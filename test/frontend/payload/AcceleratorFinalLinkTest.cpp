@@ -5,6 +5,15 @@
 #include "Frontend/Payload/PayloadCarrier.h"
 #include "Frontend/Payload/RelocatableAcceleratorPayload.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/InitAllDialects.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
+#include "mlir/Target/LLVMIR/Import.h"
+
+#include "llvm/ADT/StringSet.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Function.h"
@@ -279,6 +288,41 @@ std::uint64_t archiveMemberOffset(const char *test, llvm::StringRef archivePath,
   return *offset;
 }
 
+/// Stands in for the ordinary linker, which owns every symbol resolution fact
+/// the final link consumes. It answers the way a linker answers for a program
+/// whose accelerator definitions are reachable from the regular objects beside
+/// them, and reports the names it was told to hide as invisible outside the
+/// payload cohort.
+class OrdinaryLinkerResolutions {
+public:
+  explicit OrdinaryLinkerResolutions(llvm::ArrayRef<llvm::StringRef> hidden) {
+    for (llvm::StringRef name : hidden)
+      hidden_.insert(name);
+  }
+
+  llvm::lto::SymbolResolution
+  operator()(llvm::StringRef, const llvm::lto::InputFile::Symbol &symbol) {
+    llvm::lto::SymbolResolution resolution;
+    if (symbol.isUndefined())
+      return resolution;
+    resolution.Prevailing = prevailing_.insert(symbol.getName()).second;
+    resolution.FinalDefinitionInLinkageUnit = resolution.Prevailing;
+    resolution.VisibleToRegularObj = !hidden_.contains(symbol.getName());
+    return resolution;
+  }
+
+private:
+  llvm::StringSet<> hidden_;
+  llvm::StringSet<> prevailing_;
+};
+
+llvm::Expected<std::unique_ptr<llvm::Module>>
+linkWith(const LinkerSelectedInputs &selected, llvm::LLVMContext &context,
+         llvm::ArrayRef<llvm::StringRef> hidden = {}) {
+  OrdinaryLinkerResolutions resolutions(hidden);
+  return linkSelectedAcceleratorPayloads(selected, resolutions, context);
+}
+
 /// Two selected ordinary objects plus one archive in which the ordinary linker
 /// selected exactly one of two payload-bearing members. The linked module must
 /// hold every selected translation unit and nothing from the unselected member.
@@ -306,7 +350,7 @@ void selectedObjectsAndArchiveMemberLinkOnce() {
 
   llvm::LLVMContext context;
   const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkSelectedAcceleratorPayloads(selected, context));
+      takeExpected(test, linkWith(selected, context));
   require(test, linked != nullptr,
           "the selected payload cohort produced no linked module");
   require(test, linked->getFunction("loom_first") != nullptr,
@@ -339,7 +383,7 @@ void archiveMemberExclusionFollowsSelection() {
 
   llvm::LLVMContext context;
   const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkSelectedAcceleratorPayloads(selected, context));
+      takeExpected(test, linkWith(selected, context));
   require(test, linked != nullptr,
           "the selected archive member produced no linked module");
   require(test, linked->getFunction("loom_second") != nullptr,
@@ -398,14 +442,13 @@ void objectsWithoutPayloadStayValid() {
   onlyPlain.selectObjectFile(plainObject);
   require(test,
           takeExpected(test,
-                       linkSelectedAcceleratorPayloads(onlyPlain, context)) ==
+                       linkWith(onlyPlain, context)) ==
               nullptr,
           "a selection with no payload implied accelerator compilation");
 
   const LinkerSelectedInputs nothingSelected;
   require(test,
-          takeExpected(test, linkSelectedAcceleratorPayloads(nothingSelected,
-                                                             context)) ==
+          takeExpected(test, linkWith(nothingSelected, context)) ==
               nullptr,
           "an empty selection implied accelerator compilation");
 
@@ -413,7 +456,7 @@ void objectsWithoutPayloadStayValid() {
   mixed.selectObjectFile(plainObject);
   mixed.selectObjectFile(carrierObject);
   const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkSelectedAcceleratorPayloads(mixed, context));
+      takeExpected(test, linkWith(mixed, context));
   require(test, linked != nullptr,
           "a payload-free input suppressed the payload beside it");
   require(test, linked->getFunction("loom_carrier") != nullptr,
@@ -447,7 +490,7 @@ void malformedSelectedMemberFailsWithAttribution() {
   withBroken.selectArchiveMember(archive, intactOffset);
   withBroken.selectArchiveMember(archive, brokenOffset);
   const std::string message = rejectionMessage(
-      test, linkSelectedAcceleratorPayloads(withBroken, context));
+      test, linkWith(withBroken, context));
   requireMentions(test, message, "selected_payload_rejected",
                   "a malformed selected payload was not typed");
   requireMentions(test, message, "broken.o",
@@ -458,7 +501,7 @@ void malformedSelectedMemberFailsWithAttribution() {
   LinkerSelectedInputs onlyIntact;
   onlyIntact.selectArchiveMember(archive, intactOffset);
   const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkSelectedAcceleratorPayloads(onlyIntact, context));
+      takeExpected(test, linkWith(onlyIntact, context));
   require(test, linked != nullptr && linked->getFunction("loom_intact"),
           "the intact archive member did not link on its own");
 }
@@ -484,7 +527,7 @@ void incompatibleRawCohortFieldsFail() {
 
   llvm::LLVMContext context;
   const std::string message =
-      rejectionMessage(test, linkSelectedAcceleratorPayloads(selected, context));
+      rejectionMessage(test, linkWith(selected, context));
   requireMentions(test, message, "selected_payload_incompatible",
                   "a raw cohort disagreement was not typed");
   requireMentions(test, message, "foreign.o",
@@ -493,10 +536,11 @@ void incompatibleRawCohortFieldsFail() {
                   "a raw cohort disagreement did not name the field");
 }
 
-/// COMDAT and ODR resolution across selected payloads is the pinned LLVM
-/// Linker's decision. The duplicate definition merges instead of being renamed
-/// or duplicated, and nothing here restates that rule.
-void llvmLinkerResolvesComdatOdr() {
+/// COMDAT and ODR resolution across selected payloads is the pinned LTO
+/// pipeline's decision, taken from the ordinary linker's prevailing facts. The
+/// duplicate definition merges instead of being renamed or duplicated, and
+/// nothing here restates that rule.
+void ltoResolvesComdatOdr() {
   const char *test = __func__;
 
   // Both translation units define and use the same COMDAT definition, which is
@@ -532,7 +576,7 @@ void llvmLinkerResolvesComdatOdr() {
 
   llvm::LLVMContext context;
   const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkSelectedAcceleratorPayloads(selected, context));
+      takeExpected(test, linkWith(selected, context));
   require(test, linked != nullptr, "the ODR cohort produced no linked module");
   require(test, linked->getFunction("shared") != nullptr,
           "the shared COMDAT definition did not survive the link");
@@ -541,9 +585,9 @@ void llvmLinkerResolvesComdatOdr() {
           "and one merged COMDAT definition");
 }
 
-/// Module-flag validation is the pinned LLVM Linker's too. Loom surfaces its
+/// Module-flag validation is the pinned LTO pipeline's too. Loom surfaces its
 /// rejection as a typed error naming the member that failed to link.
-void llvmLinkerRejectsConflictingModuleFlags() {
+void ltoRejectsConflictingModuleFlags() {
   const char *test = __func__;
   const auto withWcharSize = [](llvm::StringRef function, int size) {
     return assemblyFor(hostTriple(),
@@ -565,13 +609,122 @@ void llvmLinkerRejectsConflictingModuleFlags() {
 
   llvm::LLVMContext context;
   const std::string message =
-      rejectionMessage(test, linkSelectedAcceleratorPayloads(selected, context));
+      rejectionMessage(test, linkWith(selected, context));
   requireMentions(test, message, "accelerator_link_failed",
-                  "an LLVM Linker rejection was not typed");
+                  "an LTO rejection was not typed");
   requireMentions(test, message, "second.o",
-                  "an LLVM Linker rejection did not name its member");
+                  "an LTO rejection did not name its member");
   requireMentions(test, message, "wchar_size",
-                  "an LLVM Linker rejection dropped the reason LLVM reported");
+                  "an LTO rejection dropped the reason LLVM reported");
+}
+
+/// Internalization is LTO's, and it follows the ordinary linker's visibility
+/// facts. A definition that linker reported as invisible outside the payload
+/// cohort must not stay externally visible in the linked module, while one it
+/// reported as reachable from regular objects must.
+void ltoInternalizesWhatTheLinkerReportedInvisible() {
+  const char *test = __func__;
+  const std::string assembly =
+      assemblyFor(hostTriple(), "define i32 @loom_helper(i32 %value) {\n"
+                                "entry:\n"
+                                "  %scaled = mul nsw i32 %value, 7\n"
+                                "  ret i32 %scaled\n"
+                                "}\n"
+                                "\n"
+                                "define i32 @loom_exported(i32 %value) {\n"
+                                "entry:\n"
+                                "  %helped = call i32 @loom_helper(i32 %value)\n"
+                                "  ret i32 %helped\n"
+                                "}\n");
+
+  TempTree tree(test);
+  const std::string object =
+      tree.writeFile("internalize.o", emitCarrierObject(test, assembly));
+  LinkerSelectedInputs selected;
+  selected.selectObjectFile(object);
+
+  llvm::LLVMContext context;
+  const std::unique_ptr<llvm::Module> linked = takeExpected(
+      test, linkWith(selected, context, {llvm::StringRef("loom_helper")}));
+  require(test, linked != nullptr, "the selected payload produced no module");
+
+  const llvm::Function *exported = linked->getFunction("loom_exported");
+  require(test,
+          exported && !exported->isDeclaration() &&
+              !exported->hasLocalLinkage(),
+          "a definition the ordinary linker reported as visible to regular "
+          "objects stopped being externally visible");
+  const llvm::Function *helper = linked->getFunction("loom_helper");
+  require(test, !helper || helper->hasLocalLinkage(),
+          "a definition the ordinary linker reported as invisible outside the "
+          "cohort stayed externally visible, so internalization did not run");
+}
+
+/// The linked module is the ordinary hand-off to Part 2. It enters S0 through
+/// the same upstream LLVM-to-MLIR importer the raising driver uses, and the
+/// imported llvm.func still owns the complete LLVM ABI envelope it arrived
+/// with rather than a Loom-private restatement of it.
+void linkedModuleEntersS0WithCompleteAbiEnvelope() {
+  const char *test = __func__;
+  const std::string assembly = assemblyFor(
+      hostTriple(),
+      "$envelope = comdat any\n"
+      "\n"
+      "declare i32 @loom_personality(...)\n"
+      "\n"
+      "define weak_odr fastcc void @loom_envelope(ptr noalias sret(i32) align 4 "
+      "%out, ptr readonly %in) memory(argmem: readwrite) comdat($envelope) "
+      "personality ptr @loom_personality {\n"
+      "entry:\n"
+      "  %value = load i32, ptr %in, align 4\n"
+      "  store i32 %value, ptr %out, align 4\n"
+      "  ret void\n"
+      "}\n");
+
+  TempTree tree(test);
+  const std::string object =
+      tree.writeFile("envelope.o", emitCarrierObject(test, assembly));
+  LinkerSelectedInputs selected;
+  selected.selectObjectFile(object);
+
+  llvm::LLVMContext context;
+  std::unique_ptr<llvm::Module> linked =
+      takeExpected(test, linkWith(selected, context));
+  require(test, linked != nullptr, "the selected payload produced no module");
+
+  mlir::DialectRegistry registry;
+  mlir::registerAllDialects(registry);
+  mlir::registerAllFromLLVMIRTranslations(registry);
+  mlir::MLIRContext mlirContext(registry);
+  mlirContext.loadAllAvailableDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> imported =
+      mlir::translateLLVMIRToModule(std::move(linked), &mlirContext);
+  require(test, static_cast<bool>(imported),
+          "the linked module did not import through the upstream LLVM-to-MLIR "
+          "path");
+
+  auto envelope =
+      imported->lookupSymbol<mlir::LLVM::LLVMFuncOp>("loom_envelope");
+  require(test, envelope != nullptr,
+          "the linked function did not survive import as an llvm.func");
+  require(test, envelope.getLinkage() == mlir::LLVM::Linkage::WeakODR,
+          "the imported function lost its linkage");
+  require(test, envelope.getCConv() == mlir::LLVM::CConv::Fast,
+          "the imported function lost its calling convention");
+  require(test, envelope.getComdat().has_value(),
+          "the imported function lost its COMDAT");
+  require(test, envelope.getPersonality().has_value(),
+          "the imported function lost its personality");
+  require(test, envelope.getMemoryEffects().has_value(),
+          "the imported function lost its memory effects");
+  require(test,
+          static_cast<bool>(envelope.getArgAttr(
+              0, mlir::LLVM::LLVMDialect::getNoAliasAttrName())),
+          "the imported function lost a noalias argument attribute");
+  require(test,
+          static_cast<bool>(envelope.getArgAttr(
+              0, mlir::LLVM::LLVMDialect::getStructRetAttrName())),
+          "the imported function lost an sret argument attribute");
 }
 
 } // namespace
@@ -586,7 +739,9 @@ int main() {
   objectsWithoutPayloadStayValid();
   malformedSelectedMemberFailsWithAttribution();
   incompatibleRawCohortFieldsFail();
-  llvmLinkerResolvesComdatOdr();
-  llvmLinkerRejectsConflictingModuleFlags();
+  ltoResolvesComdatOdr();
+  ltoRejectsConflictingModuleFlags();
+  ltoInternalizesWhatTheLinkerReportedInvisible();
+  linkedModuleEntersS0WithCompleteAbiEnvelope();
   return 0;
 }

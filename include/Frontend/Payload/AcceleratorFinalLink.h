@@ -2,7 +2,9 @@
 #define LOOM_FRONTEND_PAYLOAD_ACCELERATORFINALLINK_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/LTO/LTO.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -20,12 +22,12 @@ namespace loom {
 
 /// The ordinary linker's selected-input result.
 ///
-/// The ordinary linker is the sole authority for archive search, symbol
-/// resolution, and which object files and archive members participate in a
-/// link. Loom records that result and consults nothing else. An archive member
-/// is named only by its exact child offset in its archive, so collection has no
-/// way to reach a member the ordinary linker did not select; member names are
-/// not unique inside an archive and are therefore diagnostics, never identity.
+/// The ordinary linker is the sole authority for archive search and for which
+/// object files and archive members participate in a link. Loom records that
+/// result and consults nothing else. An archive member is named only by its
+/// exact child offset in its archive, so collection has no way to reach a
+/// member the ordinary linker did not select; member names are not unique
+/// inside an archive and are therefore diagnostics, never identity.
 class LinkerSelectedInputs {
 public:
   /// One relocatable input the ordinary linker selected.
@@ -46,22 +48,28 @@ private:
   std::vector<Selection> selections_;
 };
 
+/// The ordinary linker's resolution of one symbol of one selected input.
+///
+/// Both the symbol and the resolution are the pinned LTO API's own types. The
+/// ordinary linker owns whether a definition prevails, whether it is final in
+/// this linkage unit, and whether anything outside the payload cohort can see
+/// it. Loom carries those facts from that linker to LTO unchanged: it derives
+/// no resolution, keeps no symbol table, and never answers for a symbol itself.
+using LinkerSymbolResolver = llvm::function_ref<llvm::lto::SymbolResolution(
+    llvm::StringRef carrier, const llvm::lto::InputFile::Symbol &symbol)>;
+
 /// Collects the payload carried by exactly the selected inputs, checks the raw
-/// cohort through the production preflight, and forms one linked LLVM module.
+/// cohort through the production preflight, and runs the pinned LTO pipeline
+/// over them with the ordinary linker's resolutions.
 ///
-/// The pinned LLVM Linker is the sole module-linking authority: symbol
-/// resolution, COMDAT and ODR handling, and module-flag validation across the
-/// collected modules are all its decisions, and none of them are reimplemented
-/// or inferred from a copied manifest here.
+/// LTO is the sole whole-program authority here. Symbol resolution, COMDAT and
+/// ODR handling, module-flag validation, internalization, and whole-program
+/// optimization are all its work, driven by the resolutions the ordinary linker
+/// supplied. The pipeline stops at its own last pre-code-generation hook, so
+/// what this produces is the unique post-LTO linked module rather than native
+/// objects.
 ///
-/// Internalization and whole-program optimization belong to the same LLVM
-/// authority, and LLVM derives both from the ordinary linker's symbol-resolution
-/// result: which collected symbol is still referenced from outside this payload
-/// cohort. A selected-input list does not carry that result, so neither runs
-/// here. Loom performs no substitute for them rather than inventing the
-/// resolution they need.
-///
-/// The result is the ordinary Part 1 hand-off toward S0. It is null exactly
+/// That module is the ordinary Part 1 hand-off to Part 2. It is null exactly
 /// when no selected input carries a payload, which is a valid link implying no
 /// accelerator compilation rather than a failure. A selected input whose
 /// carrier or payload is unreadable, malformed, stale, unsupported, or
@@ -69,10 +77,11 @@ private:
 /// is never silently discarded.
 ///
 /// The whole operation is failure-atomic. Nothing is returned unless every
-/// selected payload was decoded, parsed, fully materialized, verified, and
-/// linked, and the linked module itself verified.
+/// selected payload was decoded, admitted to LTO, linked, optimized, and
+/// verified.
 llvm::Expected<std::unique_ptr<llvm::Module>>
 linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
+                                LinkerSymbolResolver resolveSymbol,
                                 llvm::LLVMContext &context);
 
 } // namespace loom

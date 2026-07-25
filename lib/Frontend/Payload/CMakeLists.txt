@@ -48,6 +48,25 @@ configure_file(
   @ONLY
 )
 
+# An LLVM build may publish one shared library, static components, or both.
+# Mixing the two forms in one executable registers the same LLVM command-line
+# options twice, so the payload library and everything downstream of it follow
+# whichever form that build selected.
+if(LLVM_LINK_LLVM_DYLIB AND TARGET LLVM)
+  set(loom_payload_llvm_libs LLVM)
+else()
+  set(loom_payload_llvm_libs
+    LLVMBitReader
+    LLVMBitWriter
+    LLVMCore
+    LLVMLTO
+    LLVMObject
+    LLVMSupport
+    LLVMTargetParser
+    LLVMTransformUtils
+  )
+endif()
+
 add_mlir_library(LoomFrontendPayload
   AbiCompatibilityKey.cpp
   AcceleratorFinalLink.cpp
@@ -61,12 +80,5 @@ add_mlir_library(LoomFrontendPayload
 
   LINK_LIBS PUBLIC
   LoomCommon
-  LLVMBitReader
-  LLVMBitWriter
-  LLVMCore
-  LLVMLinker
-  LLVMObject
-  LLVMSupport
-  LLVMTargetParser
-  LLVMTransformUtils
+  ${loom_payload_llvm_libs}
 )
