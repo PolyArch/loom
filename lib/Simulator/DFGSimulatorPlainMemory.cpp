@@ -47,8 +47,12 @@ void canonicalizeMemoryActionRanges(
   ranges.assign(merged.begin(), merged.end());
 }
 
-ReadyPlainMemoryConflictScan
-scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
+// True when one ready set overlaps itself on a hazard, which is exactly the
+// conflict no explicit order can resolve within one scheduler decision. The
+// ranges of a single action are canonical, so an action never conflicts with
+// itself here.
+static bool readyPlainMemoryActionsConflict(
+    llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
   struct Range {
     std::uint64_t rootId;
     std::int64_t begin;
@@ -74,14 +78,12 @@ scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
     return lhs.isWrite < rhs.isWrite;
   });
 
-  ReadyPlainMemoryConflictScan result;
   std::optional<std::uint64_t> rootId;
   std::int64_t maximalEnd = 0;
   std::int64_t maximalWriteEnd = 0;
   bool hasRange = false;
   bool hasWrite = false;
   for (const Range &range : ranges) {
-    ++result.inspectedRanges;
     if (!rootId || *rootId != range.rootId) {
       rootId = range.rootId;
       maximalEnd = range.end;
@@ -91,10 +93,8 @@ scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
       continue;
     }
     if ((range.isWrite && hasRange && maximalEnd > range.begin) ||
-        (!range.isWrite && hasWrite && maximalWriteEnd > range.begin)) {
-      result.hasConflict = true;
-      return result;
-    }
+        (!range.isWrite && hasWrite && maximalWriteEnd > range.begin))
+      return true;
     maximalEnd = std::max(maximalEnd, range.end);
     if (range.isWrite) {
       maximalWriteEnd =
@@ -102,35 +102,32 @@ scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
       hasWrite = true;
     }
   }
-  return result;
+  return false;
 }
 
-PlainMemoryConflictQuery
+llvm::SmallVector<SyncEffectId>
 PlainMemoryConflictIndex::query(MemoryActionRecord action) const {
-  PlainMemoryConflictQuery result;
+  llvm::SmallVector<SyncEffectId> effects;
   canonicalizeMemoryActionRanges(action.byteRanges);
   auto root = intervals_.find(action.rootId);
   if (root == intervals_.end())
-    return result;
+    return effects;
 
   const IntervalMap &intervals = root->second->intervals;
   for (const auto &[begin, end] : action.byteRanges) {
     auto interval = intervals.find(begin);
     while (interval.valid() && interval.start() < end) {
-      ++result.inspectedIntervals;
       const Hazards &hazards = interval.value();
       if (hazards.write)
-        result.effects.push_back(*hazards.write);
+        effects.push_back(*hazards.write);
       if (action.isWrite)
-        result.effects.append(hazards.reads.begin(), hazards.reads.end());
+        effects.append(hazards.reads.begin(), hazards.reads.end());
       ++interval;
     }
   }
-  llvm::sort(result.effects);
-  result.effects.erase(
-      std::unique(result.effects.begin(), result.effects.end()),
-      result.effects.end());
-  return result;
+  llvm::sort(effects);
+  effects.erase(std::unique(effects.begin(), effects.end()), effects.end());
+  return effects;
 }
 
 void PlainMemoryConflictIndex::retain(MemoryActionRecord action,
@@ -144,15 +141,6 @@ void PlainMemoryConflictIndex::retain(MemoryActionRecord action,
     root = std::make_unique<RootIntervals>();
   for (const auto &[begin, end] : action.byteRanges)
     updateRange(*root, begin, end, action.isWrite, effect, synchronization);
-}
-
-std::size_t
-PlainMemoryConflictIndex::intervalCount(std::uint64_t rootId) const {
-  auto root = intervals_.find(rootId);
-  if (root == intervals_.end())
-    return 0;
-  return std::distance(root->second->intervals.begin(),
-                       root->second->intervals.end());
 }
 
 void PlainMemoryConflictIndex::applyAccess(
@@ -255,15 +243,14 @@ bool admitReadyPlainMemoryActions(SimulatorState &state) {
   for (std::uint64_t ordinal : inactiveCandidates)
     state.plainMemoryCandidates.erase(ordinal);
 
-  if (scanReadyPlainMemoryConflicts(ready).hasConflict)
+  if (readyPlainMemoryActionsConflict(ready))
     return rejectPlainMemoryConflict(state);
 
   for (const ReadyPlainMemoryAction &candidate : ready) {
-    PlainMemoryConflictQuery conflict =
+    llvm::SmallVector<SyncEffectId> conflict =
         state.memoryActions.query(candidate.action);
-    if (!conflict.effects.empty() &&
-        !state.memorySync->areCoveredByHappensBefore(conflict.effects,
-                                                     candidate.ctrlFrontier))
+    if (!conflict.empty() && !state.memorySync->areCoveredByHappensBefore(
+                                 conflict, candidate.ctrlFrontier))
       return rejectPlainMemoryConflict(state);
   }
 

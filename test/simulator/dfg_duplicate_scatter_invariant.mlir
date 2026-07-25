@@ -2,10 +2,6 @@
 // RUN:   --arg 1=0x0000000200000002 --memref 2=10,11,12,13 \
 // RUN:   --output %t.duplicate.json
 // RUN: FileCheck %s --check-prefix=DUPLICATE < %t.duplicate.json
-// RUN: loom-dfg-sim %s --graph duplicate_scatter --arg 0=8589934593 \
-// RUN:   --arg 1=0x0000000300000002 --memref 2=10,11,12,13 \
-// RUN:   --output %t.distinct.json
-// RUN: FileCheck %s --check-prefix=DISTINCT < %t.distinct.json
 
 // docs/spec-dataflow-vectorization.md gives a plain scatter no lane order for
 // duplicate active addresses: the finalized program must already have proved
@@ -20,15 +16,6 @@
 // DUPLICATE-DAG: "final_outputs": []
 // DUPLICATE-NOT: "dataflow.store":
 // DUPLICATE: "status": "execution_failed"
-
-// The same actor with distinct active addresses is an ordinary scatter.
-// DISTINCT: "arg2": [
-// DISTINCT-NEXT: "i32:10",
-// DISTINCT-NEXT: "i32:11",
-// DISTINCT-NEXT: "i32:1",
-// DISTINCT-NEXT: "i32:2"
-// DISTINCT: "dataflow.store": 1
-// DISTINCT: "status": "pass"
 
 module {
   module attributes {

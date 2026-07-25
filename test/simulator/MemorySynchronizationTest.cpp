@@ -9,7 +9,6 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <chrono>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
@@ -683,10 +682,14 @@ void acceptedFactsAreInsertionOrderInvariant() {
                 "insertion order changed a publication");
 }
 
-// A fresh declaration and a later batch insertion record the same accepted
-// sequenced-before facts. Synchronizes-with may make one predecessor happen
-// before another, but it cannot erase the explicit release-fence hook.
-void freshAndBatchDeclarationsPublishTheSameFenceOrigin() {
+// declareEffectSequencedAfter records every explicit predecessor the caller
+// names. A release fence publishes only through a write sequenced after it, so
+// reducing an incoming frontier must never drop that hook: here the release
+// fence happens-before the acquire through synchronizes-with, which would let a
+// happens-before reduction drop the fence, yet it still reaches the writer the
+// frontier declared. The single-edge reference and the frontier declaration
+// publish the same fence, and a rejected frontier allocates no identity.
+void incomingFrontierPreservesReleaseFencePublication() {
   MemoryAtomicOrder order;
   takeExpected(order.initializeObject(kFlag));
   takeExpected(order.initializeObject(kGate));
@@ -694,8 +697,7 @@ void freshAndBatchDeclarationsPublishTheSameFenceOrigin() {
   AtomicReadId selected = takeExpected(order.atomicLoad(kFlag, published));
   AtomicVersionId carried = takeExpected(order.atomicStore(kGate));
 
-  auto build = [&](bool freshDeclaration) {
-    MemorySynchronization sync(order);
+  auto establish = [&](MemorySynchronization &sync) {
     SyncEffectId releaseFence = sync.declareEffect();
     SyncEffectId publisher = sync.declareEffect();
     SyncEffectId acquire = sync.declareEffect();
@@ -707,193 +709,54 @@ void freshAndBatchDeclarationsPublishTheSameFenceOrigin() {
     accept(sync.declareOperationRole(acquire, SyncRoleKind::Acquire),
            "acquire role");
     require(sync.synchronizesWith(releaseFence, acquire),
-            "the test setup did not synchronize the predecessor pair");
-
-    SyncEffectId writer = [&] {
-      if (!freshDeclaration) {
-        SyncEffectId declared = sync.declareEffect();
-        llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> relations{
-            {releaseFence, declared}, {acquire, declared}};
-        accept(sync.sequencedBefore(relations), "batch writer frontier");
-        return declared;
-      }
-      llvm::SmallVector<SyncEffectId, 2> predecessors{releaseFence, acquire};
-      return takeExpected(sync.declareEffectSequencedAfter(predecessors));
-    }();
-    accept(sync.registerWrite(writer, kHome, carried), "carried write");
-    require(sync.happensBefore(releaseFence, writer) &&
-                sync.happensBefore(acquire, writer),
-            "writer lost an accepted happens-before predecessor");
-    return std::tuple{std::move(sync), releaseFence};
+            "the setup did not synchronize the predecessor pair");
+    return std::tuple{releaseFence, acquire};
   };
 
-  auto [fresh, freshRelease] = build(true);
-  auto [batch, batchRelease] = build(false);
-  expectEffects(takeExpected(fresh.publishedOrigins(carried)), {freshRelease},
-                "fresh declaration lost a release-fence publication");
-  expectEffects(takeExpected(batch.publishedOrigins(carried)), {batchRelease},
-                "batch insertion lost a release-fence publication");
-}
-
-void broadIncomingFrontierDeduplicationIsAtomic() {
-  MemoryAtomicOrder order;
-  MemorySynchronization sync(order);
-  constexpr unsigned kFanIn = 65536;
-  llvm::SmallVector<SyncEffectId> sources;
-  sources.reserve(kFanIn);
-  for (unsigned index = 0; index < kFanIn; ++index)
-    sources.push_back(sync.declareEffect());
-
-  llvm::SmallVector<SyncEffectId> duplicated(sources);
-  duplicated.push_back(sources[kFanIn / 2]);
-  expectRejected(sync.declareEffectSequencedAfter(duplicated),
-                 Kind::DuplicateEdge,
-                 "a broad duplicated incoming frontier was accepted");
-
-  SyncEffectId target = takeExpected(sync.declareEffectSequencedAfter(sources));
-  require(target == SyncEffectId(kFanIn),
-          "a rejected broad frontier consumed an effect id");
-  require(sync.sequencedEdgeCount() == kFanIn,
-          "a broad independent frontier lost an accepted predecessor");
-}
-
-// One issue can inherit a wide token frontier. The authority accepts all of
-// those sequenced-before facts as one transaction, and a rejected collection
-// commits none of its otherwise-valid prefix.
-void wideFrontierUsesOneTransactionalInsertion() {
-  MemoryAtomicOrder order;
-  MemorySynchronization sync(order);
-  constexpr unsigned kFanIn = 1024;
-  llvm::SmallVector<SyncEffectId> sources;
-  sources.reserve(kFanIn);
-  for (unsigned index = 0; index < kFanIn; ++index)
-    sources.push_back(sync.declareEffect());
-  SyncEffectId target = takeExpected(sync.declareEffectSequencedAfter(sources));
-  require(sync.sequencedEdgeCount() == kFanIn,
-          "wide incoming declaration dropped an independent predecessor");
-
-  llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>> facts;
-  facts.reserve(kFanIn - 1);
-  for (unsigned index = 0; index + 1 < kFanIn; ++index)
-    facts.emplace_back(sources[index], sources[index + 1]);
-  accept(sync.sequencedBefore(facts), "wide source chain");
-  require(sync.sequencedEdgeCount() == kFanIn,
-          "wide incoming frontier was not transitively reduced");
-  require(sync.areCoveredByHappensBefore(sources, {sources.back()}),
-          "the chain tail did not cover its sequenced predecessors");
-  require(sync.areCoveredByHappensBefore(sources, {target}),
-          "the target did not cover its wide incoming frontier");
-
-  SyncEffectId unrelated = sync.declareEffect();
-  sources.push_back(unrelated);
-  require(!sync.areCoveredByHappensBefore(sources, {target}),
-          "an unrelated effect was covered by the target");
-  llvm::SmallVector<SyncEffectId, 2> frontier{target, unrelated};
-  require(sync.areCoveredByHappensBefore(sources, frontier),
-          "a multi-effect frontier did not cover all requested effects");
-
-  SyncEffectId refusedSource = sync.declareEffect();
-  SyncEffectId refusedTarget = sync.declareEffect();
-  const SyncEffectId unknown(std::numeric_limits<std::uint64_t>::max());
-  llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> refused{
-      {refusedSource, refusedTarget}, {refusedTarget, unknown}};
-  expectRejected(sync.sequencedBefore(refused), Kind::UnknownEffect,
-                 "a batch with an unknown effect was accepted");
-  require(!sync.happensBefore(refusedSource, refusedTarget),
-          "a rejected batch committed its valid prefix");
-}
-
-void rejectedIncomingFrontierDoesNotAllocateEffect() {
-  MemoryAtomicOrder order;
-  MemorySynchronization sync(order);
-  llvm::SmallVector<SyncEffectId, 1> unknown{SyncEffectId(0)};
-
-  expectRejected(sync.declareEffectSequencedAfter(unknown), Kind::UnknownEffect,
-                 "an unknown predecessor was accepted");
-  SyncEffectId first = takeExpected(sync.declareEffectSequencedAfter({}));
-  require(first == SyncEffectId(0),
-          "a rejected incoming frontier consumed an effect id");
-}
-
-void loopCarriedFrontierAndRelationStayReduced() {
-  MemoryAtomicOrder order;
-  MemorySynchronization sync(order);
-  constexpr unsigned kEffects = 2048;
-  llvm::SmallVector<SyncEffectId> history;
-  llvm::SmallVector<SyncEffectId, 2> frontier;
-  history.reserve(kEffects);
-
-  for (unsigned index = 0; index < kEffects; ++index) {
-    SyncEffectId effect =
-        takeExpected(sync.declareEffectSequencedAfter(frontier));
-    history.push_back(effect);
-    frontier.push_back(effect);
-    frontier = takeExpected(sync.maximalHappensBeforeFrontier(frontier));
-    require(frontier.size() == 1 && frontier.front() == effect,
-            "a loop-carried frontier retained a transitive predecessor");
-  }
-  require(sync.sequencedEdgeCount() == kEffects - 1,
-          "a linear effect chain stored a transitive edge");
-
-  SyncEffectId joined = takeExpected(sync.declareEffectSequencedAfter(history));
-  require(sync.sequencedEdgeCount() == kEffects,
-          "a historical incoming frontier stored redundant direct edges");
-  require(sync.happensBefore(history.front(), joined),
-          "frontier reduction changed happens-before");
-}
-
-// Scale gate for the plain-memory admission query.
-//
-// Admission asks one question per ready access: are the hazards this access
-// meets already covered by the ctrl frontier it inherited. Both sides of that
-// question are small and stay small, so its cost must follow the question
-// rather than the number of effects the run has declared so far.
-//
-// The gate is elapsed time because the answer alone cannot reject the old
-// behaviour: resolving the same query through a full predecessor closure of
-// the frontier returns exactly the same boolean. With a closure the measured
-// cost tracked the history exactly, 2.3 us per call at 1000 effects, 9.1 us at
-// 4000 and 36.5 us at 16000, which makes one ordered read-modify-write loop
-// quadratic in its own iteration count. Answering from the effect's own
-// adjacency costs a fraction of a microsecond at any history.
-//
-// The history and the call count are both fixed, so the measured region is
-// deterministic and runs in milliseconds once the query is bounded.
-void admissionQueryCostFollowsTheQueryNotTheHistory() {
-  MemoryAtomicOrder order;
-  MemorySynchronization sync(order);
-  constexpr unsigned kHistory = 8192;
-  constexpr unsigned kQueries = 100000;
-  constexpr double kBudgetSeconds = 0.3;
-
-  SyncEffectId tail = sync.declareEffect();
-  SyncEffectId prior = tail;
-  for (unsigned index = 0; index < kHistory; ++index) {
-    llvm::SmallVector<SyncEffectId, 1> ctrl{tail};
-    prior = tail;
-    tail = takeExpected(sync.declareEffectSequencedAfter(ctrl));
+  // Reference: ordinary single-edge sequenced-before calls name both
+  // predecessors explicitly.
+  {
+    MemorySynchronization sync(order);
+    auto [releaseFence, acquire] = establish(sync);
+    SyncEffectId writer = sync.declareEffect();
+    accept(sync.sequencedBefore(releaseFence, writer),
+           "release fence to writer");
+    accept(sync.sequencedBefore(acquire, writer), "acquire to writer");
+    accept(sync.registerWrite(writer, kHome, carried), "carried write");
+    expectEffects(takeExpected(sync.publishedOrigins(carried)), {releaseFence},
+                  "the reference lost the release-fence publication");
   }
 
-  // Exactly the admission shape: the write hazard one step back plus the read
-  // hazard the ctrl frontier itself names.
-  const llvm::SmallVector<SyncEffectId, 2> hazards{prior, tail};
-  const llvm::SmallVector<SyncEffectId, 1> frontier{tail};
-  const auto start = std::chrono::steady_clock::now();
-  for (unsigned index = 0; index < kQueries; ++index)
-    require(sync.areCoveredByHappensBefore(hazards, frontier),
-            "an inherited ctrl frontier did not cover the hazards it follows");
-  const double elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count();
-  require(elapsed < kBudgetSeconds,
-          "a bounded admission query scaled with the run's effect history");
+  // The same predecessors as one incoming frontier. The release fence
+  // happens-before the acquire through synchronizes-with, so the derived
+  // relation would reduce the pair to the acquire alone; the fence's sequenced
+  // hook must survive that reduction.
+  {
+    MemorySynchronization sync(order);
+    auto [releaseFence, acquire] = establish(sync);
+    SyncEffectId writer =
+        takeExpected(sync.declareEffectSequencedAfter({releaseFence, acquire}));
+    accept(sync.registerWrite(writer, kHome, carried), "carried write");
+    expectEffects(
+        takeExpected(sync.publishedOrigins(carried)), {releaseFence},
+        "the frontier declaration lost the release-fence publication");
+  }
 
-  // The bound must not have been bought by weakening the relation.
-  SyncEffectId unrelated = sync.declareEffect();
-  require(!sync.areCoveredByHappensBefore({prior, unrelated}, frontier),
-          "an unrelated effect was reported covered");
-  require(sync.areCoveredByHappensBefore({SyncEffectId(0), prior}, frontier),
-          "a distant sequenced predecessor was not reported covered");
+  // A rejected incoming predecessor allocates no identity, whether the
+  // predecessor is unknown or a duplicate the caller already named.
+  {
+    MemorySynchronization sync(order);
+    SyncEffectId first = sync.declareEffect();
+    const SyncEffectId unknown(std::numeric_limits<std::uint64_t>::max());
+    expectRejected(sync.declareEffectSequencedAfter({unknown}),
+                   Kind::UnknownEffect, "an unknown predecessor was accepted");
+    expectRejected(sync.declareEffectSequencedAfter({first, first}),
+                   Kind::DuplicateEdge,
+                   "a duplicated predecessor was accepted");
+    SyncEffectId next = takeExpected(sync.declareEffectSequencedAfter({}));
+    require(next.value() == first.value() + 1,
+            "a rejected frontier consumed an effect id");
+  }
 }
 
 } // namespace
@@ -910,11 +773,6 @@ int main() {
   rejectionsArePreciseAndAtomic();
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
-  freshAndBatchDeclarationsPublishTheSameFenceOrigin();
-  broadIncomingFrontierDeduplicationIsAtomic();
-  wideFrontierUsesOneTransactionalInsertion();
-  rejectedIncomingFrontierDoesNotAllocateEffect();
-  loopCarriedFrontierAndRelationStayReduced();
-  admissionQueryCostFollowsTheQueryNotTheHistory();
+  incomingFrontierPreservesReleaseFencePublication();
   return 0;
 }

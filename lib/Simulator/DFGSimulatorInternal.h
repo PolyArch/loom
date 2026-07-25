@@ -132,10 +132,6 @@ public:
     return id;
   }
 
-  /// Number of distinct frontiers this run retained, which is the arena's
-  /// share of the run's memory-order state.
-  std::size_t frontierCount() const { return entries_.size() - 1; }
-
 private:
   struct Entry {
     const SyncEffectId *data;
@@ -375,23 +371,6 @@ struct ReadyPlainMemoryAction {
   llvm::SmallVector<SyncEffectId, 2> ctrlFrontier;
 };
 
-struct ReadyPlainMemoryConflictScan {
-  bool hasConflict = false;
-  std::uint64_t inspectedRanges = 0;
-};
-
-/// True when one ready set overlaps itself on a hazard, which is exactly the
-/// conflict no explicit order can resolve within one scheduler decision. The
-/// ranges of a single action are canonical, so an action never conflicts with
-/// itself here.
-ReadyPlainMemoryConflictScan
-scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions);
-
-struct PlainMemoryConflictQuery {
-  llvm::SmallVector<SyncEffectId, 2> effects;
-  std::uint64_t inspectedIntervals = 0;
-};
-
 // Exact byte-interval cache of the maximal issued hazards. It stores effect
 // handles but no order relation; MemorySynchronization alone decides whether
 // one effect covers another and reduces read frontiers.
@@ -399,17 +378,13 @@ class PlainMemoryConflictIndex {
 public:
   /// The maximal issued hazards `action` meets, without deciding whether any
   /// of them is ordered before it.
-  PlainMemoryConflictQuery query(MemoryActionRecord action) const;
+  llvm::SmallVector<SyncEffectId> query(MemoryActionRecord action) const;
 
   /// Records one issued access as the new maximal hazard of its byte ranges.
   void retain(MemoryActionRecord action, SyncEffectId effect,
               MemorySynchronization &synchronization);
 
   bool empty() const { return intervals_.empty(); }
-
-  /// Retained interval count of one logical root, which is this index's share
-  /// of the run's conflict state.
-  std::size_t intervalCount(std::uint64_t rootId) const;
 
 private:
   struct Hazards {
