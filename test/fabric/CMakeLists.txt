@@ -22,6 +22,10 @@ add_executable(loom-fabric-resource-contract-record-test
   ResourceContractRecordTest.cpp
 )
 
+add_executable(loom-fabric-memory-consistency-contract-test
+  MemoryConsistencyContractTest.cpp
+)
+
 add_executable(loom-fabric-memory-capability-domain-test
   MemoryCapabilityDomainTest.cpp
 )
@@ -58,6 +62,14 @@ target_link_libraries(loom-fabric-resource-contract-test PRIVATE
 
 target_link_libraries(loom-fabric-resource-contract-record-test PRIVATE
   LoomFabricResourceContract
+)
+
+target_link_libraries(loom-fabric-memory-consistency-contract-test PRIVATE
+  LoomCommon
+  LoomFabricIdentity
+  LoomFabricMemoryConsistencyContract
+  LoomFabricResourceContract
+  LLVMSupport
 )
 
 target_link_libraries(loom-fabric-memory-capability-domain-test PRIVATE
