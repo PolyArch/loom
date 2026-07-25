@@ -301,7 +301,7 @@ TemporalOperandBufferContract::create(
             {ClaimDeclaration{
                 ClaimKey(0), service,
                 key<CapacityDimensionKey>(OperandServiceDimension::Slot),
-                CapacityUnits(1), boundary}},
+                CapacityUnits(1)}},
             {}};
       };
 

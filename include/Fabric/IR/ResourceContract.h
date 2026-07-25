@@ -234,7 +234,6 @@ enum class ResourceContractViolation : std::uint32_t {
   UnknownClaimKey,
   UndeclaredClaim,
   DuplicateCapacityClaim,
-  AmbiguousRelease,
   CapacityArithmeticOverflow,
   ClaimExceedsCapacity,
   DuplicateRequesterInGrantPolicy,
@@ -278,16 +277,13 @@ struct ResourceStateDeclaration {
   std::vector<CapacityDimensionDeclaration> capacityDimensions;
 };
 
-/// One declared claim of a use pattern. `release` is the release event this
-/// claim proposes for the atomic envelope; validation accepts a pattern only
-/// when every claim proposes the pattern's one release event, and the accepted
-/// claim keeps no release of its own.
+/// One declared claim of a use pattern. The enclosing pattern owns the one
+/// release event for the complete atomic claim envelope.
 struct ClaimDeclaration {
   ClaimKey key;
   StateKey state;
   CapacityDimensionKey dimension;
   CapacityUnits amount;
-  EventKey release;
 };
 
 /// One declared implementation transaction of an accepted use, such as a
@@ -387,9 +383,8 @@ public:
   ///      timing keys;
   ///   9. timing-contract ordering of acquire, optional commit, and release;
   ///  10. claim key inventory of each pattern;
-  ///  11. claim state, capacity dimension, and release keys;
-  ///  12. one atomic envelope per capacity dimension and one release event per
-  ///      envelope;
+  ///  11. claim state and capacity dimension keys;
+  ///  12. one atomic envelope per capacity dimension;
   ///  13. claim feasibility against the canonical initial state;
   ///  14. internal transaction claim selection;
   ///  15. grant policy permutation and reset cursor; and

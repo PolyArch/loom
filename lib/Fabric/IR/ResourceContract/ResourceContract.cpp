@@ -401,13 +401,9 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
           normalized.capacityDimensionCount(declared.state.ordinal()))
         return rejected(ResourceContractViolation::UndeclaredClaim,
                         claimSite(pattern, claim));
-      if (declared.release.ordinal() >= declaration.eventCount)
-        return rejected(ResourceContractViolation::UnknownEventKey,
-                        claimSite(pattern, claim));
     }
 
-  // One atomic envelope claims a capacity dimension once and returns all of it
-  // at the pattern's one release event.
+  // One atomic envelope claims a capacity dimension once.
   for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
        ++pattern)
     for (std::size_t claim = 0; claim < normalized.claimCount(pattern);
@@ -420,9 +416,6 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
           return rejected(ResourceContractViolation::DuplicateCapacityClaim,
                           claimSite(pattern, claim));
       }
-      if (declared.release != normalized.usePattern(pattern).release)
-        return rejected(ResourceContractViolation::AmbiguousRelease,
-                        claimSite(pattern, claim));
     }
 
   for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
@@ -528,8 +521,6 @@ getResourceContractViolationName(ResourceContractViolation violation) {
     return "undeclared_claim";
   case ResourceContractViolation::DuplicateCapacityClaim:
     return "duplicate_capacity_claim";
-  case ResourceContractViolation::AmbiguousRelease:
-    return "ambiguous_release";
   case ResourceContractViolation::CapacityArithmeticOverflow:
     return "capacity_arithmetic_overflow";
   case ResourceContractViolation::ClaimExceedsCapacity:

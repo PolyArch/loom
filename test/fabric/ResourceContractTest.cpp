@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -72,6 +73,16 @@ template <typename Key, typename Enum> constexpr Key key(Enum value) {
   return Key(static_cast<std::uint32_t>(value));
 }
 
+template <typename T, typename = void>
+struct HasPerClaimRelease : std::false_type {};
+
+template <typename T>
+struct HasPerClaimRelease<
+    T, std::void_t<decltype(std::declval<T>().release)>> : std::true_type {};
+
+static_assert(!HasPerClaimRelease<ClaimDeclaration>::value,
+              "release belongs to the atomic use pattern, not each claim");
+
 // Every fixture below declares its events in time order, so an event's own
 // ordinal is the relative time its timing contract establishes.
 template <typename Enum> constexpr std::uint32_t rank(Enum value) {
@@ -121,7 +132,7 @@ ResourceContractDeclaration declaration() {
           key<TimingContractKey>(Timing::OneCycleElastic),
           {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
                             key<CapacityDimensionKey>(Dimension::StoredEntry),
-                            CapacityUnits(1), key<EventKey>(Event::Retire)}},
+                            CapacityUnits(1)}},
           {}},
       UsePatternDeclaration{
           UsePatternKey(1),
@@ -133,7 +144,7 @@ ResourceContractDeclaration declaration() {
           key<TimingContractKey>(Timing::OneCycleElastic),
           {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
                             key<CapacityDimensionKey>(Dimension::DequeuePort),
-                            CapacityUnits(1), key<EventKey>(Event::Retire)}},
+                            CapacityUnits(1)}},
           {}},
   };
   return declaration;
@@ -177,7 +188,7 @@ ResourceContractDeclaration declaration() {
         key<TimingContractKey>(Timing::SingleBeat),
         {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Egress),
                           key<CapacityDimensionKey>(Dimension::TransferSlot),
-                          CapacityUnits(1), key<EventKey>(Event::Retire)}},
+                          CapacityUnits(1)}},
         {}});
   return declaration;
 }
@@ -244,10 +255,10 @@ ResourceContractDeclaration declaration() {
       key<TimingContractKey>(Timing::TwoBeatVectorLoad),
       {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::ServicePort),
                         key<CapacityDimensionKey>(ServicePortDimension::Beat),
-                        CapacityUnits(1), key<EventKey>(Event::Retire)},
+                        CapacityUnits(1)},
        ClaimDeclaration{ClaimKey(1), key<StateKey>(State::Bank),
                         key<CapacityDimensionKey>(BankDimension::Access),
-                        CapacityUnits(2), key<EventKey>(Event::Retire)}},
+                        CapacityUnits(2)}},
       {InternalTransactionDeclaration{{ClaimKey(0)}},
        InternalTransactionDeclaration{{ClaimKey(0), ClaimKey(1)}}}}};
   return declaration;
@@ -282,7 +293,7 @@ UsePatternDeclaration pattern(UsePatternKey patternKey, Eligibility eligibility,
       key<TimingContractKey>(Timing::ServiceWindow),
       {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Service),
                         key<CapacityDimensionKey>(ServiceDimension::Slot),
-                        CapacityUnits(1), key<EventKey>(Event::NextBoundary)}},
+                        CapacityUnits(1)}},
       {}};
 }
 
@@ -585,26 +596,16 @@ void theTimingContractMustOrderAcquireCommitAndRelease() {
                   ResourceContractViolation::DuplicateTimingContractKey);
 }
 
-// No claim of one pattern may name another pattern's release: the complete
-// envelope returns together and nothing hands ownership across patterns.
-void aClaimCannotBeReleasedByAnotherPattern() {
-  ResourceContractDeclaration declaration = operandStore::declaration();
-  declaration.usePatterns[0].claims[0].release =
-      key<EventKey>(operandStore::Event::Commit);
-  expectViolation(__func__, "a claim released outside its own envelope",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::AmbiguousRelease);
-}
-
 void oneEnvelopeHasOneReleaseAndOneClaimPerDimension() {
-  ResourceContractDeclaration declaration = memoryEngine::declaration();
-  declaration.usePatterns[0].claims[1].release =
-      key<EventKey>(memoryEngine::Event::Accept);
-  expectViolation(__func__, "one atomic envelope with two release events",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::AmbiguousRelease);
+  const ResourceContract contract = takeContract(
+      __func__, ResourceContract::create(memoryEngine::declaration()));
+  const UsePattern pattern = contract.usePattern(UsePatternKey(0));
+  require(__func__, pattern.claims.size() == 2 &&
+                        pattern.release ==
+                            key<EventKey>(memoryEngine::Event::Retire),
+          "the enclosing pattern must release its complete claim envelope");
 
-  declaration = memoryEngine::declaration();
+  ResourceContractDeclaration declaration = memoryEngine::declaration();
   declaration.usePatterns[0].claims[1].state =
       key<StateKey>(memoryEngine::State::ServicePort);
   declaration.usePatterns[0].claims[1].dimension =
@@ -803,7 +804,7 @@ void violationPrecedenceIsIndependentOfDeclarationOrder() {
   declaration.usePatterns[1].claims.push_back(ClaimDeclaration{
       ClaimKey(1), key<StateKey>(buffer::State::Queue),
       key<CapacityDimensionKey>(buffer::Dimension::DequeuePort),
-      CapacityUnits(1), key<EventKey>(buffer::Event::Retire)});
+      CapacityUnits(1)});
   expectViolation(__func__, "unknown key before duplicate capacity claim",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::UnknownEventKey);
@@ -892,7 +893,6 @@ int main() {
   shortLivedClaimAndDurableCommitAreDistinct();
   unknownCommitReferencesAreRejected();
   theTimingContractMustOrderAcquireCommitAndRelease();
-  aClaimCannotBeReleasedByAnotherPattern();
   oneEnvelopeHasOneReleaseAndOneClaimPerDimension();
   capacityArithmeticFailuresAreDistinct();
   fixedPriorityGrantsFirstEligibleRequester();

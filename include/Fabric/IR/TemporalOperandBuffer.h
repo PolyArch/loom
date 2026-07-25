@@ -82,9 +82,6 @@ enum class OperandQueueDimension : std::uint32_t { QueuedOperand };
 /// cycle. This is the only capacity a use pattern claims.
 enum class OperandServiceDimension : std::uint32_t { Slot };
 
-/// The closed transition kinds. Each is declared once per logical queue.
-enum class OperandTransitionKind : std::uint32_t { AppendOperand, RemoveOperand };
-
 /// The closed eligibility domain of the two patterns.
 enum class OperandBufferEligibility : std::uint32_t {
   /// The allocation unit has a free entry once this cycle's selected dequeue is

@@ -76,9 +76,9 @@ ResourceContractDeclaration declaration() {
           CommitDeclaration{EventKey(1), ResourceTransitionKey(0)},
           TimingContractKey(0),
           {ClaimDeclaration{ClaimKey(0), StateKey(0), CapacityDimensionKey(0),
-                            CapacityUnits(2), EventKey(2)},
+                            CapacityUnits(2)},
            ClaimDeclaration{ClaimKey(1), StateKey(0), CapacityDimensionKey(1),
-                            CapacityUnits(1), EventKey(2)}},
+                            CapacityUnits(1)}},
           {InternalTransactionDeclaration{{ClaimKey(0)}},
            InternalTransactionDeclaration{{ClaimKey(0), ClaimKey(1)}}}},
       UsePatternDeclaration{
@@ -90,7 +90,7 @@ ResourceContractDeclaration declaration() {
           std::nullopt,
           TimingContractKey(0),
           {ClaimDeclaration{ClaimKey(0), StateKey(0), CapacityDimensionKey(0),
-                            CapacityUnits(1), EventKey(2)}},
+                            CapacityUnits(1)}},
           {InternalTransactionDeclaration{{ClaimKey(0)}}}},
   };
   result.grantPolicy = GrantPolicyDeclaration(RoundRobinDeclaration{

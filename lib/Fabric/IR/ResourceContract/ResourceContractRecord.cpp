@@ -184,7 +184,7 @@ readUsePattern(RecordReader &reader, std::uint32_t patternOrdinal) {
       return error;
     claims.push_back(ClaimDeclaration{
         ClaimKey(claim), StateKey(state), CapacityDimensionKey(dimension),
-        CapacityUnits(amount), EventKey(release)});
+        CapacityUnits(amount)});
   }
 
   std::uint32_t transactionCount = 0;
