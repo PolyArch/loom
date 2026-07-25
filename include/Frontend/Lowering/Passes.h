@@ -59,9 +59,9 @@ void registerLoweringPasses();
 
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
 //   loom-lower-for-to-graph            (module-level)
-// The for-to-graph publisher internally owns canonicalization, known-library
-// expansion, graph memref-copy expansion, graph memory/control lowering,
-// constant promotion, and native validation.
+// The for-to-graph publisher internally owns canonicalization, graph
+// memref-copy expansion, graph memory/control lowering, constant promotion,
+// and native validation.
 void buildLoweringPipeline(::mlir::PassManager &pm);
 
 } // namespace lowering
