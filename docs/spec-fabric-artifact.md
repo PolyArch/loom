@@ -61,8 +61,19 @@ dependency row. Rows are sorted by `(role, ArtifactRootReference canonical
 bytes)` and exact duplicate rows are invalid.
 
 The transitive dependency closure is derived mechanically. It is never stored
-as another list. Missing, foreign, wrong-kind, duplicate, cyclic, or unused
-direct dependencies make finalization fail.
+as another list. Every direct dependency must already be durably published as
+its own Artifact before Fabric root publication begins. The finalizer resolves
+each exact root reference through Common `ArtifactStore::get`, invokes that
+dependency family's strict owner importer, and recursively validates the
+reachable closure. Common validates object framing, schema, and identity; the
+dependency owner validates its canonical semantic bytes and root kind; Fabric
+validates the dependency role, referenced local targets, use, uniqueness, and
+acyclic closure. None of these layers duplicates another layer's checks.
+
+Missing, foreign, wrong-kind, duplicate, cyclic, or unused direct dependencies
+make finalization fail before the root `put`. A dependency publication that is
+still in flight is either absent or complete to the finalizer; an absent read
+fails and may be retried rather than waiting on temporary store state.
 
 Builder handles, helper names, preset names, source locations, visualization
 metadata, file paths, and printer positions are provenance or projections and
@@ -136,6 +147,8 @@ Finalization is failure-atomic:
 authoring draft
   -> close scopes and helpers
   -> resolve direct typed references
+  -> get and strict-import every already-published direct dependency
+  -> recursively validate the exact dependency closure
   -> expand instantiations
   -> build a private identifier-free root-complete candidate
   -> verify semantic contracts on that candidate
@@ -143,12 +156,45 @@ authoring draft
   -> write canonical bytes
   -> compute the unpublished candidate ArtifactIdentity
   -> import canonical bytes and independently reverify
-  -> publish the root and its exact direct dependencies atomically
+  -> Common ArtifactStore::put the Fabric root object only
+  -> return the published ArtifactRootReference
 ```
 
-No root, local identifier, canonical byte stream, or digest is externally
-visible before the entire sequence succeeds. Retrying an unchanged valid draft
-must produce the same result.
+Fabric failure atomicity means one root object is complete or absent; it does
+not mean that the root and its dependency graph become visible in one
+transaction. Dependencies are independently valid, immutable, shareable
+Artifacts and may be visible before this root or remain unreachable after a
+failed root attempt. Fabric defines no multi-object transaction, publication
+manifest, rollback, or dependency cleanup protocol.
+
+All semantic checks and dependency imports complete before the root's atomic
+namespace insertion. A store reader may observe the complete root after that
+insertion but before the publishing call receives its durability
+acknowledgement; this is safe because the exact dependency closure was already
+published and validated. The finalizer returns no successful root reference
+until `put` reports success. If a crash or `artifact_store_io` occurs after
+insertion, recovery retries the same deterministic root publication; the store
+contains either no root or the complete expected root, never a partial root.
+
+Failure classes retain their existing owners:
+
+* an absent exact dependency is a missing-artifact failure;
+* a role, root-kind, local-target, duplicate, cycle, or owner-semantic mismatch
+  is structurally `Invalid` Fabric input;
+* malformed dependency storage, key/preimage mismatch, or identity collision
+  is Common store corruption or collision;
+* canonicalization resource exhaustion is `Incomplete`;
+* absent backend support remains `Unsupported`; and
+* root publication or durability failure is `artifact_store_io` and returns no
+  successful root reference for that attempt.
+
+Import uses the same boundary. Common validates the root object, the Fabric
+importer recursively resolves and owner-imports its exact dependencies, and a
+sealed `FabricArtifactView` is produced only after the complete closure passes.
+A stored root whose dependency later becomes unavailable remains a complete
+stored object but cannot be imported as a complete Fabric root; import reports
+the missing or corrupt dependency and never repairs, rewrites, or deletes the
+root.
 
 Semantic verification uses the structurally complete root relation, not a
 caller-supplied connection shadow. For every contained module it derives the
@@ -283,7 +329,10 @@ Anchor tests cover:
   dependency-table target uses, and malformed count or length framing;
 * owner-local reference kind round trips and rejection of unknown or
   repurposed kind ordinals;
-* failure-atomic publication and deterministic retry;
+* rejection before root publication when one exact dependency is missing or
+  owner-invalid;
+* single-object complete-or-absent root publication, independently visible
+  dependencies, and deterministic retry after ambiguous publication failure;
 * independent import and re-verification of canonical bytes;
 * exact agreement between every complete relation range and its convenience
   queries;

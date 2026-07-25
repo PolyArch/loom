@@ -327,17 +327,53 @@ or consumer-local dense index cannot replace either component.
 
 ## Artifact Store
 
-The store keys objects by full `ArtifactIdentity` and retains enough framing to
-validate the exact schema and preimage. Publishing identical content
-deduplicates. Different content at an existing valid key is an identity
-collision; malformed framing or key/preimage mismatch is corruption. Publication
-never overwrites an existing object.
+The Common store owns exactly one immutable object per `put`. It does not own
+artifact dependency graphs, multi-object transactions, publication manifests,
+or family-specific import. An artifact family must resolve and validate its
+dependencies before asking the store to publish that family's root object.
 
-Validated reads derive the object path only from identity, reject symbolic links
-and non-regular files, verify the expected schema descriptor, recompute the
-digest, and return exactly the canonical semantic bytes. The caller provides an
-already established non-symlink store root; the store does not create parent
-directories.
+The store keys objects by full `ArtifactIdentity` and retains enough framing to
+validate the exact schema and preimage. One `put` writes and validates the
+complete identity preimage in a temporary object on the same filesystem,
+durably flushes its bytes, atomically inserts the final identity-derived name
+without replacement, and flushes the containing directory before reporting
+success. A reader therefore observes either no final object or one complete
+validated object, never a partial object.
+
+A successful return proves that the one object is durably published. If the
+publisher crashes or receives an I/O error before that return, it must not infer
+that the object is absent: a crash or directory-flush failure may occur after
+the complete final name became visible. Recovery deterministically repeats the
+same `put` or performs a validated `get`. The resulting store state is either
+absent or the complete expected object; there is no pending, partial, or
+rollback state and no cleanup transaction.
+
+Publishing identical content deduplicates, including concurrent publication.
+Different content at an existing valid key is an identity collision; malformed
+framing or key/preimage mismatch is corruption. Publication never overwrites
+an existing object. Version 1.0 exposes no object mutation or deletion API;
+out-of-band removal is reported as missing and out-of-band modification as
+corruption.
+
+Validated reads derive the object path only from identity, reject symbolic
+links and non-regular files, verify the expected schema descriptor, recompute
+the digest, and return exactly the canonical semantic bytes. The caller
+provides an already established non-symlink store root; the store does not
+create parent directories.
+
+Failure classification is exact:
+
+* an absent identity is `artifact_store_missing`;
+* a present object with another schema is `artifact_schema_mismatch`;
+* malformed framing, a key/preimage mismatch, or an invalid stored object is
+  `artifact_store_corruption`;
+* distinct complete preimages occupying one identity are
+  `artifact_identity_collision`; and
+* filesystem, flush, or durability failures are `artifact_store_io`.
+
+An `artifact_store_io` result from `put` does not promise absence. The caller
+returns no successful artifact reference for that attempt and uses idempotent
+retry to determine the final state.
 
 ## Diagnostics
 
@@ -369,6 +405,12 @@ duplication, deterministic replay, and gem5 rejection when any of its three
 InstructionCore compatibility authorities disagree. Tests do not pin path
 layouts beyond the store contract or duplicate every producer/consumer pair in
 a fixture matrix.
+
+Store anchors cover single-object complete-or-absent visibility, successful
+durability acknowledgement, identical concurrent publication, retry after a
+post-insertion failure, and the five failure classes above. They do not add a
+mock transaction coordinator, dependency manifest, deletion protocol, or
+failure-point cross product.
 
 Reference-framing anchors cover one owner-local fixed byte vector, typed
 round-trip through the owner codec, and rejection of a wrong schema, wrong

@@ -463,8 +463,10 @@ metadata, paths, timestamps, diagnostics, and report data do not enter bytes.
 Finalization is failure-atomic: validate all referenced artifacts and blobs,
 rederive binary and hardware coverage, build and verify the three runtime-image
 children, serialize canonical JSON, independently import and reverify it, then
-compute and publish the Common ArtifactIdentity. No partial Deployment or root
-pointer is visible on failure.
+compute and publish the Common ArtifactIdentity. No partial Deployment object
+is ever visible, and a failed attempt returns no successful root reference. A
+post-insertion `artifact_store_io` may nevertheless leave the complete object
+visible; retry and recovery follow the Common single-object store contract.
 
 ## Public Driver Contract
 

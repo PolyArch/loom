@@ -172,7 +172,7 @@ assignment. `FinalizedFabricDesign` exposes only those sealed views. A
 convenience helper that internally records such facts must elaborate them into
 the root before finalization and discard its private state.
 
-Finalization performs one all-or-none derivation:
+Finalization performs one failure-atomic returned-closure derivation:
 
 1. close construction scopes and expand all helpers;
 2. resolve every typed reference;
@@ -180,18 +180,33 @@ Finalization performs one all-or-none derivation:
 4. invoke the canonical Fabric finalizer and its private pre-canonical verifier
    for every root;
 5. derive canonical bytes, identities, and the complete dependency closure;
-6. strictly reimport and reverify every canonical root; and
-7. expose the finalized closure only after every member succeeds.
+6. require every direct dependency to be independently and durably published,
+   then strict-import and recursively validate its exact closure;
+7. strictly reimport and reverify every canonical root;
+8. publish each Fabric root as one Common ArtifactStore object after its own
+   dependencies are available; and
+9. expose the finalized closure only after every member succeeds.
 
 The Builder cannot call a public freeze hook, construct or subclass
 `FabricArtifactView`, assign persistent local IDs, or assert that a partial
 relation set is root-complete.
 
-Artifact-store publication may write immutable content blobs before the root,
-but it publishes the root reference only after the complete closure is
-available. A failed attempt may leave only unreachable cache content, never a
-partially valid hardware target. Stream formatting and filesystem paths are
-output bindings and cannot weaken this finalization contract.
+Artifact-store publication is topologically ordered and single-object. Direct
+dependencies and opaque content blobs may be published before a Fabric root;
+the root is published only after its complete closure is available. If a
+design contains several independent Fabric roots, each root is published by a
+separate idempotent `put`. A later failure may therefore leave unreachable but
+complete dependencies or earlier roots. It never leaves a partial object, and
+the Builder performs no rollback or cleanup transaction. The
+`FinalizedFabricDesign` value is returned only when every requested member has
+published successfully.
+
+A crash or store I/O error may occur after a complete root became visible but
+before durability acknowledgement. The Builder returns no successful design
+for that attempt and retries the same deterministic publication; it does not
+infer absence, synthesize a transaction manifest, or create a second store.
+Stream formatting and filesystem paths are output bindings and cannot weaken
+this finalization contract.
 
 ## Builtin Targets
 
