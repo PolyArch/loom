@@ -612,6 +612,20 @@ void internalTransactionsRefineOneAcceptedUse() {
   expectViolation(__func__, "internal transaction repeating one claim",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::DuplicateClaimKey);
+
+  // A transaction selects an unordered set of the envelope's claims, so a
+  // malformed selection reports the same typed violation in any entry order.
+  declaration = memoryEngine::declaration();
+  declaration.usePatterns[0].internalTransactions[1].claims = {
+      ClaimKey(5), ClaimKey(0), ClaimKey(0)};
+  expectStableViolation(
+      __func__, "internal transaction selection", declaration,
+      ResourceContractViolation::DuplicateClaimKey,
+      [](ResourceContractDeclaration &declared) {
+        std::reverse(
+            declared.usePatterns[0].internalTransactions[1].claims.begin(),
+            declared.usePatterns[0].internalTransactions[1].claims.end());
+      });
 }
 
 void violationPrecedenceIsIndependentOfDeclarationOrder() {

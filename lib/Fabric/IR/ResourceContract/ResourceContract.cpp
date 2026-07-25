@@ -42,11 +42,34 @@ std::string claimSite(std::size_t pattern, std::size_t claim) {
       .str();
 }
 
-std::string transactionSite(std::size_t pattern, std::size_t transaction,
-                            std::size_t entry) {
+std::string transactionSite(std::size_t pattern, std::size_t transaction) {
   return ("use pattern " + llvm::Twine(pattern) + " internal transaction " +
-          llvm::Twine(transaction) + " entry " + llvm::Twine(entry))
+          llvm::Twine(transaction))
       .str();
+}
+
+// The one report of a malformed unordered key set: a repeated key outranks a
+// key outside the closed domain, and the reported key is the lowest offending
+// one, so the outcome depends only on which keys the set holds.
+llvm::Error rejectedKeySet(std::optional<std::uint32_t> repeated,
+                           std::optional<std::uint32_t> foreign,
+                           ResourceContractViolation duplicate,
+                           ResourceContractViolation unknown,
+                           const llvm::Twine &site) {
+  if (repeated)
+    return rejected(duplicate, site + " key " + llvm::Twine(*repeated));
+  if (foreign)
+    return rejected(unknown, site + " key " + llvm::Twine(*foreign));
+  return llvm::Error::success();
+}
+
+void observeKey(std::uint32_t key, bool inDomain, bool alreadyHeld,
+                std::optional<std::uint32_t> &repeated,
+                std::optional<std::uint32_t> &foreign) {
+  if (!inDomain)
+    foreign = foreign ? std::min(*foreign, key) : key;
+  else if (alreadyHeld)
+    repeated = repeated ? std::min(*repeated, key) : key;
 }
 
 // One declaration reached only through validated keys. Every check after an
@@ -90,10 +113,8 @@ struct NormalizedDeclaration {
   std::vector<std::vector<std::uint32_t>> claimPositions;
 };
 
-// One closed key inventory presents every key of its domain exactly once. An
-// inventory is unordered, so the whole of it is scanned and the outcome depends
-// only on which keys it holds: a repeated key outranks a key outside the
-// domain, and the reported key is the lowest offending one.
+// One closed key inventory presents every key of its domain exactly once. It is
+// unordered, so the whole of it is scanned before it is reported.
 template <typename KeyAt>
 llvm::Error indexInventory(std::size_t size, KeyAt keyAt,
                            ResourceContractViolation duplicate,
@@ -106,19 +127,14 @@ llvm::Error indexInventory(std::size_t size, KeyAt keyAt,
 
   for (std::size_t position = 0; position < size; ++position) {
     const std::uint32_t key = keyAt(position);
-    if (static_cast<std::size_t>(key) >= size)
-      foreign = foreign ? std::min(*foreign, key) : key;
-    else if (positionByKey[key] != absentPosition)
-      repeated = repeated ? std::min(*repeated, key) : key;
-    else
+    const bool inDomain = static_cast<std::size_t>(key) < size;
+    const bool alreadyHeld = inDomain && positionByKey[key] != absentPosition;
+    observeKey(key, inDomain, alreadyHeld, repeated, foreign);
+    if (inDomain && !alreadyHeld)
       positionByKey[key] = static_cast<std::uint32_t>(position);
   }
 
-  if (repeated)
-    return rejected(duplicate, site + " key " + llvm::Twine(*repeated));
-  if (foreign)
-    return rejected(unknown, site + " key " + llvm::Twine(*foreign));
-  return llvm::Error::success();
+  return rejectedKeySet(repeated, foreign, duplicate, unknown, site);
 }
 
 llvm::ArrayRef<RequesterKey>
@@ -358,23 +374,35 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
                         claimSite(pattern, claim));
     }
 
+  // A transaction selects an unordered subset of its pattern's claim envelope,
+  // and the accepted selection is stored in ascending claim key order, so the
+  // whole selection is scanned before it is reported.
+  std::vector<bool> selected;
   for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
        ++pattern) {
     const UsePatternDeclaration &declared = normalized.usePattern(pattern);
     for (std::size_t transaction = 0;
          transaction < declared.internalTransactions.size(); ++transaction) {
-      const InternalTransactionDeclaration &internal =
-          declared.internalTransactions[transaction];
-      for (std::size_t entry = 0; entry < internal.claims.size(); ++entry) {
-        if (static_cast<std::size_t>(internal.claims[entry].ordinal()) >=
-            declared.claims.size())
-          return rejected(ResourceContractViolation::UnknownClaimKey,
-                          transactionSite(pattern, transaction, entry));
-        for (std::size_t earlier = 0; earlier < entry; ++earlier)
-          if (internal.claims[earlier] == internal.claims[entry])
-            return rejected(ResourceContractViolation::DuplicateClaimKey,
-                            transactionSite(pattern, transaction, entry));
+      std::optional<std::uint32_t> repeated;
+      std::optional<std::uint32_t> foreign;
+      selected.assign(declared.claims.size(), false);
+
+      for (const ClaimKey entry :
+           declared.internalTransactions[transaction].claims) {
+        const std::uint32_t key = entry.ordinal();
+        const bool inDomain =
+            static_cast<std::size_t>(key) < declared.claims.size();
+        const bool alreadyHeld = inDomain && selected[key];
+        observeKey(key, inDomain, alreadyHeld, repeated, foreign);
+        if (inDomain)
+          selected[key] = true;
       }
+
+      if (llvm::Error invalid = rejectedKeySet(
+              repeated, foreign, ResourceContractViolation::DuplicateClaimKey,
+              ResourceContractViolation::UnknownClaimKey,
+              transactionSite(pattern, transaction)))
+        return invalid;
     }
   }
 
