@@ -1,0 +1,3 @@
+# RUN: loom-fabric-persistent-ref-test | FileCheck %s
+
+# CHECK: fabric persistent references ok

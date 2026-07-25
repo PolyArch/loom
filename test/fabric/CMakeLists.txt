@@ -39,3 +39,13 @@ target_link_libraries(loom-fabric-boundary-data-path-test PRIVATE
 target_link_libraries(loom-fabric-resource-contract-test PRIVATE
   LoomFabricResourceContract
 )
+
+add_executable(loom-fabric-persistent-ref-test
+  PersistentRefTest.cpp
+)
+
+target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
+  LoomCommon
+  LoomFabricIdentity
+  LLVMSupport
+)
