@@ -57,6 +57,9 @@ ScopeFormDescriptor {
   applicability:
       WholeExactCase
     | ExactTargetPatterns(canonical nonempty set<OrderedTargetPattern>)
+  reference_cycle_requirement:
+      NotRequired
+    | ExactCaseUniqueReferenceCycle
 }
 
 ScopeRoleDescriptor {
@@ -83,6 +86,11 @@ SubjectTargetPattern {
 }
 ```
 
+`ReferenceCycleRequirement` is encoded as an unsigned 32-bit big-endian
+discriminant in declaration order. It is owned by the Metric scope-form
+descriptor, is immutable after registry construction, and is not repeated in
+an Evaluation Request.
+
 `ScopeFormRef` is a stable ordinal local to one query-kind descriptor in the
 exact Evaluation schema version. The containing `MetricKind` or `FindingKind`
 always resolves it, so it is not a global relation registry or a free string.
@@ -102,6 +110,40 @@ Exact target-pattern collections sort by exact case-signature reference,
 arity, and then each positional `(case role, root/local discriminant, owner
 schema, owner-local kind when present)` key. Duplicate patterns are invalid.
 This is descriptor canonicalization, not a second target-reference encoding.
+
+The Metric registry owns one shared admissibility operation:
+
+```text
+MetricScopeAdmissionContext =
+    DescriptorAdmission(EvaluationCaseSignatureDescriptor)
+  | RequestAdmission(
+      exact EvaluationCase,
+      CaseArtifactResolution,
+      ArtifactStore)
+
+MetricScopeAdmissionResult(context) =
+    Unit
+      if context is DescriptorAdmission
+  | optional<ReferenceCycleBasis>
+      if context is RequestAdmission
+
+validateMetricScopeAdmissibility(
+  MetricKind,
+  ScopeFormRef,
+  context: MetricScopeAdmissionContext)
+    -> MetricScopeAdmissionResult(context)
+```
+
+Both model-descriptor admission and `RequestVerifier` call this operation.
+Descriptor admission returns only success or a typed failure. Request admission
+returns no basis for `NotRequired`. `ExactCaseUniqueReferenceCycle` requires the
+case-signature-owned `UniqueReferenceCycle` descriptor; descriptor admission
+checks its static source, type, and resolver contract, while Request admission
+executes that resolver for the exact case and returns the validated basis.
+Metric implementations do not hardcode metric names or call a private cycle
+resolver. The case-signature registry remains the sole owner of the actual
+basis; the Metric registry owns only which scope form requires it. Finding
+scope forms must use `NotRequired` in schema 1.0.
 
 The persistent value is:
 
@@ -149,8 +191,10 @@ requires zero roles and zero targets and accepts the exact case already fixed
 by the Request. Validation rejects a foreign role, unbound anchor, unreachable
 target Artifact, wrong schema or local kind, malformed or noncanonical local
 payload, pattern role-order mismatch, or failed relation-specific verification.
-Large traces, waveforms, histograms, and timelines remain detailed Artifacts
-rather than scopes.
+Large traces, waveforms, histograms, and timelines remain attempt or scratch
+material rather than scopes. They become persistent only through a future exact
+owner-specific Artifact schema; Evaluation does not provide a generic raw
+material owner.
 
 ## Metric Registry
 
@@ -185,6 +229,11 @@ the signature declares `Absent` and cannot choose or rederive a different basis
 locally. A later clock-domain-specific form uses an exact target pattern rather
 than changing form 0. An empty scope-form table, an unknown form ordinal, or a
 model capability naming a form not owned by the MetricKind is invalid.
+
+The schema-1.0 requirements are exact: `CycleCount` form 0 and `ClockPeriod`
+form 0 use `ExactCaseUniqueReferenceCycle`; `Runtime` form 0 uses
+`NotRequired`. These descriptor fields, not duplicated switches in model
+registration or Request validation, control admissibility.
 
 Cycle count and physical time are distinct kinds. Total energy and energy per
 work are distinct kinds. Quantities with different ground-truth definitions or
@@ -272,7 +321,8 @@ zero and exponent zero. Overflow during normalization is invalid.
 Evaluators may calculate with tool-native or floating-point values internally.
 Finalization converts them deterministically according to the exact model
 descriptor's precision and rounding contract. Original text and units remain
-in the raw detailed bundle.
+owner-attempt or scratch material until the raw detailed-bundle Artifact owner
+is defined.
 
 `ExactRatio` is not a third `MetricValue` form. It is used only by typed fields
 whose semantics are an exact dimensionless ratio or probability, or an exact
@@ -424,6 +474,17 @@ summary's actor, Fabric, or HardwareImplementation source basis. The evaluator
 must prove that its model accepts the selected payload kind, window, coverage,
 and exact source-to-target lineage. Missing targets in a partial summary are
 unknown and cannot be interpreted as zero or filled by a hidden default.
+
+`ExecutionActivity` is a typed reserved-unavailable schema-1.0 variant until
+the exact `SimulationExecution` Artifact owner and importer are registered in
+the build. Evaluation may parse and print its closed reference-plus-ordinal
+shape, but case authoring, Request finalization, and import must resolve that
+owner, adopt the execution, validate the ordinal, require the same exact
+Request lineage, and validate source-to-target compatibility. If the owner or
+provider is absent, validation fails with a typed owner-unavailable error; it
+must not accept opaque execution bytes, skip lineage, or reinterpret the
+ordinal. Landing the already specified owner activates the existing variant
+without changing the Evaluation schema.
 
 `ExplicitAssumption` is a small uniform vectorless assumption, not an Activity
 Artifact or arbitrary per-signal map. Static probability is in `[0,1]`;
@@ -588,11 +649,12 @@ precedes `ProcessCorner` persistence. Evaluation must report an unavailable
 owner codec as an implementation/capability error; it cannot publish a fallback
 integer, tuple, path, or opaque property payload.
 
-Raw tool reports, distributions, samples, logs, and trace chunks belong to
-immutable detailed bundles. A workload execution's typed trace manifest and
-ordering and its exact typed activity summaries belong to
-`SimulationExecution`. Normalized observations and findings belong only to
-exact Evaluation Evidence.
+Raw tool reports, distributions, samples, logs, and trace chunks remain
+owner-attempt or scratch material until the raw detailed-bundle Artifact owner
+and importer are defined. A workload execution's exact typed activity summaries
+belong to `SimulationExecution`; a typed trace manifest may be added only by a
+later Simulation Artifacts schema minor after that bundle owner exists.
+Normalized observations and findings belong only to exact Evaluation Evidence.
 
 ## Anchor Tests
 
@@ -604,6 +666,8 @@ Stable tests cover:
   unreachable targets, wrong owner schemas or local kinds, noncanonical
   owner-local payloads, role-order sensitivity, and one intrinsic whole-case
   form that carries no wildcard target authority;
+* one shared reference-cycle admissibility path used by descriptor and Request
+  validation, including missing-resolver and exact-case resolution failure;
 * Decimal normalization, ExactRatio normalization, invalid denominators, and
   checked-overflow rejection;
 * condition location, ordered role/reference-type applicability, exact-
@@ -615,7 +679,8 @@ Stable tests cover:
 * deterministic query ordering and duplicate rejection;
 * activity-summary ordinal resolution, destination-target compatibility,
   missing-is-unknown behavior, and rejection of incompatible payload,
-  coverage, or lineage;
+  coverage, or lineage, plus deterministic owner-unavailable rejection before
+  the SimulationExecution importer is registered;
 * completed-result ordinal totality, explicit finding absence, occurrence
   owner encode/decode/re-encode equality, and terminal-witness reference
   resolution; and

@@ -45,11 +45,13 @@ Each successful anchor traverses:
 C/C++ -> LLVM IR -> S0 -> Sn -> D0 -> D* -> canonical verifier -> DFG-sim
 ```
 
-Every anchor proves functional terminal observables. A representative subset
-also proves monotonic cycle-ordered firing trace and stable actor references;
-the suite does not require a duplicate trace fixture for every kernel. Mapping
-is deliberately absent from this frontend gate. `attention` produces the
-logical multi-thread program; heterogeneous AccCore placement and NoC
+Every anchor proves functional terminal observables and stable actor
+references. Diagnostic cycle-ordered traces may be emitted to attempt or
+scratch storage, but they are not persistent schema-1.0 conformance inputs or
+outputs. A future Simulation Artifacts schema minor may add a representative
+persistent trace anchor after the exact raw detailed-bundle owner exists.
+Mapping is deliberately absent from this frontend gate. `attention` produces
+the logical multi-thread program; heterogeneous AccCore placement and NoC
 realization belong to the system anchor.
 
 The LoomBench manifest and pinned CMSIS source trees remain their respective
@@ -114,8 +116,9 @@ compatible Evidence -> derived runtime/energy Evidence
 
 DFG, CGRA, and mapped RTL executions must agree on terminal `C`. CGRA and RTL
 cycles are comparable only when their external service contract is identical.
-Raw waveforms, vendor reports, databases, and logs remain detailed bundles;
-human-readable FPA or comparison summaries are projections.
+Raw waveforms, vendor reports, databases, and logs remain owner-attempt or
+scratch material until their exact Artifact owner is defined; human-readable
+FPA or comparison summaries are projections.
 
 ## Negative Anchors
 

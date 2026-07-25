@@ -337,7 +337,6 @@ SimulationExecution {
   functional_observations
   progress_observations
   activity_summaries
-  trace_manifest?
 }
 ```
 
@@ -356,9 +355,10 @@ request_ref
 ```
 
 The root field order, terminal record, Spatial and System functional and
-progress observations, activity summaries, trace manifest/chunk envelope, and
-typed Spatial trace-event algebra are closed below. Together they define the
-complete `loom.simulation_execution 1.0` wire.
+progress observations, and activity summaries are closed below. Together they
+define the complete `loom.simulation_execution 1.0` wire. The trace
+manifest/chunk envelope and typed Spatial trace-event algebra are a future
+schema-minor contract, not fields of version 1.0.
 
 The closed terminal algebra is:
 
@@ -654,8 +654,9 @@ program_entry_accepted
 These anchors do not copy a tick frequency, wall time, exit-code policy, or
 gem5 event priority. Evaluation derives metrics through the exact model. The
 first System wire does not standardize a typed gem5 event trace; its
-`trace_manifest` is absent and raw gem5 traces remain detailed bundle material.
-DFG and CGRA traces continue to use the typed Spatial event algebra below.
+root has no trace field and raw gem5 traces remain attempt or scratch material.
+DFG and CGRA diagnostic traces may use the future typed Spatial event algebra
+below only outside persistent version-1.0 identity.
 
 ## Activity Summaries
 
@@ -768,7 +769,8 @@ because a transition is a state change, and the four exact residency values
 sum to the selected window duration. This basis permits mechanical SAIF or
 toggle-table projection without making HDL hierarchy names semantic.
 Waveforms, VCD, FSDB, raw SAIF, and simulator-native activity files remain raw
-detailed-bundle material.
+owner-attempt or scratch material until the raw detailed-bundle Artifact owner
+is defined.
 
 An activity summary must contain at least one target entry across its payload;
 otherwise it is omitted. `activity_summaries` may therefore be empty. It
@@ -776,6 +778,13 @@ contains at most one summary for each `(ActivityWindow, payload kind)` pair and
 sorts by those zero-based enum discriminants. This order mechanically defines
 the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
 by their owner-defined canonical reference bytes.
+
+This specification is the semantic owner contract consumed by
+`ActivityBinding.ExecutionActivity`. Until a compiled `SimulationExecution`
+Artifact owner registers the exact root schema, importer, activity-summary
+adopter, ordinal resolver, and same-Request validator, that Evaluation variant
+is reserved-unavailable and every attempted authoring or import fails closed.
+Parsing the outer Evaluation wire does not prove that this owner is available.
 
 The summary wire encodes, in declaration order, the zero-based window,
 coverage, and payload discriminants as unsigned 32-bit big-endian values,
@@ -801,9 +810,18 @@ source attachment. A capture request is a nonsemantic invocation binding.
 Enabling activity capture cannot change scheduling, outputs, terminal form,
 progress anchors, normalized metrics, or findings.
 
-## Trace Manifest And Chunk Envelope
+## Future Trace Manifest And Chunk Envelope
 
-The optional trace field has one closed envelope and one level type:
+`SimulationExecution` schema 1.0 contains no trace-manifest field. The exact
+event and chunk algebra below remains the intended future contract, but it
+cannot enter a persistent execution until the raw detailed-bundle Artifact
+owner defines the typed bundle reference, content inventory, importer, and
+same-Request lineage. Adding the optional manifest requires a Simulation
+Artifacts schema minor update. Providers may emit nonsemantic diagnostic traces
+to scratch storage in the meantime, but no path, opaque payload, or unchecked
+Artifact reference enters `SimulationExecution` identity.
+
+The future optional trace field has one closed envelope and one level type:
 
 ```text
 TraceCaptureLevel =
@@ -833,10 +851,11 @@ TraceFrame {
 }
 ```
 
-An absent `trace_manifest` means that no canonical trace was retained. There is
-no `None` level inside a present manifest. A trace requested as an invocation
-output must produce a present manifest at the required level; otherwise the
-attempt has not satisfied that output requirement. This rule does not make
+In the future schema minor, an absent `trace_manifest` will mean that no
+canonical trace was retained. There is no `None` level inside a present
+manifest. A trace requested as an invocation output must produce a present
+manifest at the required level; otherwise the attempt has not satisfied that
+output requirement. This rule does not make
 capture policy part of the EvaluationRequest.
 
 `Complete` contains every event required by its level from
@@ -849,7 +868,7 @@ trace through its terminal horizon. `Prefix` also begins at
 Its coordinate must be no earlier than launch and strictly earlier than
 terminal. It may equal launch when no event has yet been retained.
 
-Schema 1.0 admits neither late-start capture, arbitrary intervals, interior
+The future trace schema admits neither late-start capture, arbitrary intervals, interior
 gaps, nor a set of coverage ranges. Losing an interior event or chunk
 invalidates the canonical trace; it cannot be relabeled as a prefix. An empty
 chunk array is legal only when the selected complete or prefix coverage
@@ -869,12 +888,12 @@ trace-event algebra; a duplicate event key in one frame is invalid. Chunk
 boundaries, target chunk size, and generation buffering are nonsemantic
 invocation choices.
 
-Canonical chunk bytes are:
+The candidate future canonical chunk bytes are:
 
 ```text
 bytes("loom.simulation.trace.chunk\0")
-|| u32be(schema_version.major = 1)
-|| u32be(schema_version.minor = 0)
+|| u32be(schema_version.major)
+|| u32be(schema_version.minor)
 || u32be(level)
 || u64be(frame_count)
 || frames_in_order
@@ -887,7 +906,7 @@ Common contract in `docs/spec-full-stack-traceability.md`. Storage may
 compress or index a chunk transparently, but no compression algorithm, path,
 byte offset, or index enters the manifest or chunk wire.
 
-The manifest encodes the level and completeness discriminants as unsigned
+After the owner and schema minor are fixed, the manifest encodes the level and completeness discriminants as unsigned
 32-bit big-endian values. `Prefix` then encodes its coordinate. The exact
 detailed-bundle reference follows, then an unsigned 64-bit big-endian chunk
 count and the ordered 32-byte digests. A complete manifest carries no redundant
@@ -1174,8 +1193,9 @@ execution cost and retained raw material, but must not change scheduling,
 outputs, terminal form, cycle count, metrics, or findings. The exact capture
 request belongs only to `InvocationManifest`. The execution owner's attempt
 record references that request and owns attempt provenance and retained-
-material references. The `SimulationExecution` trace manifest alone owns the
-actual order, coverage, and completeness of captured trace data.
+material references. After the future schema minor lands, the
+`SimulationExecution` trace manifest alone owns the actual order, coverage, and
+completeness of captured trace data.
 
 ## Ownership And Coupling
 
@@ -1221,7 +1241,7 @@ that excludes `delta`.
 
 System execution anchors cover positional functional arrays, retired versus
 partial publication, exact gem5 tick ordering, mandatory program-exit presence
-for `Retired`, and absence of a typed System trace manifest in version 1.
+for `Retired`, and absence of any persistent trace manifest in version 1.
 
 Activity anchors cover the two progress-defined windows, rejection of a
 missing retirement anchor, complete versus partial target inventories,
@@ -1233,18 +1253,11 @@ Fabric resource case, and one four-state signal case are sufficient; tests do
 not build a cross-product over windows, coverage, actors, resource kinds, or
 signals.
 
-Trace-envelope anchors cover absent versus present capture, complete and
-prefix coverage, empty-event traces, strict frame/chunk order, no split frame,
-same-Request bundle coupling, blob-digest verification, rejection of
-interior gaps and duplicate chunk refs, and capture noninterference. One
-complete multi-chunk trace and one prefix are sufficient.
-
-Typed-event anchors cover one actor/token publication, one atomic relation,
-one buffered CGRA transfer with a nonzero request-to-grant interval, occurrence
-ownership and dense ordinals, lifecycle ordering, level inclusion,
-functional/activity projection agreement, and cross-reference rejection.
-Tests do not build a Cartesian product over event kinds, levels, vector shapes,
-resource kinds, memory orderings, compression formats, or chunk boundaries.
+Version-1 trace anchors only reject a persistent `trace_manifest` field and
+verify that diagnostic capture cannot change execution semantics. The future
+trace-envelope and typed-event anchors in the preceding design input do not
+become implementation tests until the raw detailed-bundle owner and Simulation
+Artifacts schema minor are defined.
 
 Tests do not pin report layouts, simulator class hierarchies, broad workload
 matrices, every finding kind, every witness payload, every partial-output

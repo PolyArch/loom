@@ -31,9 +31,9 @@ Each persistent fact has one owner:
   inputs;
 * Deployment owns the complete selected executable closure, and
   RuntimePlatformBinding owns provider-facing installation compatibility;
-* `SimulationExecution` owns workload terminal observables, activity, and trace
-  manifest;
-* raw detailed bundles own large external payloads and tool products; and
+* `SimulationExecution` 1.0 owns workload terminal observables and activity;
+* owner-attempt or scratch storage retains large external payloads and tool
+  products until a raw detailed-bundle Artifact family is defined; and
 * report/visualization exports are removable projections.
 
 File names, private symbol names, local paths, timestamps, and printer order
@@ -105,8 +105,8 @@ Deployment + Gem5SimulationBinding
 
 immutable subjects + exact model binding
   -> EvaluationRequest
-  -> descriptor-owned typed output Artifacts and optional raw detailed bundle
-EvaluationRequest + typed output bindings + retained raw material
+  -> descriptor-owned typed output Artifacts
+EvaluationRequest + typed output bindings
   -> EvaluationEvidence
 
 candidate sets + Evidence + resolved DSE policy

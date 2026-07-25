@@ -4,7 +4,7 @@ This document owns the execution contract for Loom's hardware-unaware
 Canonical Dataflow Program simulator. Persistent Evaluation schemas are owned
 by [DSE and Evaluation](spec-dse-feedback.md); this document defines only the
 model-specific subject, behavior, and observations. Shared workload, runtime
-input, execution, trace-manifest, and terminal schemas are owned by
+input, execution, activity, future trace, and terminal schemas are owned by
 [Simulation Artifacts](spec-simulation-artifacts.md).
 
 ## Purpose And Boundary
@@ -32,11 +32,11 @@ A workload-running invocation declares one typed `SimulationExecution` output
 slot and the complete mandatory terminal FindingQuery set. It produces:
 
 ```text
-SimulationExecution + EvaluationEvidence + optional raw detailed bundle
+SimulationExecution + EvaluationEvidence
 ```
 
 `SimulationExecution` owns contract-aligned functional observations, progress,
-activity, and the trace manifest. `EvaluationEvidence` owns
+and activity. `EvaluationEvidence` owns
 normalized outcome, metrics, findings, and binds the execution through that
 output slot. `Retired` returns every mandatory terminal finding as `Absent`;
 `Halted` returns the corresponding finding as `Present` and all others as
@@ -194,12 +194,14 @@ reinterpreted as plain load/store.
 
 ## Trace And Termination
 
-When requested, the `SimulationExecution` trace manifest orders
-Common `BlobDigest` references whose canonical chunk bytes are retained by its
-one exact same-Request raw detailed bundle. DFG-sim may emit a complete
-launch-to-terminal trace or a gap-free launch-rooted prefix; it cannot
-serialize an interior loss as partial coverage. Frames are strictly ordered by
-`EventCoordinate`, cannot cross chunk boundaries, and use canonical
+Schema 1.0 has no persistent trace-manifest field because the raw
+detailed-bundle owner and importer are not yet defined. DFG-sim may retain a
+diagnostic trace in attempt or scratch storage, but it cannot place paths,
+opaque bytes, or unchecked Artifact references in `SimulationExecution` or
+`EvaluationEvidence`. The future trace contract may encode a complete
+launch-to-terminal trace or a gap-free launch-rooted prefix; it cannot encode
+an interior loss as partial coverage. Frames are strictly ordered by
+`EventCoordinate`, cannot cross future chunk boundaries, and use canonical
 within-frame event order.
 
 DFG-sim supports the exact `Firing` and `Semantic` levels owned by Simulation
@@ -305,13 +307,10 @@ Stable anchor tests cover:
 * release/acquire synchronization, including its fence form;
 * repeated-address `PerLane` atomic execution with one actor retirement;
 * at-most-once volatile MMIO observation through an exact external model;
-* deterministic `EventCoordinate` and within-frame trace order;
-* exact firing-to-semantic level inclusion and mandatory semantic token values;
-* primitive memory-relation projection without copied derived relations;
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
-* complete and launch-rooted prefix trace envelopes with no interior gaps;
-* trace observer noninterference;
+* version-1 rejection of persistent trace-manifest fields and diagnostic trace
+  capture noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
 * deterministic or oracle-governed comparison with one legal CGRA-sim

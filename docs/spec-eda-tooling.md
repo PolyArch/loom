@@ -91,8 +91,9 @@ reclassify them as recipes.
 
 Lint, formal checks, RTL workload execution, timing, area, power, DRC, and other
 observations are ordinary Evaluations over exact immutable subjects. They
-produce `EvaluationEvidence` and raw detailed bundles. Workload-running RTL
-simulation also produces `SimulationExecution`.
+produce `EvaluationEvidence`. Workload-running RTL simulation also produces
+`SimulationExecution`. Raw products remain owner-attempt or scratch material
+until the raw detailed-bundle Artifact owner is defined.
 
 FPGA prototype or measured-hardware execution uses the same
 EvaluationRequest, SimulationWorkload, SimulationRuntimeInput, and Evidence
@@ -107,14 +108,16 @@ attach observations to the parent design or mutate an existing implementation.
 ## External Artifacts
 
 Backend-native products such as reports, logs, waveforms, netlists, extracted
-parasitics, databases, and bitfiles are stored in content-addressed raw bundles
-or in the owning `HardwareImplementation`, according to whether they represent
-semantic hardware state. A bundle manifest contains payload digests, tool
-products, and the exact `EvaluationRequest` reference. It never refers to an
+parasitics, databases, and bitfiles are stored in owner-attempt or scratch
+storage, or in the owning `HardwareImplementation` when they represent semantic
+hardware state. A future raw detailed-bundle Artifact may persist the other
+products only after it defines content inventory, canonical framing, an exact
+`EvaluationRequest` reference, and an importer. It never refers to an
 Invocation or `EvaluationEvidence`; owner-specific attempt records retain
-invocation provenance and may reference the bundle. Evidence may refer to the
-bundle, giving an acyclic direction from raw execution material to normalized
-observations. Normalized metrics and findings remain owned only by Evidence.
+invocation provenance and may reference the bundle. `EvaluationEvidence` 1.0
+does not refer to it; a later Evidence schema minor may add an exact typed
+reference after the owner exists. Normalized metrics and findings remain owned
+only by Evidence.
 
 High-cost products use a caller-selected artifact root, with a resolved default
 under Loom's user data area when no path is supplied. Public specs and portable

@@ -3,7 +3,7 @@
 This document owns the execution contract for Loom's hardware-aware
 SpatialCore simulator. Persistent Evaluation schemas are owned by
 [DSE and Evaluation](spec-dse-feedback.md). Shared workload, runtime input,
-execution, trace-manifest, and terminal schemas are owned by
+execution, activity, future trace, and terminal schemas are owned by
 [Simulation Artifacts](spec-simulation-artifacts.md).
 
 ## Purpose And Subject
@@ -33,10 +33,11 @@ invocation and attempt state.
 
 CGRA-sim declares one typed `SimulationExecution` output slot and the complete
 mandatory terminal FindingQuery set. It produces one execution, one
-`EvaluationEvidence`, and an optional raw detailed bundle. Their ownership is identical to DFG-sim:
-execution owns contract-aligned functional observations, progress, activity,
-and trace; Evidence owns
+`EvaluationEvidence`. Their ownership is identical to DFG-sim: execution owns
+contract-aligned functional observations, progress, and activity; Evidence owns
 normalized outcome, metrics, findings, and the typed execution output binding.
+Raw traces and tool material remain attempt or scratch state until the raw
+detailed-bundle owner and a later Simulation Artifacts schema minor are defined.
 `Retired` returns every mandatory terminal finding as `Absent`; `Halted`
 returns the corresponding finding as `Present` and all others as `Absent`.
 
@@ -237,12 +238,12 @@ duplicated as trace events.
 
 Implementation lane or beat actions remain deterministic child physical
 actions of one canonical actor transition and do not appear as additional
-actor firings. `SimulationExecution` owns the typed manifest, level, ordering,
-and complete or launch-rooted prefix coverage. Its one exact same-Request raw
-detailed bundle owns the canonical chunk bytes and their Common `BlobDigest`
-inventory. Frames cannot split across chunks, and an interior event or chunk
-loss invalidates the canonical trace. Neither creates a separate
-`SimulationTrace` artifact.
+actor firings. In the future persistent trace schema, `SimulationExecution`
+owns the typed manifest, level, ordering, and complete or launch-rooted prefix
+coverage, while its one exact same-Request raw detailed bundle owns canonical
+chunk bytes and their Common `BlobDigest` inventory. That schema is unavailable
+in version 1.0; diagnostic traces remain attempt or scratch material and do not
+create a `SimulationTrace` artifact.
 
 Launch, graph-retirement, and terminal markers are projected from
 `SpatialProgressObservations`; CGRA-sim does not serialize duplicate boundary
@@ -304,10 +305,8 @@ Stable anchor tests cover:
 * mechanically derived progress reference domain and ordered progress anchors;
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
-* complete and launch-rooted prefix trace envelopes with no interior gaps;
-* strict firing, semantic, and microarchitecture level inclusion;
-* physical request, grant, and retirement ordering with stall derivation;
-* trace observer noninterference;
+* version-1 rejection of persistent trace-manifest fields and diagnostic trace
+  capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

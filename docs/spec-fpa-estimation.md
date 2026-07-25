@@ -71,8 +71,9 @@ extracted design state. Invocation lineage records the input implementation,
 tool/library bindings, and output implementation.
 
 Analysis of an immutable implementation is Evaluation. Timing, area, power,
-DRC findings, and similar observations are `EvaluationEvidence` plus raw
-detailed material. Evaluation never mutates the implementation.
+DRC findings, and similar normalized observations are `EvaluationEvidence`.
+Raw reports remain owner-attempt or scratch material until their exact Artifact
+owner is defined. Evaluation never mutates the implementation.
 
 A backend invocation may do both in sequence, but the two semantic outputs stay
 separate:

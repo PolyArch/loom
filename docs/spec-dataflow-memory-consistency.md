@@ -345,12 +345,16 @@ Coherence is likewise not a Dataflow actor attribute. Fabric owns consistency
 and coherence capability, Mapping binds the software requirement to it, and
 the selected implementation or simulator executes its dynamic state.
 
-## Persistent Simulation Projection
+## Future Persistent Simulation Projection
 
-The typed trace schema in `docs/spec-simulation-artifacts.md` owns the
-persistent `MemoryLinearized` record. This document owns the semantic validity
-of its fields. The record retains only primitive dynamic choices that cannot
-be recovered from the exact actor contract and program order:
+SimulationExecution schema 1.0 has no persistent trace manifest or
+`MemoryLinearized` record. Diagnostic observations remain attempt or scratch
+material. After the exact raw detailed-bundle owner and a Simulation Artifacts
+schema minor exist, that typed trace schema will own the persistent
+`MemoryLinearized` record; this document will continue to own the semantic
+validity of its fields. The future record retains only primitive dynamic
+choices that cannot be recovered from the exact actor contract and program
+order:
 
 ```text
 reads_from
@@ -358,14 +362,14 @@ modification_predecessor
 sequentially_consistent_predecessor
 ```
 
-An atomic load records `reads_from`; an atomic store records
-`modification_predecessor`; an RMW or successful compare-exchange records
-both; a failed compare-exchange records only `reads_from`. A `seq_cst`
-operation or fence records the preceding action in the exact
-sequentially-consistent order when one exists. Plain actions and non-`seq_cst`
-fences carry no relation field.
+In that future schema, an atomic load records `reads_from`; an atomic store
+records `modification_predecessor`; an RMW or successful compare-exchange
+records both; a failed compare-exchange records only `reads_from`. A `seq_cst`
+operation or fence records the preceding action in the exact sequentially
+consistent order when one exists. Plain actions and non-`seq_cst` fences carry
+no relation field.
 
-The initial version is relative to the addressed action's exact
+The future initial version is relative to the addressed action's exact
 `AtomicObjectKey`. A written version must name a memory-action occurrence that
 writes the same object. Scalar, plain-vector, `WholePayload`, and fence actors
 use one actor-wide occurrence. `PerLane` uses one occurrence for each active

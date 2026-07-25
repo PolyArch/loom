@@ -56,15 +56,17 @@ cold-path representation of that model, not another schema authority.
 Raw execution material is deliberately outside normalized Evidence:
 
 - a workload-running simulator owns its exact `SimulationExecution` artifact;
-- a tool flow owns immutable detailed bundles containing scripts, logs, raw
-  reports, and process material; and
+- a future raw detailed-bundle Artifact family will own scripts, logs, raw
+  reports, and process material after its exact schema and importer are
+  defined; and
 - owner-specific attempt records own runtime provenance and retry history.
 
 Evidence binds evaluator-produced semantic Artifacts through descriptor-owned
 typed output slots. A workload-running simulator uses one
-`SimulationExecution` output slot. `detailed_bundle_refs` are reserved for
-opaque scripts, logs, reports, waveforms, and process material. Neither kind
-of reference becomes another normalized result authority.
+`SimulationExecution` output slot. `evaluation.evidence.1.0` has no raw-bundle
+field or generic Artifact-reference escape hatch. Until the detailed-bundle
+owner lands, providers may retain raw material only through owner-specific
+attempt or scratch storage; it cannot enter Request or Evidence identity.
 
 ## Models, Metrics, and Findings
 
@@ -153,10 +155,15 @@ case, resolve through its family-owned local-reference codec, and satisfy the
 signature's declared reference-cycle type. The resolved variant must match the
 descriptor's declared `source`. Resolution failure, a foreign anchor, a
 noncanonical local reference, or more than one possible result is invalid.
-`Absent` makes whole-case cycle-count and clock-period forms invalid.
+`Absent` means that this case signature provides no reference-cycle basis.
+Only the Metric registry decides which scope forms require such a basis.
 The resolved basis is derived from the exact case and is not serialized as a
 Request field; the exact signature ref and its registered typed resolver are
 the authority. A model cannot derive, invent, or replace the basis in config.
+The Metric registry's single `validateMetricScopeAdmissibility` operation owns
+whether a form requires this resolver and is called by both model-descriptor
+admission and `RequestVerifier`; neither caller duplicates metric-specific
+cycle rules.
 
 This replaces descriptor-local subject-slot definitions. Such slots made the
 supposedly model-independent case key depend on model-specific ordinals, so two
@@ -538,7 +545,8 @@ Admission has three nonoverlapping owners:
 1. `RequestVerifier` checks canonical form, descriptor and case-signature
    resolution, case-role totality and compatibility, workload/runtime
    requirements, condition location and applicability, scope anchors and
-   targets, metric and finding capabilities, model slots and config, and
+   targets, metric and finding capabilities, shared Metric scope
+   admissibility and reference-cycle resolution, model slots and config, and
    replicate validity.
 2. `EvaluationPlanAdmission` checks model authorization, Evidence obligations,
    dependency readiness, and deterministic semantic work.
@@ -565,7 +573,6 @@ EvaluationEvidence {
     | Unsupported { reason: OutcomeReason }
     | ExecutionFailed { reason: OutcomeReason }
     | CancelledOrTimeout { reason: OutcomeReason }
-  detailed_bundle_refs: canonical set<ArtifactRootReference>
 }
 ```
 
@@ -595,8 +602,9 @@ controller's `Incomplete` outcome, not a fifth Evidence outcome.
 `OutcomeReason` is a closed typed union and is the only normalized failure
 classification in Evidence. Evidence has no generic diagnostic string, list,
 or key-value bag. Human-readable messages, vendor warnings, stdout, stderr,
-and partial reports remain raw bundle material. Timestamps, host details, retry
-history, and execution-limit details remain owner-attempt material.
+and partial reports remain owner-attempt or scratch material until the raw
+detailed-bundle owner is defined. Timestamps, host details, retry history, and
+execution-limit details remain owner-attempt material.
 
 Metric result position is the requested ordinal; the result contains only its
 observation form, value or bounds, uncertainty, and any referenced calibration
@@ -627,32 +635,32 @@ slot's canonical output binding. The referenced execution owns the typed
 witness instance; Evidence does not copy it. Both terminals produce Completed
 Evidence with total result arrays.
 
-Every detailed bundle reference resolves to immutable raw material for the
-same exact Request. A bundle owns generated scripts, logs, raw reports, opaque
-process payloads, and their content inventory and digests. It references the
-exact Request, but never an Invocation or Evidence, and does not copy canonical
-semantic tool inputs recoverable from the Request and model binding. Attempt
-status and execution provenance belong to the owner-specific attempt record.
-A bundle cannot copy normalized Evidence outcome, MetricResult, or
-FindingResult. Dependency direction remains acyclic:
+Schema 1.0 deliberately contains no `detailed_bundle_refs`. The earlier generic
+`canonical set<ArtifactRootReference>` shape was removed because no exact raw
+detailed-bundle schema, root kind, canonical payload, or importer owns those
+references. Keeping an always-invalid generic field would be a second authority
+and permanent wire slop. A later schema minor may add one exact typed reference
+only after that Artifact owner defines immutable content inventory, exact
+Request lineage, canonical framing, and the prohibition on normalized outcome,
+MetricResult, or FindingResult copies.
+
+The schema-1.0 dependency direction is therefore:
 
 ```text
-Raw detailed bundle -> EvaluationRequest
-SimulationExecution -> EvaluationRequest + optional raw detailed bundle
+SimulationExecution -> EvaluationRequest
 EvaluationEvidence -> EvaluationRequest + typed output Artifacts
-                      + optional raw detailed bundle
 ```
 
 A simulator that executes a workload retains the exact `SimulationExecution`
-as a typed Artifact distinct from raw detailed material. It owns terminal
+as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
-summaries, and the trace manifest. The raw detailed bundle owns the manifest's
-canonical chunk bytes, their Common `BlobDigest` inventory, and any waveform
-payload. One manifest references one exact same-Request bundle and orders only
-digests present in that bundle. The bundle cannot copy trace order, coverage,
-or completeness. Neither owner contains normalized metrics, findings,
-Evaluation outcome, DSE decisions, or a second simulator result schema.
+summaries. Schema 1.0 contains no trace-manifest field. Trace-chunk and waveform
+persistence remains unavailable until the raw detailed-bundle owner and a
+Simulation Artifacts schema minor land; a simulator cannot replace them with
+paths, opaque bytes, or provider-private references. `SimulationExecution` contains no
+normalized metrics, findings, Evaluation outcome, DSE decisions, or second
+simulator result schema.
 
 ## Candidate Lineage and Evaluation DAG
 
@@ -684,7 +692,7 @@ The Evaluation DAG is derived from exact references; there is no
 `EvaluationDagArtifact`. Requests reference finalized subject Artifacts through
 descriptor-owned role slots and any
 upstream Evidence in descriptor-owned model slots. Evidence references its
-exact Request and detailed material. These references mechanically recover the
+exact Request and typed output bindings. These references mechanically recover the
 persistent data dependencies. A model dependency cycle discovered while
 resolving the plan is rejected before any Request is created.
 
@@ -1046,7 +1054,7 @@ candidate, or complete from best-so-far state.
 
 Attempts and checkpoints remain owner-specific. Evaluation uses its
 request-local attempt record; ToolRunner retains scripts, stdout, stderr, raw
-reports, and process outcome in detailed material; PnR, training, and other
+reports, and process outcome in attempt or scratch material; PnR, training, and other
 domains define typed checkpoints only when real recovery requires them. A
 checkpoint binds the exact run key, occurrence, plan node, WorkUnitKey, owner
 schema, and version. There is no generic Attempt Artifact or all-domain
@@ -1153,8 +1161,9 @@ does not become Mapping illegality.
 PnR may use an ephemeral domain-specific incremental adapter for hot probes.
 Its full model remains the oracle, its cache is removable, and probes create no
 Request or Evidence. Any finalized candidate that starts an authorized external
-evaluation uses the ordinary Request/Evidence boundary and retains its raw
-material. Evaluation-derived route guidance may order proposals, but cannot
+evaluation uses the ordinary Request/Evidence boundary and retains raw material
+only in owner-attempt or scratch state until its exact Artifact owner exists.
+Evaluation-derived route guidance may order proposals, but cannot
 change legal arcs, prove legality, replace complete `Q`, or enter a Mapping
 Artifact.
 
@@ -1170,9 +1179,9 @@ ModelTrainingRequest Artifact
 
 The `ModelTrainingRequest` is the sole training input root. It binds exact
 immutable Evidence plus deterministic trainer identity, configuration, and
-seed. Training normally reaches executions and raw payloads through each
-Evidence record's detailed-material closure. A trainer that genuinely requires
-a direct execution or payload reference must receive it through a
+seed. Evidence has no detailed-material closure. A trainer that requires an
+execution or, after its Artifact owner exists, a persistent raw payload must
+receive it through a
 descriptor-owned typed Request slot included in canonical Request bytes; it
 must not accept a hidden side input. Training produces a new immutable
 parameter bundle with provenance; parameters never mutate in place. Candidate
@@ -1225,6 +1234,9 @@ Only these stable semantic anchors belong at this boundary:
 - Completed Evidence is exactly total over both request sets, while
   Unsupported, ExecutionFailed, and CancelledOrTimeout carry only a typed
   OutcomeReason and no result arrays.
+- EvaluationEvidence schema 1.0 rejects a `detailed_bundle_refs` field or any
+  other generic raw-material reference until the exact bundle owner and a
+  later schema minor define it.
 - Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
   replay or resume with the same run closure and stable work ordinals produces
   the same formal selection as uninterrupted execution.

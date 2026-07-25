@@ -216,8 +216,9 @@ Focused Mapping specs are derived views of those owners, not parallel schemas.
 
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,
-and Mapping inputs. Both are event-driven and may emit ordered cycle-coordinate
-traces through SimulationExecution.
+and Mapping inputs. Both are event-driven and may emit diagnostic ordered
+cycle-coordinate traces to attempt or scratch storage. Persistent traces require
+the future Simulation Artifacts schema minor and raw detailed-bundle owner.
 
 HostCore, InstructionCore, cache, coherence, and system-interconnect execution
 belong to an external system simulator integrated through Loom's bridge. Loom
@@ -225,8 +226,9 @@ does not rebuild a CPU or full-system simulator. A system simulation is an
 ordinary Evaluation model over an exact Deployment, Gem5SimulationBinding,
 workload, and runtime input.
 
-Architecture-only RTL or EDA evaluation may produce EvaluationEvidence and raw
-detailed bundles without claiming workload execution. Mapped RTL execution
+Architecture-only RTL or EDA evaluation may produce EvaluationEvidence without
+claiming workload execution. Raw reports remain owner-attempt or scratch
+material until their exact Artifact owner is defined. Mapped RTL execution
 produces SimulationExecution only when it actually runs the Deployment and
 observes the requested values, streams, memories, and completion behavior.
 

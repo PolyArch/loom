@@ -166,9 +166,10 @@ InstructionCore, caches, coherence, NoC, and system time belong to the
 external system simulator. A Loom Bridge invokes the shared SpatialCore
 simulation library only at the Spatial Launch boundary.
 
-Workload-running simulation produces one `SimulationExecution`, normalized
-`EvaluationEvidence`, and optional raw detailed material under their distinct
-ownership contracts. Architecture-only checks produce no empty execution.
+Workload-running simulation produces one `SimulationExecution` and normalized
+`EvaluationEvidence` under their distinct ownership contracts. Raw material is
+attempt or scratch state until its exact Artifact owner is defined.
+Architecture-only checks produce no empty execution.
 None of these outputs becomes a Mapping fact or legality exception.
 
 ## Evaluation And DSE Boundary

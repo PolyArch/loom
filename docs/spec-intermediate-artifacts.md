@@ -14,13 +14,15 @@ Every report field that describes a semantic fact resolves to one exact owner:
 - a Fabric Hardware Description owns hardware structure and capability;
 - a complete Mapping Artifact owns selected realization, placement, routes,
   resource use, tags, buffers, and other profile-specific decisions;
-- a `SimulationExecution` owns typed terminal workload observations, activity
-  summaries, and the trace manifest;
+- a `SimulationExecution` 1.0 owns typed terminal workload observations and
+  activity summaries; a trace manifest requires a later schema minor after its
+  raw detailed-bundle owner exists;
 - an `EvaluationRequest` owns the exact evaluation question;
 - an `EvaluationEvidence` owns normalized outcome, metric results, and finding
   results;
-- a detailed bundle owns retained scripts, logs, raw tool reports, canonical
-  trace chunks, and other payloads; and
+- owner-attempt or scratch storage retains scripts, logs, raw tool reports,
+  diagnostic trace chunks, and other payloads until their exact Artifact owner
+  is defined; and
 - `InvocationManifest`, `ExecutionJournal`, and owner-specific attempt records
   own invocation provenance, recovery state, and retry history.
 
@@ -54,18 +56,13 @@ scanning a scratch directory.
 ## Simulation Reports
 
 A DFG-sim, CGRA-sim, or system-simulation report obtains terminal values,
-stream sequences, visible logical-memory state or diffs, completion, activity,
-and trace order and coverage only from the exact `SimulationExecution`. It
-resolves canonical trace chunks only through the manifest's exact detailed-
-bundle reference. It obtains normalized outcome, metrics, and findings only
-from exact `EvaluationEvidence`, with query meaning recovered through the
-corresponding `EvaluationRequest` and registries.
-
-For a present trace, the report resolves the manifest's one exact same-Request
-detailed bundle, verifies every ordered `BlobDigest`, and decodes canonical
-chunk bytes. It preserves `Complete` versus launch-rooted `Prefix` coverage and
-must not invent a late-start range, fill an interior gap, reorder chunks, or
-treat an absent manifest as an empty complete trace.
+stream sequences, visible logical-memory state or diffs, completion, and
+activity only from the exact `SimulationExecution`. It obtains normalized
+outcome, metrics, and findings only from exact `EvaluationEvidence`, with query
+meaning recovered through the corresponding `EvaluationRequest` and
+registries. Persistent trace projection is unavailable in schema 1.0 and may
+be added only after the raw detailed-bundle owner and a Simulation Artifacts
+schema minor define the exact manifest and chunk import path.
 
 A simulator progress counter, event count, raw tool exit status, or
 human-oriented score is not a cycle metric unless an Evaluation model has
@@ -75,7 +72,8 @@ identity.
 
 Architecture-only RTL or EDA evaluation has no workload execution and
 therefore produces no empty `SimulationExecution`. Its report projects exact
-Request, Evidence, detailed-bundle, and owner-attempt records instead.
+Request, Evidence, and owner-attempt records instead. Raw payloads remain
+scratch state until their exact Artifact owner exists.
 
 ## Mapping Reports
 

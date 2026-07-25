@@ -525,10 +525,11 @@ tools as an alternate launch mode.
 ## Diagnostics And Evidence
 
 Runtime waits, actual arbitration, completion events, terminal observables,
-typed activity summaries, and the trace manifest belong to
-`SimulationExecution`. Opaque trace chunks and tool payloads belong to an
-immutable raw detailed bundle. Attempt timestamps, host/tool bindings, retries,
-and execution-limit outcomes belong to the runtime owner's attempt record.
+and typed activity summaries belong to `SimulationExecution` 1.0. Trace chunks
+and tool payloads remain attempt or scratch material until the raw
+detailed-bundle Artifact owner and a later Simulation Artifacts schema minor
+are defined. Attempt timestamps, host/tool bindings, retries, and
+execution-limit outcomes belong to the runtime owner's attempt record.
 Normalized outcome, metrics, and findings belong only to
 `EvaluationEvidence`; human-readable runtime reports are projections of those
 records. Their exact Request recovers Deployment, Mapping, Fabric,
