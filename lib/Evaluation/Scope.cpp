@@ -23,24 +23,27 @@ int compareSchemaVersion(SchemaVersion lhs, SchemaVersion rhs) {
   return 0;
 }
 
-int compareSchemaDescriptors(const ArtifactSchemaDescriptor &lhs,
-                             const ArtifactSchemaDescriptor &rhs) {
-  if (lhs.identity != rhs.identity)
-    return lhs.identity < rhs.identity ? -1 : 1;
-  return compareSchemaVersion(lhs.version, rhs.version);
+int compareSchema(llvm::StringRef lhsIdentity, SchemaVersion lhsVersion,
+                  llvm::StringRef rhsIdentity, SchemaVersion rhsVersion) {
+  if (lhsIdentity != rhsIdentity)
+    return lhsIdentity < rhsIdentity ? -1 : 1;
+  return compareSchemaVersion(lhsVersion, rhsVersion);
 }
 
 int compareReferenceTypes(const SubjectReferenceType &lhs,
                           const SubjectReferenceType &rhs) {
   if (lhs.index() != rhs.index())
     return lhs.index() < rhs.index() ? -1 : 1;
-  if (const auto *lhsRoot = std::get_if<ArtifactRootType>(&lhs))
-    return compareSchemaDescriptors(
-        lhsRoot->schema, std::get<ArtifactRootType>(rhs).schema);
+  if (const auto *lhsRoot = std::get_if<ArtifactRootType>(&lhs)) {
+    const auto &rhsRoot = std::get<ArtifactRootType>(rhs);
+    return compareSchema(lhsRoot->schemaIdentity, lhsRoot->schemaVersion,
+                         rhsRoot.schemaIdentity, rhsRoot.schemaVersion);
+  }
   const auto &lhsLocal = std::get<ArtifactLocalType>(lhs).type;
   const auto &rhsLocal = std::get<ArtifactLocalType>(rhs).type;
-  if (int order = compareSchemaDescriptors(lhsLocal.ownerSchema,
-                                           rhsLocal.ownerSchema))
+  if (int order = compareSchema(
+          lhsLocal.ownerSchemaIdentity, lhsLocal.ownerSchemaVersion,
+          rhsLocal.ownerSchemaIdentity, rhsLocal.ownerSchemaVersion))
     return order;
   if (lhsLocal.ownerLocalKind != rhsLocal.ownerLocalKind)
     return lhsLocal.ownerLocalKind < rhsLocal.ownerLocalKind ? -1 : 1;
@@ -69,7 +72,8 @@ llvm::Error validateFormRoles(const ScopeFormDescriptor &descriptor) {
 
 bool evaluationCaseSignatureRefLess(EvaluationCaseSignatureRef lhs,
                                     EvaluationCaseSignatureRef rhs) {
-  if (int order = compareSchemaVersion(lhs.schemaVersion(), rhs.schemaVersion()))
+  if (int order =
+          compareSchemaVersion(lhs.schemaVersion(), rhs.schemaVersion()))
     return order < 0;
   return lhs.caseKind().ordinal() < rhs.caseKind().ordinal();
 }
@@ -86,8 +90,8 @@ bool orderedTargetPatternLess(const OrderedTargetPattern &lhs,
     if (lhsTarget.caseSubjectRole != rhsTarget.caseSubjectRole)
       return lhsTarget.caseSubjectRole.ordinal() <
              rhsTarget.caseSubjectRole.ordinal();
-    if (int order =
-            compareReferenceTypes(lhsTarget.referenceType, rhsTarget.referenceType))
+    if (int order = compareReferenceTypes(lhsTarget.referenceType,
+                                          rhsTarget.referenceType))
       return order < 0;
   }
   return false;
@@ -101,11 +105,12 @@ bool conditionApplicabilityPatternLess(
   return orderedTargetPatternLess(lhs.targets, rhs.targets);
 }
 
-llvm::Error validateOrderedTargetPatternSet(
-    llvm::StringRef owner, llvm::ArrayRef<OrderedTargetPattern> patterns) {
+llvm::Error
+validateOrderedTargetPatternSet(llvm::StringRef owner,
+                                llvm::ArrayRef<OrderedTargetPattern> patterns) {
   for (std::size_t index = 0; index < patterns.size(); ++index) {
-    if (index != 0 && !orderedTargetPatternLess(patterns[index - 1],
-                                                patterns[index])) {
+    if (index != 0 &&
+        !orderedTargetPatternLess(patterns[index - 1], patterns[index])) {
       if (patterns[index - 1] == patterns[index])
         return evaluationError("'" + owner +
                                "' declares a duplicate target pattern");
@@ -133,9 +138,9 @@ const ArtifactRootReference &SubjectTargetRef::targetArtifact() const {
 
 SubjectReferenceType subjectReferenceTypeOf(const SubjectTarget &target) {
   if (const auto *root = std::get_if<ArtifactRootReference>(&target))
-    return SubjectReferenceType{ArtifactRootType{root->schema}};
-  return SubjectReferenceType{
-      ArtifactLocalType{std::get<EncodedArtifactLocalReference>(target).type()}};
+    return SubjectReferenceType{ArtifactRootType::fromRootReference(*root)};
+  return SubjectReferenceType{ArtifactLocalType{
+      std::get<EncodedArtifactLocalReference>(target).type()}};
 }
 
 OrderedTargetPattern
@@ -160,9 +165,9 @@ void detail::appendSubjectTargetKey(std::vector<std::uint8_t> &bytes,
     return;
   }
   appendU32Be(bytes, artifactLocalDiscriminator);
-  appendFramedBytes(bytes,
-                    encodeArtifactLocalReference(
-                        std::get<EncodedArtifactLocalReference>(target.target)));
+  appendFramedBytes(
+      bytes, encodeArtifactLocalReference(
+                 std::get<EncodedArtifactLocalReference>(target.target)));
 }
 
 std::vector<std::uint8_t> canonicalScopeKey(const EvaluationScope &scope) {
@@ -177,6 +182,10 @@ std::vector<std::uint8_t> canonicalScopeKey(const EvaluationScope &scope) {
 llvm::Error
 validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
                             const EvaluationScope &scope) {
+  for (std::size_t index = 0; index < forms.size(); ++index)
+    if (forms[index].form != ScopeFormRef(static_cast<std::uint32_t>(index)))
+      return evaluationError(
+          "scope forms must use ordered query-kind-local ordinals");
   const ScopeFormDescriptor *descriptor = findScopeForm(forms, scope.form);
   if (!descriptor)
     return evaluationError("unknown scope form ordinal " +
@@ -191,12 +200,6 @@ validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
                            " requires exactly " + std::to_string(arity) +
                            (arity == 1 ? " target" : " targets"));
 
-  if (arity == 0) {
-    if (!descriptor->acceptedTargetPatterns.empty())
-      return evaluationError("a zero-role scope form must not declare target "
-                             "patterns");
-    return llvm::Error::success();
-  }
   if (descriptor->acceptedTargetPatterns.empty())
     return evaluationError("scope form " +
                            std::to_string(descriptor->form.ordinal()) +
@@ -225,8 +228,8 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
                                          target.anchorSubjectArtifact))
     return evaluationError(
         "anchor artifact is not bound to case subject role " +
-        std::to_string(target.caseSubjectRole.ordinal()) + " of case signature '" +
-        signature.spelling + "'");
+        std::to_string(target.caseSubjectRole.ordinal()) +
+        " of case signature '" + signature.spelling + "'");
 
   const CaseArtifactResolution::Entry *anchor =
       context.resolution().find(target.anchorSubjectArtifact);
@@ -256,9 +259,10 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
   return validateArtifactLocalReference(*local);
 }
 
-llvm::Error validateEvaluationScopeCase(
-    const EvaluationScope &scope, llvm::ArrayRef<ScopeFormDescriptor> forms,
-    const CaseTargetContext &context) {
+llvm::Error
+validateEvaluationScopeCase(const EvaluationScope &scope,
+                            llvm::ArrayRef<ScopeFormDescriptor> forms,
+                            const CaseTargetContext &context) {
   if (llvm::Error error = validateEvaluationScopeForm(forms, scope))
     return error;
   const ScopeFormDescriptor &descriptor = *findScopeForm(forms, scope.form);
@@ -267,19 +271,17 @@ llvm::Error validateEvaluationScopeCase(
     if (llvm::Error error = validateSubjectTargetRef(target, context))
       return error;
 
-  if (!descriptor.roles.empty()) {
-    const OrderedTargetPattern derived =
-        deriveOrderedTargetPattern(scope.targets, context.signatureRef());
-    bool accepted = false;
-    for (const OrderedTargetPattern &pattern : descriptor.acceptedTargetPatterns)
-      accepted = accepted || pattern == derived;
-    if (!accepted)
-      return evaluationError(
-          "scope form " + std::to_string(descriptor.form.ordinal()) +
-          " does not accept the derived ordered target pattern of case "
-          "signature '" +
-          context.signature().spelling + "'");
-  }
+  const OrderedTargetPattern derived =
+      deriveOrderedTargetPattern(scope.targets, context.signatureRef());
+  bool accepted = false;
+  for (const OrderedTargetPattern &pattern : descriptor.acceptedTargetPatterns)
+    accepted = accepted || pattern == derived;
+  if (!accepted)
+    return evaluationError(
+        "scope form " + std::to_string(descriptor.form.ordinal()) +
+        " does not accept the derived ordered target pattern of case "
+        "signature '" +
+        context.signature().spelling + "'");
 
   if (descriptor.verifyRelation)
     return descriptor.verifyRelation(scope.targets);

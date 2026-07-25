@@ -37,11 +37,12 @@ llvm::Error validateAcceptedSchema(
     llvm::ArrayRef<const ArtifactSchemaDescriptor *> accepted,
     const ArtifactRootReference &artifact) {
   for (const ArtifactSchemaDescriptor *schema : accepted)
-    if (*schema == artifact.schema)
+    if (schema->identity == artifact.schemaIdentity &&
+        schema->version == artifact.schemaVersion)
       return llvm::Error::success();
   return evaluationError(reference + " does not accept schema '" +
-                         artifact.schema.identity + " " +
-                         formatSchemaVersion(artifact.schema.version) + "'");
+                         artifact.schemaIdentity + " " +
+                         formatSchemaVersion(artifact.schemaVersion) + "'");
 }
 
 llvm::Error validateReferenceRequirement(
@@ -65,8 +66,8 @@ llvm::Error validateReferenceRequirement(
   return validateAcceptedSchema(reference, accepted, *value);
 }
 
-llvm::Error validateRoleDefinitions(
-    const EvaluationCaseSignatureDescriptor &descriptor) {
+llvm::Error
+validateRoleDefinitions(const EvaluationCaseSignatureDescriptor &descriptor) {
   for (std::size_t index = 0; index < descriptor.subjectRoles.size(); ++index) {
     const CaseSubjectRoleDescriptor &role = descriptor.subjectRoles[index];
     if (role.role != CaseSubjectRoleRef(static_cast<std::uint32_t>(index)))
@@ -85,9 +86,9 @@ llvm::Error validateRoleDefinitions(
   return llvm::Error::success();
 }
 
-llvm::Error validateBasePatternSet(
-    const EvaluationCaseSignatureDescriptor &descriptor,
-    EvaluationCaseSignatureRef signatureRef) {
+llvm::Error
+validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor,
+                       EvaluationCaseSignatureRef signatureRef) {
   for (std::size_t index = 0; index < descriptor.permittedBaseConditions.size();
        ++index) {
     const ConditionApplicabilityPattern &pattern =
@@ -264,13 +265,13 @@ CaseArtifactResolution::find(const ArtifactRootReference &artifact) const {
   return nullptr;
 }
 
-bool CaseArtifactResolution::reaches(
-    const Entry &entry, const ArtifactRootReference &dependency) {
+bool CaseArtifactResolution::reaches(const Entry &entry,
+                                     const ArtifactRootReference &dependency) {
   if (entry.artifact == dependency)
     return true;
   return std::find(entry.dependencyClosure.begin(),
-                   entry.dependencyClosure.end(), dependency) !=
-         entry.dependencyClosure.end();
+                   entry.dependencyClosure.end(),
+                   dependency) != entry.dependencyClosure.end();
 }
 
 llvm::Expected<EvaluationCase>
@@ -280,8 +281,7 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
                     std::optional<ArtifactRootReference> runtimeInput,
                     llvm::ArrayRef<EvaluationCondition> baseConditions,
                     const CaseArtifactResolution &resolution) {
-  const EvaluationCaseSignatureDescriptor *descriptor =
-      signature.descriptor();
+  const EvaluationCaseSignatureDescriptor *descriptor = signature.descriptor();
   if (!descriptor)
     return evaluationError("unregistered evaluation case kind " +
                            std::to_string(signature.caseKind().ordinal()));
@@ -315,14 +315,15 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
     }
   }
 
-  if (llvm::Error error = validateReferenceRequirement(
-          *descriptor, descriptor->workload, descriptor->acceptedWorkloadSchemas,
-          "workload", workload, resolution))
+  if (llvm::Error error =
+          validateReferenceRequirement(*descriptor, descriptor->workload,
+                                       descriptor->acceptedWorkloadSchemas,
+                                       "workload", workload, resolution))
     return std::move(error);
   if (llvm::Error error = validateReferenceRequirement(
           *descriptor, descriptor->runtimeInput,
-          descriptor->acceptedRuntimeInputSchemas, "runtime input", runtimeInput,
-          resolution))
+          descriptor->acceptedRuntimeInputSchemas, "runtime input",
+          runtimeInput, resolution))
     return std::move(error);
 
   for (const CaseSubjectRoleDescriptor &role : descriptor->subjectRoles) {
@@ -340,10 +341,9 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
 
   const CaseTargetContext context(*descriptor, signature, bindings, resolution);
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
-      canonicalizeEvaluationConditions(baseConditions, ConditionLocation::Base,
-                                       descriptor->spelling,
-                                       descriptor->permittedBaseConditions,
-                                       context);
+      canonicalizeEvaluationConditions(
+          baseConditions, ConditionLocation::Base, descriptor->spelling,
+          descriptor->permittedBaseConditions, context);
   if (!canonicalConditions)
     return canonicalConditions.takeError();
 

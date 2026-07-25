@@ -41,16 +41,14 @@ struct MetricDescriptor {
   llvm::StringRef canonicalUnit;
   MetricValueDomain valueDomain;
   llvm::ArrayRef<ScopeFormDescriptor> scopeForms;
-  /// The request-specific condition kinds this metric permits. Schema 1.0
-  /// admits only the targetless Quantile kind here, so each permitted kind
-  /// derives exactly one pattern for the requesting case signature. Targeted
-  /// kinds are Base-only and never appear in this list.
-  llvm::ArrayRef<EvaluationConditionKind> permittedRequestConditions;
+  /// Complete request-specific condition patterns. A metric never turns a
+  /// kind-only declaration into a wildcard over case signatures or targets.
+  llvm::ArrayRef<ConditionApplicabilityPattern>
+      permittedRequestConditionPatterns;
   std::uint8_t permittedObservationForms;
   std::optional<CensoredReasonPolicy> censoredReasonPolicy;
 
   bool permitsObservationForm(ObservationForm form) const;
-  bool permitsRequestCondition(EvaluationConditionKind kind) const;
 };
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors();

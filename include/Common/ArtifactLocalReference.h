@@ -8,6 +8,9 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 // The heterogeneous exact-reference carriers owned by the Common artifact
@@ -26,41 +29,41 @@
 
 namespace loom {
 
-/// An exact reference to one finalized Artifact root. The schema is present
-/// because the identity digest alone does not select an importer or
-/// validator.
-struct ArtifactRootReference {
-  ArtifactSchemaDescriptor schema;
-  ArtifactIdentity artifact;
-
-  friend bool operator==(const ArtifactRootReference &lhs,
-                         const ArtifactRootReference &rhs) {
-    return lhs.schema == rhs.schema && lhs.artifact == rhs.artifact;
-  }
-  friend bool operator!=(const ArtifactRootReference &lhs,
-                         const ArtifactRootReference &rhs) {
-    return !(lhs == rhs);
-  }
-};
-
 /// The complete local-reference type descriptor, derived exactly once as
 /// (owner schema, owner-local kind). owner_local_kind is a stable closed
 /// ordinal owned by that exact Artifact family and schema version; it is not
 /// a global entity kind, consumer enum, textual type name, or native variant
 /// index.
 struct ArtifactLocalReferenceTypeDescriptor {
-  ArtifactSchemaDescriptor ownerSchema;
+  std::string ownerSchemaIdentity;
+  SchemaVersion ownerSchemaVersion;
   std::uint32_t ownerLocalKind = 0;
+
+  ArtifactLocalReferenceTypeDescriptor(
+      const ArtifactSchemaDescriptor &ownerSchema, std::uint32_t ownerLocalKind)
+      : ArtifactLocalReferenceTypeDescriptor(
+            ownerSchema.identity.str(), ownerSchema.version, ownerLocalKind) {}
 
   friend bool operator==(const ArtifactLocalReferenceTypeDescriptor &lhs,
                          const ArtifactLocalReferenceTypeDescriptor &rhs) {
-    return lhs.ownerSchema == rhs.ownerSchema &&
+    return lhs.ownerSchemaIdentity == rhs.ownerSchemaIdentity &&
+           lhs.ownerSchemaVersion == rhs.ownerSchemaVersion &&
            lhs.ownerLocalKind == rhs.ownerLocalKind;
   }
   friend bool operator!=(const ArtifactLocalReferenceTypeDescriptor &lhs,
                          const ArtifactLocalReferenceTypeDescriptor &rhs) {
     return !(lhs == rhs);
   }
+
+private:
+  ArtifactLocalReferenceTypeDescriptor(std::string ownerSchemaIdentity,
+                                       SchemaVersion ownerSchemaVersion,
+                                       std::uint32_t ownerLocalKind)
+      : ownerSchemaIdentity(std::move(ownerSchemaIdentity)),
+        ownerSchemaVersion(ownerSchemaVersion), ownerLocalKind(ownerLocalKind) {
+  }
+
+  friend struct EncodedArtifactLocalReference;
 };
 
 /// The persistent or heterogeneous carrier used to recover a typed
@@ -74,7 +77,8 @@ struct EncodedArtifactLocalReference {
   std::vector<std::uint8_t> payload;
 
   ArtifactLocalReferenceTypeDescriptor type() const {
-    return ArtifactLocalReferenceTypeDescriptor{artifact.schema, ownerLocalKind};
+    return ArtifactLocalReferenceTypeDescriptor{
+        artifact.schemaIdentity, artifact.schemaVersion, ownerLocalKind};
   }
 
   friend bool operator==(const EncodedArtifactLocalReference &lhs,
@@ -118,6 +122,29 @@ encodeArtifactLocalReference(const EncodedArtifactLocalReference &reference);
 struct ArtifactLocalReferenceCodec {
   llvm::Error (*strictDecode)(llvm::ArrayRef<std::uint8_t> payload);
   llvm::Error (*validate)(const EncodedArtifactLocalReference &reference);
+};
+
+enum class ArtifactLocalReferenceErrorKind : std::uint8_t {
+  OwnerCodecUnavailable,
+};
+
+class ArtifactLocalReferenceError final
+    : public llvm::ErrorInfo<ArtifactLocalReferenceError> {
+public:
+  static char ID;
+
+  ArtifactLocalReferenceError(ArtifactLocalReferenceErrorKind kind,
+                              std::string message)
+      : kind_(kind), message_(std::move(message)) {}
+
+  ArtifactLocalReferenceErrorKind kind() const { return kind_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  ArtifactLocalReferenceErrorKind kind_;
+  std::string message_;
 };
 
 /// The registered codec for one (owner schema, owner-local kind) pair, or

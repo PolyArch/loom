@@ -84,10 +84,11 @@ validateRelativeClockSchedule(const RelativeClockScheduleCondition &schedule) {
 }
 
 llvm::Error validateActivityBinding(const ActivityBindingCondition &activity) {
+  if (std::holds_alternative<ExecutionActivitySource>(activity.source))
+    return evaluationError(
+        "SimulationExecution activity validation is unavailable");
   const auto *assumption =
       std::get_if<ExplicitAssumptionSource>(&activity.source);
-  if (!assumption)
-    return llvm::Error::success();
   if (!isProbability(assumption->staticProbability))
     return evaluationError("static probability must be in [0, 1]");
   return llvm::Error::success();
@@ -124,10 +125,9 @@ llvm::Error validateConditionPayload(const EvaluationCondition &condition) {
   llvm_unreachable("unknown EvaluationConditionKind");
 }
 
-/// A process corner is exactly the TechnologyCorner local-reference kind of
-/// loom.implementation_platform 1.0. The ImplementationPlatform owner decodes
-/// and validates it; the exact platform must additionally be admitted by the
-/// condition target's anchor closure.
+/// A process corner requires the TechnologyCorner owner codec and exact
+/// platform import. The platform must also be admitted by the selected
+/// target's anchor closure.
 llvm::Error validateProcessCorner(const ProcessCornerCondition &corner,
                                   const CaseTargetContext &context) {
   const EncodedArtifactLocalReference encoded =
@@ -142,8 +142,7 @@ llvm::Error validateProcessCorner(const ProcessCornerCondition &corner,
 
   const CaseArtifactResolution::Entry *anchor =
       context.resolution().find(corner.target.anchorSubjectArtifact);
-  if (!anchor ||
-      !CaseArtifactResolution::reaches(*anchor, encoded.artifact))
+  if (!anchor || !CaseArtifactResolution::reaches(*anchor, encoded.artifact))
     return evaluationError(
         "the exact implementation platform is not admitted by the selected "
         "subject's dependency closure");
@@ -154,8 +153,8 @@ void appendActivitySource(std::vector<std::uint8_t> &key,
                           const ActivitySource &source) {
   if (const auto *execution = std::get_if<ExecutionActivitySource>(&source)) {
     appendU32Be(key, executionActivityDiscriminator);
-    appendFramedBytes(key,
-                      encodeArtifactRootReference(execution->simulationExecution));
+    appendFramedBytes(
+        key, encodeArtifactRootReference(execution->simulationExecution));
     appendU64Be(key, execution->activitySummaryOrdinal);
     return;
   }
@@ -288,9 +287,9 @@ conditionPayloadKey(const EvaluationCondition &condition) {
   case EvaluationConditionKind::ProcessCorner: {
     const auto &corner = std::get<ProcessCornerCondition>(condition.payload);
     appendSubjectTargetKey(key, corner.target);
-    appendFramedBytes(
-        key, encodeArtifactLocalReference(
-                 platform::encodeTechnologyCornerRef(corner.corner)));
+    appendFramedBytes(key,
+                      encodeArtifactLocalReference(
+                          platform::encodeTechnologyCornerRef(corner.corner)));
     return key;
   }
   case EvaluationConditionKind::SupplyVoltage: {

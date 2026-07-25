@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 add_mlir_library(LoomCommon
   ArtifactFinalizer.cpp
   ArtifactLocalReference.cpp
@@ -21,4 +23,5 @@ add_mlir_library(LoomCommon
   MLIRDataLayoutInterfaces
   MLIRIR
   MLIRSupport
+  Threads::Threads
 )

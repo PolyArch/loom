@@ -2,7 +2,6 @@
 
 #include "CanonicalSupport.h"
 
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/SHA256.h"
 
@@ -60,25 +59,11 @@ MetricRequest::get(MetricQuery query,
           query.scope, metricDescriptor(query.metric).scopeForms, context))
     return std::move(error);
 
-  // The metric descriptor owns which request-specific conditions apply. Every
-  // permitted kind is targetless in schema 1.0, so each derives exactly one
-  // complete pattern for this exact case signature.
   const MetricDescriptor &descriptor = metricDescriptor(query.metric);
-  llvm::SmallVector<ConditionApplicabilityPattern, 1> permittedPatterns;
-  for (EvaluationConditionKind kind : descriptor.permittedRequestConditions) {
-    if (conditionDescriptor(kind).permitsLocation(ConditionLocation::Base))
-      return detail::evaluationError(
-          "metric descriptor '" + descriptor.spelling +
-          "' permits a base-only condition kind in request conditions");
-    permittedPatterns.push_back(ConditionApplicabilityPattern{
-        kind, OrderedTargetPattern{context.signatureRef(), {}}});
-  }
-
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
-      canonicalizeEvaluationConditions(conditions,
-                                       ConditionLocation::MetricRequest,
-                                       descriptor.spelling, permittedPatterns,
-                                       context);
+      canonicalizeEvaluationConditions(
+          conditions, ConditionLocation::MetricRequest, descriptor.spelling,
+          descriptor.permittedRequestConditionPatterns, context);
   if (!canonicalConditions)
     return canonicalConditions.takeError();
 

@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -147,16 +148,31 @@ bool evaluationCaseSignatureRefLess(EvaluationCaseSignatureRef lhs,
 
 /// One exact accepted root type: any Artifact root of this exact schema.
 struct ArtifactRootType {
-  ArtifactSchemaDescriptor schema;
+  std::string schemaIdentity;
+  SchemaVersion schemaVersion;
+
+  ArtifactRootType(const ArtifactSchemaDescriptor &schema)
+      : ArtifactRootType(schema.identity.str(), schema.version) {}
+
+  static ArtifactRootType
+  fromRootReference(const ArtifactRootReference &reference) {
+    return ArtifactRootType(reference.schemaIdentity, reference.schemaVersion);
+  }
 
   friend bool operator==(const ArtifactRootType &lhs,
                          const ArtifactRootType &rhs) {
-    return lhs.schema == rhs.schema;
+    return lhs.schemaIdentity == rhs.schemaIdentity &&
+           lhs.schemaVersion == rhs.schemaVersion;
   }
   friend bool operator!=(const ArtifactRootType &lhs,
                          const ArtifactRootType &rhs) {
     return !(lhs == rhs);
   }
+
+private:
+  ArtifactRootType(std::string schemaIdentity, SchemaVersion schemaVersion)
+      : schemaIdentity(std::move(schemaIdentity)),
+        schemaVersion(schemaVersion) {}
 };
 
 /// One exact accepted local type: one owner-local kind of one exact Artifact
@@ -236,13 +252,15 @@ struct ConditionApplicabilityPattern {
 /// owner-local kind when present) key. Duplicate patterns are invalid.
 bool orderedTargetPatternLess(const OrderedTargetPattern &lhs,
                               const OrderedTargetPattern &rhs);
-bool conditionApplicabilityPatternLess(const ConditionApplicabilityPattern &lhs,
-                                       const ConditionApplicabilityPattern &rhs);
+bool conditionApplicabilityPatternLess(
+    const ConditionApplicabilityPattern &lhs,
+    const ConditionApplicabilityPattern &rhs);
 
 /// Validates one descriptor-owned pattern collection: canonical order and no
 /// duplicate patterns.
-llvm::Error validateOrderedTargetPatternSet(
-    llvm::StringRef owner, llvm::ArrayRef<OrderedTargetPattern> patterns);
+llvm::Error
+validateOrderedTargetPatternSet(llvm::StringRef owner,
+                                llvm::ArrayRef<OrderedTargetPattern> patterns);
 
 //===----------------------------------------------------------------------===//
 // Subject bindings and resolved case artifacts
@@ -310,7 +328,8 @@ public:
   const Entry *find(const ArtifactRootReference &artifact) const;
   /// True when the dependency is the Artifact itself or occurs in its exact
   /// semantic dependency closure.
-  static bool reaches(const Entry &entry, const ArtifactRootReference &dependency);
+  static bool reaches(const Entry &entry,
+                      const ArtifactRootReference &dependency);
 
 private:
   explicit CaseArtifactResolution(std::vector<Entry> entries)
@@ -437,10 +456,9 @@ struct ScopeFormDescriptor {
   /// Ordered, nonrepeating role tuple: each role ordinal is its position and
   /// the semantic roles are distinct.
   llvm::ArrayRef<ScopeRoleDescriptor> roles;
-  /// The complete positional alternatives accepted at this form. A zero-role
-  /// form denotes the entire exact Evaluation case and declares no patterns:
-  /// its one accepted pattern is the targetless pattern of the requesting
-  /// case signature. A form with roles declares a canonical nonempty set.
+  /// The complete positional alternatives accepted at this form. Every form,
+  /// including a zero-role whole-case form, declares a canonical nonempty set
+  /// pinned to exact case signatures.
   llvm::ArrayRef<OrderedTargetPattern> acceptedTargetPatterns;
   /// Relation-specific verification owned by this query form, such as
   /// requiring two distinct endpoints. Null when the accepted patterns are
@@ -555,9 +573,10 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
 /// Case-relative scope validation: every target is valid, the derived exact
 /// ordered target pattern matches one descriptor-owned pattern of the
 /// selected form, and the form's own relation verification holds.
-llvm::Error validateEvaluationScopeCase(
-    const EvaluationScope &scope, llvm::ArrayRef<ScopeFormDescriptor> forms,
-    const CaseTargetContext &context);
+llvm::Error
+validateEvaluationScopeCase(const EvaluationScope &scope,
+                            llvm::ArrayRef<ScopeFormDescriptor> forms,
+                            const CaseTargetContext &context);
 
 //===----------------------------------------------------------------------===//
 // Evaluation conditions

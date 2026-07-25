@@ -16,6 +16,16 @@ llvm::Error framingError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
+llvm::Error
+ownerCodecUnavailable(const EncodedArtifactLocalReference &reference) {
+  return llvm::make_error<ArtifactLocalReferenceError>(
+      ArtifactLocalReferenceErrorKind::OwnerCodecUnavailable,
+      ("no registered owner codec for local-reference kind " +
+       llvm::Twine(reference.ownerLocalKind) + " of schema '" +
+       reference.artifact.schemaIdentity + "'")
+          .str());
+}
+
 void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
   bytes.push_back(static_cast<std::uint8_t>(value >> 24));
   bytes.push_back(static_cast<std::uint8_t>(value >> 16));
@@ -47,14 +57,24 @@ std::mutex &localReferenceKindMutex() {
 
 } // namespace
 
+char ArtifactLocalReferenceError::ID = 0;
+
+void ArtifactLocalReferenceError::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code ArtifactLocalReferenceError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
 bool artifactRootReferenceLess(const ArtifactRootReference &lhs,
                                const ArtifactRootReference &rhs) {
-  if (lhs.schema.identity != rhs.schema.identity)
-    return lhs.schema.identity < rhs.schema.identity;
-  if (lhs.schema.version.major != rhs.schema.version.major)
-    return lhs.schema.version.major < rhs.schema.version.major;
-  if (lhs.schema.version.minor != rhs.schema.version.minor)
-    return lhs.schema.version.minor < rhs.schema.version.minor;
+  if (lhs.schemaIdentity != rhs.schemaIdentity)
+    return lhs.schemaIdentity < rhs.schemaIdentity;
+  if (lhs.schemaVersion.major != rhs.schemaVersion.major)
+    return lhs.schemaVersion.major < rhs.schemaVersion.major;
+  if (lhs.schemaVersion.minor != rhs.schemaVersion.minor)
+    return lhs.schemaVersion.minor < rhs.schemaVersion.minor;
   return lhs.artifact.bytes() < rhs.artifact.bytes();
 }
 
@@ -62,11 +82,11 @@ std::vector<std::uint8_t>
 encodeArtifactRootReference(const ArtifactRootReference &reference) {
   std::vector<std::uint8_t> bytes;
   appendU32Be(bytes,
-              static_cast<std::uint32_t>(reference.schema.identity.size()));
-  bytes.insert(bytes.end(), reference.schema.identity.bytes_begin(),
-               reference.schema.identity.bytes_end());
-  appendU32Be(bytes, reference.schema.version.major);
-  appendU32Be(bytes, reference.schema.version.minor);
+              static_cast<std::uint32_t>(reference.schemaIdentity.size()));
+  bytes.insert(bytes.end(), reference.schemaIdentity.begin(),
+               reference.schemaIdentity.end());
+  appendU32Be(bytes, reference.schemaVersion.major);
+  appendU32Be(bytes, reference.schemaVersion.minor);
   bytes.insert(bytes.end(), reference.artifact.bytes().begin(),
                reference.artifact.bytes().end());
   return bytes;
@@ -74,7 +94,8 @@ encodeArtifactRootReference(const ArtifactRootReference &reference) {
 
 std::vector<std::uint8_t>
 encodeArtifactLocalReference(const EncodedArtifactLocalReference &reference) {
-  std::vector<std::uint8_t> bytes = encodeArtifactRootReference(reference.artifact);
+  std::vector<std::uint8_t> bytes =
+      encodeArtifactRootReference(reference.artifact);
   appendU32Be(bytes, reference.ownerLocalKind);
   appendU64Be(bytes, reference.payload.size());
   bytes.insert(bytes.end(), reference.payload.begin(), reference.payload.end());
@@ -125,13 +146,15 @@ findArtifactLocalReferenceSchema(llvm::StringRef identity,
 
 llvm::Error
 validateArtifactLocalReference(const EncodedArtifactLocalReference &reference) {
+  std::optional<ArtifactSchemaDescriptor> ownerSchema =
+      findArtifactLocalReferenceSchema(reference.artifact.schemaIdentity,
+                                       reference.artifact.schemaVersion);
+  if (!ownerSchema)
+    return ownerCodecUnavailable(reference);
   std::optional<ArtifactLocalReferenceCodec> codec =
-      findArtifactLocalReferenceKind(reference.artifact.schema,
-                                     reference.ownerLocalKind);
+      findArtifactLocalReferenceKind(*ownerSchema, reference.ownerLocalKind);
   if (!codec)
-    return framingError("no registered owner codec for local-reference kind " +
-                        llvm::Twine(reference.ownerLocalKind) + " of schema '" +
-                        reference.artifact.schema.identity + "'");
+    return ownerCodecUnavailable(reference);
   if (llvm::Error error = codec->strictDecode(reference.payload))
     return error;
   return codec->validate(reference);

@@ -51,24 +51,18 @@ constexpr std::uint8_t nonCensoredObservationForms =
 constexpr CensoredReasonPolicy subjectDidNotCompletePolicy{
     CensoredReason::SubjectDidNotComplete, true, false};
 
-// Every registered metric owns the zero-role whole-case form: the entire
-// exact Evaluation case. A zero-role form declares no target patterns; its
-// one accepted pattern is the targetless pattern of the requesting case
-// signature.
-const ScopeFormDescriptor metricScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact Evaluation case", {}, {}, nullptr},
-};
-
-// A quantile selects among samples of one metric request and names no target.
-const EvaluationConditionKind sampledRequestConditions[] = {
-    EvaluationConditionKind::Quantile};
-
 const std::array<MetricDescriptor, 3> metricDescriptors = {{
-    {MetricKind::CycleCount, "cycle_count",
+    {MetricKind::CycleCount,
+     "cycle_count",
      "Number of subject clock cycles required by the observed work.",
-     MetricValueKind::Integer, MetricDimension::Cycle, "cycle",
-     MetricValueDomain::NonNegative, metricScopeForms, sampledRequestConditions,
-     allObservationForms, subjectDidNotCompletePolicy},
+     MetricValueKind::Integer,
+     MetricDimension::Cycle,
+     "cycle",
+     MetricValueDomain::NonNegative,
+     {},
+     {},
+     allObservationForms,
+     subjectDidNotCompletePolicy},
     {MetricKind::ClockPeriod,
      "clock_period",
      "Duration of one clock cycle for the evaluated operating condition.",
@@ -76,14 +70,20 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
      MetricDimension::Time,
      "second",
      MetricValueDomain::Positive,
-     metricScopeForms,
+     {},
      {},
      nonCensoredObservationForms,
      std::nullopt},
-    {MetricKind::Runtime, "runtime",
-     "Elapsed physical time for the observed work.", MetricValueKind::Decimal,
-     MetricDimension::Time, "second", MetricValueDomain::NonNegative,
-     metricScopeForms, sampledRequestConditions, allObservationForms,
+    {MetricKind::Runtime,
+     "runtime",
+     "Elapsed physical time for the observed work.",
+     MetricValueKind::Decimal,
+     MetricDimension::Time,
+     "second",
+     MetricValueDomain::NonNegative,
+     {},
+     {},
+     allObservationForms,
      subjectDidNotCompletePolicy},
 }};
 
@@ -339,13 +339,6 @@ parseObservationValue(const llvm::json::Object &object) {
 
 bool MetricDescriptor::permitsObservationForm(ObservationForm form) const {
   return (permittedObservationForms & observationFormBit(form)) != 0;
-}
-
-bool MetricDescriptor::permitsRequestCondition(
-    EvaluationConditionKind kind) const {
-  return std::find(permittedRequestConditions.begin(),
-                   permittedRequestConditions.end(),
-                   kind) != permittedRequestConditions.end();
 }
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors() {

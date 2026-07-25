@@ -96,7 +96,8 @@ parseArtifactIdentityHex(llvm::StringRef spelling) {
   return ArtifactIdentity::fromBytes(bytes);
 }
 
-std::string formatArtifactLocalPayloadHex(llvm::ArrayRef<std::uint8_t> payload) {
+std::string
+formatArtifactLocalPayloadHex(llvm::ArrayRef<std::uint8_t> payload) {
   static constexpr char hex[] = "0123456789abcdef";
   std::string result;
   result.reserve(payload.size() * 2);

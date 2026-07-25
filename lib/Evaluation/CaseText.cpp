@@ -46,8 +46,13 @@ requireIdentity(const llvm::json::Object &object, llvm::StringRef key,
   return parseArtifactIdentityHex(*spelling);
 }
 
-llvm::Expected<ArtifactSchemaDescriptor>
-requireSchema(const llvm::json::Object &object, llvm::StringRef context) {
+struct ParsedSchema {
+  std::string identity;
+  SchemaVersion version;
+};
+
+llvm::Expected<ParsedSchema> requireSchema(const llvm::json::Object &object,
+                                           llvm::StringRef context) {
   llvm::Expected<llvm::StringRef> identity =
       requireString(object, "schema", context);
   if (!identity)
@@ -59,14 +64,7 @@ requireSchema(const llvm::json::Object &object, llvm::StringRef context) {
   llvm::Expected<SchemaVersion> parsed = parseSchemaVersion(*version);
   if (!parsed)
     return parsed.takeError();
-  // The exact schema descriptor is resolved to the owner-published constant;
-  // it is never reconstructed from the spelling.
-  std::optional<ArtifactSchemaDescriptor> resolved =
-      findArtifactLocalReferenceSchema(*identity, *parsed);
-  if (!resolved)
-    return evaluationError("no registered artifact family '" + *identity +
-                           " " + *version + "'");
-  return *resolved;
+  return ParsedSchema{identity->str(), *parsed};
 }
 
 llvm::Expected<ArtifactRootReference>
@@ -81,14 +79,15 @@ parseRootReference(const llvm::json::Object &object, llvm::StringRef context,
             object, context, {"schema", "schema_version", "artifact"}))
       return std::move(error);
   }
-  llvm::Expected<ArtifactSchemaDescriptor> schema = requireSchema(object, context);
+  llvm::Expected<ParsedSchema> schema = requireSchema(object, context);
   if (!schema)
     return schema.takeError();
   llvm::Expected<ArtifactIdentity> artifact =
       requireIdentity(object, "artifact", context);
   if (!artifact)
     return artifact.takeError();
-  return ArtifactRootReference{*schema, std::move(*artifact)};
+  return ArtifactRootReference{std::move(schema->identity), schema->version,
+                               std::move(*artifact)};
 }
 
 llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
@@ -113,8 +112,7 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
                               {"kind", "schema", "schema_version", "artifact",
                                "local_kind", "payload"}))
     return std::move(error);
-  llvm::Expected<ArtifactSchemaDescriptor> schema =
-      requireSchema(object, targetContext);
+  llvm::Expected<ParsedSchema> schema = requireSchema(object, targetContext);
   if (!schema)
     return schema.takeError();
   llvm::Expected<ArtifactIdentity> artifact =
@@ -135,17 +133,19 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
     return payload.takeError();
 
   EncodedArtifactLocalReference local{
-      ArtifactRootReference{*schema, std::move(*artifact)}, *localKind,
-      std::move(*payload)};
+      ArtifactRootReference{schema->identity, schema->version,
+                            std::move(*artifact)},
+      *localKind, std::move(*payload)};
   // The family codec strictly decodes its own payload here; the family
   // validator checks the typed target where the exact case is known.
+  std::optional<ArtifactSchemaDescriptor> ownerSchema =
+      findArtifactLocalReferenceSchema(schema->identity, schema->version);
+  if (!ownerSchema)
+    return validateArtifactLocalReference(local);
   std::optional<ArtifactLocalReferenceCodec> codec =
-      findArtifactLocalReferenceKind(*schema, *localKind);
+      findArtifactLocalReferenceKind(*ownerSchema, *localKind);
   if (!codec)
-    return evaluationError("no registered owner codec for local-reference "
-                           "kind " +
-                           std::to_string(*localKind) + " of schema '" +
-                           schema->identity + "'");
+    return validateArtifactLocalReference(local);
   if (llvm::Error error = codec->strictDecode(local.payload))
     return error;
   return SubjectTarget{std::move(local)};
@@ -186,8 +186,9 @@ parseSubjectTargetRef(const llvm::json::Value &value) {
 
 void writeRootReference(llvm::json::OStream &json,
                         const ArtifactRootReference &reference) {
-  json.attribute("schema", reference.schema.identity);
-  json.attribute("schema_version", formatSchemaVersion(reference.schema.version));
+  json.attribute("schema", reference.schemaIdentity);
+  json.attribute("schema_version",
+                 formatSchemaVersion(reference.schemaVersion));
   json.attribute("artifact", formatArtifactIdentityHex(reference.artifact));
 }
 
@@ -202,7 +203,8 @@ void writeEvaluationScopeJson(llvm::json::OStream &json,
         json.object([&] {
           json.attribute("case_subject_role", target.caseSubjectRole.ordinal());
           json.attributeBegin("anchor");
-          json.object([&] { writeRootReference(json, target.anchorSubjectArtifact); });
+          json.object(
+              [&] { writeRootReference(json, target.anchorSubjectArtifact); });
           json.attributeEnd();
           json.attributeBegin("target");
           json.object([&] {
