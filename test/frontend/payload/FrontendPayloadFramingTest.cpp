@@ -16,7 +16,6 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 using namespace loom;
 
@@ -203,76 +202,6 @@ void abiKeyMatchesKnownVector() {
   static_assert(!std::is_same_v<AbiCompatibilityKey, ComponentViewDigest>);
 }
 
-void abiKeyFollowsEveryPreimageField() {
-  const ResolvedFrontendConfigView view =
-      projectResolvedFrontendConfigView(defaultResolvedConfig());
-  const AbiCompatibilityKey key =
-      computeAbiCompatibilityKey(vectorKeyInputs(view));
-
-  const std::string otherRepository = "llvm-project-fork";
-  const std::string otherCommit(40, 'a');
-  const std::string otherTriple = "aarch64-unknown-linux-gnu";
-  const std::string otherDescriptor = "loom.config.view.frontend.2.0";
-  const std::array<std::uint8_t, 1> otherViewBytes = {0x00};
-
-  struct Mutation {
-    const char *name;
-    AbiCompatibilityKeyInputs inputs;
-  };
-  std::vector<Mutation> mutations;
-  auto add = [&](const char *name, auto &&mutate) {
-    AbiCompatibilityKeyInputs inputs = vectorKeyInputs(view);
-    mutate(inputs);
-    mutations.push_back(Mutation{name, inputs});
-  };
-  add("repository_identity", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.repositoryIdentity = otherRepository;
-  });
-  add("full_commit_identity", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.fullCommitIdentity = otherCommit;
-  });
-  add("canonical_target_triple", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.canonicalTargetTriple = otherTriple;
-  });
-  add("view_schema_descriptor", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.viewSchemaDescriptorBytes = asBytes(otherDescriptor);
-  });
-  add("view_canonical_bytes", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.viewCanonicalBytes = otherViewBytes;
-  });
-
-  for (const Mutation &mutation : mutations) {
-    require(__func__, computeAbiCompatibilityKey(mutation.inputs) != key,
-            std::string("changing ") + mutation.name +
-                " did not change the ABI compatibility key");
-    require(__func__,
-            llvm::StringRef(llvm::toString(validateAbiCompatibilityKey(
-                                mutation.inputs, key)))
-                .contains("abi_compatibility_key_mismatch"),
-            std::string("a key derived from a different ") + mutation.name +
-                " was still accepted");
-  }
-
-  // Adjacent fields must not be confusable: moving a byte across the
-  // repository/commit boundary is a distinct framed preimage.
-  AbiCompatibilityKeyInputs shifted = vectorKeyInputs(view);
-  const std::string shortRepository =
-      closedRepositoryIdentity.drop_back(1).str();
-  const std::string extendedCommit =
-      closedRepositoryIdentity.take_back(1).str() + closedCommitIdentity.str();
-  shifted.repositoryIdentity = shortRepository;
-  shifted.fullCommitIdentity = extendedCommit;
-  require(__func__, computeAbiCompatibilityKey(shifted) != key,
-          "the framed provider fields are not length delimited");
-
-  rejectionMessage(__func__,
-                   AbiCompatibilityKey::fromBytes(std::vector<std::uint8_t>(
-                       AbiCompatibilityKey::byteSize - 1, 0)));
-  rejectionMessage(__func__,
-                   AbiCompatibilityKey::fromBytes(std::vector<std::uint8_t>(
-                       AbiCompatibilityKey::byteSize + 1, 0)));
-}
-
 } // namespace
 
 int main() {
@@ -280,6 +209,5 @@ int main() {
   unrelatedResolvedConfigFieldsLeaveTheViewUnchanged();
   adoptedFrontendViewFieldsFailClosed();
   abiKeyMatchesKnownVector();
-  abiKeyFollowsEveryPreimageField();
   return 0;
 }

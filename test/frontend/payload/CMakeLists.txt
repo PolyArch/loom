@@ -25,9 +25,8 @@ target_include_directories(loom-relocatable-payload-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Frontend/Payload
 )
 
-# The final-link cases build real relocatable objects and a real archive, and
-# the hand-off case imports the linked module through the same upstream
-# LLVM-to-MLIR path the raising driver uses.
+# The final-link cases build real relocatable objects and a real archive, then
+# link exactly the payloads selected by the ordinary linker through pinned LTO.
 add_executable(loom-accelerator-final-link-test
   AcceleratorFinalLinkTest.cpp
 )
@@ -35,9 +34,4 @@ add_executable(loom-accelerator-final-link-test
 target_link_libraries(loom-accelerator-final-link-test PRIVATE
   LoomCommon
   LoomFrontendPayload
-  MLIRIR
-  MLIRLLVMDialect
-  MLIRRegisterAllDialects
-  MLIRTargetLLVMIRImport
-  MLIRFromLLVMIRTranslationRegistration
 )
