@@ -11,6 +11,18 @@ class Fabric_Attr<string name, string attrMnemonic,
   let mnemonic = attrMnemonic;
 }
 
+def Fabric_EntityIdAttr : Fabric_Attr<"EntityId", "entity_id"> {
+  let summary = "materialized canonical Fabric entity identifier";
+  let description = [{
+    The artifact-global unsigned 64-bit EntityId assigned by the Fabric
+    finalizer. It is a derived projection of canonical structure, never an
+    authoring input. Finalization strips any supplied value before labeling,
+    and strict import recomputes and verifies it.
+  }];
+  let parameters = (ins "uint64_t":$id);
+  let assemblyFormat = "`<` $id `>`";
+}
+
 def Fabric_MemoryServiceContractAttr
     : Fabric_Attr<"MemoryServiceContract", "memory_service_contract"> {
   let summary = "closed typed local memory service behavior";

@@ -1,0 +1,3 @@
+# RUN: loom-fabric-canonical-labeling-test | FileCheck %s
+
+# CHECK: fabric canonical labeling ok

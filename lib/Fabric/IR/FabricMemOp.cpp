@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Common/IndexWidth.h"
+#include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -642,9 +643,13 @@ static LogicalResult verifyDispatchEligibility(MemOp op,
 }
 
 static LogicalResult verifyCanonicalAttributeSet(MemOp op) {
-  for (NamedAttribute attribute : op->getDiscardableAttrs())
+  for (NamedAttribute attribute : op->getDiscardableAttrs()) {
+    if (attribute.getName().getValue() == ::fabric::kEntityIdAttrName &&
+        isa<::fabric::EntityIdAttr>(attribute.getValue()))
+      continue;
     return op.emitOpError("has non-canonical discardable attribute '")
            << attribute.getName().getValue() << "'";
+  }
   return success();
 }
 

@@ -289,6 +289,9 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute("bypassed", builder.getBoolAttr(bypassed));
   }
 
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
   Type outerType;
   if (parser.parseColon() || parser.parseType(outerType))
     return failure();
@@ -312,6 +315,8 @@ void FifoOp::print(OpAsmPrinter &p) {
     << ", bypassable = " << (getBypassable() ? "true" : "false") << "]";
   if (auto a = getBypassedAttr())
     p << " {bypassed = " << (a.getValue() ? "true" : "false") << "}";
+  SmallVector<StringRef, 3> elided{"max_depth", "bypassable", "bypassed"};
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   Type outerTy = getInput().getType();
   Type innerTy = getOutput().getType();
   p << " : " << outerTy;

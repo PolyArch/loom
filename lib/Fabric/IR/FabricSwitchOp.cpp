@@ -140,6 +140,9 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
       }
     }
 
+    if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+      return failure();
+
     if (parser.parseColon())
       return failure();
     SmallVector<Type, 4> sourceTypes;
@@ -233,6 +236,8 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
       result.addAttribute("sw_configs", d);
     }
   }
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
   return success();
 }
 
@@ -281,6 +286,11 @@ void SwitchOp::print(OpAsmPrinter &p) {
     p << ' ';
     p.printAttribute(sw);
   }
+
+  SmallVector<StringRef, 6> elided{"schedule",      "sym_name",
+                                   "function_type", "inner_input_types",
+                                   "hw_params",     "sw_configs"};
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
 
   if (!isNamed) {
     ArrayRef<Type> innerTypes = getInnerInputTypes();
