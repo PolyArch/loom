@@ -50,11 +50,13 @@ llvm::Expected<MetricRequest>
 MetricRequest::get(MetricQuery query,
                    llvm::ArrayRef<EvaluationCondition> conditions,
                    const EvaluationCase &evaluationCase,
-                   const CaseArtifactResolution &resolution) {
+                   const CaseArtifactResolution &resolution,
+                   const ArtifactStore &artifactStore) {
   if (llvm::Error error = validateMetricQuery(query))
     return std::move(error);
 
-  const CaseTargetContext context = evaluationCase.targetContext(resolution);
+  const CaseTargetContext context =
+      evaluationCase.targetContext(resolution, artifactStore);
   if (llvm::Error error = validateEvaluationScopeCase(
           query.scope, metricDescriptor(query.metric).scopeForms, context))
     return std::move(error);

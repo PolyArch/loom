@@ -32,6 +32,10 @@
 // kind ordinals, canonical payload bytes, typed decoder, and validation;
 // Evaluation owns only case-role, anchor/closure, and pattern verification.
 
+namespace loom {
+class ArtifactStore;
+}
+
 namespace loom::evaluation {
 
 /// The exact Evaluation schema version that owns every registry ordinal in
@@ -539,15 +543,18 @@ validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
 //===----------------------------------------------------------------------===//
 
 /// The case-relative facts a target validator needs: the exact case
-/// signature, its bound subjects, and the resolved case Artifacts.
+/// signature, its bound subjects, the dependency-closure resolution, and the
+/// explicit immutable store used to import exact target Artifacts.
 class CaseTargetContext {
 public:
   CaseTargetContext(const EvaluationCaseSignatureDescriptor &signature,
                     EvaluationCaseSignatureRef signatureRef,
                     const EvaluationSubjectBindings &bindings,
-                    const CaseArtifactResolution &resolution)
+                    const CaseArtifactResolution &resolution,
+                    const ArtifactStore &artifactStore)
       : signature_(&signature), signatureRef_(signatureRef),
-        bindings_(&bindings), resolution_(&resolution) {}
+        bindings_(&bindings), resolution_(&resolution),
+        artifactStore_(&artifactStore) {}
 
   const EvaluationCaseSignatureDescriptor &signature() const {
     return *signature_;
@@ -555,12 +562,14 @@ public:
   EvaluationCaseSignatureRef signatureRef() const { return signatureRef_; }
   const EvaluationSubjectBindings &bindings() const { return *bindings_; }
   const CaseArtifactResolution &resolution() const { return *resolution_; }
+  const ArtifactStore &artifactStore() const { return *artifactStore_; }
 
 private:
   const EvaluationCaseSignatureDescriptor *signature_;
   EvaluationCaseSignatureRef signatureRef_;
   const EvaluationSubjectBindings *bindings_;
   const CaseArtifactResolution *resolution_;
+  const ArtifactStore *artifactStore_;
 };
 
 /// Rejects a foreign case role, an anchor that is not an exact member of that
@@ -785,7 +794,8 @@ public:
       std::optional<ArtifactRootReference> workload,
       std::optional<ArtifactRootReference> runtimeInput,
       llvm::ArrayRef<EvaluationCondition> baseConditions,
-      const CaseArtifactResolution &resolution);
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore);
 
   EvaluationCaseSignatureRef signature() const { return signature_; }
   const EvaluationSubjectBindings &subjectBindings() const { return bindings_; }
@@ -799,8 +809,8 @@ public:
     return baseConditions_;
   }
 
-  CaseTargetContext
-  targetContext(const CaseArtifactResolution &resolution) const;
+  CaseTargetContext targetContext(const CaseArtifactResolution &resolution,
+                                  const ArtifactStore &artifactStore) const;
 
 private:
   EvaluationCase(EvaluationCaseSignatureRef signature,

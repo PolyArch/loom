@@ -253,10 +253,9 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
   if (!local)
     return llvm::Error::success();
 
-  // A local reference is only meaningful inside an exact Artifact of its own
-  // family, imported through the family's own codec and validator. The family
-  // resolves its typed importer view through its own owner boundary.
-  return validateArtifactLocalReference(*local);
+  // Common resolves the exact Artifact bytes from the explicit store; the
+  // family codec then strict-imports those bytes and validates its typed target.
+  return validateArtifactLocalReference(context.artifactStore(), *local);
 }
 
 llvm::Error
@@ -289,9 +288,10 @@ validateEvaluationScopeCase(const EvaluationScope &scope,
 }
 
 CaseTargetContext
-EvaluationCase::targetContext(const CaseArtifactResolution &resolution) const {
+EvaluationCase::targetContext(const CaseArtifactResolution &resolution,
+                              const ArtifactStore &artifactStore) const {
   return CaseTargetContext(*signature_.descriptor(), signature_, bindings_,
-                           resolution);
+                           resolution, artifactStore);
 }
 
 } // namespace loom::evaluation

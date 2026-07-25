@@ -137,7 +137,8 @@ llvm::Error validateProcessCorner(const ProcessCornerCondition &corner,
   if (!platformEntry)
     return evaluationError("the implementation platform artifact of a process "
                            "corner is unresolved");
-  if (llvm::Error error = validateArtifactLocalReference(encoded))
+  if (llvm::Error error =
+          validateArtifactLocalReference(context.artifactStore(), encoded))
     return error;
 
   const CaseArtifactResolution::Entry *anchor =

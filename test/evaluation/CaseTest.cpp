@@ -4,6 +4,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactStore.h"
 #include "ImplementationPlatform/TechnologyCorner.h"
 
 #include "llvm/Support/Error.h"
@@ -186,12 +187,19 @@ CaseArtifactResolution resolution(const char *test) {
                                  {platformArtifact(), {}}}));
 }
 
+const ArtifactStore &artifactStore() {
+  static const ArtifactStore store(
+      "/nonexistent/loom-evaluation-case-test-artifacts");
+  return store;
+}
+
 EvaluationCase
 evaluationCase(const char *test, llvm::ArrayRef<EvaluationCondition> conditions,
                EvaluationCaseSignatureRef signature = testSignatureRef()) {
   return takeExpected(test, EvaluationCase::get(signature, bindings(test),
                                                 std::nullopt, std::nullopt,
-                                                conditions, resolution(test)));
+                                                conditions, resolution(test),
+                                                artifactStore()));
 }
 
 SubjectTargetRef rootTarget(ArtifactRootReference target) {
@@ -259,7 +267,8 @@ void sharedSignatureDerivesOneCaseKeyAcrossDescriptors() {
 void scopeChecksAnchorClosureLocalProviderAndRoleOrder() {
   const EvaluationCase current = evaluationCase(__func__, {});
   const CaseArtifactResolution resolved = resolution(__func__);
-  const CaseTargetContext context = current.targetContext(resolved);
+  const CaseTargetContext context =
+      current.targetContext(resolved, artifactStore());
 
   const EvaluationScope whole{ScopeFormRef(0), {}};
   const EvaluationScope subject{ScopeFormRef(1),
@@ -293,7 +302,7 @@ void scopeChecksAnchorClosureLocalProviderAndRoleOrder() {
       __func__,
       validateEvaluationScopeCase(
           EvaluationScope{ScopeFormRef(1), {rootTarget(dependencyArtifact())}},
-          scopeForms, current.targetContext(unresolved)),
+          scopeForms, current.targetContext(unresolved, artifactStore())),
       "target artifact is unresolved");
 
   expectOwnerCodecUnavailable(
@@ -325,14 +334,15 @@ void scopeChecksAnchorClosureLocalProviderAndRoleOrder() {
 void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
   const CaseArtifactResolution resolved = resolution(__func__);
   const EvaluationCase current = evaluationCase(__func__, {});
-  const CaseTargetContext context = current.targetContext(resolved);
+  const CaseTargetContext context =
+      current.targetContext(resolved, artifactStore());
 
   expectErrorContains(
       __func__,
       EvaluationCase::get(
           testSignatureRef(), bindings(__func__), std::nullopt, std::nullopt,
           {EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}}},
-          resolved),
+          resolved, artifactStore()),
       "not permitted in base conditions");
 
   const EvaluationCondition period = clockPeriod(__func__, 8);
@@ -348,7 +358,7 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
           testSignatureRef(), bindings(__func__), std::nullopt, std::nullopt,
           {EvaluationCondition{SupplyVoltageCondition{
               rootTarget(subjectArtifact()), decimal(__func__, 9, -1)}}},
-          resolved),
+          resolved, artifactStore()),
       "is not applicable");
 
   expectOwnerCodecUnavailable(
@@ -359,7 +369,7 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
               rootTarget(subjectArtifact()),
               platform::TechnologyCornerRef{platformArtifact().artifact,
                                             platform::TechnologyCornerId(0)}}}},
-          resolved));
+          resolved, artifactStore()));
 
   expectErrorContains(
       __func__,
@@ -368,19 +378,20 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
           {EvaluationCondition{ActivityBindingCondition{
               rootTarget(subjectArtifact()),
               ExecutionActivitySource{dependencyArtifact(), 0}}}},
-          resolved),
+          resolved, artifactStore()),
       "SimulationExecution activity validation is unavailable");
 
   expectErrorContains(
       __func__,
       EvaluationCase::get(testSignatureRef(), bindings(__func__), std::nullopt,
-                          std::nullopt, {period, period}, resolved),
+                          std::nullopt, {period, period}, resolved,
+                          artifactStore()),
       "duplicate evaluation condition");
   expectErrorContains(
       __func__,
       EvaluationCase::get(testSignatureRef(), bindings(__func__), std::nullopt,
                           std::nullopt, {period, clockPeriod(__func__, 6)},
-                          resolved),
+                          resolved, artifactStore()),
       "conflicting");
 
   const EvaluationCondition schedule{RelativeClockScheduleCondition{

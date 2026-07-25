@@ -280,7 +280,8 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
                     std::optional<ArtifactRootReference> workload,
                     std::optional<ArtifactRootReference> runtimeInput,
                     llvm::ArrayRef<EvaluationCondition> baseConditions,
-                    const CaseArtifactResolution &resolution) {
+                    const CaseArtifactResolution &resolution,
+                    const ArtifactStore &artifactStore) {
   const EvaluationCaseSignatureDescriptor *descriptor = signature.descriptor();
   if (!descriptor)
     return evaluationError("unregistered evaluation case kind " +
@@ -339,7 +340,8 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
             bindings, workload, runtimeInput, resolution))
       return std::move(error);
 
-  const CaseTargetContext context(*descriptor, signature, bindings, resolution);
+  const CaseTargetContext context(*descriptor, signature, bindings, resolution,
+                                  artifactStore);
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
       canonicalizeEvaluationConditions(
           baseConditions, ConditionLocation::Base, descriptor->spelling,

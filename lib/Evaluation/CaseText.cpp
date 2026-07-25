@@ -136,17 +136,7 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
       ArtifactRootReference{schema->identity, schema->version,
                             std::move(*artifact)},
       *localKind, std::move(*payload)};
-  // The family codec strictly decodes its own payload here; the family
-  // validator checks the typed target where the exact case is known.
-  std::optional<ArtifactSchemaDescriptor> ownerSchema =
-      findArtifactLocalReferenceSchema(schema->identity, schema->version);
-  if (!ownerSchema)
-    return validateArtifactLocalReference(local);
-  std::optional<ArtifactLocalReferenceCodec> codec =
-      findArtifactLocalReferenceKind(*ownerSchema, *localKind);
-  if (!codec)
-    return validateArtifactLocalReference(local);
-  if (llvm::Error error = codec->strictDecode(local.payload))
+  if (llvm::Error error = validateArtifactLocalReferencePayload(local))
     return error;
   return SubjectTarget{std::move(local)};
 }

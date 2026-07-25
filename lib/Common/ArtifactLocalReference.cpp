@@ -1,5 +1,7 @@
 #include "Common/ArtifactLocalReference.h"
 
+#include "Common/ArtifactStore.h"
+
 #include "ArtifactLocalReferenceRegistry.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -24,6 +26,20 @@ ownerCodecUnavailable(const EncodedArtifactLocalReference &reference) {
        llvm::Twine(reference.ownerLocalKind) + " of schema '" +
        reference.artifact.schemaIdentity + "'")
           .str());
+}
+
+llvm::Expected<ArtifactLocalReferenceCodec>
+resolveCodec(const EncodedArtifactLocalReference &reference) {
+  std::optional<ArtifactSchemaDescriptor> ownerSchema =
+      findArtifactLocalReferenceSchema(reference.artifact.schemaIdentity,
+                                       reference.artifact.schemaVersion);
+  if (!ownerSchema)
+    return ownerCodecUnavailable(reference);
+  std::optional<ArtifactLocalReferenceCodec> codec =
+      findArtifactLocalReferenceKind(*ownerSchema, reference.ownerLocalKind);
+  if (!codec)
+    return ownerCodecUnavailable(reference);
+  return *codec;
 }
 
 void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
@@ -106,14 +122,15 @@ llvm::Error
 registerArtifactLocalReferenceKind(const ArtifactSchemaDescriptor &ownerSchema,
                                    std::uint32_t ownerLocalKind,
                                    ArtifactLocalReferenceCodec codec) {
-  if (!codec.strictDecode || !codec.validate)
+  if (!codec.validateCanonicalPayload || !codec.validateTarget)
     return framingError("an artifact local-reference kind requires both a "
-                        "strict decoder and a validator");
+                        "canonical payload validator and a target validator");
   std::lock_guard<std::mutex> lock(localReferenceKindMutex());
   for (const LocalReferenceKindEntry &entry : localReferenceKinds()) {
     if (entry.schema == ownerSchema && entry.kind == ownerLocalKind) {
-      if (entry.codec.strictDecode == codec.strictDecode &&
-          entry.codec.validate == codec.validate)
+      if (entry.codec.validateCanonicalPayload ==
+              codec.validateCanonicalPayload &&
+          entry.codec.validateTarget == codec.validateTarget)
         return llvm::Error::success();
       return framingError("conflicting registration for local-reference kind " +
                           llvm::Twine(ownerLocalKind) + " of schema '" +
@@ -145,19 +162,28 @@ findArtifactLocalReferenceSchema(llvm::StringRef identity,
 }
 
 llvm::Error
-validateArtifactLocalReference(const EncodedArtifactLocalReference &reference) {
-  std::optional<ArtifactSchemaDescriptor> ownerSchema =
-      findArtifactLocalReferenceSchema(reference.artifact.schemaIdentity,
-                                       reference.artifact.schemaVersion);
-  if (!ownerSchema)
-    return ownerCodecUnavailable(reference);
-  std::optional<ArtifactLocalReferenceCodec> codec =
-      findArtifactLocalReferenceKind(*ownerSchema, reference.ownerLocalKind);
+validateArtifactLocalReferencePayload(
+    const EncodedArtifactLocalReference &reference) {
+  llvm::Expected<ArtifactLocalReferenceCodec> codec = resolveCodec(reference);
   if (!codec)
-    return ownerCodecUnavailable(reference);
-  if (llvm::Error error = codec->strictDecode(reference.payload))
+    return codec.takeError();
+  return codec->validateCanonicalPayload(reference.payload);
+}
+
+llvm::Error validateArtifactLocalReference(
+    const ArtifactStore &store,
+    const EncodedArtifactLocalReference &reference) {
+  llvm::Expected<ArtifactLocalReferenceCodec> codec = resolveCodec(reference);
+  if (!codec)
+    return codec.takeError();
+  if (llvm::Error error =
+          codec->validateCanonicalPayload(reference.payload))
     return error;
-  return codec->validate(reference);
+  llvm::Expected<CanonicalSemanticBytes> artifactBytes =
+      store.get(reference.artifact);
+  if (!artifactBytes)
+    return artifactBytes.takeError();
+  return codec->validateTarget(*artifactBytes, reference);
 }
 
 } // namespace loom

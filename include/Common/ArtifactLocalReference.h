@@ -29,6 +29,8 @@
 
 namespace loom {
 
+class ArtifactStore;
+
 /// The complete local-reference type descriptor, derived exactly once as
 /// (owner schema, owner-local kind). owner_local_kind is a stable closed
 /// ordinal owned by that exact Artifact family and schema version; it is not
@@ -113,15 +115,18 @@ encodeArtifactRootReference(const ArtifactRootReference &reference);
 std::vector<std::uint8_t>
 encodeArtifactLocalReference(const EncodedArtifactLocalReference &reference);
 
-/// One registered owner-local kind. The strict decoder rejects malformed or
-/// noncanonical payloads without any Artifact view; the validator then checks
-/// the decoded typed target against the one exact imported Artifact, resolving
-/// its family-owned importer view through the family's own typed resolver
-/// boundary. Any type erasure stays inside the owner codec: no untyped view
-/// ever crosses the Common boundary.
+/// One registered owner-local kind. Canonical payload validation rejects
+/// malformed or noncanonical payloads without resolving an Artifact. Target
+/// validation receives the exact canonical bytes loaded from ArtifactStore and
+/// checks the decoded typed target through the family-owned strict importer.
+/// Any type erasure stays inside the owner codec: no untyped view crosses the
+/// Common boundary.
 struct ArtifactLocalReferenceCodec {
-  llvm::Error (*strictDecode)(llvm::ArrayRef<std::uint8_t> payload);
-  llvm::Error (*validate)(const EncodedArtifactLocalReference &reference);
+  llvm::Error (*validateCanonicalPayload)(
+      llvm::ArrayRef<std::uint8_t> payload);
+  llvm::Error (*validateTarget)(
+      const CanonicalSemanticBytes &artifactBytes,
+      const EncodedArtifactLocalReference &reference);
 };
 
 enum class ArtifactLocalReferenceErrorKind : std::uint8_t {
@@ -165,13 +170,22 @@ std::optional<ArtifactSchemaDescriptor>
 findArtifactLocalReferenceSchema(llvm::StringRef identity,
                                  SchemaVersion version);
 
-/// Import of one heterogeneous local reference: resolves the registered
-/// owner codec, strictly decodes the payload, and invokes the owner validator,
-/// which resolves the exact imported Artifact's view through the family's own
-/// typed boundary. Unknown schemas or kinds, malformed or noncanonical
-/// payloads, and owner rejections are invalid.
+/// Resolves the registered owner codec and validates only the canonical owner
+/// payload. This boundary performs no Artifact lookup and is suitable for
+/// strict parsing before an exact ArtifactStore is available.
 llvm::Error
-validateArtifactLocalReference(const EncodedArtifactLocalReference &reference);
+validateArtifactLocalReferencePayload(
+    const EncodedArtifactLocalReference &reference);
+
+/// Full import of one heterogeneous local reference: resolves the registered
+/// owner codec, validates the canonical payload, loads the exact referenced
+/// Artifact from the explicit store, and invokes the owner validator with its
+/// canonical bytes. Unknown schemas or kinds remain capability failures;
+/// missing objects propagate the store failure; malformed or noncanonical
+/// payloads, Artifact bytes, and owner-rejected targets are invalid.
+llvm::Error validateArtifactLocalReference(
+    const ArtifactStore &store,
+    const EncodedArtifactLocalReference &reference);
 
 } // namespace loom
 

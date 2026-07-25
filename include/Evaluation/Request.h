@@ -23,7 +23,8 @@ public:
   static llvm::Expected<MetricRequest>
   get(MetricQuery query, llvm::ArrayRef<EvaluationCondition> conditions,
       const EvaluationCase &evaluationCase,
-      const CaseArtifactResolution &resolution);
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore);
 
   const MetricQuery &query() const { return query_; }
   llvm::ArrayRef<EvaluationCondition> conditions() const { return conditions_; }

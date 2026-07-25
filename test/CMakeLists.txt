@@ -27,6 +27,7 @@ set(LOOM_TEST_DEPENDS
   loom-accelerator-final-link-test
   loom-adg-builder-test
   loom-config-test
+  loom-common-artifact-local-reference-test
   loom-common-artifact-test
   loom-common-blob-test
   loom-cost-test
