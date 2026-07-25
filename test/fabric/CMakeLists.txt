@@ -18,6 +18,10 @@ add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp
 )
 
+add_executable(loom-fabric-boundary-transfer-test
+  BoundaryTransferTest.cpp
+)
+
 target_link_libraries(loom-fabric-elaboration-api-test PRIVATE
   MLIRFabric
   MLIRParser
@@ -38,6 +42,10 @@ target_link_libraries(loom-fabric-boundary-data-path-test PRIVATE
 
 target_link_libraries(loom-fabric-resource-contract-test PRIVATE
   LoomFabricResourceContract
+)
+
+target_link_libraries(loom-fabric-boundary-transfer-test PRIVATE
+  LoomFabricBoundaryTransfer
 )
 
 add_executable(loom-fabric-persistent-ref-test

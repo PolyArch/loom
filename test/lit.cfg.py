@@ -53,6 +53,7 @@ tools = [
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
     "loom-fabric-boundary-data-path-test",
+    "loom-fabric-boundary-transfer-test",
     "loom-fabric-elaboration-alias-chain-test",
     "loom-fabric-elaboration-api-test",
     "loom-fabric-elaboration-header-test",
