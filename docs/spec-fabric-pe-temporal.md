@@ -26,7 +26,8 @@ Both anonymous and named-template forms are accepted:
          tag_width = 4 : i32,
          num_instruction = 4 : i32,
          fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
        } { ... }
 
 fabric.pe @TempPe [temporal] (!fabric.bits_tag<32, 4>)
@@ -112,7 +113,7 @@ attributes).
 | `reg_fifo_ports`      | `I32Attr`        | optional (default 1); must be `1` or `2`                        |
 | `fu_config_mode`      | `FuConfigModeAttr` | required, `#fabric.fu_config_mode<per_instruction_fu_config>` or `#fabric.fu_config_mode<per_fu_config>` |
 | `operand_buffer_mode` | `OperandBufferModeAttr` | required, `#fabric.operand_buffer_mode<per_instruction>` / `#fabric.operand_buffer_mode<per_input_port>` / `#fabric.operand_buffer_mode<all_fu_share>` |
-| `operand_buffer_size` | `I32Attr`        | absent for `per_instruction`; otherwise required and positive          |
+| `operand_buffer_size` | `I32Attr`        | required and positive for every mode; entries per mode-derived allocation unit |
 
 These attributes describe hardware capacity and physical organization. They
 do not select a workload configuration. Inner `fabric.op.hw_params` likewise
@@ -270,11 +271,40 @@ selected by ingress routing and tag dispatch. The mode changes only the
 physical storage organization:
 
 * `per_instruction`: each logical operand queue has dedicated storage.
-  `operand_buffer_size` is absent.
+  Each queue is one allocation unit with `operand_buffer_size` entries.
 * `per_input_port`: logical queues associated with one FU ingress bank share
-  an entry pool of size `operand_buffer_size`.
+  one allocation unit with `operand_buffer_size` entries.
 * `all_fu_share`: all logical operand queues in the PE share one entry pool
-  of size `operand_buffer_size`.
+  that is one allocation unit with `operand_buffer_size` entries.
+
+`operand_buffer_size` is a required Fabric hardware parameter in all three
+modes. It has no default. In particular, `per_instruction` depth is not an
+implementation constant: depths 1 and 2 have different backpressure behavior,
+canonical Fabric bytes, and Artifact identity.
+
+The Fabric-owned potential logical-queue domain is the complete canonical set:
+
+```text
+LogicalOperandQueueKey =
+  (InstructionContextRef,
+   ConcreteFuOccurrenceOrdinal,
+   FuInputOrdinal)
+```
+
+An Active configured view makes only its selected queues eligible; every other
+key remains empty and ineligible. The allocation unit is the following total
+mechanical projection and is not a Mapping record or backend choice:
+
+```text
+per_instruction -> DedicatedQueue(LogicalOperandQueueKey)
+per_input_port   -> FuInput(ConcreteFuOccurrenceOrdinal, FuInputOrdinal)
+all_fu_share     -> WholeTemporalPe
+```
+
+These owner-local keys are not standalone entities or persistent references.
+Their canonical ordering is the lexicographic order of the typed components,
+using `InstructionContextRef` order first, then concrete FU occurrence order,
+then FU input ordinal.
 
 Every shared pool maintains independent FIFO head and tail state for each
 logical queue. Allocation may use a shared free-entry pool, but dequeue
@@ -306,6 +336,42 @@ queue heads, one operation pipeline, result holding capacity, and register-FIFO
 ports. Mapping binds typed workload values and selected exact refinements but
 cannot split that claim or define another scheduler. Queue contents, grant
 cursors, and in-flight transitions are nonpersistent execution state.
+
+For operand buffering, the finalizer derives one exact resource contract from
+the two hardware parameters:
+
+```text
+ResourceState:
+  OperandEntryCapacity(allocation_unit, capacity = operand_buffer_size)
+  OperandQueueOrder(logical_queue, initial = empty)
+  OperandEnqueueService(allocation_unit, capacity_per_local_cycle = 1)
+  OperandDequeueService(allocation_unit, capacity_per_local_cycle = 1)
+
+UsePattern:
+  Enqueue(logical_queue)
+    atomically claims queue tail, one free entry, and one enqueue service slot
+  Dequeue(logical_queue)
+    atomically claims queue head and one dequeue service slot,
+    and releases one occupied entry on commit
+```
+
+One enqueue and one dequeue may commit on the same allocation unit in one
+local cycle. A successful dequeue may provide capacity to an enqueue in that
+cycle, but the newly enqueued token is not eligible to dequeue until the next
+local cycle; there is no implicit bypass. Enqueue and dequeue service slots are
+free at the start of each local cycle and remain consumed until the next local
+cycle boundary after a successful use.
+
+When more than one logical queue can request the same enqueue or dequeue
+service slot, that service uses the shared `RoundRobin` GrantPolicy over the
+canonical logical-queue order above, filtered to queues that project to that
+allocation unit. Enqueue and dequeue have independent cursors, both reset to
+the first canonical requester and advance only on a successful grant. A policy
+is absent only when structural analysis proves that at most one requester can
+be eligible. An implementation-private priority, arrival-order race, default
+depth, extra port, banking scheme, reservation, or virtual channel is
+forbidden. A future multiported or reserved organization requires an explicit
+typed Fabric parameter or refinement.
 
 ## Mapping Ownership
 
@@ -369,6 +435,15 @@ named-template form additionally requires a closing zero-operand
 `fabric.yield`. No
 other op kind is permitted.
 
+## Validation Anchors
+
+Anchor tests cover `per_instruction` depths 1 and 2 producing distinct Fabric
+identity and backpressure, rejection of an absent or nonpositive
+`operand_buffer_size` in every mode, canonical allocation-unit derivation for
+all three modes, simultaneous dequeue/enqueue without same-cycle bypass, and
+deterministic round-robin contention between two logical queues. Tests do not
+construct a queue-count, depth, context, FU-input, or arbitration cross product.
+
 ## Cross-reference
 
 * Spatial branch and its configured-view semantics: `spec-fabric-pe.md`.
@@ -376,3 +451,5 @@ other op kind is permitted.
   `spec-fabric-reconfigurable-op.md`.
 * Boundary ops bridging spatial and temporal domains:
   `spec-fabric-boundary.md`.
+* Shared state, atomic-use, requester-order, and grant-policy atoms:
+  `spec-fabric-resource-contract.md`.

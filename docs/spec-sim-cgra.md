@@ -73,6 +73,14 @@ selects a different memory service, repairs a Mapping, or invents a Fabric
 configuration. Dynamic execution may arbitrate among legal requests according
 to Fabric policy, but it cannot change the Mapping decision.
 
+Boundary execution uses the exact atomic join/fork equations declared by
+Fabric: no input or output leg may transfer independently, and the base
+boundary has no simulator-owned holding state. Temporal-PE operand queues use
+the exact required `operand_buffer_size`, mode-derived allocation units,
+one-enqueue/one-dequeue service contract, and canonical grant state. The
+simulator must not supply the former implicit depth 2 or any other capacity,
+port, or priority default.
+
 ## Event Model
 
 CGRA-sim and DFG-sim share the dependency-driven progress protocol defined by
@@ -268,6 +276,9 @@ Stable anchor tests cover:
 * exact `{D,F,SpatialMapping}` admission and rejection of stale or incomplete
   Mapping;
 * finite-route, buffer, memory, and temporal-resource contention;
+* boundary partial-valid and partial-ready stalls without partial transfer;
+* replay-visible Temporal PE behavior for explicit operand-buffer depths 1 and
+  2;
 * contiguous, indexed, masked, and multi-transaction memory execution with one
   logical retirement and one Tag per vector token;
 * local atomic and fence execution through one exact Fabric consistency

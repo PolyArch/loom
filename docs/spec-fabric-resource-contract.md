@@ -101,6 +101,8 @@ not admitted through a predicate DSL.
 
 Concrete resources embed only the atoms they need:
 
+* a stateless boundary uses one atomic transfer pattern and no state or grant
+  policy;
 * a spatial PE may have statically disjoint use patterns and no grant policy;
 * a temporal PE uses instruction-context requesters and declared state banks;
 * a switch uses transfer-pattern requesters and a declared arbitration policy;

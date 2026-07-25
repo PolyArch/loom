@@ -1103,6 +1103,13 @@ refinement domain. One UsePattern may atomically claim multiple states. PnR
 may select an exposed refinement and bind workload values, but it cannot split
 an atomic pattern or construct a parallel generic resource/arbiter graph.
 
+The base `fabric.boundary` contributes one stateless atomic use over all active
+input and output legs. A Temporal PE contributes operand-entry, queue-order,
+enqueue-service, and dequeue-service claims derived from its exact mode and
+required `operand_buffer_size`. Freeze and search must not substitute an
+implicit queue depth, split a boundary join/fork, or replace the declared
+round-robin grant relation with candidate order.
+
 PnR emits a persistent use only for a non-derived activation, reservation,
 release, or sharing assignment required by that schema. Static claims implied
 by a selected traversal are not duplicated, and multiplicity derives from

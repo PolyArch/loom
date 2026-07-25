@@ -48,9 +48,11 @@ boundary directions describe the transitions between the two domains:
 | `t2t`     | temporal `bits_tag<BW, TW1>`    | temporal `bits_tag<BW, TW2>`    |
 | `t2s`     | temporal `bits_tag`             | spatial `bits` (and tag)        |
 
-`fabric.boundary` carries the `Pure` trait. It does not perform any
-handshake mediation (FIFO, mux, demux, etc.); it only transforms the
-type of the stream.
+`fabric.boundary` carries the `Pure` trait because it has no software-visible
+side effect or persistent storage. It does perform the minimal combinational
+ready/valid rendezvous required to make its declared input and output token
+fields one atomic transfer. It is not a FIFO, arbiter, independently scheduled
+mux/demux, or hidden holding resource.
 
 ## Configured Projection
 
@@ -74,6 +76,69 @@ An Active `t2t` projection with no lookup entry canonicalizes to `Disabled`.
 Canonical hardware-only Fabric contains no selected projection. The
 `sw_configs` spellings below are only the Active projection's semantic fields;
 they are not optional values independent of the closed variant.
+
+## Atomic Transfer And Handshake
+
+Let `x.valid` denote the producer-valid signal of endpoint `x`, and let
+`x.ready` denote its consumer-ready signal. A transfer occurs only when both
+are true. An Active boundary has one `BoundaryTransfer` UsePattern that claims
+all of its active input consumptions and output publications atomically. It has
+no `ResourceState`, capacity dimension, holding register, or `GrantPolicy`.
+
+The two-operand `s2t` form is a stateless join with these exact equations:
+
+```text
+out.valid  = data.valid && tag.valid
+data.ready = out.ready && tag.valid
+tag.ready  = out.ready && data.valid
+fire       = data.valid && tag.valid && out.ready
+```
+
+On `fire`, the data and tag inputs are consumed exactly once and the one tagged
+output is published exactly once. For the counterexample
+`data.valid = 1`, `tag.valid = 0`, and `out.ready = 1`, `data.ready = 0` and
+nothing is consumed. Input producers retain valid and stable payload until the
+joint transfer occurs.
+
+The two-result `t2s` form is a stateless atomic fork:
+
+```text
+data.valid = in.valid && tag.ready
+tag.valid  = in.valid && data.ready
+in.ready   = data.ready && tag.ready
+fire       = in.valid && data.ready && tag.ready
+```
+
+Both output handshakes therefore occur together. One output cannot consume a
+token while the other remains pending, and the input cannot retire until both
+outputs accept. The one-operand configured-tag `s2t` form and the one-result
+drop-tag `t2s` form use the ordinary one-input/one-output equations
+`out.valid = in.valid` and `in.ready = out.ready`.
+
+For Active `t2t`, `match` is true exactly when the input tag has one configured
+lookup entry:
+
+```text
+out.valid = in.valid && match
+in.ready  = out.ready && match
+fire      = in.valid && out.ready && match
+```
+
+A lookup miss consumes nothing and publishes nothing. SpatialMapping
+finalization must prove that every reachable input Physical Tag has exactly
+one selected entry; a miss in a finalized Mapping is invalid rather than a
+packet-drop behavior. `Disabled` drives no output valid and accepts no input.
+
+Every successful boundary firing commits, publishes, and retires in the same
+local-cycle delta. There is no registered latency or residual completion
+state. An implementation that needs holding or pipelining must use an explicit
+Fabric FIFO or a future typed stateful refinement whose state, latency, and
+capacity enter Fabric identity.
+
+These equations create explicit combinational handshake dependencies. A
+composed Fabric containing a directed combinational ready/valid dependency
+cycle with no stateful break is invalid; finalization must reject it rather
+than relying on simulator iteration order or backend-specific loop breaking.
 
 `fabric.boundary` is required for a real port-kind or tagged-domain
 transition. It is not required for an ordinary `bits` to `bits` or
@@ -338,8 +403,10 @@ or type-conversion rule in this op establishes that relation.
 Anchor-level validation covers a Mapping-assigned constant `s2t` tag reused by
 repeated firings, bounded `t2t` content matching without direct tag indexing,
 `t2s` tag removal, and rejection of any physical LUT layout outside the exact
-`ConfigurationABI`. Tests do not freeze diagnostic wording, comparator
-topology, row placement, or raw configuration bits.
+`ConfigurationABI`. It also covers the two-input partial-valid counterexample,
+one stalled output of split `t2s`, an uncovered reachable `t2t` tag, and an
+unbroken combinational handshake cycle. Tests do not freeze diagnostic
+wording, comparator topology, row placement, or raw configuration bits.
 
 ## Cross-references
 
@@ -351,5 +418,7 @@ topology, row placement, or raw configuration bits.
 * `spec-fabric-instantiate.md` -- template instantiation rules for
   Fabric resources whose external connections remain governed by the
   module-level compatibility rule.
+* `spec-fabric-resource-contract.md` -- the shared atomic-use vocabulary used
+  by the stateless `BoundaryTransfer` pattern.
 * `spec-mapping-memory.md` -- software-memory, physical-service, and
   manager/subordinate endpoint binding ownership.

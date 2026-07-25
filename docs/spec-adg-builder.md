@@ -242,6 +242,13 @@ Each fully resolved preset owns a complete construction recipe for:
   capacity, and dispatch capability; and
 * every required Spatial-to-Temporal or Temporal-to-Spatial boundary.
 
+Every Temporal PE recipe explicitly supplies a positive
+`operand_buffer_size`, including `per_instruction`. The value is entries per
+allocation unit under the mode semantics in
+`docs/spec-fabric-pe-temporal.md`. The public Builder API has no zero or hidden
+default, and helper or builtin expansion fails before Fabric emission when the
+value is absent or invalid.
+
 The common construction pattern contains both an untagged Spatial network and
 a tagged Temporal network connected only through explicit Fabric boundaries.
 This is an authoring recipe, not a second topology schema: expansion produces

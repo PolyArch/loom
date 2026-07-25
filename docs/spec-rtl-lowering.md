@@ -161,6 +161,20 @@ Fabric capability explicitly defines that consumption and backpressure
 behavior. FU-local selection remains the explicit `fabric.mux` and
 `fabric.demux` topology owned by Fabric.
 
+Boundary lowering implements the normative atomic ready/valid equations in
+`docs/spec-fabric-boundary.md`. Two-input `s2t` cannot consume either input
+alone, and split `t2s` cannot publish either output alone. The base boundary
+has no register or holding state; adding one is a behavior-changing Fabric
+refinement, not an RTL convenience. The RTL dependency graph must also satisfy
+the module-level prohibition on unbroken combinational handshake cycles.
+
+Temporal-PE operand storage is emitted from the exact required
+`operand_buffer_size` and mode-derived allocation units. The base contract has
+one enqueue and one dequeue service per allocation unit per local cycle, with
+the declared canonical round-robin policy where contention is possible. RTL
+must not substitute a default depth, extra port, global arrival-order head, or
+implementation-private priority.
+
 ## Clocks, Reset, And Quiescence
 
 RTL exposes the exact Fabric clock/reset domains and only their declared
@@ -306,9 +320,13 @@ Stable anchors cover:
 
 * one regular and one arbitrary-topology Fabric lowering;
 * exact replication/arbitration and width/tag behavior;
+* atomic two-input `s2t` and two-output `t2s` handshakes with no partial
+  transfer or hidden holding;
 * dispatch of one operation schema through two implementation families and
   typed rejection of a missing provider;
 * temporal context and memory-operation behavior;
+* Temporal PE `per_instruction` depths 1 and 2 with the exact derived queue,
+  service, and round-robin resource contract;
 * vector element, contiguous, indexed, and masked memory operation lowering,
   including one declared narrower-beat realization and one logical retirement;
 * Spatial and Temporal element-only, vector-only, and shared-hybrid memory

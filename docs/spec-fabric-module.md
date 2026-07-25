@@ -311,6 +311,17 @@ resource spec. For example, a switch may require all of its declared
 ports to be uniform even though neighboring resources connected to
 those ports may use different widths under this module-level rule.
 
+### Combinational Handshake Closure
+
+Direct connections and zero-state resources contribute their exact
+ready/valid dependency arcs to one module-level combinational handshake graph.
+The finalizer rejects every directed cycle in that graph. A software dataflow
+cycle is legal only when its physical realization contains an explicit
+stateful break, such as a FIFO, registered operation, or another Fabric
+resource whose contract owns the required state and latency. Simulator delta
+iteration, HDL loop-breaking, or implementation-specific signal defaults
+cannot repair an invalid combinational cycle.
+
 ## Stateful Resource Lifecycle
 
 Every stateful Fabric resource declares a canonical initial state as part of

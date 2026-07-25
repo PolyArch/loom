@@ -99,6 +99,12 @@ No root, local identifier, canonical byte stream, or digest is externally
 visible before the entire sequence succeeds. Retrying an unchanged valid draft
 must produce the same result.
 
+Semantic verification uses the structurally complete root relation, not a
+caller-supplied connection shadow. For every contained module it derives the
+complete combinational ready/valid dependency graph from canonical point
+connections and zero-state resource contracts, then applies the cycle rule in
+`docs/spec-fabric-module.md` before canonical bytes or identity are published.
+
 ## Immutable Root-Complete Views
 
 The canonical Fabric root is the only authority for its structural relations.
