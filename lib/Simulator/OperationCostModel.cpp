@@ -7,121 +7,121 @@ using namespace loom::sim;
 
 namespace {
 
-struct OperationCostEntry {
-  const char *name;
-  std::uint64_t baseScore;
-  std::uint64_t repeatScore;
-};
+std::optional<OperationCost>
+lookupOperationCost(dataflow::OperationSchemaId schema) {
+  using Schema = dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::ArithConstant:
+  case Schema::ArithNegF:
+  case Schema::ArithAddI:
+  case Schema::ArithSubI:
+  case Schema::ArithShLI:
+  case Schema::ArithShRSI:
+  case Schema::ArithShRUI:
+  case Schema::ArithAndI:
+  case Schema::ArithOrI:
+  case Schema::ArithXOrI:
+  case Schema::ArithMinSI:
+  case Schema::ArithMaxSI:
+  case Schema::ArithMinUI:
+  case Schema::ArithMaxUI:
+  case Schema::ArithCmpI:
+  case Schema::ArithSelect:
+  case Schema::ArithExtSI:
+  case Schema::ArithExtUI:
+  case Schema::ArithTruncI:
+  case Schema::ArithIndexCast:
+  case Schema::ArithIndexCastUI:
+  case Schema::MathAbsF:
+  case Schema::MathAbsI:
+  case Schema::MathCountLeadingZeros:
+  case Schema::LLVMFshl:
+  case Schema::LLVMByteSwap:
+  case Schema::LLVMUSubSat:
+  case Schema::LLVMCountLeadingZeros:
+  case Schema::LLVMAbs:
+  case Schema::UBPoison:
+  case Schema::DataflowStream:
+  case Schema::DataflowCarry:
+  case Schema::DataflowInvariant:
+  case Schema::DataflowGate:
+  case Schema::DataflowConstant:
+  case Schema::DataflowSync:
+  case Schema::DataflowParallelize:
+  case Schema::DataflowSerialize:
+  case Schema::DataflowPack:
+  case Schema::DataflowUnpack:
+    return OperationCost{1, 1};
 
-constexpr OperationCostEntry kOperationCosts[] = {
-    {"arith.constant", 1, 1},
-    {"arith.addf", 2, 2},
-    {"arith.subf", 2, 2},
-    {"arith.mulf", 3, 3},
-    {"arith.divf", 12, 12},
-    {"arith.negf", 1, 1},
-    {"arith.addi", 1, 1},
-    {"arith.subi", 1, 1},
-    {"arith.muli", 3, 3},
-    {"arith.andi", 1, 1},
-    {"arith.ori", 1, 1},
-    {"arith.xori", 1, 1},
-    {"arith.shli", 1, 1},
-    {"arith.shrsi", 1, 1},
-    {"arith.shrui", 1, 1},
-    {"arith.divsi", 8, 8},
-    {"arith.divui", 8, 8},
-    {"arith.remsi", 8, 8},
-    {"arith.remui", 8, 8},
-    {"arith.cmpi", 1, 1},
-    {"arith.cmpf", 2, 2},
-    {"arith.select", 1, 1},
-    {"arith.index_cast", 1, 1},
-    {"arith.index_castui", 1, 1},
-    {"arith.extsi", 1, 1},
-    {"arith.extui", 1, 1},
-    {"arith.trunci", 1, 1},
-    {"arith.sitofp", 3, 3},
-    {"arith.uitofp", 3, 3},
-    {"arith.fptosi", 3, 3},
-    {"arith.fptoui", 3, 3},
-    {"arith.minsi", 1, 1},
-    {"arith.maxsi", 1, 1},
-    {"arith.minui", 1, 1},
-    {"arith.maxui", 1, 1},
-    {"llvm.load", 4, 4},
-    {"llvm.store", 4, 4},
-    {"llvm.icmp", 1, 1},
-    {"llvm.getelementptr", 1, 1},
-    {"llvm.mlir.addressof", 1, 1},
-    {"llvm.mlir.zero", 1, 1},
-    {"llvm.intr.memcpy", 8, 8},
-    {"llvm.intr.fshl", 1, 1},
-    {"llvm.intr.bswap", 1, 1},
-    {"llvm.intr.usub.sat", 1, 1},
-    {"llvm.intr.ctlz", 1, 1},
-    {"llvm.intr.abs", 1, 1},
-    {"math.absf", 1, 1},
-    {"math.absi", 1, 1},
-    {"math.ctlz", 1, 1},
-    {"math.fma", 8, 8},
-    {"math.sin", 16, 16},
-    {"math.cos", 16, 16},
-    {"math.tan", 16, 16},
-    {"math.sinh", 16, 16},
-    {"math.cosh", 16, 16},
-    {"math.tanh", 16, 16},
-    {"math.exp", 12, 12},
-    {"math.exp2", 12, 12},
-    {"math.expm1", 12, 12},
-    {"math.log", 12, 12},
-    {"math.log2", 12, 12},
-    {"math.log10", 12, 12},
-    {"math.log1p", 12, 12},
-    {"math.floor", 2, 2},
-    {"math.ceil", 2, 2},
-    {"math.round", 2, 2},
-    {"math.trunc", 2, 2},
-    {"math.roundeven", 2, 2},
-    {"math.sqrt", 8, 8},
-    {"math.rsqrt", 8, 8},
-    {"math.erf", 16, 16},
-    {"dataflow.stream", 1, 1},
-    {"dataflow.carry", 1, 1},
-    {"dataflow.invariant", 1, 1},
-    {"dataflow.constant", 1, 1},
-    {"dataflow.sync", 1, 1},
-    {"dataflow.load", 4, 4},
-    {"dataflow.store", 4, 4},
-    {"dataflow.mux", 2, 2},
-    {"dataflow.demux", 2, 2},
-    {"dataflow.parallelize", 1, 1},
-    {"dataflow.pack", 1, 1},
-    {"dataflow.unpack", 1, 1},
-    {"dataflow.serialize", 1, 1},
-    {"dataflow.gate", 1, 1},
-};
+  case Schema::ArithAddF:
+  case Schema::ArithSubF:
+  case Schema::ArithCmpF:
+  case Schema::MathFloor:
+  case Schema::MathCeil:
+  case Schema::MathRound:
+  case Schema::MathTrunc:
+  case Schema::MathRoundEven:
+  case Schema::DataflowMux:
+  case Schema::DataflowDemux:
+    return OperationCost{2, 2};
 
-std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {
-  for (const OperationCostEntry &entry : kOperationCosts) {
-    if (opName == entry.name)
-      return OperationCost{entry.baseScore, entry.repeatScore};
+  case Schema::ArithMulI:
+  case Schema::ArithMulF:
+  case Schema::ArithSIToFP:
+  case Schema::ArithUIToFP:
+  case Schema::ArithFPToSI:
+  case Schema::ArithFPToUI:
+    return OperationCost{3, 3};
+
+  case Schema::DataflowLoad:
+  case Schema::DataflowStore:
+    return OperationCost{4, 4};
+
+  case Schema::ArithDivSI:
+  case Schema::ArithDivUI:
+  case Schema::ArithRemSI:
+  case Schema::ArithRemUI:
+  case Schema::MathFma:
+  case Schema::MathSqrt:
+  case Schema::MathRsqrt:
+    return OperationCost{8, 8};
+
+  case Schema::ArithDivF:
+  case Schema::MathExp:
+  case Schema::MathExp2:
+  case Schema::MathExpM1:
+  case Schema::MathLog:
+  case Schema::MathLog2:
+  case Schema::MathLog10:
+  case Schema::MathLog1p:
+    return OperationCost{12, 12};
+
+  case Schema::MathSin:
+  case Schema::MathCos:
+  case Schema::MathTan:
+  case Schema::MathSinh:
+  case Schema::MathCosh:
+  case Schema::MathTanh:
+  case Schema::MathErf:
+    return OperationCost{16, 16};
+
+  default:
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 
 } // namespace
 
-bool loom::sim::hasOperationCost(llvm::StringRef opName) {
-  return lookupOperationCost(opName).has_value();
+bool loom::sim::hasOperationCost(dataflow::OperationSchemaId schema) {
+  return lookupOperationCost(schema).has_value();
 }
 
 llvm::Expected<OperationCost>
-loom::sim::estimateOperationCost(llvm::StringRef opName) {
-  std::optional<OperationCost> cost = lookupOperationCost(opName);
+loom::sim::estimateOperationCost(dataflow::OperationSchemaId schema) {
+  std::optional<OperationCost> cost = lookupOperationCost(schema);
   if (cost)
     return *cost;
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "%s has no operation cost model entry",
-                                 opName.str().c_str());
+  return llvm::createStringError(
+      std::errc::invalid_argument, "%s has no simulator operation cost entry",
+      dataflow::operationSchemaSpelling(schema).str().c_str());
 }

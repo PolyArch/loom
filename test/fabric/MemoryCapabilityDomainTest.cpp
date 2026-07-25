@@ -52,7 +52,8 @@ module {
                                 %ctrl: none) -> (f32, none) {
     %data, %done = dataflow.load %mem[%address] %ctrl
         {contract = #dataflow.atomic_access<ordering = acquire,
-                                            sync_scope = <system>>}
+                                            sync_scope = <system>,
+                                            source_alignment_bytes = 4>}
         : memref<8xf32>
     return %data, %done : f32, none
   }

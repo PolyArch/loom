@@ -77,29 +77,34 @@
 // SIGN-EXTEND-DAG: "i32:-2"
 
 // EXACT-DIV-DAG: "workload": "exact_division_poison"
-// EXACT-DIV-DAG: "status": "blocked"
-// EXACT-DIV-DAG: "arith.divsi exact result would be poison"
+// EXACT-DIV-DAG: "status": "pass"
+// EXACT-DIV-DAG: "arith.divsi": 1
+// EXACT-DIV-DAG: "i32:poison"
 
 // EXACT-SHIFT-DAG: "workload": "exact_shift_poison"
-// EXACT-SHIFT-DAG: "status": "blocked"
-// EXACT-SHIFT-DAG: "arith.shrsi exact shift would discard non-zero bits"
+// EXACT-SHIFT-DAG: "status": "pass"
+// EXACT-SHIFT-DAG: "arith.shrsi": 1
+// EXACT-SHIFT-DAG: "i8:poison"
 
 // EXACT-UNSIGNED-SHIFT-DAG: "workload": "exact_unsigned_shift_poison"
-// EXACT-UNSIGNED-SHIFT-DAG: "status": "blocked"
-// EXACT-UNSIGNED-SHIFT-DAG: "arith.shrui exact shift would discard non-zero bits"
+// EXACT-UNSIGNED-SHIFT-DAG: "status": "pass"
+// EXACT-UNSIGNED-SHIFT-DAG: "arith.shrui": 1
+// EXACT-UNSIGNED-SHIFT-DAG: "i8:poison"
 
 // OVERSIZED-SHIFT-DAG: "workload": "oversized_shift_poison"
-// OVERSIZED-SHIFT-DAG: "status": "blocked"
-// OVERSIZED-SHIFT-DAG: "arith.shrsi shift amount must be less than bit width 8, got 8"
+// OVERSIZED-SHIFT-DAG: "status": "pass"
+// OVERSIZED-SHIFT-DAG: "arith.shrsi": 1
+// OVERSIZED-SHIFT-DAG: "i8:poison"
 
 // REMSI-EDGE-DAG: "workload": "remsi_min_minus_one"
 // REMSI-EDGE-DAG: "status": "pass"
 // REMSI-EDGE-DAG: "i8:0"
 
 // TRUNCI-OVERFLOW-DAG: "workload": "trunci_overflow_poison"
-// TRUNCI-OVERFLOW-DAG: "status": "blocked"
-// TRUNCI-OVERFLOW-DAG: "arith.trunci overflow<nuw> result would be poison"
-// TRUNCI-OVERFLOW-DAG: "arith.trunci overflow<nsw> result would be poison"
+// TRUNCI-OVERFLOW-DAG: "status": "pass"
+// TRUNCI-OVERFLOW-DAG: "arith.trunci": 2
+// TRUNCI-OVERFLOW-DAG: "i8:poison"
+// TRUNCI-OVERFLOW-DAG: "i8:poison"
 
 module {
   dataflow.graph private @signed_shift_div_rem(%ctrl: none) -> (i32)

@@ -41,6 +41,28 @@ Token boolValueToken(bool value) {
   return token;
 }
 
+llvm::Expected<Token> exceptionalValueToken(PrimitiveValueState state,
+                                            mlir::Type type) {
+  if (state == PrimitiveValueState::Defined)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "exceptional token state is defined");
+  Token token;
+  token.valueState = state;
+  if (mlir::isa<mlir::IndexType>(type))
+    token.kind = TokenKind::Integer;
+  else if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    token.kind = integer.getWidth() == 1 ? TokenKind::Bool : TokenKind::Integer;
+  else if (mlir::isa<mlir::FloatType>(type))
+    token.kind = TokenKind::Float;
+  else if (mlir::isa<mlir::VectorType>(type))
+    token.kind = TokenKind::Vector;
+  else
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "type has no exceptional scalar or fixed-vector token state");
+  return token;
+}
+
 static bool usesDoubleFloatText(mlir::FloatType type) {
   return llvm::APFloat::isRepresentableBy(type.getFloatSemantics(),
                                           llvm::APFloat::IEEEdouble());
@@ -84,6 +106,10 @@ static unsigned hexDigitCount(unsigned bitWidth) {
 
 llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
                                           mlir::Operation *scope) {
+  if (token.valueState == PrimitiveValueState::Poison)
+    return typePrefix(type) + ":poison";
+  if (token.valueState == PrimitiveValueState::Undef)
+    return typePrefix(type) + ":undef";
   if (token.kind == TokenKind::None)
     return "none";
   if (token.kind == TokenKind::Bool)
@@ -178,6 +204,10 @@ llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
 
 llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
                                             mlir::Type type) {
+  if (token.valueState != PrimitiveValueState::Defined)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "exceptional token has no defined bit pattern");
   auto width = tokenTypeBitWidth(type);
   if (!width)
     return width.takeError();
@@ -454,6 +484,10 @@ llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
 
 llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
                                                  unsigned width) {
+  if (token.valueState != PrimitiveValueState::Defined)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "exceptional index token has no defined bit pattern");
   if (token.bitPattern) {
     if (token.bitPattern->getBitWidth() != width)
       return llvm::createStringError(
@@ -484,11 +518,16 @@ Token indexToken(const llvm::APInt &value) {
 
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
                                         mlir::Operation *scope) {
+  raw = raw.trim();
+  if (raw == "poison")
+    return exceptionalValueToken(PrimitiveValueState::Poison, type);
+  if (raw == "undef")
+    return exceptionalValueToken(PrimitiveValueState::Undef, type);
   if (mlir::isa<mlir::IndexType>(type)) {
     auto width = loom::getIndexBitWidth(scope);
     if (!width)
       return width.takeError();
-    auto bits = parseIntegerBitPattern(raw.trim(), *width, "index");
+    auto bits = parseIntegerBitPattern(raw, *width, "index");
     if (!bits)
       return bits.takeError();
     return indexToken(*bits);
@@ -501,7 +540,7 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
   auto width = indexVectorTokenBitWidth(vector, scope);
   if (!width)
     return width.takeError();
-  auto bits = parsePackedBitPattern(raw.trim(), *width, "vector");
+  auto bits = parsePackedBitPattern(raw, *width, "vector");
   if (!bits)
     return bits.takeError();
   Token token;

@@ -61,6 +61,7 @@ set(LOOM_TEST_DEPENDS
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
+  loom-simulator-operation-schema-projection-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
   loom-tblgen

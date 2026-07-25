@@ -2,15 +2,14 @@
 #define LOOM_SIMULATOR_OPERATION_SEMANTICS_H
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/OperationSchema.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
-#include <cstdint>
 #include <optional>
-#include <string>
 
 namespace loom {
 namespace sim {
@@ -18,28 +17,27 @@ namespace sim {
 inline constexpr const char kOperationSemanticsSource[] =
     "loom.sim.operation_semantics.v1";
 
-enum class PrimitiveValueKind { None, Integer, Float, Bool };
+enum class PrimitiveValueState { Defined, Poison, Undef };
 
 struct PrimitiveValue {
-  PrimitiveValueKind kind = PrimitiveValueKind::None;
-  std::int64_t intValue = 0;
-  double floatValue = 0.0;
-  bool boolValue = false;
+  PrimitiveValueState state = PrimitiveValueState::Undef;
+  std::optional<llvm::APInt> bits;
 
-  static PrimitiveValue none();
-  static PrimitiveValue integer(std::int64_t value);
-  static PrimitiveValue floating(double value);
+  static PrimitiveValue integer(llvm::APInt value);
+  static PrimitiveValue floating(const llvm::APFloat &value);
   static PrimitiveValue boolean(bool value);
+  static PrimitiveValue poison();
+  static PrimitiveValue undef();
+
+  bool isDefined() const {
+    return state == PrimitiveValueState::Defined && bits.has_value();
+  }
 };
 
 struct PrimitiveOperationDescriptor {
-  std::string name;
-  llvm::StringRef predicate;
+  dataflow::CanonicalActorSchemaProjection actor;
   unsigned resultBitWidth = 0;
   unsigned operandBitWidth = 0;
-  bool isExact = false;
-  bool noSignedWrap = false;
-  bool noUnsignedWrap = false;
 };
 
 using dataflow::semantics::countSemanticInputs;
@@ -79,11 +77,7 @@ using dataflow::semantics::PhaseSemanticState;
 using dataflow::semantics::SerializeInput;
 using dataflow::semantics::SerializeTransition;
 
-bool isSupportedPrimitiveOperation(llvm::StringRef opName);
-
-llvm::Expected<PrimitiveValue>
-evaluatePrimitiveOperation(llvm::StringRef opName,
-                           llvm::ArrayRef<PrimitiveValue> operands);
+bool isSupportedPrimitiveOperation(dataflow::OperationSchemaId schema);
 
 llvm::Expected<PrimitiveValue>
 evaluatePrimitiveOperation(const PrimitiveOperationDescriptor &descriptor,

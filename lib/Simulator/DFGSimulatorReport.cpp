@@ -186,13 +186,14 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
 }
 
 std::uint64_t estimateWeightedOperationScore(
-    const std::map<std::string, std::uint64_t> &operationFireCounts,
+    const std::map<dataflow::OperationSchemaId, std::uint64_t>
+        &operationFireCounts,
     llvm::SmallVectorImpl<std::string> &diagnostics) {
   std::uint64_t score = 0;
-  for (const auto &[opName, fireCount] : operationFireCounts) {
+  for (const auto &[schema, fireCount] : operationFireCounts) {
     if (fireCount == 0)
       continue;
-    auto costOrErr = estimateOperationCost(opName);
+    auto costOrErr = estimateOperationCost(schema);
     if (!costOrErr) {
       diagnostics.push_back(llvm::toString(costOrErr.takeError()));
       continue;
@@ -303,8 +304,12 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["event_count"] = report.eventCount;
   root["dynamic_work_items"] = report.dynamicWorkItems;
 
+  std::map<std::string, std::uint64_t> serializedFireCounts;
+  for (const auto &[schema, count] : report.operationFireCounts)
+    serializedFireCounts[dataflow::operationSchemaSpelling(schema).str()] =
+        count;
   llvm::json::Object fireCounts;
-  for (const auto &[opName, count] : report.operationFireCounts)
+  for (const auto &[opName, count] : serializedFireCounts)
     fireCounts[opName] = count;
   root["operation_fire_counts"] = std::move(fireCounts);
 

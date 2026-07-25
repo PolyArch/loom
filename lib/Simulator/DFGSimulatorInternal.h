@@ -6,7 +6,6 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -297,6 +296,7 @@ private:
 
 struct Token {
   TokenKind kind = TokenKind::None;
+  PrimitiveValueState valueState = PrimitiveValueState::Defined;
   // Index storage and the schema 2.2 projection for integers up to 64 bits.
   std::int64_t intValue = 0;
   double floatValue = 0.0;
@@ -454,11 +454,14 @@ enum class RunFailure {
 };
 
 struct SimulatorState {
+  llvm::DenseMap<mlir::Operation *, dataflow::CanonicalActorSchemaProjection>
+      actorProjections;
   ChannelMap channels;
   ChannelMap pendingChannels;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
+  llvm::DenseMap<mlir::Value, MemoryView> memoryViews;
   llvm::DenseMap<mlir::Value, std::uint64_t> memoryRootIds;
   llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamSemanticState> streamStates;
@@ -479,7 +482,7 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
-  std::map<std::string, std::uint64_t> operationFireCounts;
+  std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
   std::map<std::string, std::uint64_t> modeledLibraryCalls;
   std::uint64_t nextMemoryRootId = 0;
   std::uint64_t modeledLibraryScore = 0;
@@ -527,6 +530,8 @@ Token noneToken();
 Token integerValueToken(std::int64_t value);
 Token floatValueToken(double value);
 Token boolValueToken(bool value);
+llvm::Expected<Token> exceptionalValueToken(PrimitiveValueState state,
+                                            mlir::Type type);
 llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type);
 llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
                                             mlir::Type type);
@@ -540,10 +545,6 @@ Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
                    std::int64_t byteOffset = 0);
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
 llvm::Expected<Token> zeroToken(mlir::Type type);
-llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
-                                          mlir::Type elementType);
-llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
-                                           llvm::ArrayRef<Token> dynamicTokens);
 
 /// Canonicalizes `frontier` and reduces it to its maximal members. The
 /// authority owns the reduction; this only shapes the request.
@@ -587,7 +588,10 @@ Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);
 void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
                               Token token, MemoryOrderFrontierId memoryOrder);
-bool recordEvent(SimulatorState &state, llvm::StringRef opName);
+bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
+bool recordActorEvent(SimulatorState &state, mlir::Operation *op);
+const dataflow::CanonicalActorSchemaProjection &
+actorProjection(const SimulatorState &state, mlir::Operation *op);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
@@ -609,15 +613,15 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                const llvm::APInt &address,
                                                SimulatorState &state,
                                                mlir::Operation *scope,
-                                               llvm::StringRef opName);
+                                               llvm::StringRef diagnosticLabel);
 std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                const Token &addr,
                                                SimulatorState &state,
                                                mlir::Operation *scope,
-                                               llvm::StringRef opName);
+                                               llvm::StringRef diagnosticLabel);
 std::optional<Token> readMemoryElement(const MemoryView &view,
                                        std::size_t index, SimulatorState &state,
-                                       llvm::StringRef opName);
+                                       llvm::StringRef diagnosticLabel);
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
@@ -657,50 +661,40 @@ memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values);
 /// An operation the model does not know contributes a diagnostic instead of a
 /// guessed score.
 std::uint64_t estimateWeightedOperationScore(
-    const std::map<std::string, std::uint64_t> &operationFireCounts,
+    const std::map<dataflow::OperationSchemaId, std::uint64_t>
+        &operationFireCounts,
     llvm::SmallVectorImpl<std::string> &diagnostics);
 
 /// Copies the run's counters, derived cost scores, and distinct execution
 /// diagnostics into the report.
 void projectRunObservations(SimulatorState &state, DFGSimulationReport &report);
 
-bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op);
-llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
-                                          const Token &lhs, const Token &rhs);
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
-                                                       mlir::Type type);
+                                                       mlir::Type type,
+                                                       unsigned indexBitWidth);
 llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
                                               mlir::Type type);
-std::string primitivePredicate(mlir::Operation *op);
-std::string primitiveOperationName(mlir::Operation *op);
 llvm::Expected<PrimitiveOperationDescriptor>
-primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
-                    mlir::Value result);
+primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
+                    mlir::Operation *op, mlir::Value result);
 llvm::Expected<PrimitiveOperationDescriptor>
-primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
-                    mlir::Type resultType, mlir::Type operandType);
+primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
+                    mlir::Operation *op, mlir::Type resultType,
+                    mlir::Type operandType);
 llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
                                         mlir::Value result);
 llvm::Expected<Token> evaluatePrimitiveToken(mlir::Operation *op,
+                                             const dataflow::CanonicalActorSchemaProjection &projection,
                                              mlir::Value result,
                                              llvm::ArrayRef<Token> inputTokens);
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);
-bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state);
-bool fireLLVMStore(mlir::LLVM::StoreOp op, SimulatorState &state);
-bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state);
-bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
-                       const Token &dst, const Token &src, const Token &len);
-bool isPointerSelect(mlir::LLVM::SelectOp op);
-std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
-                                           const Token &condition,
-                                           const Token &trueValue,
-                                           const Token &falseValue,
-                                           SimulatorState &state);
 bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
 std::optional<UnsupportedOperation>
-unsupportedActorOperation(mlir::Operation *op);
+unsupportedActorProvider(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection);
 
 std::string unsupportedOperationLabel(mlir::Operation *op);
 

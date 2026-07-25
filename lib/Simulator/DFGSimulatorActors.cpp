@@ -6,7 +6,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
@@ -53,7 +52,13 @@ static llvm::Expected<Token> streamIvToken(const llvm::APInt &bits,
   return token;
 }
 
-static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
+static bool fireStream(
+    dataflow::StreamOp op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  const auto *payload =
+      std::get_if<dataflow::StreamRecurrencePayload>(&projection.payload);
+  assert(payload && "stream provider received the wrong semantic payload");
   if (state.failedStreamOps.contains(op.getOperation()))
     return false;
 
@@ -76,7 +81,7 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
 
   auto transition = evaluateStreamTransition(
       stream,
-      StreamSemanticConfig{op.getStepKind(), op.getPredicate(),
+      StreamSemanticConfig{payload->stepKind, payload->predicate,
                            streamIntegerBitWidth(op.getInit().getType())},
       activation);
   if (!transition) {
@@ -118,25 +123,26 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   stream = transition->nextState;
   releaseActivationMemoryOrder(state, op.getOperation(),
                                stream.mode == StreamMode::Idle);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
-static bool fireConstant(dataflow::ConstantOp op, SimulatorState &state) {
+static bool fireConstant(
+    dataflow::ConstantOp op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
   if (!hasToken(state.channels, op->getOpOperand(0)))
     return false;
-  auto attr = mlir::dyn_cast<mlir::TypedAttr>(op.getConstValue());
-  if (!attr) {
-    state.diagnostics.push_back("dataflow.constant has untyped const_value");
-    return false;
-  }
-  auto tokenOrErr = tokenFromTypedAttr(attr);
+  const auto *payload =
+      std::get_if<dataflow::ConstantValuePayload>(&projection.payload);
+  assert(payload && "constant provider received the wrong semantic payload");
+  auto tokenOrErr = tokenFromTypedAttr(payload->value);
   if (!tokenOrErr) {
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
   }
   popToken(state, op->getOpOperand(0));
   emitToken(state, op.getValue(), *tokenOrErr);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
@@ -170,7 +176,7 @@ static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                carry.semanticState ==
                                    PhaseSemanticState::Initial);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
@@ -203,7 +209,7 @@ static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                invariant.semanticState ==
                                    PhaseSemanticState::Initial);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
@@ -234,7 +240,7 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                transition.nextState ==
                                    GateSemanticState::Closed);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
@@ -250,7 +256,7 @@ static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
 
   for (auto [result, token] : llvm::zip_equal(op->getResults(), consumed))
     emitToken(state, result, token);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
@@ -276,7 +282,7 @@ static bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
   (void)popToken(state, selOperand);
   Token value = popToken(state, selectedOperand);
   emitToken(state, op.getOutput(), value);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
@@ -300,7 +306,7 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
   (void)popToken(state, selOperand);
   Token value = popToken(state, inputOperand);
   emitToken(state, op.getOutputs()[static_cast<unsigned>(lane)], value);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 struct ParallelizeGroup {
@@ -438,7 +444,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     emitToken(state, op.getGroupPhase(), boolValueToken(true));
   if (transition.emitFalsePhase)
     emitToken(state, op.getGroupPhase(), boolValueToken(false));
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool firePack(dataflow::PackOp op, SimulatorState &state) {
@@ -457,7 +463,7 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
   }
   (void)popToken(state, op.getVectorMutable());
   emitToken(state, op.getPacked(), *packed);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
@@ -476,7 +482,7 @@ static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
   }
   (void)popToken(state, op.getPackedMutable());
   emitToken(state, op.getVector(), *vector);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
@@ -537,55 +543,7 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
   }
   if (transition.emitFalsePhase)
     emitToken(state, op.getScalarPhase(), boolValueToken(false));
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-static bool fireCast(mlir::UnrealizedConversionCastOp op,
-                     SimulatorState &state) {
-  if (op->getNumOperands() != 1 || op->getNumResults() != 1)
-    return false;
-  mlir::OpOperand &operand = op->getOpOperand(0);
-  if (!hasToken(state.channels, operand))
-    return false;
-  Token token = popToken(state, operand);
-  if (auto memrefType =
-          mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType())) {
-    auto tokenOrErr =
-        ensurePointerMemory(state, token, memrefType.getElementType());
-    if (!tokenOrErr) {
-      state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
-      return false;
-    }
-    emitToken(state, op.getResult(0), *tokenOrErr);
-    return true;
-  }
-  emitToken(state, op.getResult(0), token);
-  return true;
-}
-
-static bool fireGEP(mlir::LLVM::GEPOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op.getBaseMutable()))
-    return false;
-  for (unsigned i = 1, e = op->getNumOperands(); i < e; ++i) {
-    if (!hasToken(state.channels, op->getOpOperand(i)))
-      return false;
-  }
-  Token base = popToken(state, op.getBaseMutable());
-  if (base.kind != TokenKind::Pointer) {
-    state.diagnostics.push_back("llvm.getelementptr base is not a pointer");
-    return false;
-  }
-  llvm::SmallVector<Token> dynamicTokens;
-  for (unsigned i = 1, e = op->getNumOperands(); i < e; ++i)
-    dynamicTokens.push_back(popToken(state, op->getOpOperand(i)));
-  auto offsetOrErr = gepByteOffset(op, dynamicTokens);
-  if (!offsetOrErr) {
-    state.diagnostics.push_back(llvm::toString(offsetOrErr.takeError()));
-    return false;
-  }
-  base.pointer.byteOffset += *offsetOrErr;
-  emitToken(state, op.getResult(), base);
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 static bool hasVectorPrimitiveType(mlir::Operation *op) {
@@ -674,18 +632,20 @@ llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
 }
 
 static llvm::Expected<Token>
-evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
+evaluateElementwiseVectorPrimitive(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    mlir::Value result,
                                    llvm::ArrayRef<Token> inputTokens) {
   auto resultTypeOrErr = validateElementwiseVectorPrimitive(op, result);
   if (!resultTypeOrErr)
     return resultTypeOrErr.takeError();
   mlir::VectorType resultType = *resultTypeOrErr;
-  std::string predicate = primitivePredicate(op);
   auto firstOperandType =
       mlir::cast<mlir::VectorType>(op->getOperand(0).getType());
-  auto descriptor =
-      primitiveDescriptor(op, predicate, resultType.getElementType(),
-                          firstOperandType.getElementType());
+  auto descriptor = primitiveDescriptor(projection, op,
+                                        resultType.getElementType(),
+                                        firstOperandType.getElementType());
   if (!descriptor)
     return descriptor.takeError();
 
@@ -728,7 +688,8 @@ evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
       if (!laneToken)
         return laneToken.takeError();
       auto laneValue =
-          primitiveValueFromToken(*laneToken, vectorType.getElementType());
+          primitiveValueFromToken(*laneToken, vectorType.getElementType(),
+                                  descriptor->operandBitWidth);
       if (!laneValue)
         return laneValue.takeError();
       laneOperands.push_back(*laneValue);
@@ -737,9 +698,12 @@ evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
     auto laneResult = evaluatePrimitiveOperation(*descriptor, laneOperands);
     if (!laneResult)
       return llvm::joinErrors(
-          llvm::createStringError(std::errc::invalid_argument,
-                                  "%s failed for vector lane %u",
-                                  descriptor->name.c_str(), lane),
+          llvm::createStringError(
+              std::errc::invalid_argument, "%s failed for vector lane %u",
+              dataflow::operationSchemaSpelling(descriptor->actor.schema)
+                  .str()
+                  .c_str(),
+              lane),
           laneResult.takeError());
     auto laneToken =
         tokenFromPrimitiveValue(*laneResult, resultType.getElementType());
@@ -754,24 +718,28 @@ evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
 }
 
 llvm::Expected<Token>
-evaluatePrimitiveToken(mlir::Operation *op, mlir::Value result,
+evaluatePrimitiveToken(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    mlir::Value result,
                        llvm::ArrayRef<Token> inputTokens) {
   if (inputTokens.size() != op->getNumOperands())
     return llvm::createStringError(
         std::errc::invalid_argument,
         "primitive token count does not match operation operands");
   if (hasVectorPrimitiveType(op))
-    return evaluateElementwiseVectorPrimitive(op, result, inputTokens);
+    return evaluateElementwiseVectorPrimitive(op, projection, result,
+                                              inputTokens);
 
-  std::string predicate = primitivePredicate(op);
-  auto descriptor = primitiveDescriptor(op, predicate, result);
+  auto descriptor = primitiveDescriptor(projection, op, result);
   if (!descriptor)
     return descriptor.takeError();
   llvm::SmallVector<PrimitiveValue> operands;
   operands.reserve(inputTokens.size());
   for (auto [operand, token] :
        llvm::zip_equal(op->getOpOperands(), inputTokens)) {
-    auto value = primitiveValueFromToken(token, operand.get().getType());
+    auto value = primitiveValueFromToken(token, operand.get().getType(),
+                                         descriptor->operandBitWidth);
     if (!value)
       return value.takeError();
     operands.push_back(*value);
@@ -783,8 +751,12 @@ evaluatePrimitiveToken(mlir::Operation *op, mlir::Value result,
 }
 
 static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
+                                   const dataflow::CanonicalActorSchemaProjection
+                                       &projection,
                                    SimulatorState &state) {
   if (state.terminalPrimitiveOps.contains(op))
+    return false;
+  if (op->getNumOperands() == 0 && state.oneShotOps.contains(op))
     return false;
   for (mlir::OpOperand &operand : op->getOpOperands()) {
     if (!hasToken(state.channels, operand))
@@ -795,7 +767,7 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   operands.reserve(op->getNumOperands());
   for (mlir::OpOperand &operand : op->getOpOperands())
     operands.push_back(peekToken(state.channels, operand));
-  auto resultToken = evaluatePrimitiveToken(op, result, operands);
+  auto resultToken = evaluatePrimitiveToken(op, projection, result, operands);
   if (!resultToken) {
     state.diagnostics.push_back(llvm::toString(resultToken.takeError()));
     state.terminalPrimitiveOps.insert(op);
@@ -804,211 +776,151 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   for (mlir::OpOperand &operand : op->getOpOperands())
     (void)popToken(state, operand);
   emitToken(state, result, *resultToken);
-  return recordEvent(state, primitiveOperationName(op));
+  if (op->getNumOperands() == 0)
+    state.oneShotOps.insert(op);
+  return recordActorEvent(state, op);
 }
 
-static bool fireArithConstant(mlir::arith::ConstantOp op,
-                              SimulatorState &state) {
+static bool fireArithConstant(
+    mlir::arith::ConstantOp op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
   if (state.oneShotOps.contains(op.getOperation()))
     return false;
-  auto attr = mlir::dyn_cast<mlir::TypedAttr>(op.getValue());
-  if (!attr) {
-    state.diagnostics.push_back("arith.constant has untyped value");
-    return false;
-  }
-  auto tokenOrErr = tokenFromTypedAttr(attr);
+  const auto *payload =
+      std::get_if<dataflow::ConstantValuePayload>(&projection.payload);
+  assert(payload && "constant provider received the wrong semantic payload");
+  auto tokenOrErr = tokenFromTypedAttr(payload->value);
   if (!tokenOrErr) {
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
   }
   emitToken(state, op.getResult(), *tokenOrErr);
   state.oneShotOps.insert(op.getOperation());
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
-static bool fireLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state) {
-  if (state.oneShotOps.contains(op.getOperation()))
-    return false;
-  auto tokenOrErr = zeroToken(op->getResult(0).getType());
-  if (!tokenOrErr) {
-    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
-    return false;
+using ActorProvider = bool (*)(
+    mlir::Operation *, const dataflow::CanonicalActorSchemaProjection &,
+    SimulatorState &);
+
+template <typename OpT, bool (*Fire)(OpT, SimulatorState &)>
+static bool fireTypedActor(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  (void)projection;
+  return Fire(mlir::cast<OpT>(op), state);
+}
+
+static bool fireStreamActor(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  return fireStream(mlir::cast<dataflow::StreamOp>(op), projection, state);
+}
+
+static bool fireDataflowConstantActor(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  return fireConstant(mlir::cast<dataflow::ConstantOp>(op), projection, state);
+}
+
+static bool fireArithConstantActor(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  return fireArithConstant(mlir::cast<mlir::arith::ConstantOp>(op), projection,
+                           state);
+}
+
+static bool firePrimitiveActor(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state) {
+  return firePrimitiveOperation(op, op->getResult(0), projection, state);
+}
+
+static ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
+  if (isSupportedPrimitiveOperation(schema))
+    return firePrimitiveActor;
+
+  using Schema = dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::ArithConstant:
+    return fireArithConstantActor;
+  case Schema::DataflowStream:
+    return fireStreamActor;
+  case Schema::DataflowConstant:
+    return fireDataflowConstantActor;
+  case Schema::DataflowCarry:
+    return fireTypedActor<dataflow::CarryOp, fireCarry>;
+  case Schema::DataflowInvariant:
+    return fireTypedActor<dataflow::InvariantOp, fireInvariant>;
+  case Schema::DataflowGate:
+    return fireTypedActor<dataflow::GateOp, fireGate>;
+  case Schema::DataflowSync:
+    return fireTypedActor<dataflow::SyncOp, fireSync>;
+  case Schema::DataflowMux:
+    return fireTypedActor<dataflow::MuxOp, fireMux>;
+  case Schema::DataflowDemux:
+    return fireTypedActor<dataflow::DemuxOp, fireDemux>;
+  case Schema::DataflowParallelize:
+    return fireTypedActor<dataflow::ParallelizeOp, fireParallelize>;
+  case Schema::DataflowPack:
+    return fireTypedActor<dataflow::PackOp, firePack>;
+  case Schema::DataflowUnpack:
+    return fireTypedActor<dataflow::UnpackOp, fireUnpack>;
+  case Schema::DataflowSerialize:
+    return fireTypedActor<dataflow::SerializeOp, fireSerialize>;
+  case Schema::DataflowLoad:
+    return fireTypedActor<dataflow::LoadOp, fireLoad>;
+  case Schema::DataflowStore:
+    return fireTypedActor<dataflow::StoreOp, fireStore>;
+  default:
+    return nullptr;
   }
-  emitToken(state, op->getResult(0), *tokenOrErr);
-  state.oneShotOps.insert(op.getOperation());
-  return recordEvent(state, op->getName().getStringRef());
 }
 
-static bool fireLLVMAddressOf(mlir::LLVM::AddressOfOp op,
-                              SimulatorState &state) {
-  if (state.oneShotOps.contains(op.getOperation()))
+static bool hasUnsupportedMemoryContract(
+    const dataflow::CanonicalActorSchemaProjection &projection) {
+  const auto *memory =
+      std::get_if<dataflow::MemoryContractPayload>(&projection.payload);
+  if (!memory)
     return false;
-  mlir::Value result = op->getResult(0);
-  emitToken(state, result, pointerToken(result));
-  state.oneShotOps.insert(op.getOperation());
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-static bool fireLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state) {
-  mlir::OpOperand &lhsOperand = op->getOpOperand(0);
-  mlir::OpOperand &rhsOperand = op->getOpOperand(1);
-  if (!hasToken(state.channels, lhsOperand) ||
-      !hasToken(state.channels, rhsOperand))
-    return false;
-  Token lhs = popToken(state, lhsOperand);
-  Token rhs = popToken(state, rhsOperand);
-  auto resultOrErr = evaluatePointerICmp(op, lhs, rhs);
-  if (!resultOrErr) {
-    state.diagnostics.push_back(llvm::toString(resultOrErr.takeError()));
-    return false;
-  }
-  emitToken(state, op->getResult(0), *resultOrErr);
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-bool isPointerSelect(mlir::LLVM::SelectOp op) {
-  return op->getNumOperands() == 3 && op->getNumResults() == 1 &&
-         mlir::isa<mlir::LLVM::LLVMPointerType>(op->getResult(0).getType());
-}
-
-std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
-                                           const Token &condition,
-                                           const Token &trueValue,
-                                           const Token &falseValue,
-                                           SimulatorState &state) {
-  if (!isPointerSelect(op))
-    return std::nullopt;
-  if (trueValue.kind != TokenKind::Pointer ||
-      falseValue.kind != TokenKind::Pointer) {
-    state.diagnostics.push_back(
-        "llvm.select pointer operands are not pointers");
-    return std::nullopt;
-  }
-  return boolToken(condition) ? trueValue : falseValue;
-}
-
-static bool fireLLVMSelect(mlir::LLVM::SelectOp op, SimulatorState &state) {
-  if (!isPointerSelect(op))
-    return firePrimitiveOperation(op.getOperation(), op->getResult(0), state);
-  mlir::OpOperand &conditionOperand = op->getOpOperand(0);
-  mlir::OpOperand &trueOperand = op->getOpOperand(1);
-  mlir::OpOperand &falseOperand = op->getOpOperand(2);
-  if (!hasToken(state.channels, conditionOperand) ||
-      !hasToken(state.channels, trueOperand) ||
-      !hasToken(state.channels, falseOperand))
-    return false;
-  Token condition = popToken(state, conditionOperand);
-  Token trueValue = popToken(state, trueOperand);
-  Token falseValue = popToken(state, falseOperand);
-  std::optional<Token> selected =
-      evaluatePointerSelect(op, condition, trueValue, falseValue, state);
-  if (!selected)
-    return false;
-  emitToken(state, op->getResult(0), *selected);
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-static bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
-  if (op->getNumResults() != 1)
-    return false;
-  if (!isSupportedPrimitiveOperation(primitiveOperationName(op)))
-    return false;
-  return firePrimitiveOperation(op, op->getResult(0), state);
+  const auto *plain = std::get_if<dataflow::PlainAccessProjection>(memory);
+  return !plain || plain->isVolatile;
 }
 
 bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
-  return llvm::TypeSwitch<mlir::Operation *, bool>(op)
-      .Case<dataflow::StreamOp>(
-          [&](auto typedOp) { return fireStream(typedOp, state); })
-      .Case<dataflow::ConstantOp>(
-          [&](auto typedOp) { return fireConstant(typedOp, state); })
-      .Case<dataflow::CarryOp>(
-          [&](auto typedOp) { return fireCarry(typedOp, state); })
-      .Case<dataflow::InvariantOp>(
-          [&](auto typedOp) { return fireInvariant(typedOp, state); })
-      .Case<dataflow::GateOp>(
-          [&](auto typedOp) { return fireGate(typedOp, state); })
-      .Case<dataflow::SyncOp>(
-          [&](auto typedOp) { return fireSync(typedOp, state); })
-      .Case<dataflow::MuxOp>(
-          [&](auto typedOp) { return fireMux(typedOp, state); })
-      .Case<dataflow::DemuxOp>(
-          [&](auto typedOp) { return fireDemux(typedOp, state); })
-      .Case<dataflow::ParallelizeOp>(
-          [&](auto typedOp) { return fireParallelize(typedOp, state); })
-      .Case<dataflow::PackOp>(
-          [&](auto typedOp) { return firePack(typedOp, state); })
-      .Case<dataflow::UnpackOp>(
-          [&](auto typedOp) { return fireUnpack(typedOp, state); })
-      .Case<dataflow::SerializeOp>(
-          [&](auto typedOp) { return fireSerialize(typedOp, state); })
-      .Case<dataflow::LoadOp>(
-          [&](auto typedOp) { return fireLoad(typedOp, state); })
-      .Case<dataflow::StoreOp>(
-          [&](auto typedOp) { return fireStore(typedOp, state); })
-      .Case<mlir::UnrealizedConversionCastOp>(
-          [&](auto typedOp) { return fireCast(typedOp, state); })
-      .Case<mlir::LLVM::GEPOp>(
-          [&](auto typedOp) { return fireGEP(typedOp, state); })
-      .Case<mlir::LLVM::AddressOfOp>(
-          [&](auto typedOp) { return fireLLVMAddressOf(typedOp, state); })
-      .Case<mlir::LLVM::ZeroOp>(
-          [&](auto typedOp) { return fireLLVMZero(typedOp, state); })
-      .Case<mlir::LLVM::ICmpOp>(
-          [&](auto typedOp) { return fireLLVMICmp(typedOp, state); })
-      .Case<mlir::LLVM::SelectOp>(
-          [&](auto typedOp) { return fireLLVMSelect(typedOp, state); })
-      .Case<mlir::LLVM::LoadOp>(
-          [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
-      .Case<mlir::LLVM::StoreOp>(
-          [&](auto typedOp) { return fireLLVMStore(typedOp, state); })
-      .Case<mlir::LLVM::MemcpyOp>(
-          [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
-      .Case<mlir::arith::ConstantOp>(
-          [&](auto typedOp) { return fireArithConstant(typedOp, state); })
-      .Default([&](mlir::Operation *genericOp) {
-        return fireGenericPrimitive(genericOp, state);
-      });
+  const auto &projection = actorProjection(state, op);
+  ActorProvider provider = actorProvider(projection.schema);
+  assert(provider && "admitted actor has no simulator provider");
+  return provider(op, projection, state);
 }
 
-std::optional<UnsupportedOperation>
-unsupportedActorOperation(mlir::Operation *op) {
-  // Dynamic consistency-domain state - modification order, reads-from,
-  // synchronizes-with, and the global sequentially-consistent order - is not
-  // modeled. An atomic, volatile, or fence actor is therefore rejected before
-  // execution rather than approximated as a plain access. Residual LLVM memory
-  // operations never reach admission; finalized graph validation rejects them.
-  if (auto contract = dataflow::semantics::getMemoryActorContract(op)) {
-    if (contract->atomic || contract->isVolatile)
-      return UnsupportedOperation{
-          unsupportedOperationLabel(op),
-          "atomic, volatile, and fence memory contracts have no dynamic "
-          "consistency-domain semantics"};
-  }
-  if (op->getNumResults() == 1 &&
-      isSupportedPrimitiveOperation(primitiveOperationName(op))) {
-    if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {
+std::optional<UnsupportedOperation> unsupportedActorProvider(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection) {
+  if (hasUnsupportedMemoryContract(projection))
+    return UnsupportedOperation{
+        unsupportedOperationLabel(op),
+        "atomic, volatile, and fence memory contracts have no dynamic "
+        "consistency-domain semantics"};
+
+  if (!actorProvider(projection.schema))
+    return UnsupportedOperation{unsupportedOperationLabel(op), ""};
+
+  if (isSupportedPrimitiveOperation(projection.schema)) {
+    if (op->getNumResults() != 1)
+      return UnsupportedOperation{unsupportedOperationLabel(op),
+                                  "primitive provider requires one result"};
+    if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0)))
       return UnsupportedOperation{unsupportedOperationLabel(op),
                                   llvm::toString(std::move(error))};
-    }
-    return std::nullopt;
   }
-  if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
-    if (isSupportedPointerICmp(icmp))
-      return std::nullopt;
-    return UnsupportedOperation{unsupportedOperationLabel(op), ""};
-  }
-  if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
-                dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
-                dataflow::MuxOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
-                dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
-                dataflow::LoadOp, dataflow::StoreOp,
-                mlir::UnrealizedConversionCastOp, mlir::LLVM::AddressOfOp,
-                mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp,
-                mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
-                mlir::arith::ConstantOp>(op))
-    return std::nullopt;
-  return UnsupportedOperation{unsupportedOperationLabel(op), ""};
+  return std::nullopt;
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail
