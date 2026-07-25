@@ -302,8 +302,7 @@ constexpr llvm::StringLiteral fabricRefKeyword(FabricEntityKind kind) {
 /// their identifiers.
 template <FabricEntityKind Kind> class FabricTypedEntityRef {
 public:
-  static constexpr llvm::StringLiteral familyKeyword =
-      fabricRefKeyword(Kind);
+  static constexpr llvm::StringLiteral familyKeyword = fabricRefKeyword(Kind);
 
   FabricTypedEntityRef() = default;
   explicit constexpr FabricTypedEntityRef(FabricEntityId id) : id_(id) {}
@@ -472,11 +471,10 @@ struct FabricMemoryOperationContextRef {
 struct FabricMemoryServiceRef {
   static constexpr llvm::StringLiteral familyKeyword =
       llvm::StringLiteral("fabric.memory_service");
-  using Payload = typename FabricCatalogVariant<
-      void
+  using Payload = typename FabricCatalogVariant<void
 #define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-      >::type;
+                                                >::type;
 
   Payload payload;
 
@@ -484,24 +482,23 @@ struct FabricMemoryServiceRef {
     return static_cast<FabricMemoryServiceKind>(payload.index());
   }
 
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                      \
-  static_assert(std::is_same_v<                                              \
-                    std::variant_alternative_t<                              \
-                        static_cast<std::size_t>(FabricMemoryServiceKind::Name),\
-                        Payload>,                                            \
-                    Type>,                                                   \
-                "alternative order must match the discriminants");
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<static_cast<std::size_t>(                 \
+                                         FabricMemoryServiceKind::Name),       \
+                                     Payload>,                                 \
+          Type>,                                                               \
+      "alternative order must match the discriminants");
 #include "Fabric/Identity/FabricRefs.def"
 
   static FabricMemoryServiceRef local(FabricMemoryOccurrenceRef memory) {
-    return FabricMemoryServiceRef{Payload(std::in_place_type<
-                                              FabricMemoryOccurrenceRef>,
-                                          memory)};
+    return FabricMemoryServiceRef{
+        Payload(std::in_place_type<FabricMemoryOccurrenceRef>, memory)};
   }
   static FabricMemoryServiceRef system(SystemMemoryServiceRef service) {
-    return FabricMemoryServiceRef{Payload(std::in_place_type<
-                                              SystemMemoryServiceRef>,
-                                          service)};
+    return FabricMemoryServiceRef{
+        Payload(std::in_place_type<SystemMemoryServiceRef>, service)};
   }
 };
 
@@ -555,8 +552,7 @@ LOOM_FABRIC_REF_EQUALITY(FabricFuOccurrencePortRef,
                          lhs.fu == rhs.fu && lhs.direction == rhs.direction &&
                              lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryOperationPortRef,
-                         lhs.memory == rhs.memory &&
-                             lhs.ordinal == rhs.ordinal)
+                         lhs.memory == rhs.memory && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryCapabilityAlternativeRef,
                          lhs.port == rhs.port && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryOperationContextRef,
@@ -579,11 +575,10 @@ LOOM_FABRIC_REF_EQUALITY(FabricTransferPatternRef,
 
 /// Closed union of Mapping-visible owners exposing token terminals.
 struct FabricTransportEndpointOwnerRef {
-  using Payload = typename FabricCatalogVariant<
-      void
+  using Payload = typename FabricCatalogVariant<void
 #define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-      >::type;
+                                                >::type;
 
   Payload payload;
 
@@ -591,17 +586,17 @@ struct FabricTransportEndpointOwnerRef {
     return static_cast<FabricTransportEndpointOwnerKind>(payload.index());
   }
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                              \
-  static_assert(std::is_same_v<                                              \
-                    std::variant_alternative_t<                              \
-                        static_cast<std::size_t>(                            \
-                            FabricTransportEndpointOwnerKind::Name),         \
-                        Payload>,                                            \
-                    Type>,                                                   \
-                "alternative order must match the discriminants");           \
-  static FabricTransportEndpointOwnerRef of(const Type &value) {             \
-    return FabricTransportEndpointOwnerRef{                                  \
-        Payload(std::in_place_type<Type>, value)};                           \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+  static_assert(                                                               \
+      std::is_same_v<std::variant_alternative_t<                               \
+                         static_cast<std::size_t>(                             \
+                             FabricTransportEndpointOwnerKind::Name),          \
+                         Payload>,                                             \
+                     Type>,                                                    \
+      "alternative order must match the discriminants");                       \
+  static FabricTransportEndpointOwnerRef of(const Type &value) {               \
+    return FabricTransportEndpointOwnerRef{                                    \
+        Payload(std::in_place_type<Type>, value)};                             \
   }
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -618,11 +613,10 @@ inline bool operator!=(const FabricTransportEndpointOwnerRef &lhs,
 /// Closed union of owners exposing a manager or subordinate memory-service
 /// endpoint inventory.
 struct FabricMemoryEndpointOwnerRef {
-  using Payload = typename FabricCatalogVariant<
-      void
+  using Payload = typename FabricCatalogVariant<void
 #define LOOM_FABRIC_MEMORY_OWNER(Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-      >::type;
+                                                >::type;
 
   Payload payload;
 
@@ -630,17 +624,17 @@ struct FabricMemoryEndpointOwnerRef {
     return static_cast<FabricMemoryEndpointOwnerKind>(payload.index());
   }
 
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                 \
-  static_assert(std::is_same_v<                                              \
-                    std::variant_alternative_t<                              \
-                        static_cast<std::size_t>(                            \
-                            FabricMemoryEndpointOwnerKind::Name),            \
-                        Payload>,                                            \
-                    Type>,                                                   \
-                "alternative order must match the discriminants");           \
-  static FabricMemoryEndpointOwnerRef of(const Type &value) {                \
-    return FabricMemoryEndpointOwnerRef{                                     \
-        Payload(std::in_place_type<Type>, value)};                           \
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<static_cast<std::size_t>(                 \
+                                         FabricMemoryEndpointOwnerKind::Name), \
+                                     Payload>,                                 \
+          Type>,                                                               \
+      "alternative order must match the discriminants");                       \
+  static FabricMemoryEndpointOwnerRef of(const Type &value) {                  \
+    return FabricMemoryEndpointOwnerRef{                                       \
+        Payload(std::in_place_type<Type>, value)};                             \
   }
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -658,11 +652,10 @@ inline bool operator!=(const FabricMemoryEndpointOwnerRef &lhs,
 /// the catalog avoids four independently drifting copies; the projection that
 /// selects a canonical inventory is static type information alone.
 struct FabricInventoryOwnerRef {
-  using Payload = typename FabricCatalogVariant<
-      void
+  using Payload = typename FabricCatalogVariant<void
 #define LOOM_FABRIC_INVENTORY_OWNER(Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-      >::type;
+                                                >::type;
 
   Payload payload;
 
@@ -670,17 +663,16 @@ struct FabricInventoryOwnerRef {
     return static_cast<FabricInventoryOwnerKind>(payload.index());
   }
 
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                              \
-  static_assert(std::is_same_v<                                              \
-                    std::variant_alternative_t<                              \
-                        static_cast<std::size_t>(                            \
-                            FabricInventoryOwnerKind::Name),                 \
-                        Payload>,                                            \
-                    Type>,                                                   \
-                "alternative order must match the discriminants");           \
-  static FabricInventoryOwnerRef of(const Type &value) {                     \
-    return FabricInventoryOwnerRef{                                          \
-        Payload(std::in_place_type<Type>, value)};                           \
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<static_cast<std::size_t>(                 \
+                                         FabricInventoryOwnerKind::Name),      \
+                                     Payload>,                                 \
+          Type>,                                                               \
+      "alternative order must match the discriminants");                       \
+  static FabricInventoryOwnerRef of(const Type &value) {                       \
+    return FabricInventoryOwnerRef{Payload(std::in_place_type<Type>, value)};  \
   }
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -764,9 +756,8 @@ struct FabricMemoryEndpointRef {
     LOOM_FABRIC_REF_FIELDS(visitor.ref(self.owner);                            \
                            visitor.ordinal(self.ordinal);)                     \
   };                                                                           \
-  LOOM_FABRIC_REF_EQUALITY(Family,                                             \
-                           lhs.owner == rhs.owner &&                           \
-                               lhs.ordinal == rhs.ordinal)
+  LOOM_FABRIC_REF_EQUALITY(Family, lhs.owner == rhs.owner &&                   \
+                                       lhs.ordinal == rhs.ordinal)
 #include "Fabric/Identity/FabricRefs.def"
 
 LOOM_FABRIC_REF_EQUALITY(FabricTransportEndpointRef,
@@ -875,11 +866,10 @@ LOOM_FABRIC_TRAVERSAL_PAYLOAD_EQUALITY(FabricTransferPatternLegPayload,
 struct FabricPhysicalTraversalRef {
   static constexpr llvm::StringLiteral familyKeyword =
       llvm::StringLiteral("fabric.traversal");
-  using Payload = typename FabricCatalogVariant<
-      void
+  using Payload = typename FabricCatalogVariant<void
 #define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-      >::type;
+                                                >::type;
 
   Payload payload;
 
@@ -887,14 +877,14 @@ struct FabricPhysicalTraversalRef {
     return static_cast<FabricPhysicalTraversalKind>(payload.index());
   }
 
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                           \
-  static_assert(std::is_same_v<                                              \
-                    std::variant_alternative_t<                              \
-                        static_cast<std::size_t>(                            \
-                            FabricPhysicalTraversalKind::Name),              \
-                        Payload>,                                            \
-                    Type>,                                                   \
-                "alternative order must match the discriminants");
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
+  static_assert(                                                               \
+      std::is_same_v<                                                          \
+          std::variant_alternative_t<static_cast<std::size_t>(                 \
+                                         FabricPhysicalTraversalKind::Name),   \
+                                     Payload>,                                 \
+          Type>,                                                               \
+      "alternative order must match the discriminants");
 #include "Fabric/Identity/FabricRefs.def"
 
   template <typename PayloadType>

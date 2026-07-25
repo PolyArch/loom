@@ -32,8 +32,7 @@ llvm::StringRef loom::fabric::fabricRefKeyword(FabricFuNodeKind value) {
 #define LOOM_FABRIC_PORT_DIRECTION(Name, Keyword)                              \
   case FabricPortDirection::Name:                                              \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricPortDirection value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricPortDirection value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -43,8 +42,7 @@ loom::fabric::fabricRefKeyword(FabricPortDirection value) {
 #define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricMemoryServiceKind value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricMemoryServiceKind value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -54,8 +52,7 @@ loom::fabric::fabricRefKeyword(FabricMemoryServiceKind value) {
 #define LOOM_FABRIC_FIFO_MODE(Name, Keyword)                                   \
   case FabricFifoTraversalMode::Name:                                          \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricFifoTraversalMode value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricFifoTraversalMode value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -65,8 +62,8 @@ loom::fabric::fabricRefKeyword(FabricFifoTraversalMode value) {
 #define LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE(Name, Keyword)                     \
   case FabricRegisterFifoPathRole::Name:                                       \
     return Keyword;
-llvm::StringRef loom::fabric::fabricRefKeyword(
-    FabricRegisterFifoPathRole value) {
+llvm::StringRef
+loom::fabric::fabricRefKeyword(FabricRegisterFifoPathRole value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -76,8 +73,8 @@ llvm::StringRef loom::fabric::fabricRefKeyword(
 #define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
     return Keyword;
-llvm::StringRef loom::fabric::fabricRefKeyword(
-    FabricPhysicalTraversalKind value) {
+llvm::StringRef
+loom::fabric::fabricRefKeyword(FabricPhysicalTraversalKind value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -87,8 +84,7 @@ llvm::StringRef loom::fabric::fabricRefKeyword(
 #define LOOM_FABRIC_INVENTORY(Name, Keyword)                                   \
   case FabricInventoryKind::Name:                                              \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricInventoryKind value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricInventoryKind value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -98,8 +94,7 @@ loom::fabric::fabricRefKeyword(FabricInventoryKind value) {
 #define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword)                        \
   case FabricHardwareDomainKind::Name:                                         \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricHardwareDomainKind value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricHardwareDomainKind value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -109,8 +104,7 @@ loom::fabric::fabricRefKeyword(FabricHardwareDomainKind value) {
 #define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword)                        \
   case FabricMemoryEndpointRole::Name:                                         \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricMemoryEndpointRole value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricMemoryEndpointRole value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -120,8 +114,7 @@ loom::fabric::fabricRefKeyword(FabricMemoryEndpointRole value) {
 #define LOOM_FABRIC_REF_ERROR(Name, Keyword)                                   \
   case FabricRefErrorKind::Name:                                               \
     return Keyword;
-llvm::StringRef
-loom::fabric::fabricRefKeyword(FabricRefErrorKind value) {
+llvm::StringRef loom::fabric::fabricRefKeyword(FabricRefErrorKind value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }

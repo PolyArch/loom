@@ -28,11 +28,12 @@ public:
 
   /// Kind of the entity holding `id`, or absent when the artifact declares no
   /// such entity.
-  virtual std::optional<FabricEntityKind> entityKind(FabricEntityId id) const = 0;
+  virtual std::optional<FabricEntityKind>
+  entityKind(FabricEntityId id) const = 0;
 
   /// Size of the owner's canonical token transport inventory.
-  virtual std::uint64_t
-  transportEndpointCount(const FabricTransportEndpointOwnerRef &owner) const = 0;
+  virtual std::uint64_t transportEndpointCount(
+      const FabricTransportEndpointOwnerRef &owner) const = 0;
 
   /// Size of the owner's canonical memory-service endpoint inventory. It is a
   /// separate plane, so equal ordinals never select the same object.

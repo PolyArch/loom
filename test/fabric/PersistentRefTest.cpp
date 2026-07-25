@@ -60,8 +60,8 @@ void requireCanonical(const char *test, llvm::StringRef spelling) {
   const std::string printed =
       printFabricRef(takeExpected(test, parseFabricRef<Ref>(spelling)));
   if (printed != spelling)
-    fail(test, "canonical print of '" + spelling.str() + "' was '" + printed +
-                   "'");
+    fail(test,
+         "canonical print of '" + spelling.str() + "' was '" + printed + "'");
 }
 
 template <typename Ref>
@@ -198,8 +198,8 @@ public:
     return ordinal == 2 ? FabricFuNodeKind::Mux : FabricFuNodeKind::Op;
   }
 
-  bool declaresLocalMemoryService(
-      FabricMemoryOccurrenceRef memory) const override {
+  bool
+  declaresLocalMemoryService(FabricMemoryOccurrenceRef memory) const override {
     return memory.id() == kMemory;
   }
 
@@ -293,7 +293,8 @@ void testFuOccurrenceIdentity() {
 
   require(test, occurrenceA != occurrenceB, "occurrences must stay distinct");
   require(test,
-          canonicalFabricBytes(occurrenceA) != canonicalFabricBytes(occurrenceB),
+          canonicalFabricBytes(occurrenceA) !=
+              canonicalFabricBytes(occurrenceB),
           "distinct occurrences need distinct canonical bytes");
   // Template reuse never merges identity, and equal numbers under different
   // entity kinds are different targets.
@@ -326,9 +327,9 @@ void testTraversalDistinctions() {
   static_assert(
       !std::is_same_v<FabricPhysicalTraversalRef, FabricResourceStateRef>,
       "a traversal is not a resource state");
-  static_assert(
-      !std::is_convertible_v<FabricPhysicalTraversalRef, FabricResourceStateRef>,
-      "a traversal never converts to a resource state");
+  static_assert(!std::is_convertible_v<FabricPhysicalTraversalRef,
+                                       FabricResourceStateRef>,
+                "a traversal never converts to a resource state");
 
   const FabricSwitchOccurrenceRef switchOccurrence(kSwitch);
   const FabricPhysicalTraversalRef traversal =
@@ -356,26 +357,28 @@ void testTraversalDistinctions() {
 
   // An in-range turn the switch contract does not admit is a contract failure,
   // while an out-of-range ordinal remains an ordinal failure.
-  requireKind(test,
-              validateFabricRef(view, FabricPhysicalTraversalRef::switchTraversal(
-                                          switchOccurrence, 1, 0)),
-              FabricRefErrorKind::TraversalNotAdmitted, "unadmitted turn");
-  requireKind(test,
-              validateFabricRef(view, FabricPhysicalTraversalRef::switchTraversal(
-                                          switchOccurrence, 0, 2)),
-              FabricRefErrorKind::OrdinalOutOfRange, "switch output 2 of 2");
-  requireKind(test,
-              validateFabricRef(view,
-                                FabricPhysicalTraversalRef::pointConnection(
-                                    AnchorFabric::switchEndpoint(3),
-                                    AnchorFabric::switchEndpoint(2))),
-              FabricRefErrorKind::AbsentPointConnection, "reverse direction");
+  requireKind(
+      test,
+      validateFabricRef(view, FabricPhysicalTraversalRef::switchTraversal(
+                                  switchOccurrence, 1, 0)),
+      FabricRefErrorKind::TraversalNotAdmitted, "unadmitted turn");
+  requireKind(
+      test,
+      validateFabricRef(view, FabricPhysicalTraversalRef::switchTraversal(
+                                  switchOccurrence, 0, 2)),
+      FabricRefErrorKind::OrdinalOutOfRange, "switch output 2 of 2");
+  requireKind(
+      test,
+      validateFabricRef(view, FabricPhysicalTraversalRef::pointConnection(
+                                  AnchorFabric::switchEndpoint(3),
+                                  AnchorFabric::switchEndpoint(2))),
+      FabricRefErrorKind::AbsentPointConnection, "reverse direction");
   requireKind(test,
               validateFabricRef(
-                  view, FabricResourceStateRef{
-                            FabricResourceStateOwnerRef(
-                                FabricInventoryOwnerRef::of(switchOccurrence)),
-                            3}),
+                  view, FabricResourceStateRef{FabricResourceStateOwnerRef(
+                                                   FabricInventoryOwnerRef::of(
+                                                       switchOccurrence)),
+                                               3}),
               FabricRefErrorKind::OrdinalOutOfRange, "state ordinal 3 of 3");
 }
 
@@ -414,14 +417,16 @@ void testEndpointPlanes() {
   // A SpatialCore attachment is not the AccCore that owns it.
   const AccCoreOccurrenceRef accCore(kAccCore);
   const FabricTransportEndpointRef spatial{
-      FabricTransportEndpointOwnerRef::of(SpatialCoreOccurrenceRef{accCore}), 1};
+      FabricTransportEndpointOwnerRef::of(SpatialCoreOccurrenceRef{accCore}),
+      1};
   const FabricTransportEndpointRef core{
       FabricTransportEndpointOwnerRef::of(accCore), 1};
   require(test, canonicalFabricBytes(spatial) != canonicalFabricBytes(core),
           "spatial core and acc core owners must differ");
   requireSuccess(test, validateFabricRef(view, spatial), "spatial endpoint");
   requireKind(test, validateFabricRef(view, core),
-              FabricRefErrorKind::OrdinalOutOfRange, "acc core endpoint 1 of 0");
+              FabricRefErrorKind::OrdinalOutOfRange,
+              "acc core endpoint 1 of 0");
 }
 
 /// The four owner projections share one constructor catalog while remaining
@@ -492,8 +497,7 @@ void testTypedRefinements() {
   requireKind(test, validateFabricRef(view, LocalMemoryServiceRef(absent)),
               FabricRefErrorKind::WrongEntityKind, "refined absent service");
   requireKind(test,
-              validateFabricRef(view,
-                                FabricMemoryServiceRegionRef{absent, 0}),
+              validateFabricRef(view, FabricMemoryServiceRegionRef{absent, 0}),
               FabricRefErrorKind::WrongEntityKind, "region of absent service");
   requireKind(test,
               validateFabricRef(view, FabricInventoryOwnerRef::of(absent)),
@@ -516,14 +520,15 @@ void testTypedRefinements() {
               FabricRefErrorKind::WrongEntityKind, "manager as subordinate");
 
   requireSuccess(test,
-                 validateFabricRef(view, MemoryConsistencyDomainRef{
-                                             HardwareDomainRef(
-                                                 kConsistencyDomain)}),
+                 validateFabricRef(view,
+                                   MemoryConsistencyDomainRef{
+                                       HardwareDomainRef(kConsistencyDomain)}),
                  "memory consistency domain");
-  requireKind(test,
-              validateFabricRef(view, MemoryConsistencyDomainRef{
-                                          HardwareDomainRef(kClockDomain)}),
-              FabricRefErrorKind::WrongEntityKind, "clock domain");
+  requireKind(
+      test,
+      validateFabricRef(
+          view, MemoryConsistencyDomainRef{HardwareDomainRef(kClockDomain)}),
+      FabricRefErrorKind::WrongEntityKind, "clock domain");
 }
 
 /// An owner mismatch between two individually valid objects is its own
@@ -544,16 +549,18 @@ void testWrongOwner() {
   requireKind(test, paired.takeError(), FabricRefErrorKind::WrongOwner,
               "unrelated template owner");
 
-  requireKind(test,
-              validateFabricRef(view, FabricFuTemplateNodeRef{
-                                          FabricFuNodeKind::Op,
-                                          FabricFuTemplateRef(kFuTemplate), 2}),
-              FabricRefErrorKind::WrongEntityKind, "node kind at ordinal 2");
-  requireKind(test,
-              validateFabricRef(view, FabricFuTemplateNodeRef{
-                                          FabricFuNodeKind::Op,
-                                          FabricFuTemplateRef(kFuTemplate), 4}),
-              FabricRefErrorKind::OrdinalOutOfRange, "node ordinal 4 of 4");
+  requireKind(
+      test,
+      validateFabricRef(
+          view, FabricFuTemplateNodeRef{FabricFuNodeKind::Op,
+                                        FabricFuTemplateRef(kFuTemplate), 2}),
+      FabricRefErrorKind::WrongEntityKind, "node kind at ordinal 2");
+  requireKind(
+      test,
+      validateFabricRef(
+          view, FabricFuTemplateNodeRef{FabricFuNodeKind::Op,
+                                        FabricFuTemplateRef(kFuTemplate), 4}),
+      FabricRefErrorKind::OrdinalOutOfRange, "node ordinal 4 of 4");
 }
 
 /// Import rejects every artifact-scope and entity failure it classifies.
@@ -573,15 +580,15 @@ void testImportRejection() {
                                   identity(test, 0x22), occurrence}),
               FabricRefErrorKind::ForeignArtifact, "foreign artifact");
   requireKind(test,
-              importFabricRef(
-                  view,
-                  FabricImportBinding{identity(test, 0x11),
-                                      FabricRootKind::System},
-                  ArtifactReference<FabricFuOccurrenceRef>{
-                      identity(test, 0x11), occurrence}),
+              importFabricRef(view,
+                              FabricImportBinding{identity(test, 0x11),
+                                                  FabricRootKind::System},
+                              ArtifactReference<FabricFuOccurrenceRef>{
+                                  identity(test, 0x11), occurrence}),
               FabricRefErrorKind::WrongRootKind, "wrong root kind");
 
-  requireKind(test, validateFabricRef(view, FabricFuOccurrenceRef(kAbsentEntity)),
+  requireKind(test,
+              validateFabricRef(view, FabricFuOccurrenceRef(kAbsentEntity)),
               FabricRefErrorKind::UnknownEntity, "stale entity");
   requireKind(test, validateFabricRef(view, FabricFuOccurrenceRef(kFuTemplate)),
               FabricRefErrorKind::WrongEntityKind, "wrong entity kind");
@@ -589,15 +596,16 @@ void testImportRejection() {
   // Deprecated and generic escapes are reported as such, not as syntax noise.
   requireParseKind<FabricFuOccurrenceRef>(test, "fabric.fu<11>",
                                           FabricRefErrorKind::DeprecatedAlias);
-  requireParseKind<FabricFuOccurrenceRef>(test, "fabric.fu_occurrence<11>.port[3]",
+  requireParseKind<FabricFuOccurrenceRef>(test,
+                                          "fabric.fu_occurrence<11>.port[3]",
                                           FabricRefErrorKind::DeprecatedAlias);
   requireParseKind<FabricFuOccurrenceRef>(test, "@fu_occurrence",
                                           FabricRefErrorKind::DeprecatedAlias);
   requireParseKind<FabricFuOccurrenceRef>(test, "#fabric.fu_occurrence<11>",
                                           FabricRefErrorKind::DeprecatedAlias);
-  requireParseKind<FabricFuOccurrenceRef>(
-      test, "fabric.fu_occurrence<11> loc(\"x\")",
-      FabricRefErrorKind::DeprecatedAlias);
+  requireParseKind<FabricFuOccurrenceRef>(test,
+                                          "fabric.fu_occurrence<11> loc(\"x\")",
+                                          FabricRefErrorKind::DeprecatedAlias);
 }
 
 /// The strict text codec accepts exactly the canonical typed language.
@@ -658,11 +666,10 @@ void testRoundTrip() {
   // Canonical bytes are unsigned 32-bit big-endian variant tags followed by
   // unsigned 64-bit big-endian fields, with no padding or native layout.
   const auto tagBytes = [](std::uint32_t value) {
-    return std::vector<std::uint8_t>{
-        static_cast<std::uint8_t>(value >> 24),
-        static_cast<std::uint8_t>(value >> 16),
-        static_cast<std::uint8_t>(value >> 8),
-        static_cast<std::uint8_t>(value)};
+    return std::vector<std::uint8_t>{static_cast<std::uint8_t>(value >> 24),
+                                     static_cast<std::uint8_t>(value >> 16),
+                                     static_cast<std::uint8_t>(value >> 8),
+                                     static_cast<std::uint8_t>(value)};
   };
   const auto fieldBytes = [](std::uint64_t value) {
     std::vector<std::uint8_t> out;
@@ -670,9 +677,8 @@ void testRoundTrip() {
       out.push_back(static_cast<std::uint8_t>(value >> shift));
     return out;
   };
-  std::vector<std::uint8_t> expected =
-      tagBytes(static_cast<std::uint32_t>(
-          FabricTransportEndpointOwnerKind::FabricSwitchOccurrence));
+  std::vector<std::uint8_t> expected = tagBytes(static_cast<std::uint32_t>(
+      FabricTransportEndpointOwnerKind::FabricSwitchOccurrence));
   for (std::vector<std::uint8_t> part :
        {tagBytes(static_cast<std::uint32_t>(
             FabricEntityKind::FabricSwitchOccurrence)),

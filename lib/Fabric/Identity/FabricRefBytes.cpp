@@ -11,8 +11,8 @@ loom::fabric::readFabricClosedTag(FabricByteReader &reader, std::uint32_t bound,
     return raw.takeError();
   if (*raw >= bound)
     return makeFabricRefError(FabricRefErrorKind::MalformedSyntax,
-                              llvm::Twine("unknown ") + what + " discriminant " +
-                                  llvm::Twine(*raw));
+                              llvm::Twine("unknown ") + what +
+                                  " discriminant " + llvm::Twine(*raw));
   return *raw;
 }
 
@@ -29,7 +29,7 @@ void loom::fabric::encodeFabricRef(
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
 #define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
-  case FabricTransportEndpointOwnerKind::Name:                              \
+  case FabricTransportEndpointOwnerKind::Name:                                 \
     return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -39,8 +39,8 @@ void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
                                    const FabricMemoryEndpointOwnerRef &value) {
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                \
-  case FabricMemoryEndpointOwnerKind::Name:                              \
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+  case FabricMemoryEndpointOwnerKind::Name:                                    \
     return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -51,7 +51,7 @@ void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
 #define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
-  case FabricInventoryOwnerKind::Name:                              \
+  case FabricInventoryOwnerKind::Name:                                         \
     return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -62,7 +62,7 @@ void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
   writer.tag(static_cast<std::uint32_t>(value.kind()));
   switch (value.kind()) {
 #define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
-  case FabricMemoryServiceKind::Name:                              \
+  case FabricMemoryServiceKind::Name:                                          \
     return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -91,7 +91,7 @@ loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
     return tag.takeError();
   switch (static_cast<FabricTransportEndpointOwnerKind>(*tag)) {
 #define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
-  case FabricTransportEndpointOwnerKind::Name:                              \
+  case FabricTransportEndpointOwnerKind::Name:                                 \
     return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -107,8 +107,8 @@ loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
   if (!tag)
     return tag.takeError();
   switch (static_cast<FabricMemoryEndpointOwnerKind>(*tag)) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                \
-  case FabricMemoryEndpointOwnerKind::Name:                              \
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+  case FabricMemoryEndpointOwnerKind::Name:                                    \
     return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -124,7 +124,7 @@ llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
     return tag.takeError();
   switch (static_cast<FabricInventoryOwnerKind>(*tag)) {
 #define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
-  case FabricInventoryOwnerKind::Name:                              \
+  case FabricInventoryOwnerKind::Name:                                         \
     return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -140,7 +140,7 @@ llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
     return tag.takeError();
   switch (static_cast<FabricMemoryServiceKind>(*tag)) {
 #define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
-  case FabricMemoryServiceKind::Name:                              \
+  case FabricMemoryServiceKind::Name:                                          \
     return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }

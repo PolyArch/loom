@@ -78,9 +78,9 @@ static llvm::Error fabricOwnerFamilyError(llvm::StringRef keyword,
   const bool inOtherPlane = isTransportPlane ? isMemoryOwnerFamily(keyword)
                                              : isTransportOwnerFamily(keyword);
   if (inOtherPlane)
-    return makeFabricRefError(
-        FabricRefErrorKind::PlaneMisuse,
-        llvm::Twine("'") + keyword + "' owns the other endpoint plane");
+    return makeFabricRefError(FabricRefErrorKind::PlaneMisuse,
+                              llvm::Twine("'") + keyword +
+                                  "' owns the other endpoint plane");
   if (isDeprecatedFamily(keyword) || isGenericEscape(rest))
     return fabricRefTextError("an endpoint owner", rest);
   return makeFabricRefError(FabricRefErrorKind::InvalidOwnerFamily,
@@ -91,7 +91,8 @@ static llvm::Error fabricOwnerFamilyError(llvm::StringRef keyword,
 llvm::Error loom::fabric::fabricRefTextError(const llvm::Twine &context,
                                              llvm::StringRef rest) {
   const llvm::StringRef trimmed = rest.ltrim(' ');
-  if (isGenericEscape(trimmed) || isDeprecatedFamily(rest.take_while(isKeywordByte)))
+  if (isGenericEscape(trimmed) ||
+      isDeprecatedFamily(rest.take_while(isKeywordByte)))
     return makeFabricRefError(FabricRefErrorKind::DeprecatedAlias,
                               llvm::Twine("deprecated or generic reference "
                                           "escape at '") +
@@ -148,8 +149,8 @@ llvm::Error loom::fabric::fabricExpectFamily(FabricRefScanner &scanner,
     // spelling failure.
     if (isEntityFamily(keyword) && isEntityFamily(family))
       return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
-                                llvm::Twine("'") + keyword +
-                                    "' is not '" + family + "'");
+                                llvm::Twine("'") + keyword + "' is not '" +
+                                    family + "'");
     return fabricRefTextError(llvm::Twine("reference family '") + family + "'",
                               scanner.rest());
   }
@@ -164,8 +165,8 @@ llvm::Error loom::fabric::fabricExpectFamily(FabricRefScanner &scanner,
 // constructor is recovered from the payload family rather than written twice.
 //===---------------------------------------------------------------------===//
 
-void loom::fabric::printFabricRef(llvm::raw_ostream &os,
-                                  const FabricTransportEndpointOwnerRef &owner) {
+void loom::fabric::printFabricRef(
+    llvm::raw_ostream &os, const FabricTransportEndpointOwnerRef &owner) {
   switch (owner.kind()) {
 #define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
   case FabricTransportEndpointOwnerKind::Name:                                 \
@@ -269,17 +270,16 @@ llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
   if (llvm::Error error = scanner.expect("<"))
     return error;
   FabricMemoryServiceKind kind = FabricMemoryServiceKind();
-  if (llvm::Error error = parseFabricKeyword(scanner, kind,
-                                             fabricClosedBound(kind),
-                                             fabricClosedName(kind)))
+  if (llvm::Error error = parseFabricKeyword(
+          scanner, kind, fabricClosedBound(kind), fabricClosedName(kind)))
     return error;
   if (llvm::Error error = scanner.expect(", "))
     return error;
   switch (kind) {
 #define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
-    if (llvm::Error error = parseFabricRefInto(                                \
-            scanner, service.payload.emplace<Type>()))                         \
+    if (llvm::Error error =                                                    \
+            parseFabricRefInto(scanner, service.payload.emplace<Type>()))      \
       return error;                                                            \
     break;
 #include "Fabric/Identity/FabricRefs.def"
@@ -296,9 +296,8 @@ loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
   if (llvm::Error error = scanner.expect("<"))
     return error;
   FabricPhysicalTraversalKind kind = FabricPhysicalTraversalKind();
-  if (llvm::Error error = parseFabricKeyword(scanner, kind,
-                                             fabricClosedBound(kind),
-                                             fabricClosedName(kind)))
+  if (llvm::Error error = parseFabricKeyword(
+          scanner, kind, fabricClosedBound(kind), fabricClosedName(kind)))
     return error;
   FabricParseVisitor visitor{scanner, /*started=*/true};
   switch (kind) {

@@ -51,18 +51,21 @@ llvm::Error fabricRefTextError(const llvm::Twine &context,
 
 /// Consumes exactly `family`. A different catalog family, a retired spelling,
 /// or a generic escape is classified rather than reported as syntax noise.
-llvm::Error fabricExpectFamily(FabricRefScanner &scanner, llvm::StringRef family);
+llvm::Error fabricExpectFamily(FabricRefScanner &scanner,
+                               llvm::StringRef family);
 
 template <FabricEntityKind Kind>
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricTypedEntityRef<Kind> &ref);
-template <typename Ref> void printFabricRef(llvm::raw_ostream &os, const Ref &ref);
+template <typename Ref>
+void printFabricRef(llvm::raw_ostream &os, const Ref &ref);
 
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricTransportEndpointOwnerRef &owner);
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricMemoryEndpointOwnerRef &owner);
-void printFabricRef(llvm::raw_ostream &os, const FabricInventoryOwnerRef &owner);
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricInventoryOwnerRef &owner);
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricMemoryServiceRef &service);
 void printFabricRef(llvm::raw_ostream &os,
@@ -249,7 +252,8 @@ llvm::Error parseFabricRefInto(FabricRefScanner &scanner, Ref &ref) {
 }
 
 /// Parses one complete reference of the statically required family.
-template <typename Ref> llvm::Expected<Ref> parseFabricRef(llvm::StringRef text) {
+template <typename Ref>
+llvm::Expected<Ref> parseFabricRef(llvm::StringRef text) {
   FabricRefScanner scanner(text);
   Ref ref;
   if (llvm::Error error = parseFabricRefInto(scanner, ref))

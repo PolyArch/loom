@@ -122,7 +122,8 @@ void encodeFabricRef(FabricByteWriter &writer, const Ref &ref) {
   Ref::visitFields(ref, visitor);
 }
 
-template <typename Ref> std::vector<std::uint8_t> canonicalFabricBytes(const Ref &ref) {
+template <typename Ref>
+std::vector<std::uint8_t> canonicalFabricBytes(const Ref &ref) {
   FabricByteWriter writer;
   encodeFabricRef(writer, ref);
   return writer.take();
