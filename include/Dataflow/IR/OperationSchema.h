@@ -93,12 +93,31 @@ struct NoPayload {
   friend bool operator==(NoPayload, NoPayload) { return true; }
 };
 
-/// Floating-point fast-math admission, which is an observable capability fact.
-struct FastMathPayload {
+/// Floating-point policy not encoded by the actor's function type.
+struct FloatingPointPayload {
   ::mlir::arith::FastMathFlags flags = ::mlir::arith::FastMathFlags::none;
+  std::optional<::mlir::arith::RoundingMode> roundingMode;
 
-  friend bool operator==(FastMathPayload lhs, FastMathPayload rhs) {
-    return lhs.flags == rhs.flags;
+  friend bool operator==(FloatingPointPayload lhs, FloatingPointPayload rhs) {
+    return lhs.flags == rhs.flags && lhs.roundingMode == rhs.roundingMode;
+  }
+};
+
+/// The exact flag on integer division and right-shift actors.
+struct ExactPayload {
+  bool isExact = false;
+
+  friend bool operator==(ExactPayload lhs, ExactPayload rhs) {
+    return lhs.isExact == rhs.isExact;
+  }
+};
+
+/// The non-negative operand assumption on unsigned conversion actors.
+struct NonNegativePayload {
+  bool isNonNegative = false;
+
+  friend bool operator==(NonNegativePayload lhs, NonNegativePayload rhs) {
+    return lhs.isNonNegative == rhs.isNonNegative;
   }
 };
 
@@ -161,6 +180,29 @@ struct AggregatePositionPayload {
   friend bool operator==(const AggregatePositionPayload &lhs,
                          const AggregatePositionPayload &rhs) {
     return lhs.position == rhs.position;
+  }
+};
+
+/// The static dimension selections of a fixed-vector extract or insert.
+/// Dynamic selections remain operands and are already represented by the
+/// actor's function type.
+struct VectorStaticPositionPayload {
+  std::vector<std::int64_t> position;
+
+  friend bool operator==(const VectorStaticPositionPayload &lhs,
+                         const VectorStaticPositionPayload &rhs) {
+    return lhs.position == rhs.position;
+  }
+};
+
+/// The exact lane selection of a fixed-vector shuffle. A value of -1 retains
+/// its native poison meaning.
+struct VectorShuffleMaskPayload {
+  std::vector<std::int64_t> mask;
+
+  friend bool operator==(const VectorShuffleMaskPayload &lhs,
+                         const VectorShuffleMaskPayload &rhs) {
+    return lhs.mask == rhs.mask;
   }
 };
 
@@ -274,12 +316,12 @@ using MemoryContractPayload =
                  FenceProjection>;
 
 /// The closed payload sum, one alternative per declared semantic case.
-using SemanticPayload =
-    std::variant<NoPayload, FastMathPayload, IntegerOverflowPayload,
-                 IntegerComparePayload, FloatComparePayload,
-                 ConstantValuePayload, StreamRecurrencePayload,
-                 MemoryContractPayload, ZeroPoisonPayload,
-                 IntegerMinPoisonPayload, AggregatePositionPayload>;
+using SemanticPayload = std::variant<
+    NoPayload, FloatingPointPayload, ExactPayload, NonNegativePayload,
+    IntegerOverflowPayload, IntegerComparePayload, FloatComparePayload,
+    ConstantValuePayload, StreamRecurrencePayload, MemoryContractPayload,
+    ZeroPoisonPayload, IntegerMinPoisonPayload, AggregatePositionPayload,
+    VectorStaticPositionPayload, VectorShuffleMaskPayload>;
 
 /// The complete identity-critical projection of one canonical actor instance.
 struct CanonicalActorSemantics {

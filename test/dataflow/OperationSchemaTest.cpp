@@ -28,6 +28,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -45,6 +46,36 @@ using namespace dataflow;
 
 namespace {
 
+template <typename OpTy>
+bool nativeSemanticInterfacesAreClassified(OperationSemanticsCase semantics) {
+  if constexpr (OpTy::template hasTrait<
+                    arith::ArithRoundingModeInterface::Trait>())
+    return semantics == OperationSemanticsCase::ArithFloatingPoint;
+  if constexpr (OpTy::template hasTrait<arith::ArithFastMathInterface::Trait>())
+    return semantics == OperationSemanticsCase::ArithFloatingPoint ||
+           semantics == OperationSemanticsCase::ArithFloatCompare;
+  if constexpr (OpTy::template hasTrait<
+                    arith::ArithIntegerOverflowFlagsInterface::Trait>())
+    return semantics == OperationSemanticsCase::ArithIntegerOverflow;
+  if constexpr (OpTy::template hasTrait<
+                    arith::ArithNonNegFlagInterface::Trait>())
+    return semantics == OperationSemanticsCase::ArithNonNegative;
+  return true;
+}
+
+bool checkNativeSemanticInterfaceCoverage() {
+  bool ok = true;
+#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
+  if (!nativeSemanticInterfacesAreClassified<OpClass>(                         \
+          OperationSemanticsCase::SemanticsCase)) {                            \
+    llvm::errs() << OpClass::getOperationName()                                \
+                 << " leaves a native semantic interface unclassified\n";      \
+    ok = false;                                                                \
+  }
+#include "Dataflow/IR/OperationSchemas.inc"
+  return ok;
+}
+
 bool checkSpellingRoundTrip() {
   bool ok = true;
   llvm::StringSet<> spellings;
@@ -52,6 +83,12 @@ bool checkSpellingRoundTrip() {
   if (count == 0) {
     llvm::errs() << "the registry declares no operation schema\n";
     return false;
+  }
+  if (static_cast<std::uint32_t>(OperationSchemaId::VectorExtract) != 94 ||
+      static_cast<std::uint32_t>(OperationSchemaId::VectorInsert) != 95 ||
+      static_cast<std::uint32_t>(OperationSchemaId::VectorShuffle) != 96) {
+    llvm::errs() << "fixed-vector schema ids changed\n";
+    ok = false;
   }
   for (std::uint32_t index = 0; index < count; ++index) {
     auto schema = static_cast<OperationSchemaId>(index);
@@ -156,6 +193,28 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
       ok = false;
       return std::nullopt;
     }
+    std::optional<OperationSchemaId> schema = operationSchemaOf(op);
+    if (!schema || actor.getOperationSchema() != *schema ||
+        actor.getCanonicalActorKind() != actorKind(*schema)) {
+      llvm::errs() << op->getName().getStringRef()
+                   << " interface identity disagrees with the registry\n";
+      ok = false;
+    }
+    if (failed(actor.verifyCanonicalActorInstance())) {
+      llvm::errs() << op->getName().getStringRef()
+                   << " interface verifier rejected its generated projection\n";
+      ok = false;
+    }
+    llvm::Expected<CanonicalActorSemantics> direct =
+        projectRegisteredActorSemantics(op);
+    if (!direct) {
+      llvm::errs() << llvm::toString(direct.takeError()) << '\n';
+      ok = false;
+    } else if (*direct != *projection) {
+      llvm::errs() << op->getName().getStringRef()
+                   << " interface projection disagrees with the registry\n";
+      ok = false;
+    }
     return *projection;
   };
 
@@ -194,6 +253,392 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
   signedLess->erase();
   rhs.getDefiningOp()->erase();
   lhs.getDefiningOp()->erase();
+  return ok;
+}
+
+bool checkFloatingSemanticState(MLIRContext &context) {
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Value lhs =
+      arith::ConstantOp::create(builder, loc, builder.getF32FloatAttr(1.0));
+  Value rhs =
+      arith::ConstantOp::create(builder, loc, builder.getF32FloatAttr(2.0));
+  Operation *plain =
+      arith::AddFOp::create(builder, loc, lhs, rhs, arith::FastMathFlags::none,
+                            arith::RoundingModeAttr{});
+  Operation *fast =
+      arith::AddFOp::create(builder, loc, lhs, rhs, arith::FastMathFlags::nnan,
+                            arith::RoundingModeAttr{});
+  Operation *rounded = arith::AddFOp::create(
+      builder, loc, lhs, rhs, arith::FastMathFlags::none,
+      arith::RoundingModeAttr::get(&context, arith::RoundingMode::downward));
+  Operation *plainSin =
+      math::SinOp::create(builder, loc, lhs, arith::FastMathFlags::none);
+  Operation *fastSin =
+      math::SinOp::create(builder, loc, lhs, arith::FastMathFlags::nnan);
+  Operation *plainFma = math::FmaOp::create(builder, loc, lhs, rhs, lhs,
+                                            arith::FastMathFlags::none,
+                                            arith::RoundingModeAttr{});
+  Operation *roundedFma = math::FmaOp::create(
+      builder, loc, lhs, rhs, lhs, arith::FastMathFlags::none,
+      arith::RoundingModeAttr::get(&context, arith::RoundingMode::upward));
+
+  bool ok = true;
+  auto project =
+      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+    auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
+    if (!actor) {
+      llvm::errs() << op->getName().getStringRef()
+                   << " does not project through the typed actor interface\n";
+      ok = false;
+      return std::nullopt;
+    }
+    llvm::Expected<CanonicalActorSemantics> projection =
+        actor.projectCanonicalActorSemantics();
+    if (!projection) {
+      llvm::errs() << llvm::toString(projection.takeError()) << '\n';
+      ok = false;
+      return std::nullopt;
+    }
+    return *projection;
+  };
+
+  std::optional<CanonicalActorSemantics> plainProjection = project(plain);
+  std::optional<CanonicalActorSemantics> fastProjection = project(fast);
+  std::optional<CanonicalActorSemantics> roundedProjection = project(rounded);
+  std::optional<CanonicalActorSemantics> plainSinProjection = project(plainSin);
+  std::optional<CanonicalActorSemantics> fastSinProjection = project(fastSin);
+  std::optional<CanonicalActorSemantics> plainFmaProjection = project(plainFma);
+  std::optional<CanonicalActorSemantics> roundedFmaProjection =
+      project(roundedFma);
+  if (plainProjection && fastProjection &&
+      *plainProjection == *fastProjection) {
+    llvm::errs() << "fast-math state did not change the projection\n";
+    ok = false;
+  }
+  if (plainProjection && roundedProjection &&
+      *plainProjection == *roundedProjection) {
+    llvm::errs() << "rounding mode did not change the projection\n";
+    ok = false;
+  }
+  if (plainSinProjection && fastSinProjection &&
+      *plainSinProjection == *fastSinProjection) {
+    llvm::errs()
+        << "math unary fast-math state did not change the projection\n";
+    ok = false;
+  }
+  if (plainFmaProjection && roundedFmaProjection &&
+      *plainFmaProjection == *roundedFmaProjection) {
+    llvm::errs() << "math.fma rounding mode did not change the projection\n";
+    ok = false;
+  }
+
+  roundedFma->erase();
+  plainFma->erase();
+  fastSin->erase();
+  plainSin->erase();
+  rounded->erase();
+  fast->erase();
+  plain->erase();
+  rhs.getDefiningOp()->erase();
+  lhs.getDefiningOp()->erase();
+  return ok;
+}
+
+bool checkExactAndNonNegativeSemanticState(MLIRContext &context) {
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  Value lhs =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(8));
+  Value rhs =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(2));
+  Operation *plainDivision =
+      arith::DivSIOp::create(builder, loc, lhs, rhs, false);
+  Operation *exactDivision =
+      arith::DivSIOp::create(builder, loc, lhs, rhs, true);
+  Operation *plainExtension =
+      arith::ExtUIOp::create(builder, loc, builder.getI64Type(), lhs, false);
+  Operation *nonNegativeExtension =
+      arith::ExtUIOp::create(builder, loc, builder.getI64Type(), lhs, true);
+
+  bool ok = true;
+  auto expectDelta = [&ok](Operation *plain, Operation *qualified,
+                           llvm::StringRef state) {
+    llvm::Expected<CanonicalActorSemantics> plainProjection =
+        projectRegisteredActorSemantics(plain);
+    llvm::Expected<CanonicalActorSemantics> qualifiedProjection =
+        projectRegisteredActorSemantics(qualified);
+    if (!plainProjection) {
+      llvm::errs() << llvm::toString(plainProjection.takeError()) << '\n';
+      ok = false;
+      if (!qualifiedProjection)
+        llvm::consumeError(qualifiedProjection.takeError());
+      return;
+    }
+    if (!qualifiedProjection) {
+      llvm::errs() << llvm::toString(qualifiedProjection.takeError()) << '\n';
+      ok = false;
+      return;
+    }
+    if (*plainProjection == *qualifiedProjection) {
+      llvm::errs() << state << " state did not change the projection\n";
+      ok = false;
+    }
+  };
+
+  expectDelta(plainDivision, exactDivision, "exact");
+  expectDelta(plainExtension, nonNegativeExtension, "nneg");
+
+  nonNegativeExtension->erase();
+  plainExtension->erase();
+  exactDivision->erase();
+  plainDivision->erase();
+  rhs.getDefiningOp()->erase();
+  lhs.getDefiningOp()->erase();
+  return ok;
+}
+
+bool checkVectorStructuralSemanticState(MLIRContext &context) {
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  VectorType vectorType = VectorType::get({2}, builder.getI32Type());
+  SmallVector<Attribute> lhsElements = {builder.getI32IntegerAttr(1),
+                                        builder.getI32IntegerAttr(2)};
+  SmallVector<Attribute> rhsElements = {builder.getI32IntegerAttr(3),
+                                        builder.getI32IntegerAttr(4)};
+  Value lhs = arith::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(vectorType, lhsElements));
+  Value rhs = arith::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(vectorType, rhsElements));
+  Value scalar =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(7));
+
+  Operation *extractFirst = vector::ExtractOp::create(builder, loc, lhs, 0);
+  Operation *extractSecond = vector::ExtractOp::create(builder, loc, lhs, 1);
+  Operation *insertFirst =
+      vector::InsertOp::create(builder, loc, scalar, lhs, 0);
+  Operation *insertSecond =
+      vector::InsertOp::create(builder, loc, scalar, lhs, 1);
+  Operation *identityShuffle = vector::ShuffleOp::create(
+      builder, loc, vectorType, lhs, rhs, llvm::ArrayRef<int64_t>{0, 1});
+  Operation *reverseShuffle = vector::ShuffleOp::create(
+      builder, loc, vectorType, lhs, rhs, llvm::ArrayRef<int64_t>{1, 0});
+  Operation *poisonShuffle = vector::ShuffleOp::create(
+      builder, loc, vectorType, lhs, rhs, llvm::ArrayRef<int64_t>{0, -1});
+  Value dynamicIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+  SmallVector<OpFoldResult> dynamicPosition = {dynamicIndex};
+  Operation *dynamicExtract =
+      vector::ExtractOp::create(builder, loc, lhs, dynamicPosition);
+
+  bool ok = true;
+  auto project =
+      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+    auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
+    if (!actor) {
+      llvm::errs() << op->getName().getStringRef()
+                   << " does not project through the typed actor interface\n";
+      ok = false;
+      return std::nullopt;
+    }
+    llvm::Expected<CanonicalActorSemantics> projection =
+        actor.projectCanonicalActorSemantics();
+    if (!projection) {
+      llvm::errs() << llvm::toString(projection.takeError()) << '\n';
+      ok = false;
+      return std::nullopt;
+    }
+    return *projection;
+  };
+
+  std::optional<CanonicalActorSemantics> firstExtract = project(extractFirst);
+  std::optional<CanonicalActorSemantics> secondExtract = project(extractSecond);
+  std::optional<CanonicalActorSemantics> firstInsert = project(insertFirst);
+  std::optional<CanonicalActorSemantics> secondInsert = project(insertSecond);
+  std::optional<CanonicalActorSemantics> identity = project(identityShuffle);
+  std::optional<CanonicalActorSemantics> reverse = project(reverseShuffle);
+  std::optional<CanonicalActorSemantics> poison = project(poisonShuffle);
+  std::optional<CanonicalActorSemantics> dynamic = project(dynamicExtract);
+  if (firstExtract && secondExtract && *firstExtract == *secondExtract) {
+    llvm::errs() << "two vector.extract positions share one projection\n";
+    ok = false;
+  }
+  if (firstInsert && secondInsert && *firstInsert == *secondInsert) {
+    llvm::errs() << "two vector.insert positions share one projection\n";
+    ok = false;
+  }
+  if (identity && reverse && *identity == *reverse) {
+    llvm::errs() << "two vector.shuffle masks share one projection\n";
+    ok = false;
+  }
+  if (firstExtract) {
+    auto *position =
+        std::get_if<VectorStaticPositionPayload>(&firstExtract->payload);
+    if (!position || position->position != std::vector<std::int64_t>{0}) {
+      llvm::errs() << "vector.extract lost its static position\n";
+      ok = false;
+    }
+  }
+  if (poison) {
+    auto *mask = std::get_if<VectorShuffleMaskPayload>(&poison->payload);
+    if (!mask || mask->mask != std::vector<std::int64_t>{0, -1}) {
+      llvm::errs() << "vector.shuffle lost its poison mask lane\n";
+      ok = false;
+    }
+  }
+  if (dynamic) {
+    auto *position =
+        std::get_if<VectorStaticPositionPayload>(&dynamic->payload);
+    if (!position ||
+        position->position != std::vector<std::int64_t>{ShapedType::kDynamic} ||
+        dynamic->type.getNumInputs() != 2) {
+      llvm::errs() << "vector.extract did not separate dynamic operands from "
+                      "static position structure\n";
+      ok = false;
+    }
+  }
+
+  dynamicExtract->erase();
+  dynamicIndex.getDefiningOp()->erase();
+  poisonShuffle->erase();
+  reverseShuffle->erase();
+  identityShuffle->erase();
+  insertSecond->erase();
+  insertFirst->erase();
+  extractSecond->erase();
+  extractFirst->erase();
+  scalar.getDefiningOp()->erase();
+  rhs.getDefiningOp()->erase();
+  lhs.getDefiningOp()->erase();
+  return ok;
+}
+
+bool expectStructuralVectorRejection(Operation *op, llvm::StringRef state) {
+  bool ok = true;
+  auto reportAdmission = [&](llvm::StringRef surface) {
+    llvm::errs() << op->getName().getStringRef() << " admitted " << state
+                 << " through " << surface << '\n';
+    ok = false;
+  };
+
+  if (operationSchemaOf(op))
+    reportAdmission("operationSchemaOf");
+  if (classifyCanonicalDataflowActor(op))
+    reportAdmission("classifyCanonicalDataflowActor");
+  if (isCanonicalDataflowActor(op))
+    reportAdmission("isCanonicalDataflowActor");
+  if (isCanonicalDataflowActor(op, CanonicalDataflowActorKind::Compute))
+    reportAdmission("kind-specific isCanonicalDataflowActor");
+
+  llvm::Expected<CanonicalActorSemantics> direct =
+      projectRegisteredActorSemantics(op);
+  if (direct)
+    reportAdmission("projectRegisteredActorSemantics");
+  else
+    llvm::consumeError(direct.takeError());
+
+  auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
+  if (!actor) {
+    llvm::errs() << op->getName().getStringRef()
+                 << " has no canonical actor interface for rejecting " << state
+                 << '\n';
+    return false;
+  }
+  llvm::Expected<CanonicalActorSemantics> projected =
+      actor.projectCanonicalActorSemantics();
+  if (projected)
+    reportAdmission("CanonicalDataflowActorOpInterface projection");
+  else
+    llvm::consumeError(projected.takeError());
+  if (succeeded(actor.verifyCanonicalActorInstance()))
+    reportAdmission("CanonicalDataflowActorOpInterface verifier");
+  return ok;
+}
+
+bool checkStructuralVectorAdmission(MLIRContext &context) {
+  OpBuilder builder(&context);
+  Location loc = builder.getUnknownLoc();
+  VectorType scalableType = VectorType::get({2}, builder.getI32Type(), {true});
+  VectorType fixedType = VectorType::get({2}, builder.getI32Type());
+  VectorType rankZeroType = VectorType::get({}, builder.getI32Type());
+  VectorType indexVectorType = VectorType::get({2}, builder.getIndexType());
+  Value scalable = ub::PoisonOp::create(builder, loc, scalableType);
+  Value fixed = ub::PoisonOp::create(builder, loc, fixedType);
+  Value rankZeroLhs = ub::PoisonOp::create(builder, loc, rankZeroType);
+  Value rankZeroRhs = ub::PoisonOp::create(builder, loc, rankZeroType);
+  Value indexLhs = ub::PoisonOp::create(builder, loc, indexVectorType);
+  Value indexRhs = ub::PoisonOp::create(builder, loc, indexVectorType);
+  Value scalar =
+      arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(7));
+  Value indexScalar = arith::ConstantIndexOp::create(builder, loc, 0);
+
+  Operation *scalableExtract =
+      vector::ExtractOp::create(builder, loc, scalable, 0);
+  Operation *mixedScalableExtract =
+      vector::ExtractOp::create(builder, loc, scalableType, fixed, ValueRange{},
+                                builder.getDenseI64ArrayAttr({}));
+  Operation *scalableInsert =
+      vector::InsertOp::create(builder, loc, scalar, scalable, 0);
+  Operation *scalableShuffle =
+      vector::ShuffleOp::create(builder, loc, scalableType, scalable, scalable,
+                                llvm::ArrayRef<int64_t>{0, 1});
+
+  Operation *rankZeroExtract =
+      vector::ExtractOp::create(builder, loc, rankZeroLhs);
+  Operation *rankZeroInsert =
+      vector::InsertOp::create(builder, loc, scalar, rankZeroLhs);
+  Operation *rankZeroShuffle =
+      vector::ShuffleOp::create(builder, loc, fixedType, rankZeroLhs,
+                                rankZeroRhs, llvm::ArrayRef<int64_t>{0, 1});
+
+  Operation *indexExtract =
+      vector::ExtractOp::create(builder, loc, indexLhs, 0);
+  Operation *indexInsert =
+      vector::InsertOp::create(builder, loc, indexScalar, indexLhs, 0);
+  Operation *indexShuffle =
+      vector::ShuffleOp::create(builder, loc, indexVectorType, indexLhs,
+                                indexRhs, llvm::ArrayRef<int64_t>{0, 1});
+
+  bool ok = true;
+  ScopedDiagnosticHandler diagnostics(&context, [](Diagnostic &) {});
+  ok &= expectStructuralVectorRejection(scalableExtract,
+                                        "a scalable structural vector");
+  ok &= expectStructuralVectorRejection(mixedScalableExtract,
+                                        "a scalable structural vector result");
+  ok &= expectStructuralVectorRejection(scalableInsert,
+                                        "a scalable structural vector");
+  ok &= expectStructuralVectorRejection(scalableShuffle,
+                                        "a scalable structural vector");
+  ok &= expectStructuralVectorRejection(rankZeroExtract,
+                                        "a rank-zero structural vector");
+  ok &= expectStructuralVectorRejection(rankZeroInsert,
+                                        "a rank-zero structural vector");
+  ok &= expectStructuralVectorRejection(rankZeroShuffle,
+                                        "a rank-zero structural vector");
+  ok &= expectStructuralVectorRejection(indexExtract,
+                                        "an index-element structural vector");
+  ok &= expectStructuralVectorRejection(indexInsert,
+                                        "an index-element structural vector");
+  ok &= expectStructuralVectorRejection(indexShuffle,
+                                        "an index-element structural vector");
+
+  indexShuffle->erase();
+  indexInsert->erase();
+  indexExtract->erase();
+  rankZeroShuffle->erase();
+  rankZeroInsert->erase();
+  rankZeroExtract->erase();
+  scalableShuffle->erase();
+  scalableInsert->erase();
+  mixedScalableExtract->erase();
+  scalableExtract->erase();
+  indexScalar.getDefiningOp()->erase();
+  scalar.getDefiningOp()->erase();
+  indexRhs.getDefiningOp()->erase();
+  indexLhs.getDefiningOp()->erase();
+  rankZeroRhs.getDefiningOp()->erase();
+  rankZeroLhs.getDefiningOp()->erase();
+  fixed.getDefiningOp()->erase();
+  scalable.getDefiningOp()->erase();
   return ok;
 }
 
@@ -354,10 +799,9 @@ bool checkAggregatePositionProjection(MLIRContext &context) {
   return ok;
 }
 
-/// A no-payload schema states that function type is the complete firing
-/// semantics. Any otherwise unclassified operation state must fail closed
-/// rather than being captured in an open attribute bag or silently ignored.
-bool checkNoPayloadFailsClosed(MLIRContext &context) {
+/// Any state outside a schema's closed typed payload must fail closed rather
+/// than being captured in an open attribute bag or silently ignored.
+bool checkUnclassifiedStateFailsClosed(MLIRContext &context) {
   OpBuilder builder(&context);
   Location loc = builder.getUnknownLoc();
   Value lhs =
@@ -365,9 +809,14 @@ bool checkNoPayloadFailsClosed(MLIRContext &context) {
   Value rhs =
       arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(2));
   Operation *bitAnd = arith::AndIOp::create(builder, loc, lhs, rhs);
-  Operation *exactDivision =
-      arith::DivSIOp::create(builder, loc, lhs, rhs, true);
   Operation *poison = ub::PoisonOp::create(builder, loc, builder.getI32Type());
+  Value floatLhs =
+      arith::ConstantOp::create(builder, loc, builder.getF32FloatAttr(1.0));
+  Value floatRhs =
+      arith::ConstantOp::create(builder, loc, builder.getF32FloatAttr(2.0));
+  Operation *floating = arith::AddFOp::create(builder, loc, floatLhs, floatRhs,
+                                              arith::FastMathFlags::none,
+                                              arith::RoundingModeAttr{});
 
   bool ok = true;
   llvm::Expected<CanonicalActorSemantics> defaultPoison =
@@ -381,6 +830,7 @@ bool checkNoPayloadFailsClosed(MLIRContext &context) {
       builder.getStringAttr("dataflow.unclassified_firing_state");
   bitAnd->setDiscardableAttr(stateName, builder.getUnitAttr());
   poison->setDiscardableAttr(stateName, builder.getUnitAttr());
+  floating->setDiscardableAttr(stateName, builder.getUnitAttr());
 
   auto expectFailure = [&ok](Operation *op) {
     llvm::Expected<CanonicalActorSemantics> projection =
@@ -394,11 +844,13 @@ bool checkNoPayloadFailsClosed(MLIRContext &context) {
     llvm::consumeError(projection.takeError());
   };
   expectFailure(bitAnd);
-  expectFailure(exactDivision);
   expectFailure(poison);
+  expectFailure(floating);
 
+  floating->erase();
+  floatRhs.getDefiningOp()->erase();
+  floatLhs.getDefiningOp()->erase();
   poison->erase();
-  exactDivision->erase();
   bitAnd->erase();
   rhs.getDefiningOp()->erase();
   lhs.getDefiningOp()->erase();
@@ -450,18 +902,24 @@ bool checkDeclaredCaseFailsClosed(MLIRContext &context) {
 int main() {
   DialectRegistry registry;
   registry.insert<arith::ArithDialect, func::FuncDialect, math::MathDialect,
-                  LLVM::LLVMDialect, ub::UBDialect, DataflowDialect>();
+                  LLVM::LLVMDialect, ub::UBDialect, vector::VectorDialect,
+                  DataflowDialect>();
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
   bool ok = true;
+  ok &= checkNativeSemanticInterfaceCoverage();
   ok &= checkSpellingRoundTrip();
   ok &= checkUnregisteredSpelling();
   ok &= checkOperationIdentity(context);
   ok &= checkTypedSemanticDelta(context);
+  ok &= checkFloatingSemanticState(context);
+  ok &= checkExactAndNonNegativeSemanticState(context);
+  ok &= checkVectorStructuralSemanticState(context);
+  ok &= checkStructuralVectorAdmission(context);
   ok &= checkPoisonFlagAdmission(context);
   ok &= checkAggregatePositionProjection(context);
-  ok &= checkNoPayloadFailsClosed(context);
+  ok &= checkUnclassifiedStateFailsClosed(context);
   ok &= checkDeclaredCaseFailsClosed(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

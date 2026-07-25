@@ -14,6 +14,7 @@
 
 #include "Dataflow/IR/OperationSchema.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -21,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -196,10 +198,10 @@ llvm::Expected<dataflow::SemanticPayload> readConstantValue(Operation *op) {
 llvm::Expected<dataflow::SemanticPayload>
 readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
   using Case = dataflow::OperationSemanticsCase;
+  if (!op->getDiscardableAttrDictionary().empty())
+    return mismatch(op, kind);
   switch (kind) {
   case Case::NoSemanticPayload: {
-    if (!op->getDiscardableAttrDictionary().empty())
-      return mismatch(op, kind);
     if (auto poison = llvm::dyn_cast<ub::PoisonOp>(op)) {
       ub::PoisonAttrInterface value = poison.getValue();
       if (value && !llvm::isa<ub::PoisonAttr>(value))
@@ -217,12 +219,42 @@ readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
       return mismatch(op, kind);
     return dataflow::SemanticPayload{dataflow::NoPayload{}};
   }
-  case Case::ArithFastMath: {
-    auto actor = llvm::dyn_cast<arith::ArithFastMathInterface>(op);
+  case Case::ArithFloatingPoint: {
+    auto fastMath = llvm::dyn_cast<arith::ArithFastMathInterface>(op);
+    auto rounding = llvm::dyn_cast<arith::ArithRoundingModeInterface>(op);
+    if (!fastMath && !rounding)
+      return mismatch(op, kind);
+    arith::FastMathFlags flags = arith::FastMathFlags::none;
+    if (fastMath) {
+      arith::FastMathFlagsAttr attr = fastMath.getFastMathFlagsAttr();
+      if (attr)
+        flags = attr.getValue();
+    }
+    std::optional<arith::RoundingMode> roundingMode;
+    if (rounding) {
+      arith::RoundingModeAttr attr = rounding.getRoundingModeAttr();
+      if (attr)
+        roundingMode = attr.getValue();
+    }
+    return dataflow::SemanticPayload{
+        dataflow::FloatingPointPayload{flags, roundingMode}};
+  }
+  case Case::ArithExact: {
+    return llvm::TypeSwitch<Operation *,
+                            llvm::Expected<dataflow::SemanticPayload>>(op)
+        .Case<arith::DivSIOp, arith::DivUIOp, arith::ShRSIOp, arith::ShRUIOp>(
+            [](auto actor) {
+              return dataflow::SemanticPayload{
+                  dataflow::ExactPayload{actor.getIsExact()}};
+            })
+        .Default([&](Operation *) { return mismatch(op, kind); });
+  }
+  case Case::ArithNonNegative: {
+    auto actor = llvm::dyn_cast<arith::ArithNonNegFlagInterface>(op);
     if (!actor)
       return mismatch(op, kind);
     return dataflow::SemanticPayload{
-        dataflow::FastMathPayload{actor.getFastMathFlagsAttr().getValue()}};
+        dataflow::NonNegativePayload{actor.getNonNeg()}};
   }
   case Case::ArithIntegerOverflow: {
     auto actor = llvm::dyn_cast<arith::ArithIntegerOverflowFlagsInterface>(op);
@@ -268,6 +300,24 @@ readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
               std::vector<std::int64_t>(position.begin(), position.end())}};
         })
         .Default([&](Operation *) { return mismatch(op, kind); });
+  case Case::VectorStaticPosition:
+    return llvm::TypeSwitch<Operation *,
+                            llvm::Expected<dataflow::SemanticPayload>>(op)
+        .Case<vector::ExtractOp, vector::InsertOp>([](auto actor) {
+          llvm::ArrayRef<std::int64_t> position = actor.getStaticPosition();
+          return dataflow::SemanticPayload{
+              dataflow::VectorStaticPositionPayload{
+                  std::vector<std::int64_t>(position.begin(), position.end())}};
+        })
+        .Default([&](Operation *) { return mismatch(op, kind); });
+  case Case::VectorShuffleMask: {
+    auto actor = llvm::dyn_cast<vector::ShuffleOp>(op);
+    if (!actor)
+      return mismatch(op, kind);
+    llvm::ArrayRef<std::int64_t> mask = actor.getMask();
+    return dataflow::SemanticPayload{dataflow::VectorShuffleMaskPayload{
+        std::vector<std::int64_t>(mask.begin(), mask.end())}};
+  }
   case Case::TypedConstantValue:
     return readConstantValue(op);
   case Case::StreamRecurrence: {
@@ -334,6 +384,26 @@ dataflow::operationSchemaOf(Operation *op) {
       findOperationSchema(op->getName().getStringRef());
   if (!schema)
     return std::nullopt;
+  switch (semanticsCase(*schema)) {
+  case OperationSemanticsCase::VectorStaticPosition:
+  case OperationSemanticsCase::VectorShuffleMask: {
+    for (Type type :
+         llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes())) {
+      if (!llvm::isa<VectorType>(type))
+        continue;
+      llvm::Expected<VectorType> vector =
+          dataflow::semantics::analyzeFixedRankDataVector(
+              type, dataflow::semantics::VectorRank::AnyFixed);
+      if (vector)
+        continue;
+      llvm::consumeError(vector.takeError());
+      return std::nullopt;
+    }
+    break;
+  }
+  default:
+    break;
+  }
   switch (*schema) {
   case OperationSchemaId::LLVMCountLeadingZeros: {
     auto actor = llvm::dyn_cast<LLVM::CountLeadingZerosOp>(op);
@@ -425,6 +495,7 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
   context.getOrLoadDialect<math::MathDialect>();
   context.getOrLoadDialect<LLVM::LLVMDialect>();
   context.getOrLoadDialect<ub::UBDialect>();
+  context.getOrLoadDialect<vector::VectorDialect>();
 
 #define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
   attachActorModel<OpClass>(context);

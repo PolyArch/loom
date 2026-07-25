@@ -39,6 +39,7 @@ target_link_libraries(loom-dataflow-operation-schema-test PRIVATE
   MLIRLLVMDialect
   MLIRMathDialect
   MLIRUBDialect
+  MLIRVectorDialect
   MLIRSupport
   LLVMSupport
 )

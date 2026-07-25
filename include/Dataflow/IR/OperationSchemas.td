@@ -46,7 +46,7 @@ include "Dataflow/IR/OperationSchemaBase.td"
 // element types, for example, are recovered from the type and therefore need
 // no case of their own.
 def NoSemanticPayload : SemanticsCase<0>;
-def ArithFastMath : SemanticsCase<1>;
+def ArithFloatingPoint : SemanticsCase<1>;
 def ArithIntegerOverflow : SemanticsCase<2>;
 def ArithIntegerCompare : SemanticsCase<3>;
 def ArithFloatCompare : SemanticsCase<4>;
@@ -56,6 +56,10 @@ def MemoryContract : SemanticsCase<7>;
 def LLVMZeroPoison : SemanticsCase<8>;
 def LLVMIntegerMinPoison : SemanticsCase<9>;
 def LLVMAggregatePosition : SemanticsCase<10>;
+def ArithExact : SemanticsCase<11>;
+def ArithNonNegative : SemanticsCase<12>;
+def VectorStaticPosition : SemanticsCase<13>;
+def VectorShuffleMask : SemanticsCase<14>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -98,9 +102,9 @@ def ArithMulI : ActorSchema<3, "::mlir::arith::MulIOp", "Compute",
 def ArithShLI : ActorSchema<4, "::mlir::arith::ShLIOp", "Compute",
     ArithIntegerOverflow>;
 def ArithShRSI : ActorSchema<5, "::mlir::arith::ShRSIOp", "Compute",
-    NoSemanticPayload>;
+    ArithExact>;
 def ArithShRUI : ActorSchema<6, "::mlir::arith::ShRUIOp", "Compute",
-    NoSemanticPayload>;
+    ArithExact>;
 def ArithAndI : ActorSchema<7, "::mlir::arith::AndIOp", "Compute",
     NoSemanticPayload>;
 def ArithOrI : ActorSchema<8, "::mlir::arith::OrIOp", "Compute",
@@ -108,9 +112,9 @@ def ArithOrI : ActorSchema<8, "::mlir::arith::OrIOp", "Compute",
 def ArithXOrI : ActorSchema<9, "::mlir::arith::XOrIOp", "Compute",
     NoSemanticPayload>;
 def ArithDivSI : ActorSchema<10, "::mlir::arith::DivSIOp", "Compute",
-    NoSemanticPayload>;
+    ArithExact>;
 def ArithDivUI : ActorSchema<11, "::mlir::arith::DivUIOp", "Compute",
-    NoSemanticPayload>;
+    ArithExact>;
 def ArithRemSI : ActorSchema<12, "::mlir::arith::RemSIOp", "Compute",
     NoSemanticPayload>;
 def ArithRemUI : ActorSchema<13, "::mlir::arith::RemUIOp", "Compute",
@@ -130,45 +134,45 @@ def ArithSelect : ActorSchema<19, "::mlir::arith::SelectOp", "Compute",
 def ArithExtSI : ActorSchema<20, "::mlir::arith::ExtSIOp", "Compute",
     NoSemanticPayload>;
 def ArithExtUI : ActorSchema<21, "::mlir::arith::ExtUIOp", "Compute",
-    NoSemanticPayload>;
+    ArithNonNegative>;
 def ArithTruncI : ActorSchema<22, "::mlir::arith::TruncIOp", "Compute",
     ArithIntegerOverflow>;
 def ArithIndexCast : ActorSchema<23, "::mlir::arith::IndexCastOp", "Compute",
     NoSemanticPayload>;
 def ArithIndexCastUI : ActorSchema<24, "::mlir::arith::IndexCastUIOp",
-    "Compute", NoSemanticPayload>;
+    "Compute", ArithNonNegative>;
 def ArithBitcast : ActorSchema<25, "::mlir::arith::BitcastOp", "Compute",
     NoSemanticPayload>;
 def ArithAddF : ActorSchema<26, "::mlir::arith::AddFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithSubF : ActorSchema<27, "::mlir::arith::SubFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithMulF : ActorSchema<28, "::mlir::arith::MulFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithDivF : ActorSchema<29, "::mlir::arith::DivFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithRemF : ActorSchema<30, "::mlir::arith::RemFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithNegF : ActorSchema<31, "::mlir::arith::NegFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithMinimumF : ActorSchema<32, "::mlir::arith::MinimumFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithMaximumF : ActorSchema<33, "::mlir::arith::MaximumFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithMinNumF : ActorSchema<34, "::mlir::arith::MinNumFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithMaxNumF : ActorSchema<35, "::mlir::arith::MaxNumFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithCmpF : ActorSchema<36, "::mlir::arith::CmpFOp", "Compute",
     ArithFloatCompare>;
 def ArithExtF : ActorSchema<37, "::mlir::arith::ExtFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithTruncF : ActorSchema<38, "::mlir::arith::TruncFOp", "Compute",
-    ArithFastMath>;
+    ArithFloatingPoint>;
 def ArithSIToFP : ActorSchema<39, "::mlir::arith::SIToFPOp", "Compute",
     NoSemanticPayload>;
 def ArithUIToFP : ActorSchema<40, "::mlir::arith::UIToFPOp", "Compute",
-    NoSemanticPayload>;
+    ArithNonNegative>;
 def ArithFPToSI : ActorSchema<41, "::mlir::arith::FPToSIOp", "Compute",
     NoSemanticPayload>;
 def ArithFPToUI : ActorSchema<42, "::mlir::arith::FPToUIOp", "Compute",
@@ -179,55 +183,66 @@ def ArithFPToUI : ActorSchema<42, "::mlir::arith::FPToUIOp", "Compute",
 //===----------------------------------------------------------------------===//
 
 def MathAbsF : ActorSchema<43, "::mlir::math::AbsFOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathAbsI : ActorSchema<44, "::mlir::math::AbsIOp", "Compute",
     NoSemanticPayload>;
 def MathSin : ActorSchema<45, "::mlir::math::SinOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathCos : ActorSchema<46, "::mlir::math::CosOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathTan : ActorSchema<47, "::mlir::math::TanOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathSinh : ActorSchema<48, "::mlir::math::SinhOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathCosh : ActorSchema<49, "::mlir::math::CoshOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathTanh : ActorSchema<50, "::mlir::math::TanhOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathExp : ActorSchema<51, "::mlir::math::ExpOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathExp2 : ActorSchema<52, "::mlir::math::Exp2Op", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathExpM1 : ActorSchema<53, "::mlir::math::ExpM1Op", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathLog : ActorSchema<54, "::mlir::math::LogOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathLog2 : ActorSchema<55, "::mlir::math::Log2Op", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathLog10 : ActorSchema<56, "::mlir::math::Log10Op", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathLog1p : ActorSchema<57, "::mlir::math::Log1pOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathFloor : ActorSchema<58, "::mlir::math::FloorOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathCeil : ActorSchema<59, "::mlir::math::CeilOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathRound : ActorSchema<60, "::mlir::math::RoundOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathTrunc : ActorSchema<61, "::mlir::math::TruncOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathRoundEven : ActorSchema<62, "::mlir::math::RoundEvenOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathSqrt : ActorSchema<63, "::mlir::math::SqrtOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathRsqrt : ActorSchema<64, "::mlir::math::RsqrtOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathErf : ActorSchema<65, "::mlir::math::ErfOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathFma : ActorSchema<66, "::mlir::math::FmaOp", "Compute",
-    NoSemanticPayload>;
+    ArithFloatingPoint>;
 def MathCountLeadingZeros : ActorSchema<93,
     "::mlir::math::CountLeadingZerosOp", "Compute", NoSemanticPayload>;
+
+//===----------------------------------------------------------------------===//
+// Fixed-vector structural schemas
+//===----------------------------------------------------------------------===//
+
+def VectorExtract : ActorSchema<94, "::mlir::vector::ExtractOp", "Compute",
+    VectorStaticPosition>;
+def VectorInsert : ActorSchema<95, "::mlir::vector::InsertOp", "Compute",
+    VectorStaticPosition>;
+def VectorShuffle : ActorSchema<96, "::mlir::vector::ShuffleOp", "Compute",
+    VectorShuffleMask>;
 
 //===----------------------------------------------------------------------===//
 // Irreducible LLVM compute schemas
