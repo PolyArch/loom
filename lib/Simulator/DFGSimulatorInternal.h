@@ -357,7 +357,8 @@ struct MemoryFixture {
 // MemorySynchronization remains the authority for every causal comparison.
 struct MemoryActionRecord {
   std::uint64_t rootId = 0;
-  // Half-open byte ranges of the active lanes, relative to the logical root.
+  // Canonical half-open byte ranges of the active lanes, relative to the
+  // logical root: ascending, non-empty, and neither overlapping nor touching.
   llvm::SmallVector<std::pair<std::int64_t, std::int64_t>, 1> byteRanges;
   bool isWrite = false;
 };
@@ -378,10 +379,10 @@ class PlainMemoryConflictIndex {
 public:
   /// The maximal issued hazards `action` meets, without deciding whether any
   /// of them is ordered before it.
-  llvm::SmallVector<SyncEffectId> query(MemoryActionRecord action) const;
+  llvm::SmallVector<SyncEffectId> query(const MemoryActionRecord &action) const;
 
   /// Records one issued access as the new maximal hazard of its byte ranges.
-  void retain(MemoryActionRecord action, SyncEffectId effect,
+  void retain(const MemoryActionRecord &action, SyncEffectId effect,
               MemorySynchronization &synchronization);
 
   bool empty() const { return intervals_.empty(); }

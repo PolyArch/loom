@@ -20,6 +20,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -34,17 +35,18 @@ namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 void canonicalizeMemoryActionRanges(
     llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges) {
   llvm::sort(ranges);
-  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> merged;
-  for (const auto &range : ranges) {
-    if (range.first >= range.second)
+  std::size_t output = 0;
+  for (std::size_t input = 0; input < ranges.size(); ++input) {
+    const auto [begin, end] = ranges[input];
+    if (begin >= end)
       continue;
-    if (merged.empty() || merged.back().second < range.first) {
-      merged.push_back(range);
+    if (output == 0 || ranges[output - 1].second < begin) {
+      ranges[output++] = {begin, end};
       continue;
     }
-    merged.back().second = std::max(merged.back().second, range.second);
+    ranges[output - 1].second = std::max(ranges[output - 1].second, end);
   }
-  ranges.assign(merged.begin(), merged.end());
+  ranges.resize(output);
 }
 
 // True when one ready set overlaps itself on a hazard, which is exactly the
@@ -60,11 +62,9 @@ static bool readyPlainMemoryActionsConflict(
     bool isWrite;
   };
 
-  llvm::SmallVector<Range> ranges;
+  llvm::SmallVector<Range, 8> ranges;
   for (const ReadyPlainMemoryAction &ready : actions) {
-    auto actionRanges = ready.action.byteRanges;
-    canonicalizeMemoryActionRanges(actionRanges);
-    for (const auto &[begin, end] : actionRanges)
+    for (const auto &[begin, end] : ready.action.byteRanges)
       ranges.push_back(
           Range{ready.action.rootId, begin, end, ready.action.isWrite});
   }
@@ -106,9 +106,8 @@ static bool readyPlainMemoryActionsConflict(
 }
 
 llvm::SmallVector<SyncEffectId>
-PlainMemoryConflictIndex::query(MemoryActionRecord action) const {
+PlainMemoryConflictIndex::query(const MemoryActionRecord &action) const {
   llvm::SmallVector<SyncEffectId> effects;
-  canonicalizeMemoryActionRanges(action.byteRanges);
   auto root = intervals_.find(action.rootId);
   if (root == intervals_.end())
     return effects;
@@ -130,10 +129,9 @@ PlainMemoryConflictIndex::query(MemoryActionRecord action) const {
   return effects;
 }
 
-void PlainMemoryConflictIndex::retain(MemoryActionRecord action,
+void PlainMemoryConflictIndex::retain(const MemoryActionRecord &action,
                                       SyncEffectId effect,
                                       MemorySynchronization &synchronization) {
-  canonicalizeMemoryActionRanges(action.byteRanges);
   if (action.byteRanges.empty())
     return;
   std::unique_ptr<RootIntervals> &root = intervals_[action.rootId];

@@ -324,7 +324,7 @@ prepareDataflowMemoryWrite(const Token &data,
   // the run rather than reporting a capability the model lacks. The refusal is
   // atomic: no input is consumed, no memory changes, and nothing is published.
   if (access.isGather()) {
-    llvm::DenseSet<std::size_t> destinations;
+    llvm::SmallDenseSet<std::size_t, 8> destinations;
     for (std::size_t slot : projection.slots) {
       if (destinations.insert(slot).second)
         continue;
@@ -408,7 +408,7 @@ peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
 
 // Empty accesses pass through only ctrl order; others publish a new effect.
 static std::optional<MemoryOrderFrontierId>
-issueMemoryAction(MemoryActionRecord action,
+issueMemoryAction(const MemoryActionRecord &action,
                   llvm::ArrayRef<SyncEffectId> orderFrontier,
                   SimulatorState &state) {
   if (action.byteRanges.empty()) {
@@ -426,7 +426,7 @@ issueMemoryAction(MemoryActionRecord action,
     state.failure = RunFailure::ProviderInvariant;
     return std::nullopt;
   }
-  state.memoryActions.retain(std::move(action), *effect, sync);
+  state.memoryActions.retain(action, *effect, sync);
   return state.memoryOrderFrontiers.internCanonical(*effect);
 }
 
