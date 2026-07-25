@@ -34,3 +34,12 @@ target_link_libraries(loom-common-blob-test PRIVATE
   LoomCommon
   LLVMSupport
 )
+
+add_executable(loom-common-canonical-relation-test
+  CanonicalRelationTest.cpp
+)
+
+target_link_libraries(loom-common-canonical-relation-test PRIVATE
+  LoomCommon
+  LLVMSupport
+)

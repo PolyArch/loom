@@ -14,6 +14,7 @@
 
 #include "DataflowCanonicalLabeling.h"
 
+#include "Common/CanonicalRelation.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
@@ -38,10 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <limits>
-#include <map>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -79,13 +77,13 @@ void putU32(std::string &s, std::uint32_t v) {
   for (int i = 3; i >= 0; --i)
     s.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
 }
-void putU64(std::string &s, std::uint64_t v) {
-  for (int i = 7; i >= 0; --i)
-    s.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
-}
-void putStr(std::string &s, StringRef x) {
-  putU32(s, static_cast<std::uint32_t>(x.size()));
-  s.append(x.data(), x.size());
+
+std::string edgeLabel(EdgeKind kind, std::uint32_t ord0, std::uint32_t ord1) {
+  std::string label;
+  putU8(label, static_cast<std::uint8_t>(kind));
+  putU32(label, ord0);
+  putU32(label, ord1);
+  return label;
 }
 
 llvm::Error relationError(const llvm::Twine &message) {
@@ -288,7 +286,7 @@ class SemanticGraph {
 public:
   static llvm::Expected<SemanticGraph> build(ModuleOp module);
 
-  CanonicalLabeling canonicalize();
+  llvm::Expected<CanonicalLabeling> canonicalize();
 
 private:
   unsigned addVertex(std::string intrinsic) {
@@ -304,29 +302,10 @@ private:
   llvm::Error collectVertices(Operation *op);
   llvm::Error detectCarriers(ModuleOp module);
   llvm::Error buildEdges(ModuleOp module);
-  void buildAdjacency();
-
-  std::vector<std::uint64_t> refine(std::vector<std::uint64_t> color) const;
-  std::vector<std::uint64_t> assignIds(llvm::ArrayRef<unsigned> order) const;
-  std::vector<std::uint8_t> serialize(llvm::ArrayRef<unsigned> order) const;
-
-  struct Leaf {
-    std::vector<std::uint8_t> bytes;
-    std::vector<unsigned> order;
-  };
-  Leaf search(std::vector<std::uint64_t> color,
-              std::vector<unsigned> &path) const;
-
-  // Automorphisms discovered while searching, each a vertex permutation that
-  // preserves the colored relation graph. Used only to prune orbit-equivalent
-  // candidates; it never affects the canonical bytes.
-  mutable std::vector<std::vector<unsigned>> automorphisms_;
 
   unsigned numVertices_ = 0;
   std::vector<std::string> intrinsic_;
   std::vector<Edge> edges_;
-  std::vector<llvm::SmallVector<std::uint32_t>> outAdj_;
-  std::vector<llvm::SmallVector<std::uint32_t>> inAdj_;
 
   llvm::DenseMap<Operation *, unsigned> opVertex_;
   llvm::DenseMap<Block *, unsigned> blockVertex_;
@@ -361,10 +340,22 @@ llvm::Error SemanticGraph::collectVertices(Operation *op) {
 
 llvm::Error SemanticGraph::detectCarriers(ModuleOp module) {
   auto record = [&](Value vertexValue, EntityCarrier carrier) {
-    carrier_[valueVertex_.lookup(vertexValue)] = carrier;
+    unsigned vertex = valueVertex_.lookup(vertexValue);
+    carrier_[vertex] = carrier;
+    intrinsic_[vertex].append("\x1f"
+                              "ENTITY"
+                              "\x1f",
+                              8);
+    putU8(intrinsic_[vertex], static_cast<std::uint8_t>(carrier.kind));
   };
   auto recordOp = [&](Operation *op, EntityCarrier carrier) {
-    carrier_[opVertex_.lookup(op)] = carrier;
+    unsigned vertex = opVertex_.lookup(op);
+    carrier_[vertex] = carrier;
+    intrinsic_[vertex].append("\x1f"
+                              "ENTITY"
+                              "\x1f",
+                              8);
+    putU8(intrinsic_[vertex], static_cast<std::uint8_t>(carrier.kind));
   };
 
   llvm::Error error = llvm::Error::success();
@@ -480,15 +471,6 @@ llvm::Error SemanticGraph::buildEdges(ModuleOp module) {
   return error;
 }
 
-void SemanticGraph::buildAdjacency() {
-  outAdj_.assign(numVertices_, {});
-  inAdj_.assign(numVertices_, {});
-  for (std::uint32_t index = 0; index < edges_.size(); ++index) {
-    outAdj_[edges_[index].from].push_back(index);
-    inAdj_[edges_[index].to].push_back(index);
-  }
-}
-
 llvm::Expected<SemanticGraph> SemanticGraph::build(ModuleOp module) {
   SemanticGraph graph;
   if (llvm::Error error = graph.collectVertices(module.getOperation()))
@@ -497,226 +479,29 @@ llvm::Expected<SemanticGraph> SemanticGraph::build(ModuleOp module) {
     return std::move(error);
   if (llvm::Error error = graph.buildEdges(module))
     return std::move(error);
-  graph.buildAdjacency();
   return graph;
 }
 
-//===----------------------------------------------------------------------===//
-// Individualization-refinement
-//===----------------------------------------------------------------------===//
+llvm::Expected<CanonicalLabeling> SemanticGraph::canonicalize() {
+  std::vector<::loom::CanonicalRelationEdge> relations;
+  relations.reserve(edges_.size());
+  for (const Edge &edge : edges_)
+    relations.push_back(
+        {edge.from, edge.to, edgeLabel(edge.kind, edge.ord0, edge.ord1)});
 
-std::vector<std::uint64_t>
-SemanticGraph::refine(std::vector<std::uint64_t> color) const {
-  while (true) {
-    std::vector<std::string> signature(numVertices_);
-    for (unsigned v = 0; v < numVertices_; ++v) {
-      std::string sig;
-      putU64(sig, color[v]);
-      llvm::SmallVector<std::string> neighbors;
-      for (std::uint32_t index : outAdj_[v]) {
-        const Edge &edge = edges_[index];
-        std::string n;
-        putU8(n, 0);
-        putU8(n, static_cast<std::uint8_t>(edge.kind));
-        putU32(n, edge.ord0);
-        putU32(n, edge.ord1);
-        putU64(n, color[edge.to]);
-        neighbors.push_back(std::move(n));
-      }
-      for (std::uint32_t index : inAdj_[v]) {
-        const Edge &edge = edges_[index];
-        std::string n;
-        putU8(n, 1);
-        putU8(n, static_cast<std::uint8_t>(edge.kind));
-        putU32(n, edge.ord0);
-        putU32(n, edge.ord1);
-        putU64(n, color[edge.from]);
-        neighbors.push_back(std::move(n));
-      }
-      std::sort(neighbors.begin(), neighbors.end());
-      putU32(sig, static_cast<std::uint32_t>(neighbors.size()));
-      for (const std::string &n : neighbors)
-        sig.append(n);
-      signature[v] = std::move(sig);
-    }
+  llvm::Expected<::loom::CanonicalRelationResult> result =
+      ::loom::canonicalizeRelationGraph(intrinsic_, relations);
+  if (!result)
+    return result.takeError();
 
-    std::map<std::string, std::uint64_t> rank;
-    for (const std::string &sig : signature)
-      rank.emplace(sig, 0);
-    std::uint64_t next = 0;
-    for (auto &entry : rank)
-      entry.second = next++;
-
-    std::set<std::uint64_t> previous(color.begin(), color.end());
-    for (unsigned v = 0; v < numVertices_; ++v)
-      color[v] = rank[signature[v]];
-    if (next == previous.size())
-      return color;
-  }
-}
-
-std::vector<std::uint64_t>
-SemanticGraph::assignIds(llvm::ArrayRef<unsigned> order) const {
   std::vector<std::uint64_t> id(numVertices_,
                                 std::numeric_limits<std::uint64_t>::max());
   std::uint64_t next = 0;
-  for (unsigned vertex : order)
+  for (std::uint32_t vertex : result->canonicalOrder)
     if (carrier_.count(vertex))
       id[vertex] = next++;
-  return id;
-}
-
-std::vector<std::uint8_t>
-SemanticGraph::serialize(llvm::ArrayRef<unsigned> order) const {
-  std::vector<unsigned> rank(numVertices_);
-  for (unsigned position = 0; position < order.size(); ++position)
-    rank[order[position]] = position;
-  std::vector<std::uint64_t> id = assignIds(order);
-
-  // The schema name and version are not re-embedded here: the Common finalizer
-  // already frames canonicalDataflowSchema around these family-owned bytes, so
-  // duplicating the tag would create a second, divergable authority.
-  std::string out;
-  putU32(out, numVertices_);
-  for (unsigned vertex : order) {
-    putStr(out, intrinsic_[vertex]);
-    auto found = carrier_.find(vertex);
-    if (found != carrier_.end()) {
-      putU8(out, 1);
-      putU8(out, static_cast<std::uint8_t>(found->second.kind));
-      putU64(out, id[vertex]);
-    } else {
-      putU8(out, 0);
-    }
-    llvm::SmallVector<std::array<std::uint64_t, 4>> outgoing;
-    for (std::uint32_t index : outAdj_[vertex]) {
-      const Edge &edge = edges_[index];
-      outgoing.push_back({static_cast<std::uint64_t>(edge.kind), edge.ord0,
-                          edge.ord1, rank[edge.to]});
-    }
-    std::sort(outgoing.begin(), outgoing.end());
-    putU32(out, static_cast<std::uint32_t>(outgoing.size()));
-    for (const std::array<std::uint64_t, 4> &edge : outgoing) {
-      putU8(out, static_cast<std::uint8_t>(edge[0]));
-      putU32(out, static_cast<std::uint32_t>(edge[1]));
-      putU32(out, static_cast<std::uint32_t>(edge[2]));
-      putU32(out, static_cast<std::uint32_t>(edge[3]));
-    }
-  }
-  return std::vector<std::uint8_t>(out.begin(), out.end());
-}
-
-SemanticGraph::Leaf SemanticGraph::search(std::vector<std::uint64_t> color,
-                                          std::vector<unsigned> &path) const {
-  color = refine(std::move(color));
-
-  std::map<std::uint64_t, llvm::SmallVector<unsigned>> cells;
-  for (unsigned v = 0; v < numVertices_; ++v)
-    cells[color[v]].push_back(v);
-
-  const llvm::SmallVector<unsigned> *target = nullptr;
-  for (const auto &cell : cells)
-    if (cell.second.size() > 1) {
-      target = &cell.second;
-      break;
-    }
-
-  if (!target) {
-    Leaf leaf;
-    leaf.order.resize(numVertices_);
-    for (unsigned v = 0; v < numVertices_; ++v)
-      leaf.order[v] = v;
-    std::sort(leaf.order.begin(), leaf.order.end(),
-              [&](unsigned a, unsigned b) { return color[a] < color[b]; });
-    leaf.bytes = serialize(leaf.order);
-    return leaf;
-  }
-
-  std::uint64_t fresh = 0;
-  for (std::uint64_t c : color)
-    fresh = std::max(fresh, c);
-  ++fresh;
-
-  // Orbit pruning under the discovered automorphism group. Two target-cell
-  // candidates in the same orbit of an automorphism that fixes every ancestor
-  // individualization on `path` open isomorphic subtrees and therefore the same
-  // canonical leaf, so only one orbit representative is explored. This is the
-  // exact mechanism that collapses the factorial candidate product for a
-  // symmetric input without any noncanonical source-order tie-break; the
-  // canonical bytes are exactly those the unpruned search would minimize to.
-  std::vector<unsigned> parent(numVertices_);
-  for (unsigned v = 0; v < numVertices_; ++v)
-    parent[v] = v;
-  std::function<unsigned(unsigned)> find = [&](unsigned x) {
-    while (parent[x] != x) {
-      parent[x] = parent[parent[x]];
-      x = parent[x];
-    }
-    return x;
-  };
-  auto unite = [&](unsigned a, unsigned b) { parent[find(a)] = find(b); };
-  auto fixesPath = [&](const std::vector<unsigned> &perm) {
-    for (unsigned u : path)
-      if (perm[u] != u)
-        return false;
-    return true;
-  };
-  auto applyAutomorphism = [&](const std::vector<unsigned> &perm) {
-    if (!fixesPath(perm))
-      return;
-    for (unsigned v = 0; v < numVertices_; ++v)
-      unite(v, perm[v]);
-  };
-  for (const std::vector<unsigned> &perm : automorphisms_)
-    applyAutomorphism(perm);
-
-  Leaf best;
-  bool haveBest = false;
-  std::set<unsigned> exploredReps;
-  for (unsigned candidate : *target) {
-    unsigned rep = find(candidate);
-    if (!exploredReps.insert(rep).second)
-      continue;
-    std::vector<std::uint64_t> individualized = color;
-    individualized[candidate] = fresh;
-    path.push_back(candidate);
-    Leaf leaf = search(std::move(individualized), path);
-    path.pop_back();
-    if (!haveBest || leaf.bytes < best.bytes) {
-      best = std::move(leaf);
-      haveBest = true;
-    } else if (leaf.bytes == best.bytes) {
-      // Equal canonical bytes witness an automorphism: the vertex at each
-      // canonical position in `leaf` plays the same role as in `best`. Record
-      // it and, if it fixes this node's ancestors, extend the orbit partition
-      // so later candidates in its orbit are skipped.
-      std::vector<unsigned> perm(numVertices_);
-      for (unsigned i = 0; i < numVertices_; ++i)
-        perm[leaf.order[i]] = best.order[i];
-      applyAutomorphism(perm);
-      automorphisms_.push_back(std::move(perm));
-    }
-  }
-  return best;
-}
-
-CanonicalLabeling SemanticGraph::canonicalize() {
-  std::map<std::string, std::uint64_t> rank;
-  for (const std::string &intrinsic : intrinsic_)
-    rank.emplace(intrinsic, 0);
-  std::uint64_t next = 0;
-  for (auto &entry : rank)
-    entry.second = next++;
-  std::vector<std::uint64_t> initial(numVertices_);
-  for (unsigned v = 0; v < numVertices_; ++v)
-    initial[v] = rank[intrinsic_[v]];
-
-  std::vector<unsigned> path;
-  Leaf leaf = search(std::move(initial), path);
-
-  std::vector<std::uint64_t> id = assignIds(leaf.order);
   std::vector<EntityCarrier> carriers;
-  for (unsigned vertex : leaf.order) {
+  for (std::uint32_t vertex : result->canonicalOrder) {
     auto found = carrier_.find(vertex);
     if (found == carrier_.end())
       continue;
@@ -734,13 +519,12 @@ CanonicalLabeling SemanticGraph::canonicalize() {
     operationOfVertex[entry.second] = entry.first;
   std::vector<Operation *> canonicalOperationOrder;
   canonicalOperationOrder.reserve(opVertex_.size());
-  for (unsigned vertex : leaf.order)
+  for (std::uint32_t vertex : result->canonicalOrder)
     if (Operation *op = operationOfVertex.lookup(vertex))
       canonicalOperationOrder.push_back(op);
 
-  return CanonicalLabeling{
-      ::loom::CanonicalSemanticBytes(std::move(leaf.bytes)),
-      std::move(carriers), std::move(canonicalOperationOrder)};
+  return CanonicalLabeling{std::move(result->bytes), std::move(carriers),
+                           std::move(canonicalOperationOrder)};
 }
 
 } // namespace

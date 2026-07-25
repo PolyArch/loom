@@ -7,6 +7,7 @@ add_mlir_library(LoomCommon
   ArtifactText.cpp
   BlobDigest.cpp
   BlobStore.cpp
+  CanonicalRelation.cpp
   ComponentViewDigest.cpp
   IndexWidth.cpp
   ResolvedConfig.cpp
