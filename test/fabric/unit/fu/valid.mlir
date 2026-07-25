@@ -12,7 +12,7 @@ fabric.module @fu_min(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
       // CHECK: fabric.op
       %0 = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield
     }
   }
@@ -34,7 +34,7 @@ fabric.module @fu_mux_op_yield(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %c 
            : !fabric.bits<32>
       // CHECK: fabric.op
       %k = fabric.op [@arith.addi] (%m, %z)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
   }
@@ -51,30 +51,11 @@ fabric.module @fu_op_demux(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
     %r:2 = fabric.fu(%x = %pa : !fabric.bits<16>, %y = %pb : !fabric.bits<16>)
                     -> (!fabric.bits<16>, !fabric.bits<16>) {
       %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
       // CHECK: fabric.demux
       %d0, %d1 = fabric.demux %k {sel = 0 : i32, discard = false, disconnect = false}
                  : !fabric.bits<16> -> 2
       fabric.yield %d0, %d1 : !fabric.bits<16>, !fabric.bits<16>
-    }
-  }
-  fabric.yield
-}
-
-// FU boundary truncation: outer operand bits<32> with inner block-arg
-// bits<0>. Hardware drops the high 32 bits at the FU boundary. The outer
-// type matches the enclosing PE's uniform W=32, while the inner body
-// op (dataflow.constant) consumes the bits<0> none-token.
-// CHECK-LABEL: fabric.module @fu_boundary_trunc
-fabric.module @fu_boundary_trunc(%ctrl : !fabric.bits<32>) {
-  fabric.pe [spatial] (%pctrl = %ctrl : !fabric.bits<32>) -> !fabric.bits<32> {
-    // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32>
-    %r = fabric.fu(%c = %pctrl : !fabric.bits<32> to !fabric.bits<0>)
-                  -> !fabric.bits<32> {
-      %k = fabric.op [@dataflow.constant] (%c)
-           {sw_configs = {const_hex_value = "0xdeadbeef"}}
-           : (!fabric.bits<0>) -> !fabric.bits<32>
-      fabric.yield %k : !fabric.bits<32>
     }
   }
   fabric.yield
@@ -92,7 +73,7 @@ fabric.module @fu_yield_widen(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
     %r = fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
       %p = fabric.op [@arith.cmpi] (%x, %y)
-           {hw_params = [{predicate = ["eq", "ne"]}]}
+           {implementation_family = #fabric.implementation_family<ScalarIntegerCompareMinMax>, hw_params = {integer_widths = [32 : i32], predicates = ["eq", "ne"]}}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
       // CHECK: fabric.yield %{{.*}} : !fabric.bits<1> to !fabric.bits<32>
       fabric.yield %p : !fabric.bits<1> to !fabric.bits<32>
@@ -112,10 +93,10 @@ fabric.module @fu_multi_op(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
                   -> !fabric.bits<32> {
       // CHECK: fabric.op [@arith.addi, @arith.subi]
       %s = fabric.op [@arith.addi, @arith.subi] (%x, %y)
-           {sw_configs = {op_sel = "arith.subi"}}
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [32 : i32]}}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       %t = fabric.op [@arith.muli] (%s, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %t : !fabric.bits<32>
     }
   }

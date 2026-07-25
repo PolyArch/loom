@@ -25,6 +25,7 @@ add_mlir_library(MLIRFabricEnums
 # consumer that must not depend on the Fabric dialect, such as a backend
 # provider registry, can still read the one generated relation.
 add_mlir_library(LoomFabricImplementationFamily
+  FamilyCapabilityParams.cpp
   ImplementationFamily.cpp
 
   PARTIAL_SOURCES_INTENDED
@@ -49,8 +50,6 @@ add_mlir_library(LoomFabricImplementationFamily
 )
 
 add_mlir_dialect_library(MLIRFabric
-  ConfiguredFunction.cpp
-  ConfiguredFunctionCoverage.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricElaboration.cpp
@@ -62,7 +61,6 @@ add_mlir_dialect_library(MLIRFabric
   FabricOps.cpp
   FabricPrimitiveOps.cpp
   FabricPeTemporalOps.cpp
-  StreamConfiguration.cpp
   FabricSwitchOp.cpp
 
   ADDITIONAL_HEADER_DIRS

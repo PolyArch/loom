@@ -1,5 +1,0 @@
-synth:
-  parallelism:
-    workers: 4
-  coverage_verifier:
-    parallel_match: true

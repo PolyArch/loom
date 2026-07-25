@@ -8,7 +8,7 @@ fabric.module @pe_min(%a : !fabric.bits<32>) {
     // CHECK: fabric.fu
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -26,7 +26,7 @@ fabric.module @pe_2x2(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fb)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -44,12 +44,14 @@ fabric.module @pe_heterogeneous(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fb)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
     // CHECK: fabric.fu
     fabric.fu(%ga = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
-      %w = fabric.op [@math.absi] (%ga)
+      %w = fabric.op [@math.absf] (%ga)
+           {implementation_family =
+               #fabric.implementation_family<ScalarFloatSign>, hw_params = {float_formats = ["f32"], behavior = {rounding_modes = ["to_nearest_even"], nan_behaviors = ["ieee"], subnormal_behaviors = ["preserve"], signed_zero_behaviors = ["preserve"], fastmath = "none"}}}
            : (!fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %w : !fabric.bits<32>
     }
@@ -68,7 +70,7 @@ fabric.module @pe_boundary(%a : !fabric.bits<16>, %b : !fabric.bits<16>) {
               %fb = %pb : !fabric.bits<16>)
               -> (!fabric.bits<16>, !fabric.bits<16>) {
       %v = fabric.op [@arith.muli] (%fa, %fb)
-           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
       %d:2 = fabric.demux %v {sel = 0 : i32, discard = false, disconnect = false}
              : !fabric.bits<16> -> 2
       fabric.yield %d#0, %d#1 : !fabric.bits<16>, !fabric.bits<16>
@@ -85,14 +87,14 @@ fabric.module @pe_two_pes(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
   %r0 = fabric.pe [spatial] (%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %pa : !fabric.bits<8>) -> (!fabric.bits<8>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %v : !fabric.bits<8>
     }
   }
   %r1 = fabric.pe [spatial] (%qa = %b : !fabric.bits<8>) -> !fabric.bits<8> {
     fabric.fu(%fa = %qa : !fabric.bits<8>) -> (!fabric.bits<8>) {
       %w = fabric.op [@arith.muli] (%fa, %fa)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %w : !fabric.bits<8>
     }
   }

@@ -3,16 +3,17 @@
 //
 // Usage:
 //   loom-parallel-test --workers <N> --map <N>            # parallelMap squares
-//   loom-parallel-test --workers <N> --for <N>            # parallelFor atomic sum
-//   loom-parallel-test --workers <N> --serial <N>         # runSerialInOrder
-//   loom-parallel-test --workers <N> --workers-effective  # numWorkers()
+//   loom-parallel-test --workers <N> --for <N>            # parallelFor atomic
+//   sum loom-parallel-test --workers <N> --serial <N>         #
+//   runSerialInOrder loom-parallel-test --workers <N> --workers-effective  #
+//   numWorkers()
 //
 // At least one of --map / --for / --serial / --workers-effective must be
 // supplied; mode flags are evaluated in that order on a single invocation
 // (they may be combined for stress tests, though lit tests use one mode at
 // a time).
 
-#include "Fabric/Tech/Synthesizer/Parallel.h"
+#include "Fabric/Tech/Parallel.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -27,25 +28,23 @@ static ::llvm::cl::opt<unsigned>
     workers("workers", ::llvm::cl::desc("Worker count (0 = auto-detect)"),
             ::llvm::cl::init(0));
 
-static ::llvm::cl::opt<int>
-    mapMode("map",
-            ::llvm::cl::desc("parallelMap [0..N): print squares in input order"),
-            ::llvm::cl::init(-1));
+static ::llvm::cl::opt<int> mapMode(
+    "map", ::llvm::cl::desc("parallelMap [0..N): print squares in input order"),
+    ::llvm::cl::init(-1));
 
 static ::llvm::cl::opt<int>
     forMode("for",
             ::llvm::cl::desc("parallelFor [0..N): atomic-sum and print total"),
             ::llvm::cl::init(-1));
 
-static ::llvm::cl::opt<int>
-    serialMode("serial",
-               ::llvm::cl::desc("runSerialInOrder [0..N): print one line per i"),
-               ::llvm::cl::init(-1));
+static ::llvm::cl::opt<int> serialMode(
+    "serial", ::llvm::cl::desc("runSerialInOrder [0..N): print one line per i"),
+    ::llvm::cl::init(-1));
 
-static ::llvm::cl::opt<bool> workersEffective(
-    "workers-effective",
-    ::llvm::cl::desc("Print numWorkers() after auto-detect"),
-    ::llvm::cl::init(false));
+static ::llvm::cl::opt<bool>
+    workersEffective("workers-effective",
+                     ::llvm::cl::desc("Print numWorkers() after auto-detect"),
+                     ::llvm::cl::init(false));
 
 namespace {
 
@@ -83,9 +82,8 @@ void runSerial(::loom::fabric::tech::WorkerPool &pool, int n) {
     inputs.push_back(i);
   pool.runSerialInOrder<int64_t>(
       ::llvm::ArrayRef<int64_t>(inputs),
-      ::llvm::function_ref<void(const int64_t &)>([](const int64_t &x) {
-        ::llvm::outs() << "serial[" << x << "]\n";
-      }));
+      ::llvm::function_ref<void(const int64_t &)>(
+          [](const int64_t &x) { ::llvm::outs() << "serial[" << x << "]\n"; }));
 }
 
 } // namespace

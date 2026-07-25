@@ -5,6 +5,7 @@
 #include "Fabric/IR/FabricEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -51,15 +52,19 @@ template <typename Element, std::size_t DomainSize> class ClosedEnumSet {
 public:
   static ClosedEnumSet get(std::initializer_list<Element> elements) {
     ClosedEnumSet result;
-    for (Element element : elements) {
-      std::size_t index = static_cast<std::size_t>(element);
-      if (index >= DomainSize) {
-        result.valid_ = false;
-        continue;
-      }
-      result.bits_ |= std::uint64_t{1} << index;
-    }
+    for (Element element : elements)
+      result.insert(element);
     return result;
+  }
+
+  bool insert(Element element) {
+    std::size_t index = static_cast<std::size_t>(element);
+    if (index >= DomainSize) {
+      valid_ = false;
+      return false;
+    }
+    bits_ |= std::uint64_t{1} << index;
+    return true;
   }
 
   bool contains(Element element) const {
@@ -89,17 +94,22 @@ public:
 
   static ClosedPairRelation get(std::initializer_list<Pair> pairs) {
     ClosedPairRelation result;
-    for (Pair pair : pairs) {
-      std::size_t source = static_cast<std::size_t>(pair.first);
-      std::size_t destination = static_cast<std::size_t>(pair.second);
-      if (source >= SourceDomainSize || destination >= DestinationDomainSize) {
-        result.valid_ = false;
-        continue;
-      }
-      std::size_t index = source * DestinationDomainSize + destination;
-      result.bits_ |= std::uint64_t{1} << index;
-    }
+    for (Pair pair : pairs)
+      result.insert(pair.first, pair.second);
     return result;
+  }
+
+  bool insert(Source source, Destination destination) {
+    std::size_t sourceIndex = static_cast<std::size_t>(source);
+    std::size_t destinationIndex = static_cast<std::size_t>(destination);
+    if (sourceIndex >= SourceDomainSize ||
+        destinationIndex >= DestinationDomainSize) {
+      valid_ = false;
+      return false;
+    }
+    std::size_t index = sourceIndex * DestinationDomainSize + destinationIndex;
+    bits_ |= std::uint64_t{1} << index;
+    return true;
   }
 
   bool contains(Source source, Destination destination) const {
@@ -374,6 +384,12 @@ findImplementationFamily(llvm::StringRef keyword);
 bool admitsOperationSchema(ImplementationFamilyId family,
                            ::dataflow::OperationSchemaId schema);
 
+/// The generated implementation families that admit `schema`. This is a
+/// mechanical projection of the descriptor table; callers still choose an
+/// exact family explicitly when more than one physical implementation exists.
+llvm::SmallVector<ImplementationFamilyId, 2>
+implementationFamiliesFor(::dataflow::OperationSchemaId schema);
+
 /// Diagnostic spellings of the two closed vocabularies a descriptor selects.
 llvm::StringRef capabilityParamsSchemaKeyword(CapabilityParamsSchemaId schema);
 llvm::StringRef
@@ -382,6 +398,21 @@ typedAdmissionProviderKeyword(TypedAdmissionProviderId provider);
 /// The generated schema identity of one closed typed capability record.
 CapabilityParamsSchemaId
 capabilityParamsSchema(const FamilyCapabilityParams &params);
+
+/// Decodes the canonical closed `hw_params` record selected by `family`.
+/// Unknown fields, missing fields, malformed values, and empty required
+/// domains are rejected. The dictionary is serialization syntax only; the
+/// returned typed sum is the semantic capability value.
+llvm::Expected<FamilyCapabilityParams>
+parseFamilyCapabilityParams(ImplementationFamilyId family,
+                            ::mlir::DictionaryAttr params);
+
+/// Encodes one typed capability record using its canonical field spellings.
+/// The caller must pair it with a family whose generated descriptor selects
+/// the same schema.
+::mlir::DictionaryAttr
+getFamilyCapabilityParamsAttr(::mlir::MLIRContext *context,
+                              const FamilyCapabilityParams &params);
 
 /// Verifies that one exact registered actor projection is accepted by the
 /// selected family's concrete typed capability. Missing or mismatched

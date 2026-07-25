@@ -19,7 +19,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
-#include "Fabric/Tech/Synthesizer/CostModel.h"
+#include "Fabric/Tech/CostModel.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -38,9 +38,9 @@
 
 #include <string>
 
-static ::llvm::cl::opt<std::string>
-    inputPath(::llvm::cl::Positional, ::llvm::cl::desc("<input>"),
-              ::llvm::cl::Required);
+static ::llvm::cl::opt<std::string> inputPath(::llvm::cl::Positional,
+                                              ::llvm::cl::desc("<input>"),
+                                              ::llvm::cl::Required);
 
 static ::llvm::cl::opt<std::string>
     configPath("config",
@@ -102,8 +102,7 @@ int main(int argc, char **argv) {
            !::mlir::isa<::mlir::ModuleOp>(wrapper->getParentOp()))
       wrapper = wrapper->getParentOp();
     ::llvm::StringRef wrapperName;
-    if (auto sym = ::mlir::dyn_cast_or_null<::mlir::SymbolOpInterface>(
-            wrapper))
+    if (auto sym = ::mlir::dyn_cast_or_null<::mlir::SymbolOpInterface>(wrapper))
       wrapperName = sym.getName();
     const double score = cost.evaluate(fu);
     ::llvm::outs() << "cost " << wrapperName << "=" << score << "\n";

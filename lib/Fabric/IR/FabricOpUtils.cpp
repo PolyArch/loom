@@ -6,10 +6,8 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <iterator>
 #include <string>
 
 using namespace mlir;
@@ -34,85 +32,6 @@ std::optional<unsigned> getFabricBitsWidth(Type type) {
   if (auto bits = dyn_cast<BitsType>(type))
     return bits.getWidth();
   return std::nullopt;
-}
-
-FabricOpModeClassification classifyFabricOpModes(OpOp op) {
-  ArrayAttr modes = op.getHwParamsAttr();
-  DictionaryAttr software = op.getSwConfigsAttr();
-  bool selectsNormalizedMode = software && software.get("mode");
-  if (!modes) {
-    if (selectsNormalizedMode)
-      return {FabricOpModeKind::Malformed,
-              "'sw_configs.mode' requires normalized hw_params"};
-    return {};
-  }
-  if (modes.empty())
-    return {FabricOpModeKind::Malformed, "'hw_params' must not be empty"};
-
-  std::optional<FabricOpModeKind> format;
-  for (auto [index, attr] : llvm::enumerate(modes)) {
-    auto entry = dyn_cast<DictionaryAttr>(attr);
-    if (!entry)
-      return {FabricOpModeKind::Malformed,
-              "'hw_params' entry #" + std::to_string(index) +
-                  " must be a dictionary attribute"};
-
-    constexpr llvm::StringLiteral normalizedKeys[] = {
-        "op", "function_type", "input_ports", "output_ports", "attributes"};
-    unsigned present = 0;
-    for (StringRef key : normalizedKeys)
-      present += static_cast<unsigned>(static_cast<bool>(entry.get(key)));
-    if (present != 0 && present != std::size(normalizedKeys))
-      return {FabricOpModeKind::Malformed,
-              "'hw_params' entry #" + std::to_string(index) +
-                  " partially specifies a normalized mode"};
-
-    FabricOpModeKind entryFormat = present == std::size(normalizedKeys)
-                                       ? FabricOpModeKind::Normalized
-                                       : FabricOpModeKind::Legacy;
-    if (!format) {
-      format = entryFormat;
-      continue;
-    }
-    if (*format != entryFormat)
-      return {FabricOpModeKind::Malformed,
-              "'hw_params' must not mix normalized modes and legacy fields"};
-  }
-
-  if (*format == FabricOpModeKind::Legacy && modes.size() != 1)
-    return {FabricOpModeKind::Malformed,
-            "legacy 'hw_params' must be a length-1 array, got " +
-                std::to_string(modes.size())};
-  if (*format == FabricOpModeKind::Legacy && selectsNormalizedMode)
-    return {FabricOpModeKind::Malformed,
-            "'sw_configs.mode' requires normalized hw_params"};
-  return {*format, {}};
-}
-
-LogicalResult
-preflightPairedLaneModes(OpOp op,
-                         const FabricOpModeClassification &classification,
-                         std::string &error) {
-  if (!op.getPairedLanesAttr())
-    return success();
-  if (classification.kind == FabricOpModeKind::Malformed) {
-    error = classification.diagnostic;
-    return failure();
-  }
-  if (classification.kind != FabricOpModeKind::Normalized) {
-    error = "paired_lanes requires normalized hw_params modes";
-    return failure();
-  }
-  for (Attribute attr : op.getHwParamsAttr()) {
-    auto mode = dyn_cast<DictionaryAttr>(attr);
-    auto selected = mode ? mode.getAs<FlatSymbolRefAttr>("op") : nullptr;
-    if (!selected || selected.getValue() != "dataflow.sync") {
-      error =
-          "paired_lanes requires every hw_params mode to select @dataflow.sync";
-      return failure();
-    }
-  }
-  return success();
 }
 
 FailureOr<unsigned> getSemanticPayloadWidth(Type type, std::string &error) {

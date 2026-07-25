@@ -813,6 +813,17 @@ bool fabric::admitsOperationSchema(ImplementationFamilyId family,
                             schema);
 }
 
+llvm::SmallVector<fabric::ImplementationFamilyId, 2>
+fabric::implementationFamiliesFor(::dataflow::OperationSchemaId schema) {
+  llvm::SmallVector<ImplementationFamilyId, 2> families;
+  for (std::uint32_t index = 0; index < implementationFamilyCount(); ++index) {
+    auto family = static_cast<ImplementationFamilyId>(index);
+    if (admitsOperationSchema(family, schema))
+      families.push_back(family);
+  }
+  return families;
+}
+
 llvm::StringRef
 fabric::capabilityParamsSchemaKeyword(CapabilityParamsSchemaId schema) {
   switch (schema) {

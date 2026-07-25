@@ -157,6 +157,66 @@ bool checkMembership() {
   return ok;
 }
 
+bool checkCapabilityCodec(MLIRContext &context) {
+  FloatBehaviorProfile behavior = FloatBehaviorProfile::strictIEEE();
+  behavior.roundingModes = RoundingModeSet::get(
+      {arith::RoundingMode::to_nearest_even, arith::RoundingMode::downward});
+  FamilyCapabilityParams capability = ScalarFloatWidthCastParams{
+      FloatFormatRelation::get({{FloatFormat::F16, FloatFormat::F32},
+                                {FloatFormat::F32, FloatFormat::F64}}),
+      behavior};
+  DictionaryAttr encoded = getFamilyCapabilityParamsAttr(&context, capability);
+  llvm::Expected<FamilyCapabilityParams> decoded = parseFamilyCapabilityParams(
+      ImplementationFamilyId::ScalarFloatWidthCast, encoded);
+  if (!decoded) {
+    llvm::errs() << "canonical typed hw_params failed to decode: "
+                 << llvm::toString(decoded.takeError()) << '\n';
+    return false;
+  }
+  if (getFamilyCapabilityParamsAttr(&context, *decoded) != encoded) {
+    llvm::errs() << "canonical typed hw_params did not round-trip\n";
+    return false;
+  }
+
+  OpBuilder builder(&context);
+  DictionaryAttr duplicateDomain =
+      builder.getDictionaryAttr({builder.getNamedAttr(
+          "integer_widths",
+          builder.getArrayAttr({builder.getI32IntegerAttr(32),
+                                builder.getI32IntegerAttr(32)}))});
+  llvm::Expected<FamilyCapabilityParams> duplicateDomainResult =
+      parseFamilyCapabilityParams(ImplementationFamilyId::ScalarIntegerAddSub,
+                                  duplicateDomain);
+  if (duplicateDomainResult) {
+    llvm::errs() << "duplicate typed capability domain was accepted\n";
+    return false;
+  }
+  if (!llvm::StringRef(llvm::toString(duplicateDomainResult.takeError()))
+           .contains("duplicate")) {
+    llvm::errs() << "duplicate typed capability domain was misclassified\n";
+    return false;
+  }
+
+  ArrayAttr pair = builder.getArrayAttr(
+      {builder.getI32IntegerAttr(8), builder.getI32IntegerAttr(32)});
+  DictionaryAttr duplicateRelation =
+      builder.getDictionaryAttr({builder.getNamedAttr(
+          "width_pairs", builder.getArrayAttr({pair, pair}))});
+  llvm::Expected<FamilyCapabilityParams> duplicateRelationResult =
+      parseFamilyCapabilityParams(ImplementationFamilyId::ScalarIntegerCast,
+                                  duplicateRelation);
+  if (duplicateRelationResult) {
+    llvm::errs() << "duplicate typed capability relation was accepted\n";
+    return false;
+  }
+  if (!llvm::StringRef(llvm::toString(duplicateRelationResult.takeError()))
+           .contains("duplicate")) {
+    llvm::errs() << "duplicate typed capability relation was misclassified\n";
+    return false;
+  }
+  return true;
+}
+
 bool checkIntegerAdmission(MLIRContext &context) {
   OpFixture fixture(context);
   Type i7 = fixture.builder.getIntegerType(7);
@@ -458,6 +518,7 @@ int main() {
   bool ok = true;
   ok &= checkDescriptorRelations();
   ok &= checkMembership();
+  ok &= checkCapabilityCodec(context);
   ok &= checkIntegerAdmission(context);
   ok &= checkFloatingAdmission(context);
   ok &= checkCastRelations(context);

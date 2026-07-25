@@ -6,7 +6,7 @@ llvm_update_compile_flags(loom-cost-test)
 target_link_libraries(loom-cost-test PRIVATE
   LoomCommon
   MLIRFabric
-  MLIRFabricTechSynthesizer
+  MLIRFabricTech
   MLIRDataflow
   MLIRFuncDialect
   MLIRIR

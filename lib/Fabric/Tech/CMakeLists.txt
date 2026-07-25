@@ -1,5 +1,6 @@
 add_mlir_library(MLIRFabricTech
-  ConfiguredFunctionAdapters.cpp
+  CostModel.cpp
+  Parallel.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Tech
@@ -8,11 +9,7 @@ add_mlir_library(MLIRFabricTech
   LoomCommon
   MLIRArithDialect
   MLIRFabric
-  MLIRFuncDialect
   MLIRIR
-  MLIRMathDialect
-  MLIRPass
   MLIRSupport
+  LLVMSupport
 )
-
-add_subdirectory(Synthesizer)

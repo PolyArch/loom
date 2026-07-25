@@ -45,7 +45,7 @@ fabric.module @named_pe_host(%a : !fabric.bits<32>) {
   ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
     fabric.yield
@@ -65,7 +65,7 @@ fabric.module @named_fu_host(%a : !fabric.bits<32>) {
     fabric.fu @F (!fabric.bits<32>) -> (!fabric.bits<32>) {
     ^bb0(%fa: !fabric.bits<32>):
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
     %g = fabric.instantiate @F(%pa : !fabric.bits<32>) -> (!fabric.bits<32>)

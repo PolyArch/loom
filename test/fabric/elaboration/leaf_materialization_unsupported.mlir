@@ -24,6 +24,7 @@ fabric.module @pe_host(%arg : !fabric.bits_tag<16, 4>) -> () {
   ^bb0(%pe_arg : !fabric.bits<8>):
     fabric.fu(%fu_arg = %pe_arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
       %sum = fabric.op [@arith.addi] (%fu_arg, %fu_arg)
+          {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [8 : i32]}}
           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %sum : !fabric.bits<8>
     }
@@ -68,6 +69,7 @@ fabric.module @fu_host(%arg : !fabric.bits_tag<8, 2>)
     fabric.fu @FU (!fabric.bits<8>) -> (!fabric.bits<8>) {
     ^bb0(%fu_arg : !fabric.bits<8>):
       %sum = fabric.op [@arith.addi] (%fu_arg, %fu_arg)
+          {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [8 : i32]}}
           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %sum : !fabric.bits<8>
     }

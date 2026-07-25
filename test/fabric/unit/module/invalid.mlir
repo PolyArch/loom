@@ -133,7 +133,7 @@ fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   // expected-error @+1 {{is not allowed inside fabric.module}}
   fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> () {
     %k = fabric.op [@arith.muli] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+         {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
     fabric.yield
   }
   fabric.yield
@@ -145,7 +145,7 @@ fabric.module @m_raw_fu_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 fabric.module @m_raw_op_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   // expected-error @+1 {{is not allowed inside fabric.module}}
   %k = fabric.op [@arith.addi] (%a, %b)
-       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+       {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   fabric.yield
 }
 
@@ -157,6 +157,6 @@ fabric.module @m_raw_op_rejected(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
 // expected-error @+1 {{must be inside a fabric.pe (parent must be fabric.pe)}}
 fabric.fu(%x = %a_top : !fabric.bits<32>, %y = %b_top : !fabric.bits<32>) -> () {
   %k = fabric.op [@arith.muli] (%x, %y)
-       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+       {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   fabric.yield
 }

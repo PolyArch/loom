@@ -352,7 +352,7 @@ fabric.module @boundary_in_fu(%d : !fabric.bits<32>) {
       %0 = fabric.boundary [s2t] %fa {sw_configs = {tag = 0 : i4}}
            : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -368,7 +368,7 @@ fabric.module @boundary_in_pe(%d : !fabric.bits<32>) {
          : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
