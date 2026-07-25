@@ -63,11 +63,11 @@ std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 // Scaffolds with live loop results or any unexpected structure are unchanged.
 std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
 
-// Uplift counted scf.while loops produced by CFG-to-SCF structuring into
-// scf.for, keeping each loop's imported annotation on the uplifted loop. This
-// combines the upstream counted-loop utility with Loom's conservative
-// do-while counted-loop fallback. Loops that do not match a supported counted
-// shape are left as scf.while.
+// Uplift counted scf.while loops inside callable regions into scf.for, keeping
+// each loop's imported annotation on the uplifted loop. This combines the
+// upstream counted-loop utility with Loom's conservative do-while counted-loop
+// fallback. Each existing operation is offered the transform once; loops
+// outside callables and unsupported shapes are left as scf.while.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // The closed set of execution shapes an `llvm.intr.fmuladd` can be
@@ -95,10 +95,11 @@ enum class FMulAddExecutionShape {
 std::unique_ptr<::mlir::Pass>
 createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 
-// Lift trivially parallel scf.for loops (no iter_args, iv-dependent
-// stores only, no nested calls; lane-local structured scf.while is
-// allowed) into scf.forall. Loops that do not match the conservative
-// parallel criterion are left as scf.for.
+// Lift trivially parallel scf.for loops inside callable regions (no iter_args,
+// iv-dependent stores only, no nested calls; lane-local structured scf.while
+// is allowed) into scf.forall. Each existing operation is offered the
+// transform once; loops outside callables and loops that do not match the
+// conservative parallel criterion are left as scf.for.
 // This development-only transformation is registered for explicit pass
 // runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();

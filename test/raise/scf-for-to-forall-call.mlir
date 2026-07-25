@@ -64,3 +64,27 @@ func.func @nested_callable_is_not_loop_body(%dst: memref<?xf32>, %n: index) {
   }
   return
 }
+
+// SymbolTable is a lookup trait, not proof that every nested operation is a
+// definition. Unsupported control directly inside the container still belongs
+// to the loop body and keeps the loop sequential.
+// CHECK-LABEL: func.func @symbol_table_does_not_hide_control
+// CHECK: scf.for
+// CHECK: module {
+// CHECK: scf.execute_region
+// CHECK-NOT: scf.forall
+func.func @symbol_table_does_not_hide_control(%dst: memref<?xf32>, %n: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %f0 = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %n step %c1 {
+    builtin.module {
+      %unused = scf.execute_region -> i32 {
+        %value = arith.constant 0 : i32
+        scf.yield %value : i32
+      }
+    }
+    memref.store %f0, %dst[%i] : memref<?xf32>
+  }
+  return
+}

@@ -1,6 +1,8 @@
 #ifndef LOOM_LIB_FRONTEND_RAISING_EXACTSTANDARDSPELLING_H
 #define LOOM_LIB_FRONTEND_RAISING_EXACTSTANDARDSPELLING_H
 
+#include "CallableRegions.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -87,7 +89,8 @@ inline bool statesFloatingPolicy(::mlir::LLVM::LLVMFuncOp funcOp) {
 // True when the enclosing callable states a floating-point environment the
 // standard operation cannot restate.
 inline bool enclosingFloatingPolicyBlocksRewrite(::mlir::Operation *op) {
-  auto funcOp = op->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
+  auto funcOp = ::mlir::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(
+      getNearestCallableOp(op));
   return funcOp && statesFloatingPolicy(funcOp);
 }
 

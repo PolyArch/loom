@@ -1,17 +1,35 @@
 // RUN: loom-raise-opt --loom-scf-for-to-forall %s | FileCheck %s
 
+// A matching loop outside every callable is not owned by this pass.
+// CHECK: memref.alloc
+// CHECK: scf.for
+// CHECK: memref.store
+// CHECK-NOT: scf.forall
+
 // Case 1: a trivially parallel scf.for with no iter_args lifts to
 // scf.forall. The store inside writes to an iv-derived address, which
 // is the conservative parallel-safety condition the pass requires.
 
 // CHECK-LABEL: func.func @parallel_init
+// CHECK: arith.addi
 // CHECK: scf.forall
 // CHECK: memref.store
 // CHECK-NOT: scf.for
+
+%module_buffer = memref.alloc() : memref<8xf32>
+%module_c0 = arith.constant 0 : index
+%module_c1 = arith.constant 1 : index
+%module_c8 = arith.constant 8 : index
+%module_f0 = arith.constant 0.0 : f32
+scf.for %i = %module_c0 to %module_c8 step %module_c1 {
+  memref.store %module_f0, %module_buffer[%i] : memref<8xf32>
+}
+
 func.func @parallel_init(%buf: memref<?xf32>, %n: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %f0 = arith.constant 0.0 : f32
+    %unrelated = arith.addi %c0, %c1 : index
     scf.for %i = %c0 to %n step %c1 {
       memref.store %f0, %buf[%i] : memref<?xf32>
     }
@@ -94,6 +112,10 @@ llvm.func @parallel_i64(%base: !llvm.ptr) {
 // CHECK: scf.forall
 // CHECK: scf.while
 // CHECK: memref.store
+// CHECK-LABEL: func.func @nested_parallel_loops
+// CHECK-COUNT-2: scf.forall
+// CHECK-NOT: scf.for %
+
 func.func @parallel_lane_local_while(%input: memref<?xi32>, %output: memref<?xi32>,
                                      %n: index) {
     %c0 = arith.constant 0 : index
@@ -115,4 +137,17 @@ func.func @parallel_lane_local_while(%input: memref<?xi32>, %output: memref<?xi3
       memref.store %result#1, %output[%i] : memref<?xi32>
     }
     return
+}
+
+func.func @nested_parallel_loops(%output: memref<?xf32>, %n: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %f0 = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %n step %c1 {
+    scf.for %j = %c0 to %n step %c1 {
+      %unused = arith.addi %j, %c1 : index
+    }
+    memref.store %f0, %output[%i] : memref<?xf32>
+  }
+  return
 }

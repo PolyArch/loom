@@ -47,6 +47,8 @@
 
 #include "Frontend/Raising/Passes.h"
 
+#include "CallableRegions.h"
+#include "ExactRewrite.h"
 #include "PreservedHints.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -58,7 +60,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace {
@@ -111,8 +112,7 @@ bool isLoopInvariant(::mlir::Value v, ::mlir::scf::WhileOp loop) {
   return !loop->isAncestor(def);
 }
 
-::mlir::FailureOr<CountedInfo>
-matchCountedDoWhile(::mlir::scf::WhileOp loop) {
+::mlir::FailureOr<CountedInfo> matchCountedDoWhile(::mlir::scf::WhileOp loop) {
   ::mlir::Block *beforeBody = loop.getBeforeBody();
   ::mlir::Block *afterBody = loop.getAfterBody();
   ::mlir::scf::ConditionOp condOp = loop.getConditionOp();
@@ -221,8 +221,7 @@ matchCountedDoWhile(::mlir::scf::WhileOp loop) {
   for (::mlir::Operation &op : *afterBody) {
     if (&op == yieldOp.getOperation())
       continue;
-    if (::mlir::isa<::mlir::arith::IndexCastOp,
-                    ::mlir::arith::IndexCastUIOp,
+    if (::mlir::isa<::mlir::arith::IndexCastOp, ::mlir::arith::IndexCastUIOp,
                     ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
                     ::mlir::arith::TruncIOp, ::mlir::LLVM::SExtOp,
                     ::mlir::LLVM::ZExtOp, ::mlir::LLVM::TruncOp>(&op)) {
@@ -302,8 +301,8 @@ struct UpliftDoWhileToFor
     }
 
     // Empty builder -- we will inline the original body manually.
-    auto emptyBuilder = [](::mlir::OpBuilder &, ::mlir::Location,
-                           ::mlir::Value, ::mlir::ValueRange) {};
+    auto emptyBuilder = [](::mlir::OpBuilder &, ::mlir::Location, ::mlir::Value,
+                           ::mlir::ValueRange) {};
     auto forOp = ::mlir::scf::ForOp::create(rewriter, loc, lb, ub, step,
                                             iterArgs, emptyBuilder);
     carryLoopAnnotation(loop->getAttr(loopAnnotationName), forOp);
@@ -333,8 +332,7 @@ struct UpliftDoWhileToFor
       // Skip the addi+cmpi pair -- those are absorbed by scf.for. The
       // matchCountedDoWhile invariant guarantees the addi only feeds
       // the cmpi/condition and is not used elsewhere.
-      if (&op == info.addOp.getOperation() ||
-          &op == info.cmpOp.getOperation())
+      if (&op == info.addOp.getOperation() || &op == info.cmpOp.getOperation())
         continue;
       rewriter.clone(op, mapping);
     }
@@ -397,9 +395,13 @@ struct SCFWhileToForPass
 
     ::mlir::RewritePatternSet patterns(ctx);
     patterns.add<UpliftCountedWhileToFor, UpliftDoWhileToFor>(ctx);
+    ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
-    if (failed(::mlir::applyPatternsGreedily(module, std::move(patterns))))
-      return signalPassFailure();
+    (void)loom::raising::forEachCallableRegion(
+        module, [&](::mlir::Region &region) {
+          loom::raising::applyExactPatternsOnce(region, frozen);
+          return ::mlir::success();
+        });
   }
 };
 

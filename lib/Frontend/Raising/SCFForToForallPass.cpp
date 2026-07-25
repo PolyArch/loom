@@ -34,6 +34,7 @@
 #include "Frontend/Raising/Passes.h"
 
 #include "CallableRegions.h"
+#include "ExactRewrite.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -45,11 +46,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -512,13 +511,14 @@ bool isUnmodelledCall(::mlir::Operation *op) {
   return true;
 }
 
-// True if `op` is a structural scf op (or an scf terminator we treat
-// transparently). Such ops are themselves neither a memory write nor a
-// bail-out; the walk descends into their bodies and any meaningful
-// effects are picked up there. scf.execute_region is rejected separately
-// by the body checker because it can hide arbitrary control flow.
-bool isTransparentScfOp(::mlir::Operation *op) {
-  return ::mlir::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
+// True if `op` is a structural body operation treated transparently. Such ops
+// are themselves neither a memory write nor a bail-out; the ownership walk
+// descends into their regions and checks the operations there. builtin.module
+// is the one non-SCF entry because it contributes a symbol scope, not an
+// execution effect of its own. scf.execute_region is rejected separately
+// because it can hide arbitrary control flow.
+bool isTransparentBodyOp(::mlir::Operation *op) {
+  return ::mlir::isa<::mlir::ModuleOp, ::mlir::scf::ForOp, ::mlir::scf::IfOp,
                      ::mlir::scf::WhileOp, ::mlir::scf::ForallOp,
                      ::mlir::scf::YieldOp, ::mlir::scf::InParallelOp,
                      ::mlir::scf::ConditionOp>(op);
@@ -529,13 +529,11 @@ bool isTransparentScfOp(::mlir::Operation *op) {
 // llvm.cond_br). A nested scf.for / scf.if is fine because the
 // successor counts of its own internal blocks are not the outer body's
 // concern. We only check blocks that belong to `loop.getBody()` and to regions
-// of nested transparent scf ops. A nested callable owns its own body and is
-// pruned before either check can inspect it.
+// of nested transparent body operations. A nested callable owns its own body
+// and is pruned before either check can inspect it.
 bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   ::mlir::WalkResult walked = loom::raising::forEachOwnedOperation(
       loop.getRegion(), [&](::mlir::Operation *op) {
-        if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
-          return ::mlir::WalkResult::skip();
         if (op == loop.getBody()->getTerminator())
           return ::mlir::WalkResult::advance();
         if (op->getNumSuccessors() <= 1)
@@ -574,8 +572,6 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
 
   auto walkResult = loom::raising::forEachOwnedOperation(
       loop.getRegion(), [&](::mlir::Operation *op) {
-        if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
-          return ::mlir::WalkResult::skip();
         if (op == loop.getBody()->getTerminator())
           return ::mlir::WalkResult::advance();
         // Reject scf.execute_region inside the body.
@@ -590,7 +586,10 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
                 ::mlir::memref::AtomicRMWOp, ::mlir::memref::AtomicYieldOp>(op))
           return ::mlir::WalkResult::interrupt();
 
-        if (isTransparentScfOp(op))
+        // builtin.module is a structural symbol scope. Its contents are still
+        // visited here, while nested callable bodies are pruned by the common
+        // ownership traversal.
+        if (isTransparentBodyOp(op))
           return ::mlir::WalkResult::advance();
 
         // Pure ops do not constrain parallelism here.
@@ -791,9 +790,13 @@ struct SCFForToForallPass
 
     ::mlir::RewritePatternSet patterns(ctx);
     patterns.add<ForToForall>(ctx);
+    ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
-    if (failed(::mlir::applyPatternsGreedily(module, std::move(patterns))))
-      return signalPassFailure();
+    (void)loom::raising::forEachCallableRegion(
+        module, [&](::mlir::Region &region) {
+          loom::raising::applyExactPatternsOnce(region, frozen);
+          return ::mlir::success();
+        });
   }
 };
 

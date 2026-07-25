@@ -22,12 +22,24 @@ namespace raising {
 //
 // Both kinds are callables, but only one is an imported LLVM ABI authority. A
 // native func.func is a callable region raised like any other and is never an
-// ABI envelope: a floating-point environment is read only off the nearest
-// enclosing llvm.func, and an llvm.func is never copied into another dialect
-// to obtain a pass wrapper. That leaves llvm.func the sole imported LLVM
-// callable and ABI owner of its body.
+// ABI envelope: a floating-point environment is read only when the nearest
+// callable is an llvm.func, and an llvm.func is never copied into another
+// dialect to obtain a pass wrapper. That leaves llvm.func the sole imported
+// LLVM callable and ABI owner of its body.
 inline bool isCallableOp(::mlir::Operation *op) {
   return ::mlir::isa<::mlir::LLVM::LLVMFuncOp, ::mlir::func::FuncOp>(op);
+}
+
+// Return the nearest callable that owns `op`, or null when `op` is outside
+// every callable region. A nested callable cuts off ownership inherited from
+// any callable above it.
+inline ::mlir::Operation *getNearestCallableOp(::mlir::Operation *op) {
+  for (::mlir::Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isCallableOp(parent))
+      return parent;
+  }
+  return nullptr;
 }
 
 // Run `transform` on every non-empty region of every callable reachable from

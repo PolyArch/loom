@@ -40,6 +40,11 @@
 // ENVIRONMENT: llvm.fadd
 // ENVIRONMENT-NOT: arith.addf
 // ENVIRONMENT-NOT: arith.mulf
+// ENVIRONMENT-LABEL: llvm.func @outer_policy
+// ENVIRONMENT: llvm.fadd
+// ENVIRONMENT-LABEL: func.func @native_scope
+// ENVIRONMENT: arith.addf
+// ENVIRONMENT-NOT: llvm.fadd
 
 // The imported debug scope and the source file, line and column of the
 // replaced operation are the provenance authority, so the standard operation
@@ -97,6 +102,18 @@ llvm.func @contracted(%a: f32, %b: f32) -> f32
 llvm.func @target_specific(%a: f32, %b: f32) -> f32
     attributes {passthrough = ["nounwind"]} {
   %0 = llvm.fadd %a, %b : f32
+  llvm.return %0 : f32
+}
+
+llvm.func @outer_policy(%a: f32, %b: f32) -> f32
+    attributes {fp_contract = "fast"} {
+  %0 = llvm.fadd %a, %b : f32
+  builtin.module {
+    func.func @native_scope(%x: f32, %y: f32) -> f32 {
+      %1 = llvm.fadd %x, %y : f32
+      return %1 : f32
+    }
+  }
   llvm.return %0 : f32
 }
 

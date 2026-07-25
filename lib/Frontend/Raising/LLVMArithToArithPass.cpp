@@ -185,9 +185,9 @@ struct BinaryAlias : public ::mlir::OpRewritePattern<LLVMOp> {
         return ::mlir::failure();
     }
 
-    StandardOp raised = StandardOp::create(
-        rewriter, op.getLoc(), op->getResult(0).getType(), op->getOperand(0),
-        op->getOperand(1));
+    StandardOp raised =
+        StandardOp::create(rewriter, op.getLoc(), op->getResult(0).getType(),
+                           op->getOperand(0), op->getOperand(1));
     carryExactFlags(op, raised);
     rewriter.replaceOp(op, raised);
     return ::mlir::success();
@@ -201,13 +201,11 @@ struct UnaryFloatAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
-  matchAndRewrite(LLVMOp op,
-                  ::mlir::PatternRewriter &rewriter) const override {
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
     if (!restatesExactly(op, /*floating=*/true))
       return ::mlir::failure();
-    StandardOp raised =
-        StandardOp::create(rewriter, op.getLoc(), op->getResult(0).getType(),
-                           op->getOperand(0));
+    StandardOp raised = StandardOp::create(
+        rewriter, op.getLoc(), op->getResult(0).getType(), op->getOperand(0));
     carryExactFlags(op, raised);
     rewriter.replaceOp(op, raised);
     return ::mlir::success();
@@ -328,8 +326,7 @@ struct PlainCastAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
-  matchAndRewrite(LLVMOp op,
-                  ::mlir::PatternRewriter &rewriter) const override {
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
     if (!restatesExactly(op, Floating))
       return ::mlir::failure();
     rewriter.replaceOpWithNewOp<StandardOp>(op, op.getRes().getType(),
@@ -346,8 +343,7 @@ struct NonNegativeCastAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
-  matchAndRewrite(LLVMOp op,
-                  ::mlir::PatternRewriter &rewriter) const override {
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
     if (!restatesExactly(op, Floating))
       return ::mlir::failure();
     rewriter.replaceOpWithNewOp<StandardOp>(op, op.getRes().getType(),
