@@ -19,6 +19,19 @@ combines them into objectives, quality gates, Pareto sets, promotion, or final
 selection. A mapper, simulator, or backend cannot embed a private score and
 silently override policy.
 
+The same boundary is required before Mapping. Structured and Dataflow
+optimization need both software-only estimates and exact hardware-aware
+estimates, while hardware exploration also needs hardware-only models. Exact
+case signatures therefore cover software-only, software-plus-Fabric,
+hardware-only, and mapped subject closures without creating separate evaluator
+frameworks for each compiler stage.
+
+This forms a feedback graph rather than a one-way fidelity ladder. A mapped
+result may provide Evidence that causes the central DSE plan to generate a new
+Structured or Dataflow candidate. It never mutates the evaluated candidate or
+rebinds the existing Mapping; immutable lineage keeps each observation tied to
+the exact program and hardware that produced it.
+
 ## Why Request And Evidence Are Separate Artifacts
 
 An Evaluation case asks a ground-truth question about exact immutable subjects,

@@ -243,6 +243,43 @@ predictor and a physical timing tool can share one Hardware Implementation
 case while retaining different parameter, technology-tool, and execution
 bindings.
 
+### Cross-Stack Subject Profiles
+
+The shared case-signature registry expresses the exact subjects consumed by a
+model at any point in the stack. The initial production profiles are:
+
+| Evaluation purpose | Required subject closure |
+| --- | --- |
+| structured software analysis | Structured Program Candidate |
+| hardware-aware structured analysis | Structured Program Candidate, Fabric |
+| Dataflow software analysis | Canonical Dataflow Program |
+| hardware-aware Dataflow analysis | Canonical Dataflow Program, Fabric |
+| hardware-only analysis | Fabric |
+| mapped or CGRA analysis | Canonical Dataflow Program, Fabric, Mapping |
+
+This table does not introduce a second case-kind enum or a generic optional
+subject bag. Every real model registers one exact
+`EvaluationCaseSignatureDescriptor` with ordered roles, accepted Artifact
+schemas, workload and runtime-input requirements, conditions, and cycle-basis
+resolver. An analytic `(D,F)` model and a simulation `(D,F)` model with a
+required workload are therefore distinct exact signatures even when their
+subject roles match.
+
+The compiler invocation always resolves one exact Fabric target. A
+software-only signature means only that the selected model does not consume
+Fabric; it cannot authorize ambient target lookup. For a mapped case, the
+Mapping must resolve to the same exact Dataflow and Fabric Artifacts supplied
+in the other roles. A Mapping reference alone is not a substitute for the
+complete subject closure, and Request verification rejects any mismatch.
+
+Evidence participates in compilation only through typed use-def edges in the
+central DSE plan. Mapping-aware Evidence may be projected into a Structured or
+Dataflow generator, but that generator creates a new immutable candidate. It
+cannot copy Mapping-private records into software IR, mutate an existing
+candidate, or rebind the Mapping. Promotion to Mapping is an explicit,
+potentially expensive branch for a selected survivor set rather than an
+implicit action performed by frontend passes.
+
 ## EvaluationRequest and Model Descriptor
 
 `evaluation.request.1.0` has one strict typed root:

@@ -110,6 +110,24 @@ decision is explored, but equal resulting program semantics must deduplicate.
 Making the raw hint semantic would let a nonbinding compiler suggestion create
 distinct programs even when it changed no program decision.
 
+## Why Fabric Precedes Structured Optimization
+
+Structured optimization cannot choose useful unroll, vector, ownership,
+memory, communication, or topology-sensitive transformations from software
+syntax alone. Loom therefore resolves the exact Fabric before producing the
+first Structured candidate. Cheap capability projections reject proved
+impossibilities, central Evaluation compares legal alternatives, and selected
+survivors may be promoted through Dataflow and Mapping for higher-fidelity
+feedback.
+
+Fabric identity is not embedded into every Structured or Dataflow Artifact.
+Those Artifacts own software semantics and should deduplicate across hardware
+when their semantics are equal. Target facts that actually change software
+semantics are materialized in the candidate; resource and topology lineage is
+carried by the exact EvaluationRequest, DSE use-def edge, and Mapping. This
+keeps the hardware dependency explicit without creating a second target
+authority inside software IR.
+
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
 dependence and logical-domain models are derived analyses; physical binding

@@ -136,6 +136,32 @@ LLVM IR
   -> optimized canonical Dataflow Program
 ```
 
+These are software Artifact boundaries, not a claim that optimization is a
+one-way dependency chain. The exact Fabric target is resolved before the first
+software candidate is produced, and central Evaluation may be queried at both
+optimization surfaces:
+
+```text
+ADG Builder, builtin target, or user Fabric -> exact Fabric F
+
+source -> LLVM -> initial Structured Program S0
+  -> Generate/Promote(S, F, analysis or Evidence) -> optimized S
+  -> mechanical lowering -> initial canonical Dataflow D0
+  -> Generate/Promote(D, F, analysis or Evidence) -> optimized D
+  -> Mapping(D, F) -> Mapping M
+```
+
+Evaluation is a typed side relation over exact immutable subjects rather than
+a pipeline stage. Exact registered case signatures may evaluate `S`, `(S,F)`,
+`D`, `(D,F)`, `F`, or `(D,F,M)`. Workload, runtime input, conditions, and model
+binding remain part of the exact case contract, so analytically similar
+subject sets do not collapse distinct questions.
+
+Evidence returns through the central DSE plan. A high-fidelity iteration may
+therefore follow `S_i -> D_i -> M_i -> Evidence -> S_j`, where `S_j` is a new
+immutable candidate. `M_i` remains bound to the exact `D_i` and `F`; no
+feedback mutates an existing software Artifact or rebinds a Mapping.
+
 Translation into the structured MLIR stage is mechanical. The Structured
 Program Candidate is the primary optimization surface for loop, memory,
 parallelism, vectorization, partitioning, and InstructionCore/SpatialCore
@@ -157,6 +183,16 @@ ordinary fully elaborated Fabric artifacts, not abstract capability summaries.
 The frontend consumes that target directly for mechanical target facts or
 through derived capability views and central Evaluation; it does not own
 target selection or invoke Mapping during candidate pruning.
+
+Fabric is compilation context, but it is not automatically a semantic
+dependency of every Structured or Dataflow Artifact. Target facts that change
+software semantics, including target triple, ABI, DataLayout, and address
+width, are materialized in the software Artifact and therefore affect its own
+identity. Resource inventory, topology, bandwidth, physical capability,
+placement, and routing remain owned by Fabric, Evaluation, and Mapping. A
+software-only Evaluation signature omits Fabric because that model does not
+consume hardware facts, not because the compiler invocation lacks an exact
+Fabric target.
 
 Ordinary separate compilation embeds the carrier-independent
 `loom.relocatable_accelerator_payload 1.0` owned by Compiler Part 1. Final link

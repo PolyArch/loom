@@ -440,6 +440,13 @@ A pure-software Evaluator need not include Fabric in its subject. A
 hardware-aware Evaluator references the exact Fabric identity. Neither a view
 nor Evidence enters software IR or copies Fabric capability authority.
 
+The compiler invocation nevertheless always has one exact Fabric target. A
+frontend pass cannot discover another target through ambient process state,
+global registries, or an implicit default. A hardware-sensitive legality,
+filtering, or quality decision consumes either the typed capability view
+derived from that exact target or an EvaluationRequest whose case signature
+includes that exact Fabric Artifact.
+
 Frontend filtering may prove absence of a capability, aggregate insufficiency,
 arbitrary-topology disconnection, or a cut/bandwidth lower bound. Only proved
 impossibility is a hard prune. A positive or unknown result is not proof of
@@ -447,6 +454,14 @@ mappability. The frontend never creates a realization, selects an occurrence,
 route, tag, buffer, or configuration, calls a Mapping solver, or emits a
 Mapping Artifact. Central DSE may explicitly promote a small survivor set to
 Mapping and feed resulting Evidence into a later compilation iteration.
+
+Promotion first mechanically derives the exact canonical Dataflow Program
+`D_i` from the selected Structured Program Candidate `S_i`. The resulting
+Mapping `M_i` is permanently coupled to `D_i` and the exact Fabric `F`, and the
+high-fidelity Evaluation case names that exact tuple. A structured candidate
+generator may consume a declared typed projection of the resulting Evidence
+to produce a new immutable `S_j`. It cannot inspect Mapping-private records,
+mutate `S_i`, or reinterpret `M_i` as a Mapping of `S_j`.
 
 ## Compilation DSE
 
