@@ -27,6 +27,13 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "fabric_artifact_invalid: " + message);
 }
 
+llvm::Error implementationInputOwnerUnavailable() {
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "fabric_artifact_owner_contract_unavailable: ImplementationInput has "
+      "no closed artifact owner contract in loom.fabric 1.0");
+}
+
 bool dependencyRowsFit(std::uint64_t count, std::size_t remaining) {
   if (remaining < payloadLengthFieldSize)
     return false;
@@ -66,7 +73,7 @@ llvm::Expected<std::uint32_t> roleOrdinal(FabricDependencyRole role) {
   case FabricDependencyRole::RefinedSystem:
     return 1;
   case FabricDependencyRole::ImplementationInput:
-    return 2;
+    return implementationInputOwnerUnavailable();
   }
   return invalid("unknown dependency role");
 }

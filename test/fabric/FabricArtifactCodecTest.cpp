@@ -224,11 +224,8 @@ void emptyDependencyTableRoundTrips() {
 }
 
 void encodeSortsDependenciesCanonically() {
-  // Deliberately non-canonical input order spanning distinct roles and
+  // Deliberately non-canonical input order spanning enabled roles and
   // identities so the sort exercises both the role and identity fields.
-  const FabricDirectDependency implementationInput{
-      FabricDependencyRole::ImplementationInput,
-      ArtifactRootReference{"loom.fabric", {1, 0}, identity(__func__, 0x02)}};
   const FabricDirectDependency importedHigher{
       FabricDependencyRole::ImportedModule,
       ArtifactRootReference{"loom.fabric", {1, 0}, identity(__func__, 0x03)}};
@@ -240,11 +237,9 @@ void encodeSortsDependenciesCanonically() {
       ArtifactRootReference{"loom.fabric", {1, 0}, identity(__func__, 0x04)}};
 
   const CanonicalSemanticBytes encoded = takeExpected(
-      __func__,
-      encodeFabricArtifactEnvelope(
-          FabricRootKind::System,
-          {implementationInput, importedHigher, refinedSystem, importedLower},
-          {}));
+      __func__, encodeFabricArtifactEnvelope(
+                    FabricRootKind::System,
+                    {importedHigher, refinedSystem, importedLower}, {}));
   std::vector<std::uint8_t> canonicalRows;
   appendDependencyRow(canonicalRows, 0, "loom.fabric", 1, 0,
                       importedLower.root.artifact);
@@ -252,25 +247,21 @@ void encodeSortsDependenciesCanonically() {
                       importedHigher.root.artifact);
   appendDependencyRow(canonicalRows, 1, "loom.fabric", 1, 0,
                       refinedSystem.root.artifact);
-  appendDependencyRow(canonicalRows, 2, "loom.fabric", 1, 0,
-                      implementationInput.root.artifact);
   const std::vector<std::uint8_t> expected =
-      buildEnvelope(1, canonicalRows, 4, {});
+      buildEnvelope(1, canonicalRows, 3, {});
   require(__func__, encoded.bytes().equals(expected),
           "canonical dependency row bytes are wrong");
 
   const CanonicalSemanticBytes permuted = takeExpected(
-      __func__,
-      encodeFabricArtifactEnvelope(
-          FabricRootKind::System,
-          {refinedSystem, importedLower, implementationInput, importedHigher},
-          {}));
+      __func__, encodeFabricArtifactEnvelope(
+                    FabricRootKind::System,
+                    {refinedSystem, importedLower, importedHigher}, {}));
   require(__func__, permuted.bytes().equals(encoded.bytes()),
           "dependency input order changed canonical envelope bytes");
 
   const DecodedFabricArtifact decoded =
       takeExpected(__func__, decodeFabricArtifactEnvelope(encoded.bytes()));
-  require(__func__, decoded.dependencies.size() == 4,
+  require(__func__, decoded.dependencies.size() == 3,
           "canonical sort lost a dependency");
   require(__func__, decoded.dependencies[0] == importedLower,
           "first canonical dependency row is wrong");
@@ -278,8 +269,36 @@ void encodeSortsDependenciesCanonically() {
           "second canonical dependency row is wrong");
   require(__func__, decoded.dependencies[2] == refinedSystem,
           "third canonical dependency row is wrong");
-  require(__func__, decoded.dependencies[3] == implementationInput,
-          "fourth canonical dependency row is wrong");
+}
+
+void implementationInputOrdinalIsDecodeOnly() {
+  const ArtifactIdentity referenced = identity(__func__, 0x02);
+  std::vector<std::uint8_t> rows;
+  appendDependencyRow(rows, 2, "loom.hardware_implementation", 1, 0,
+                      referenced);
+  const std::vector<std::uint8_t> bytes = buildEnvelope(2, rows, 1, {});
+  const DecodedFabricArtifact decoded =
+      takeExpected(__func__, decodeFabricArtifactEnvelope(bytes));
+  require(__func__, decoded.dependencies.size() == 1,
+          "reserved dependency row was not decoded");
+  require(__func__,
+          decoded.dependencies.front().role ==
+              FabricDependencyRole::ImplementationInput,
+          "reserved dependency ordinal changed");
+
+  const FabricDirectDependency dependency{
+      FabricDependencyRole::ImplementationInput,
+      ArtifactRootReference{
+          "loom.hardware_implementation", {1, 0}, referenced}};
+  llvm::Expected<CanonicalSemanticBytes> encoded = encodeFabricArtifactEnvelope(
+      FabricRootKind::InterconnectImplementation, {dependency}, {});
+  if (encoded)
+    fail(__func__, "encoder accepted reserved ImplementationInput role");
+  const std::string message = llvm::toString(encoded.takeError());
+  require(__func__,
+          llvm::StringRef(message).contains(
+              "fabric_artifact_owner_contract_unavailable"),
+          "encoder rejected reserved role with the wrong failure: " + message);
 }
 
 void encodeRejectsEmptySchemaIdentity() {
@@ -409,6 +428,7 @@ int main() {
   envelopeFramesEveryRootOrdinal();
   emptyDependencyTableRoundTrips();
   encodeSortsDependenciesCanonically();
+  implementationInputOrdinalIsDecodeOnly();
   encodeRejectsEmptySchemaIdentity();
   encodeRejectsDuplicateDependencyRow();
   decodeRejectsWrongDomain();

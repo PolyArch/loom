@@ -48,6 +48,14 @@ fabricReference(const CanonicalSemanticBytes &canonicalBytes) {
 }
 
 llvm::Error validateDependencyRoles(const DecodedFabricArtifact &artifact) {
+  for (const FabricDirectDependency &dependency : artifact.dependencies)
+    if (dependency.role == FabricDependencyRole::ImplementationInput)
+      return dependencyError(
+          FabricArtifactDependencyFailureReason::
+              ImplementationInputOwnerUnavailable,
+          "ImplementationInput has no closed artifact owner or strict "
+          "import contract");
+
   switch (artifact.rootKind) {
   case FabricRootKind::Module:
   case FabricRootKind::System:
@@ -65,11 +73,10 @@ llvm::Error validateDependencyRoles(const DecodedFabricArtifact &artifact) {
         ++refinedSystems;
         continue;
       }
-      if (dependency.role != FabricDependencyRole::ImplementationInput)
-        return dependencyError(
-            FabricArtifactDependencyFailureReason::InvalidDependencyRoles,
-            "InterconnectImplementation roots admit only RefinedSystem and "
-            "ImplementationInput dependencies");
+      return dependencyError(
+          FabricArtifactDependencyFailureReason::InvalidDependencyRoles,
+          "InterconnectImplementation roots admit only one RefinedSystem "
+          "dependency");
     }
     if (refinedSystems != 1)
       return dependencyError(
@@ -112,13 +119,6 @@ llvm::Error validateDecodedFabricArtifact(
     auto canonicalDependency = store.get(dependency.root);
     if (!canonicalDependency)
       return canonicalDependency.takeError();
-
-    if (dependency.role == FabricDependencyRole::ImplementationInput)
-      return dependencyError(
-          FabricArtifactDependencyFailureReason::
-              ImplementationInputOwnerUnavailable,
-          "ImplementationInput has no closed artifact owner or strict "
-          "import contract");
 
     if (!isFabricSchema(dependency.root))
       return dependencyError(

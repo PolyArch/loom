@@ -132,6 +132,46 @@ fabricReference(const CanonicalSemanticBytes &canonicalBytes) {
       finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes));
 }
 
+void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value >> 24));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 16));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+CanonicalSemanticBytes
+implementationInputEnvelope(const ArtifactRootReference &refinedSystem,
+                            const ArtifactRootReference &implementationInput,
+                            std::initializer_list<std::uint8_t> payload) {
+  static constexpr char domain[] = "loom.fabric.semantic.v1\0";
+  std::vector<std::uint8_t> bytes(domain, domain + sizeof(domain) - 1);
+  appendU32Be(bytes, 2);
+  appendU64Be(bytes, 2);
+  for (const auto &[role, reference] :
+       {std::pair{FabricDependencyRole::RefinedSystem, &refinedSystem},
+        std::pair{FabricDependencyRole::ImplementationInput,
+                  &implementationInput}}) {
+    appendU32Be(bytes, static_cast<std::uint32_t>(role));
+    appendU32Be(bytes,
+                static_cast<std::uint32_t>(reference->schemaIdentity.size()));
+    bytes.insert(bytes.end(), reference->schemaIdentity.begin(),
+                 reference->schemaIdentity.end());
+    appendU32Be(bytes, reference->schemaVersion.major);
+    appendU32Be(bytes, reference->schemaVersion.minor);
+    bytes.insert(bytes.end(), reference->artifact.bytes().begin(),
+                 reference->artifact.bytes().end());
+  }
+  appendU64Be(bytes, payload.size());
+  bytes.insert(bytes.end(), payload.begin(), payload.end());
+  return CanonicalSemanticBytes(std::move(bytes));
+}
+
 void requireStoredReference(const char *test, ArtifactStore &store,
                             const ArtifactRootReference &reference) {
   (void)takeExpected(test, store.get(reference));
@@ -240,34 +280,17 @@ void framingClosureRecursivelyLoadsExactFabricDependencies() {
   requireCandidateAbsent(__func__, store, root);
 }
 
-void implementationInputIsLoadedBeforeUnsupportedOwnerRejection() {
+void implementationInputIsRejectedBeforeLookup() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
   const ArtifactRootReference system =
       storeFabric(__func__, store, FabricRootKind::System, {}, {0x21});
-  const CanonicalSemanticBytes foreignBytes(
-      std::vector<std::uint8_t>{0xfa, 0xce});
-  const ArtifactRootReference foreign{
-      foreignSchema.identity.str(), foreignSchema.version,
-      finalizeArtifactIdentity(foreignSchema, foreignBytes)};
-  const CanonicalSemanticBytes root = envelope(
-      __func__, FabricRootKind::InterconnectImplementation,
-      {FabricDirectDependency{FabricDependencyRole::RefinedSystem, system},
-       FabricDirectDependency{FabricDependencyRole::ImplementationInput,
-                              foreign}},
-      {0x22});
-
-  expectErrorContains(
-      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
-      "artifact_store_missing");
-  requireCandidateAbsent(__func__, store, root);
-
-  const ArtifactIdentity storedForeign =
-      takeExpected(__func__, store.put(foreignSchema, foreignBytes));
-  require(__func__, storedForeign == foreign.artifact,
-          "foreign fixture identity changed");
-  requireStoredReference(__func__, store, foreign);
+  const ArtifactRootReference foreign{foreignSchema.identity.str(),
+                                      foreignSchema.version,
+                                      identity(__func__, 0x22)};
+  const CanonicalSemanticBytes root =
+      implementationInputEnvelope(system, foreign, {0x23});
   expectDependencyError(
       __func__, validateFabricArtifactDependencyFramingClosure(store, root),
       FabricArtifactDependencyFailureReason::
@@ -351,26 +374,6 @@ void wrongKindDependencyIsRejected() {
   requireCandidateAbsent(__func__, store, wrongKind);
 }
 
-void sameExactRootInDistinctRolesIsNotADuplicate() {
-  TemporaryDirectory directory(__func__);
-  ArtifactStore store(directory.path());
-
-  const ArtifactRootReference system =
-      storeFabric(__func__, store, FabricRootKind::System, {}, {0x33});
-  const CanonicalSemanticBytes crossRoleRoot = envelope(
-      __func__, FabricRootKind::InterconnectImplementation,
-      {FabricDirectDependency{FabricDependencyRole::RefinedSystem, system},
-       FabricDirectDependency{FabricDependencyRole::ImplementationInput,
-                              system}},
-      {0x34});
-  expectDependencyError(
-      __func__,
-      validateFabricArtifactDependencyFramingClosure(store, crossRoleRoot),
-      FabricArtifactDependencyFailureReason::
-          ImplementationInputOwnerUnavailable);
-  requireCandidateAbsent(__func__, store, crossRoleRoot);
-}
-
 void sameFamilyFramingClosureDoesNotPublishTheRoot() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
@@ -400,28 +403,6 @@ void sameFamilyFramingClosureDoesNotPublishTheRoot() {
           store, implementationBytes))
     fail(__func__, llvm::toString(std::move(error)));
   requireCandidateAbsent(__func__, store, implementationBytes);
-}
-
-void implementationInputRequiresAClosedOwner() {
-  TemporaryDirectory directory(__func__);
-  ArtifactStore store(directory.path());
-
-  const ArtifactRootReference system =
-      storeFabric(__func__, store, FabricRootKind::System, {}, {0x51});
-  const ArtifactRootReference module =
-      storeFabric(__func__, store, FabricRootKind::Module, {}, {0x52});
-  const CanonicalSemanticBytes root = envelope(
-      __func__, FabricRootKind::InterconnectImplementation,
-      {FabricDirectDependency{FabricDependencyRole::RefinedSystem, system},
-       FabricDirectDependency{FabricDependencyRole::ImplementationInput,
-                              module}},
-      {0x53});
-
-  expectDependencyError(
-      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
-      FabricArtifactDependencyFailureReason::
-          ImplementationInputOwnerUnavailable);
-  requireCandidateAbsent(__func__, store, root);
 }
 
 void framingClosureNeverPublishesCandidateRoots() {
@@ -488,12 +469,10 @@ int main() {
   invalidStoredFabricDependencyIsTypedInvalid();
   roleAndRootKindLegalityPrecedeDependencyLoads();
   framingClosureRecursivelyLoadsExactFabricDependencies();
-  implementationInputIsLoadedBeforeUnsupportedOwnerRejection();
+  implementationInputIsRejectedBeforeLookup();
   foreignSameFamilyRoleIsInvalid();
   wrongKindDependencyIsRejected();
-  sameExactRootInDistinctRolesIsNotADuplicate();
   sameFamilyFramingClosureDoesNotPublishTheRoot();
-  implementationInputRequiresAClosedOwner();
   framingClosureNeverPublishesCandidateRoots();
   contentAddressedCycleConstraintUsesProductionTraversal();
   llvm::outs() << "fabric artifact gate ok\n";
