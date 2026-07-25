@@ -106,6 +106,22 @@ Canonical Dataflow result is legal only because the exact ownership decision
 kept all work on stored-program cores, not because CMSIS or LoomBench received
 a weaker contract.
 
+## Why Hardware Construction Closes First
+
+The ADG Builder-to-Fabric path has no software prerequisite, while useful
+Structured optimization needs target ABI facts, resource bounds, topology,
+memory capability, and hardware-aware quality estimates. Closing one real
+hardware substrate first therefore removes an upstream ambiguity instead of
+hard-coding an abstract target into the compiler.
+
+After an exact builtin Fabric exists, frontend and non-Mapping Evaluation must
+advance together. The frontend owns legal candidate generation; Evaluation
+owns comparable observations over software-only or software-plus-Fabric
+subjects. Developing either side alone would force transformations to use
+fixed heuristics or force models to evaluate candidate forms the compiler
+cannot yet produce. Mapping remains a later fidelity boundary and is not
+required to establish the complete pre-Mapping corpus path.
+
 ## Why Several Features Are Explicitly Deferred
 
 Deferred features are absent rather than represented by empty records and

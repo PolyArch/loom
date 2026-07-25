@@ -380,6 +380,30 @@ Corpus contracts are specified by
 [CMSIS Compiler Contract](spec-cmsis-dropin-compiler.md), and
 [LoomBench](spec-loombench.md).
 
+## Initial Integration Gates
+
+The first hardware gate requires the public ADG Builder to finalize both
+user-authored regular or irregular heterogeneous multi-AccCore designs and all
+initial builtin presets through the same Fabric path. The exact API,
+Small/Default/Large catalog, provider-closure rule, and Artifact publication
+contract remain owned by [ADG Builder](spec-adg-builder.md) and
+[Fabric Artifact](spec-fabric-artifact.md). Passing this gate produces exact
+Fabric Artifacts without requiring a software input.
+
+The next product gate is pre-Mapping compilation over every selected member of
+the complete repository corpus. Each input uses the same `loom-cc` or
+`loom-c++` contract to produce LLVM IR, Structured candidates, and a finalized
+Canonical Dataflow Program while resolving one exact Fabric target and using
+central Evaluation where required. Mapping is outside this gate. A typed
+unsupported outcome remains a tool or target limitation; it is not success
+and cannot be made suite-specific.
+
+Frontend and non-Mapping Evaluation capabilities advance together after at
+least one exact builtin Fabric is available. Hardware-aware compiler decisions
+must consume the shared Evaluation contracts defined by this specification;
+the frontend cannot substitute a private cost model or an abstract target
+summary for the exact Fabric.
+
 ## External Dependency Pinning
 
 CIRCT is an unmodified upstream submodule at `externals/circt`. Loom builds
