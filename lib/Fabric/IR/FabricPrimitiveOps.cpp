@@ -374,9 +374,7 @@ LogicalResult OpOp::verify() {
   ArrayAttr opList = getOpList();
   if (opList.empty())
     return emitOpError("'op_list' must be non-empty");
-  llvm::SmallVector<StringRef, 4> opNames;
   llvm::StringSet<> uniqueNames;
-  opNames.reserve(opList.size());
   for (auto [i, attr] : llvm::enumerate(opList)) {
     auto sym = dyn_cast<FlatSymbolRefAttr>(attr);
     if (!sym)
@@ -394,7 +392,6 @@ LogicalResult OpOp::verify() {
       return emitOpError("op_list member @")
              << n << " is not admitted by implementation family "
              << implementationFamilyKeyword(*family);
-    opNames.push_back(n);
   }
 
   auto params = parseFamilyCapabilityParams(*family, getHwParams());

@@ -58,17 +58,6 @@ verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
 ::mlir::Operation *
 resolveInstantiateTarget(InstantiateOp instantiate,
                          ::mlir::SymbolTableCollection &symbolTables);
-
-// Resolve the Loom address bit width for `op`. Walks up to the enclosing
-// fabric.module; if that module sets a `loom_addr_bits` override returns
-// it, otherwise returns ::loom::getDefaultLoomAddrBits().
-unsigned resolveLoomAddrBits(::mlir::Operation *op);
-
-// Resolve the Loom memory bus width (in bits) for `op`. Walks up to the
-// enclosing fabric.module; if that module sets a `loom_mem_bus_width`
-// override returns it, otherwise returns
-// ::loom::getDefaultLoomMemBusWidth().
-unsigned resolveLoomMemBusWidth(::mlir::Operation *op);
 } // namespace fabric
 
 #endif // FABRIC_IR_FABRICOPS_H

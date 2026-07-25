@@ -1,14 +1,16 @@
-#include "ADG/Builder.h"
+#include "BuilderInternal.h"
 
 #include "Dataflow/IR/DataflowEnums.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/ImplementationFamily.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
@@ -23,6 +25,7 @@
 #include <system_error>
 
 using namespace loom::adg;
+using namespace loom::adg::detail;
 
 namespace {
 
@@ -411,71 +414,8 @@ void printStringArray(llvm::raw_ostream &os,
   os << ']';
 }
 
-void printHwParams(
-    llvm::raw_ostream &os,
-    const std::map<std::string, std::vector<std::string>> &hwParams) {
-  if (hwParams.empty())
-    return;
-  os << "hw_params = [{";
-  bool first = true;
-  for (const auto &[key, values] : hwParams) {
-    if (!first)
-      os << ", ";
-    first = false;
-    os << key << " = ";
-    printStringArray(os, values);
-  }
-  os << "}]";
-}
-
-void printSwConfigs(llvm::raw_ostream &os,
-                    const std::map<std::string, std::string> &swConfigs) {
-  if (swConfigs.empty())
-    return;
-  os << "sw_configs = {";
-  bool first = true;
-  for (const auto &[key, value] : swConfigs) {
-    if (!first)
-      os << ", ";
-    first = false;
-    os << key << " = " << '"' << value << '"';
-  }
-  os << '}';
-}
-
-void printStreamConfig(llvm::raw_ostream &os, const StreamConfig &config) {
-  os << "hw_params = [{step_kind = "
-     << static_cast<std::uint32_t>(config.stepKind) << " : i32, predicate = [";
-  for (std::size_t i = 0; i < config.predicates.size(); ++i) {
-    if (i)
-      os << ", ";
-    os << static_cast<std::uint64_t>(config.predicates[i]) << " : i64";
-  }
-  os << "]}]";
-  if (config.selectedPredicate)
-    os << ", sw_configs = {predicate = "
-       << static_cast<std::uint64_t>(*config.selectedPredicate) << " : i64}";
-}
-
-void printOpAttrs(llvm::raw_ostream &os, const FabricOpSpec &op) {
-  if (op.hwParams.empty() && op.swConfigs.empty() && !op.streamConfig)
-    return;
-  os << " {";
-  if (op.streamConfig) {
-    printStreamConfig(os, *op.streamConfig);
-  } else if (!op.hwParams.empty()) {
-    printHwParams(os, op.hwParams);
-  }
-  if (!op.streamConfig) {
-    if (!op.hwParams.empty() && !op.swConfigs.empty())
-      os << ", ";
-    if (!op.swConfigs.empty())
-      printSwConfigs(os, op.swConfigs);
-  }
-  os << '}';
-}
-
-void printFabricOp(llvm::raw_ostream &os, const FabricOpSpec &op) {
+void printFabricOp(llvm::raw_ostream &os, ::mlir::MLIRContext &context,
+                   const FabricOpSpec &op) {
   os << "      ";
   for (std::size_t i = 0; i < op.results.size(); ++i) {
     if (i)
@@ -485,11 +425,11 @@ void printFabricOp(llvm::raw_ostream &os, const FabricOpSpec &op) {
   if (!op.results.empty())
     os << " = ";
   os << "fabric.op [";
-  for (std::size_t i = 0; i < op.opList.size(); ++i) {
-    if (i)
-      os << ", ";
-    os << '@' << op.opList[i];
-  }
+  // Text is derived only at MLIR construction boundaries; the schema owns it.
+  llvm::interleaveComma(
+      op.enabledSchemas, os, [&](::dataflow::OperationSchemaId schema) {
+        os << '@' << ::dataflow::operationSchemaSpelling(schema);
+      });
   os << "] (";
   for (std::size_t i = 0; i < op.operands.size(); ++i) {
     if (i)
@@ -497,7 +437,8 @@ void printFabricOp(llvm::raw_ostream &os, const FabricOpSpec &op) {
     os << valueName(op.operands[i]);
   }
   os << ')';
-  printOpAttrs(os, op);
+  os << ' ';
+  printFabricOpAttrs(os, context, op.capability);
   os << " : ";
   printTypeList(os, op.operandTypes);
   os << " -> ";
@@ -505,14 +446,15 @@ void printFabricOp(llvm::raw_ostream &os, const FabricOpSpec &op) {
   os << '\n';
 }
 
-void printFu(llvm::raw_ostream &os, const FuSpec &fu) {
+void printFu(llvm::raw_ostream &os, ::mlir::MLIRContext &context,
+             const FuSpec &fu) {
   os << "    fabric.fu(";
   printBindings(os, fu.inputs, "              ");
   os << ") -> ";
   printResultTypes(os, fu.resultTypes);
   os << " {\n";
   for (const FabricOpSpec &op : fu.operations)
-    printFabricOp(os, op);
+    printFabricOp(os, context, op);
   os << "      fabric.yield";
   if (!fu.yieldValues.empty()) {
     os << ' ';
@@ -561,64 +503,26 @@ llvm::Error validateFu(const FuSpec &fu) {
         std::errc::invalid_argument,
         "ADG fu yield type count must match yield value count");
   for (const FabricOpSpec &op : fu.operations) {
-    bool isStream =
-        op.opList.size() == 1 && op.opList.front() == "dataflow.stream";
-    if (isStream && (!op.hwParams.empty() || !op.swConfigs.empty()))
+    if (op.enabledSchemas.empty())
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "ADG dataflow.stream configuration cannot use generic hw_params or "
-          "sw_configs");
-    if (isStream && !op.streamConfig)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG dataflow.stream requires typed stream configuration");
-    if (!isStream && op.streamConfig)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG stream configuration requires op_list [dataflow.stream]");
-    if (!op.streamConfig)
-      continue;
-
-    const StreamConfig &config = *op.streamConfig;
-    if (!dataflow::symbolizeStreamStepKind(
-            static_cast<std::uint32_t>(config.stepKind)))
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG stream configuration has invalid step kind");
-    if (config.predicates.empty())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG stream configuration requires at least one predicate");
-    llvm::SmallSet<mlir::arith::CmpIPredicate, 16> predicates;
-    for (mlir::arith::CmpIPredicate predicate : config.predicates) {
-      if (!mlir::arith::symbolizeCmpIPredicate(
-              static_cast<std::uint64_t>(predicate)))
+          "ADG fabric.op must enable at least one registered member");
+    if (llvm::Error error = validateFabricOpCapability(op.capability))
+      return error;
+    for (::dataflow::OperationSchemaId schema : op.enabledSchemas)
+      if (!::fabric::admitsOperationSchema(op.capability.family, schema))
         return llvm::createStringError(
             std::errc::invalid_argument,
-            "ADG stream configuration has invalid predicate");
-      if (!predicates.insert(predicate).second)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "ADG stream configuration contains a duplicate predicate");
-    }
-    if (config.selectedPredicate &&
-        !mlir::arith::symbolizeCmpIPredicate(
-            static_cast<std::uint64_t>(*config.selectedPredicate)))
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG stream configuration has invalid selected predicate");
-    if (config.selectedPredicate &&
-        !predicates.count(*config.selectedPredicate))
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG selected stream predicate is not supported by the hardware");
+            "ADG fabric.op enables %s, which implementation family %s does "
+            "not admit",
+            ::dataflow::operationSchemaSpelling(schema).str().c_str(),
+            ::fabric::implementationFamilyKeyword(op.capability.family)
+                .str()
+                .c_str());
   }
   return llvm::Error::success();
 }
 
-// Every temporal PE recipe supplies its own positive operand-buffer depth: the
-// value counts entries per mode-derived allocation unit and no mode, helper, or
-// backend may substitute one. Expansion fails here, before Fabric emission.
 llvm::Error validateTemporalPe(const TemporalPeConfig &config) {
   if (config.operandBufferSize == 0)
     return llvm::createStringError(
@@ -646,8 +550,8 @@ void printTemporalPeAttributes(llvm::raw_ostream &os,
      << " : i32\n       }";
 }
 
-void printPe(llvm::raw_ostream &os, const PeSpec &pe,
-             llvm::ArrayRef<std::size_t> useIds,
+void printPe(llvm::raw_ostream &os, ::mlir::MLIRContext &context,
+             const PeSpec &pe, llvm::ArrayRef<std::size_t> useIds,
              llvm::ArrayRef<std::string> resolvedUses) {
   os << "  ";
   if (!pe.resultNames.empty()) {
@@ -667,7 +571,7 @@ void printPe(llvm::raw_ostream &os, const PeSpec &pe,
     printTemporalPeAttributes(os, pe.temporal);
   os << " {\n";
   for (const FuSpec &fu : pe.fus)
-    printFu(os, fu);
+    printFu(os, context, fu);
   os << "  }\n";
 }
 
@@ -1107,10 +1011,27 @@ SystemBuilder &SystemBuilder::connect(std::string srcNode, std::string srcPort,
   return *this;
 }
 
+ModuleBuilder &ModuleBuilder::addUnsupportedResource(std::string detail) {
+  if (!llvm::is_contained(unsupportedResources, detail))
+    unsupportedResources.push_back(std::move(detail));
+  return *this;
+}
+
 llvm::Error ModuleBuilder::print(llvm::raw_ostream &destination) const {
   if (name.empty())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "ADG module name is empty");
+  // A catalog resource the normative implementation-family registry cannot
+  // express fails construction here. Emitting it would produce Fabric that no
+  // verifier accepts, and inventing a family for it would make the registry
+  // follow the helper instead of the hardware.
+  if (!unsupportedResources.empty())
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "ADG target '%s' requires %zu resource(s) with no registered "
+        "implementation family: %s",
+        name.c_str(), unsupportedResources.size(),
+        llvm::join(unsupportedResources, "; ").c_str());
   llvm::StringSet<> seenInputs;
   llvm::StringSet<> valueNames;
   llvm::StringMap<std::string> valueTypes;
@@ -1337,6 +1258,7 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &destination) const {
     return planOrErr.takeError();
   TransportPlan plan = std::move(*planOrErr);
 
+  ::mlir::MLIRContext capabilityContext;
   std::string text;
   llvm::raw_string_ostream os(text);
   os << "fabric.module @" << name << '(';
@@ -1366,7 +1288,7 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &destination) const {
   }
   os << " {\n";
   for (const PeEntry &entry : pes)
-    printPe(os, entry.spec, entry.useIds, plan.resolvedUses);
+    printPe(os, capabilityContext, entry.spec, entry.useIds, plan.resolvedUses);
   for (std::size_t switchIndex = 0; switchIndex < switches.size();
        ++switchIndex) {
     const SwitchEntry &entry = switches[switchIndex];

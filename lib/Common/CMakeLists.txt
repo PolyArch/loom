@@ -9,7 +9,6 @@ add_mlir_library(LoomCommon
   BlobStore.cpp
   ComponentViewDigest.cpp
   IndexWidth.cpp
-  LoomConstants.cpp
   ResolvedConfig.cpp
   VectorWidth.cpp
 

@@ -23,13 +23,14 @@ PeSpec makeMinimalAddPe(Schedule schedule, std::string lhsSource,
   FuSpec addFu;
   addFu.inputs = {{"fa", "pa", fuType, ""}, {"fb", "pb", fuType, ""}};
   addFu.resultTypes = {fuType};
-  addFu.operations.push_back(FabricOpSpec{{"sum"},
-                                          {"arith.addi"},
-                                          {"fa", "fb"},
-                                          {fuType, fuType},
-                                          {fuType},
-                                          {},
-                                          {}});
+  addFu.operations.push_back(
+      FabricOpSpec{{"sum"},
+                   builtinOpCapability(
+                       ::fabric::ImplementationFamilyId::ScalarIntegerAddSub),
+                   {::dataflow::OperationSchemaId::ArithAddI},
+                   {"fa", "fb"},
+                   {fuType, fuType},
+                   {fuType}});
   addFu.yieldValues = {"sum"};
   pe.fus.push_back(std::move(addFu));
   return pe;
@@ -378,7 +379,8 @@ void addSpatialSwitch(ModuleBuilder &module,
 
 void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
                      llvm::StringRef lhs, llvm::StringRef rhs,
-                     llvm::StringRef opName) {
+                     ::fabric::ImplementationFamilyId family,
+                     ::dataflow::OperationSchemaId member) {
   std::vector<BodyResultSpec> results = {
       BodyResultSpec{result.str(), "!fabric.bits<32>"}};
   appendBodyOp(
@@ -396,8 +398,10 @@ void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
            nestedBodyLine(
                "                %fu_rhs = %rhs : !fabric.bits<32>) -> "
                "!fabric.bits<32> {"),
-           nestedBodyLine("        %value = fabric.op [@" + opName.str() +
-                          "] (%fu_lhs, %fu_rhs)"),
+           nestedBodyLine("        %value = fabric.op [@" +
+                          ::dataflow::operationSchemaSpelling(member).str() +
+                          "] (%fu_lhs, %fu_rhs) " +
+                          fabricOpAttrsText(builtinOpCapability(family))),
            nestedBodyLine(
                "                 : (!fabric.bits<32>, !fabric.bits<32>) -> "
                "!fabric.bits<32>"),
@@ -406,7 +410,8 @@ void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
 }
 
 void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
-                llvm::StringRef input, llvm::StringRef opName) {
+                llvm::StringRef input, ::fabric::ImplementationFamilyId family,
+                ::dataflow::OperationSchemaId member) {
   std::vector<BodyResultSpec> results = {
       BodyResultSpec{result.str(), "!fabric.bits<32>"}};
   appendBodyOp(
@@ -420,8 +425,10 @@ void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
            nestedBodyLine(
                "      fabric.fu(%input = %value : !fabric.bits<32>) -> "
                "!fabric.bits<32> {"),
-           nestedBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)"),
+           nestedBodyLine("        %result = fabric.op [@" +
+                          ::dataflow::operationSchemaSpelling(member).str() +
+                          "] (%input) " +
+                          fabricOpAttrsText(builtinOpCapability(family))),
            nestedBodyLine(
                "                 : (!fabric.bits<32>) -> !fabric.bits<32>"),
            nestedBodyLine("        fabric.yield %result : !fabric.bits<32>"),
@@ -429,7 +436,9 @@ void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
 }
 
 void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName) {
+                        llvm::StringRef input,
+                        ::fabric::ImplementationFamilyId family,
+                        ::dataflow::OperationSchemaId member) {
   std::vector<BodyResultSpec> results = {
       BodyResultSpec{result.str(), "!fabric.bits<64>"}};
   appendBodyOp(
@@ -443,8 +452,10 @@ void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
            nestedBodyLine(
                "      fabric.fu(%input = %value : !fabric.bits<64> to "
                "!fabric.bits<32>) -> !fabric.bits<64> {"),
-           nestedBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)"),
+           nestedBodyLine("        %result = fabric.op [@" +
+                          ::dataflow::operationSchemaSpelling(member).str() +
+                          "] (%input) " +
+                          fabricOpAttrsText(builtinOpCapability(family))),
            nestedBodyLine(
                "                 : (!fabric.bits<32>) -> !fabric.bits<64>"),
            nestedBodyLine("        fabric.yield %result : !fabric.bits<64>"),
@@ -452,7 +463,14 @@ void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
 }
 
 void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName) {
+                        llvm::StringRef input,
+                        ::fabric::ImplementationFamilyId family,
+                        ::dataflow::OperationSchemaId member) {
+  FabricOpCapability capability =
+      member == ::dataflow::OperationSchemaId::ArithIndexCast ||
+              member == ::dataflow::OperationSchemaId::ArithIndexCastUI
+          ? builtinIndexCastCapability(::fabric::ResolvedIndexWidth::I64)
+          : builtinOpCapability(family);
   std::vector<BodyResultSpec> results = {
       BodyResultSpec{result.str(), "!fabric.bits<64>"}};
   appendBodyOp(
@@ -466,8 +484,9 @@ void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
            nestedBodyLine(
                "      fabric.fu(%input = %value : !fabric.bits<64>) -> "
                "!fabric.bits<64> {"),
-           nestedBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)"),
+           nestedBodyLine("        %result = fabric.op [@" +
+                          ::dataflow::operationSchemaSpelling(member).str() +
+                          "] (%input) " + fabricOpAttrsText(capability)),
            nestedBodyLine(
                "                 : (!fabric.bits<64>) -> !fabric.bits<32>"),
            nestedBodyLine("        fabric.yield %result : !fabric.bits<32> to "
@@ -477,12 +496,15 @@ void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
 
 void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
                     llvm::StringRef input) {
-  addWideNarrowingPe(module, result, input, "llvm.trunc");
+  addWideNarrowingPe(module, result, input,
+                     ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                     ::dataflow::OperationSchemaId::ArithTruncI);
 }
 
 void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef lhs, llvm::StringRef rhs, llvm::StringRef acc,
-                  llvm::StringRef opName) {
+                  ::fabric::ImplementationFamilyId family,
+                  ::dataflow::OperationSchemaId member) {
   std::vector<BodyResultSpec> results = {
       BodyResultSpec{result.str(), "!fabric.bits<32>"}};
   appendBodyOp(
@@ -503,8 +525,10 @@ void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
            nestedBodyLine("                %b = %rhs : !fabric.bits<32>,"),
            nestedBodyLine("                %c = %acc : !fabric.bits<32>) -> "
                           "!fabric.bits<32> {"),
-           nestedBodyLine("        %value = fabric.op [@" + opName.str() +
-                          "] (%a, %b, %c)"),
+           nestedBodyLine("        %value = fabric.op [@" +
+                          ::dataflow::operationSchemaSpelling(member).str() +
+                          "] (%a, %b, %c) " +
+                          fabricOpAttrsText(builtinOpCapability(family))),
            nestedBodyLine(
                "                 : (!fabric.bits<32>, !fabric.bits<32>, "
                "!fabric.bits<32>) -> !fabric.bits<32>"),
@@ -519,52 +543,31 @@ std::string numbered(llvm::StringRef prefix, unsigned index) {
 void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
                                llvm::StringRef control,
                                llvm::ArrayRef<llvm::StringRef> constHexValues) {
-  PeSpec pe;
-  pe.inputs = {{"pa", control.str(), "!fabric.bits<0>", "!fabric.bits<32>"}};
-  pe.resultNames = {result.str()};
-  pe.resultTypes = {"!fabric.bits<32>"};
-  FuSpec fu;
-  fu.inputs = {{"token", "pa", "!fabric.bits<32>", "!fabric.bits<0>"}};
-  fu.resultTypes = {"!fabric.bits<32>"};
-  FabricOpSpec op;
-  op.results = {"value"};
-  op.opList = {"dataflow.constant"};
-  op.operands = {"token"};
-  op.operandTypes = {"!fabric.bits<0>"};
-  op.resultTypes = {"!fabric.bits<32>"};
-  op.hwParams["const_hex_value"] = stringList(constHexValues);
-  fu.operations.push_back(std::move(op));
-  fu.yieldValues = {"value"};
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
+  // dataflow.constant belongs to a helper family the normative registry does
+  // not declare, so the resource is reported rather than emitted.
+  (void)result;
+  (void)control;
+  (void)constHexValues;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowConstant});
 }
 
 void addConfigurableWideConstantPe(
     ModuleBuilder &module, llvm::StringRef result, llvm::StringRef control,
     llvm::ArrayRef<llvm::StringRef> constHexValues) {
-  PeSpec pe;
-  pe.inputs = {{"pa", control.str(), "!fabric.bits<0>", "!fabric.bits<64>"}};
-  pe.resultNames = {result.str()};
-  pe.resultTypes = {"!fabric.bits<64>"};
-  FuSpec fu;
-  fu.inputs = {{"token", "pa", "!fabric.bits<64>", "!fabric.bits<0>"}};
-  fu.resultTypes = {"!fabric.bits<64>"};
-  FabricOpSpec op;
-  op.results = {"value"};
-  op.opList = {"dataflow.constant"};
-  op.operands = {"token"};
-  op.operandTypes = {"!fabric.bits<0>"};
-  op.resultTypes = {"!fabric.bits<64>"};
-  op.hwParams["const_hex_value"] = stringList(constHexValues);
-  fu.operations.push_back(std::move(op));
-  fu.yieldValues = {"value"};
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
+  // dataflow.constant belongs to a helper family the normative registry does
+  // not declare, so the resource is reported rather than emitted.
+  (void)result;
+  (void)control;
+  (void)constHexValues;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowConstant});
 }
 
-void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                             llvm::StringRef lhs, llvm::StringRef rhs,
-                             llvm::ArrayRef<llvm::StringRef> opNames) {
+void addConfigurableBinaryPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef lhs,
+    llvm::StringRef rhs, ::fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
   PeSpec pe;
   pe.inputs = {{"lhs", lhs.str(), "!fabric.bits<32>", ""},
                {"rhs", rhs.str(), "!fabric.bits<32>", ""}};
@@ -575,20 +578,20 @@ void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
                {"b", "rhs", "!fabric.bits<32>", ""}};
   fu.resultTypes = {"!fabric.bits<32>"};
   fu.operations.push_back(FabricOpSpec{{"value"},
-                                       stringList(opNames),
+                                       builtinOpCapability(family),
+                                       members.vec(),
                                        {"a", "b"},
                                        {"!fabric.bits<32>", "!fabric.bits<32>"},
-                                       {"!fabric.bits<32>"},
-                                       {},
-                                       {}});
+                                       {"!fabric.bits<32>"}});
   fu.yieldValues = {"value"};
   pe.fus.push_back(std::move(fu));
   module.addPe(std::move(pe));
 }
 
-void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                                 llvm::StringRef lhs, llvm::StringRef rhs,
-                                 llvm::ArrayRef<llvm::StringRef> opNames) {
+void addConfigurableWideBinaryPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef lhs,
+    llvm::StringRef rhs, ::fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
   PeSpec pe;
   pe.inputs = {{"lhs", lhs.str(), "!fabric.bits<64>", ""},
                {"rhs", rhs.str(), "!fabric.bits<64>", ""}};
@@ -599,12 +602,11 @@ void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
                {"b", "rhs", "!fabric.bits<64>", ""}};
   fu.resultTypes = {"!fabric.bits<64>"};
   fu.operations.push_back(FabricOpSpec{{"value"},
-                                       stringList(opNames),
+                                       builtinOpCapability(family),
+                                       members.vec(),
                                        {"a", "b"},
                                        {"!fabric.bits<64>", "!fabric.bits<64>"},
-                                       {"!fabric.bits<64>"},
-                                       {},
-                                       {}});
+                                       {"!fabric.bits<64>"}});
   fu.yieldValues = {"value"};
   pe.fus.push_back(std::move(fu));
   module.addPe(std::move(pe));
@@ -613,8 +615,7 @@ void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
 void addComparisonPe(ModuleBuilder &module, llvm::StringRef result,
                      llvm::StringRef lhs, llvm::StringRef rhs,
                      llvm::StringRef boundaryType,
-                     std::vector<std::string> opNames,
-                     std::vector<std::string> predicates) {
+                     llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
   PeSpec pe;
   pe.inputs = {{"lhs", lhs.str(), boundaryType.str(), ""},
                {"rhs", rhs.str(), boundaryType.str(), ""}};
@@ -624,14 +625,41 @@ void addComparisonPe(ModuleBuilder &module, llvm::StringRef result,
   fu.inputs = {{"a", "lhs", boundaryType.str(), ""},
                {"b", "rhs", boundaryType.str(), ""}};
   fu.resultTypes = {boundaryType.str()};
-  FabricOpSpec op;
-  op.results = {"pred"};
-  op.opList = std::move(opNames);
-  op.operands = {"a", "b"};
-  op.operandTypes = {boundaryType.str(), boundaryType.str()};
-  op.resultTypes = {"!fabric.bits<1>"};
-  op.hwParams["predicate"] = std::move(predicates);
-  fu.operations.push_back(std::move(op));
+  fu.operations.push_back(FabricOpSpec{
+      {"pred"},
+      builtinOpCapability(
+          ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax),
+      members.vec(),
+      {"a", "b"},
+      {boundaryType.str(), boundaryType.str()},
+      {"!fabric.bits<1>"}});
+  fu.yieldValues = {"pred"};
+  fu.yieldTypes = {"!fabric.bits<1>"};
+  pe.fus.push_back(std::move(fu));
+  module.addPe(std::move(pe));
+}
+
+void addFloatComparisonPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef lhs,
+    llvm::StringRef rhs, llvm::StringRef boundaryType,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
+  PeSpec pe;
+  pe.inputs = {{"lhs", lhs.str(), boundaryType.str(), ""},
+               {"rhs", rhs.str(), boundaryType.str(), ""}};
+  pe.resultNames = {result.str()};
+  pe.resultTypes = {boundaryType.str()};
+  FuSpec fu;
+  fu.inputs = {{"a", "lhs", boundaryType.str(), ""},
+               {"b", "rhs", boundaryType.str(), ""}};
+  fu.resultTypes = {boundaryType.str()};
+  fu.operations.push_back(FabricOpSpec{
+      {"pred"},
+      builtinOpCapability(
+          ::fabric::ImplementationFamilyId::ScalarFloatCompareMinMax),
+      members.vec(),
+      {"a", "b"},
+      {boundaryType.str(), boundaryType.str()},
+      {"!fabric.bits<1>"}});
   fu.yieldValues = {"pred"};
   fu.yieldTypes = {"!fabric.bits<1>"};
   pe.fus.push_back(std::move(fu));
@@ -640,57 +668,32 @@ void addComparisonPe(ModuleBuilder &module, llvm::StringRef result,
 
 void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
               llvm::StringRef lhs, llvm::StringRef rhs) {
-  addComparisonPe(
-      module, result, lhs, rhs, "!fabric.bits<32>", {"arith.cmpi", "llvm.icmp"},
-      {"eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"});
+  addComparisonPe(module, result, lhs, rhs, "!fabric.bits<32>",
+                  {::dataflow::OperationSchemaId::ArithCmpI});
 }
 
 void addWideCmpPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef lhs, llvm::StringRef rhs) {
-  addComparisonPe(
-      module, result, lhs, rhs, "!fabric.bits<64>", {"arith.cmpi", "llvm.icmp"},
-      {"eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"});
+  addComparisonPe(module, result, lhs, rhs, "!fabric.bits<64>",
+                  {::dataflow::OperationSchemaId::ArithCmpI});
 }
 
 void addFloatCmpPe(ModuleBuilder &module, llvm::StringRef result,
                    llvm::StringRef lhs, llvm::StringRef rhs) {
-  addComparisonPe(module, result, lhs, rhs, "!fabric.bits<32>", {"arith.cmpf"},
-                  {"oeq", "ogt", "oge", "olt", "ole", "one", "ord", "ueq",
-                   "ugt", "uge", "ult", "ule", "une", "uno"});
+  addFloatComparisonPe(module, result, lhs, rhs, "!fabric.bits<32>",
+                       {::dataflow::OperationSchemaId::ArithCmpF});
 }
 
 void addControlSyncPe(ModuleBuilder &module, llvm::StringRef prefix,
                       unsigned inputCount) {
-  PeSpec pe;
-  for (unsigned index = 0; index < inputCount; ++index) {
-    pe.inputs.push_back(
-        {(llvm::Twine("p") + llvm::Twine(index)).str(),
-         (prefix + llvm::Twine("_in") + llvm::Twine(index)).str(),
-         "!fabric.bits<0>", ""});
-    pe.resultNames.push_back(
-        (prefix + llvm::Twine("_done") + llvm::Twine(index)).str());
-    pe.resultTypes.push_back("!fabric.bits<0>");
-  }
-
-  FuSpec fu;
-  FabricOpSpec sync;
-  for (unsigned index = 0; index < inputCount; ++index) {
-    std::string local = (llvm::Twine("f") + llvm::Twine(index)).str();
-    fu.inputs.push_back(
-        {local, pe.inputs[index].localName, "!fabric.bits<0>", ""});
-    fu.resultTypes.push_back("!fabric.bits<0>");
-    std::string result = (llvm::Twine("s") + llvm::Twine(index)).str();
-    sync.results.push_back(result);
-    sync.operands.push_back(local);
-    sync.operandTypes.push_back("!fabric.bits<0>");
-    sync.resultTypes.push_back("!fabric.bits<0>");
-    fu.yieldValues.push_back(result);
-  }
-  sync.opList.push_back("dataflow.sync");
-  sync.swConfigs["bitmask"] = std::string(inputCount, '1');
-  fu.operations.push_back(std::move(sync));
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
+  // A `dataflow.sync` resource belongs to the TokenControlFu helper. The
+  // normative registry declares no implementation family that admits that
+  // schema, and a helper never creates one, so this resource is reported
+  // rather than emitted.
+  (void)prefix;
+  (void)inputCount;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowSync});
 }
 
 void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
@@ -702,23 +705,23 @@ void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
                {"false_value", falseValue.str(), "!fabric.bits<32>", ""}};
   pe.resultNames = {result.str()};
   pe.resultTypes = {"!fabric.bits<32>"};
-  auto makeSelectFu = [](llvm::StringRef opName) {
-    return FuSpec{{{"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
-                   {"a", "true_value", "!fabric.bits<32>", ""},
-                   {"b", "false_value", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{"value"},
-                                {opName.str()},
-                                {"sel", "a", "b"},
-                                {"!fabric.bits<1>", "!fabric.bits<32>",
-                                 "!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {"value"}};
+  auto makeSelectFu = [](::dataflow::OperationSchemaId member) {
+    return FuSpec{
+        {{"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
+         {"a", "true_value", "!fabric.bits<32>", ""},
+         {"b", "false_value", "!fabric.bits<32>", ""}},
+        {"!fabric.bits<32>"},
+        {FabricOpSpec{
+            {"value"},
+            builtinOpCapability(
+                ::fabric::ImplementationFamilyId::ScalarValueSelect),
+            {member},
+            {"sel", "a", "b"},
+            {"!fabric.bits<1>", "!fabric.bits<32>", "!fabric.bits<32>"},
+            {"!fabric.bits<32>"}}},
+        {"value"}};
   };
-  pe.fus.push_back(makeSelectFu("arith.select"));
-  pe.fus.push_back(makeSelectFu("llvm.select"));
+  pe.fus.push_back(makeSelectFu(::dataflow::OperationSchemaId::ArithSelect));
   module.addPe(std::move(pe));
 }
 
@@ -731,175 +734,108 @@ void addWideSelectPe(ModuleBuilder &module, llvm::StringRef result,
                {"false_value", falseValue.str(), "!fabric.bits<64>", ""}};
   pe.resultNames = {result.str()};
   pe.resultTypes = {"!fabric.bits<64>"};
-  auto makeSelectFu = [](llvm::StringRef opName) {
-    return FuSpec{{{"sel", "pred", "!fabric.bits<64>", "!fabric.bits<1>"},
-                   {"a", "true_value", "!fabric.bits<64>", ""},
-                   {"b", "false_value", "!fabric.bits<64>", ""}},
-                  {"!fabric.bits<64>"},
-                  {FabricOpSpec{{"value"},
-                                {opName.str()},
-                                {"sel", "a", "b"},
-                                {"!fabric.bits<1>", "!fabric.bits<64>",
-                                 "!fabric.bits<64>"},
-                                {"!fabric.bits<64>"},
-                                {},
-                                {}}},
-                  {"value"}};
+  auto makeSelectFu = [](::dataflow::OperationSchemaId member) {
+    return FuSpec{
+        {{"sel", "pred", "!fabric.bits<64>", "!fabric.bits<1>"},
+         {"a", "true_value", "!fabric.bits<64>", ""},
+         {"b", "false_value", "!fabric.bits<64>", ""}},
+        {"!fabric.bits<64>"},
+        {FabricOpSpec{
+            {"value"},
+            builtinOpCapability(
+                ::fabric::ImplementationFamilyId::ScalarValueSelect),
+            {member},
+            {"sel", "a", "b"},
+            {"!fabric.bits<1>", "!fabric.bits<64>", "!fabric.bits<64>"},
+            {"!fabric.bits<64>"}}},
+        {"value"}};
   };
-  pe.fus.push_back(makeSelectFu("arith.select"));
-  pe.fus.push_back(makeSelectFu("llvm.select"));
+  pe.fus.push_back(makeSelectFu(::dataflow::OperationSchemaId::ArithSelect));
   module.addPe(std::move(pe));
 }
 
 void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef pred, llvm::StringRef falseValue,
                   llvm::StringRef trueValue) {
-  PeSpec pe;
-  pe.inputs = {{"pred", pred.str(), "!fabric.bits<32>", ""},
-               {"false_value", falseValue.str(), "!fabric.bits<32>", ""},
-               {"true_value", trueValue.str(), "!fabric.bits<32>", ""}};
-  pe.resultNames = {result.str()};
-  pe.resultTypes = {"!fabric.bits<32>"};
-  pe.fus.push_back(FuSpec{
-      {{"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"a", "false_value", "!fabric.bits<32>", ""},
-       {"b", "true_value", "!fabric.bits<32>", ""}},
-      {"!fabric.bits<32>"},
-      {FabricOpSpec{{"value"},
-                    {"dataflow.mux"},
-                    {"sel", "a", "b"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {"value"}});
-  module.addPe(std::move(pe));
+  // dataflow.mux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)result;
+  (void)pred;
+  (void)falseValue;
+  (void)trueValue;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowMux});
 }
 
 void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
                       llvm::StringRef pred, llvm::StringRef falseValue,
                       llvm::StringRef trueValue) {
-  PeSpec pe;
-  pe.inputs = {{"pred", pred.str(), "!fabric.bits<64>", ""},
-               {"false_value", falseValue.str(), "!fabric.bits<64>", ""},
-               {"true_value", trueValue.str(), "!fabric.bits<64>", ""}};
-  pe.resultNames = {result.str()};
-  pe.resultTypes = {"!fabric.bits<64>"};
-  pe.fus.push_back(FuSpec{
-      {{"sel", "pred", "!fabric.bits<64>", "!fabric.bits<1>"},
-       {"a", "false_value", "!fabric.bits<64>", ""},
-       {"b", "true_value", "!fabric.bits<64>", ""}},
-      {"!fabric.bits<64>"},
-      {FabricOpSpec{{"value"},
-                    {"dataflow.mux"},
-                    {"sel", "a", "b"},
-                    {"!fabric.bits<1>", "!fabric.bits<64>", "!fabric.bits<64>"},
-                    {"!fabric.bits<64>"},
-                    {},
-                    {}}},
-      {"value"}});
-  module.addPe(std::move(pe));
+  // dataflow.mux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)result;
+  (void)pred;
+  (void)falseValue;
+  (void)trueValue;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowMux});
 }
 
 void addControlMuxPe(ModuleBuilder &module, llvm::StringRef result,
                      llvm::StringRef pred, llvm::StringRef falseValue,
                      llvm::StringRef trueValue) {
-  PeSpec pe;
-  pe.inputs = {
-      {"pred", pred.str(), "!fabric.bits<32>", ""},
-      {"false_value", falseValue.str(), "!fabric.bits<0>", "!fabric.bits<32>"},
-      {"true_value", trueValue.str(), "!fabric.bits<0>", "!fabric.bits<32>"}};
-  pe.resultNames = {result.str()};
-  pe.resultTypes = {"!fabric.bits<32>"};
-  FuSpec fu;
-  fu.inputs = {
-      {"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
-      {"false_lane", "false_value", "!fabric.bits<32>", "!fabric.bits<0>"},
-      {"true_lane", "true_value", "!fabric.bits<32>", "!fabric.bits<0>"}};
-  fu.resultTypes = {"!fabric.bits<32>"};
-  fu.operations.push_back(
-      FabricOpSpec{{"selected"},
-                   {"dataflow.mux"},
-                   {"sel", "false_lane", "true_lane"},
-                   {"!fabric.bits<1>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                   {"!fabric.bits<0>"},
-                   {},
-                   {}});
-  fu.yieldValues = {"selected"};
-  fu.yieldTypes = {"!fabric.bits<0>"};
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
+  // dataflow.mux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)result;
+  (void)pred;
+  (void)falseValue;
+  (void)trueValue;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowMux});
 }
 
 void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                     llvm::StringRef trueResult, llvm::StringRef pred,
                     llvm::StringRef value) {
-  PeSpec pe;
-  pe.inputs = {{"pred", pred.str(), "!fabric.bits<32>", ""},
-               {"value", value.str(), "!fabric.bits<32>", ""}};
-  pe.resultNames = {falseResult.str(), trueResult.str()};
-  pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  pe.fus.push_back(
-      FuSpec{{{"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
-              {"data", "value", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>", "!fabric.bits<32>"},
-             {FabricOpSpec{{"false_lane", "true_lane"},
-                           {"dataflow.demux"},
-                           {"sel", "data"},
-                           {"!fabric.bits<1>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"false_lane", "true_lane"}});
-  module.addPe(std::move(pe));
+  // dataflow.demux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)falseResult;
+  (void)trueResult;
+  (void)pred;
+  (void)value;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowDemux});
 }
 
 void addWideDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                         llvm::StringRef trueResult, llvm::StringRef pred,
                         llvm::StringRef value) {
-  PeSpec pe;
-  pe.inputs = {{"pred", pred.str(), "!fabric.bits<32>", "!fabric.bits<64>"},
-               {"value", value.str(), "!fabric.bits<64>", ""}};
-  pe.resultNames = {falseResult.str(), trueResult.str()};
-  pe.resultTypes = {"!fabric.bits<64>", "!fabric.bits<64>"};
-  pe.fus.push_back(
-      FuSpec{{{"sel", "pred", "!fabric.bits<64>", "!fabric.bits<1>"},
-              {"data", "value", "!fabric.bits<64>", ""}},
-             {"!fabric.bits<64>", "!fabric.bits<64>"},
-             {FabricOpSpec{{"false_lane", "true_lane"},
-                           {"dataflow.demux"},
-                           {"sel", "data"},
-                           {"!fabric.bits<1>", "!fabric.bits<64>"},
-                           {"!fabric.bits<64>", "!fabric.bits<64>"},
-                           {},
-                           {}}},
-             {"false_lane", "true_lane"}});
-  module.addPe(std::move(pe));
+  // dataflow.demux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)falseResult;
+  (void)trueResult;
+  (void)pred;
+  (void)value;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowDemux});
 }
 
 void addControlDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                        llvm::StringRef trueResult, llvm::StringRef pred,
                        llvm::StringRef value) {
-  PeSpec pe;
-  pe.inputs = {{"pred", pred.str(), "!fabric.bits<32>", ""},
-               {"value", value.str(), "!fabric.bits<0>", "!fabric.bits<32>"}};
-  pe.resultNames = {falseResult.str(), trueResult.str()};
-  pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  FuSpec fu;
-  fu.inputs = {{"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
-               {"data", "value", "!fabric.bits<32>", "!fabric.bits<0>"}};
-  fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  fu.operations.push_back(FabricOpSpec{{"false_lane", "true_lane"},
-                                       {"dataflow.demux"},
-                                       {"sel", "data"},
-                                       {"!fabric.bits<1>", "!fabric.bits<0>"},
-                                       {"!fabric.bits<0>", "!fabric.bits<0>"},
-                                       {},
-                                       {}});
-  fu.yieldValues = {"false_lane", "true_lane"};
-  fu.yieldTypes = {"!fabric.bits<0>", "!fabric.bits<0>"};
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
+  // dataflow.demux is a TokenControlFu routing resource. The normative registry
+  // declares no implementation family admitting that schema, and a helper
+  // never creates one, so the resource is reported rather than emitted.
+  (void)falseResult;
+  (void)trueResult;
+  (void)pred;
+  (void)value;
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowDemux});
 }
 
 void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
@@ -982,10 +918,16 @@ ModuleBuilder buildChain1DAdg() {
       "matrix_chain1d_adg", false,
       {{"mem", 0, 0}, {"p0", 1, 0}, {"s0", 2, 0}, {"p1", 3, 0}, {"p2", 4, 0}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "p0", "data", "a");
+  addSpatialAddPe(module, "p0", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"s0"}, {"p0", "b"}, {"11"});
-  addSpatialAddPe(module, "p1", "s0", "c");
-  addSpatialAddPe(module, "p2", "p1", "d");
+  addSpatialAddPe(module, "p1", "s0", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "p2", "p1", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -997,11 +939,19 @@ ModuleBuilder buildMesh2DAdg() {
                                                    {"n10", 1, 1},
                                                    {"n11", 2, 1}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
+  addSpatialAddPe(module, "n00", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n01", "data", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"east", "south"}, {"n00", "n01"}, {"11", "11"});
-  addSpatialAddPe(module, "n10", "east", "c");
-  addSpatialAddPe(module, "n11", "south", "n10");
+  addSpatialAddPe(module, "n10", "east", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n11", "south", "n10",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1016,14 +966,22 @@ ModuleBuilder buildTorusEdgeAdg() {
                                 {"wrap_north", 1, -1},
                                 {"wrap_west", 0, 1}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
+  addSpatialAddPe(module, "n00", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n01", "data", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"east", "south"}, {"n00", "n01", "c"},
                    {"110", "101"});
-  addSpatialAddPe(module, "n10", "east", "south");
+  addSpatialAddPe(module, "n10", "east", "south",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"wrap_north", "wrap_west"}, {"n10", "n00", "d"},
                    {"110", "101"});
-  addSpatialAddPe(module, "n11", "wrap_north", "wrap_west");
+  addSpatialAddPe(module, "n11", "wrap_north", "wrap_west",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1037,9 +995,15 @@ ModuleBuilder buildSystolicArrayAdg() {
                                 {"cell2", 4, 0}});
   addSpatialMemLoad(module);
   addSpatialSwitch(module, {"broadcast"}, {"data", "a", "b"}, {"111"});
-  addSpatialAddPe(module, "cell0", "broadcast", "c", "arith.mulf");
-  addSpatialAddPe(module, "cell1", "cell0", "d", "arith.addf");
-  addSpatialAddPe(module, "cell2", "cell1", "broadcast", "arith.addf");
+  addSpatialAddPe(module, "cell0", "broadcast", "c",
+                  ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
+                  ::dataflow::OperationSchemaId::ArithMulF);
+  addSpatialAddPe(module, "cell1", "cell0", "d",
+                  ::fabric::ImplementationFamilyId::ScalarFloatAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddF);
+  addSpatialAddPe(module, "cell2", "cell1", "broadcast",
+                  ::fabric::ImplementationFamilyId::ScalarFloatAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddF);
   return module;
 }
 
@@ -1055,13 +1019,23 @@ ModuleBuilder buildClusteredArrayAdg() {
                                 {"cluster1", 4, 0},
                                 {"out", 5, 0}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "c0a", "data", "a");
-  addSpatialAddPe(module, "c0b", "data", "b");
+  addSpatialAddPe(module, "c0a", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "c0b", "data", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"cluster0"}, {"c0a", "c0b"}, {"11"});
-  addSpatialAddPe(module, "c1a", "c", "d");
-  addSpatialAddPe(module, "c1b", "cluster0", "c1a");
+  addSpatialAddPe(module, "c1a", "c", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "c1b", "cluster0", "c1a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"cluster1"}, {"c1a", "c1b"}, {"11"});
-  addSpatialAddPe(module, "out", "cluster0", "cluster1");
+  addSpatialAddPe(module, "out", "cluster0", "cluster1",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1075,12 +1049,20 @@ ModuleBuilder buildFoldedRingAdg() {
                                 {"n3", 1, 1},
                                 {"wrap", 0, 1}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n0", "data", "a");
-  addSpatialAddPe(module, "n1", "n0", "b");
-  addSpatialAddPe(module, "n2", "n1", "c");
+  addSpatialAddPe(module, "n0", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n1", "n0", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n2", "n1", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"wrap", "forward"}, {"n2", "n0", "d"},
                    {"110", "101"});
-  addSpatialAddPe(module, "n3", "wrap", "forward");
+  addSpatialAddPe(module, "n3", "wrap", "forward",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1094,12 +1076,20 @@ ModuleBuilder buildMeshDiagonalAdg() {
                                 {"n11", 2, 1},
                                 {"diag", 2, 2}});
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
-  addSpatialAddPe(module, "n10", "c", "d");
+  addSpatialAddPe(module, "n00", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n01", "data", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "n10", "c", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"east", "south", "diag"}, {"n00", "n01", "n10"},
                    {"110", "101", "011"});
-  addSpatialAddPe(module, "n11", "diag", "south");
+  addSpatialAddPe(module, "n11", "diag", "south",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1118,24 +1108,40 @@ ModuleBuilder buildMultiLanePipelineAdg() {
   addSpatialMemLoad(module);
   addSpatialSwitch(module, {"lane0_in", "lane1_in"}, {"data", "a", "b"},
                    {"110", "101"});
-  addSpatialAddPe(module, "lane0_stage0", "lane0_in", "c");
-  addSpatialAddPe(module, "lane1_stage0", "lane1_in", "d");
-  addSpatialAddPe(module, "lane0_stage1", "lane0_stage0", "lane1_stage0");
-  addSpatialAddPe(module, "lane1_stage1", "lane1_stage0", "lane0_stage0");
+  addSpatialAddPe(module, "lane0_stage0", "lane0_in", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lane1_stage0", "lane1_in", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lane0_stage1", "lane0_stage0", "lane1_stage0",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lane1_stage1", "lane1_stage0", "lane0_stage0",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"merged"}, {"lane0_stage1", "lane1_stage1"},
                    {"11"});
-  addSpatialAddPe(module, "out", "merged", "data");
+  addSpatialAddPe(module, "out", "merged", "data",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
 ModuleBuilder buildReductionTreeAdg() {
   ModuleBuilder module = makeTopologyMatrixModule("matrix_reduction_tree_adg");
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "leaf0", "data", "a");
-  addSpatialAddPe(module, "leaf1", "b", "c");
+  addSpatialAddPe(module, "leaf0", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "leaf1", "b", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"tree0", "tree1"}, {"leaf0", "leaf1"},
                    {"10", "01"});
-  addSpatialAddPe(module, "root", "tree0", "tree1");
+  addSpatialAddPe(module, "root", "tree0", "tree1",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1143,23 +1149,37 @@ ModuleBuilder buildCrossCoupledSwitchAdg() {
   ModuleBuilder module =
       makeTopologyMatrixModule("matrix_cross_coupled_switch_adg");
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "left", "data", "a");
-  addSpatialAddPe(module, "right", "b", "c");
+  addSpatialAddPe(module, "left", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "right", "b", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"x0", "x1"}, {"left", "right"}, {"01", "10"});
   addSpatialSwitch(module, {"x2", "x3"}, {"x0", "x1", "d"}, {"111", "111"});
-  addSpatialAddPe(module, "merged", "x2", "x3");
+  addSpatialAddPe(module, "merged", "x2", "x3",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
 ModuleBuilder buildDiamondBypassAdg() {
   ModuleBuilder module = makeTopologyMatrixModule("matrix_diamond_bypass_adg");
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "entry", "data", "a");
-  addSpatialAddPe(module, "upper", "entry", "b");
-  addSpatialAddPe(module, "lower", "entry", "c");
+  addSpatialAddPe(module, "entry", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "upper", "entry", "b",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lower", "entry", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"join", "bypass"}, {"upper", "lower", "entry"},
                    {"110", "001"});
-  addSpatialAddPe(module, "exit", "join", "bypass");
+  addSpatialAddPe(module, "exit", "join", "bypass",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1168,11 +1188,19 @@ ModuleBuilder buildMemoryFanoutAdg() {
   addSpatialMemLoad(module);
   addSpatialSwitch(module, {"data_lane0", "data_lane1", "data_lane2"},
                    {"data", "a", "b"}, {"111", "101", "110"});
-  addSpatialAddPe(module, "lane0", "data_lane0", "c");
-  addSpatialAddPe(module, "lane1", "data_lane1", "d");
-  addSpatialAddPe(module, "lane2", "data_lane2", "lane0");
+  addSpatialAddPe(module, "lane0", "data_lane0", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lane1", "data_lane1", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "lane2", "data_lane2", "lane0",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"combined"}, {"lane0", "lane1", "lane2"}, {"111"});
-  addSpatialAddPe(module, "out", "combined", "data");
+  addSpatialAddPe(module, "out", "combined", "data",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1189,7 +1217,9 @@ ModuleBuilder buildMixedTemporalBridgeAdg() {
                                 "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
                                 std::move(temporal)));
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "spatial0", "data", "a");
+  addSpatialAddPe(module, "spatial0", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   module
       .addBoundary(BoundarySpec{::fabric::BoundaryDirection::S2t,
                                 {{"spatial0"}, {"tag"}},
@@ -1201,7 +1231,9 @@ ModuleBuilder buildMixedTemporalBridgeAdg() {
                                 {"untagged"},
                                 {"!fabric.bits<32>"}});
   addSpatialSwitch(module, {"bridge_out"}, {"untagged", "b", "c"}, {"111"});
-  addSpatialAddPe(module, "spatial1", "bridge_out", "d");
+  addSpatialAddPe(module, "spatial1", "bridge_out", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1209,12 +1241,20 @@ ModuleBuilder buildSparseLongLinkAdg() {
   ModuleBuilder module =
       makeTopologyMatrixModule("matrix_sparse_long_link_adg");
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "near0", "data", "a");
-  addSpatialAddPe(module, "near1", "b", "c");
-  addSpatialAddPe(module, "far0", "near1", "d");
+  addSpatialAddPe(module, "near0", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "near1", "b", "c",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "far0", "near1", "d",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   addSpatialSwitch(module, {"long0", "bypass"}, {"near0", "far0", "data"},
                    {"101", "010"});
-  addSpatialAddPe(module, "far1", "long0", "bypass");
+  addSpatialAddPe(module, "far1", "long0", "bypass",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 
@@ -1231,11 +1271,17 @@ ModuleBuilder buildHeterogeneousIslandsAdg() {
                                 "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
                                 std::move(temporal)));
   addSpatialMemLoad(module);
-  addSpatialAddPe(module, "int_island", "data", "a", "arith.addi");
-  addSpatialAddPe(module, "float_island", "b", "c", "arith.mulf");
+  addSpatialAddPe(module, "int_island", "data", "a",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
+  addSpatialAddPe(module, "float_island", "b", "c",
+                  ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
+                  ::dataflow::OperationSchemaId::ArithMulF);
   addSpatialSwitch(module, {"island_mux"}, {"int_island", "float_island", "d"},
                    {"111"});
-  addSpatialAddPe(module, "bridge", "island_mux", "int_island");
+  addSpatialAddPe(module, "bridge", "island_mux", "int_island",
+                  ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                  ::dataflow::OperationSchemaId::ArithAddI);
   return module;
 }
 

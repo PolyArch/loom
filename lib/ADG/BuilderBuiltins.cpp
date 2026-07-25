@@ -84,8 +84,15 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
            nestedBodyLine("  fabric.fu(%fa = %pa : !fabric.bits<32>) -> "
                           "(!fabric.bits<32>) {"),
            nestedBodyLine(
-               "    %v = fabric.op [@arith.addi] (%fa, %fa) : "
-               "(!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>"),
+               "    %v = fabric.op [@" +
+               ::dataflow::operationSchemaSpelling(
+                   ::dataflow::OperationSchemaId::ArithAddI)
+                   .str() +
+               "] (%fa, %fa) " +
+               fabricOpAttrsText(builtinOpCapability(
+                   ::fabric::ImplementationFamilyId::ScalarIntegerAddSub)) +
+               " : (!fabric.bits<32>, !fabric.bits<32>) -> "
+               "!fabric.bits<32>"),
            nestedBodyLine("    fabric.yield %v : !fabric.bits<32>"),
            nestedBodyLine("  }"), nestedBodyLine("  fabric.yield"),
            nestedBodyLine("}")}});

@@ -12,6 +12,8 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 
 using namespace mlir;
 
@@ -76,16 +78,40 @@ static Type getOperandEndpointType(OpOperand &operand) {
 }
 
 struct SemanticConfig {
-  unsigned addrBits;
-  unsigned memBusWidth;
+  std::optional<unsigned> addrBits;
+  std::optional<unsigned> memBusWidth;
 
   bool operator==(const SemanticConfig &other) const {
     return addrBits == other.addrBits && memBusWidth == other.memBusWidth;
   }
 };
 
+static fabric::ModuleOp getEnclosingFabricModule(Operation *op) {
+  for (Operation *current = op; current; current = current->getParentOp()) {
+    if (auto module = dyn_cast<fabric::ModuleOp>(current))
+      return module;
+  }
+  return {};
+}
+
 static SemanticConfig getSemanticConfig(Operation *op) {
-  return {fabric::resolveLoomAddrBits(op), fabric::resolveLoomMemBusWidth(op)};
+  fabric::ModuleOp module = getEnclosingFabricModule(op);
+  if (!module)
+    return {};
+
+  std::optional<unsigned> addrBits;
+  if (auto attr = module.getLoomAddrBitsAttr())
+    addrBits = static_cast<unsigned>(attr.getInt());
+
+  std::optional<unsigned> memBusWidth;
+  if (auto attr = module.getLoomMemBusWidthAttr())
+    memBusWidth = static_cast<unsigned>(attr.getInt());
+
+  return {addrBits, memBusWidth};
+}
+
+static std::string configValue(std::optional<unsigned> value) {
+  return value ? std::to_string(*value) : "unset";
 }
 
 static LogicalResult
@@ -328,18 +354,22 @@ private:
              << "cannot inline fabric.module @" << instantiate.getCallee()
              << " because module-scoped semantic configuration differs: "
                 "loom_addr_bits callee="
-             << definition.addrBits << " caller=" << destination.addrBits
-             << ", loom_mem_bus_width callee=" << definition.memBusWidth
-             << " caller=" << destination.memBusWidth;
+             << configValue(definition.addrBits)
+             << " caller=" << configValue(destination.addrBits)
+             << ", loom_mem_bus_width callee="
+             << configValue(definition.memBusWidth)
+             << " caller=" << configValue(destination.memBusWidth);
 
     return instantiate.emitError()
            << "cannot materialize " << target->getName() << " @"
            << instantiate.getCallee()
            << " because module-scoped semantic configuration differs: "
               "loom_addr_bits definition="
-           << definition.addrBits << " destination=" << destination.addrBits
-           << ", loom_mem_bus_width definition=" << definition.memBusWidth
-           << " destination=" << destination.memBusWidth;
+           << configValue(definition.addrBits)
+           << " destination=" << configValue(destination.addrBits)
+           << ", loom_mem_bus_width definition="
+           << configValue(definition.memBusWidth)
+           << " destination=" << configValue(destination.memBusWidth);
   }
 
   LogicalResult collectMappedInstances(Operation *source, IRMapping &mapping,

@@ -1,6 +1,7 @@
 add_mlir_library(LoomADGBuilder
   Builder.cpp
   BuilderBuiltins.cpp
+  BuilderCapabilities.cpp
   BuilderRecipes.cpp
   BuilderSharedMemoryRecipes.cpp
   BuilderSharedReductionCompute.cpp

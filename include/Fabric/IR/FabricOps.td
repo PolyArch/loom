@@ -207,11 +207,8 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
   let arguments = (ins
       SymbolNameAttr:$sym_name,
       TypeAttrOf<FunctionType>:$function_type,
-      // Optional per-module overrides for the global Loom constants
-      // consumed by `fabric.mem` (and any future op that depends on the
-      // address-space width or memory-bus width). When absent the
-      // verifier falls back to ::loom::getDefaultLoomAddrBits() and
-      // ::loom::getDefaultLoomMemBusWidth().
+      // Optional exact module-scoped semantic values. Absence remains
+      // absence during elaboration; no Fabric-local default is applied.
       OptionalAttr<I32Attr>:$loom_addr_bits,
       OptionalAttr<I32Attr>:$loom_mem_bus_width
   );

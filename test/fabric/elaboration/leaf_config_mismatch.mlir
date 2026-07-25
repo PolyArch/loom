@@ -11,17 +11,16 @@ fabric.module @earlier(%arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
 }
 
 fabric.module @owner() -> ()
-    attributes {loom_addr_bits = 48 : i32,
-                loom_mem_bus_width = 256 : i32} {
+    attributes {loom_addr_bits = 48 : i32} {
   fabric.switch @OUTER [spatial]
       (!fabric.bits<8>) -> (!fabric.bits<8>)
       [{connectivity_table = ["1"]}]
   fabric.module @destination(%arg : !fabric.bits<8>) -> ()
       attributes {loom_addr_bits = 48 : i32,
-                  loom_mem_bus_width = 512 : i32} {
+                  loom_mem_bus_width = 32768 : i32} {
     // CHECK: error: cannot materialize fabric.switch @OUTER because module-scoped semantic configuration differs
     // CHECK-SAME: loom_addr_bits definition=48 destination=48
-    // CHECK-SAME: loom_mem_bus_width definition=256 destination=512
+    // CHECK-SAME: loom_mem_bus_width definition=unset destination=32768
     %unused = fabric.instantiate @OUTER(
         %arg : !fabric.bits<8>) -> (!fabric.bits<8>)
     fabric.yield

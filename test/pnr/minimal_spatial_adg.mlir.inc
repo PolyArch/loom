@@ -7,7 +7,7 @@ fabric.module @minimal_spatial_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pb = %transport_fanout1_out0 : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
-      %sum = fabric.op [@arith.addi] (%fa, %fb) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %sum = fabric.op [@arith.addi] (%fa, %fb) {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [8 : i32, 16 : i32, 32 : i32, 64 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %sum : !fabric.bits<32>
     }
   }

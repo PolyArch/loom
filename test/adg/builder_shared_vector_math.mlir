@@ -1,27 +1,17 @@
-// RUN: rm -rf %t.dir
-// RUN: mkdir -p %t.dir
-// RUN: loom-adg-builder-test --shared-vector-math --output %t.hardware.mlir
-// RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
+// RUN: not loom-adg-builder-test --shared-vector-math --output %t.hardware.mlir 2>&1 | FileCheck %s
+// RUN: test ! -s %t.hardware.mlir
 
-// HARDWARE-LABEL: fabric.module @shared_vector_math_adg
-// HARDWARE-DAG: load_group_size = 8 : i32
-// HARDWARE-DAG: store_group_size = 4 : i32
-// HARDWARE-DAG: fabric.op [@dataflow.constant]
-// HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
-// HARDWARE-DAG: fabric.op [@arith.ori]
-// HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
-// HARDWARE-DAG: fabric.op [@arith.mulf]
-// HARDWARE-DAG: fabric.op [@llvm.fneg]
-// HARDWARE-DAG: fabric.op [@math.fma]
-// HARDWARE-DAG: fabric.op [@llvm.zext]
-// HARDWARE-DAG: fabric.op [@llvm.trunc]
-// HARDWARE-DAG: fabric.op [@dataflow.stream]
-// HARDWARE-DAG: (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<1>)
-// HARDWARE-DAG: fabric.op [@dataflow.carry]
-// HARDWARE-DAG: fabric.op [@dataflow.invariant]
-// HARDWARE-DAG: fabric.op [@dataflow.gate]
-// HARDWARE-DAG: fabric.op [@dataflow.demux]
-// HARDWARE-DAG: fabric.op [@dataflow.mux]
-// HARDWARE-DAG: fabric.op [@arith.index_cast]
-// HARDWARE-DAG: fabric.op [@dataflow.sync]
-// HARDWARE-DAG: fabric.mem [spatial]
+// The shared vector math catalog references resources the normative
+// implementation-family registry cannot express: dataflow.constant, the
+// integer and floating divide/remainder operations, the elementary math
+// functions, the LLVM compute intrinsics without a registered family, and
+// the TokenControlFu routing schemas. Construction fails honestly and
+// atomically: the diagnostic names the target and every unsupported
+// resource, and no partial Fabric is emitted.
+
+// CHECK: error: ADG target 'shared_vector_math_adg' requires {{[0-9]+}} resource(s) with no registered implementation family: dataflow.constant has no registered implementation family
+// CHECK-DAG: arith.remsi has no registered implementation family
+// CHECK-DAG: math.sqrt has no registered implementation family
+// CHECK-DAG: llvm.intr.usub.sat has no registered implementation family
+// CHECK-DAG: dataflow.mux has no registered implementation family
+// CHECK-DAG: dataflow.sync has no registered implementation family

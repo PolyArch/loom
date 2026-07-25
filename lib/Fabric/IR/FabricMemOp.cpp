@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "Common/IndexWidth.h"
-#include "Common/LoomConstants.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -38,36 +37,6 @@ RegisteredOperationName::Model<::fabric::MemOp>::setPropertiesFromAttr(
 }
 
 } // namespace mlir
-
-namespace fabric {
-
-unsigned resolveLoomAddrBits(Operation *op) {
-  Operation *cur = op;
-  while (cur) {
-    if (auto module = dyn_cast<ModuleOp>(cur)) {
-      if (auto attr = module.getLoomAddrBitsAttr())
-        return static_cast<unsigned>(attr.getInt());
-      break;
-    }
-    cur = cur->getParentOp();
-  }
-  return ::loom::getDefaultLoomAddrBits();
-}
-
-unsigned resolveLoomMemBusWidth(Operation *op) {
-  Operation *cur = op;
-  while (cur) {
-    if (auto module = dyn_cast<ModuleOp>(cur)) {
-      if (auto attr = module.getLoomMemBusWidthAttr())
-        return static_cast<unsigned>(attr.getInt());
-      break;
-    }
-    cur = cur->getParentOp();
-  }
-  return ::loom::getDefaultLoomMemBusWidth();
-}
-
-} // namespace fabric
 
 namespace {
 
