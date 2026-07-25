@@ -26,8 +26,9 @@ namespace loom {
 /// object files and archive members participate in a link. Loom records that
 /// result and consults nothing else. An archive member is named only by its
 /// exact child offset in its archive, so collection has no way to reach a
-/// member the ordinary linker did not select; member names are not unique
-/// inside an archive and are therefore diagnostics, never identity.
+/// member the ordinary linker did not select. Member names are not unique
+/// inside an archive and never carry identity here; a diagnostic quotes the
+/// name for readability alongside the child offset that identifies the member.
 class LinkerSelectedInputs {
 public:
   /// One relocatable input the ordinary linker selected.
@@ -50,13 +51,17 @@ private:
 
 /// The ordinary linker's resolution of one symbol of one selected input.
 ///
-/// Both the symbol and the resolution are the pinned LTO API's own types. The
-/// ordinary linker owns whether a definition prevails, whether it is final in
-/// this linkage unit, and whether anything outside the payload cohort can see
-/// it. Loom carries those facts from that linker to LTO unchanged: it derives
-/// no resolution, keeps no symbol table, and never answers for a symbol itself.
+/// The input is named by the exact Selection that linker reported, so two
+/// archive members sharing a name stay distinct inputs that can be given
+/// different facts for the same symbol. The symbol and the resolution are the
+/// pinned LTO API's own types. The ordinary linker owns whether a definition
+/// prevails, whether it is final in this linkage unit, and whether anything
+/// outside the payload cohort can see it. Loom carries those facts from that
+/// linker to LTO unchanged: it derives no resolution, keeps no symbol table,
+/// and never answers for a symbol itself.
 using LinkerSymbolResolver = llvm::function_ref<llvm::lto::SymbolResolution(
-    llvm::StringRef carrier, const llvm::lto::InputFile::Symbol &symbol)>;
+    const LinkerSelectedInputs::Selection &selection,
+    const llvm::lto::InputFile::Symbol &symbol)>;
 
 /// Collects the payload carried by exactly the selected inputs, checks the raw
 /// cohort through the production preflight, and runs the pinned LTO pipeline

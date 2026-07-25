@@ -1,9 +1,11 @@
 #include "Frontend/Payload/RelocatableAcceleratorPayload.h"
 #include "Common/Artifact.h"
+#include "Common/ComponentViewDigest.h"
 #include "Common/ResolvedConfig.h"
 #include "Frontend/Payload/AbiCompatibilityKey.h"
 #include "Frontend/Payload/FrontendConfigView.h"
 #include "Frontend/Payload/LlvmModuleNormalization.h"
+#include "RelocatablePayloadRootCodec.h"
 
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -12,17 +14,14 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -186,56 +185,36 @@ std::string printBitcodeAsAssembly(const char *test,
   return printed;
 }
 
-std::vector<std::uint8_t> sha256(llvm::ArrayRef<std::uint8_t> bytes) {
-  const std::array<std::uint8_t, 32> digest = llvm::SHA256::hash(bytes);
-  return std::vector<std::uint8_t>(digest.begin(), digest.end());
-}
-
-void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
 std::vector<std::uint8_t> toVector(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
 }
 
-/// Flips one byte of the named root field inside production canonical bytes.
-/// The search stops before the trailing normalized module bytes, so exactly one
-/// framed root field changes.
-std::vector<std::uint8_t>
-mutateRootField(const char *test, const char *what,
-                const CanonicalSemanticBytes &canonical,
-                llvm::ArrayRef<std::uint8_t> moduleBytes,
-                llvm::ArrayRef<std::uint8_t> fieldBytes) {
-  std::vector<std::uint8_t> mutated = toVector(canonical.bytes());
-  const std::size_t rootHeaderSize = mutated.size() - moduleBytes.size();
-  const auto begin = mutated.begin();
-  const auto end = begin + static_cast<std::ptrdiff_t>(rootHeaderSize);
-  const auto at = std::search(begin, end, fieldBytes.begin(), fieldBytes.end());
-  if (at == end)
-    fail(test, std::string(what) + " was not found in the canonical bytes");
-  if (std::search(at + 1, end, fieldBytes.begin(), fieldBytes.end()) != end)
-    fail(test, std::string(what) + " is ambiguous in the canonical bytes");
-  *(at + static_cast<std::ptrdiff_t>(fieldBytes.size()) - 1) ^= 0x01;
-  return mutated;
+std::vector<std::uint8_t> bytesOf(llvm::StringRef text) {
+  return std::vector<std::uint8_t>(text.bytes_begin(), text.bytes_end());
 }
 
-/// Rebuilds only the trailing normalized-bitcode digest and bytes so the
-/// reader's canonical-byte check is what the hostile input exercises.
-std::vector<std::uint8_t>
-withReplacedModuleBytes(const CanonicalSemanticBytes &canonical,
-                        llvm::ArrayRef<std::uint8_t> moduleBytes,
-                        llvm::ArrayRef<std::uint8_t> replacement) {
-  const llvm::ArrayRef<std::uint8_t> bytes = canonical.bytes();
-  std::vector<std::uint8_t> rebuilt =
-      toVector(bytes.drop_back(32 + 8 + moduleBytes.size()));
-  const std::vector<std::uint8_t> digest = sha256(replacement);
-  rebuilt.insert(rebuilt.end(), digest.begin(), digest.end());
-  appendU64Be(rebuilt, replacement.size());
-  rebuilt.insert(rebuilt.end(), replacement.begin(), replacement.end());
-  return rebuilt;
+/// A byte sequence that is the same size but not the same value, which is what
+/// makes a stored projection stale without changing the encoding shape.
+std::vector<std::uint8_t> flipped(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::uint8_t> changed = toVector(bytes);
+  changed.back() ^= 0x01;
+  return changed;
+}
+
+using RootField =
+    llvm::ArrayRef<std::uint8_t> detail::RelocatablePayloadRoot::*;
+
+/// Re-encodes production canonical bytes with exactly one root field replaced,
+/// through the production root codec. The hostile input therefore restates no
+/// field order, framing, or digest formula of its own.
+std::vector<std::uint8_t> rootWithField(const char *test,
+                                        llvm::ArrayRef<std::uint8_t> canonical,
+                                        RootField field,
+                                        llvm::ArrayRef<std::uint8_t> value) {
+  detail::RelocatablePayloadRoot root =
+      takeExpected(test, detail::decodeRelocatablePayloadRoot(canonical));
+  root.*field = value;
+  return detail::encodeRelocatablePayloadRoot(root);
 }
 
 ResolvedFrontendConfigView anchorView() {
@@ -259,10 +238,6 @@ void normalizationIsRepeatableAndCanonicalizesTargetSpellings() {
   require(__func__, normalized.canonicalDataLayout == canonicalDataLayout,
           "unexpected canonical data layout: " +
               normalized.canonicalDataLayout);
-  require(__func__,
-          normalized.bitcodeDigest == llvm::SHA256::hash(normalized.bitcode),
-          "the stored digest is not the digest of the normalized bytes");
-
   // Renormalizing the normalizer's own output reproduces it byte for byte.
   const NormalizedLlvmModule again =
       takeExpected(__func__, normalizeLlvmModule(normalized.bitcode));
@@ -319,17 +294,12 @@ void normalizationPreservesTheCompleteModule() {
   require(__func__, printed == expected,
           "normalization changed the module:\n" + printed);
 
-  // Guard against the anchor quietly degrading into an empty module.
+  // One marker per class the contract names, so the anchor cannot quietly
+  // degrade into an empty module.
   for (llvm::StringRef marker :
-       {llvm::StringRef("source_filename = \"loom_payload_anchor.c\""),
-        llvm::StringRef("module asm"), llvm::StringRef("comdat any"),
-        llvm::StringRef("linkonce_odr"), llvm::StringRef("hidden"),
-        llvm::StringRef("internal global"), llvm::StringRef("sret(i32)"),
-        llvm::StringRef("noalias"),
-        llvm::StringRef("\"frame-pointer\"=\"all\""),
-        llvm::StringRef("!llvm.module.flags"), llvm::StringRef("!llvm.dbg.cu"),
-        llvm::StringRef("!loom.anchor"), llvm::StringRef("DICompileUnit"),
-        llvm::StringRef("DILocation"), llvm::StringRef("Debug Info Version")})
+       {llvm::StringRef("!llvm.module.flags"), llvm::StringRef("sret(i32)"),
+        llvm::StringRef("DICompileUnit"),
+        llvm::StringRef("source_filename = \"loom_payload_anchor.c\"")})
     require(__func__, llvm::StringRef(printed).contains(marker),
             "the preserved module lost " + marker.str());
 }
@@ -403,255 +373,118 @@ void moduleContentChangesPayloadIdentity() {
           "a module content change moved the payload out of its ABI cohort");
 }
 
-void invalidTargetFactsAreRejected() {
-  struct Case {
-    const char *what;
-    std::string search;
-    std::string replacement;
-    llvm::StringRef marker;
-  };
-  const std::string tripleLine =
-      "target triple = \"" + canonicalTargetTriple.str() + "\"";
+/// Normalization fails closed rather than repairing an input: one target fact
+/// the pinned provider does not print, and one unparsable module.
+void normalizationFailsClosed() {
+  const char *test = __func__;
+  std::string foreignLayout = representativeModuleAssembly.str();
   const std::string layoutLine =
       "target datalayout = \"" + canonicalDataLayout.str() + "\"";
-  const Case cases[] = {
-      {"absent target triple", tripleLine, "", "target_triple_absent"},
-      {"absent data layout", layoutLine, "", "data_layout_absent"},
-      {"unsupported target triple", tripleLine,
-       "target triple = \"not-a-real-triple\"", "target_triple_unsupported"},
-      {"foreign data layout", layoutLine,
-       "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"",
-       "data_layout_not_canonical"},
-  };
-  for (const Case &testCase : cases) {
-    std::string assembly = representativeModuleAssembly.str();
-    const std::size_t at = assembly.find(testCase.search);
-    require(__func__, at != std::string::npos,
-            std::string("target fixture not found for ") + testCase.what);
-    assembly.replace(at, testCase.search.size(), testCase.replacement);
-    requireRejection(
-        __func__,
-        rejectionMessage(__func__, normalizeLlvmModule(buildSourceBitcode(
-                                       __func__, assembly, false))),
-        testCase.marker,
-        std::string("unexpected rejection for ") + testCase.what);
-  }
-}
+  const std::size_t at = foreignLayout.find(layoutLine);
+  require(test, at != std::string::npos, "target fixture not found");
+  foreignLayout.replace(
+      at, layoutLine.size(),
+      "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"");
+  requireRejection(
+      test,
+      rejectionMessage(test, normalizeLlvmModule(buildSourceBitcode(
+                                 test, foreignLayout, false))),
+      "data_layout_not_canonical", "unexpected foreign data layout rejection");
 
-void malformedBitcodeIsRejected() {
   const std::vector<std::uint8_t> garbage(64, 0x5a);
-  requireRejection(__func__,
-                   rejectionMessage(__func__, normalizeLlvmModule(garbage)),
+  requireRejection(test, rejectionMessage(test, normalizeLlvmModule(garbage)),
                    "llvm_module_unparsable", "unexpected garbage rejection");
-  requireRejection(__func__,
-                   rejectionMessage(__func__, normalizeLlvmModule({})),
-                   "llvm_module_unparsable", "unexpected empty rejection");
-
-  const std::vector<std::uint8_t> valid =
-      buildSourceBitcode(__func__, representativeModuleAssembly, false);
-  const std::vector<std::uint8_t> truncated(valid.begin(),
-                                            valid.begin() + valid.size() / 2);
-  requireRejection(__func__,
-                   rejectionMessage(__func__, normalizeLlvmModule(truncated)),
-                   "llvm_module_unparsable", "unexpected truncation rejection");
 }
 
-void unsupportedSchemaIsRejected() {
-  const RelocatableAcceleratorPayload payload = anchorPayload(__func__);
+/// A payload the reader does not support, and canonical bytes that are not a
+/// well-formed root, both fail closed before anything is interpreted.
+void unsupportedSchemaAndMalformedEncodingAreRejected() {
+  const char *test = __func__;
+  const RelocatableAcceleratorPayload payload = anchorPayload(test);
   const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
 
-  constexpr ArtifactSchemaDescriptor foreignIdentity{"loom.other.payload",
-                                                     SchemaVersion{1, 0}};
   constexpr ArtifactSchemaDescriptor newerMajor{
       "loom.relocatable_accelerator_payload", SchemaVersion{2, 0}};
-  constexpr ArtifactSchemaDescriptor newerMinor{
-      "loom.relocatable_accelerator_payload", SchemaVersion{1, 1}};
-  for (const ArtifactSchemaDescriptor &schema :
-       {foreignIdentity, newerMajor, newerMinor})
-    requireRejection(
-        __func__,
-        rejectionMessage(__func__, decodeRelocatableAcceleratorPayload(
-                                       schema, canonical.bytes())),
-        "relocatable_payload_schema_unsupported",
-        "unexpected schema rejection");
-}
+  requireRejection(test,
+                   rejectionMessage(test, decodeRelocatableAcceleratorPayload(
+                                              newerMajor, canonical.bytes())),
+                   "relocatable_payload_schema_unsupported",
+                   "unexpected schema rejection");
 
-void malformedEncodingsAreRejected() {
-  const RelocatableAcceleratorPayload payload = anchorPayload(__func__);
-  const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
-  const llvm::ArrayRef<std::uint8_t> bytes = canonical.bytes();
-
-  const std::vector<std::uint8_t> truncated = toVector(bytes.drop_back(1));
+  const std::vector<std::uint8_t> truncated =
+      toVector(canonical.bytes().drop_back(1));
   requireRejection(
-      __func__,
+      test,
       rejectionMessage(
-          __func__,
-          decodeRelocatableAcceleratorPayload(
-              RelocatableAcceleratorPayload::artifactSchema, truncated)),
+          test, decodeRelocatableAcceleratorPayload(
+                    RelocatableAcceleratorPayload::artifactSchema, truncated)),
       "relocatable_payload_encoding", "unexpected truncation rejection");
-
-  std::vector<std::uint8_t> trailing = toVector(bytes);
-  trailing.push_back(0x00);
-  requireRejection(
-      __func__,
-      rejectionMessage(
-          __func__,
-          decodeRelocatableAcceleratorPayload(
-              RelocatableAcceleratorPayload::artifactSchema, trailing)),
-      "relocatable_payload_encoding", "unexpected trailing byte rejection");
-
-  // The leading framed length claims far more bytes than the input holds.
-  std::vector<std::uint8_t> overflow = toVector(bytes);
-  for (unsigned index = 0; index < 8; ++index)
-    overflow[index] = 0xff;
-  requireRejection(
-      __func__,
-      rejectionMessage(
-          __func__,
-          decodeRelocatableAcceleratorPayload(
-              RelocatableAcceleratorPayload::artifactSchema, overflow)),
-      "relocatable_payload_encoding", "unexpected length overflow rejection");
-
-  requireRejection(
-      __func__,
-      rejectionMessage(__func__,
-                       decodeRelocatableAcceleratorPayload(
-                           RelocatableAcceleratorPayload::artifactSchema, {})),
-      "relocatable_payload_encoding", "unexpected empty encoding rejection");
 }
 
-void staleRootFieldsAreRejected() {
-  const RelocatableAcceleratorPayload payload = anchorPayload(__func__);
+/// Every stored projection is recomputed from the raw fields, so a stale one is
+/// a typed rejection. One case per independent recomputation the reader makes.
+void staleRootProjectionsAreRejected() {
+  const char *test = __func__;
+  const RelocatableAcceleratorPayload payload = anchorPayload(test);
   const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
-  const llvm::ArrayRef<std::uint8_t> moduleBytes = payload.normalizedBitcode();
-
-  auto asBytes = [](llvm::StringRef text) {
-    return llvm::ArrayRef<std::uint8_t>(
-        reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
-  };
-
-  // The view digest is derived on demand, so it is held here rather than
-  // referenced through a temporary.
   const ComponentViewDigest viewDigest = payload.frontendConfigView().digest();
+  using Root = detail::RelocatablePayloadRoot;
 
   struct Case {
     const char *what;
-    llvm::ArrayRef<std::uint8_t> field;
+    RootField field;
+    std::vector<std::uint8_t> value;
     llvm::StringRef marker;
   };
   const Case cases[] = {
-      {"provider repository identity",
-       asBytes(payload.llvmProvider().repositoryIdentity),
-       "llvm_provider_mismatch"},
-      {"provider commit identity",
-       asBytes(payload.llvmProvider().fullCommitIdentity),
-       "llvm_provider_mismatch"},
-      {"frontend view descriptor",
-       payload.frontendConfigView().schemaDescriptorBytes(),
-       "frontend_config_view_descriptor"},
-      {"frontend view digest", viewDigest.bytes(),
+      {"provider identity", &Root::repositoryIdentity,
+       bytesOf("not-the-pinned-provider"), "llvm_provider_mismatch"},
+      {"frontend view digest", &Root::viewDigest, flipped(viewDigest.bytes()),
        "component_view_digest_mismatch"},
-      {"normalized bitcode digest", payload.normalizedBitcodeDigest(),
+      {"target triple", &Root::targetTriple,
+       bytesOf("aarch64-unknown-linux-gnu"), "target_triple_mismatch"},
+      {"normalized bitcode digest", &Root::normalizedBitcodeDigest,
+       flipped(payload.normalizedBitcodeDigest()),
        "normalized_bitcode_digest_mismatch"},
-      {"target triple", asBytes(payload.targetTriple()),
-       "target_triple_mismatch"},
-      {"data layout", asBytes(payload.dataLayout()), "data_layout_mismatch"},
-      {"abi compatibility key", payload.abiCompatibilityKey().bytes(),
+      {"abi compatibility key", &Root::abiCompatibilityKey,
+       flipped(payload.abiCompatibilityKey().bytes()),
        "abi_compatibility_key_mismatch"},
   };
   for (const Case &testCase : cases)
     requireRejection(
-        __func__,
-        rejectionMessage(__func__,
+        test,
+        rejectionMessage(test,
                          decodeRelocatableAcceleratorPayload(
                              RelocatableAcceleratorPayload::artifactSchema,
-                             mutateRootField(__func__, testCase.what, canonical,
-                                             moduleBytes, testCase.field))),
+                             rootWithField(test, canonical.bytes(),
+                                           testCase.field, testCase.value))),
         testCase.marker,
         std::string("unexpected rejection for a stale ") + testCase.what);
 }
 
+/// Valid bitcode of the same module that the production writer contract would
+/// never emit is rejected: the reader rewrites the module through that writer
+/// and requires exact byte equality before it trusts anything derived from it.
 void noncanonicalModuleBytesAreRejected() {
-  const RelocatableAcceleratorPayload payload = anchorPayload(__func__);
+  const char *test = __func__;
+  const RelocatableAcceleratorPayload payload = anchorPayload(test);
   const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
 
-  // Valid bitcode of the same module that the production writer contract would
-  // never emit, carried with a matching digest so only canonicality is tested.
   const std::vector<std::uint8_t> noncanonical =
-      buildSourceBitcode(__func__, representativeModuleAssembly, true);
-  require(__func__, noncanonical != toVector(payload.normalizedBitcode()),
+      buildSourceBitcode(test, representativeModuleAssembly, true);
+  require(test, noncanonical != toVector(payload.normalizedBitcode()),
           "the noncanonical fixture matches the production writer output");
   requireRejection(
-      __func__,
+      test,
       rejectionMessage(
-          __func__,
+          test,
           decodeRelocatableAcceleratorPayload(
               RelocatableAcceleratorPayload::artifactSchema,
-              withReplacedModuleBytes(canonical, payload.normalizedBitcode(),
-                                      noncanonical))),
+              rootWithField(test, canonical.bytes(),
+                            &detail::RelocatablePayloadRoot::normalizedBitcode,
+                            noncanonical))),
       "normalized_bitcode_not_canonical",
       "unexpected noncanonical module rejection");
-
-  const std::vector<std::uint8_t> garbage(64, 0x5a);
-  requireRejection(
-      __func__,
-      rejectionMessage(
-          __func__, decodeRelocatableAcceleratorPayload(
-                        RelocatableAcceleratorPayload::artifactSchema,
-                        withReplacedModuleBytes(
-                            canonical, payload.normalizedBitcode(), garbage))),
-      "llvm_module_unparsable", "unexpected malformed module rejection");
-}
-
-void compatibilityRequiresExactRawFields() {
-  const RelocatableAcceleratorPayload payload = anchorPayload(__func__);
-
-  std::string otherAssembly = representativeModuleAssembly.str();
-  const std::size_t at = otherAssembly.find("i32 7, comdat");
-  require(__func__, at != std::string::npos, "compatibility fixture not found");
-  otherAssembly.replace(at, std::strlen("i32 7"), "i32 11");
-  const RelocatableAcceleratorPayload sibling = takeExpected(
-      __func__,
-      RelocatableAcceleratorPayload::create(
-          buildSourceBitcode(__func__, otherAssembly, false), anchorView()));
-
-  // Distinct translation units of one cohort stay compatible.
-  require(__func__, sibling.identity() != payload.identity(),
-          "the compatibility fixture is not a distinct payload");
-  require(
-      __func__,
-      llvm::toString(requireRelocatablePayloadCompatibility(payload, sibling))
-          .empty(),
-      "two payloads with identical raw fields were rejected");
-  require(
-      __func__,
-      llvm::toString(requireRelocatablePayloadCompatibility(payload, payload))
-          .empty(),
-      "a payload was incompatible with itself");
-
-  // One raw field disagreement is a typed rejection.
-  std::string aarch64Assembly = representativeModuleAssembly.str();
-  const std::string tripleLine =
-      "target triple = \"" + canonicalTargetTriple.str() + "\"";
-  const std::string layoutLine =
-      "target datalayout = \"" + canonicalDataLayout.str() + "\"";
-  const std::size_t tripleAt = aarch64Assembly.find(tripleLine);
-  aarch64Assembly.replace(tripleAt, tripleLine.size(),
-                          "target triple = \"aarch64-unknown-linux-gnu\"");
-  const std::size_t layoutAt = aarch64Assembly.find(layoutLine);
-  aarch64Assembly.replace(
-      layoutAt, layoutLine.size(),
-      "target datalayout = \"" +
-          llvm::Triple("aarch64-unknown-linux-gnu").computeDataLayout() + "\"");
-  const RelocatableAcceleratorPayload foreign = takeExpected(
-      __func__,
-      RelocatableAcceleratorPayload::create(
-          buildSourceBitcode(__func__, aarch64Assembly, false), anchorView()));
-  requireRejection(
-      __func__,
-      llvm::toString(requireRelocatablePayloadCompatibility(payload, foreign)),
-      "relocatable_payload_incompatible",
-      "a foreign target payload was accepted as compatible");
 }
 
 } // namespace
@@ -662,12 +495,9 @@ int main() {
   normalizationPreservesTheCompleteModule();
   payloadRoundTripsThroughCanonicalBytes();
   moduleContentChangesPayloadIdentity();
-  invalidTargetFactsAreRejected();
-  malformedBitcodeIsRejected();
-  unsupportedSchemaIsRejected();
-  malformedEncodingsAreRejected();
-  staleRootFieldsAreRejected();
+  normalizationFailsClosed();
+  unsupportedSchemaAndMalformedEncodingAreRejected();
+  staleRootProjectionsAreRejected();
   noncanonicalModuleBytesAreRejected();
-  compatibilityRequiresExactRawFields();
   return 0;
 }

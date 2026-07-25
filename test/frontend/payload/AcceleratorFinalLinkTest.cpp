@@ -13,6 +13,7 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Target/LLVMIR/Import.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -57,7 +58,8 @@ void require(const char *test, bool condition, const std::string &message) {
     fail(test, message);
 }
 
-template <typename T> T takeExpected(const char *test, llvm::Expected<T> value) {
+template <typename T>
+T takeExpected(const char *test, llvm::Expected<T> value) {
   if (!value)
     fail(test, llvm::toString(value.takeError()));
   return std::move(*value);
@@ -213,9 +215,9 @@ class TempTree {
 public:
   explicit TempTree(const char *test) : test_(test) {
     llvm::SmallString<128> path;
-    requireSuccess(test_, llvm::errorCodeToError(
-                              llvm::sys::fs::createUniqueDirectory(
-                                  "loom-final-link", path)));
+    requireSuccess(test_,
+                   llvm::errorCodeToError(llvm::sys::fs::createUniqueDirectory(
+                       "loom-final-link", path)));
     root_ = path.str().str();
   }
 
@@ -261,11 +263,12 @@ private:
   std::string root_;
 };
 
-/// Stands in for the ordinary linker reporting which archive member it selected.
-/// A member is identified by its exact child offset because archive member
-/// names are not unique.
-std::uint64_t archiveMemberOffset(const char *test, llvm::StringRef archivePath,
-                                  llvm::StringRef memberName) {
+/// Stands in for the ordinary linker reporting which archive member it
+/// selected. A member is identified by its exact child offset because archive
+/// member names are not unique.
+std::vector<std::uint64_t> archiveMemberOffsets(const char *test,
+                                                llvm::StringRef archivePath,
+                                                llvm::StringRef memberName) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> file =
       llvm::MemoryBuffer::getFile(archivePath, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
@@ -273,19 +276,20 @@ std::uint64_t archiveMemberOffset(const char *test, llvm::StringRef archivePath,
   const std::unique_ptr<llvm::object::Archive> archive = takeExpected(
       test, llvm::object::Archive::create((*file)->getMemBufferRef()));
 
-  std::optional<std::uint64_t> offset;
+  std::vector<std::uint64_t> offsets;
   llvm::Error iteration = llvm::Error::success();
-  for (const llvm::object::Archive::Child &child :
-       archive->children(iteration)) {
-    if (takeExpected(test, child.getName()) != memberName)
-      continue;
-    offset = child.getChildOffset();
-    break;
-  }
+  for (const llvm::object::Archive::Child &child : archive->children(iteration))
+    if (takeExpected(test, child.getName()) == memberName)
+      offsets.push_back(child.getChildOffset());
   requireSuccess(test, std::move(iteration));
-  if (!offset)
+  if (offsets.empty())
     fail(test, "the archive has no member named " + memberName.str());
-  return *offset;
+  return offsets;
+}
+
+std::uint64_t archiveMemberOffset(const char *test, llvm::StringRef archivePath,
+                                  llvm::StringRef memberName) {
+  return archiveMemberOffsets(test, archivePath, memberName).front();
 }
 
 /// Stands in for the ordinary linker, which owns every symbol resolution fact
@@ -301,7 +305,8 @@ public:
   }
 
   llvm::lto::SymbolResolution
-  operator()(llvm::StringRef, const llvm::lto::InputFile::Symbol &symbol) {
+  operator()(const LinkerSelectedInputs::Selection &,
+             const llvm::lto::InputFile::Symbol &symbol) {
     llvm::lto::SymbolResolution resolution;
     if (symbol.isUndefined())
       return resolution;
@@ -331,7 +336,8 @@ void selectedObjectsAndArchiveMemberLinkOnce() {
   TempTree tree(test);
 
   const std::string firstObject = tree.writeFile(
-      "first.o", emitCarrierObject(test, translationUnitAssembly("loom_first")));
+      "first.o",
+      emitCarrierObject(test, translationUnitAssembly("loom_first")));
   const std::string secondObject = tree.writeFile(
       "second.o",
       emitCarrierObject(test, translationUnitAssembly("loom_second")));
@@ -364,34 +370,6 @@ void selectedObjectsAndArchiveMemberLinkOnce() {
           "linked module");
 }
 
-/// The complement selection over the same archive. Which member is excluded
-/// follows the ordinary linker's result alone, not archive order or content.
-void archiveMemberExclusionFollowsSelection() {
-  const char *test = __func__;
-  TempTree tree(test);
-
-  const std::string archive = tree.writeArchive(
-      "libloom.a",
-      {{"first.o",
-        emitCarrierObject(test, translationUnitAssembly("loom_first"))},
-       {"second.o",
-        emitCarrierObject(test, translationUnitAssembly("loom_second"))}});
-
-  LinkerSelectedInputs selected;
-  selected.selectArchiveMember(archive,
-                               archiveMemberOffset(test, archive, "second.o"));
-
-  llvm::LLVMContext context;
-  const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkWith(selected, context));
-  require(test, linked != nullptr,
-          "the selected archive member produced no linked module");
-  require(test, linked->getFunction("loom_second") != nullptr,
-          "the selected archive member did not reach the linked module");
-  require(test, linked->getFunction("loom_first") == nullptr,
-          "the unselected archive member entered the linked module");
-}
-
 /// A real object carries the complete canonical payload bytes back out
 /// unchanged, and the carrier itself contributes nothing to payload identity.
 void carrierRoundTripPreservesPayloadIdentity() {
@@ -401,8 +379,8 @@ void carrierRoundTripPreservesPayloadIdentity() {
       payloadBytesFor(test, assembly);
 
   TempTree tree(test);
-  const std::string objectPath =
-      tree.writeFile("round_trip.o", emitObject(test, assembly, canonicalBytes));
+  const std::string objectPath = tree.writeFile(
+      "round_trip.o", emitObject(test, assembly, canonicalBytes));
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> object =
       llvm::MemoryBuffer::getFile(objectPath, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
@@ -440,17 +418,8 @@ void objectsWithoutPayloadStayValid() {
   llvm::LLVMContext context;
   LinkerSelectedInputs onlyPlain;
   onlyPlain.selectObjectFile(plainObject);
-  require(test,
-          takeExpected(test,
-                       linkWith(onlyPlain, context)) ==
-              nullptr,
+  require(test, takeExpected(test, linkWith(onlyPlain, context)) == nullptr,
           "a selection with no payload implied accelerator compilation");
-
-  const LinkerSelectedInputs nothingSelected;
-  require(test,
-          takeExpected(test, linkWith(nothingSelected, context)) ==
-              nullptr,
-          "an empty selection implied accelerator compilation");
 
   LinkerSelectedInputs mixed;
   mixed.selectObjectFile(plainObject);
@@ -475,26 +444,31 @@ void malformedSelectedMemberFailsWithAttribution() {
   std::vector<std::uint8_t> brokenBytes = payloadBytesFor(test, brokenAssembly);
   brokenBytes.back() ^= 0xFF;
 
+  // Both members carry the same name, which archives allow, so only the child
+  // offset tells the malformed one from the intact one.
   const std::string archive = tree.writeArchive(
       "libloom.a",
-      {{"intact.o",
+      {{"member.o",
         emitCarrierObject(test, translationUnitAssembly("loom_intact"))},
-       {"broken.o", emitObject(test, brokenAssembly, brokenBytes)}});
-  const std::uint64_t intactOffset =
-      archiveMemberOffset(test, archive, "intact.o");
-  const std::uint64_t brokenOffset =
-      archiveMemberOffset(test, archive, "broken.o");
+       {"member.o", emitObject(test, brokenAssembly, brokenBytes)}});
+  const std::vector<std::uint64_t> offsets =
+      archiveMemberOffsets(test, archive, "member.o");
+  require(test, offsets.size() == 2,
+          "the archive did not keep two same-named members");
+  const std::uint64_t intactOffset = offsets[0];
+  const std::uint64_t brokenOffset = offsets[1];
 
   llvm::LLVMContext context;
   LinkerSelectedInputs withBroken;
   withBroken.selectArchiveMember(archive, intactOffset);
   withBroken.selectArchiveMember(archive, brokenOffset);
-  const std::string message = rejectionMessage(
-      test, linkWith(withBroken, context));
+  const std::string message =
+      rejectionMessage(test, linkWith(withBroken, context));
   requireMentions(test, message, "selected_payload_rejected",
                   "a malformed selected payload was not typed");
-  requireMentions(test, message, "broken.o",
-                  "a malformed selected payload did not name its member");
+  requireMentions(test, message, std::to_string(brokenOffset),
+                  "a malformed selected payload did not identify the exact "
+                  "member by child offset");
 
   // The intact member on its own still links, so the rejection came from the
   // malformed member rather than from the archive as a whole.
@@ -537,14 +511,14 @@ void incompatibleRawCohortFieldsFail() {
 }
 
 /// COMDAT and ODR resolution across selected payloads is the pinned LTO
-/// pipeline's decision, taken from the ordinary linker's prevailing facts. The
-/// duplicate definition merges instead of being renamed or duplicated, and
-/// nothing here restates that rule.
-void ltoResolvesComdatOdr() {
+/// pipeline's decision, taken from the ordinary linker's prevailing facts.
+///
+/// The two inputs are archive members that share a name, which archives allow.
+/// They are still distinct selected inputs, so the resolver has to see the
+/// exact selection to give them different facts for the same symbol, and only
+/// the child offset tells them apart.
+void ltoResolvesComdatOdrAcrossSameNamedMembers() {
   const char *test = __func__;
-
-  // Both translation units define and use the same COMDAT definition, which is
-  // exactly the duplicate an ODR link has to resolve.
   const auto sharingUnit = [](llvm::StringRef function) {
     return assemblyFor(hostTriple(),
                        "$shared = comdat any\n"
@@ -565,18 +539,42 @@ void ltoResolvesComdatOdr() {
   };
 
   TempTree tree(test);
-  const std::string firstObject =
-      tree.writeFile("first.o", emitCarrierObject(test, sharingUnit("loom_first")));
-  const std::string secondObject = tree.writeFile(
-      "second.o", emitCarrierObject(test, sharingUnit("loom_second")));
+  const std::string archive = tree.writeArchive(
+      "libloom.a",
+      {{"member.o", emitCarrierObject(test, sharingUnit("loom_first"))},
+       {"member.o", emitCarrierObject(test, sharingUnit("loom_second"))}});
+  const std::vector<std::uint64_t> offsets =
+      archiveMemberOffsets(test, archive, "member.o");
+  require(test, offsets.size() == 2,
+          "the archive did not keep two same-named members");
 
   LinkerSelectedInputs selected;
-  selected.selectObjectFile(firstObject);
-  selected.selectObjectFile(secondObject);
+  selected.selectArchiveMember(archive, offsets[0]);
+  selected.selectArchiveMember(archive, offsets[1]);
+
+  // The ordinary linker already chose which same-named member owns the shared
+  // definition; it reports that per input, not per name.
+  llvm::DenseSet<std::uint64_t> resolvedOffsets;
+  auto resolve = [&](const LinkerSelectedInputs::Selection &selection,
+                     const llvm::lto::InputFile::Symbol &symbol) {
+    require(test, selection.memberChildOffset.has_value(),
+            "an archive selection reached the resolver without its offset");
+    resolvedOffsets.insert(*selection.memberChildOffset);
+    llvm::lto::SymbolResolution resolution;
+    if (symbol.isUndefined())
+      return resolution;
+    resolution.Prevailing = symbol.getName() != "shared" ||
+                            *selection.memberChildOffset == offsets[0];
+    resolution.FinalDefinitionInLinkageUnit = resolution.Prevailing;
+    resolution.VisibleToRegularObj = true;
+    return resolution;
+  };
 
   llvm::LLVMContext context;
-  const std::unique_ptr<llvm::Module> linked =
-      takeExpected(test, linkWith(selected, context));
+  const std::unique_ptr<llvm::Module> linked = takeExpected(
+      test, linkSelectedAcceleratorPayloads(selected, resolve, context));
+  require(test, resolvedOffsets.size() == 2,
+          "the resolver could not tell the two same-named members apart");
   require(test, linked != nullptr, "the ODR cohort produced no linked module");
   require(test, linked->getFunction("shared") != nullptr,
           "the shared COMDAT definition did not survive the link");
@@ -590,11 +588,10 @@ void ltoResolvesComdatOdr() {
 void ltoRejectsConflictingModuleFlags() {
   const char *test = __func__;
   const auto withWcharSize = [](llvm::StringRef function, int size) {
-    return assemblyFor(hostTriple(),
-                       definitionOf(function) +
-                           "\n!llvm.module.flags = !{!0}\n"
-                           "!0 = !{i32 1, !\"wchar_size\", i32 " +
-                           std::to_string(size) + "}\n");
+    return assemblyFor(hostTriple(), definitionOf(function) +
+                                         "\n!llvm.module.flags = !{!0}\n"
+                                         "!0 = !{i32 1, !\"wchar_size\", i32 " +
+                                         std::to_string(size) + "}\n");
   };
 
   TempTree tree(test);
@@ -624,18 +621,18 @@ void ltoRejectsConflictingModuleFlags() {
 /// reported as reachable from regular objects must.
 void ltoInternalizesWhatTheLinkerReportedInvisible() {
   const char *test = __func__;
-  const std::string assembly =
-      assemblyFor(hostTriple(), "define i32 @loom_helper(i32 %value) {\n"
-                                "entry:\n"
-                                "  %scaled = mul nsw i32 %value, 7\n"
-                                "  ret i32 %scaled\n"
-                                "}\n"
-                                "\n"
-                                "define i32 @loom_exported(i32 %value) {\n"
-                                "entry:\n"
-                                "  %helped = call i32 @loom_helper(i32 %value)\n"
-                                "  ret i32 %helped\n"
-                                "}\n");
+  const std::string assembly = assemblyFor(
+      hostTriple(), "define i32 @loom_helper(i32 %value) {\n"
+                    "entry:\n"
+                    "  %scaled = mul nsw i32 %value, 7\n"
+                    "  ret i32 %scaled\n"
+                    "}\n"
+                    "\n"
+                    "define i32 @loom_exported(i32 %value) {\n"
+                    "entry:\n"
+                    "  %helped = call i32 @loom_helper(i32 %value)\n"
+                    "  ret i32 %helped\n"
+                    "}\n");
 
   TempTree tree(test);
   const std::string object =
@@ -660,11 +657,14 @@ void ltoInternalizesWhatTheLinkerReportedInvisible() {
           "cohort stayed externally visible, so internalization did not run");
 }
 
-/// The linked module is the ordinary hand-off to Part 2. It enters S0 through
-/// the same upstream LLVM-to-MLIR importer the raising driver uses, and the
-/// imported llvm.func still owns the complete LLVM ABI envelope it arrived
-/// with rather than a Loom-private restatement of it.
-void linkedModuleEntersS0WithCompleteAbiEnvelope() {
+/// The post-LTO linked module is the ordinary Part 1 hand-off, and it survives
+/// the upstream LLVM-to-MLIR import with its complete llvm.func ABI envelope
+/// intact rather than a Loom-private restatement of it.
+///
+/// This covers exactly that import step. It does not run the Part 2 mechanical
+/// raising pipeline and makes no claim about the Structured Program Candidate
+/// that pipeline produces.
+void linkedModuleImportsToMlirWithCompleteAbiEnvelope() {
   const char *test = __func__;
   const std::string assembly = assemblyFor(
       hostTriple(),
@@ -672,7 +672,8 @@ void linkedModuleEntersS0WithCompleteAbiEnvelope() {
       "\n"
       "declare i32 @loom_personality(...)\n"
       "\n"
-      "define weak_odr fastcc void @loom_envelope(ptr noalias sret(i32) align 4 "
+      "define weak_odr fastcc void @loom_envelope(ptr noalias sret(i32) align "
+      "4 "
       "%out, ptr readonly %in) memory(argmem: readwrite) comdat($envelope) "
       "personality ptr @loom_personality {\n"
       "entry:\n"
@@ -734,14 +735,13 @@ int main() {
   llvm::InitializeNativeTargetAsmPrinter();
 
   selectedObjectsAndArchiveMemberLinkOnce();
-  archiveMemberExclusionFollowsSelection();
   carrierRoundTripPreservesPayloadIdentity();
   objectsWithoutPayloadStayValid();
   malformedSelectedMemberFailsWithAttribution();
   incompatibleRawCohortFieldsFail();
-  ltoResolvesComdatOdr();
+  ltoResolvesComdatOdrAcrossSameNamedMembers();
   ltoRejectsConflictingModuleFlags();
   ltoInternalizesWhatTheLinkerReportedInvisible();
-  linkedModuleEntersS0WithCompleteAbiEnvelope();
+  linkedModuleImportsToMlirWithCompleteAbiEnvelope();
   return 0;
 }

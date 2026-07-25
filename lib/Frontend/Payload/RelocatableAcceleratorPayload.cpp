@@ -4,6 +4,7 @@
 #include "Common/ComponentViewDigest.h"
 #include "Frontend/Payload/BuildConfig.h"
 #include "Frontend/Payload/LlvmModuleNormalization.h"
+#include "RelocatablePayloadRootCodec.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -30,102 +31,6 @@ llvm::ArrayRef<std::uint8_t> asBytes(llvm::StringRef text) {
 llvm::StringRef asText(llvm::ArrayRef<std::uint8_t> bytes) {
   return {reinterpret_cast<const char *>(bytes.data()), bytes.size()};
 }
-
-void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
-/// Appends a variable byte sequence as its u64 big-endian length followed by
-/// its exact bytes.
-void appendFramed(std::vector<std::uint8_t> &bytes,
-                  llvm::ArrayRef<std::uint8_t> field) {
-  appendU64Be(bytes, static_cast<std::uint64_t>(field.size()));
-  bytes.insert(bytes.end(), field.begin(), field.end());
-}
-
-void appendFramed(std::vector<std::uint8_t> &bytes, llvm::StringRef field) {
-  appendFramed(bytes, asBytes(field));
-}
-
-/// Appends a fixed digest as its raw bytes, with no length prefix.
-void appendFixed(std::vector<std::uint8_t> &bytes,
-                 llvm::ArrayRef<std::uint8_t> digest) {
-  bytes.insert(bytes.end(), digest.begin(), digest.end());
-}
-
-/// Raw size of the stored normalized-bitcode SHA-256 digest.
-constexpr std::size_t bitcodeDigestSize = 32;
-
-/// Sequential reader over canonical root bytes. Every read is bounded by the
-/// remaining input, so a truncated or overlong framed length is a typed
-/// rejection rather than an out-of-range access. The first rejection is kept
-/// and later reads yield nothing, which lets the root be read as the field list
-/// it is and checked once.
-class RootReader {
-public:
-  explicit RootReader(llvm::ArrayRef<std::uint8_t> bytes) : bytes_(bytes) {}
-
-  llvm::ArrayRef<std::uint8_t> framed() {
-    if (!rejection_.empty())
-      return {};
-    if (remaining() < 8) {
-      reject("relocatable_payload_encoding_truncated: a framed length does not "
-             "fit in the canonical bytes");
-      return {};
-    }
-    std::uint64_t length = 0;
-    for (unsigned index = 0; index < 8; ++index)
-      length = (length << 8) | bytes_[offset_ + index];
-    offset_ += 8;
-    if (length > remaining()) {
-      reject("relocatable_payload_encoding_overflow: a framed length exceeds "
-             "the remaining canonical bytes");
-      return {};
-    }
-    return take(static_cast<std::size_t>(length));
-  }
-
-  llvm::ArrayRef<std::uint8_t> fixed(std::size_t size) {
-    if (!rejection_.empty())
-      return {};
-    if (remaining() < size) {
-      reject("relocatable_payload_encoding_truncated: a fixed digest does not "
-             "fit in the canonical bytes");
-      return {};
-    }
-    return take(size);
-  }
-
-  /// The first encoding rejection, or the trailing-data rejection when the
-  /// complete root was read but bytes remain.
-  llvm::Error takeError() {
-    if (rejection_.empty() && offset_ != bytes_.size())
-      reject("relocatable_payload_encoding_trailing: the canonical bytes carry "
-             "data after the canonical root");
-    if (rejection_.empty())
-      return llvm::Error::success();
-    return rejected(rejection_);
-  }
-
-private:
-  void reject(llvm::StringRef message) { rejection_ = message.str(); }
-
-  std::uint64_t remaining() const {
-    return static_cast<std::uint64_t>(bytes_.size() - offset_);
-  }
-
-  llvm::ArrayRef<std::uint8_t> take(std::size_t size) {
-    const llvm::ArrayRef<std::uint8_t> field = bytes_.slice(offset_, size);
-    offset_ += size;
-    return field;
-  }
-
-  llvm::ArrayRef<std::uint8_t> bytes_;
-  std::size_t offset_ = 0;
-  std::string rejection_;
-};
 
 AbiCompatibilityKeyInputs keyInputs(const LlvmProviderIdentity &provider,
                                     llvm::StringRef targetTriple,
@@ -185,18 +90,20 @@ RelocatableAcceleratorPayload::create(
 
 CanonicalSemanticBytes
 RelocatableAcceleratorPayload::canonicalSemanticBytes() const {
-  std::vector<std::uint8_t> bytes;
-  appendFramed(bytes, provider_.repositoryIdentity);
-  appendFramed(bytes, provider_.fullCommitIdentity);
-  appendFramed(bytes, targetTriple_);
-  appendFramed(bytes, dataLayout_);
-  appendFixed(bytes, abiKey_.bytes());
-  appendFramed(bytes, view_.schemaDescriptorBytes());
-  appendFramed(bytes, view_.canonicalViewBytes());
-  appendFixed(bytes, view_.digest().bytes());
-  appendFixed(bytes, bitcodeDigest_);
-  appendFramed(bytes, bitcode_);
-  return CanonicalSemanticBytes(std::move(bytes));
+  // The view digest is derived on demand, so it is held while it is framed.
+  const ComponentViewDigest viewDigest = view_.digest();
+  detail::RelocatablePayloadRoot root;
+  root.repositoryIdentity = asBytes(provider_.repositoryIdentity);
+  root.fullCommitIdentity = asBytes(provider_.fullCommitIdentity);
+  root.targetTriple = asBytes(targetTriple_);
+  root.dataLayout = asBytes(dataLayout_);
+  root.abiCompatibilityKey = abiKey_.bytes();
+  root.viewSchemaDescriptor = view_.schemaDescriptorBytes();
+  root.viewCanonicalBytes = view_.canonicalViewBytes();
+  root.viewDigest = viewDigest.bytes();
+  root.normalizedBitcodeDigest = bitcodeDigest_;
+  root.normalizedBitcode = bitcode_;
+  return CanonicalSemanticBytes(detail::encodeRelocatablePayloadRoot(root));
 }
 
 ArtifactIdentity RelocatableAcceleratorPayload::identity() const {
@@ -215,23 +122,22 @@ decodeRelocatableAcceleratorPayload(
                     "decodes " +
                     supported.identity + " 1.0");
 
-  // The canonical root in its fixed field order.
-  RootReader reader(canonicalBytes);
-  const llvm::ArrayRef<std::uint8_t> repository = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> commit = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> targetTriple = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> dataLayout = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> abiKeyBytes =
-      reader.fixed(AbiCompatibilityKey::byteSize);
-  const llvm::ArrayRef<std::uint8_t> viewDescriptor = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> viewBytes = reader.framed();
-  const llvm::ArrayRef<std::uint8_t> viewDigestBytes =
-      reader.fixed(ComponentViewDigest::byteSize);
+  llvm::Expected<detail::RelocatablePayloadRoot> root =
+      detail::decodeRelocatablePayloadRoot(canonicalBytes);
+  if (!root)
+    return root.takeError();
+  const llvm::ArrayRef<std::uint8_t> repository = root->repositoryIdentity;
+  const llvm::ArrayRef<std::uint8_t> commit = root->fullCommitIdentity;
+  const llvm::ArrayRef<std::uint8_t> targetTriple = root->targetTriple;
+  const llvm::ArrayRef<std::uint8_t> dataLayout = root->dataLayout;
+  const llvm::ArrayRef<std::uint8_t> abiKeyBytes = root->abiCompatibilityKey;
+  const llvm::ArrayRef<std::uint8_t> viewDescriptor =
+      root->viewSchemaDescriptor;
+  const llvm::ArrayRef<std::uint8_t> viewBytes = root->viewCanonicalBytes;
+  const llvm::ArrayRef<std::uint8_t> viewDigestBytes = root->viewDigest;
   const llvm::ArrayRef<std::uint8_t> bitcodeDigestBytes =
-      reader.fixed(bitcodeDigestSize);
-  const llvm::ArrayRef<std::uint8_t> moduleBytes = reader.framed();
-  if (llvm::Error error = reader.takeError())
-    return std::move(error);
+      root->normalizedBitcodeDigest;
+  const llvm::ArrayRef<std::uint8_t> moduleBytes = root->normalizedBitcode;
 
   const LlvmProviderIdentity &provider = buildSelectedLlvmProvider();
   if (asText(repository) != llvm::StringRef(provider.repositoryIdentity) ||

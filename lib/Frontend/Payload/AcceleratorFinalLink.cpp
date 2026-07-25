@@ -36,16 +36,17 @@ llvm::Error rejected(const llvm::Twine &message) {
 /// Names the exact object or archive member a rejection came from, so a driver
 /// can point at the selected input that failed instead of reporting that some
 /// accelerator payload somewhere was bad.
-llvm::Error attributed(llvm::StringRef carrier, llvm::Error cause) {
-  return rejected("selected_payload_rejected: '" + carrier +
+llvm::Error attributed(llvm::StringRef label, llvm::Error cause) {
+  return rejected("selected_payload_rejected: '" + label +
                   "': " + llvm::toString(std::move(cause)));
 }
 
 /// The complete canonical payload bytes one selected carrier delivers, together
-/// with the exact name every diagnostic about it must use. No bytes means the
-/// selected input simply carries no payload, which stays valid.
+/// with the label every diagnostic about it must use. The label is for reading,
+/// never for identity. No bytes means the selected input simply carries no
+/// payload, which stays valid.
 struct CarrierContents {
-  std::string carrier;
+  std::string label;
   std::optional<std::vector<std::uint8_t>> canonicalBytes;
 };
 
@@ -79,21 +80,25 @@ readArchiveMemberCarrier(llvm::StringRef archivePath,
   llvm::Expected<llvm::StringRef> memberName = member.getName();
   if (!memberName)
     return rejected("selected_input_unreadable: selected archive '" +
-                    archivePath + "' has no readable name for its member at "
-                                  "child offset " +
+                    archivePath +
+                    "' has no readable name for its member at "
+                    "child offset " +
                     llvm::Twine(member.getChildOffset()) + ": " +
                     llvm::toString(memberName.takeError()));
-  const std::string carrier =
-      archivePath.str() + "(" + memberName->str() + ")";
+  // Same-named members are legal, so the child offset is what makes the label
+  // identify one exact member; the name only makes it readable.
+  const std::string label = archivePath.str() + "(" + memberName->str() +
+                            " at child offset " +
+                            std::to_string(member.getChildOffset()) + ")";
 
   llvm::Expected<llvm::MemoryBufferRef> buffer = member.getMemoryBufferRef();
   if (!buffer)
-    return attributed(carrier, buffer.takeError());
+    return attributed(label, buffer.takeError());
   llvm::Expected<std::optional<std::vector<std::uint8_t>>> carried =
       readRelocatablePayloadCarrier(*buffer);
   if (!carried)
-    return attributed(carrier, carried.takeError());
-  return CarrierContents{carrier, std::move(*carried)};
+    return attributed(label, carried.takeError());
+  return CarrierContents{label, std::move(*carried)};
 }
 
 /// Reads every member one archive was selected from, opening and traversing
@@ -113,8 +118,9 @@ readArchiveCarriers(llvm::StringRef archivePath,
   llvm::Expected<std::unique_ptr<llvm::object::Archive>> archive =
       llvm::object::Archive::create((*file)->getMemBufferRef());
   if (!archive)
-    return rejected("selected_input_unreadable: cannot read selected archive '" +
-                    archivePath + "': " + llvm::toString(archive.takeError()));
+    return rejected(
+        "selected_input_unreadable: cannot read selected archive '" +
+        archivePath + "': " + llvm::toString(archive.takeError()));
 
   llvm::DenseSet<std::uint64_t> selectedOffsets;
   for (std::size_t index : selectedIndices)
@@ -127,8 +133,9 @@ readArchiveCarriers(llvm::StringRef archivePath,
     if (selectedOffsets.contains(child.getChildOffset()))
       selectedMembers.emplace(child.getChildOffset(), child);
   if (iteration)
-    return rejected("selected_input_unreadable: cannot read selected archive '" +
-                    archivePath + "': " + llvm::toString(std::move(iteration)));
+    return rejected(
+        "selected_input_unreadable: cannot read selected archive '" +
+        archivePath + "': " + llvm::toString(std::move(iteration)));
 
   for (std::size_t index : selectedIndices) {
     const std::uint64_t offset = *selections[index].memberChildOffset;
@@ -175,18 +182,21 @@ readSelectedCarriers(const LinkerSelectedInputs &selected) {
   return carriers;
 }
 
-/// One validated payload and the selected carrier that delivered it.
+/// One validated payload, the selection that identifies the input it came from,
+/// and the label diagnostics about it use.
 struct CollectedPayload {
-  std::string carrier;
+  std::size_t selectionIndex;
+  std::string label;
   RelocatableAcceleratorPayload payload;
 };
 
 llvm::MemoryBufferRef payloadBuffer(const CollectedPayload &member) {
-  const llvm::ArrayRef<std::uint8_t> bitcode = member.payload.normalizedBitcode();
+  const llvm::ArrayRef<std::uint8_t> bitcode =
+      member.payload.normalizedBitcode();
   return llvm::MemoryBufferRef(
       llvm::StringRef(reinterpret_cast<const char *>(bitcode.data()),
                       bitcode.size()),
-      member.carrier);
+      member.label);
 }
 
 std::vector<std::uint8_t> writeTransportBitcode(const llvm::Module &module) {
@@ -217,7 +227,8 @@ linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
     return carriers.takeError();
 
   std::vector<CollectedPayload> collected;
-  for (CarrierContents &contents : *carriers) {
+  for (std::size_t index = 0; index < carriers->size(); ++index) {
+    CarrierContents &contents = (*carriers)[index];
     // A selected input without a payload is an ordinary external or
     // InstructionCore-only link input and stays valid.
     if (!contents.canonicalBytes)
@@ -228,9 +239,9 @@ linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
             RelocatableAcceleratorPayload::artifactSchema,
             *contents.canonicalBytes);
     if (!payload)
-      return attributed(contents.carrier, payload.takeError());
-    collected.push_back(
-        CollectedPayload{std::move(contents.carrier), std::move(*payload)});
+      return attributed(contents.label, payload.takeError());
+    collected.push_back(CollectedPayload{index, std::move(contents.label),
+                                         std::move(*payload)});
   }
 
   // No selected member carries a payload, so no accelerator compilation is
@@ -245,9 +256,9 @@ linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
     const CollectedPayload &member = collected[index];
     if (llvm::Error error = requireRelocatablePayloadCompatibility(
             cohort.payload, member.payload))
-      return rejected("selected_payload_incompatible: '" + member.carrier +
+      return rejected("selected_payload_incompatible: '" + member.label +
                       "' does not join the cohort established by '" +
-                      cohort.carrier + "': " + llvm::toString(std::move(error)));
+                      cohort.label + "': " + llvm::toString(std::move(error)));
   }
 
   // Diagnostics LTO reports are kept exactly as reported: they state decisions
@@ -277,25 +288,27 @@ linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
     llvm::Expected<std::unique_ptr<llvm::lto::InputFile>> input =
         llvm::lto::InputFile::create(payloadBuffer(member));
     if (!input)
-      return attributed(member.carrier, input.takeError());
+      return attributed(member.label, input.takeError());
 
     // Every symbol of this input is resolved by the ordinary linker, in the
-    // order the pinned LTO API enumerates them.
+    // order the pinned LTO API enumerates them. The exact selection identifies
+    // the input, so same-named archive members are resolved separately.
+    const LinkerSelectedInputs::Selection &selection =
+        selected.selections()[member.selectionIndex];
     std::vector<llvm::lto::SymbolResolution> resolutions;
     resolutions.reserve((*input)->symbols().size());
     for (const llvm::lto::InputFile::Symbol &symbol : (*input)->symbols())
-      resolutions.push_back(resolveSymbol(member.carrier, symbol));
+      resolutions.push_back(resolveSymbol(selection, symbol));
 
     // Admitting an input is where LTO merges it, so a rejection here is a link
     // failure attributed to that member rather than a bad payload.
     if (llvm::Error error = lto.add(std::move(*input), resolutions))
       return rejected("accelerator_link_failed: the pinned LTO pipeline "
                       "rejected '" +
-                      member.carrier + "': " + llvm::toString(std::move(error)));
+                      member.label + "': " + llvm::toString(std::move(error)));
   }
 
-  const llvm::AddStreamFn refuseNativeOutput =
-      [](unsigned, const llvm::Twine &)
+  const llvm::AddStreamFn refuseNativeOutput = [](unsigned, const llvm::Twine &)
       -> llvm::Expected<std::unique_ptr<llvm::CachedFileStream>> {
     return rejected("accelerator_link_unexpected_codegen: the final link asked "
                     "for native output instead of a linked module");

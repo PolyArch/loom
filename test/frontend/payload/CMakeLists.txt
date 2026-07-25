@@ -19,6 +19,12 @@ target_link_libraries(loom-relocatable-payload-test PRIVATE
   LoomFrontendPayload
 )
 
+# The hostile-input cases build their canonical bytes through the production
+# root codec instead of restating its framing or digest rules.
+target_include_directories(loom-relocatable-payload-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Frontend/Payload
+)
+
 # The final-link cases build real relocatable objects and a real archive, and
 # the hand-off case imports the linked module through the same upstream
 # LLVM-to-MLIR path the raising driver uses.

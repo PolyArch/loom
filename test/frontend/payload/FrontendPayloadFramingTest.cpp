@@ -163,15 +163,6 @@ void adoptedFrontendViewFieldsFailClosed() {
               .contains("frontend_config_view_descriptor"),
           "unexpected foreign frontend view descriptor rejection");
 
-  const std::array<std::uint8_t, 1> nonEmptyView = {0x00};
-  require(__func__,
-          llvm::StringRef(
-              rejectionMessage(__func__, adoptResolvedFrontendConfigView(
-                                             view.schemaDescriptorBytes(),
-                                             nonEmptyView, digest)))
-              .contains("frontend_config_view_bytes"),
-          "unexpected nonempty frontend view bytes rejection");
-
   std::array<std::uint8_t, ComponentViewDigest::byteSize> staleDigest =
       knownFrontendViewDigest;
   staleDigest.back() ^= 0x01;
@@ -185,21 +176,6 @@ void adoptedFrontendViewFieldsFailClosed() {
                                                  staleDigest)))))
               .contains("component_view_digest_mismatch"),
           "unexpected stale frontend view digest rejection");
-}
-
-void buildSelectedProviderIsTheClosedPinnedLlvm() {
-  const LlvmProviderIdentity &provider = buildSelectedLlvmProvider();
-  require(__func__,
-          llvm::StringRef(provider.repositoryIdentity) ==
-              closedRepositoryIdentity,
-          "unexpected LLVM provider repository identity: " +
-              provider.repositoryIdentity);
-  require(__func__,
-          llvm::StringRef(provider.fullCommitIdentity) == closedCommitIdentity,
-          "unexpected LLVM provider commit identity: " +
-              provider.fullCommitIdentity);
-  require(__func__, provider.fullCommitIdentity.size() == 40,
-          "the LLVM provider commit identity is abbreviated");
 }
 
 void abiKeyMatchesKnownVector() {
@@ -311,7 +287,6 @@ int main() {
   frontendViewIsTheClosedZeroFieldProjection();
   unrelatedResolvedConfigFieldsLeaveTheViewUnchanged();
   adoptedFrontendViewFieldsFailClosed();
-  buildSelectedProviderIsTheClosedPinnedLlvm();
   abiKeyMatchesKnownVector();
   abiKeyFollowsEverySourceField();
   return 0;

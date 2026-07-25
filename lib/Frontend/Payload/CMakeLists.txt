@@ -74,6 +74,7 @@ add_mlir_library(LoomFrontendPayload
   LlvmModuleNormalization.cpp
   PayloadCarrier.cpp
   RelocatableAcceleratorPayload.cpp
+  RelocatablePayloadRootCodec.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Payload
