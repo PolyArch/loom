@@ -2,6 +2,7 @@
 #define LOOM_DATAFLOW_IR_DATAFLOW_SERVICE_SCHEMA_H
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -13,6 +14,15 @@
 #include <variant>
 
 namespace dataflow::semantics {
+
+class CanonicalMemoryAccessView;
+class CanonicalService;
+
+/// Verifies that the service and optional access view form one complete
+/// projection of an actor with this exact canonical schema projection.
+llvm::Error validateCanonicalMemoryActorCorrespondence(
+    const CanonicalActorSchemaProjection &actor,
+    const CanonicalService &service, const CanonicalMemoryAccessView *access);
 
 //===----------------------------------------------------------------------===//
 // Canonical memory access view
@@ -43,7 +53,8 @@ enum class MemoryMaskForm : std::uint8_t { Absent, Dynamic };
 /// Dataflow actor. It holds the two existing owners of that actor's memory
 /// semantics -- the shared access geometry and the actor's one aggregate
 /// contract -- and derives every projected fact from them, including the
-/// flattened widths a downstream compatibility relation compares.
+/// flattened widths a downstream compatibility relation compares. It retains
+/// the canonical actor projection only as immutable correspondence evidence.
 ///
 /// It is produced only by `getCanonicalMemoryAccessView` from one exact
 /// verified actor: it cannot be default constructed, assembled field by
@@ -58,6 +69,11 @@ public:
   CanonicalMemoryAccessView(const CanonicalMemoryAccessView &) = default;
   CanonicalMemoryAccessView &
   operator=(const CanonicalMemoryAccessView &) = delete;
+
+  bool operator==(const CanonicalMemoryAccessView &other) const;
+  bool operator!=(const CanonicalMemoryAccessView &other) const {
+    return !(*this == other);
+  }
 
   MemoryAccessOperation operation() const { return accessOperation; }
 
@@ -128,16 +144,22 @@ private:
     std::uint64_t maskBits;
   };
 
-  CanonicalMemoryAccessView(MemoryAccessOperation operation,
+  CanonicalMemoryAccessView(CanonicalActorSchemaProjection sourceActor,
+                            MemoryAccessOperation operation,
                             const MemoryAccessType &geometry,
                             const MemoryActorContract &contract,
                             mlir::Type maskType, const DerivedGeometry &derived)
-      : accessOperation(operation), accessGeometry(geometry),
-        actorContract(contract), actorMaskType(maskType), derived(derived) {}
+      : sourceActor(std::move(sourceActor)), accessOperation(operation),
+        accessGeometry(geometry), actorContract(contract),
+        actorMaskType(maskType), derived(derived) {}
 
   friend llvm::Expected<CanonicalMemoryAccessView>
   getCanonicalMemoryAccessView(mlir::Operation *op);
+  friend llvm::Error validateCanonicalMemoryActorCorrespondence(
+      const CanonicalActorSchemaProjection &actor,
+      const CanonicalService &service, const CanonicalMemoryAccessView *access);
 
+  CanonicalActorSchemaProjection sourceActor;
   MemoryAccessOperation accessOperation;
   MemoryAccessType accessGeometry;
   MemoryActorContract actorContract;
@@ -267,8 +289,13 @@ public:
   FenceContractAttr fenceContract() const;
 
 private:
-  using Parameter =
-      std::variant<mlir::Type, CanonicalMemoryAccessView, FenceContractAttr>;
+  struct FenceServiceParameter {
+    CanonicalActorSchemaProjection sourceActor;
+    FenceContractAttr contract;
+  };
+
+  using Parameter = std::variant<mlir::Type, CanonicalMemoryAccessView,
+                                 FenceServiceParameter>;
 
   explicit CanonicalService(Parameter parameter)
       : parameter(std::move(parameter)) {}
@@ -277,6 +304,10 @@ private:
   mlir::Type typeOf(ServiceValueRole role) const;
 
   Parameter parameter;
+
+  friend llvm::Error validateCanonicalMemoryActorCorrespondence(
+      const CanonicalActorSchemaProjection &actor,
+      const CanonicalService &service, const CanonicalMemoryAccessView *access);
 };
 
 } // namespace dataflow::semantics

@@ -208,6 +208,32 @@ MemoryAccessForm CanonicalMemoryAccessView::form() const {
                                    : MemoryAccessForm::Element;
 }
 
+bool CanonicalMemoryAccessView::operator==(
+    const CanonicalMemoryAccessView &other) const {
+  return sourceActor == other.sourceActor &&
+         accessOperation == other.accessOperation &&
+         accessGeometry.elementType == other.accessGeometry.elementType &&
+         accessGeometry.vectorType == other.accessGeometry.vectorType &&
+         accessGeometry.addressVectorType ==
+             other.accessGeometry.addressVectorType &&
+         actorContract.aggregate == other.actorContract.aggregate &&
+         actorContract.atomic == other.actorContract.atomic &&
+         actorContract.isVolatile == other.actorContract.isVolatile &&
+         actorContract.sourceAlignmentBytes ==
+             other.actorContract.sourceAlignmentBytes &&
+         actorContract.vectorGranularity ==
+             other.actorContract.vectorGranularity &&
+         actorContract.syncScope == other.actorContract.syncScope &&
+         actorMaskType == other.actorMaskType &&
+         derived.laneCount == other.derived.laneCount &&
+         derived.addressCount == other.derived.addressCount &&
+         derived.elementBits == other.derived.elementBits &&
+         derived.dataBits == other.derived.dataBits &&
+         derived.indexBits == other.derived.indexBits &&
+         derived.addressBits == other.derived.addressBits &&
+         derived.maskBits == other.derived.maskBits;
+}
+
 llvm::ArrayRef<std::int64_t> CanonicalMemoryAccessView::laneShape() const {
   if (!accessGeometry.isVector())
     return {};
@@ -241,6 +267,10 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
     return schemaError("operation is not an addressed canonical memory actor");
   if (llvm::Error error = verifyActorStructure(op))
     return std::move(error);
+  llvm::Expected<CanonicalActorSchemaProjection> projection =
+      projectRegisteredActorSchemaProjection(op);
+  if (!projection)
+    return projection.takeError();
 
   std::optional<AddressedActor> actor = getAddressedActor(op);
   assert(actor && "a verified addressed actor exposes its access operands");
@@ -299,7 +329,7 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   }
 
   return CanonicalMemoryAccessView(
-      actor->operation, *geometry, *contract, maskType,
+      std::move(*projection), actor->operation, *geometry, *contract, maskType,
       CanonicalMemoryAccessView::DerivedGeometry{
           laneCount, addressCount, *elementBits, dataBits, *indexBits,
           addressBits, maskType ? laneCount : 0});
@@ -362,8 +392,14 @@ llvm::Expected<CanonicalService> CanonicalService::forActor(Operation *op) {
   if (llvm::isa_and_present<FenceOp>(op)) {
     if (llvm::Error error = verifyActorStructure(op))
       return std::move(error);
-    return CanonicalService(Parameter(std::in_place_type<FenceContractAttr>,
-                                      llvm::cast<FenceOp>(op).getContract()));
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        projectRegisteredActorSchemaProjection(op);
+    if (!projection)
+      return projection.takeError();
+    FenceServiceParameter fence{std::move(*projection),
+                                llvm::cast<FenceOp>(op).getContract()};
+    return CanonicalService(
+        Parameter(std::in_place_type<FenceServiceParameter>, std::move(fence)));
   }
 
   llvm::Expected<CanonicalMemoryAccessView> view =
@@ -418,7 +454,7 @@ MLIRContext *CanonicalService::context() const {
     return view->geometry().elementType.getContext();
   if (const auto *payloadType = std::get_if<Type>(&parameter))
     return payloadType->getContext();
-  return std::get<FenceContractAttr>(parameter).getContext();
+  return std::get<FenceServiceParameter>(parameter).contract.getContext();
 }
 
 Type CanonicalService::typeOf(ServiceValueRole role) const {
@@ -482,5 +518,39 @@ const CanonicalMemoryAccessView &CanonicalService::access() const {
 FenceContractAttr CanonicalService::fenceContract() const {
   assert(kind() == ServiceKind::MemoryFence &&
          "only a fence carries a fence contract");
-  return std::get<FenceContractAttr>(parameter);
+  return std::get<FenceServiceParameter>(parameter).contract;
+}
+
+llvm::Error dataflow::semantics::validateCanonicalMemoryActorCorrespondence(
+    const CanonicalActorSchemaProjection &actor,
+    const CanonicalService &service, const CanonicalMemoryAccessView *access) {
+  const auto *serviceAccess =
+      std::get_if<CanonicalMemoryAccessView>(&service.parameter);
+  const CanonicalActorSchemaProjection *serviceActor = nullptr;
+  if (serviceAccess) {
+    serviceActor = &serviceAccess->sourceActor;
+  } else if (const auto *fence =
+                 std::get_if<CanonicalService::FenceServiceParameter>(
+                     &service.parameter)) {
+    serviceActor = &fence->sourceActor;
+  } else {
+    return schemaError(
+        "parent service is not derived from a canonical memory actor");
+  }
+
+  if (*serviceActor != actor)
+    return schemaError(
+        "parent service does not match the exact actor projection");
+
+  if (!serviceAccess) {
+    if (access)
+      return schemaError("fence correspondence must not carry an access view");
+    return llvm::Error::success();
+  }
+  if (!access)
+    return schemaError("addressed correspondence requires an access view");
+  if (*serviceAccess != *access)
+    return schemaError(
+        "access view does not match the complete parent service projection");
+  return llvm::Error::success();
 }
