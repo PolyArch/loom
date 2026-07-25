@@ -34,10 +34,19 @@
 #define LOOM_FABRIC_PORT_DIRECTION(Name, Keyword)
 #endif
 
-// Memory-service variants. Member is the payload union member, Type its
-// typed reference.
+// Memory-service variants. Type is the selected payload reference.
 #ifndef LOOM_FABRIC_MEMORY_SERVICE
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)
+#endif
+
+// Closed hardware-domain kinds owned by docs/spec-fabric-system-adg.md.
+#ifndef LOOM_FABRIC_HARDWARE_DOMAIN_KIND
+#define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword)
+#endif
+
+// Memory-service endpoint roles owned by docs/spec-fabric-mem.md.
+#ifndef LOOM_FABRIC_MEMORY_ENDPOINT_ROLE
+#define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword)
 #endif
 
 // FIFO occurrence traversal modes owned by docs/spec-fabric-fifo.md.
@@ -51,10 +60,9 @@
 #define LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE(Name, Keyword)
 #endif
 
-// Directed physical traversal variants. Member is the payload union member,
-// Type its payload record.
+// Directed physical traversal variants. Type is the payload record.
 #ifndef LOOM_FABRIC_TRAVERSAL
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)
 #endif
 
 // Owner-declared canonical inventories an owner-relative ordinal indexes.
@@ -65,18 +73,30 @@
 
 // Closed union of owners exposing a token transport endpoint inventory.
 #ifndef LOOM_FABRIC_TRANSPORT_OWNER
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)
 #endif
 
 // Closed union of owners exposing a memory-service endpoint inventory.
 #ifndef LOOM_FABRIC_MEMORY_OWNER
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)
 #endif
 
-// Closed constructor catalog shared by the resource-state, use-pattern,
-// semantic-config-field, and physical-refinement-domain owner projections.
+// Closed constructor catalog shared by every owner projection below.
 #ifndef LOOM_FABRIC_INVENTORY_OWNER
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)
+#endif
+
+// The role-specific owner projections. Each is a distinct static type over
+// the one constructor catalog above and selects the canonical inventory its
+// consuming family indexes.
+#ifndef LOOM_FABRIC_OWNER_ROLE
+#define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)
+#endif
+
+// Typed refinements: a name selected by the consuming field's static type
+// whose canonical form remains exactly that of Underlying.
+#ifndef LOOM_FABRIC_REFINEMENT
+#define LOOM_FABRIC_REFINEMENT(Name, Alias, Underlying)
 #endif
 
 // Typed classification of every identity failure. Mapping feasibility
@@ -119,8 +139,17 @@ LOOM_FABRIC_FU_NODE_KIND(Demux, "demux")
 LOOM_FABRIC_PORT_DIRECTION(Input, "input")
 LOOM_FABRIC_PORT_DIRECTION(Output, "output")
 
-LOOM_FABRIC_MEMORY_SERVICE(Local, "local", local, FabricMemoryOccurrenceRef)
-LOOM_FABRIC_MEMORY_SERVICE(System, "system", system, SystemMemoryServiceRef)
+LOOM_FABRIC_MEMORY_SERVICE(Local, "local", FabricMemoryOccurrenceRef)
+LOOM_FABRIC_MEMORY_SERVICE(System, "system", SystemMemoryServiceRef)
+
+LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Clock, "clock")
+LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Reset, "reset")
+LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Power, "power")
+LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Address, "address")
+LOOM_FABRIC_HARDWARE_DOMAIN_KIND(MemoryConsistency, "memory_consistency")
+
+LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Manager, "manager")
+LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Subordinate, "subordinate")
 
 LOOM_FABRIC_FIFO_MODE(Buffered, "buffered")
 LOOM_FABRIC_FIFO_MODE(Bypass, "bypass")
@@ -128,20 +157,18 @@ LOOM_FABRIC_FIFO_MODE(Bypass, "bypass")
 LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE(Write, "write")
 LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE(Read, "read")
 
-LOOM_FABRIC_TRAVERSAL(PointConnection, "point_connection", pointConnection,
+LOOM_FABRIC_TRAVERSAL(PointConnection, "point_connection",
                       FabricPointConnectionPayload)
-LOOM_FABRIC_TRAVERSAL(PeSelectorTraversal, "pe_selector", peSelector,
+LOOM_FABRIC_TRAVERSAL(PeSelectorTraversal, "pe_selector",
                       FabricPeSelectorPayload)
 LOOM_FABRIC_TRAVERSAL(PeRegisterFifoTraversal, "pe_register_fifo",
-                      peRegisterFifo, FabricPeRegisterFifoPayload)
-LOOM_FABRIC_TRAVERSAL(SwitchTraversal, "switch", switchTraversal,
-                      FabricSwitchTraversalPayload)
-LOOM_FABRIC_TRAVERSAL(FifoTraversal, "fifo", fifoTraversal,
-                      FabricFifoTraversalPayload)
-LOOM_FABRIC_TRAVERSAL(BoundaryTraversal, "boundary", boundaryTraversal,
+                      FabricPeRegisterFifoPayload)
+LOOM_FABRIC_TRAVERSAL(SwitchTraversal, "switch", FabricSwitchTraversalPayload)
+LOOM_FABRIC_TRAVERSAL(FifoTraversal, "fifo", FabricFifoTraversalPayload)
+LOOM_FABRIC_TRAVERSAL(BoundaryTraversal, "boundary",
                       FabricBoundaryTraversalPayload)
 LOOM_FABRIC_TRAVERSAL(SystemTransferPatternLeg, "system_transfer_pattern_leg",
-                      transferPatternLeg, FabricTransferPatternLegPayload)
+                      FabricTransferPatternLegPayload)
 
 LOOM_FABRIC_INVENTORY(FuNode, "fu_node")
 LOOM_FABRIC_INVENTORY(InputPort, "input_port")
@@ -163,80 +190,70 @@ LOOM_FABRIC_INVENTORY(BoundaryOutput, "boundary_output")
 LOOM_FABRIC_INVENTORY(RegisterFifo, "register_fifo")
 LOOM_FABRIC_INVENTORY(TransferPatternEgress, "transfer_pattern_egress")
 
-LOOM_FABRIC_TRANSPORT_OWNER(SpatialCoreOccurrence, spatialCore,
-                            SpatialCoreOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricPeOccurrence, peOccurrence,
-                            FabricPeOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricFuOccurrence, fuOccurrence,
-                            FabricFuOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricMemoryOccurrence, memoryOccurrence,
-                            FabricMemoryOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricSwitchOccurrence, switchOccurrence,
-                            FabricSwitchOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricFifoOccurrence, fifoOccurrence,
-                            FabricFifoOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricBoundaryOccurrence, boundaryOccurrence,
+LOOM_FABRIC_TRANSPORT_OWNER(SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricPeOccurrence, FabricPeOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricFuOccurrence, FabricFuOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricMemoryOccurrence, FabricMemoryOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricSwitchOccurrence, FabricSwitchOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricFifoOccurrence, FabricFifoOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(FabricBoundaryOccurrence,
                             FabricBoundaryOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(AccCoreOccurrence, accCore, AccCoreOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(SystemServiceEndpoint, systemServiceEndpoint,
-                            SystemServiceEndpointRef)
-LOOM_FABRIC_TRANSPORT_OWNER(SystemTransportResource, systemTransportResource,
-                            SystemTransportResourceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(ExternalBoundary, externalBoundary,
-                            ExternalBoundaryRef)
+LOOM_FABRIC_TRANSPORT_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(SystemServiceEndpoint, SystemServiceEndpointRef)
+LOOM_FABRIC_TRANSPORT_OWNER(SystemTransportResource, SystemTransportResourceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(ExternalBoundary, ExternalBoundaryRef)
 
-LOOM_FABRIC_MEMORY_OWNER(SpatialCoreOccurrence, spatialCore,
-                         SpatialCoreOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(FabricMemoryOccurrence, memoryOccurrence,
-                         FabricMemoryOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(AccCoreOccurrence, accCore, AccCoreOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemMemoryService, systemMemoryService,
-                         SystemMemoryServiceRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemServiceEndpoint, systemServiceEndpoint,
-                         SystemServiceEndpointRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemServiceTransform, systemServiceTransform,
-                         SystemServiceTransformRef)
-LOOM_FABRIC_MEMORY_OWNER(ExternalBoundary, externalBoundary,
-                         ExternalBoundaryRef)
+LOOM_FABRIC_MEMORY_OWNER(SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
+LOOM_FABRIC_MEMORY_OWNER(FabricMemoryOccurrence, FabricMemoryOccurrenceRef)
+LOOM_FABRIC_MEMORY_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef)
+LOOM_FABRIC_MEMORY_OWNER(SystemMemoryService, SystemMemoryServiceRef)
+LOOM_FABRIC_MEMORY_OWNER(SystemServiceEndpoint, SystemServiceEndpointRef)
+LOOM_FABRIC_MEMORY_OWNER(SystemServiceTransform, SystemServiceTransformRef)
+LOOM_FABRIC_MEMORY_OWNER(ExternalBoundary, ExternalBoundaryRef)
 
-LOOM_FABRIC_INVENTORY_OWNER(ModuleTemplate, moduleTemplate,
-                            FabricModuleTemplateRef)
-LOOM_FABRIC_INVENTORY_OWNER(PeOccurrence, peOccurrence, FabricPeOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(FuTemplate, fuTemplate, FabricFuTemplateRef)
-LOOM_FABRIC_INVENTORY_OWNER(FuOccurrence, fuOccurrence, FabricFuOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(FuTemplateNode, fuTemplateNode,
-                            FabricFuTemplateNodeRef)
-LOOM_FABRIC_INVENTORY_OWNER(FuOccurrenceNode, fuOccurrenceNode,
-                            FabricFuOccurrenceNodeRef)
-LOOM_FABRIC_INVENTORY_OWNER(MemoryOccurrence, memoryOccurrence,
-                            FabricMemoryOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(MemoryOperationPort, memoryOperationPort,
-                            FabricMemoryOperationPortRef)
-LOOM_FABRIC_INVENTORY_OWNER(MemoryService, memoryService,
-                            FabricMemoryServiceRef)
-LOOM_FABRIC_INVENTORY_OWNER(SwitchOccurrence, switchOccurrence,
-                            FabricSwitchOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(FifoOccurrence, fifoOccurrence,
-                            FabricFifoOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(BoundaryOccurrence, boundaryOccurrence,
-                            FabricBoundaryOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(InstructionContext, instructionContext,
-                            InstructionContextRef)
-LOOM_FABRIC_INVENTORY_OWNER(InstructionCoreContext, instructionCoreContext,
-                            InstructionCoreContextRef)
-LOOM_FABRIC_INVENTORY_OWNER(HostCoreOccurrence, hostCore, HostCoreOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(AccCoreOccurrence, accCore, AccCoreOccurrenceRef)
-LOOM_FABRIC_INVENTORY_OWNER(SystemServiceEndpoint, systemServiceEndpoint,
-                            SystemServiceEndpointRef)
-LOOM_FABRIC_INVENTORY_OWNER(SystemServiceTransform, systemServiceTransform,
-                            SystemServiceTransformRef)
-LOOM_FABRIC_INVENTORY_OWNER(SystemTransportResource, systemTransportResource,
+LOOM_FABRIC_INVENTORY_OWNER(ModuleTemplate, FabricModuleTemplateRef)
+LOOM_FABRIC_INVENTORY_OWNER(PeOccurrence, FabricPeOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(FuTemplate, FabricFuTemplateRef)
+LOOM_FABRIC_INVENTORY_OWNER(FuOccurrence, FabricFuOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(FuTemplateNode, FabricFuTemplateNodeRef)
+LOOM_FABRIC_INVENTORY_OWNER(FuOccurrenceNode, FabricFuOccurrenceNodeRef)
+LOOM_FABRIC_INVENTORY_OWNER(MemoryOccurrence, FabricMemoryOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(MemoryOperationPort, FabricMemoryOperationPortRef)
+LOOM_FABRIC_INVENTORY_OWNER(MemoryService, FabricMemoryServiceRef)
+LOOM_FABRIC_INVENTORY_OWNER(SwitchOccurrence, FabricSwitchOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(FifoOccurrence, FabricFifoOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(BoundaryOccurrence, FabricBoundaryOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(InstructionContext, InstructionContextRef)
+LOOM_FABRIC_INVENTORY_OWNER(InstructionCoreContext, InstructionCoreContextRef)
+LOOM_FABRIC_INVENTORY_OWNER(HostCoreOccurrence, HostCoreOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef)
+LOOM_FABRIC_INVENTORY_OWNER(SystemServiceEndpoint, SystemServiceEndpointRef)
+LOOM_FABRIC_INVENTORY_OWNER(SystemServiceTransform, SystemServiceTransformRef)
+LOOM_FABRIC_INVENTORY_OWNER(SystemTransportResource,
                             SystemTransportResourceRef)
-LOOM_FABRIC_INVENTORY_OWNER(TransferPattern, transferPattern,
-                            FabricTransferPatternRef)
-LOOM_FABRIC_INVENTORY_OWNER(HardwareDomain, hardwareDomain, HardwareDomainRef)
-LOOM_FABRIC_INVENTORY_OWNER(ExternalBoundary, externalBoundary,
-                            ExternalBoundaryRef)
+LOOM_FABRIC_INVENTORY_OWNER(TransferPattern, FabricTransferPatternRef)
+LOOM_FABRIC_INVENTORY_OWNER(HardwareDomain, HardwareDomainRef)
+LOOM_FABRIC_INVENTORY_OWNER(ExternalBoundary, ExternalBoundaryRef)
+
+LOOM_FABRIC_OWNER_ROLE(FabricResourceStateOwnerRef, ResourceState,
+                       FabricResourceStateRef, "fabric.resource_state")
+LOOM_FABRIC_OWNER_ROLE(FabricUsePatternOwnerRef, UsePattern,
+                       FabricUsePatternRef, "fabric.use_pattern")
+LOOM_FABRIC_OWNER_ROLE(FabricConfigurationOwnerRef, SemanticConfigField,
+                       FabricSemanticConfigFieldRef,
+                       "fabric.semantic_config_field")
+LOOM_FABRIC_OWNER_ROLE(FabricRefinementOwnerRef, RefinementDomain,
+                       FabricPhysicalRefinementDomainRef,
+                       "fabric.refinement_domain")
+
+LOOM_FABRIC_REFINEMENT(LocalMemoryService, LocalMemoryServiceRef,
+                       FabricMemoryServiceRef)
+LOOM_FABRIC_REFINEMENT(ManagerEndpoint, ManagerEndpointRef,
+                       FabricMemoryEndpointRef)
+LOOM_FABRIC_REFINEMENT(SubordinateEndpoint, SubordinateEndpointRef,
+                       FabricMemoryEndpointRef)
+LOOM_FABRIC_REFINEMENT(MemoryConsistencyDomain, MemoryConsistencyDomainRef,
+                       HardwareDomainRef)
 
 LOOM_FABRIC_REF_ERROR(MalformedSyntax, "malformed_syntax")
 LOOM_FABRIC_REF_ERROR(DeprecatedAlias, "deprecated_alias")
@@ -249,6 +266,7 @@ LOOM_FABRIC_REF_ERROR(PlaneMisuse, "plane_misuse")
 LOOM_FABRIC_REF_ERROR(OrdinalOutOfRange, "ordinal_out_of_range")
 LOOM_FABRIC_REF_ERROR(AbsentPointConnection, "absent_point_connection")
 LOOM_FABRIC_REF_ERROR(TraversalNotAdmitted, "traversal_not_admitted")
+LOOM_FABRIC_REF_ERROR(WrongOwner, "wrong_owner")
 
 LOOM_FABRIC_DEPRECATED_REF("fabric.fu")
 LOOM_FABRIC_DEPRECATED_REF("fabric.resource")
@@ -261,6 +279,8 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_FU_NODE_KIND
 #undef LOOM_FABRIC_PORT_DIRECTION
 #undef LOOM_FABRIC_MEMORY_SERVICE
+#undef LOOM_FABRIC_HARDWARE_DOMAIN_KIND
+#undef LOOM_FABRIC_MEMORY_ENDPOINT_ROLE
 #undef LOOM_FABRIC_FIFO_MODE
 #undef LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE
 #undef LOOM_FABRIC_TRAVERSAL
@@ -268,5 +288,7 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_TRANSPORT_OWNER
 #undef LOOM_FABRIC_MEMORY_OWNER
 #undef LOOM_FABRIC_INVENTORY_OWNER
+#undef LOOM_FABRIC_OWNER_ROLE
+#undef LOOM_FABRIC_REFINEMENT
 #undef LOOM_FABRIC_REF_ERROR
 #undef LOOM_FABRIC_DEPRECATED_REF

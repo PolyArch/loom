@@ -84,6 +84,18 @@ void encodeFabricRef(FabricByteWriter &writer,
 void encodeFabricRef(FabricByteWriter &writer,
                      const FabricPhysicalTraversalRef &traversal);
 
+/// A projection and a refinement encode exactly their underlying reference.
+template <FabricInventoryKind Inventory>
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricOwnerProjection<Inventory> &owner) {
+  encodeFabricRef(writer, owner.catalog());
+}
+template <FabricRefinementKind Refinement, typename Underlying>
+void encodeFabricRef(FabricByteWriter &writer,
+                     const FabricRefinedRef<Refinement, Underlying> &ref) {
+  encodeFabricRef(writer, ref.underlying());
+}
+
 /// Walks one family's single field declaration in order.
 struct FabricEncodeVisitor {
   FabricByteWriter &writer;
@@ -142,6 +154,25 @@ llvm::Expected<std::uint32_t> readFabricClosedTag(FabricByteReader &reader,
                                                   std::uint32_t bound,
                                                   llvm::StringRef what);
 
+template <FabricInventoryKind Inventory>
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricOwnerProjection<Inventory> &owner) {
+  FabricInventoryOwnerRef catalog;
+  if (llvm::Error error = decodeFabricRefInto(reader, catalog))
+    return error;
+  owner = FabricOwnerProjection<Inventory>(std::move(catalog));
+  return llvm::Error::success();
+}
+template <FabricRefinementKind Refinement, typename Underlying>
+llvm::Error decodeFabricRefInto(FabricByteReader &reader,
+                                FabricRefinedRef<Refinement, Underlying> &ref) {
+  Underlying underlying;
+  if (llvm::Error error = decodeFabricRefInto(reader, underlying))
+    return error;
+  ref = FabricRefinedRef<Refinement, Underlying>(std::move(underlying));
+  return llvm::Error::success();
+}
+
 struct FabricDecodeVisitor {
   FabricByteReader &reader;
   llvm::Error error = llvm::Error::success();
@@ -175,7 +206,10 @@ struct FabricDecodeVisitor {
 template <FabricEntityKind Kind>
 llvm::Error decodeFabricRefInto(FabricByteReader &reader,
                                 FabricTypedEntityRef<Kind> &ref) {
-  llvm::Expected<std::uint32_t> kind = reader.tag();
+  // An out-of-catalog discriminant is unknown input, not a known entity of
+  // the wrong kind.
+  llvm::Expected<std::uint32_t> kind = readFabricClosedTag(
+      reader, fabricClosedBound(Kind), fabricClosedName(Kind));
   if (!kind)
     return kind.takeError();
   if (*kind != static_cast<std::uint32_t>(Kind))

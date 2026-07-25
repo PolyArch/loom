@@ -25,74 +25,74 @@ loom::fabric::readFabricClosedTag(FabricByteReader &reader, std::uint32_t bound,
 //===---------------------------------------------------------------------===//
 
 void loom::fabric::encodeFabricRef(
-    FabricByteWriter &writer, const FabricTransportEndpointOwnerRef &owner) {
-  writer.tag(static_cast<std::uint32_t>(owner.kind));
-  switch (owner.kind) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
-  case FabricTransportEndpointOwnerKind::Name:                                 \
-    return encodeFabricRef(writer, owner.payload.Member);
+    FabricByteWriter &writer, const FabricTransportEndpointOwnerRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+  case FabricTransportEndpointOwnerKind::Name:                              \
+    return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
-                                   const FabricMemoryEndpointOwnerRef &owner) {
-  writer.tag(static_cast<std::uint32_t>(owner.kind));
-  switch (owner.kind) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
-  case FabricMemoryEndpointOwnerKind::Name:                                    \
-    return encodeFabricRef(writer, owner.payload.Member);
+                                   const FabricMemoryEndpointOwnerRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                \
+  case FabricMemoryEndpointOwnerKind::Name:                              \
+    return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
-                                   const FabricInventoryOwnerRef &owner) {
-  writer.tag(static_cast<std::uint32_t>(owner.kind));
-  switch (owner.kind) {
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
-  case FabricInventoryOwnerKind::Name:                                         \
-    return encodeFabricRef(writer, owner.payload.Member);
+                                   const FabricInventoryOwnerRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
+  case FabricInventoryOwnerKind::Name:                              \
+    return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::encodeFabricRef(FabricByteWriter &writer,
-                                   const FabricMemoryServiceRef &service) {
-  writer.tag(static_cast<std::uint32_t>(service.kind));
-  switch (service.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
-  case FabricMemoryServiceKind::Name:                                          \
-    return encodeFabricRef(writer, service.payload.Member);
+                                   const FabricMemoryServiceRef &value) {
+  writer.tag(static_cast<std::uint32_t>(value.kind()));
+  switch (value.kind()) {
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
+  case FabricMemoryServiceKind::Name:                              \
+    return encodeFabricRef(writer, std::get<Type>(value.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::encodeFabricRef(
     FabricByteWriter &writer, const FabricPhysicalTraversalRef &traversal) {
-  writer.tag(static_cast<std::uint32_t>(traversal.kind));
+  writer.tag(static_cast<std::uint32_t>(traversal.kind()));
   FabricEncodeVisitor visitor{writer};
-  switch (traversal.kind) {
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
+  switch (traversal.kind()) {
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
-    return Type::visitFields(traversal.payload.Member, visitor);
+    return Type::visitFields(std::get<Type>(traversal.payload), visitor);
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 llvm::Error
 loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
-                                  FabricTransportEndpointOwnerRef &owner) {
-  llvm::Expected<std::uint32_t> kind = readFabricClosedTag(
-      reader, fabricClosedBound(owner.kind), fabricClosedName(owner.kind));
-  if (!kind)
-    return kind.takeError();
-  owner.kind = static_cast<FabricTransportEndpointOwnerKind>(*kind);
-  switch (owner.kind) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
-  case FabricTransportEndpointOwnerKind::Name:                                 \
-    owner.payload.Member = Type();                                             \
-    return decodeFabricRefInto(reader, owner.payload.Member);
+                                  FabricTransportEndpointOwnerRef &value) {
+  const FabricTransportEndpointOwnerKind bound =
+      FabricTransportEndpointOwnerKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricTransportEndpointOwnerKind>(*tag)) {
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+  case FabricTransportEndpointOwnerKind::Name:                              \
+    return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -100,52 +100,48 @@ loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
 
 llvm::Error
 loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
-                                  FabricMemoryEndpointOwnerRef &owner) {
-  llvm::Expected<std::uint32_t> kind = readFabricClosedTag(
-      reader, fabricClosedBound(owner.kind), fabricClosedName(owner.kind));
-  if (!kind)
-    return kind.takeError();
-  owner.kind = static_cast<FabricMemoryEndpointOwnerKind>(*kind);
-  switch (owner.kind) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
-  case FabricMemoryEndpointOwnerKind::Name:                                    \
-    owner.payload.Member = Type();                                             \
-    return decodeFabricRefInto(reader, owner.payload.Member);
+                                  FabricMemoryEndpointOwnerRef &value) {
+  const FabricMemoryEndpointOwnerKind bound = FabricMemoryEndpointOwnerKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricMemoryEndpointOwnerKind>(*tag)) {
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                \
+  case FabricMemoryEndpointOwnerKind::Name:                              \
+    return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
 }
 
 llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
-                                              FabricInventoryOwnerRef &owner) {
-  llvm::Expected<std::uint32_t> kind = readFabricClosedTag(
-      reader, fabricClosedBound(owner.kind), fabricClosedName(owner.kind));
-  if (!kind)
-    return kind.takeError();
-  owner.kind = static_cast<FabricInventoryOwnerKind>(*kind);
-  switch (owner.kind) {
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
-  case FabricInventoryOwnerKind::Name:                                         \
-    owner.payload.Member = Type();                                             \
-    return decodeFabricRefInto(reader, owner.payload.Member);
+                                              FabricInventoryOwnerRef &value) {
+  const FabricInventoryOwnerKind bound = FabricInventoryOwnerKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricInventoryOwnerKind>(*tag)) {
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
+  case FabricInventoryOwnerKind::Name:                              \
+    return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
 }
 
 llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
-                                              FabricMemoryServiceRef &service) {
-  llvm::Expected<std::uint32_t> kind =
-      readFabricClosedTag(reader, fabricClosedBound(service.kind),
-                          fabricClosedName(service.kind));
-  if (!kind)
-    return kind.takeError();
-  service.kind = static_cast<FabricMemoryServiceKind>(*kind);
-  switch (service.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
-  case FabricMemoryServiceKind::Name:                                          \
-    service.payload.Member = Type();                                           \
-    return decodeFabricRefInto(reader, service.payload.Member);
+                                              FabricMemoryServiceRef &value) {
+  const FabricMemoryServiceKind bound = FabricMemoryServiceKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
+  switch (static_cast<FabricMemoryServiceKind>(*tag)) {
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
+  case FabricMemoryServiceKind::Name:                              \
+    return decodeFabricRefInto(reader, value.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -154,18 +150,16 @@ llvm::Error loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
 llvm::Error
 loom::fabric::decodeFabricRefInto(FabricByteReader &reader,
                                   FabricPhysicalTraversalRef &traversal) {
-  llvm::Expected<std::uint32_t> kind =
-      readFabricClosedTag(reader, fabricClosedBound(traversal.kind),
-                          fabricClosedName(traversal.kind));
-  if (!kind)
-    return kind.takeError();
-  traversal.kind = static_cast<FabricPhysicalTraversalKind>(*kind);
+  const FabricPhysicalTraversalKind bound = FabricPhysicalTraversalKind();
+  llvm::Expected<std::uint32_t> tag = readFabricClosedTag(
+      reader, fabricClosedBound(bound), fabricClosedName(bound));
+  if (!tag)
+    return tag.takeError();
   FabricDecodeVisitor visitor{reader};
-  switch (traversal.kind) {
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
+  switch (static_cast<FabricPhysicalTraversalKind>(*tag)) {
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
-    traversal.payload.Member = Type();                                         \
-    Type::visitFields(traversal.payload.Member, visitor);                      \
+    Type::visitFields(traversal.payload.emplace<Type>(), visitor);             \
     break;
 #include "Fabric/Identity/FabricRefs.def"
   }

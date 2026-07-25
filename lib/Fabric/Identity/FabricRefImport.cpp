@@ -33,6 +33,24 @@ llvm::Error checkInventory(const FabricArtifactView &view,
   return llvm::Error::success();
 }
 
+/// An in-range node ordinal still names exactly the node kind its owner's
+/// configured graph declares there.
+llvm::Error checkNode(const FabricArtifactView &view,
+                      const FabricInventoryOwnerRef &owner,
+                      FabricFuNodeKind node, FabricOrdinal ordinal) {
+  if (llvm::Error error =
+          checkInventory(view, owner, FabricInventoryKind::FuNode, ordinal))
+    return error;
+  const std::optional<FabricFuNodeKind> declared =
+      view.fuNodeKind(owner, ordinal);
+  if (!declared || *declared != node)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              llvm::Twine("node ordinal ") +
+                                  llvm::Twine(ordinal) + " is not a " +
+                                  fabricRefKeyword(node) + " node");
+  return llvm::Error::success();
+}
+
 FabricInventoryKind portInventory(FabricPortDirection direction) {
   return direction == FabricPortDirection::Input
              ? FabricInventoryKind::InputPort
@@ -89,10 +107,10 @@ llvm::Error loom::fabric::validateFabricEntity(const FabricArtifactView &view,
 llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricTransportEndpointOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
   case FabricTransportEndpointOwnerKind::Name:                                 \
-    return validateFabricRef(view, owner.payload.Member);
+    return validateFabricRef(view, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -101,10 +119,10 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
 llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricMemoryEndpointOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
   case FabricMemoryEndpointOwnerKind::Name:                                    \
-    return validateFabricRef(view, owner.payload.Member);
+    return validateFabricRef(view, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -112,10 +130,10 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                             const FabricInventoryOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
   case FabricInventoryOwnerKind::Name:                                         \
-    return validateFabricRef(view, owner.payload.Member);
+    return validateFabricRef(view, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -143,15 +161,15 @@ llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                             const FabricFuTemplateNodeRef &ref) {
-  return checkInventory(view, FabricInventoryOwnerRef::of(ref.fu),
-                        FabricInventoryKind::FuNode, ref.ordinal);
+  return checkNode(view, FabricInventoryOwnerRef::of(ref.fu), ref.node,
+                   ref.ordinal);
 }
 
 llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricFuOccurrenceNodeRef &ref) {
-  return checkInventory(view, FabricInventoryOwnerRef::of(ref.fu),
-                        FabricInventoryKind::FuNode, ref.ordinal);
+  return checkNode(view, FabricInventoryOwnerRef::of(ref.fu), ref.node,
+                   ref.ordinal);
 }
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
@@ -225,10 +243,10 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                             const FabricMemoryServiceRef &ref) {
-  switch (ref.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
+  switch (ref.kind()) {
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
-    return validateFabricRef(view, ref.payload.Member);
+    return validateFabricRef(view, std::get<Type>(ref.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
   return llvm::Error::success();
@@ -247,21 +265,13 @@ llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                         FabricInventoryKind::TransferPattern, ref.ordinal);
 }
 
-#define LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR(Type, Inventory)                  \
+#define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
   llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,  \
-                                              const Type &ref) {               \
-    return checkInventory(view, ref.owner, FabricInventoryKind::Inventory,     \
-                          ref.ordinal);                                        \
+                                              const Family &ref) {             \
+    return checkInventory(view, ref.owner.catalog(),                           \
+                          FabricInventoryKind::Inventory, ref.ordinal);        \
   }
-
-LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR(FabricResourceStateRef, ResourceState)
-LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR(FabricUsePatternRef, UsePattern)
-LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR(FabricSemanticConfigFieldRef,
-                                     SemanticConfigField)
-LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR(FabricPhysicalRefinementDomainRef,
-                                     RefinementDomain)
-
-#undef LOOM_FABRIC_OWNER_RELATIVE_VALIDATOR
+#include "Fabric/Identity/FabricRefs.def"
 
 //===---------------------------------------------------------------------===//
 // Directed physical traversals
@@ -272,9 +282,10 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricPhysicalTraversalRef &ref) {
   // Every traversal first resolves its own structural fields, so an
   // out-of-range ordinal is never reported as a resource-contract failure.
-  switch (ref.kind) {
+  switch (ref.kind()) {
   case FabricPhysicalTraversalKind::PointConnection: {
-    const FabricPointConnectionPayload &payload = ref.payload.pointConnection;
+    const FabricPointConnectionPayload &payload =
+        std::get<FabricPointConnectionPayload>(ref.payload);
     if (llvm::Error error = validateFabricRef(view, payload.source))
       return error;
     if (llvm::Error error = validateFabricRef(view, payload.destination))
@@ -286,7 +297,8 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
     return llvm::Error::success();
   }
   case FabricPhysicalTraversalKind::PeSelectorTraversal: {
-    const FabricPeSelectorPayload &payload = ref.payload.peSelector;
+    const FabricPeSelectorPayload &payload =
+        std::get<FabricPeSelectorPayload>(ref.payload);
     if (llvm::Error error = validateFabricRef(view, payload.owner))
       return error;
     if (llvm::Error error = validateFabricRef(view, payload.source))
@@ -296,7 +308,8 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
     break;
   }
   case FabricPhysicalTraversalKind::PeRegisterFifoTraversal: {
-    const FabricPeRegisterFifoPayload &payload = ref.payload.peRegisterFifo;
+    const FabricPeRegisterFifoPayload &payload =
+        std::get<FabricPeRegisterFifoPayload>(ref.payload);
     if (llvm::Error error =
             checkInventory(view, FabricInventoryOwnerRef::of(payload.owner),
                            FabricInventoryKind::RegisterFifo,
@@ -305,7 +318,8 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
     break;
   }
   case FabricPhysicalTraversalKind::SwitchTraversal: {
-    const FabricSwitchTraversalPayload &payload = ref.payload.switchTraversal;
+    const FabricSwitchTraversalPayload &payload =
+        std::get<FabricSwitchTraversalPayload>(ref.payload);
     const FabricInventoryOwnerRef owner =
         FabricInventoryOwnerRef::of(payload.owner);
     if (llvm::Error error = checkInventory(
@@ -317,13 +331,13 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
     break;
   }
   case FabricPhysicalTraversalKind::FifoTraversal:
-    if (llvm::Error error =
-            validateFabricRef(view, ref.payload.fifoTraversal.owner))
+    if (llvm::Error error = validateFabricRef(
+            view, std::get<FabricFifoTraversalPayload>(ref.payload).owner))
       return error;
     break;
   case FabricPhysicalTraversalKind::BoundaryTraversal: {
     const FabricBoundaryTraversalPayload &payload =
-        ref.payload.boundaryTraversal;
+        std::get<FabricBoundaryTraversalPayload>(ref.payload);
     if (llvm::Error error =
             checkInventory(view, FabricInventoryOwnerRef::of(payload.owner),
                            FabricInventoryKind::BoundaryOutput, payload.output))
@@ -332,7 +346,7 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
   }
   case FabricPhysicalTraversalKind::SystemTransferPatternLeg: {
     const FabricTransferPatternLegPayload &payload =
-        ref.payload.transferPatternLeg;
+        std::get<FabricTransferPatternLegPayload>(ref.payload);
     if (llvm::Error error = validateFabricRef(view, payload.owner))
       return error;
     if (llvm::Error error =
@@ -350,7 +364,7 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
     return makeFabricRefError(
         FabricRefErrorKind::TraversalNotAdmitted,
         llvm::Twine("the owning resource contract does not admit this ") +
-            fabricRefKeyword(ref.kind) + " traversal");
+            fabricRefKeyword(ref.kind()) + " traversal");
   return llvm::Error::success();
 }
 
@@ -366,9 +380,76 @@ loom::fabric::deriveFabricFuOccurrenceNode(const FabricArtifactView &view,
       view.fuTemplateOf(occurrence);
   if (!elaborated || *elaborated != node.fu)
     return makeFabricRefError(
-        FabricRefErrorKind::WrongEntityKind,
+        FabricRefErrorKind::WrongOwner,
         llvm::Twine("FU occurrence ") + llvm::Twine(occurrence.id()) +
             " was not elaborated from FU template " +
             llvm::Twine(node.fu.id()));
   return FabricFuOccurrenceNodeRef{node.node, occurrence, node.ordinal};
+}
+
+//===---------------------------------------------------------------------===//
+// Typed refinements
+//===---------------------------------------------------------------------===//
+
+llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                            const LocalMemoryServiceRef &ref) {
+  if (llvm::Error error = validateFabricRef(view, ref.underlying()))
+    return error;
+  if (ref.underlying().kind() != FabricMemoryServiceKind::Local)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              "a local memory service reference selects the "
+                              "System variant");
+  const FabricMemoryOccurrenceRef memory =
+      std::get<FabricMemoryOccurrenceRef>(ref.underlying().payload);
+  if (!view.declaresLocalMemoryService(memory))
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              llvm::Twine("memory occurrence ") +
+                                  llvm::Twine(memory.id()) +
+                                  " declares no Local Memory Service");
+  return llvm::Error::success();
+}
+
+/// The owner inventory decides which refined endpoint name applies; the
+/// reference never carries a copied role field.
+static llvm::Error checkEndpointRole(const FabricArtifactView &view,
+                                     const FabricMemoryEndpointRef &endpoint,
+                                     FabricMemoryEndpointRole required) {
+  if (llvm::Error error = validateFabricRef(view, endpoint))
+    return error;
+  const std::optional<FabricMemoryEndpointRole> declared =
+      view.memoryEndpointRole(endpoint);
+  if (!declared || *declared != required)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              llvm::Twine("the owner inventory does not "
+                                          "declare this endpoint ") +
+                                  fabricRefKeyword(required));
+  return llvm::Error::success();
+}
+
+llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                            const ManagerEndpointRef &ref) {
+  return checkEndpointRole(view, ref.underlying(),
+                           FabricMemoryEndpointRole::Manager);
+}
+
+llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                            const SubordinateEndpointRef &ref) {
+  return checkEndpointRole(view, ref.underlying(),
+                           FabricMemoryEndpointRole::Subordinate);
+}
+
+llvm::Error
+loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                const MemoryConsistencyDomainRef &ref) {
+  if (llvm::Error error = validateFabricRef(view, ref.underlying()))
+    return error;
+  const std::optional<FabricHardwareDomainKind> declared =
+      view.hardwareDomainKind(ref.underlying());
+  if (!declared ||
+      *declared != FabricHardwareDomainKind::MemoryConsistency)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              llvm::Twine("hardware domain ") +
+                                  llvm::Twine(ref.underlying().id()) +
+                                  " is not a memory consistency domain");
+  return llvm::Error::success();
 }

@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -125,6 +126,38 @@ public:
     return lookup(inventories_, key);
   }
 
+  std::optional<FabricFuNodeKind>
+  fuNodeKind(const FabricInventoryOwnerRef &owner,
+             FabricOrdinal ordinal) const override {
+    std::vector<std::uint8_t> key = canonicalFabricBytes(owner);
+    key.push_back(static_cast<std::uint8_t>(ordinal));
+    auto entry = nodeKinds_.find(key);
+    if (entry == nodeKinds_.end())
+      return std::nullopt;
+    return static_cast<FabricFuNodeKind>(entry->second);
+  }
+
+  bool declaresLocalMemoryService(
+      FabricMemoryOccurrenceRef memory) const override {
+    return localServices_.count(memory.id()) != 0;
+  }
+
+  std::optional<FabricMemoryEndpointRole>
+  memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const override {
+    auto entry = endpointRoles_.find(canonicalFabricBytes(endpoint));
+    if (entry == endpointRoles_.end())
+      return std::nullopt;
+    return static_cast<FabricMemoryEndpointRole>(entry->second);
+  }
+
+  std::optional<FabricHardwareDomainKind>
+  hardwareDomainKind(HardwareDomainRef domain) const override {
+    auto entry = domainKinds_.find(domain.id());
+    if (entry == domainKinds_.end())
+      return std::nullopt;
+    return entry->second;
+  }
+
   std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const override {
     auto entry = fuTemplates_.find(occurrence.id());
@@ -173,6 +206,27 @@ public:
     key.insert(key.end(), tail.begin(), tail.end());
     connections_[key] = 1;
   }
+  void setNodeKind(const FabricInventoryOwnerRef &owner, FabricOrdinal ordinal,
+                   FabricFuNodeKind node) {
+    std::vector<std::uint8_t> key = canonicalFabricBytes(owner);
+    key.push_back(static_cast<std::uint8_t>(ordinal));
+    nodeKinds_[key] = static_cast<std::uint64_t>(node);
+  }
+  void setLocalMemoryService(FabricMemoryOccurrenceRef memory, bool declared) {
+    if (declared)
+      localServices_.insert(memory.id());
+    else
+      localServices_.erase(memory.id());
+  }
+  void setEndpointRole(const FabricMemoryEndpointRef &endpoint,
+                       FabricMemoryEndpointRole role) {
+    endpointRoles_[canonicalFabricBytes(endpoint)] =
+        static_cast<std::uint64_t>(role);
+  }
+  void setHardwareDomainKind(HardwareDomainRef domain,
+                             FabricHardwareDomainKind kind) {
+    domainKinds_[domain.id()] = kind;
+  }
   void admit(const FabricPhysicalTraversalRef &traversal) {
     traversals_[canonicalFabricBytes(traversal)] = 1;
   }
@@ -195,16 +249,23 @@ private:
   ByteMap inventories_;
   ByteMap connections_;
   ByteMap traversals_;
+  ByteMap nodeKinds_;
+  ByteMap endpointRoles_;
+  llvm::DenseSet<FabricEntityId> localServices_;
+  llvm::DenseMap<FabricEntityId, FabricHardwareDomainKind> domainKinds_;
 };
 
 // Entity identifiers of the fixture Fabric.
 constexpr FabricEntityId kFuTemplate = 7;
+constexpr FabricEntityId kOtherFuTemplate = 8;
 constexpr FabricEntityId kFuOccurrenceA = 11;
 constexpr FabricEntityId kFuOccurrenceB = 12;
 constexpr FabricEntityId kSwitch = 21;
 constexpr FabricEntityId kMemory = 31;
 constexpr FabricEntityId kAccCore = 41;
 constexpr FabricEntityId kHardwareDomain = 51;
+constexpr FabricEntityId kClockDomain = 52;
+constexpr FabricEntityId kSystemService = 61;
 
 TestView buildView(const char *test) {
   TestView view(identity(test, 0x11), FabricRootKind::Module);
@@ -214,7 +275,14 @@ TestView buildView(const char *test) {
   view.addEntity(kSwitch, FabricEntityKind::FabricSwitchOccurrence);
   view.addEntity(kMemory, FabricEntityKind::FabricMemoryOccurrence);
   view.addEntity(kAccCore, FabricEntityKind::AccCoreOccurrence);
+  view.addEntity(kOtherFuTemplate, FabricEntityKind::FabricFuTemplate);
   view.addEntity(kHardwareDomain, FabricEntityKind::HardwareDomain);
+  view.addEntity(kClockDomain, FabricEntityKind::HardwareDomain);
+  view.addEntity(kSystemService, FabricEntityKind::SystemMemoryService);
+  view.setHardwareDomainKind(HardwareDomainRef(kHardwareDomain),
+                             FabricHardwareDomainKind::MemoryConsistency);
+  view.setHardwareDomainKind(HardwareDomainRef(kClockDomain),
+                             FabricHardwareDomainKind::Clock);
 
   const FabricFuTemplateRef fuTemplate(kFuTemplate);
   const FabricFuOccurrenceRef occurrenceA(kFuOccurrenceA);
@@ -224,11 +292,23 @@ TestView buildView(const char *test) {
 
   view.setInventory(FabricInventoryOwnerRef::of(fuTemplate),
                     FabricInventoryKind::FuNode, 4);
+  view.setInventory(FabricInventoryOwnerRef::of(
+                        FabricFuTemplateRef(kOtherFuTemplate)),
+                    FabricInventoryKind::FuNode, 4);
+  // One ordinal declares exactly one node kind in its owner's graph.
+  view.setNodeKind(FabricInventoryOwnerRef::of(fuTemplate), 2,
+                   FabricFuNodeKind::Mux);
+  view.setNodeKind(
+      FabricInventoryOwnerRef::of(FabricFuTemplateRef(kOtherFuTemplate)), 2,
+      FabricFuNodeKind::Mux);
   for (FabricFuOccurrenceRef occurrence : {occurrenceA, occurrenceB}) {
     view.setInventory(FabricInventoryOwnerRef::of(occurrence),
                       FabricInventoryKind::FuNode, 4);
     view.setTransportEndpoints(FabricTransportEndpointOwnerRef::of(occurrence),
                                3);
+    // An occurrence inherits the node kinds of the template it elaborates.
+    view.setNodeKind(FabricInventoryOwnerRef::of(occurrence), 2,
+                     FabricFuNodeKind::Mux);
   }
 
   const FabricSwitchOccurrenceRef switchOccurrence(kSwitch);
@@ -246,6 +326,15 @@ TestView buildView(const char *test) {
   const FabricMemoryOccurrenceRef memory(kMemory);
   view.setTransportEndpoints(FabricTransportEndpointOwnerRef::of(memory), 4);
   view.setMemoryEndpoints(FabricMemoryEndpointOwnerRef::of(memory), 1);
+  view.setLocalMemoryService(memory, true);
+  view.setEndpointRole(FabricMemoryEndpointRef{
+                           FabricMemoryEndpointOwnerRef::of(memory), 0},
+                       FabricMemoryEndpointRole::Subordinate);
+  const SystemMemoryServiceRef service(kSystemService);
+  view.setMemoryEndpoints(FabricMemoryEndpointOwnerRef::of(service), 1);
+  view.setEndpointRole(FabricMemoryEndpointRef{
+                           FabricMemoryEndpointOwnerRef::of(service), 0},
+                       FabricMemoryEndpointRole::Manager);
   view.setInventory(FabricInventoryOwnerRef::of(memory),
                     FabricInventoryKind::MemoryOperationPort, 2);
   view.setInventory(FabricInventoryOwnerRef::of(
@@ -320,7 +409,8 @@ void testFuOccurrenceIdentity() {
   require(test, nodeA.node == templateNode.node && nodeA.ordinal == 2,
           "derivation must preserve the selected template node");
 
-  // A node of an unrelated template cannot be paired with this occurrence.
+  // A node whose template identifier names another entity kind is rejected
+  // before any owner correspondence question arises.
   const FabricFuTemplateNodeRef foreignNode{FabricFuNodeKind::Mux,
                                             FabricFuTemplateRef(kSwitch), 2};
   llvm::Expected<FabricFuOccurrenceNodeRef> unrelated =
@@ -355,7 +445,9 @@ void testTraversalDistinctions() {
       FabricPhysicalTraversalRef::pointConnection(switchEndpoint(2),
                                                   switchEndpoint(3));
   const FabricResourceStateRef state{
-      FabricInventoryOwnerRef::of(FabricSwitchOccurrenceRef(kSwitch)), 1};
+      FabricResourceStateOwnerRef(
+          FabricInventoryOwnerRef::of(FabricSwitchOccurrenceRef(kSwitch))),
+      1};
 
   require(test, traversal != connection,
           "switch traversal and point connection must differ");
@@ -388,10 +480,11 @@ void testTraversalDistinctions() {
               FabricRefErrorKind::AbsentPointConnection, "absent connection");
   requireKind(test,
               validateFabricRef(
-                  view, FabricResourceStateRef{FabricInventoryOwnerRef::of(
-                                                   FabricSwitchOccurrenceRef(
-                                                       kSwitch)),
-                                               3}),
+                  view, FabricResourceStateRef{
+                            FabricResourceStateOwnerRef(
+                                FabricInventoryOwnerRef::of(
+                                    FabricSwitchOccurrenceRef(kSwitch))),
+                            3}),
               FabricRefErrorKind::OrdinalOutOfRange, "state ordinal 3 of 3");
 }
 
@@ -473,10 +566,11 @@ void testImportRejection() {
   // Owner-union membership never implies a nonempty inventory.
   requireKind(test,
               validateFabricRef(
-                  view, FabricUsePatternRef{FabricInventoryOwnerRef::of(
-                                                HardwareDomainRef(
-                                                    kHardwareDomain)),
-                                            0}),
+                  view, FabricUsePatternRef{
+                            FabricUsePatternOwnerRef(
+                                FabricInventoryOwnerRef::of(
+                                    HardwareDomainRef(kHardwareDomain))),
+                            0}),
               FabricRefErrorKind::OrdinalOutOfRange, "empty use patterns");
 
   // Deprecated and generic escapes are rejected as such, not as syntax noise.
@@ -561,6 +655,14 @@ void testRoundTrip() {
   const std::vector<std::uint8_t> bytes = canonicalFabricBytes(parsed);
   const FabricPhysicalTraversalRef decoded = takeExpected(
       test, decodeFabricRef<FabricPhysicalTraversalRef>(bytes));
+
+  // Selecting another variant of the same record is an ordinary value
+  // assignment: the previously selected payload is released, not overwritten.
+  FabricPhysicalTraversalRef reused = FabricPhysicalTraversalRef::pointConnection(
+      switchEndpoint(2), switchEndpoint(3));
+  reused = decoded;
+  require(test, reused == decoded && printFabricRef(reused) == text,
+          "reselecting a traversal variant must stay value safe");
   require(test, decoded == traversal, "decode must recover the exact record");
   require(test, printFabricRef(decoded) == text,
           "canonical print must be unique");
@@ -587,16 +689,151 @@ void testRoundTrip() {
   extended.push_back(0);
   requireRejected(test, decodeFabricRef<FabricPhysicalTraversalRef>(extended),
                   "trailing canonical bytes");
+  // An entity discriminant outside the closed catalog is unknown input, not a
+  // known entity of the wrong kind.
+  std::vector<std::uint8_t> unknownEntity = entity;
+  unknownEntity[3] = 0xff;
+  llvm::Expected<FabricFuOccurrenceRef> unknownDecode =
+      decodeFabricRef<FabricFuOccurrenceRef>(unknownEntity);
+  require(test, !unknownDecode, "unknown entity discriminant must be rejected");
+  requireKind(test, unknownDecode.takeError(),
+              FabricRefErrorKind::MalformedSyntax, "unknown entity kind tag");
+
   std::vector<std::uint8_t> truncated = bytes;
   truncated.pop_back();
   requireRejected(test, decodeFabricRef<FabricPhysicalTraversalRef>(truncated),
                   "truncated canonical bytes");
 }
 
+/// The four owner projections share one constructor catalog while remaining
+/// four distinct static types with identical canonical owner bytes and text.
+void testOwnerProjections() {
+  const char *test = "owner-projections";
+  TestView view = buildView(test);
+
+  static_assert(!std::is_same_v<FabricResourceStateOwnerRef,
+                                FabricUsePatternOwnerRef>,
+                "resource-state and use-pattern owners are distinct types");
+  static_assert(!std::is_convertible_v<FabricResourceStateOwnerRef,
+                                       FabricConfigurationOwnerRef>,
+                "one owner projection never converts to another");
+  static_assert(!std::is_convertible_v<FabricRefinementOwnerRef,
+                                       FabricUsePatternOwnerRef>,
+                "one owner projection never converts to another");
+  static_assert(!std::is_same_v<FabricResourceStateRef, FabricUsePatternRef>,
+                "the consuming families stay distinct too");
+
+  const FabricInventoryOwnerRef catalog =
+      FabricInventoryOwnerRef::of(FabricSwitchOccurrenceRef(kSwitch));
+  const FabricResourceStateRef state{FabricResourceStateOwnerRef(catalog), 1};
+  const FabricUsePatternRef pattern{FabricUsePatternOwnerRef(catalog), 1};
+
+  // One catalog, one canonical owner encoding: the projection is static type
+  // information and never a second serialized identity.
+  require(test,
+          canonicalFabricBytes(state.owner) == canonicalFabricBytes(catalog),
+          "owner projection must not change canonical owner bytes");
+  require(test,
+          canonicalFabricBytes(pattern.owner) == canonicalFabricBytes(catalog),
+          "owner projection must not change canonical owner bytes");
+  require(test, printFabricRef(state.owner) == printFabricRef(catalog),
+          "owner projection must not change canonical owner text");
+
+  requireSuccess(test, validateFabricRef(view, state), "resource state");
+  // The switch declares resource states but no use patterns, so the same
+  // catalog instance is valid in one projection and out of range in the other.
+  requireKind(test, validateFabricRef(view, pattern),
+              FabricRefErrorKind::OrdinalOutOfRange, "empty use patterns");
+}
+
+/// The role-specific refinements select an underlying reference by static
+/// type and add no wrapper, tag, copied role field, or second identity.
+void testTypedRefinements() {
+  const char *test = "typed-refinements";
+  TestView view = buildView(test);
+
+  const FabricMemoryOccurrenceRef memory(kMemory);
+  const FabricMemoryServiceRef service = FabricMemoryServiceRef::local(memory);
+  const LocalMemoryServiceRef local(service);
+  require(test,
+          canonicalFabricBytes(local) == canonicalFabricBytes(service) &&
+              printFabricRef(local) == printFabricRef(service),
+          "a refinement keeps the underlying canonical form");
+  requireSuccess(test, validateFabricRef(view, local), "local memory service");
+
+  const FabricMemoryEndpointRef subordinate{
+      FabricMemoryEndpointOwnerRef::of(memory), 0};
+  const FabricMemoryEndpointRef manager{
+      FabricMemoryEndpointOwnerRef::of(SystemMemoryServiceRef(kSystemService)),
+      0};
+  requireSuccess(test, validateFabricRef(view, SubordinateEndpointRef(subordinate)),
+                 "subordinate endpoint");
+  requireSuccess(test, validateFabricRef(view, ManagerEndpointRef(manager)),
+                 "manager endpoint");
+  // The owner-declared role, not the reference, decides which name applies.
+  requireKind(test, validateFabricRef(view, ManagerEndpointRef(subordinate)),
+              FabricRefErrorKind::WrongEntityKind, "subordinate as manager");
+  requireKind(test,
+              validateFabricRef(view, SubordinateEndpointRef(manager)),
+              FabricRefErrorKind::WrongEntityKind, "manager as subordinate");
+
+  const MemoryConsistencyDomainRef consistency{
+      HardwareDomainRef(kHardwareDomain)};
+  requireSuccess(test, validateFabricRef(view, consistency),
+                 "memory consistency domain");
+  requireKind(test,
+              validateFabricRef(
+                  view, MemoryConsistencyDomainRef{HardwareDomainRef(
+                            kClockDomain)}),
+              FabricRefErrorKind::WrongEntityKind, "clock domain");
+
+  // A memory occurrence without the optional Local Memory Service cannot
+  // supply the Local variant.
+  TestView bare = buildView(test);
+  bare.setLocalMemoryService(memory, false);
+  requireKind(test, validateFabricRef(bare, local),
+              FabricRefErrorKind::WrongEntityKind, "absent local service");
+
+  static_assert(!std::is_same_v<ManagerEndpointRef, SubordinateEndpointRef>,
+                "manager and subordinate endpoints are distinct types");
+  static_assert(!std::is_convertible_v<FabricMemoryEndpointRef,
+                                       ManagerEndpointRef>,
+                "an unrefined endpoint never converts to a refined one");
+}
+
+/// An owner mismatch between two valid objects is its own identity failure.
+void testWrongOwner() {
+  const char *test = "wrong-owner";
+  TestView view = buildView(test);
+
+  const FabricFuTemplateRef other(kOtherFuTemplate);
+  const FabricFuOccurrenceRef occurrence(kFuOccurrenceA);
+  const FabricFuTemplateNodeRef otherNode{FabricFuNodeKind::Mux, other, 2};
+
+  // The node and the occurrence are both valid; only their owners disagree.
+  requireSuccess(test, validateFabricRef(view, otherNode), "other template node");
+  requireSuccess(test, validateFabricRef(view, occurrence), "occurrence");
+  llvm::Expected<FabricFuOccurrenceNodeRef> paired =
+      deriveFabricFuOccurrenceNode(view, otherNode, occurrence);
+  require(test, !paired, "nodes of another template must not pair");
+  requireKind(test, paired.takeError(), FabricRefErrorKind::WrongOwner,
+              "unrelated template owner");
+
+  // One ordinal declares exactly one node kind.
+  requireKind(test,
+              validateFabricRef(view, FabricFuTemplateNodeRef{
+                                          FabricFuNodeKind::Op,
+                                          FabricFuTemplateRef(kFuTemplate), 2}),
+              FabricRefErrorKind::WrongEntityKind, "node kind at ordinal 2");
+}
+
 } // namespace
 
 int main() {
   testFuOccurrenceIdentity();
+  testOwnerProjections();
+  testTypedRefinements();
+  testWrongOwner();
   testTraversalDistinctions();
   testEndpointPlanes();
   testImportRejection();

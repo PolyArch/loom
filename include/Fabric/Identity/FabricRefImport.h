@@ -44,6 +44,25 @@ public:
   virtual std::uint64_t inventorySize(const FabricInventoryOwnerRef &owner,
                                       FabricInventoryKind inventory) const = 0;
 
+  /// The node kind the owner's configured graph declares at `ordinal`, or
+  /// absent when the owner declares no node there. One ordinal never carries
+  /// more than one node kind.
+  virtual std::optional<FabricFuNodeKind>
+  fuNodeKind(const FabricInventoryOwnerRef &owner,
+             FabricOrdinal ordinal) const = 0;
+
+  /// Whether the memory occurrence declares its optional Local Memory Service.
+  virtual bool
+  declaresLocalMemoryService(FabricMemoryOccurrenceRef memory) const = 0;
+
+  /// The role the owner's inventory declares for this memory endpoint.
+  virtual std::optional<FabricMemoryEndpointRole>
+  memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const = 0;
+
+  /// The declared kind of one hardware domain entity.
+  virtual std::optional<FabricHardwareDomainKind>
+  hardwareDomainKind(HardwareDomainRef domain) const = 0;
+
   /// The FU template this occurrence was elaborated from.
   virtual std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const = 0;
@@ -129,16 +148,29 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricMemoryServiceRegionRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricTransferPatternRef &ref);
-llvm::Error validateFabricRef(const FabricArtifactView &view,
-                              const FabricResourceStateRef &ref);
-llvm::Error validateFabricRef(const FabricArtifactView &view,
-                              const FabricUsePatternRef &ref);
-llvm::Error validateFabricRef(const FabricArtifactView &view,
-                              const FabricSemanticConfigFieldRef &ref);
-llvm::Error validateFabricRef(const FabricArtifactView &view,
-                              const FabricPhysicalRefinementDomainRef &ref);
+#define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
+  llvm::Error validateFabricRef(const FabricArtifactView &view,                \
+                                const Family &ref);
+#include "Fabric/Identity/FabricRefs.def"
+
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricPhysicalTraversalRef &ref);
+
+//===---------------------------------------------------------------------===//
+// Typed refinements
+//
+// A refinement adds no encoding of its own. Validation resolves the underlying
+// reference and then checks the fact its owner already declares.
+//===---------------------------------------------------------------------===//
+
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const LocalMemoryServiceRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const ManagerEndpointRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const SubordinateEndpointRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const MemoryConsistencyDomainRef &ref);
 
 /// Resolves one complete cross-artifact reference: exact artifact scope first,
 /// then the typed Fabric-local target.

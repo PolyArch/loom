@@ -68,6 +68,18 @@ void printFabricRef(llvm::raw_ostream &os,
 void printFabricRef(llvm::raw_ostream &os,
                     const FabricPhysicalTraversalRef &traversal);
 
+/// A projection and a refinement print exactly their underlying reference.
+template <FabricInventoryKind Inventory>
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricOwnerProjection<Inventory> &owner) {
+  printFabricRef(os, owner.catalog());
+}
+template <FabricRefinementKind Refinement, typename Underlying>
+void printFabricRef(llvm::raw_ostream &os,
+                    const FabricRefinedRef<Refinement, Underlying> &ref) {
+  printFabricRef(os, ref.underlying());
+}
+
 struct FabricPrintVisitor {
   llvm::raw_ostream &os;
   bool started = false;
@@ -149,6 +161,25 @@ llvm::Error parseFabricKeyword(FabricRefScanner &scanner, Enum &value,
   return makeFabricRefError(FabricRefErrorKind::MalformedSyntax,
                             llvm::Twine("expected a canonical ") + what +
                                 " keyword before '" + scanner.rest() + "'");
+}
+
+template <FabricInventoryKind Inventory>
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricOwnerProjection<Inventory> &owner) {
+  FabricInventoryOwnerRef catalog;
+  if (llvm::Error error = parseFabricRefInto(scanner, catalog))
+    return error;
+  owner = FabricOwnerProjection<Inventory>(std::move(catalog));
+  return llvm::Error::success();
+}
+template <FabricRefinementKind Refinement, typename Underlying>
+llvm::Error parseFabricRefInto(FabricRefScanner &scanner,
+                               FabricRefinedRef<Refinement, Underlying> &ref) {
+  Underlying underlying;
+  if (llvm::Error error = parseFabricRefInto(scanner, underlying))
+    return error;
+  ref = FabricRefinedRef<Refinement, Underlying>(std::move(underlying));
+  return llvm::Error::success();
 }
 
 struct FabricParseVisitor {

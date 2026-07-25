@@ -53,7 +53,7 @@ bool isEntityFamily(llvm::StringRef keyword) {
 }
 
 bool isTransportOwnerFamily(llvm::StringRef keyword) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
   if (keyword == Type::familyKeyword)                                          \
     return true;
 #include "Fabric/Identity/FabricRefs.def"
@@ -61,7 +61,7 @@ bool isTransportOwnerFamily(llvm::StringRef keyword) {
 }
 
 bool isMemoryOwnerFamily(llvm::StringRef keyword) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
   if (keyword == Type::familyKeyword)                                          \
     return true;
 #include "Fabric/Identity/FabricRefs.def"
@@ -166,30 +166,30 @@ llvm::Error loom::fabric::fabricExpectFamily(FabricRefScanner &scanner,
 
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricTransportEndpointOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
   case FabricTransportEndpointOwnerKind::Name:                                 \
-    return printFabricRef(os, owner.payload.Member);
+    return printFabricRef(os, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricMemoryEndpointOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
   case FabricMemoryEndpointOwnerKind::Name:                                    \
-    return printFabricRef(os, owner.payload.Member);
+    return printFabricRef(os, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
 
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricInventoryOwnerRef &owner) {
-  switch (owner.kind) {
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
+  switch (owner.kind()) {
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
   case FabricInventoryOwnerKind::Name:                                         \
-    return printFabricRef(os, owner.payload.Member);
+    return printFabricRef(os, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
   }
 }
@@ -197,11 +197,11 @@ void loom::fabric::printFabricRef(llvm::raw_ostream &os,
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricMemoryServiceRef &service) {
   os << FabricMemoryServiceRef::familyKeyword << '<'
-     << fabricRefKeyword(service.kind) << ", ";
-  switch (service.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
+     << fabricRefKeyword(service.kind()) << ", ";
+  switch (service.kind()) {
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
-    printFabricRef(os, service.payload.Member);                                \
+    printFabricRef(os, std::get<Type>(service.payload));                       \
     break;
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -211,12 +211,12 @@ void loom::fabric::printFabricRef(llvm::raw_ostream &os,
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricPhysicalTraversalRef &traversal) {
   os << FabricPhysicalTraversalRef::familyKeyword << '<'
-     << fabricRefKeyword(traversal.kind);
+     << fabricRefKeyword(traversal.kind());
   FabricPrintVisitor visitor{os, /*started=*/true};
-  switch (traversal.kind) {
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
+  switch (traversal.kind()) {
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
-    Type::visitFields(traversal.payload.Member, visitor);                      \
+    Type::visitFields(std::get<Type>(traversal.payload), visitor);             \
     break;
 #include "Fabric/Identity/FabricRefs.def"
   }
@@ -227,11 +227,9 @@ llvm::Error
 loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
                                  FabricTransportEndpointOwnerRef &owner) {
   const llvm::StringRef keyword = scanner.peekKeyword();
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
-  if (keyword == Type::familyKeyword) {                                        \
-    owner.kind = FabricTransportEndpointOwnerKind::Name;                       \
-    return parseFabricRefInto(scanner, owner.payload.Member);                  \
-  }
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+  if (keyword == Type::familyKeyword)                                          \
+    return parseFabricRefInto(scanner, owner.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   return fabricOwnerFamilyError(keyword, scanner.rest(),
                                 /*isTransportPlane=*/true);
@@ -241,11 +239,9 @@ llvm::Error
 loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
                                  FabricMemoryEndpointOwnerRef &owner) {
   const llvm::StringRef keyword = scanner.peekKeyword();
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
-  if (keyword == Type::familyKeyword) {                                        \
-    owner.kind = FabricMemoryEndpointOwnerKind::Name;                          \
-    return parseFabricRefInto(scanner, owner.payload.Member);                  \
-  }
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+  if (keyword == Type::familyKeyword)                                          \
+    return parseFabricRefInto(scanner, owner.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   return fabricOwnerFamilyError(keyword, scanner.rest(),
                                 /*isTransportPlane=*/false);
@@ -254,11 +250,9 @@ loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
 llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
                                              FabricInventoryOwnerRef &owner) {
   const llvm::StringRef keyword = scanner.peekKeyword();
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
-  if (keyword == Type::familyKeyword) {                                        \
-    owner.kind = FabricInventoryOwnerKind::Name;                               \
-    return parseFabricRefInto(scanner, owner.payload.Member);                  \
-  }
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                                \
+  if (keyword == Type::familyKeyword)                                          \
+    return parseFabricRefInto(scanner, owner.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
   if (isDeprecatedFamily(keyword) || isGenericEscape(scanner.rest()))
     return fabricRefTextError("an inventory owner", scanner.rest());
@@ -274,18 +268,18 @@ llvm::Error loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
     return error;
   if (llvm::Error error = scanner.expect("<"))
     return error;
-  if (llvm::Error error =
-          parseFabricKeyword(scanner, service.kind,
-                             fabricClosedBound(service.kind),
-                             fabricClosedName(service.kind)))
+  FabricMemoryServiceKind kind = FabricMemoryServiceKind();
+  if (llvm::Error error = parseFabricKeyword(scanner, kind,
+                                             fabricClosedBound(kind),
+                                             fabricClosedName(kind)))
     return error;
   if (llvm::Error error = scanner.expect(", "))
     return error;
-  switch (service.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
+  switch (kind) {
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
-    if (llvm::Error error =                                                    \
-            parseFabricRefInto(scanner, service.payload.Member))               \
+    if (llvm::Error error = parseFabricRefInto(                                \
+            scanner, service.payload.emplace<Type>()))                         \
       return error;                                                            \
     break;
 #include "Fabric/Identity/FabricRefs.def"
@@ -301,17 +295,16 @@ loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
     return error;
   if (llvm::Error error = scanner.expect("<"))
     return error;
-  if (llvm::Error error =
-          parseFabricKeyword(scanner, traversal.kind,
-                             fabricClosedBound(traversal.kind),
-                             fabricClosedName(traversal.kind)))
+  FabricPhysicalTraversalKind kind = FabricPhysicalTraversalKind();
+  if (llvm::Error error = parseFabricKeyword(scanner, kind,
+                                             fabricClosedBound(kind),
+                                             fabricClosedName(kind)))
     return error;
   FabricParseVisitor visitor{scanner, /*started=*/true};
-  switch (traversal.kind) {
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
+  switch (kind) {
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
-    traversal.payload.Member = Type();                                         \
-    Type::visitFields(traversal.payload.Member, visitor);                      \
+    Type::visitFields(traversal.payload.emplace<Type>(), visitor);             \
     break;
 #include "Fabric/Identity/FabricRefs.def"
   }

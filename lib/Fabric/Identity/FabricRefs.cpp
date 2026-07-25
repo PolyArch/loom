@@ -40,7 +40,7 @@ loom::fabric::fabricRefKeyword(FabricPortDirection value) {
   llvm_unreachable("closed sum value outside its declaration");
 }
 
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
   case FabricMemoryServiceKind::Name:                                          \
     return Keyword;
 llvm::StringRef
@@ -73,7 +73,7 @@ llvm::StringRef loom::fabric::fabricRefKeyword(
   llvm_unreachable("closed sum value outside its declaration");
 }
 
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                             \
   case FabricPhysicalTraversalKind::Name:                                      \
     return Keyword;
 llvm::StringRef loom::fabric::fabricRefKeyword(
@@ -89,6 +89,28 @@ llvm::StringRef loom::fabric::fabricRefKeyword(
     return Keyword;
 llvm::StringRef
 loom::fabric::fabricRefKeyword(FabricInventoryKind value) {
+  switch (value) {
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  llvm_unreachable("closed sum value outside its declaration");
+}
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword)                        \
+  case FabricHardwareDomainKind::Name:                                         \
+    return Keyword;
+llvm::StringRef
+loom::fabric::fabricRefKeyword(FabricHardwareDomainKind value) {
+  switch (value) {
+#include "Fabric/Identity/FabricRefs.def"
+  }
+  llvm_unreachable("closed sum value outside its declaration");
+}
+
+#define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword)                        \
+  case FabricMemoryEndpointRole::Name:                                         \
+    return Keyword;
+llvm::StringRef
+loom::fabric::fabricRefKeyword(FabricMemoryEndpointRole value) {
   switch (value) {
 #include "Fabric/Identity/FabricRefs.def"
   }

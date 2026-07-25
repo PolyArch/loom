@@ -5,9 +5,12 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <system_error>
+#include <utility>
+#include <variant>
 
 namespace loom {
 namespace fabric {
@@ -42,8 +45,18 @@ enum class FabricPortDirection : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type) Name,
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type) Name,
 enum class FabricMemoryServiceKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword) Name,
+enum class FabricHardwareDomainKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+#define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword) Name,
+enum class FabricMemoryEndpointRole : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
@@ -57,7 +70,7 @@ enum class FabricRegisterFifoPathRole : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type) Name,
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type) Name,
 enum class FabricPhysicalTraversalKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -67,17 +80,17 @@ enum class FabricInventoryKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type) Name,
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) Name,
 enum class FabricTransportEndpointOwnerKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type) Name,
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) Name,
 enum class FabricMemoryEndpointOwnerKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type) Name,
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type) Name,
 enum class FabricInventoryOwnerKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -97,37 +110,141 @@ llvm::StringRef fabricRefKeyword(FabricRootKind kind);
 llvm::StringRef fabricRefKeyword(FabricFuNodeKind kind);
 llvm::StringRef fabricRefKeyword(FabricPortDirection direction);
 llvm::StringRef fabricRefKeyword(FabricMemoryServiceKind kind);
+llvm::StringRef fabricRefKeyword(FabricHardwareDomainKind kind);
+llvm::StringRef fabricRefKeyword(FabricMemoryEndpointRole role);
 llvm::StringRef fabricRefKeyword(FabricFifoTraversalMode mode);
 llvm::StringRef fabricRefKeyword(FabricRegisterFifoPathRole role);
 llvm::StringRef fabricRefKeyword(FabricPhysicalTraversalKind kind);
 llvm::StringRef fabricRefKeyword(FabricInventoryKind kind);
 llvm::StringRef fabricRefKeyword(FabricRefErrorKind kind);
 
-/// Declared cardinality and diagnostic name of each closed sum, taken from
-/// the last enumerator of its one catalog declaration. Both codecs and the
-/// importer read these instead of repeating a bound.
-#define LOOM_FABRIC_CLOSED_SUM(Enum, LastName, Text)                           \
-  inline std::uint32_t fabricClosedBound(Enum) {                               \
-    return static_cast<std::uint32_t>(Enum::LastName) + 1;                     \
-  }                                                                            \
-  inline llvm::StringRef fabricClosedName(Enum) { return Text; }
+/// Declared cardinality and diagnostic name of each closed sum. Every bound
+/// is counted from the catalog declaration itself, so appending a variant
+/// never requires a second edit. Both codecs and the importer read these.
+#define LOOM_FABRIC_COUNT_ENTRY ++count;
 
-LOOM_FABRIC_CLOSED_SUM(FabricFuNodeKind, Demux, "FU node kind")
-LOOM_FABRIC_CLOSED_SUM(FabricPortDirection, Output, "port direction")
-LOOM_FABRIC_CLOSED_SUM(FabricMemoryServiceKind, System, "memory service kind")
-LOOM_FABRIC_CLOSED_SUM(FabricFifoTraversalMode, Bypass, "FIFO traversal mode")
-LOOM_FABRIC_CLOSED_SUM(FabricRegisterFifoPathRole, Read,
-                       "register FIFO path role")
-LOOM_FABRIC_CLOSED_SUM(FabricPhysicalTraversalKind, SystemTransferPatternLeg,
-                       "physical traversal kind")
-LOOM_FABRIC_CLOSED_SUM(FabricTransportEndpointOwnerKind, ExternalBoundary,
-                       "transport endpoint owner")
-LOOM_FABRIC_CLOSED_SUM(FabricMemoryEndpointOwnerKind, ExternalBoundary,
-                       "memory endpoint owner")
-LOOM_FABRIC_CLOSED_SUM(FabricInventoryOwnerKind, ExternalBoundary,
-                       "inventory owner")
+#define LOOM_FABRIC_ENTITY(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricEntityKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricEntityKind) {
+  return "entity kind";
+}
 
-#undef LOOM_FABRIC_CLOSED_SUM
+#define LOOM_FABRIC_FU_NODE_KIND(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricFuNodeKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricFuNodeKind) {
+  return "FU node kind";
+}
+
+#define LOOM_FABRIC_PORT_DIRECTION(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricPortDirection) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricPortDirection) {
+  return "port direction";
+}
+
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricMemoryServiceKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricMemoryServiceKind) {
+  return "memory service kind";
+}
+
+#define LOOM_FABRIC_HARDWARE_DOMAIN_KIND(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricHardwareDomainKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricHardwareDomainKind) {
+  return "hardware domain kind";
+}
+
+#define LOOM_FABRIC_MEMORY_ENDPOINT_ROLE(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricMemoryEndpointRole) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricMemoryEndpointRole) {
+  return "memory endpoint role";
+}
+
+#define LOOM_FABRIC_FIFO_MODE(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricFifoTraversalMode) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricFifoTraversalMode) {
+  return "FIFO traversal mode";
+}
+
+#define LOOM_FABRIC_REGISTER_FIFO_PATH_ROLE(Name, Keyword)                     \
+  LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricRegisterFifoPathRole) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricRegisterFifoPathRole) {
+  return "register FIFO path role";
+}
+
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricPhysicalTraversalKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricPhysicalTraversalKind) {
+  return "physical traversal kind";
+}
+
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricTransportEndpointOwnerKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricTransportEndpointOwnerKind) {
+  return "transport endpoint owner";
+}
+
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricMemoryEndpointOwnerKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricMemoryEndpointOwnerKind) {
+  return "memory endpoint owner";
+}
+
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricInventoryOwnerKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricInventoryOwnerKind) {
+  return "inventory owner";
+}
+
+#undef LOOM_FABRIC_COUNT_ENTRY
 
 /// Failure of a persistent reference carrying its typed classification.
 class FabricRefError : public llvm::ErrorInfo<FabricRefError> {
@@ -156,6 +273,14 @@ llvm::Error makeFabricRefError(FabricRefErrorKind kind,
 /// Consumes `error` and returns its classification. A non-Fabric error is
 /// reported as malformed input rather than silently reclassified.
 FabricRefErrorKind takeFabricRefErrorKind(llvm::Error error);
+
+/// Builds a variant whose alternative order is exactly the catalog order. The
+/// leading placeholder absorbs the list's separating commas and is dropped, so
+/// `index()` is the declared discriminant and no second tag is stored.
+template <typename Placeholder, typename... Alternatives>
+struct FabricCatalogVariant {
+  using type = std::variant<Alternatives...>;
+};
 
 //===---------------------------------------------------------------------===//
 // Entity references
@@ -342,42 +467,47 @@ struct FabricMemoryOperationContextRef {
 };
 
 /// A memory service is either the optional Local Memory Service of one memory
-/// occurrence or one system memory service entity.
+/// occurrence or one system memory service entity. The selected alternative is
+/// the discriminant; there is no separate tag field to keep in step.
 struct FabricMemoryServiceRef {
   static constexpr llvm::StringLiteral familyKeyword =
       llvm::StringLiteral("fabric.memory_service");
-  FabricMemoryServiceKind kind = FabricMemoryServiceKind::Local;
-  union Payload {
-    Payload() : local() {}
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type) Type Member;
+  using Payload = typename FabricCatalogVariant<
+      void
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-  } payload;
+      >::type;
+
+  Payload payload;
+
+  FabricMemoryServiceKind kind() const {
+    return static_cast<FabricMemoryServiceKind>(payload.index());
+  }
+
+#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                      \
+  static_assert(std::is_same_v<                                              \
+                    std::variant_alternative_t<                              \
+                        static_cast<std::size_t>(FabricMemoryServiceKind::Name),\
+                        Payload>,                                            \
+                    Type>,                                                   \
+                "alternative order must match the discriminants");
+#include "Fabric/Identity/FabricRefs.def"
 
   static FabricMemoryServiceRef local(FabricMemoryOccurrenceRef memory) {
-    FabricMemoryServiceRef ref;
-    ref.kind = FabricMemoryServiceKind::Local;
-    ref.payload.local = memory;
-    return ref;
+    return FabricMemoryServiceRef{Payload(std::in_place_type<
+                                              FabricMemoryOccurrenceRef>,
+                                          memory)};
   }
   static FabricMemoryServiceRef system(SystemMemoryServiceRef service) {
-    FabricMemoryServiceRef ref;
-    ref.kind = FabricMemoryServiceKind::System;
-    ref.payload.system = service;
-    return ref;
+    return FabricMemoryServiceRef{Payload(std::in_place_type<
+                                              SystemMemoryServiceRef>,
+                                          service)};
   }
 };
 
 inline bool operator==(const FabricMemoryServiceRef &lhs,
                        const FabricMemoryServiceRef &rhs) {
-  if (lhs.kind != rhs.kind)
-    return false;
-  switch (lhs.kind) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Member, Type)                \
-  case FabricMemoryServiceKind::Name:                                          \
-    return lhs.payload.Member == rhs.payload.Member;
-#include "Fabric/Identity/FabricRefs.def"
-  }
-  return false;
+  return lhs.payload == rhs.payload;
 }
 inline bool operator!=(const FabricMemoryServiceRef &lhs,
                        const FabricMemoryServiceRef &rhs) {
@@ -449,117 +579,150 @@ LOOM_FABRIC_REF_EQUALITY(FabricTransferPatternRef,
 
 /// Closed union of Mapping-visible owners exposing token terminals.
 struct FabricTransportEndpointOwnerRef {
-  FabricTransportEndpointOwnerKind kind =
-      FabricTransportEndpointOwnerKind::SpatialCoreOccurrence;
-  union Payload {
-    Payload() : spatialCore() {}
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type) Type Member;
+  using Payload = typename FabricCatalogVariant<
+      void
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-  } payload;
+      >::type;
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
-  static FabricTransportEndpointOwnerRef of(const Type &value) {               \
-    FabricTransportEndpointOwnerRef owner;                                     \
-    owner.kind = FabricTransportEndpointOwnerKind::Name;                       \
-    owner.payload.Member = value;                                              \
-    return owner;                                                              \
+  Payload payload;
+
+  FabricTransportEndpointOwnerKind kind() const {
+    return static_cast<FabricTransportEndpointOwnerKind>(payload.index());
   }
-#include "Fabric/Identity/FabricRefs.def"
-};
 
-/// Closed union of owners exposing a manager or subordinate memory-service
-/// endpoint inventory.
-struct FabricMemoryEndpointOwnerRef {
-  FabricMemoryEndpointOwnerKind kind =
-      FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence;
-  union Payload {
-    Payload() : spatialCore() {}
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type) Type Member;
-#include "Fabric/Identity/FabricRefs.def"
-  } payload;
-
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
-  static FabricMemoryEndpointOwnerRef of(const Type &value) {                  \
-    FabricMemoryEndpointOwnerRef owner;                                        \
-    owner.kind = FabricMemoryEndpointOwnerKind::Name;                          \
-    owner.payload.Member = value;                                              \
-    return owner;                                                              \
-  }
-#include "Fabric/Identity/FabricRefs.def"
-};
-
-/// The one closed constructor catalog behind the resource-state, use-pattern,
-/// semantic-config-field, and physical-refinement-domain owner projections.
-/// Sharing the catalog avoids four independently drifting copies; the
-/// consuming family selects which canonical inventory the ordinal indexes.
-struct FabricInventoryOwnerRef {
-  FabricInventoryOwnerKind kind = FabricInventoryOwnerKind::ModuleTemplate;
-  union Payload {
-    Payload() : moduleTemplate() {}
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type) Type Member;
-#include "Fabric/Identity/FabricRefs.def"
-  } payload;
-
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
-  static FabricInventoryOwnerRef of(const Type &value) {                       \
-    FabricInventoryOwnerRef owner;                                             \
-    owner.kind = FabricInventoryOwnerKind::Name;                               \
-    owner.payload.Member = value;                                              \
-    return owner;                                                              \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                              \
+  static_assert(std::is_same_v<                                              \
+                    std::variant_alternative_t<                              \
+                        static_cast<std::size_t>(                            \
+                            FabricTransportEndpointOwnerKind::Name),         \
+                        Payload>,                                            \
+                    Type>,                                                   \
+                "alternative order must match the discriminants");           \
+  static FabricTransportEndpointOwnerRef of(const Type &value) {             \
+    return FabricTransportEndpointOwnerRef{                                  \
+        Payload(std::in_place_type<Type>, value)};                           \
   }
 #include "Fabric/Identity/FabricRefs.def"
 };
 
 inline bool operator==(const FabricTransportEndpointOwnerRef &lhs,
                        const FabricTransportEndpointOwnerRef &rhs) {
-  if (lhs.kind != rhs.kind)
-    return false;
-  switch (lhs.kind) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Member, Type)                        \
-  case FabricTransportEndpointOwnerKind::Name:                                 \
-    return lhs.payload.Member == rhs.payload.Member;
-#include "Fabric/Identity/FabricRefs.def"
-  }
-  return false;
+  return lhs.payload == rhs.payload;
 }
 inline bool operator!=(const FabricTransportEndpointOwnerRef &lhs,
                        const FabricTransportEndpointOwnerRef &rhs) {
   return !(lhs == rhs);
 }
 
+/// Closed union of owners exposing a manager or subordinate memory-service
+/// endpoint inventory.
+struct FabricMemoryEndpointOwnerRef {
+  using Payload = typename FabricCatalogVariant<
+      void
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) , Type
+#include "Fabric/Identity/FabricRefs.def"
+      >::type;
+
+  Payload payload;
+
+  FabricMemoryEndpointOwnerKind kind() const {
+    return static_cast<FabricMemoryEndpointOwnerKind>(payload.index());
+  }
+
+#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                 \
+  static_assert(std::is_same_v<                                              \
+                    std::variant_alternative_t<                              \
+                        static_cast<std::size_t>(                            \
+                            FabricMemoryEndpointOwnerKind::Name),            \
+                        Payload>,                                            \
+                    Type>,                                                   \
+                "alternative order must match the discriminants");           \
+  static FabricMemoryEndpointOwnerRef of(const Type &value) {                \
+    return FabricMemoryEndpointOwnerRef{                                     \
+        Payload(std::in_place_type<Type>, value)};                           \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+};
+
 inline bool operator==(const FabricMemoryEndpointOwnerRef &lhs,
                        const FabricMemoryEndpointOwnerRef &rhs) {
-  if (lhs.kind != rhs.kind)
-    return false;
-  switch (lhs.kind) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Member, Type)                           \
-  case FabricMemoryEndpointOwnerKind::Name:                                    \
-    return lhs.payload.Member == rhs.payload.Member;
-#include "Fabric/Identity/FabricRefs.def"
-  }
-  return false;
+  return lhs.payload == rhs.payload;
 }
 inline bool operator!=(const FabricMemoryEndpointOwnerRef &lhs,
                        const FabricMemoryEndpointOwnerRef &rhs) {
   return !(lhs == rhs);
 }
 
+/// The one closed constructor catalog behind every owner projection. Sharing
+/// the catalog avoids four independently drifting copies; the projection that
+/// selects a canonical inventory is static type information alone.
+struct FabricInventoryOwnerRef {
+  using Payload = typename FabricCatalogVariant<
+      void
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type) , Type
+#include "Fabric/Identity/FabricRefs.def"
+      >::type;
+
+  Payload payload;
+
+  FabricInventoryOwnerKind kind() const {
+    return static_cast<FabricInventoryOwnerKind>(payload.index());
+  }
+
+#define LOOM_FABRIC_INVENTORY_OWNER(Name, Type)                              \
+  static_assert(std::is_same_v<                                              \
+                    std::variant_alternative_t<                              \
+                        static_cast<std::size_t>(                            \
+                            FabricInventoryOwnerKind::Name),                 \
+                        Payload>,                                            \
+                    Type>,                                                   \
+                "alternative order must match the discriminants");           \
+  static FabricInventoryOwnerRef of(const Type &value) {                     \
+    return FabricInventoryOwnerRef{                                          \
+        Payload(std::in_place_type<Type>, value)};                           \
+  }
+#include "Fabric/Identity/FabricRefs.def"
+};
+
 inline bool operator==(const FabricInventoryOwnerRef &lhs,
                        const FabricInventoryOwnerRef &rhs) {
-  if (lhs.kind != rhs.kind)
-    return false;
-  switch (lhs.kind) {
-#define LOOM_FABRIC_INVENTORY_OWNER(Name, Member, Type)                        \
-  case FabricInventoryOwnerKind::Name:                                         \
-    return lhs.payload.Member == rhs.payload.Member;
-#include "Fabric/Identity/FabricRefs.def"
-  }
-  return false;
+  return lhs.payload == rhs.payload;
 }
 inline bool operator!=(const FabricInventoryOwnerRef &lhs,
                        const FabricInventoryOwnerRef &rhs) {
   return !(lhs == rhs);
 }
+
+/// A role-specific owner projection over that one catalog. Four distinct
+/// static types share one constructor declaration and one canonical encoding;
+/// the role only selects which owner-declared inventory an ordinal indexes.
+template <FabricInventoryKind Inventory> class FabricOwnerProjection {
+public:
+  static constexpr FabricInventoryKind inventory = Inventory;
+
+  FabricOwnerProjection() = default;
+  explicit FabricOwnerProjection(FabricInventoryOwnerRef catalog)
+      : catalog_(std::move(catalog)) {}
+
+  const FabricInventoryOwnerRef &catalog() const { return catalog_; }
+
+  friend bool operator==(const FabricOwnerProjection &lhs,
+                         const FabricOwnerProjection &rhs) {
+    return lhs.catalog_ == rhs.catalog_;
+  }
+  friend bool operator!=(const FabricOwnerProjection &lhs,
+                         const FabricOwnerProjection &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  FabricInventoryOwnerRef catalog_;
+};
+
+#define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
+  using Alias = FabricOwnerProjection<FabricInventoryKind::Inventory>;
+#include "Fabric/Identity/FabricRefs.def"
 
 //===---------------------------------------------------------------------===//
 // Endpoint and owner-relative families
@@ -588,37 +751,27 @@ struct FabricMemoryEndpointRef {
                          visitor.ordinal(self.ordinal);)
 };
 
-#define LOOM_FABRIC_OWNER_RELATIVE_FAMILY(Name, Keyword)                       \
-  struct Name {                                                                \
+/// The owner-relative families. Each names its own owner projection, so a
+/// resource-state owner can never be passed where a use-pattern owner is
+/// required even though both carry the same catalog constructor.
+#define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
+  struct Family {                                                              \
     static constexpr llvm::StringLiteral familyKeyword =                       \
         llvm::StringLiteral(Keyword);                                          \
-    FabricInventoryOwnerRef owner;                                             \
+    Alias owner;                                                               \
     FabricOrdinal ordinal = 0;                                                 \
                                                                                \
     LOOM_FABRIC_REF_FIELDS(visitor.ref(self.owner);                            \
                            visitor.ordinal(self.ordinal);)                     \
-  };
-
-LOOM_FABRIC_OWNER_RELATIVE_FAMILY(FabricResourceStateRef, "fabric.resource_state")
-LOOM_FABRIC_OWNER_RELATIVE_FAMILY(FabricUsePatternRef, "fabric.use_pattern")
-LOOM_FABRIC_OWNER_RELATIVE_FAMILY(FabricSemanticConfigFieldRef,
-                                  "fabric.semantic_config_field")
-LOOM_FABRIC_OWNER_RELATIVE_FAMILY(FabricPhysicalRefinementDomainRef,
-                                  "fabric.refinement_domain")
-
-#undef LOOM_FABRIC_OWNER_RELATIVE_FAMILY
+  };                                                                           \
+  LOOM_FABRIC_REF_EQUALITY(Family,                                             \
+                           lhs.owner == rhs.owner &&                           \
+                               lhs.ordinal == rhs.ordinal)
+#include "Fabric/Identity/FabricRefs.def"
 
 LOOM_FABRIC_REF_EQUALITY(FabricTransportEndpointRef,
                          lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryEndpointRef,
-                         lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
-LOOM_FABRIC_REF_EQUALITY(FabricResourceStateRef,
-                         lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
-LOOM_FABRIC_REF_EQUALITY(FabricUsePatternRef,
-                         lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
-LOOM_FABRIC_REF_EQUALITY(FabricSemanticConfigFieldRef,
-                         lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
-LOOM_FABRIC_REF_EQUALITY(FabricPhysicalRefinementDomainRef,
                          lhs.owner == rhs.owner && lhs.ordinal == rhs.ordinal)
 
 //===---------------------------------------------------------------------===//
@@ -722,85 +875,112 @@ LOOM_FABRIC_TRAVERSAL_PAYLOAD_EQUALITY(FabricTransferPatternLegPayload,
 struct FabricPhysicalTraversalRef {
   static constexpr llvm::StringLiteral familyKeyword =
       llvm::StringLiteral("fabric.traversal");
-  FabricPhysicalTraversalKind kind =
-      FabricPhysicalTraversalKind::PointConnection;
-  union Payload {
-    Payload() : pointConnection() {}
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type) Type Member;
+  using Payload = typename FabricCatalogVariant<
+      void
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
-  } payload;
+      >::type;
+
+  Payload payload;
+
+  FabricPhysicalTraversalKind kind() const {
+    return static_cast<FabricPhysicalTraversalKind>(payload.index());
+  }
+
+#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Type)                           \
+  static_assert(std::is_same_v<                                              \
+                    std::variant_alternative_t<                              \
+                        static_cast<std::size_t>(                            \
+                            FabricPhysicalTraversalKind::Name),              \
+                        Payload>,                                            \
+                    Type>,                                                   \
+                "alternative order must match the discriminants");
+#include "Fabric/Identity/FabricRefs.def"
+
+  template <typename PayloadType>
+  static FabricPhysicalTraversalRef of(PayloadType value) {
+    return FabricPhysicalTraversalRef{
+        Payload(std::in_place_type<PayloadType>, std::move(value))};
+  }
 
   static FabricPhysicalTraversalRef
   pointConnection(FabricTransportEndpointRef source,
                   FabricTransportEndpointRef destination) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::PointConnection;
-    ref.payload.pointConnection = {source, destination};
-    return ref;
+    return of(FabricPointConnectionPayload{source, destination});
   }
   static FabricPhysicalTraversalRef
   peSelector(FabricPeOccurrenceRef owner, FabricTransportEndpointRef source,
              FabricTransportEndpointRef destination) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::PeSelectorTraversal;
-    ref.payload.peSelector = {owner, source, destination};
-    return ref;
+    return of(FabricPeSelectorPayload{owner, source, destination});
   }
   static FabricPhysicalTraversalRef
   peRegisterFifo(FabricPeOccurrenceRef owner, FabricOrdinal registerFifo,
                  FabricRegisterFifoPathRole role) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
-    ref.payload.peRegisterFifo = {owner, registerFifo, role};
-    return ref;
+    return of(FabricPeRegisterFifoPayload{owner, registerFifo, role});
   }
   static FabricPhysicalTraversalRef
   switchTraversal(FabricSwitchOccurrenceRef owner, FabricOrdinal input,
                   FabricOrdinal output) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::SwitchTraversal;
-    ref.payload.switchTraversal = {owner, input, output};
-    return ref;
+    return of(FabricSwitchTraversalPayload{owner, input, output});
   }
   static FabricPhysicalTraversalRef
   fifoTraversal(FabricFifoOccurrenceRef owner, FabricFifoTraversalMode mode) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::FifoTraversal;
-    ref.payload.fifoTraversal = {owner, mode};
-    return ref;
+    return of(FabricFifoTraversalPayload{owner, mode});
   }
   static FabricPhysicalTraversalRef
   boundaryTraversal(FabricBoundaryOccurrenceRef owner, FabricOrdinal output) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::BoundaryTraversal;
-    ref.payload.boundaryTraversal = {owner, output};
-    return ref;
+    return of(FabricBoundaryTraversalPayload{owner, output});
   }
   static FabricPhysicalTraversalRef
   transferPatternLeg(FabricTransferPatternRef owner, FabricOrdinal egress) {
-    FabricPhysicalTraversalRef ref;
-    ref.kind = FabricPhysicalTraversalKind::SystemTransferPatternLeg;
-    ref.payload.transferPatternLeg = {owner, egress};
-    return ref;
+    return of(FabricTransferPatternLegPayload{owner, egress});
   }
 };
 
 inline bool operator==(const FabricPhysicalTraversalRef &lhs,
                        const FabricPhysicalTraversalRef &rhs) {
-  if (lhs.kind != rhs.kind)
-    return false;
-  switch (lhs.kind) {
-#define LOOM_FABRIC_TRAVERSAL(Name, Keyword, Member, Type)                     \
-  case FabricPhysicalTraversalKind::Name:                                      \
-    return lhs.payload.Member == rhs.payload.Member;
-#include "Fabric/Identity/FabricRefs.def"
-  }
-  return false;
+  return lhs.payload == rhs.payload;
 }
 inline bool operator!=(const FabricPhysicalTraversalRef &lhs,
                        const FabricPhysicalTraversalRef &rhs) {
   return !(lhs == rhs);
 }
+
+#define LOOM_FABRIC_REFINEMENT(Name, Alias, Underlying) Name,
+enum class FabricRefinementKind : std::uint32_t {
+#include "Fabric/Identity/FabricRefs.def"
+};
+
+/// A typed refinement of an underlying reference. The refined name is selected
+/// by the consuming field's static type; the canonical text and bytes remain
+/// exactly the underlying ones, so no role field, wrapper tag, or second
+/// identity is ever serialized. Validation checks the fact the owner already
+/// declares.
+template <FabricRefinementKind Refinement, typename Underlying>
+class FabricRefinedRef {
+public:
+  FabricRefinedRef() = default;
+  explicit FabricRefinedRef(Underlying underlying)
+      : underlying_(std::move(underlying)) {}
+
+  const Underlying &underlying() const { return underlying_; }
+
+  friend bool operator==(const FabricRefinedRef &lhs,
+                         const FabricRefinedRef &rhs) {
+    return lhs.underlying_ == rhs.underlying_;
+  }
+  friend bool operator!=(const FabricRefinedRef &lhs,
+                         const FabricRefinedRef &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  Underlying underlying_;
+};
+
+#define LOOM_FABRIC_REFINEMENT(Name, Alias, Underlying)                        \
+  using Alias = FabricRefinedRef<FabricRefinementKind::Name, Underlying>;
+#include "Fabric/Identity/FabricRefs.def"
 
 #undef LOOM_FABRIC_REF_EQUALITY
 #undef LOOM_FABRIC_REF_FIELDS
