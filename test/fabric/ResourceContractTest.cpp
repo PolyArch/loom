@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace fabric;
@@ -56,8 +57,13 @@ template <typename Key, typename Enum> constexpr Key key(Enum value) {
   return Key(static_cast<std::uint32_t>(value));
 }
 
+bool sameClaim(const Claim &lhs, const Claim &rhs) {
+  return lhs.state == rhs.state && lhs.dimension == rhs.dimension &&
+         lhs.amount == rhs.amount;
+}
+
 // One buffering resource whose two requesters claim disjoint capacity, so the
-// verifier proves contention impossible and no grant policy exists.
+// verifier proves contention impossible and no requester order exists.
 namespace buffer {
 
 enum class State : std::uint32_t { Queue };
@@ -69,31 +75,42 @@ enum class Timing : std::uint32_t { OneCycleElastic };
 
 ResourceContractDeclaration declaration() {
   ResourceContractDeclaration declaration;
-  declaration.states = {ResourceState{{
-      CapacityDimension{CapacityUnits(4), CapacityUnits(0)},
-      CapacityDimension{CapacityUnits(1), CapacityUnits(0)},
-  }}};
-  declaration.requesterCount = 2;
+  declaration.states = {ResourceStateDeclaration{
+      key<StateKey>(State::Queue),
+      {CapacityDimensionDeclaration{
+           key<CapacityDimensionKey>(Dimension::StoredEntry), CapacityUnits(4),
+           CapacityUnits(0)},
+       CapacityDimensionDeclaration{
+           key<CapacityDimensionKey>(Dimension::DequeuePort), CapacityUnits(1),
+           CapacityUnits(0)}}}};
+  declaration.requesters = {key<RequesterKey>(Requester::Input),
+                            key<RequesterKey>(Requester::Output)};
   declaration.eligibilityCount = 2;
   declaration.eventCount = 2;
   declaration.timingContractCount = 1;
   declaration.usePatterns = {
-      UsePattern{key<RequesterKey>(Requester::Input),
-                 key<EligibilityKey>(Eligibility::InputTokenReady),
-                 key<EventKey>(Event::Accept),
-                 key<TimingContractKey>(Timing::OneCycleElastic),
-                 {Claim{key<StateKey>(State::Queue),
-                        key<CapacityDimensionKey>(Dimension::StoredEntry),
-                        CapacityUnits(1), key<EventKey>(Event::Retire)}},
-                 {}},
-      UsePattern{key<RequesterKey>(Requester::Output),
-                 key<EligibilityKey>(Eligibility::OutputTokenReady),
-                 key<EventKey>(Event::Accept),
-                 key<TimingContractKey>(Timing::OneCycleElastic),
-                 {Claim{key<StateKey>(State::Queue),
-                        key<CapacityDimensionKey>(Dimension::DequeuePort),
-                        CapacityUnits(1), key<EventKey>(Event::Retire)}},
-                 {}},
+      UsePatternDeclaration{
+          UsePatternKey(0),
+          key<RequesterKey>(Requester::Input),
+          key<EligibilityKey>(Eligibility::InputTokenReady),
+          key<EventKey>(Event::Accept),
+          key<EventKey>(Event::Retire),
+          key<TimingContractKey>(Timing::OneCycleElastic),
+          {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
+                            key<CapacityDimensionKey>(Dimension::StoredEntry),
+                            CapacityUnits(1), key<EventKey>(Event::Retire)}},
+          {}},
+      UsePatternDeclaration{
+          UsePatternKey(1),
+          key<RequesterKey>(Requester::Output),
+          key<EligibilityKey>(Eligibility::OutputTokenReady),
+          key<EventKey>(Event::Accept),
+          key<EventKey>(Event::Retire),
+          key<TimingContractKey>(Timing::OneCycleElastic),
+          {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
+                            key<CapacityDimensionKey>(Dimension::DequeuePort),
+                            CapacityUnits(1), key<EventKey>(Event::Retire)}},
+          {}},
   };
   return declaration;
 }
@@ -113,24 +130,49 @@ enum class Timing : std::uint32_t { SingleBeat };
 
 ResourceContractDeclaration declaration() {
   ResourceContractDeclaration declaration;
-  declaration.states = {ResourceState{{
-      CapacityDimension{CapacityUnits(1), CapacityUnits(0)},
-  }}};
-  declaration.requesterCount = 3;
+  declaration.states = {ResourceStateDeclaration{
+      key<StateKey>(State::Egress),
+      {CapacityDimensionDeclaration{
+          key<CapacityDimensionKey>(Dimension::TransferSlot), CapacityUnits(1),
+          CapacityUnits(0)}}}};
+  declaration.requesters = {key<RequesterKey>(Requester::Ingress0),
+                            key<RequesterKey>(Requester::Ingress1),
+                            key<RequesterKey>(Requester::Ingress2)};
   declaration.eligibilityCount = 1;
   declaration.eventCount = 2;
   declaration.timingContractCount = 1;
   for (std::uint32_t requester = 0; requester < 3; ++requester)
-    declaration.usePatterns.push_back(
-        UsePattern{RequesterKey(requester),
-                   key<EligibilityKey>(Eligibility::RouteSelected),
-                   key<EventKey>(Event::Accept),
-                   key<TimingContractKey>(Timing::SingleBeat),
-                   {Claim{key<StateKey>(State::Egress),
+    declaration.usePatterns.push_back(UsePatternDeclaration{
+        UsePatternKey(requester),
+        RequesterKey(requester),
+        key<EligibilityKey>(Eligibility::RouteSelected),
+        key<EventKey>(Event::Accept),
+        key<EventKey>(Event::Retire),
+        key<TimingContractKey>(Timing::SingleBeat),
+        {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Egress),
                           key<CapacityDimensionKey>(Dimension::TransferSlot),
                           CapacityUnits(1), key<EventKey>(Event::Retire)}},
-                   {}});
+        {}});
   return declaration;
+}
+
+ResourceContractDeclaration fixedPriorityDeclaration() {
+  ResourceContractDeclaration declared = declaration();
+  declared.grantPolicy = GrantPolicyDeclaration(
+      FixedPriorityDeclaration{{key<RequesterKey>(Requester::Ingress2),
+                                key<RequesterKey>(Requester::Ingress0),
+                                key<RequesterKey>(Requester::Ingress1)}});
+  return declared;
+}
+
+ResourceContractDeclaration roundRobinDeclaration() {
+  ResourceContractDeclaration declared = declaration();
+  declared.grantPolicy = GrantPolicyDeclaration(
+      RoundRobinDeclaration{{key<RequesterKey>(Requester::Ingress0),
+                             key<RequesterKey>(Requester::Ingress1),
+                             key<RequesterKey>(Requester::Ingress2)},
+                            key<RequesterKey>(Requester::Ingress1)});
+  return declared;
 }
 
 } // namespace crossbar
@@ -150,26 +192,36 @@ enum class Timing : std::uint32_t { TwoBeatVectorLoad };
 ResourceContractDeclaration declaration() {
   ResourceContractDeclaration declaration;
   declaration.states = {
-      ResourceState{{CapacityDimension{CapacityUnits(1), CapacityUnits(0)}}},
-      ResourceState{{CapacityDimension{CapacityUnits(2), CapacityUnits(0)}}},
+      ResourceStateDeclaration{
+          key<StateKey>(State::ServicePort),
+          {CapacityDimensionDeclaration{
+              key<CapacityDimensionKey>(ServicePortDimension::Beat),
+              CapacityUnits(1), CapacityUnits(0)}}},
+      ResourceStateDeclaration{
+          key<StateKey>(State::Bank),
+          {CapacityDimensionDeclaration{
+              key<CapacityDimensionKey>(BankDimension::Access),
+              CapacityUnits(2), CapacityUnits(0)}}},
   };
-  declaration.requesterCount = 1;
+  declaration.requesters = {key<RequesterKey>(Requester::OperationRow)};
   declaration.eligibilityCount = 1;
   declaration.eventCount = 2;
   declaration.timingContractCount = 1;
-  declaration.usePatterns = {
-      UsePattern{key<RequesterKey>(Requester::OperationRow),
-                 key<EligibilityKey>(Eligibility::OperandTupleComplete),
-                 key<EventKey>(Event::Accept),
-                 key<TimingContractKey>(Timing::TwoBeatVectorLoad),
-                 {Claim{key<StateKey>(State::ServicePort),
+  declaration.usePatterns = {UsePatternDeclaration{
+      UsePatternKey(0),
+      key<RequesterKey>(Requester::OperationRow),
+      key<EligibilityKey>(Eligibility::OperandTupleComplete),
+      key<EventKey>(Event::Accept),
+      key<EventKey>(Event::Retire),
+      key<TimingContractKey>(Timing::TwoBeatVectorLoad),
+      {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::ServicePort),
                         key<CapacityDimensionKey>(ServicePortDimension::Beat),
                         CapacityUnits(1), key<EventKey>(Event::Retire)},
-                  Claim{key<StateKey>(State::Bank),
+       ClaimDeclaration{ClaimKey(1), key<StateKey>(State::Bank),
                         key<CapacityDimensionKey>(BankDimension::Access),
                         CapacityUnits(2), key<EventKey>(Event::Retire)}},
-                 {InternalTransaction{{ClaimKey(0)}},
-                  InternalTransaction{{ClaimKey(0), ClaimKey(1)}}}}};
+      {InternalTransactionDeclaration{{ClaimKey(0)}},
+       InternalTransactionDeclaration{{ClaimKey(0), ClaimKey(1)}}}}};
   return declaration;
 }
 
@@ -180,15 +232,6 @@ void disjointResourceNeedsNoGrantPolicy() {
       takeContract(__func__, ResourceContract::create(buffer::declaration()));
 
   require(__func__, contract.stateCount() == 1, "declared state count differs");
-  require(__func__,
-          contract.state(key<StateKey>(buffer::State::Queue))
-                  .capacityDimensions.size() == 2,
-          "declared capacity dimension count differs");
-  require(__func__,
-          contract.state(key<StateKey>(buffer::State::Queue))
-                  .capacityDimensions[0]
-                  .initialOccupancy == CapacityUnits(0),
-          "canonical initial occupancy differs");
   require(__func__, contract.usePatternCount() == 2,
           "declared use pattern count differs");
   require(__func__,
@@ -196,15 +239,54 @@ void disjointResourceNeedsNoGrantPolicy() {
               contract.eventCount() == 2 && contract.timingContractCount() == 1,
           "closed owner key domains differ");
   require(__func__, !contract.grantPolicy().has_value(),
-          "disjoint requesters must not carry a grant policy");
+          "disjoint requesters must not carry a requester order");
 
-  const UsePattern &enqueue = contract.usePattern(UsePatternKey(0));
+  const llvm::ArrayRef<CapacityDimension> dimensions =
+      contract.capacityDimensions(key<StateKey>(buffer::State::Queue));
+  require(__func__,
+          dimensions.size() == 2 &&
+              dimensions[0].capacity == CapacityUnits(4) &&
+              dimensions[0].initialOccupancy == CapacityUnits(0) &&
+              dimensions[1].capacity == CapacityUnits(1),
+          "canonical capacity dimensions differ");
+
+  const UsePattern enqueue = contract.usePattern(UsePatternKey(0));
   require(__func__,
           enqueue.requester == key<RequesterKey>(buffer::Requester::Input) &&
-              enqueue.claims.size() == 1 &&
-              enqueue.claims[0].amount == CapacityUnits(1) &&
-              enqueue.claims[0].release == key<EventKey>(buffer::Event::Retire),
+              enqueue.acquire == key<EventKey>(buffer::Event::Accept) &&
+              enqueue.release == key<EventKey>(buffer::Event::Retire) &&
+              enqueue.internalTransactionCount == 0,
           "atomic use pattern content differs");
+  require(__func__,
+          enqueue.claims.size() == 1 &&
+              sameClaim(enqueue.claims[0],
+                        Claim{key<StateKey>(buffer::State::Queue),
+                              key<CapacityDimensionKey>(
+                                  buffer::Dimension::StoredEntry),
+                              CapacityUnits(1)}),
+          "atomic claim envelope differs");
+}
+
+void declarationOrderDoesNotChangeTheContract() {
+  ResourceContractDeclaration shuffled = buffer::declaration();
+  std::swap(shuffled.usePatterns[0], shuffled.usePatterns[1]);
+  std::swap(shuffled.states[0].capacityDimensions[0],
+            shuffled.states[0].capacityDimensions[1]);
+  std::swap(shuffled.requesters[0], shuffled.requesters[1]);
+
+  const ResourceContract contract =
+      takeContract(__func__, ResourceContract::create(shuffled));
+
+  const llvm::ArrayRef<CapacityDimension> dimensions =
+      contract.capacityDimensions(key<StateKey>(buffer::State::Queue));
+  require(__func__,
+          dimensions[0].capacity == CapacityUnits(4) &&
+              dimensions[1].capacity == CapacityUnits(1),
+          "capacity dimensions are not normalized by key");
+  require(__func__,
+          contract.usePattern(UsePatternKey(0)).requester ==
+              key<RequesterKey>(buffer::Requester::Input),
+          "use patterns are not normalized by key");
 }
 
 void sharedCapacityWithoutPolicyIsRejected() {
@@ -216,7 +298,83 @@ void sharedCapacityWithoutPolicyIsRejected() {
                   ResourceContractViolation::ContentionWithoutGrantPolicy);
 }
 
-void unknownAndUndeclaredKeysAreRejected() {
+void unobservableRequesterOrderIsRejected() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  declaration.grantPolicy = GrantPolicyDeclaration(
+      FixedPriorityDeclaration{{key<RequesterKey>(buffer::Requester::Input),
+                                key<RequesterKey>(buffer::Requester::Output)}});
+  expectViolation(__func__, "requester order without reachable contention",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::GrantPolicyWithoutContention);
+}
+
+void duplicateDeclaredKeysAreRejected() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  declaration.states.push_back(declaration.states[0]);
+  expectViolation(__func__, "one state key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateStateKey);
+
+  declaration = buffer::declaration();
+  declaration.states[0].capacityDimensions[1].key =
+      key<CapacityDimensionKey>(buffer::Dimension::StoredEntry);
+  expectViolation(__func__, "one capacity dimension key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateCapacityDimensionKey);
+
+  declaration = buffer::declaration();
+  declaration.requesters[1] = key<RequesterKey>(buffer::Requester::Input);
+  expectViolation(__func__, "one requester key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateRequesterKey);
+
+  declaration = buffer::declaration();
+  declaration.usePatterns[1].key = UsePatternKey(0);
+  expectViolation(__func__, "one use pattern key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateUsePatternKey);
+
+  declaration = buffer::declaration();
+  declaration.usePatterns[0].claims.push_back(
+      declaration.usePatterns[0].claims[0]);
+  expectViolation(__func__, "one claim key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateClaimKey);
+}
+
+void nonClosedDeclaredKeysAreRejected() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  declaration.states[0].key = StateKey(1);
+  expectViolation(__func__, "state key outside the closed state domain",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownStateKey);
+
+  declaration = buffer::declaration();
+  declaration.states[0].capacityDimensions[1].key = CapacityDimensionKey(2);
+  expectViolation(__func__, "capacity dimension key outside its domain",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownCapacityDimensionKey);
+
+  declaration = buffer::declaration();
+  declaration.requesters[1] = RequesterKey(2);
+  expectViolation(__func__, "requester key outside the closed domain",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownRequesterKey);
+
+  declaration = buffer::declaration();
+  declaration.usePatterns[1].key = UsePatternKey(2);
+  expectViolation(__func__, "use pattern key outside the closed domain",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownUsePatternKey);
+
+  declaration = buffer::declaration();
+  declaration.usePatterns[0].claims[0].key = ClaimKey(1);
+  expectViolation(__func__, "claim key outside the pattern envelope",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownClaimKey);
+}
+
+void unknownReferencedKeysAreRejected() {
   ResourceContractDeclaration declaration = buffer::declaration();
   declaration.usePatterns[0].claims[0].state = StateKey(1);
   expectViolation(__func__, "claim on an undeclared state",
@@ -242,8 +400,8 @@ void unknownAndUndeclaredKeysAreRejected() {
                   ResourceContractViolation::UnknownEligibilityKey);
 
   declaration = buffer::declaration();
-  declaration.usePatterns[0].claims[0].release = EventKey(2);
-  expectViolation(__func__, "claim released by an undeclared event",
+  declaration.usePatterns[0].release = EventKey(2);
+  expectViolation(__func__, "use pattern released by an undeclared event",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::UnknownEventKey);
 
@@ -254,7 +412,25 @@ void unknownAndUndeclaredKeysAreRejected() {
                   ResourceContractViolation::UnknownTimingContractKey);
 }
 
-void capacityAndClaimOverflowAreRejected() {
+void oneEnvelopeHasOneReleaseAndOneClaimPerDimension() {
+  ResourceContractDeclaration declaration = memoryEngine::declaration();
+  declaration.usePatterns[0].claims[1].release =
+      key<EventKey>(memoryEngine::Event::Accept);
+  expectViolation(__func__, "one atomic envelope with two release events",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::AmbiguousRelease);
+
+  declaration = memoryEngine::declaration();
+  declaration.usePatterns[0].claims[1].state =
+      key<StateKey>(memoryEngine::State::ServicePort);
+  declaration.usePatterns[0].claims[1].dimension =
+      key<CapacityDimensionKey>(memoryEngine::ServicePortDimension::Beat);
+  expectViolation(__func__, "one capacity dimension claimed twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateCapacityClaim);
+}
+
+void capacityArithmeticFailuresAreDistinct() {
   ResourceContractDeclaration declaration = buffer::declaration();
   declaration.states[0].capacityDimensions[0].initialOccupancy =
       CapacityUnits(5);
@@ -269,101 +445,67 @@ void capacityAndClaimOverflowAreRejected() {
                   ResourceContractViolation::ClaimExceedsCapacity);
 
   declaration = buffer::declaration();
+  declaration.states[0].capacityDimensions[0].capacity =
+      CapacityUnits(0xffffffffu);
   declaration.states[0].capacityDimensions[0].initialOccupancy =
       CapacityUnits(1);
   declaration.usePatterns[0].claims[0].amount = CapacityUnits(0xffffffffu);
-  expectViolation(__func__, "claim whose occupancy sum is not representable",
+  expectViolation(__func__, "occupancy sum that is not representable",
                   ResourceContract::create(declaration),
-                  ResourceContractViolation::ClaimExceedsCapacity);
-}
-
-void splitClaimOnOneDimensionIsRejected() {
-  ResourceContractDeclaration declaration = buffer::declaration();
-  declaration.usePatterns[0].claims.push_back(
-      declaration.usePatterns[0].claims[0]);
-  expectViolation(__func__, "one dimension claimed twice",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::DuplicateClaim);
-
-  declaration = buffer::declaration();
-  Claim staged = declaration.usePatterns[0].claims[0];
-  staged.release = key<EventKey>(buffer::Event::Accept);
-  declaration.usePatterns[0].claims.push_back(staged);
-  expectViolation(__func__, "one dimension released at two events",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::AmbiguousRelease);
-}
-
-void violationPrecedenceIsIndependentOfDeclarationOrder() {
-  ResourceContractDeclaration declaration = buffer::declaration();
-  declaration.usePatterns[0].acquire = EventKey(2);
-  declaration.usePatterns[1].claims.push_back(
-      declaration.usePatterns[1].claims[0]);
-  expectViolation(__func__, "unknown key before duplicate claim",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::UnknownEventKey);
-
-  std::swap(declaration.usePatterns[0], declaration.usePatterns[1]);
-  expectViolation(__func__, "duplicate claim before unknown key",
-                  ResourceContract::create(declaration),
-                  ResourceContractViolation::UnknownEventKey);
+                  ResourceContractViolation::CapacityArithmeticOverflow);
 }
 
 void fixedPriorityGrantsFirstEligibleRequester() {
-  ResourceContractDeclaration declaration = crossbar::declaration();
-  declaration.grantPolicy = GrantPolicy(
-      FixedPriority{{key<RequesterKey>(crossbar::Requester::Ingress2),
-                     key<RequesterKey>(crossbar::Requester::Ingress0),
-                     key<RequesterKey>(crossbar::Requester::Ingress1)}});
-  const ResourceContract contract =
-      takeContract(__func__, ResourceContract::create(declaration));
-  require(__func__, contract.grantPolicy().has_value(),
-          "contended capacity must carry a grant policy");
+  const ResourceContract contract = takeContract(
+      __func__, ResourceContract::create(crossbar::fixedPriorityDeclaration()));
+  const std::optional<GrantPolicyView> policy = contract.grantPolicy();
+  require(__func__, policy.has_value(),
+          "contended capacity must carry a requester order");
+  require(__func__, std::holds_alternative<FixedPriorityView>(*policy),
+          "a declared fixed priority must read back as fixed priority");
 
-  const GrantPolicy &policy = *contract.grantPolicy();
-  const RequesterKey origin = resetGrantCursor(policy);
-  require(__func__, origin == key<RequesterKey>(crossbar::Requester::Ingress2),
-          "fixed priority scans from the front of its permutation");
-
-  const bool lowPriorityPair[] = {true, true, false};
-  const GrantDecision low = arbitrate(policy, origin, lowPriorityPair);
+  const FixedPriorityView &order = std::get<FixedPriorityView>(*policy);
   require(__func__,
-          low.granted == key<RequesterKey>(crossbar::Requester::Ingress0),
+          order.requesterOrder().size() == 3 &&
+              order.requesterOrder()[0] ==
+                  key<RequesterKey>(crossbar::Requester::Ingress2),
+          "the exact permutation differs");
+
+  const bool lowerPair[] = {true, true, false};
+  require(__func__,
+          order.grant(lowerPair) ==
+              key<RequesterKey>(crossbar::Requester::Ingress0),
           "fixed priority must grant the first eligible requester in order");
-  require(__func__, low.nextCursor == origin,
-          "fixed priority must keep its scan origin");
 
-  const bool highPriorityPair[] = {false, true, true};
-  const GrantDecision high =
-      arbitrate(policy, low.nextCursor, highPriorityPair);
+  const bool upperPair[] = {false, true, true};
   require(__func__,
-          high.granted == key<RequesterKey>(crossbar::Requester::Ingress2),
+          order.grant(upperPair) ==
+              key<RequesterKey>(crossbar::Requester::Ingress2),
           "fixed priority must prefer the earlier permutation entry");
 
   const bool noneEligible[] = {false, false, false};
-  const GrantDecision idle = arbitrate(policy, origin, noneEligible);
-  require(__func__, !idle.granted.has_value() && idle.nextCursor == origin,
-          "an ineligible cycle must not grant or move the cursor");
+  require(__func__, !order.grant(noneEligible).has_value(),
+          "an ineligible cycle must not grant");
 }
 
 void grantPolicyMustBeAnExactRequesterPermutation() {
   ResourceContractDeclaration declaration = crossbar::declaration();
-  declaration.grantPolicy = GrantPolicy(
-      FixedPriority{{key<RequesterKey>(crossbar::Requester::Ingress0),
-                     key<RequesterKey>(crossbar::Requester::Ingress1)}});
+  declaration.grantPolicy = GrantPolicyDeclaration(FixedPriorityDeclaration{
+      {key<RequesterKey>(crossbar::Requester::Ingress0),
+       key<RequesterKey>(crossbar::Requester::Ingress1)}});
   expectViolation(__func__, "policy omitting a declared requester",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::RequesterOmittedFromGrantPolicy);
 
-  declaration.grantPolicy = GrantPolicy(
-      FixedPriority{{key<RequesterKey>(crossbar::Requester::Ingress0),
-                     key<RequesterKey>(crossbar::Requester::Ingress0),
-                     key<RequesterKey>(crossbar::Requester::Ingress1)}});
+  declaration.grantPolicy = GrantPolicyDeclaration(FixedPriorityDeclaration{
+      {key<RequesterKey>(crossbar::Requester::Ingress0),
+       key<RequesterKey>(crossbar::Requester::Ingress0),
+       key<RequesterKey>(crossbar::Requester::Ingress1)}});
   expectViolation(__func__, "policy repeating a requester",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::DuplicateRequesterInGrantPolicy);
 
-  declaration.grantPolicy = GrantPolicy(FixedPriority{
+  declaration.grantPolicy = GrantPolicyDeclaration(FixedPriorityDeclaration{
       {key<RequesterKey>(crossbar::Requester::Ingress0),
        key<RequesterKey>(crossbar::Requester::Ingress1), RequesterKey(3)}});
   expectViolation(__func__, "policy naming a foreign requester",
@@ -372,27 +514,25 @@ void grantPolicyMustBeAnExactRequesterPermutation() {
 }
 
 void roundRobinAdvancesOnlyOnASuccessfulGrant() {
-  ResourceContractDeclaration declaration = crossbar::declaration();
-  declaration.grantPolicy =
-      GrantPolicy(RoundRobin{{key<RequesterKey>(crossbar::Requester::Ingress0),
-                              key<RequesterKey>(crossbar::Requester::Ingress1),
-                              key<RequesterKey>(crossbar::Requester::Ingress2)},
-                             key<RequesterKey>(crossbar::Requester::Ingress1)});
-  const ResourceContract contract =
-      takeContract(__func__, ResourceContract::create(declaration));
-  const GrantPolicy &policy = *contract.grantPolicy();
+  const ResourceContract contract = takeContract(
+      __func__, ResourceContract::create(crossbar::roundRobinDeclaration()));
+  const std::optional<GrantPolicyView> policy = contract.grantPolicy();
+  require(__func__,
+          policy.has_value() && std::holds_alternative<RoundRobinView>(*policy),
+          "a declared round robin must read back as round robin");
 
-  const RequesterKey reset = resetGrantCursor(policy);
+  const RoundRobinView &cycle = std::get<RoundRobinView>(*policy);
+  const RequesterKey reset = cycle.resetCursor();
   require(__func__, reset == key<RequesterKey>(crossbar::Requester::Ingress1),
           "reset must establish the declared cursor");
 
   const bool noneEligible[] = {false, false, false};
-  const GrantDecision idle = arbitrate(policy, reset, noneEligible);
+  const RoundRobinGrant idle = cycle.grant(reset, noneEligible);
   require(__func__, !idle.granted.has_value() && idle.nextCursor == reset,
           "a cycle without a grant must preserve the cursor");
 
   const bool wrappedEligible[] = {true, false, false};
-  const GrantDecision wrapped = arbitrate(policy, reset, wrappedEligible);
+  const RoundRobinGrant wrapped = cycle.grant(reset, wrappedEligible);
   require(__func__,
           wrapped.granted == key<RequesterKey>(crossbar::Requester::Ingress0),
           "round robin must scan its exact cycle from the cursor");
@@ -402,8 +542,8 @@ void roundRobinAdvancesOnlyOnASuccessfulGrant() {
           "a successful grant must advance past the granted requester");
 
   const bool cursorEligible[] = {true, true, false};
-  const GrantDecision atCursor =
-      arbitrate(policy, wrapped.nextCursor, cursorEligible);
+  const RoundRobinGrant atCursor =
+      cycle.grant(wrapped.nextCursor, cursorEligible);
   require(__func__,
           atCursor.granted == key<RequesterKey>(crossbar::Requester::Ingress1),
           "the cursor entry is scanned first");
@@ -412,11 +552,9 @@ void roundRobinAdvancesOnlyOnASuccessfulGrant() {
               key<RequesterKey>(crossbar::Requester::Ingress2),
           "the cursor advances to the successor of the granted requester");
 
-  declaration.grantPolicy =
-      GrantPolicy(RoundRobin{{key<RequesterKey>(crossbar::Requester::Ingress0),
-                              key<RequesterKey>(crossbar::Requester::Ingress1),
-                              key<RequesterKey>(crossbar::Requester::Ingress2)},
-                             RequesterKey(3)});
+  ResourceContractDeclaration declaration = crossbar::roundRobinDeclaration();
+  std::get<RoundRobinDeclaration>(*declaration.grantPolicy).resetCursor =
+      RequesterKey(3);
   expectViolation(__func__, "reset cursor outside the requester domain",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::UnknownRequesterKey);
@@ -426,23 +564,26 @@ void internalTransactionsRefineOneAcceptedUse() {
   const ResourceContract contract = takeContract(
       __func__, ResourceContract::create(memoryEngine::declaration()));
 
-  const UsePattern &operation = contract.usePattern(UsePatternKey(0));
+  const UsePattern operation = contract.usePattern(UsePatternKey(0));
   require(__func__,
           operation.requester ==
                   key<RequesterKey>(memoryEngine::Requester::OperationRow) &&
               operation.acquire == key<EventKey>(memoryEngine::Event::Accept) &&
+              operation.release == key<EventKey>(memoryEngine::Event::Retire) &&
               operation.claims.size() == 2,
-          "the external firing and claim envelope differ");
-  require(__func__, operation.internalTransactions.size() == 2,
+          "the external firing, retirement, and claim envelope differ");
+  require(__func__, operation.internalTransactionCount == 2,
           "internal transaction count differs");
-  require(__func__,
-          operation.internalTransactions[0].claims.size() == 1 &&
-              operation.internalTransactions[0].claims[0] == ClaimKey(0),
+
+  const llvm::ArrayRef<ClaimKey> beat =
+      contract.internalTransaction(UsePatternKey(0), 0);
+  const llvm::ArrayRef<ClaimKey> beatWithBank =
+      contract.internalTransaction(UsePatternKey(0), 1);
+  require(__func__, beat.size() == 1 && beat[0] == ClaimKey(0),
           "the first internal transaction differs");
   require(__func__,
-          operation.internalTransactions[1].claims.size() == 2 &&
-              operation.internalTransactions[1].claims[0] == ClaimKey(0) &&
-              operation.internalTransactions[1].claims[1] == ClaimKey(1),
+          beatWithBank.size() == 2 && beatWithBank[0] == ClaimKey(0) &&
+              beatWithBank[1] == ClaimKey(1),
           "the second internal transaction differs");
 
   ResourceContractDeclaration declaration = memoryEngine::declaration();
@@ -455,21 +596,42 @@ void internalTransactionsRefineOneAcceptedUse() {
   declaration.usePatterns[0].internalTransactions[1].claims[1] = ClaimKey(0);
   expectViolation(__func__, "internal transaction repeating one claim",
                   ResourceContract::create(declaration),
-                  ResourceContractViolation::DuplicateClaim);
+                  ResourceContractViolation::DuplicateClaimKey);
+}
+
+void violationPrecedenceIsIndependentOfDeclarationOrder() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  declaration.usePatterns[0].acquire = EventKey(2);
+  declaration.usePatterns[1].claims.push_back(ClaimDeclaration{
+      ClaimKey(1), key<StateKey>(buffer::State::Queue),
+      key<CapacityDimensionKey>(buffer::Dimension::DequeuePort),
+      CapacityUnits(1), key<EventKey>(buffer::Event::Retire)});
+  expectViolation(__func__, "unknown key before duplicate capacity claim",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownEventKey);
+
+  std::swap(declaration.usePatterns[0], declaration.usePatterns[1]);
+  expectViolation(__func__, "duplicate capacity claim before unknown key",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownEventKey);
 }
 
 } // namespace
 
 int main() {
   disjointResourceNeedsNoGrantPolicy();
+  declarationOrderDoesNotChangeTheContract();
   sharedCapacityWithoutPolicyIsRejected();
-  unknownAndUndeclaredKeysAreRejected();
-  capacityAndClaimOverflowAreRejected();
-  splitClaimOnOneDimensionIsRejected();
-  violationPrecedenceIsIndependentOfDeclarationOrder();
+  unobservableRequesterOrderIsRejected();
+  duplicateDeclaredKeysAreRejected();
+  nonClosedDeclaredKeysAreRejected();
+  unknownReferencedKeysAreRejected();
+  oneEnvelopeHasOneReleaseAndOneClaimPerDimension();
+  capacityArithmeticFailuresAreDistinct();
   fixedPriorityGrantsFirstEligibleRequester();
   grantPolicyMustBeAnExactRequesterPermutation();
   roundRobinAdvancesOnlyOnASuccessfulGrant();
   internalTransactionsRefineOneAcceptedUse();
+  violationPrecedenceIsIndependentOfDeclarationOrder();
   return 0;
 }

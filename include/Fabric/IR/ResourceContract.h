@@ -34,13 +34,13 @@ enum class ResourceKeyRole : std::uint32_t {
 ///
 /// The owning resource enumerates its states, capacity dimensions, use
 /// patterns, requesters, eligibility conditions, acquire/release events, and
-/// timing/progress contracts as closed enums whose zero-based values are
-/// exactly these ordinals; the declaration this key indexes is the closure.
-/// The key is therefore also the canonical ordinal that
-/// `docs/spec-fabric-identity.md` references, so there is no second naming
-/// authority, free-form string key, or property bag. These atoms are in-memory
-/// values; the persistent encoding of a reference stays owned by the identity
-/// schema.
+/// timing/progress contracts as closed zero-based enums and spells those
+/// values in its declaration. A key inventory is closed exactly when it
+/// presents every key of its domain once, so a validated key is also the
+/// canonical ordinal that `docs/spec-fabric-identity.md` references and there
+/// is no second naming authority, free-form key, or property bag. These atoms
+/// are in-memory values; the persistent encoding of a reference stays owned by
+/// the identity schema.
 template <ResourceKeyRole Role> class ResourceKey {
 public:
   explicit constexpr ResourceKey(std::uint32_t ordinal) : ordinal_(ordinal) {}
@@ -115,102 +115,113 @@ struct CapacityDimension {
   CapacityUnits initialOccupancy;
 };
 
-/// One resource state. Its key is its declared ordinal and its canonical
-/// initial value is the declared initial occupancy of its dimensions.
-struct ResourceState {
-  std::vector<CapacityDimension> capacityDimensions;
-};
-
-/// One atomic capacity claim of a use pattern. `release` names the
-/// owner-declared event at which the claimed units return. A pattern claims a
-/// capacity dimension at most once, which is what makes both the atomic
-/// envelope and the release of every claimed capacity exact.
+/// One validated capacity claim of an atomic use pattern. The pattern owns the
+/// one acquire and the one release of the whole envelope, so a claim carries
+/// no release of its own and cannot be split.
 struct Claim {
   StateKey state;
   CapacityDimensionKey dimension;
   CapacityUnits amount;
-  EventKey release;
 };
 
-/// One implementation transaction of an accepted use, such as a service beat
-/// or a lane group. It only selects claims already declared by the enclosing
-/// pattern and carries no requester, eligibility, event, or timing of its own,
-/// so a decomposition can neither become a software actor or Mapping use nor
-/// change the single external firing, retirement, ordering, and progress
-/// contract. Declaration order is the exact issue order.
-struct InternalTransaction {
-  std::vector<ClaimKey> claims;
-};
-
-/// One atomic resource use. Every claim is acquired together at `acquire` and
-/// returns at its own declared release event. Eligibility and the
+/// One validated atomic resource use. Every claim is acquired together at
+/// `acquire` and the whole envelope returns at `release`. Eligibility and the
 /// timing/progress contract are owner-declared closed keys rather than a
-/// predicate or parameter map. Mapping selects a declared pattern; it cannot
-/// split these claims.
+/// predicate or parameter map. Spans read the owning contract's tables.
 struct UsePattern {
   RequesterKey requester;
   EligibilityKey eligibility;
   EventKey acquire;
+  EventKey release;
   TimingContractKey timingAndProgress;
-  std::vector<Claim> claims;
-  std::vector<InternalTransaction> internalTransactions;
+  llvm::ArrayRef<Claim> claims;
+  std::uint32_t internalTransactionCount;
 };
 
-/// Grants the first eligible requester in the exact permutation.
-struct FixedPriority {
-  std::vector<RequesterKey> requesterOrder;
+class ResourceContract;
+
+/// Validated fixed-priority order. It has no cursor: the permutation alone
+/// decides every grant.
+class FixedPriorityView {
+public:
+  llvm::ArrayRef<RequesterKey> requesterOrder() const { return order_; }
+
+  /// The first eligible requester in the exact permutation. `eligible` is
+  /// transient execution state indexed by requester ordinal and sized to the
+  /// requester domain.
+  std::optional<RequesterKey> grant(llvm::ArrayRef<bool> eligible) const;
+
+private:
+  explicit FixedPriorityView(llvm::ArrayRef<RequesterKey> order)
+      : order_(order) {}
+
+  llvm::ArrayRef<RequesterKey> order_;
+
+  friend class ResourceContract;
 };
 
-/// Scans the exact cycle from the current cursor and advances only past a
-/// successfully granted requester. `resetCursor` is the scan origin
-/// established by reset; the running cursor is execution state held by the
-/// consumer and never by the contract.
-struct RoundRobin {
-  std::vector<RequesterKey> requesterCycle;
-  RequesterKey resetCursor;
-};
-
-/// The closed exact requester-ordering domain. A contract without a policy has
-/// no arbiter at all: declaration, insertion, map, and arrival order never
-/// become an ordering.
-using GrantPolicy = std::variant<FixedPriority, RoundRobin>;
-
-/// One arbitration step. `nextCursor` is unchanged by a failed or absent
-/// grant.
-struct GrantDecision {
+/// One round-robin arbitration step. `nextCursor` equals the incoming cursor
+/// unless a grant succeeded.
+struct RoundRobinGrant {
   std::optional<RequesterKey> granted;
   RequesterKey nextCursor;
 };
 
-/// The cursor established by reset: the declared RoundRobin origin, or the
-/// front of a FixedPriority permutation. The permutation must be non-empty; a
-/// resource with no requester never arbitrates.
-RequesterKey resetGrantCursor(const GrantPolicy &policy);
+/// Validated round-robin cycle. The running cursor is caller-owned execution
+/// state; only its reset origin is declared.
+class RoundRobinView {
+public:
+  llvm::ArrayRef<RequesterKey> requesterCycle() const { return cycle_; }
 
-/// Resolves one grant. `eligible` is transient execution state indexed by
-/// requester ordinal and sized to the requester domain. FixedPriority always
-/// scans from the front of its permutation and keeps that origin as the next
-/// cursor; RoundRobin scans its exact cycle from `cursor` and advances only
-/// past a successfully granted requester.
-GrantDecision arbitrate(const GrantPolicy &policy, RequesterKey cursor,
-                        llvm::ArrayRef<bool> eligible);
+  /// The cursor established by reset.
+  RequesterKey resetCursor() const { return cycle_[resetPosition_]; }
 
-/// Typed contract validation failures.
+  /// Scans the exact cycle from `cursor`, which must be `resetCursor()` or a
+  /// `nextCursor` of this cycle, and advances only past a granted requester.
+  RoundRobinGrant grant(RequesterKey cursor,
+                        llvm::ArrayRef<bool> eligible) const;
+
+private:
+  RoundRobinView(llvm::ArrayRef<RequesterKey> cycle,
+                 std::uint32_t resetPosition)
+      : cycle_(cycle), resetPosition_(resetPosition) {}
+
+  llvm::ArrayRef<RequesterKey> cycle_;
+  std::uint32_t resetPosition_;
+
+  friend class ResourceContract;
+};
+
+/// The closed exact requester-ordering domain, readable only from a validated
+/// contract. Declaration, insertion, map, and arrival order never become an
+/// ordering.
+using GrantPolicyView = std::variant<FixedPriorityView, RoundRobinView>;
+
+/// Typed contract validation failures, listed in validation precedence order.
 enum class ResourceContractViolation : std::uint32_t {
+  DuplicateStateKey,
+  UnknownStateKey,
+  DuplicateCapacityDimensionKey,
+  UnknownCapacityDimensionKey,
   InitialOccupancyExceedsCapacity,
+  DuplicateRequesterKey,
   UnknownRequesterKey,
+  DuplicateUsePatternKey,
+  UnknownUsePatternKey,
   UnknownEligibilityKey,
   UnknownEventKey,
   UnknownTimingContractKey,
-  UnknownStateKey,
-  UndeclaredClaim,
-  DuplicateClaim,
-  AmbiguousRelease,
-  ClaimExceedsCapacity,
+  DuplicateClaimKey,
   UnknownClaimKey,
+  UndeclaredClaim,
+  DuplicateCapacityClaim,
+  AmbiguousRelease,
+  CapacityArithmeticOverflow,
+  ClaimExceedsCapacity,
   DuplicateRequesterInGrantPolicy,
   RequesterOmittedFromGrantPolicy,
   ContentionWithoutGrantPolicy,
+  GrantPolicyWithoutContention,
 };
 
 llvm::StringRef
@@ -235,83 +246,176 @@ private:
   std::string message_;
 };
 
-/// What one owning resource declares. Positions are keys: `states[i]` is
-/// StateKey `i`, `usePatterns[i]` is UsePatternKey `i`, and each count closes
-/// the owner domain of the matching key role.
+/// One declared capacity dimension of a state.
+struct CapacityDimensionDeclaration {
+  CapacityDimensionKey key;
+  CapacityUnits capacity;
+  CapacityUnits initialOccupancy;
+};
+
+/// One declared resource state and its closed capacity dimension inventory.
+struct ResourceStateDeclaration {
+  StateKey key;
+  std::vector<CapacityDimensionDeclaration> capacityDimensions;
+};
+
+/// One declared claim of a use pattern. `release` is the release event this
+/// claim proposes for the atomic envelope; validation accepts a pattern only
+/// when every claim proposes the pattern's one release event, and the accepted
+/// claim keeps no release of its own.
+struct ClaimDeclaration {
+  ClaimKey key;
+  StateKey state;
+  CapacityDimensionKey dimension;
+  CapacityUnits amount;
+  EventKey release;
+};
+
+/// One declared implementation transaction of an accepted use, such as a
+/// service beat or a lane group. It only selects claim keys already declared
+/// by the enclosing pattern and carries no requester, eligibility, event, or
+/// timing of its own, so a decomposition can neither become a software actor
+/// or Mapping use nor change the single external firing, retirement, ordering,
+/// and progress contract. Declaration order is the exact issue order.
+struct InternalTransactionDeclaration {
+  std::vector<ClaimKey> claims;
+};
+
+/// One declared atomic use pattern.
+struct UsePatternDeclaration {
+  UsePatternKey key;
+  RequesterKey requester;
+  EligibilityKey eligibility;
+  EventKey acquire;
+  EventKey release;
+  TimingContractKey timingAndProgress;
+  std::vector<ClaimDeclaration> claims;
+  std::vector<InternalTransactionDeclaration> internalTransactions;
+};
+
+struct FixedPriorityDeclaration {
+  std::vector<RequesterKey> requesterOrder;
+};
+
+struct RoundRobinDeclaration {
+  std::vector<RequesterKey> requesterCycle;
+  RequesterKey resetCursor;
+};
+
+using GrantPolicyDeclaration =
+    std::variant<FixedPriorityDeclaration, RoundRobinDeclaration>;
+
+/// What one owning resource declares. Each inventory carries its owner-defined
+/// keys and must present every key of its closed domain exactly once;
+/// validation normalizes accepted records into key order, so declaration order
+/// carries no meaning. `eligibilityCount`, `eventCount`, and
+/// `timingContractCount` close the three reference-only key domains, which
+/// declare no record and therefore have no inventory to duplicate.
 ///
-/// `grantPolicy` may be omitted only when the declaration itself proves
-/// contention impossible, which is exactly when no capacity dimension is
-/// claimed by use patterns of two different requesters.
+/// `grantPolicy` is present exactly when arbitration is observable, which is
+/// exactly when some capacity dimension is claimed by use patterns of two
+/// different requesters.
 struct ResourceContractDeclaration {
-  std::vector<ResourceState> states;
-  std::vector<UsePattern> usePatterns;
-  std::uint32_t requesterCount = 0;
+  std::vector<ResourceStateDeclaration> states;
+  std::vector<UsePatternDeclaration> usePatterns;
+  std::vector<RequesterKey> requesters;
   std::uint32_t eligibilityCount = 0;
   std::uint32_t eventCount = 0;
   std::uint32_t timingContractCount = 0;
-  std::optional<GrantPolicy> grantPolicy;
+  std::optional<GrantPolicyDeclaration> grantPolicy;
 };
 
-/// One complete resource contract. A concrete Fabric resource embeds one of
-/// these; it is not an artifact, an independently addressable entity, or an
-/// extension registry. Only `create` produces one, so a publicly consumable
-/// contract has already been validated.
+/// One complete validated resource contract. A concrete Fabric resource embeds
+/// one of these; it is not an artifact, an independently addressable entity,
+/// or an extension registry. Records live in flat key-ordered tables read
+/// through spans, so a consumer can cache them directly; only `create`
+/// produces one, so every publicly readable record and policy view has already
+/// been validated.
 class ResourceContract {
 public:
   /// Validates one declaration and either returns the contract or the first
   /// violation under this exact precedence, which is a property of the check
   /// class rather than of where an offending record was declared:
   ///
-  ///   1. canonical initial state of every capacity dimension;
-  ///   2. use-pattern requester, eligibility, acquire, and timing keys;
-  ///   3. claim state, capacity dimension, and release keys;
-  ///   4. atomicity of each claim envelope (duplicate or split release);
-  ///   5. claim feasibility against the canonical initial state;
-  ///   6. internal transaction claim selection;
-  ///   7. grant policy permutation and reset cursor; and
-  ///   8. contention that no exact grant policy resolves.
+  ///   1. state key inventory;
+  ///   2. capacity dimension key inventory of each state;
+  ///   3. canonical initial state of every capacity dimension;
+  ///   4. requester key inventory;
+  ///   5. use pattern key inventory;
+  ///   6. use pattern requester, eligibility, acquire, release, and timing
+  ///      keys;
+  ///   7. claim key inventory of each pattern;
+  ///   8. claim state, capacity dimension, and release keys;
+  ///   9. one atomic envelope per capacity dimension and one release event per
+  ///      envelope;
+  ///  10. claim feasibility against the canonical initial state;
+  ///  11. internal transaction claim selection;
+  ///  12. grant policy permutation and reset cursor; and
+  ///  13. agreement between reachable contention and the declared ordering.
   ///
-  /// Every class scans states, patterns, claims, and requesters in ascending
-  /// declared order, and contention is reported at the lowest contended
-  /// capacity dimension, so the result never depends on iteration order.
+  /// Every class scans keys in ascending order once its inventory is
+  /// validated, and contention is reported at the lowest contended capacity
+  /// dimension, so the result never depends on declaration or iteration order.
   static llvm::Expected<ResourceContract>
-  create(ResourceContractDeclaration declaration);
+  create(const ResourceContractDeclaration &declaration);
 
   std::uint32_t stateCount() const {
-    return static_cast<std::uint32_t>(declaration_.states.size());
+    return static_cast<std::uint32_t>(states_.size());
   }
-  const ResourceState &state(StateKey key) const {
-    assert(key.ordinal() < declaration_.states.size() && "undeclared state");
-    return declaration_.states[key.ordinal()];
+  llvm::ArrayRef<CapacityDimension> capacityDimensions(StateKey key) const {
+    assert(key.ordinal() < states_.size() && "undeclared state");
+    const Span span = states_[key.ordinal()];
+    return llvm::ArrayRef<CapacityDimension>(capacityDimensions_)
+        .slice(span.first, span.count);
   }
 
   std::uint32_t usePatternCount() const {
-    return static_cast<std::uint32_t>(declaration_.usePatterns.size());
+    return static_cast<std::uint32_t>(patterns_.size());
   }
-  const UsePattern &usePattern(UsePatternKey key) const {
-    assert(key.ordinal() < declaration_.usePatterns.size() &&
-           "undeclared use pattern");
-    return declaration_.usePatterns[key.ordinal()];
-  }
+  UsePattern usePattern(UsePatternKey key) const;
+  llvm::ArrayRef<ClaimKey> internalTransaction(UsePatternKey key,
+                                               std::uint32_t transaction) const;
 
-  std::uint32_t requesterCount() const { return declaration_.requesterCount; }
-  std::uint32_t eligibilityCount() const {
-    return declaration_.eligibilityCount;
-  }
-  std::uint32_t eventCount() const { return declaration_.eventCount; }
-  std::uint32_t timingContractCount() const {
-    return declaration_.timingContractCount;
-  }
+  std::uint32_t requesterCount() const { return requesterCount_; }
+  std::uint32_t eligibilityCount() const { return eligibilityCount_; }
+  std::uint32_t eventCount() const { return eventCount_; }
+  std::uint32_t timingContractCount() const { return timingContractCount_; }
 
-  const std::optional<GrantPolicy> &grantPolicy() const {
-    return declaration_.grantPolicy;
-  }
+  std::optional<GrantPolicyView> grantPolicy() const;
 
 private:
-  explicit ResourceContract(ResourceContractDeclaration declaration)
-      : declaration_(std::move(declaration)) {}
+  enum class GrantPolicyKind : std::uint32_t { FixedPriority, RoundRobin };
 
-  ResourceContractDeclaration declaration_;
+  struct Span {
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+  };
+
+  struct PatternRecord {
+    RequesterKey requester;
+    EligibilityKey eligibility;
+    EventKey acquire;
+    EventKey release;
+    TimingContractKey timingAndProgress;
+    Span claims;
+    Span internalTransactions;
+  };
+
+  ResourceContract() = default;
+
+  std::vector<CapacityDimension> capacityDimensions_;
+  std::vector<Span> states_;
+  std::vector<Claim> claims_;
+  std::vector<ClaimKey> transactionClaims_;
+  std::vector<Span> internalTransactions_;
+  std::vector<PatternRecord> patterns_;
+  std::vector<RequesterKey> requesterOrder_;
+  std::uint32_t requesterCount_ = 0;
+  std::uint32_t eligibilityCount_ = 0;
+  std::uint32_t eventCount_ = 0;
+  std::uint32_t timingContractCount_ = 0;
+  std::optional<GrantPolicyKind> grantPolicyKind_;
+  std::uint32_t resetCursorPosition_ = 0;
 };
 
 } // namespace fabric
