@@ -53,8 +53,7 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   pm.addPass(createLLVMCfToCfPass());
   pm.addPass(createLiftCFToSCFPass());
   pm.addPass(createLLVMArithToArithPass());
-  // Expose only the exact poison-safe exit comparison needed by the
-  // counted-loop uplift below.
+  // Canonicalize the lifted exit scaffold to its exact arith.cmpi condition.
   pm.addPass(createNormalizeLiftedSCFExitPass());
   pm.addPass(createSCFWhileToForPass());
 }

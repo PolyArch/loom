@@ -1,9 +1,9 @@
 // RUN: loom-raise-opt --loom-scf-while-to-for %s | FileCheck %s
 
-// The do-while uplift would silently drop ops in the after-region of an
-// scf.while when rewriting it into scf.for. The matcher MUST therefore
-// reject after-regions that contain anything other than the
-// passthrough yield (and value-preserving casts feeding it).
+// A post-tested scf.while whose after-region carries a side effect is
+// preserved whole: the shape is not mechanically equivalent to scf.for, so
+// no rewrite fires and the store is never at risk of being dropped. The
+// loop and its complete after-region stay legal scf.while.
 
 // CHECK-LABEL: func.func @after_region_has_store
 // CHECK: scf.while
@@ -21,9 +21,8 @@ func.func @after_region_has_store(%buf: memref<?xf32>,
       scf.condition(%cond) %iv_n, %sum : index, f32
     } do {
     ^bb0(%iv: index, %acc: f32):
-      // Side-effecting op in the after-region: a memref.store. This op
-      // would be silently dropped by the do-while -> scf.for rewrite,
-      // so the matcher must refuse to fire on this loop.
+      // Side effect in the after-region: a memref.store. It must survive
+      // the pass exactly, inside the preserved scf.while.
       memref.store %acc, %buf[%iv] : memref<?xf32>
       scf.yield %iv, %acc : index, f32
     }

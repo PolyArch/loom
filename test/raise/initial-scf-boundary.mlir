@@ -2,14 +2,25 @@
 // RUN: %loom-raise %t/parallel-store.ll | FileCheck %s --check-prefix=STANDARD
 // RUN: %loom-raise %t/parallel-store.ll | loom-raise-opt --loom-scf-for-to-forall | FileCheck %s --check-prefix=EXPLICIT
 
+// The source loop is post-tested: its exit comparison observes the
+// already-bumped induction value, so mechanical raising cannot prove the
+// scf.for trip count and preserves the recovered serial loop as scf.while.
+// A serial loop remains serial until a typed decision transforms it. The
+// counted parallel decision consumes scf.for, so it has no candidate here:
+// the loop stays serial scf.while even when the decision pass runs
+// explicitly.
+
 // STANDARD-LABEL: llvm.func @parallel_store
 // STANDARD-NOT: scf.forall
-// STANDARD: scf.for %
+// STANDARD: scf.while
 // STANDARD-NOT: scf.forall
 // STANDARD: llvm.return
 
 // EXPLICIT-LABEL: llvm.func @parallel_store
-// EXPLICIT: scf.forall
+// EXPLICIT-NOT: scf.forall
+// EXPLICIT: scf.while
+// EXPLICIT-NOT: scf.forall
+// EXPLICIT: llvm.return
 
 //--- parallel-store.ll
 define void @parallel_store(ptr %output) {

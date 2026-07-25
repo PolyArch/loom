@@ -58,16 +58,24 @@ std::unique_ptr<::mlir::Pass> createLiftCFToSCFPass();
 // arithmetic via llvm.getelementptr stays llvm by design.
 std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 
-// Normalize the exact poison-safe loop-exit scaffold emitted by CFG-to-SCF
-// structuring so counted-loop uplift can read its comparison directly.
-// Scaffolds with live loop results or any unexpected structure are unchanged.
+// Canonicalize the exact poison-safe loop-exit scaffold emitted by CFG-to-SCF
+// structuring: the lifted scf.if collapses into the direct arith.cmpi
+// condition it selects. Scaffolds with live loop results or any unexpected
+// structure are unchanged.
 std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
 
-// Uplift counted scf.while loops inside callable regions into scf.for, keeping
-// each loop's imported annotation on the uplifted loop. This combines the
-// upstream counted-loop utility with Loom's conservative do-while counted-loop
-// fallback. Each existing operation is offered the transform once; loops
-// outside callables and unsupported shapes are left as scf.while.
+// Uplift a counted scf.while loop inside a callable region into scf.for with
+// the upstream counted-loop utility, keeping the loop's imported annotation on
+// the uplifted loop. The utility recognizes the pre-tested counted shape,
+// whose trip count is structurally equivalent to scf.for. Two exactness gates
+// apply because the utility stops short of proving them: it reconstructs the
+// exit induction value rather than forwarding the exact failed-condition
+// value, so the rewrite is offered only when the loop has no external users;
+// and it accepts a loop-invariant step of unproven sign, so the step must be
+// a statically proven positive constant. The post-tested (do-while) counted
+// shape is not equivalent to scf.for without a loop-semantics analysis this
+// pass does not own, so it and every other unsupported shape are left as
+// legal scf.while. Each existing operation is offered the transform once.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // The closed set of execution shapes an `llvm.intr.fmuladd` can be
