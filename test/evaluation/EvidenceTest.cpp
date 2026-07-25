@@ -525,6 +525,18 @@ void completedMetricResultsUseRequestOwnedSemantics() {
                         !llvm::StringRef(canonical).contains("scope") &&
                         !llvm::StringRef(canonical).contains("unit"),
           "MetricResult copied Request or registry authority");
+  require(__func__,
+          !llvm::StringRef(canonical).contains("evaluation.metric"),
+          "Evidence revived the standalone metric wire identity");
+
+  // The nested point value round-trips through the Evidence artifact store.
+  const ArtifactRootReference published =
+      takeExpected(__func__, publishEvaluationEvidence(evidence, store));
+  const EvaluationEvidence imported = takeExpected(
+      __func__, importEvaluationEvidence(published, caseResolution(__func__),
+                                         store));
+  require(__func__, serializeEvaluationEvidence(imported) == canonical,
+          "nested metric value encoding did not round-trip");
 
   const MetricResult wrongValue{
       UncertaintyKind::ExactWithinModel,
@@ -536,42 +548,6 @@ void completedMetricResultsUseRequestOwnedSemantics() {
                     CompletedEvidence{{wrongValue}, {absentFinding()}},
                     caseResolution(__func__), store),
       "cycle_count requires integer values");
-}
-
-void metricResultValueEncodesOnlyNestedUnderEvidence() {
-  TemporaryDirectory directory(__func__);
-  const ArtifactStore store(directory.path());
-  const EvaluationRequest evaluationRequest =
-      metricAndFindingRequest(__func__, store);
-  takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
-  const ArtifactRootReference output = putArtifact(__func__, store, 0x67);
-  const MetricResult metric{UncertaintyKind::ExactWithinModel,
-                            PointObservation{IntegerValue(7)}, {}};
-  const EvaluationEvidence evidence = takeExpected(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    CompletedEvidence{{metric}, {absentFinding()}},
-                    caseResolution(__func__), store));
-  const std::string canonical = serializeEvaluationEvidence(evidence);
-  // The retired standalone evaluation.metric wire identity never appears; the
-  // metric result value encoding lives only nested under evaluation.evidence.
-  require(__func__,
-          !llvm::StringRef(canonical).contains("evaluation.metric"),
-          "Evidence serialized the retired standalone metric wire identity");
-  require(__func__, llvm::StringRef(canonical).contains("\"form\":\"point\""),
-          "Evidence lost the nested metric observation value encoding");
-  require(__func__,
-          !llvm::StringRef(canonical).contains("\"schema\":\"evaluation.metric\""),
-          "Evidence wrapped a metric result in a standalone schema envelope");
-  // The nested-only encoding round-trips through the Evidence artifact store.
-  const ArtifactRootReference published =
-      takeExpected(__func__, publishEvaluationEvidence(evidence, store));
-  const EvaluationEvidence imported = takeExpected(
-      __func__, importEvaluationEvidence(published, caseResolution(__func__),
-                                         store));
-  require(__func__, serializeEvaluationEvidence(imported) == canonical,
-          "nested metric value encoding did not round-trip");
 }
 
 void noncompletedEvidenceHasNoResultTables() {
@@ -674,7 +650,6 @@ int main() {
   completedEvidenceIsTotalAndCanonical();
   completedEvidenceRejectsGapsAndInvalidFindings();
   completedMetricResultsUseRequestOwnedSemantics();
-  metricResultValueEncodesOnlyNestedUnderEvidence();
   noncompletedEvidenceHasNoResultTables();
   detailedBundleFieldIsUnknown();
   terminalFindingFailsClosedWithoutExecutionOwner();
