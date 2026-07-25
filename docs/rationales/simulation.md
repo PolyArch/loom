@@ -1,0 +1,134 @@
+# Simulation Rationale
+
+Normative contracts are owned by
+[Simulation Artifacts](../spec-simulation-artifacts.md),
+[DFG-sim](../spec-sim-dfg.md),
+[CGRA-sim](../spec-sim-cgra.md), and
+[Simulation Comparison](../spec-sim-comparison.md).
+
+## Why Loom Has Three Simulation Boundaries
+
+DFG-sim executes one canonical SpatialCore graph without Fabric limits. It is
+hardware-unconstrained but still models actor latency, initiation interval,
+ordered tokens, state, memory semantics, and backpressure. It does not execute
+the InstructionCore or whole program.
+
+CGRA-sim adds exact Fabric and SpatialMapping. It models PE/FU, memory,
+switches, routes, buffers, tags, temporal contexts, resource contention, and
+physical deadlock at cycle fidelity.
+
+System simulation combines an exact Deployment and gem5 binding. Gem5 owns
+HostCore and InstructionCore execution, caches, coherent memory, system NoC,
+OS/runtime behavior, and whole-system time. Loom's SpatialCore model is a
+device-level participant. Building another CPU or SoC simulator inside Loom
+would duplicate mature infrastructure and distract from the accelerator
+research focus.
+
+SST remains a possible future adapter for large-scale exploration, not a first-
+version second system authority.
+
+## Why DFG And CGRA Share Functional Semantics
+
+An actor's firing and state transition must mean the same thing at every
+fidelity. The shared semantic kernel defines consumption, production,
+linearization, commit, and state update. Execution policies decide when an
+enabled transition can run and what resource delays it.
+
+Separate per-simulator semantics would let a graph pass DFG-sim and fail CGRA-
+sim for reasons unrelated to hardware. Shared memory consistency is especially
+important: local CGRA and external gem5 providers add timing and contention but
+cannot redefine reads-from, atomicity, or visibility.
+
+## Why Gem5 Owns System Time
+
+An in-process bridge integrates the reusable SpatialCore simulator as an
+out-of-tree gem5 component. The gem5 event queue is the sole system time
+authority. The SpatialCore session advances to the next observable boundary,
+such as a memory request, interrupt, result, completion, or wakeup time, then
+returns control.
+
+Running an independent Loom system event loop would require clock
+synchronization, duplicate ordering, and conflict resolution. The bridge is a
+typed adapter, not a second scheduler. Fabric remains simulator-neutral; a
+Gem5SimulationBinding proves correspondence between exact hardware facts and
+the selected gem5 models.
+
+## Why Workload, Runtime Input, And Execution Are Separate
+
+A workload identifies the exact rooted graph launch and fixed problem facts.
+Runtime input supplies values, ordered stream sequences and close state, and
+byte-addressed memory objects. Execution records terminal and requested
+observations. Keeping these objects separate permits replay with new inputs and
+prevents expected outputs from contaminating the workload identity.
+
+The rooted launch already owns graph, thread context, ABI, and static launch
+identity, so the workload does not repeat them. Dense coordinates are admitted
+in schema 1.0; unresolved DynamicWork correspondence fails typed Unsupported
+rather than using temporary IDs.
+
+Value, stream, and memory inputs follow the graph ABI instead of carrying a
+second port-kind union. Aliasing uses shared canonical memory-object ordinals,
+not a separate alias graph. Defined, poison, and undef values use one canonical
+semantic-value algebra shared with compiler semantics.
+
+## Why Execution Has One Root And Closed Terminals
+
+The exact EvaluationRequest already selects spatial or system model semantics.
+Adding a second execution-kind tag would allow disagreement. One execution
+root references that Request and ends as Retired, Halted, or StoppedByLimit.
+
+Deadlock witnesses belong only to Halted and resolve through typed model output
+slots. Unsupported capability or provider failure does not publish a
+placeholder execution. Output cardinality is validated against the Request so
+an adapter cannot omit or add observations.
+
+## Why Observations Are Typed And Positional
+
+The workload contract already owns requested value, stream, and memory targets
+and their canonical order. Execution stores observations positionally rather
+than repeating keys. Values publish atomically, streams carry an ordered prefix
+and close state, and memories report exact visible state; a generic
+Complete/Partial/Unavailable wrapper would create nonsensical combinations.
+
+Progress stores only the minimal launch, retirement, and terminal coordinates.
+Elapsed cycles are Evaluation metrics, and a full event list is trace data.
+Activity uses one envelope with distinct actor, Fabric-resource, and
+implementation-signal payloads because their keys and validation differ.
+
+## Why Trace Uses A Small Typed Algebra
+
+Generic `kind + property map` events would let every simulator invent payload
+semantics. A per-operation hierarchy would duplicate the same commit,
+publication, memory, and physical lifecycle across many types. The shared trace
+uses a small closed set of actor, token, memory, and physical events with exact
+Dataflow, Fabric, and Mapping references.
+
+Dynamic occurrences are execution-local ordinals, not persistent EntityIds.
+Semantic token publication records exact values when that capture level is
+requested. Physical request, grant, and retirement are the irreducible facts;
+stall is derived from their interval, not stored as another event.
+
+Trace capture levels are inclusive so Semantic contains Firing and
+Microarchitecture contains both. DFG-sim supports only the levels it can
+truthfully produce; requesting physical microarchitecture from DFG-sim is
+Unsupported.
+
+## Why Raw Trace Persistence Is Deferred
+
+Inlining large traces into SimulationExecution would prevent streaming,
+deduplication, and selective loading. Opaque simulator-private chunks would
+prevent shared validation and visualization. A future raw detailed-bundle
+owner may provide typed manifest and chunk inventory, but no such field exists
+in schema 1.0.
+
+Until that owner closes, traces are diagnostic attempt or scratch material.
+Visualization may consume the shared typed in-memory wire but cannot turn a
+private file into semantic evidence.
+
+## Why Simulation Comparison Is Gated
+
+DFG, CGRA, system, and RTL results are comparable only for observations whose
+subjects, workload, external services, reference cycles, and implementation
+correlations align. Functional equality may be meaningful when cycle equality
+is not. Comparison therefore validates exact coupling before deriving metrics
+or findings instead of coercing unlike executions into one score.

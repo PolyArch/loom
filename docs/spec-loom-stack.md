@@ -5,6 +5,21 @@ semantics belong to the referenced subsystem specifications. This document
 does not duplicate their schemas, defaults, algorithms, or implementation
 status.
 
+## Documentation Authority
+
+Tracked `spec-*.md` files are the sole normative design authority. They own
+WHAT implementations and verifiers must do. Tracked files under
+`docs/rationales/` explain WHY those contracts were selected, including
+rejected alternatives, but cannot add fields, semantics, defaults, or
+exceptions. Source code owns HOW and must conform to the specifications.
+
+A rationale disagreement with a specification is a documentation defect, not
+an alternate contract. A changed decision updates the one normative owner and
+its rationale together; superseded implementable contracts are not retained.
+Temporary meeting notes, implementation status, and work queues are neither
+normative inputs nor tracked dependencies. The navigation entry point is
+[Loom Design Documentation](README.md).
+
 ## Product Scope
 
 Loom is a full-stack compiler and architecture-exploration framework for
