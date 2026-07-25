@@ -680,7 +680,10 @@ Spatial selected decisions include only non-derived choices:
 Candidate caches may contain only exact functions of `FrozenModel` plus those
 decisions: occurrence/context/port/service/buffer occupancy, route-derived
 claims and switch configuration, tag continuity/interference domains, reverse
-incidence, and typed `V/G` components. Search work is not a cost component.
+incidence, the selected handshake-arc adjacency and incremental topological or
+SCC indexes, and typed `V/G` components. These handshake indexes are exact
+rebuildable functions of `F` and current selections; they are not another
+legality authority. Search work is not a cost component.
 Timing, slack, criticality, runtime, power, and other `Q` remain in exact
 Evaluation adapter state.
 
@@ -738,15 +741,24 @@ decisions and derived state, applies the change in a shadow candidate, and
 commits or rolls back Mapping and Evaluation state together. A binding change
 must invalidate old attachments and route claims, rebuild every incident
 route dependency, and update resource-time, buffer, tag, memory, `V/G`, and
-affected Evaluation subjects before commit. A resource change that invalidates
+affected Evaluation subjects before commit. The transaction also updates every
+affected Fabric-owned handshake fragment and runs the selected combinational
+handshake gate before commit. A newly closed directed cycle rolls back the
+transaction as intrinsic invalidity. A resource change that invalidates
 placement or routing follows the same closure.
 
 Exact references, domain membership, type and width compatibility, directed
 connectivity, and a route being either explicitly unrouted or a valid rooted
 arborescence are never relaxable. Implicit broadcast or merge, same-net
 reconvergence, invalid tags, and unresolved references are not candidate
-states. Only closed kinds admitted by `TemporaryViolationPolicy` may remain in
-a committed search candidate; all must be zero before finalization.
+states. Neither is a selected combinational handshake cycle; it cannot become
+a penalty, Evaluation metric, or policy-admitted temporary violation. An
+explicitly unrouted partial candidate proves no final closure merely because
+the missing arcs are absent. Only closed kinds admitted by
+`TemporaryViolationPolicy` may remain in a committed search candidate; all
+must be zero before finalization. Independent final verification discards all
+incremental cycle caches and recomputes the complete selected graph from the
+published facts.
 
 ## Edge Disposition And Routing
 

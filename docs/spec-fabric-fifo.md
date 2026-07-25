@@ -92,6 +92,28 @@ alternative. Accelerator-aware timing, frequency, initiation interval, and
 runtime consequences come from central Evaluation rather than a FIFO-private
 cost model.
 
+## Handshake Dependency Projection
+
+The FIFO owner derives signal-level combinational arcs from the selected mode;
+Mapping does not persist a second cycle-breaking flag.
+
+`Bypass` contributes the transparent forward valid dependency from input to
+output and the transparent backward ready dependency from output to input.
+`Buffered` never contributes an input-valid to output-valid dependency because
+an enqueued token is not visible until a later cycle. Its same-cycle
+dequeue/enqueue rule may still contribute an output-ready to input-ready
+dependency when downstream acceptance releases full capacity. Therefore
+"stateful" is not a blanket assertion that every combinational dependency is
+cut. A registered-ready, skid-isolated, or otherwise stronger break exists
+only when Fabric declares that exact typed capability or refinement.
+
+Fabric structural verification considers only FIFO arcs unconditional across
+all legal configured views. Mapping verification uses the exact selected mode
+and refinement. A bypass selection that closes a directed combinational
+handshake cycle is intrinsically invalid Mapping. Selecting buffered mode is
+legal only when the complete derived graph, including any remaining ready
+dependency, is acyclic.
+
 ## Lifecycle
 
 When an activation is admitted to a FIFO state slot, buffered state is empty
@@ -119,6 +141,8 @@ storage details do not become a second architectural contract.
 Anchor-level tests cover one buffered occurrence at empty, full, enqueue,
 dequeue, and simultaneous dequeue/enqueue boundaries; one bypassable
 occurrence in both legal modes with propagated backpressure; rejection of
-bypass on a non-bypassable occurrence; and derivation of configured mode from
-the selected RouteTree. Tests do not preserve internal pointer encoding,
+bypass on a non-bypassable occurrence; derivation of configured mode from the
+selected RouteTree; and a topology in which bypass closes a selected
+handshake cycle while a declared registered break does not. Tests do not
+preserve internal pointer encoding,
 queue implementation, raw configuration bits, or exhaustive occupancy traces.

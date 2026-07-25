@@ -205,6 +205,15 @@ instantiate may survive finalization. An instantiate directly under
 `builtin.module` is rejected by the placement rule rather than deferred to
 elaboration.
 
+An authoring environment may make another module template available as an
+elaboration input, but the finalized Module does not retain that source as an
+`ImportedModule` dependency. Its concrete body is expanded, semantic
+canonicalization removes the authoring route, and the final Module root admits
+no direct dependency. Nested PE, FU, switch, and memory templates likewise
+remain local elaboration inputs. This keeps symbol lookup out of persistent
+identity and ensures equivalent inline and instantiated authoring forms
+canonicalize to the same hardware artifact.
+
 Module targets inline their physical body at the use site. Named PE, FU,
 switch, and memory targets create fresh anonymous physical occurrences with
 independent occurrence identity and physical state for every use. Named

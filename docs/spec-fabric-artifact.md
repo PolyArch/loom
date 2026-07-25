@@ -33,6 +33,25 @@ only multi-core Fabric system. `InterconnectImplementation` is the exact
 protocol and implementation sibling for one `System`; it refines, but never
 redefines, that system's Transport Architecture.
 
+Each root variant has one typed MLIR root operation and no substitute:
+
+```text
+Module                     -> fabric.module
+System                     -> fabric.system
+InterconnectImplementation -> fabric.interconnect_implementation
+```
+
+The authoring `builtin.module` is only a symbol and dependency-resolution
+container. It is never the persistent root payload. A root-kind tag paired
+with a different operation, a generic module payload, or a caller-declared
+root kind is structurally invalid. If a running Loom build has not registered
+the exact typed operation, canonical codec, importer, and semantic verifier for
+a known root variant, that variant fails closed as
+`Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
+root operation. This is distinct from
+`fabric_artifact_owner_contract_unavailable`, which means the schema itself has
+no enabled owner contract, as for `ImplementationInput` in version 1.0.
+
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
 
@@ -53,7 +72,9 @@ RefinedSystem        = 1
 ImplementationInput  = 2  // reserved-unavailable in schema 1.0
 ```
 
-A `Module` or `System` root admits only `ImportedModule`. An
+A `Module` root admits no direct dependency: every authoring template use is
+fully elaborated into the canonical Module and no `fabric.instantiate`
+survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
 other direct dependency in schema 1.0. `ImplementationInput = 2` retains its
 wire ordinal so schema 1.x never renumbers a published discriminant, but it has
@@ -71,6 +92,51 @@ exact accepted contracts. Each table entry must fix the dependency owner's
 `ArtifactSchemaDescriptor`, required root kind, any admitted owner-local target
 kind and canonical codec, and one closed dependency-use validator. The role
 ordinal alone never owns those facts.
+
+Dependency use is determined by the static field that contains the compact
+reference. There is no generic dependency-use tag, path, or property bag. The
+closed version 1.0 field catalog is:
+
+```text
+System AccCore spatial_core
+  role: ImportedModule
+  target: FabricModuleTemplateRef
+
+System spatial_attachment module endpoint
+  role: ImportedModule
+  target: FabricModuleBoundaryEndpointRef
+
+InterconnectImplementation refined_system
+  role: RefinedSystem
+  target: root only
+
+InterconnectImplementation EndpointRefinement architecture target
+  role: RefinedSystem
+  target: FabricTransportEndpointRef
+
+InterconnectImplementation ResourceStateRefinement architecture target
+  role: RefinedSystem
+  target: FabricResourceStateRef
+
+InterconnectImplementation TransferPatternRefinement architecture target
+  role: RefinedSystem
+  target: FabricTransferPatternRef
+
+InterconnectImplementation ConfigurationRefinement architecture target
+  role: RefinedSystem
+  target: FabricSemanticConfigFieldRef
+```
+
+Each targetful field encodes exactly `u64be(dependency_table_ordinal)` followed
+by the dependency owner's canonical local-target bytes. The root-only field
+encodes only the ordinal. The decoder obtains the required role and target type
+from the field schema, checks the ordinal and role, invokes the dependency
+owner's strict local-reference decoder, validates the target against the exact
+imported root view, and requires decode/re-encode equality. A row is used when
+at least one valid field, including the root-only `refined_system` field,
+references its ordinal. After walking the complete typed root, every direct
+dependency row must have been used and every external use must resolve to one
+row. Duplicate uses are legal; duplicate or unused rows are not.
 
 A repeated use of one enabled dependency repeats its table ordinal in the
 payload; it does not duplicate the dependency row. Rows are sorted by `(role,
@@ -165,11 +231,14 @@ Finalization is failure-atomic:
 ```text
 authoring draft
   -> close scopes and helpers
+  -> require exactly one typed root operation for the selected root variant
   -> resolve direct typed references
   -> validate root/role cardinality and reject unavailable dependency roles
   -> get and strict-import every already-published direct dependency
   -> recursively validate the exact dependency closure
+  -> decode every typed external use and reject missing or unused rows
   -> expand instantiations
+  -> reject every residual fabric.instantiate
   -> build a private identifier-free root-complete candidate
   -> verify semantic contracts on that candidate
   -> canonicalize and assign local identities
@@ -179,6 +248,15 @@ authoring draft
   -> Common ArtifactStore::put the Fabric root object only
   -> return the published ArtifactRootReference
 ```
+
+Envelope encode/decode, dependency-role preflight, and Common identity
+calculation are necessary prefixes of this pipeline, not a reduced
+finalization mode. An implementation that has not decoded all typed dependency
+uses, rejected unused rows, expanded the complete instance graph, built the
+root-complete semantic view, performed semantic canonicalization, and strictly
+reimported the result cannot return `FinalizedFabricRoot` or claim artifact
+success. It must return the typed unavailable, invalid, incomplete, or store
+failure owned by the first unsatisfied stage.
 
 Fabric failure atomicity means one root object is complete or absent; it does
 not mean that the root and its dependency graph become visible in one
@@ -201,8 +279,13 @@ Failure classes retain their existing owners:
 * an absent exact dependency is a missing-artifact failure;
 * a reserved-unavailable dependency role is
   `fabric_artifact_owner_contract_unavailable` and is rejected before lookup;
-* a role, root-kind, local-target, duplicate, cycle, or owner-semantic mismatch
-  is structurally `Invalid` Fabric input;
+* a known root variant whose typed root provider is not registered is
+  `Unsupported(FabricRootProviderUnavailable)`;
+* a wrong root operation, role, root kind, local target, dependency use,
+  duplicate or unused row, residual instantiation, dependency cycle, or
+  owner-semantic mismatch is structurally `Invalid` Fabric input; a cycle in
+  the root-complete unconditional handshake graph is specifically
+  `Invalid(UnconditionalCombinationalHandshakeCycle)`;
 * malformed dependency storage, key/preimage mismatch, or identity collision
   is Common store corruption or collision;
 * canonicalization resource exhaustion is `Incomplete`;
@@ -220,10 +303,20 @@ the missing or corrupt dependency and never repairs, rewrites, or deletes the
 root.
 
 Semantic verification uses the structurally complete root relation, not a
-caller-supplied connection shadow. For every contained module it derives the
-complete combinational ready/valid dependency graph from canonical point
-connections and zero-state resource contracts, then applies the cycle rule in
-`docs/spec-fabric-module.md` before canonical bytes or identity are published.
+caller-supplied connection shadow. It validates all resource-local handshake
+alternatives and rejects a cycle only when every arc in that cycle is
+unconditional in every legal configured view. It must not union mutually
+exclusive switch traversals, FIFO modes, tags, or physical refinements into a
+fabricated active graph. The complete graph for one selected configuration is
+owned by SpatialMapping or SystemMapping verification under
+`docs/spec-mapping-verification.md`.
+
+Cross-instance structure is never validated one template at a time. The
+private candidate is built only after the complete reachable instantiation
+graph has been expanded, and any residual `fabric.instantiate` is invalid.
+Consequently point connections and resource-local dependencies that close a
+cycle across former instance boundaries are visible to both the unconditional
+Fabric structural gate and the later selected Mapping gate.
 
 ## Immutable Root-Complete Views
 
@@ -279,6 +372,13 @@ requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
 
 FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
+deriveUnconditionalHandshakeDependencyArcs(FabricArtifactView)
+  -> canonical range<HandshakeDependencyArc>
+deriveHandshakeDependencyArcs(
+    FabricArtifactView,
+    FabricHandshakeFragmentRef,
+    canonical PhysicalRefinementAssignments)
+  -> canonical range<HandshakeDependencyArc>
 FabricArtifactView::memoryOperationPorts(FabricMemoryOccurrenceRef)
   -> canonical range<FabricMemoryOperationPortRef>
 FabricArtifactView::memoryOperationPort(FabricMemoryOperationPortRef)
@@ -302,6 +402,22 @@ FabricSystemRootView::transferPatterns(SystemTransportResourceRef)
 FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
   -> optional<ClockCrossingContractView>
 ```
+
+`FabricHandshakeFragmentRef` is a sealed view-only union of
+`FabricPhysicalTraversalRef`, `FabricFuCapabilityTemplateRef`, and
+`FabricUsePatternRef`. It receives no persistent kind or identity because all
+three members already have exact Fabric-owned references. The passed
+refinement assignments must belong to the selected fragment's existing
+Fabric-owned refinement domains. The derivation is the only API by which
+Mapping, simulation, or RTL obtain resource-local ready/valid arcs; consumers
+cannot reconstruct them from operation names, latency, or a generic
+"stateful" flag.
+
+Before persistent IDs exist, the finalizer invokes the same owner
+implementation over its private root-complete semantic view and obtains
+identifier-free signal and arc keys. The post-ID API above is its canonical
+reference projection, not a second algorithm. The private keys cannot escape
+finalization or be compared with persistent references.
 
 `FabricSystemRootView` is a zero-copy typed refinement of the same immutable
 storage. It has no independent constructor or relation lists. Refinement of a
@@ -368,6 +484,11 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
+* strict field-owned dependency-use decoding, target re-encoding, and
+  rejection of missing, wrong-role, wrong-target, and unused dependency rows;
+* rejection of any envelope-only or dependency-preflight path that attempts to
+  construct or return `FinalizedFabricRoot` before the complete finalization
+  pipeline and strict reimport have succeeded;
 * preservation of the `ImplementationInput = 2` wire ordinal together with
   authoring, encoding, finalization, and import rejection before object lookup;
 * owner-local reference kind round trips and rejection of unknown or
@@ -383,6 +504,12 @@ Anchor tests cover:
   omitted that point connection from a former shadow list;
 * rejection of attempts to construct, subclass, or publicly freeze a partial
   root view;
+* full expansion of a nested instance whose cross-instance connections expose
+  an invalid unconditional cycle, plus rejection of every residual
+  `fabric.instantiate`;
+* rejection of a root-kind-2 generic module payload and typed
+  `FabricRootProviderUnavailable` when the exact
+  `fabric.interconnect_implementation` owner provider is absent;
 * a valid custom Fabric with a missing backend provider reporting
   `Unsupported`; and
 * a builtin target refusing publication when provider closure is incomplete.

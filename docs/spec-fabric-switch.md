@@ -180,6 +180,27 @@ writer continuity and `ResourceUse` sharing assignments. It is a local
 interpretation key where co-resident incompatible routes require distinction,
 not a firing, iteration, invocation, or logical-token identity.
 
+### Handshake Dependency Projection
+
+`connectivity_table` declares capability and contributes no active arc by
+itself. Absent an exact holding or registered refinement, each selected
+spatial row or resident temporal row derives both the input-valid to selected-
+output-valid dependency and the selected-output-ready to selected-input-ready
+dependency. A unicast traversal therefore propagates both halves of
+ready/valid flow. For atomic broadcast, every selected output-ready signal
+participates in the one selected input's readiness because the source cannot
+retire until every selected sink accepts. A Fabric-declared temporal grant,
+holding, or registered refinement owns its replacement arc set and any
+stateful break; it cannot silently retain or remove the zero-state arcs.
+
+Disabled outputs, Unused temporal entries, and connectivity alternatives not
+selected by the configured route table contribute no arc. All resident Active
+temporal entries contribute their possible arcs even though runtime tags choose
+which entry handles a token; a trace-specific tag value cannot erase a
+structural dependency. These projections feed the two gates in
+`docs/spec-fabric-module.md` and `docs/spec-mapping-verification.md` and are not
+stored as a second switch graph.
+
 ### Tag-driven trigger semantics
 
 When a token arrives at an input port carrying tag value `t`, the

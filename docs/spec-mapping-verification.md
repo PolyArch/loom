@@ -179,10 +179,72 @@ The verifier checks in dependency order:
   finite resources, queues, atomic admission, releases, and Fabric
   guarantees.
 
+### Selected Combinational Handshake Closure
+
+Combinational handshake closure is an intrinsic Mapping gate over the exact
+upstream Fabric and the exact Mapping under verification:
+
+```text
+verifySelectedHandshakeClosure(FabricArtifactView F,
+                               SpatialMapping | SystemMapping M)
+  -> success
+   | Spatial Invalid(SelectedCombinationalHandshakeCycle)
+   | System Rejected(SelectedCombinationalHandshakeCycle)
+```
+
+`F` must be the sealed root-complete view produced after whole-root
+elaboration. A residual `fabric.instantiate`, partial connection list, or
+caller-supplied dependency graph is invalid input rather than an incomplete
+cycle proof.
+
+The verifier first derives the complete configured selection from existing
+Mapping facts: selected FU capability templates and correspondences, memory
+operation/use patterns, RouteTree traversals, service-plan transfer patterns,
+resident switch rows and tags, ResourceUse selections, and physical refinement
+assignments. It then asks the owning Fabric resource contracts for the exact
+ready/valid dependency arcs of those selected fragments and composes them with
+the root-complete point connections. The signal and arc types are owned by
+`docs/spec-fabric-module.md`. This configured graph is derived state and is
+never persisted in Mapping, Fabric, ConfigurationABI, or Deployment.
+
+Only selected active alternatives contribute arcs. Disabled switch outputs,
+unused temporal rows, inactive FU nodes, and unselected FIFO modes contribute
+nothing. Conversely, every resident alternative that may be active under the
+selected configuration contributes its Fabric-owned arcs; runtime tags,
+traffic values, token coordinates, or observed traces cannot be used to erase
+a structural dependency. ConfigurationABI bits are derived later and cannot
+change this graph.
+
+For `fabric.fifo`, bypass contributes its transparent forward-valid and
+backward-ready arcs. Buffered mode contributes exactly the arcs derived by the
+FIFO contract, including any remaining same-cycle ready dependency; it is not
+assumed to break every cycle merely because it owns storage. A stronger
+registered break is available only through an exact Fabric capability or
+Mapping-selected refinement.
+
+The final graph must be a directed acyclic graph. A cycle is an intrinsic
+base-verifier failure, not congestion, a temporary capacity violation, a QoR
+metric, or an Evaluation finding. The diagnostic may carry a canonical sorted
+cycle witness for explanation, but that witness is not persistent semantic
+content.
+SpatialMapping checks the complete SpatialCore-local graph. SystemMapping
+requires every exact imported SpatialMapping to have passed its own gate, then
+composes the active arcs mechanically derived from those immutable mappings
+with the System transport and spatial-attachment arcs and checks the complete
+combined graph. `hierarchical` and `flat` are search decompositions, not
+verifier modes. A flat search that changed a reopened Spatial decision must
+first finalize the replacement SpatialMapping before constructing the one
+ordinary SystemMapping.
+
+For the System form, `M`'s exact import table and upstream bindings
+mechanically resolve those SpatialMappings and their Module Fabric views. They
+are not an additional caller parameter or a supplied graph summary.
+
 Validation fails fast by dependency layer: schema and upstream references;
 coverage and uniqueness; local placement, memory, and route structure;
-derived configuration, resources, and Tags; then progress closure. A later
-layer cannot guess a repair when an earlier fact is invalid.
+derived configuration, resources, Tags, and selected handshake closure; then
+progress closure. A later layer cannot guess a repair when an earlier fact is
+invalid.
 
 The intrinsic semantic result is either `Valid` or `Invalid` with typed
 diagnostics. A passing verifier does not persist `valid`, closure projections,
@@ -238,6 +300,10 @@ Every imported SpatialMapping must resolve, pass its own base verifier, bind
 the same exact `D` and `F`, and preserve its exact TechMapping lineage. The
 System verifier does not rematch Dataflow to Fabric or reopen imported
 SpatialMapping decisions.
+
+The shared Selected Combinational Handshake Closure gate above is one layer of
+this base verifier. It resolves imported active arcs through
+`ExactSpatialMappingSet(M)` and introduces no System-specific graph authority.
 
 The verifier derives one nonpersistent shared projection:
 
@@ -370,6 +436,10 @@ Tests should protect stable semantic anchors:
   complete vector-memory token routing, declared multi-transaction memory use
   patterns, MemoryBinding and exposure closure, ResourceUse, Tags, and
   progress;
+* one potential hardware cycle with two mutually exclusive switch traversals,
+  where the Fabric remains valid, one selected Mapping is acyclic, and another
+  selected Mapping is rejected; one equivalent bypass/refinement case; and one
+  selected cycle crossing an elaborated former instance boundary;
 * separation of Spatial base validity from exact `K` admission;
 * exact equality of the System import table and normalized `B_graph` range,
   including a legal InstructionCore-only empty table;
