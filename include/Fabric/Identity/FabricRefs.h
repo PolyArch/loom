@@ -379,6 +379,19 @@ struct InstructionContextRef {
   LOOM_FABRIC_REF_FIELDS(visitor.ref(self.pe); visitor.ordinal(self.ordinal);)
 };
 
+/// One reusable module-template boundary endpoint. This is attachment
+/// correspondence, not a concrete occurrence endpoint or routing resource.
+struct FabricModuleBoundaryEndpointRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.module_boundary_endpoint");
+  FabricModuleTemplateRef module;
+  FabricPortDirection direction = FabricPortDirection::Input;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.module); visitor.tag(self.direction);
+                         visitor.ordinal(self.ordinal);)
+};
+
 /// A node of the FU-internal configured graph of one FU template. Inner nodes
 /// are not independently placeable and therefore hold no EntityId.
 struct FabricFuTemplateNodeRef {
@@ -435,6 +448,17 @@ struct FabricFuOccurrencePortRef {
 
   LOOM_FABRIC_REF_FIELDS(visitor.ref(self.fu); visitor.tag(self.direction);
                          visitor.ordinal(self.ordinal);)
+};
+
+/// One condition-relevant physical graph template owned by an FU definition.
+/// The referenced record inventory is defined by the Fabric artifact owner.
+struct FabricFuCapabilityTemplateRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.fu_capability_template");
+  FabricFuTemplateRef fu;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.fu); visitor.ordinal(self.ordinal);)
 };
 
 struct FabricMemoryOperationPortRef {
@@ -535,6 +559,10 @@ LOOM_FABRIC_REF_EQUALITY(SpatialCoreOccurrenceRef, lhs.core == rhs.core)
 LOOM_FABRIC_REF_EQUALITY(InstructionCoreContextRef, lhs.core == rhs.core)
 LOOM_FABRIC_REF_EQUALITY(InstructionContextRef,
                          lhs.pe == rhs.pe && lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricModuleBoundaryEndpointRef,
+                         lhs.module == rhs.module &&
+                             lhs.direction == rhs.direction &&
+                             lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricFuTemplateNodeRef,
                          lhs.node == rhs.node && lhs.fu == rhs.fu &&
                              lhs.ordinal == rhs.ordinal)
@@ -551,6 +579,8 @@ LOOM_FABRIC_REF_EQUALITY(FabricFuNodePortRef,
 LOOM_FABRIC_REF_EQUALITY(FabricFuOccurrencePortRef,
                          lhs.fu == rhs.fu && lhs.direction == rhs.direction &&
                              lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricFuCapabilityTemplateRef,
+                         lhs.fu == rhs.fu && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryOperationPortRef,
                          lhs.memory == rhs.memory && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryCapabilityAlternativeRef,

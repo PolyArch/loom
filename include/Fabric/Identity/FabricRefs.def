@@ -99,6 +99,14 @@
 #define LOOM_FABRIC_REFINEMENT(Name, Alias, Underlying)
 #endif
 
+// Complete loom.fabric 1.x owner-local ArtifactLocalReference kind catalog.
+// Ordinal is the stable Common owner_local_kind and Type is its exact typed
+// target. Nested unions and endpoint components are intentionally absent
+// unless they are listed here.
+#ifndef LOOM_FABRIC_LOCAL_REFERENCE_KIND
+#define LOOM_FABRIC_LOCAL_REFERENCE_KIND(Ordinal, Type)
+#endif
+
 // Typed classification of every identity failure. Mapping feasibility
 // failures are deliberately absent.
 #ifndef LOOM_FABRIC_REF_ERROR
@@ -257,6 +265,52 @@ LOOM_FABRIC_REFINEMENT(MemoryConsistencyDomain, MemoryConsistencyDomainRef,
 LOOM_FABRIC_REFINEMENT(ClockDomain, ClockDomainRef, HardwareDomainRef)
 LOOM_FABRIC_REFINEMENT(ResetDomain, ResetDomainRef, HardwareDomainRef)
 
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(0, FabricModuleTemplateRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(1, FabricPeOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(2, FabricFuTemplateRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(3, FabricFuOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(4, FabricMemoryOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(5, FabricSwitchOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(6, FabricFifoOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(7, FabricBoundaryOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(8, HostCoreOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(9, AccCoreOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(10, SystemMemoryServiceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(11, SystemServiceEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(12, SystemServiceTransformRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(13, SystemTransportResourceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(14, HardwareDomainRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(15, ExternalBoundaryRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(16, SpatialCoreOccurrenceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(17, InstructionCoreContextRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(18, InstructionContextRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(19, FabricFuTemplateNodeRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(20, FabricFuOccurrenceNodeRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(21, FabricFuTemplatePortRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(22, FabricFuNodePortRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(23, FabricFuOccurrencePortRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(24, FabricFuCapabilityTemplateRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(25, FabricModuleBoundaryEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(26, FabricTransportEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(27, FabricMemoryEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(28, FabricMemoryOperationPortRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(29, FabricMemoryCapabilityAlternativeRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(30, FabricMemoryOperationContextRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(31, FabricMemoryServiceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(32, FabricMemoryServiceRegionRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(33, FabricTransferPatternRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(34, FabricResourceStateRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(35, FabricUsePatternRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(36, FabricSemanticConfigFieldRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(37, FabricPhysicalRefinementDomainRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(38, FabricPhysicalTraversalRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(39, LocalMemoryServiceRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(40, ManagerEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(41, SubordinateEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(42, MemoryConsistencyDomainRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(43, ClockDomainRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(44, ResetDomainRef)
+
 LOOM_FABRIC_REF_ERROR(MalformedSyntax, "malformed_syntax")
 LOOM_FABRIC_REF_ERROR(DeprecatedAlias, "deprecated_alias")
 LOOM_FABRIC_REF_ERROR(ForeignArtifact, "foreign_artifact")
@@ -292,5 +346,6 @@ LOOM_FABRIC_DEPRECATED_REF("fabric.property")
 #undef LOOM_FABRIC_INVENTORY_OWNER
 #undef LOOM_FABRIC_OWNER_ROLE
 #undef LOOM_FABRIC_REFINEMENT
+#undef LOOM_FABRIC_LOCAL_REFERENCE_KIND
 #undef LOOM_FABRIC_REF_ERROR
 #undef LOOM_FABRIC_DEPRECATED_REF

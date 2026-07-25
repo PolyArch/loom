@@ -118,6 +118,8 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const InstructionContextRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const FabricModuleBoundaryEndpointRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricFuTemplateNodeRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricFuOccurrenceNodeRef &ref);

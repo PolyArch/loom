@@ -164,6 +164,13 @@ llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
 
 llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                const FabricModuleBoundaryEndpointRef &ref) {
+  return checkInventory(view, FabricInventoryOwnerRef::of(ref.module),
+                        portInventory(ref.direction), ref.ordinal);
+}
+
+llvm::Error
+loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricFuTemplateNodeRef &ref) {
   return checkNode(view, FabricInventoryOwnerRef::of(ref.fu), ref.node,
                    ref.ordinal);

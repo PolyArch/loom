@@ -1,5 +1,6 @@
 add_mlir_library(LoomFabricArtifact
   FabricArtifactCodec.cpp
+  FabricArtifactLocalReference.cpp
   FabricArtifactPreflight.cpp
   FabricSystemContracts.cpp
 
