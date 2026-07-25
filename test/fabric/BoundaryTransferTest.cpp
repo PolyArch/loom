@@ -139,8 +139,12 @@ void contractIsStatelessAndUnarbitrated() {
 
   const UsePattern transfer = contract.usePattern(boundaryTransferPattern);
   require(transfer.claims.empty(), "boundary transfer claims capacity");
+  require(!transfer.commit, "boundary transfer declares a state transition");
   require(transfer.acquire == transfer.release,
           "boundary transfer does not acquire and release in one event");
+  require(contract.eventOrder(transfer.timingAndProgress) ==
+              llvm::ArrayRef<std::uint32_t>({0}),
+          "boundary transfer timing does not preserve one atomic event");
 }
 
 } // namespace

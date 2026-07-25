@@ -22,6 +22,7 @@ namespace fabric {
 enum class ResourceKeyRole : std::uint32_t {
   State,
   CapacityDimension,
+  Transition,
   UsePattern,
   Requester,
   Eligibility,
@@ -60,6 +61,7 @@ private:
 
 using StateKey = ResourceKey<ResourceKeyRole::State>;
 using CapacityDimensionKey = ResourceKey<ResourceKeyRole::CapacityDimension>;
+using ResourceTransitionKey = ResourceKey<ResourceKeyRole::Transition>;
 using UsePatternKey = ResourceKey<ResourceKeyRole::UsePattern>;
 using RequesterKey = ResourceKey<ResourceKeyRole::Requester>;
 using EligibilityKey = ResourceKey<ResourceKeyRole::Eligibility>;
@@ -115,24 +117,37 @@ struct CapacityDimension {
   CapacityUnits initialOccupancy;
 };
 
-/// One validated capacity claim of an atomic use pattern. The pattern owns the
-/// one acquire and the one release of the whole envelope, so a claim carries
-/// no release of its own and cannot be split.
+/// One validated capacity claim of an atomic use pattern. A claim is a
+/// temporary reservation only: the pattern owns the one acquire and the one
+/// release of the whole envelope, so a claim carries no release of its own,
+/// cannot be split, and never becomes durable resource state.
 struct Claim {
   StateKey state;
   CapacityDimensionKey dimension;
   CapacityUnits amount;
 };
 
+/// The one owner-defined durable state transition an accepted use applies, and
+/// the exact event at which it applies atomically. A transition is not a
+/// capacity claim: the state it produces stays until a later use commits its own
+/// transition, and no later use releases or inherits an earlier claim.
+struct Commit {
+  EventKey event;
+  ResourceTransitionKey transition;
+};
+
 /// One validated atomic resource use. Every claim is acquired together at
-/// `acquire` and the whole envelope returns at `release`. Eligibility and the
-/// timing/progress contract are owner-declared closed keys rather than a
+/// `acquire` and the complete envelope returns together at `release`. When
+/// `commit` is present its transition applies atomically at its own event, which
+/// the owning timing contract orders within `[acquire, release]`. Eligibility
+/// and the timing/progress contract are owner-declared closed keys rather than a
 /// predicate or parameter map. Spans read the owning contract's tables.
 struct UsePattern {
   RequesterKey requester;
   EligibilityKey eligibility;
   EventKey acquire;
   EventKey release;
+  std::optional<Commit> commit;
   TimingContractKey timingAndProgress;
   llvm::ArrayRef<Claim> claims;
   std::uint32_t internalTransactionCount;
@@ -204,13 +219,17 @@ enum class ResourceContractViolation : std::uint32_t {
   DuplicateCapacityDimensionKey,
   UnknownCapacityDimensionKey,
   InitialOccupancyExceedsCapacity,
+  DuplicateResourceTransitionKey,
+  UnknownResourceTransitionKey,
+  DuplicateTimingContractKey,
+  UnknownTimingContractKey,
   DuplicateRequesterKey,
   UnknownRequesterKey,
   DuplicateUsePatternKey,
   UnknownUsePatternKey,
   UnknownEligibilityKey,
   UnknownEventKey,
-  UnknownTimingContractKey,
+  TimingContractDoesNotOrderUse,
   DuplicateClaimKey,
   UnknownClaimKey,
   UndeclaredClaim,
@@ -273,12 +292,30 @@ struct ClaimDeclaration {
 
 /// One declared implementation transaction of an accepted use, such as a
 /// service beat or a lane group. It only selects claim keys already declared
-/// by the enclosing pattern and carries no requester, eligibility, event, or
-/// timing of its own, so a decomposition can neither become a software actor
-/// or Mapping use nor change the single external firing, retirement, ordering,
-/// and progress contract. Declaration order is the exact issue order.
+/// by the enclosing pattern and carries no requester, eligibility, event,
+/// commit transition, or timing of its own, so a decomposition can neither
+/// acquire a second claim envelope, apply another resource transition, become a
+/// software actor or Mapping use, nor change the single external firing,
+/// retirement, ordering, and progress contract. Declaration order is the exact
+/// issue order.
 struct InternalTransactionDeclaration {
   std::vector<ClaimKey> claims;
+};
+
+/// The one optional declared commit of a use pattern.
+struct CommitDeclaration {
+  EventKey event;
+  ResourceTransitionKey transition;
+};
+
+/// One declared timing-and-progress contract. `eventRank` is the owner's
+/// relative time of every declared event under this contract, indexed by event
+/// ordinal; equal ranks denote one atomic event. It is the one place the owner
+/// establishes `acquire <= commit <= release`, so no callback, string predicate,
+/// or property bag can order a use instead.
+struct TimingContractDeclaration {
+  TimingContractKey key;
+  std::vector<std::uint32_t> eventRank;
 };
 
 /// One declared atomic use pattern.
@@ -288,6 +325,7 @@ struct UsePatternDeclaration {
   EligibilityKey eligibility;
   EventKey acquire;
   EventKey release;
+  std::optional<CommitDeclaration> commit;
   TimingContractKey timingAndProgress;
   std::vector<ClaimDeclaration> claims;
   std::vector<InternalTransactionDeclaration> internalTransactions;
@@ -308,20 +346,21 @@ using GrantPolicyDeclaration =
 /// What one owning resource declares. Each inventory carries its owner-defined
 /// keys and must present every key of its closed domain exactly once;
 /// validation normalizes accepted records into key order, so declaration order
-/// carries no meaning. `eligibilityCount`, `eventCount`, and
-/// `timingContractCount` close the three reference-only key domains, which
-/// declare no record and therefore have no inventory to duplicate.
+/// carries no meaning. `eligibilityCount` and `eventCount` close the two
+/// reference-only key domains, which declare no record and therefore have no
+/// inventory to duplicate.
 ///
 /// `grantPolicy` is present exactly when arbitration is observable, which is
 /// exactly when some capacity dimension is claimed by use patterns of two
 /// different requesters.
 struct ResourceContractDeclaration {
   std::vector<ResourceStateDeclaration> states;
+  std::vector<ResourceTransitionKey> resourceTransitions;
+  std::vector<TimingContractDeclaration> timingContracts;
   std::vector<UsePatternDeclaration> usePatterns;
   std::vector<RequesterKey> requesters;
   std::uint32_t eligibilityCount = 0;
   std::uint32_t eventCount = 0;
-  std::uint32_t timingContractCount = 0;
   std::optional<GrantPolicyDeclaration> grantPolicy;
 };
 
@@ -340,18 +379,21 @@ public:
   ///   1. state key inventory;
   ///   2. capacity dimension key inventory of each state;
   ///   3. canonical initial state of every capacity dimension;
-  ///   4. requester key inventory;
-  ///   5. use pattern key inventory;
-  ///   6. use pattern requester, eligibility, acquire, release, and timing
-  ///      keys;
-  ///   7. claim key inventory of each pattern;
-  ///   8. claim state, capacity dimension, and release keys;
-  ///   9. one atomic envelope per capacity dimension and one release event per
+  ///   4. resource transition key inventory;
+  ///   5. timing contract key inventory and its event-rank shape;
+  ///   6. requester key inventory;
+  ///   7. use pattern key inventory;
+  ///   8. use pattern requester, eligibility, acquire, release, commit, and
+  ///      timing keys;
+  ///   9. timing-contract ordering of acquire, optional commit, and release;
+  ///  10. claim key inventory of each pattern;
+  ///  11. claim state, capacity dimension, and release keys;
+  ///  12. one atomic envelope per capacity dimension and one release event per
   ///      envelope;
-  ///  10. claim feasibility against the canonical initial state;
-  ///  11. internal transaction claim selection;
-  ///  12. grant policy permutation and reset cursor; and
-  ///  13. agreement between reachable contention and the declared ordering.
+  ///  13. claim feasibility against the canonical initial state;
+  ///  14. internal transaction claim selection;
+  ///  15. grant policy permutation and reset cursor; and
+  ///  16. agreement between reachable contention and the declared ordering.
   ///
   /// Every class scans keys in ascending order once its inventory is
   /// validated, and contention is reported at the lowest contended capacity
@@ -374,6 +416,10 @@ public:
         .slice(span.first, span.count);
   }
 
+  std::uint32_t resourceTransitionCount() const {
+    return resourceTransitionCount_;
+  }
+
   std::uint32_t usePatternCount() const {
     return static_cast<std::uint32_t>(patterns_.size());
   }
@@ -385,6 +431,10 @@ public:
   std::uint32_t eligibilityCount() const { return eligibilityCount_; }
   std::uint32_t eventCount() const { return eventCount_; }
   std::uint32_t timingContractCount() const { return timingContractCount_; }
+
+  /// The relative time this timing contract declares for every event, indexed
+  /// by event ordinal.
+  llvm::ArrayRef<std::uint32_t> eventOrder(TimingContractKey key) const;
 
   std::optional<GrantPolicyView> grantPolicy() const;
 
@@ -401,6 +451,7 @@ private:
     EligibilityKey eligibility;
     EventKey acquire;
     EventKey release;
+    std::optional<Commit> commit;
     TimingContractKey timingAndProgress;
     Span claims;
     Span internalTransactions;
@@ -410,11 +461,13 @@ private:
 
   std::vector<CapacityDimension> capacityDimensions_;
   std::vector<Span> states_;
+  std::vector<std::uint32_t> eventRanks_;
   std::vector<Claim> claims_;
   std::vector<ClaimKey> transactionClaims_;
   std::vector<Span> internalTransactions_;
   std::vector<PatternRecord> patterns_;
   std::vector<RequesterKey> requesterOrder_;
+  std::uint32_t resourceTransitionCount_ = 0;
   std::uint32_t requesterCount_ = 0;
   std::uint32_t eligibilityCount_ = 0;
   std::uint32_t eventCount_ = 0;

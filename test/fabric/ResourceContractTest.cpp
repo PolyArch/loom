@@ -72,6 +72,12 @@ template <typename Key, typename Enum> constexpr Key key(Enum value) {
   return Key(static_cast<std::uint32_t>(value));
 }
 
+// Every fixture below declares its events in time order, so an event's own
+// ordinal is the relative time its timing contract establishes.
+template <typename Enum> constexpr std::uint32_t rank(Enum value) {
+  return static_cast<std::uint32_t>(value);
+}
+
 bool sameClaim(const Claim &lhs, const Claim &rhs) {
   return lhs.state == rhs.state && lhs.dimension == rhs.dimension &&
          lhs.amount == rhs.amount;
@@ -102,7 +108,8 @@ ResourceContractDeclaration declaration() {
                             key<RequesterKey>(Requester::Output)};
   declaration.eligibilityCount = 2;
   declaration.eventCount = 2;
-  declaration.timingContractCount = 1;
+  declaration.timingContracts = {TimingContractDeclaration{
+      TimingContractKey(0), {rank(Event::Accept), rank(Event::Retire)}}};
   declaration.usePatterns = {
       UsePatternDeclaration{
           UsePatternKey(0),
@@ -110,6 +117,7 @@ ResourceContractDeclaration declaration() {
           key<EligibilityKey>(Eligibility::InputTokenReady),
           key<EventKey>(Event::Accept),
           key<EventKey>(Event::Retire),
+          std::nullopt,
           key<TimingContractKey>(Timing::OneCycleElastic),
           {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
                             key<CapacityDimensionKey>(Dimension::StoredEntry),
@@ -121,6 +129,7 @@ ResourceContractDeclaration declaration() {
           key<EligibilityKey>(Eligibility::OutputTokenReady),
           key<EventKey>(Event::Accept),
           key<EventKey>(Event::Retire),
+          std::nullopt,
           key<TimingContractKey>(Timing::OneCycleElastic),
           {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Queue),
                             key<CapacityDimensionKey>(Dimension::DequeuePort),
@@ -155,7 +164,8 @@ ResourceContractDeclaration declaration() {
                             key<RequesterKey>(Requester::Ingress2)};
   declaration.eligibilityCount = 1;
   declaration.eventCount = 2;
-  declaration.timingContractCount = 1;
+  declaration.timingContracts = {TimingContractDeclaration{
+      TimingContractKey(0), {rank(Event::Accept), rank(Event::Retire)}}};
   for (std::uint32_t requester = 0; requester < 3; ++requester)
     declaration.usePatterns.push_back(UsePatternDeclaration{
         UsePatternKey(requester),
@@ -163,6 +173,7 @@ ResourceContractDeclaration declaration() {
         key<EligibilityKey>(Eligibility::RouteSelected),
         key<EventKey>(Event::Accept),
         key<EventKey>(Event::Retire),
+        std::nullopt,
         key<TimingContractKey>(Timing::SingleBeat),
         {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Egress),
                           key<CapacityDimensionKey>(Dimension::TransferSlot),
@@ -221,13 +232,15 @@ ResourceContractDeclaration declaration() {
   declaration.requesters = {key<RequesterKey>(Requester::OperationRow)};
   declaration.eligibilityCount = 1;
   declaration.eventCount = 2;
-  declaration.timingContractCount = 1;
+  declaration.timingContracts = {TimingContractDeclaration{
+      TimingContractKey(0), {rank(Event::Accept), rank(Event::Retire)}}};
   declaration.usePatterns = {UsePatternDeclaration{
       UsePatternKey(0),
       key<RequesterKey>(Requester::OperationRow),
       key<EligibilityKey>(Eligibility::OperandTupleComplete),
       key<EventKey>(Event::Accept),
       key<EventKey>(Event::Retire),
+      std::nullopt,
       key<TimingContractKey>(Timing::TwoBeatVectorLoad),
       {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::ServicePort),
                         key<CapacityDimensionKey>(ServicePortDimension::Beat),
@@ -241,6 +254,69 @@ ResourceContractDeclaration declaration() {
 }
 
 } // namespace memoryEngine
+
+// One stateful store whose service reservation lives for a single cycle while
+// its queue contents are durable. The stored dimension is never claimed: only a
+// committed transition changes it, and no later use releases an earlier claim.
+namespace operandStore {
+
+enum class State : std::uint32_t { Service, Queue };
+enum class ServiceDimension : std::uint32_t { Slot };
+enum class QueueDimension : std::uint32_t { Stored };
+enum class Transition : std::uint32_t { Append, Remove };
+enum class Requester : std::uint32_t { Port };
+enum class Eligibility : std::uint32_t { FreeEntry, StoredToken };
+enum class Event : std::uint32_t { Commit, NextBoundary };
+enum class Timing : std::uint32_t { ServiceWindow };
+
+UsePatternDeclaration pattern(UsePatternKey patternKey, Eligibility eligibility,
+                              Transition transition) {
+  return UsePatternDeclaration{
+      patternKey,
+      key<RequesterKey>(Requester::Port),
+      key<EligibilityKey>(eligibility),
+      key<EventKey>(Event::Commit),
+      key<EventKey>(Event::NextBoundary),
+      CommitDeclaration{key<EventKey>(Event::Commit),
+                        key<ResourceTransitionKey>(transition)},
+      key<TimingContractKey>(Timing::ServiceWindow),
+      {ClaimDeclaration{ClaimKey(0), key<StateKey>(State::Service),
+                        key<CapacityDimensionKey>(ServiceDimension::Slot),
+                        CapacityUnits(1), key<EventKey>(Event::NextBoundary)}},
+      {}};
+}
+
+ResourceContractDeclaration declaration() {
+  ResourceContractDeclaration declaration;
+  declaration.states = {
+      ResourceStateDeclaration{
+          key<StateKey>(State::Service),
+          {CapacityDimensionDeclaration{
+              key<CapacityDimensionKey>(ServiceDimension::Slot),
+              CapacityUnits(1), CapacityUnits(0)}}},
+      ResourceStateDeclaration{
+          key<StateKey>(State::Queue),
+          {CapacityDimensionDeclaration{
+              key<CapacityDimensionKey>(QueueDimension::Stored),
+              CapacityUnits(4), CapacityUnits(0)}}},
+  };
+  declaration.resourceTransitions = {
+      key<ResourceTransitionKey>(Transition::Append),
+      key<ResourceTransitionKey>(Transition::Remove)};
+  declaration.timingContracts = {TimingContractDeclaration{
+      key<TimingContractKey>(Timing::ServiceWindow),
+      {rank(Event::Commit), rank(Event::NextBoundary)}}};
+  declaration.requesters = {key<RequesterKey>(Requester::Port)};
+  declaration.eligibilityCount = 2;
+  declaration.eventCount = 2;
+  declaration.usePatterns = {
+      pattern(UsePatternKey(0), Eligibility::FreeEntry, Transition::Append),
+      pattern(UsePatternKey(1), Eligibility::StoredToken, Transition::Remove),
+  };
+  return declaration;
+}
+
+} // namespace operandStore
 
 void disjointResourceNeedsNoGrantPolicy() {
   const ResourceContract contract =
@@ -425,6 +501,99 @@ void unknownReferencedKeysAreRejected() {
   expectViolation(__func__, "use pattern with an undeclared timing contract",
                   ResourceContract::create(declaration),
                   ResourceContractViolation::UnknownTimingContractKey);
+}
+
+// A use may reserve capacity briefly and still change durable state: the claim
+// envelope holds only the service slot, while the queue contents move under the
+// committed transition.
+void shortLivedClaimAndDurableCommitAreDistinct() {
+  const ResourceContract contract = takeContract(
+      __func__, ResourceContract::create(operandStore::declaration()));
+  require(__func__, contract.resourceTransitionCount() == 2,
+          "the closed transition inventory differs");
+  require(__func__,
+          contract.eventOrder(
+              key<TimingContractKey>(operandStore::Timing::ServiceWindow)) ==
+              llvm::ArrayRef<std::uint32_t>({0, 1}),
+          "the declared event order differs");
+
+  const UsePattern append = contract.usePattern(UsePatternKey(0));
+  require(__func__,
+          append.claims.size() == 1 &&
+              sameClaim(append.claims[0],
+                        Claim{key<StateKey>(operandStore::State::Service),
+                              key<CapacityDimensionKey>(
+                                  operandStore::ServiceDimension::Slot),
+                              CapacityUnits(1)}),
+          "durable queue contents must not appear in the claim envelope");
+  require(__func__,
+          append.commit.has_value() &&
+              append.commit->transition ==
+                  key<ResourceTransitionKey>(
+                      operandStore::Transition::Append) &&
+              append.commit->event == append.acquire &&
+              append.release ==
+                  key<EventKey>(operandStore::Event::NextBoundary),
+          "the committed transition or its event differs");
+
+  const UsePattern remove = contract.usePattern(UsePatternKey(1));
+  require(__func__,
+          remove.commit.has_value() &&
+              remove.commit->transition ==
+                  key<ResourceTransitionKey>(operandStore::Transition::Remove),
+          "the second pattern must commit its own transition");
+}
+
+void unknownCommitReferencesAreRejected() {
+  ResourceContractDeclaration declaration = operandStore::declaration();
+  declaration.usePatterns[0].commit->transition = ResourceTransitionKey(2);
+  expectViolation(__func__, "commit naming an undeclared transition",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownResourceTransitionKey);
+
+  declaration = operandStore::declaration();
+  declaration.usePatterns[0].commit->event = EventKey(2);
+  expectViolation(__func__, "commit naming an undeclared event",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::UnknownEventKey);
+
+  declaration = operandStore::declaration();
+  declaration.resourceTransitions[1] =
+      key<ResourceTransitionKey>(operandStore::Transition::Append);
+  expectViolation(__func__, "one transition key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateResourceTransitionKey);
+}
+
+void theTimingContractMustOrderAcquireCommitAndRelease() {
+  ResourceContractDeclaration declaration = operandStore::declaration();
+  declaration.timingContracts[0].eventRank = {1, 0};
+  expectViolation(__func__, "a commit ranked after its release",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::TimingContractDoesNotOrderUse);
+
+  declaration = operandStore::declaration();
+  declaration.timingContracts[0].eventRank = {0};
+  expectViolation(__func__, "a timing contract that ranks only some events",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::TimingContractDoesNotOrderUse);
+
+  declaration = operandStore::declaration();
+  declaration.timingContracts.push_back(declaration.timingContracts[0]);
+  expectViolation(__func__, "one timing contract key declared twice",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::DuplicateTimingContractKey);
+}
+
+// No claim of one pattern may name another pattern's release: the complete
+// envelope returns together and nothing hands ownership across patterns.
+void aClaimCannotBeReleasedByAnotherPattern() {
+  ResourceContractDeclaration declaration = operandStore::declaration();
+  declaration.usePatterns[0].claims[0].release =
+      key<EventKey>(operandStore::Event::Commit);
+  expectViolation(__func__, "a claim released outside its own envelope",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::AmbiguousRelease);
 }
 
 void oneEnvelopeHasOneReleaseAndOneClaimPerDimension() {
@@ -720,6 +889,10 @@ int main() {
   duplicateDeclaredKeysAreRejected();
   nonClosedDeclaredKeysAreRejected();
   unknownReferencedKeysAreRejected();
+  shortLivedClaimAndDurableCommitAreDistinct();
+  unknownCommitReferencesAreRejected();
+  theTimingContractMustOrderAcquireCommitAndRelease();
+  aClaimCannotBeReleasedByAnotherPattern();
   oneEnvelopeHasOneReleaseAndOneClaimPerDimension();
   capacityArithmeticFailuresAreDistinct();
   fixedPriorityGrantsFirstEligibleRequester();

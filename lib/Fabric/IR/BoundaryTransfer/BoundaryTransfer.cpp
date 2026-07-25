@@ -68,12 +68,14 @@ ResourceContractDeclaration fabric::declareBoundaryTransferContract() {
   // acquire and release, and one timing contract (same local-cycle delta).
   declaration.eligibilityCount = 1;
   declaration.eventCount = 1;
-  declaration.timingContractCount = 1;
+  declaration.timingContracts = {
+      TimingContractDeclaration{TimingContractKey(0), {0}}};
   declaration.usePatterns = {UsePatternDeclaration{boundaryTransferPattern,
                                                    boundaryTransferRequester,
                                                    EligibilityKey(0),
                                                    EventKey(0),
                                                    EventKey(0),
+                                                   std::nullopt,
                                                    TimingContractKey(0),
                                                    {},
                                                    {}}};

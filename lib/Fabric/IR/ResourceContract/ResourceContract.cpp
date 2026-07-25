@@ -93,6 +93,13 @@ struct NormalizedDeclaration {
         .capacityDimensions[capacityDimensionPositions[stateKey][dimensionKey]];
   }
 
+  std::size_t timingContractCount() const {
+    return declaration.timingContracts.size();
+  }
+  const TimingContractDeclaration &timingContract(std::size_t key) const {
+    return declaration.timingContracts[timingContractPositions[key]];
+  }
+
   std::size_t usePatternCount() const { return declaration.usePatterns.size(); }
   const UsePatternDeclaration &usePattern(std::size_t key) const {
     return declaration.usePatterns[usePatternPositions[key]];
@@ -109,6 +116,7 @@ struct NormalizedDeclaration {
   const ResourceContractDeclaration &declaration;
   std::vector<std::uint32_t> statePositions;
   std::vector<std::vector<std::uint32_t>> capacityDimensionPositions;
+  std::vector<std::uint32_t> timingContractPositions;
   std::vector<std::uint32_t> usePatternPositions;
   std::vector<std::vector<std::uint32_t>> claimPositions;
 };
@@ -262,6 +270,35 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
             dimensionSite(state, dimension));
     }
 
+  std::vector<std::uint32_t> transitionPositions;
+  if (llvm::Error invalid = indexInventory(
+          declaration.resourceTransitions.size(),
+          [&](std::size_t position) {
+            return declaration.resourceTransitions[position].ordinal();
+          },
+          ResourceContractViolation::DuplicateResourceTransitionKey,
+          ResourceContractViolation::UnknownResourceTransitionKey,
+          "resource transition declaration", transitionPositions))
+    return invalid;
+
+  if (llvm::Error invalid = indexInventory(
+          declaration.timingContracts.size(),
+          [&](std::size_t position) {
+            return declaration.timingContracts[position].key.ordinal();
+          },
+          ResourceContractViolation::DuplicateTimingContractKey,
+          ResourceContractViolation::UnknownTimingContractKey,
+          "timing contract declaration", normalized.timingContractPositions))
+    return invalid;
+
+  // A timing contract orders a use only when it ranks every declared event.
+  for (std::size_t contract = 0; contract < normalized.timingContractCount();
+       ++contract)
+    if (normalized.timingContract(contract).eventRank.size() !=
+        declaration.eventCount)
+      return rejected(ResourceContractViolation::TimingContractDoesNotOrderUse,
+                      "timing contract " + llvm::Twine(contract));
+
   const std::size_t requesterCount = declaration.requesters.size();
   std::vector<std::uint32_t> requesterPositions;
   if (llvm::Error invalid = indexInventory(
@@ -298,8 +335,40 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
         declared.release.ordinal() >= declaration.eventCount)
       return rejected(ResourceContractViolation::UnknownEventKey,
                       patternSite(pattern));
-    if (declared.timingAndProgress.ordinal() >= declaration.timingContractCount)
+    if (declared.commit) {
+      if (static_cast<std::size_t>(declared.commit->transition.ordinal()) >=
+          declaration.resourceTransitions.size())
+        return rejected(
+            ResourceContractViolation::UnknownResourceTransitionKey,
+            patternSite(pattern));
+      if (declared.commit->event.ordinal() >= declaration.eventCount)
+        return rejected(ResourceContractViolation::UnknownEventKey,
+                        patternSite(pattern));
+    }
+    if (static_cast<std::size_t>(declared.timingAndProgress.ordinal()) >=
+        normalized.timingContractCount())
       return rejected(ResourceContractViolation::UnknownTimingContractKey,
+                      patternSite(pattern));
+  }
+
+  // The owning timing contract must place acquisition no later than the optional
+  // commit and the commit no later than release, so an accepted use always
+  // reaches its durable transition and then returns its whole claim envelope.
+  for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
+       ++pattern) {
+    const UsePatternDeclaration &declared = normalized.usePattern(pattern);
+    const llvm::ArrayRef<std::uint32_t> rank =
+        normalized.timingContract(declared.timingAndProgress.ordinal())
+            .eventRank;
+    const std::uint32_t acquire = rank[declared.acquire.ordinal()];
+    const std::uint32_t release = rank[declared.release.ordinal()];
+    const bool ordered =
+        declared.commit
+            ? acquire <= rank[declared.commit->event.ordinal()] &&
+                  rank[declared.commit->event.ordinal()] <= release
+            : acquire <= release;
+    if (!ordered)
+      return rejected(ResourceContractViolation::TimingContractDoesNotOrderUse,
                       patternSite(pattern));
   }
 
@@ -427,6 +496,14 @@ getResourceContractViolationName(ResourceContractViolation violation) {
     return "duplicate_capacity_dimension_key";
   case ResourceContractViolation::UnknownCapacityDimensionKey:
     return "unknown_capacity_dimension_key";
+  case ResourceContractViolation::DuplicateResourceTransitionKey:
+    return "duplicate_resource_transition_key";
+  case ResourceContractViolation::UnknownResourceTransitionKey:
+    return "unknown_resource_transition_key";
+  case ResourceContractViolation::DuplicateTimingContractKey:
+    return "duplicate_timing_contract_key";
+  case ResourceContractViolation::TimingContractDoesNotOrderUse:
+    return "timing_contract_does_not_order_use";
   case ResourceContractViolation::InitialOccupancyExceedsCapacity:
     return "initial_occupancy_exceeds_capacity";
   case ResourceContractViolation::DuplicateRequesterKey:
@@ -517,10 +594,19 @@ UsePattern ResourceContract::usePattern(UsePatternKey key) const {
                     record.eligibility,
                     record.acquire,
                     record.release,
+                    record.commit,
                     record.timingAndProgress,
                     llvm::ArrayRef<Claim>(claims_).slice(record.claims.first,
                                                          record.claims.count),
                     record.internalTransactions.count};
+}
+
+llvm::ArrayRef<std::uint32_t>
+ResourceContract::eventOrder(TimingContractKey key) const {
+  assert(key.ordinal() < timingContractCount_ && "undeclared timing contract");
+  return llvm::ArrayRef<std::uint32_t>(eventRanks_)
+      .slice(static_cast<std::size_t>(key.ordinal()) * eventCount_,
+             eventCount_);
 }
 
 llvm::ArrayRef<ClaimKey>
@@ -551,11 +637,25 @@ ResourceContract::create(const ResourceContractDeclaration &declaration) {
     return std::move(invalid);
 
   ResourceContract contract;
+  contract.resourceTransitionCount_ =
+      static_cast<std::uint32_t>(declaration.resourceTransitions.size());
   contract.requesterCount_ =
       static_cast<std::uint32_t>(declaration.requesters.size());
   contract.eligibilityCount_ = declaration.eligibilityCount;
   contract.eventCount_ = declaration.eventCount;
-  contract.timingContractCount_ = declaration.timingContractCount;
+  contract.timingContractCount_ =
+      static_cast<std::uint32_t>(declaration.timingContracts.size());
+
+  contract.eventRanks_.reserve(
+      static_cast<std::size_t>(contract.timingContractCount_) *
+      declaration.eventCount);
+  for (std::size_t timing = 0; timing < normalized.timingContractCount();
+       ++timing) {
+    const llvm::ArrayRef<std::uint32_t> rank =
+        normalized.timingContract(timing).eventRank;
+    contract.eventRanks_.insert(contract.eventRanks_.end(), rank.begin(),
+                                rank.end());
+  }
 
   for (std::size_t state = 0; state < normalized.stateCount(); ++state) {
     const Span span{
@@ -578,6 +678,10 @@ ResourceContract::create(const ResourceContractDeclaration &declaration) {
         declared.eligibility,
         declared.acquire,
         declared.release,
+        declared.commit ? std::optional<Commit>(Commit{
+                              declared.commit->event,
+                              declared.commit->transition})
+                        : std::nullopt,
         declared.timingAndProgress,
         Span{static_cast<std::uint32_t>(contract.claims_.size()),
              static_cast<std::uint32_t>(normalized.claimCount(pattern))},
