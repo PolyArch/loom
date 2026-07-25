@@ -1,4 +1,4 @@
-#include "FabricArtifactPreflightInternal.h"
+#include "FabricArtifactDependencyClosureInternal.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
@@ -61,55 +61,33 @@ void expectErrorContains(const char *test, llvm::Expected<T> value,
   expectErrorContains(test, value.takeError(), expected);
 }
 
-void expectGateError(const char *test, llvm::Error error,
-                     FabricArtifactGateFailureKind expectedKind,
-                     FabricArtifactGateReason expectedReason,
-                     llvm::StringRef expectedDiagnostic = {}) {
+void expectDependencyError(const char *test, llvm::Error error,
+                           FabricArtifactDependencyFailureReason expectedReason,
+                           llvm::StringRef expectedDiagnostic = {}) {
   if (!error)
-    fail(test, "expected a typed Fabric artifact gate error");
+    fail(test, "expected a typed Fabric artifact dependency error");
 
   bool matched = false;
   llvm::Error remaining = llvm::handleErrors(
-      std::move(error), [&](const FabricArtifactGateError &gateError) {
+      std::move(error),
+      [&](const FabricArtifactDependencyError &dependencyError) {
         matched = true;
-        require(test, gateError.kind() == expectedKind,
-                "Fabric artifact gate failure kind changed");
-        require(test, gateError.reason() == expectedReason,
-                "Fabric artifact gate failure reason changed");
+        require(test, dependencyError.reason() == expectedReason,
+                "Fabric artifact dependency failure reason changed");
         if (!expectedDiagnostic.empty()) {
           std::string message;
           llvm::raw_string_ostream stream(message);
-          gateError.log(stream);
+          dependencyError.log(stream);
           require(test,
                   llvm::StringRef(stream.str()).contains(expectedDiagnostic),
-                  "Fabric artifact gate error lost its codec diagnostic: " +
+                  "Fabric artifact dependency error lost its codec "
+                  "diagnostic: " +
                       message);
         }
       });
   if (remaining)
     fail(test, "unexpected error: " + llvm::toString(std::move(remaining)));
-  require(test, matched, "error was not a FabricArtifactGateError");
-}
-
-template <typename T>
-void expectGateError(const char *test, llvm::Expected<T> value,
-                     FabricArtifactGateFailureKind expectedKind,
-                     FabricArtifactGateReason expectedReason,
-                     llvm::StringRef expectedDiagnostic = {}) {
-  if (value)
-    fail(test, "expected a typed Fabric artifact gate error");
-  expectGateError(test, value.takeError(), expectedKind, expectedReason,
-                  expectedDiagnostic);
-}
-
-void expectIncompletePreflight(
-    const char *test,
-    llvm::Expected<FabricArtifactDependencyPreflightIncomplete> result,
-    FabricArtifactPreflightBlocker expectedBlocker) {
-  const FabricArtifactDependencyPreflightIncomplete incomplete =
-      takeExpected(test, std::move(result));
-  require(test, incomplete.blocker == expectedBlocker,
-          "Fabric artifact preflight blocker changed");
+  require(test, matched, "error was not a FabricArtifactDependencyError");
 }
 
 class TemporaryDirectory {
@@ -198,20 +176,20 @@ void roleAndRootKindLegalityPrecedeDependencyLoads() {
       __func__, FabricRootKind::Module,
       {FabricDirectDependency{FabricDependencyRole::RefinedSystem, missing}},
       {0x01});
-  expectGateError(__func__,
-                  preflightCanonicalFabricArtifactDependencies(
-                      store, moduleWithRefinedSystem),
-                  FabricArtifactGateFailureKind::Invalid,
-                  FabricArtifactGateReason::InvalidDependencyRoles);
+  expectDependencyError(
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(store,
+                                                     moduleWithRefinedSystem),
+      FabricArtifactDependencyFailureReason::InvalidDependencyRoles);
   requireCandidateAbsent(__func__, store, moduleWithRefinedSystem);
 
   const CanonicalSemanticBytes implementationWithoutSystem = envelope(
       __func__, FabricRootKind::InterconnectImplementation, {}, {0x02});
-  expectGateError(__func__,
-                  preflightCanonicalFabricArtifactDependencies(
-                      store, implementationWithoutSystem),
-                  FabricArtifactGateFailureKind::Invalid,
-                  FabricArtifactGateReason::InvalidDependencyRoles);
+  expectDependencyError(
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(
+          store, implementationWithoutSystem),
+      FabricArtifactDependencyFailureReason::InvalidDependencyRoles);
   requireCandidateAbsent(__func__, store, implementationWithoutSystem);
 
   const ArtifactRootReference other = fabricReference(identity(__func__, 2));
@@ -220,15 +198,15 @@ void roleAndRootKindLegalityPrecedeDependencyLoads() {
       {FabricDirectDependency{FabricDependencyRole::RefinedSystem, missing},
        FabricDirectDependency{FabricDependencyRole::RefinedSystem, other}},
       {0x03});
-  expectGateError(__func__,
-                  preflightCanonicalFabricArtifactDependencies(
-                      store, implementationWithTwoSystems),
-                  FabricArtifactGateFailureKind::Invalid,
-                  FabricArtifactGateReason::InvalidDependencyRoles);
+  expectDependencyError(
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(
+          store, implementationWithTwoSystems),
+      FabricArtifactDependencyFailureReason::InvalidDependencyRoles);
   requireCandidateAbsent(__func__, store, implementationWithTwoSystems);
 }
 
-void preflightRecursivelyLoadsExactFabricDependencies() {
+void framingClosureRecursivelyLoadsExactFabricDependencies() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
@@ -246,9 +224,9 @@ void preflightRecursivelyLoadsExactFabricDependencies() {
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, child}},
       {0x13});
 
-  expectErrorContains(__func__,
-                      preflightCanonicalFabricArtifactDependencies(store, root),
-                      "artifact_store_missing");
+  expectErrorContains(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      "artifact_store_missing");
   requireCandidateAbsent(__func__, store, root);
 
   const ArtifactIdentity publishedGrandchild =
@@ -256,13 +234,13 @@ void preflightRecursivelyLoadsExactFabricDependencies() {
   require(__func__, publishedGrandchild == grandchild.artifact,
           "grandchild fixture identity changed");
   requireStoredReference(__func__, store, grandchild);
-  expectIncompletePreflight(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, root),
-      FabricArtifactPreflightBlocker::DependencyUseDecoder);
+  if (llvm::Error error =
+          validateFabricArtifactDependencyFramingClosure(store, root))
+    fail(__func__, llvm::toString(std::move(error)));
   requireCandidateAbsent(__func__, store, root);
 }
 
-void foreignDependencyIsLoadedBeforeUnsupportedImporterRejection() {
+void implementationInputIsLoadedBeforeUnsupportedOwnerRejection() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
@@ -280,9 +258,9 @@ void foreignDependencyIsLoadedBeforeUnsupportedImporterRejection() {
                               foreign}},
       {0x22});
 
-  expectErrorContains(__func__,
-                      preflightCanonicalFabricArtifactDependencies(store, root),
-                      "artifact_store_missing");
+  expectErrorContains(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      "artifact_store_missing");
   requireCandidateAbsent(__func__, store, root);
 
   const ArtifactIdentity storedForeign =
@@ -290,10 +268,32 @@ void foreignDependencyIsLoadedBeforeUnsupportedImporterRejection() {
   require(__func__, storedForeign == foreign.artifact,
           "foreign fixture identity changed");
   requireStoredReference(__func__, store, foreign);
-  expectGateError(__func__,
-                  preflightCanonicalFabricArtifactDependencies(store, root),
-                  FabricArtifactGateFailureKind::Unsupported,
-                  FabricArtifactGateReason::DependencyImporterUnavailable);
+  expectDependencyError(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      FabricArtifactDependencyFailureReason::
+          ImplementationInputOwnerUnavailable,
+      "fabric_artifact_owner_contract_unavailable");
+  requireCandidateAbsent(__func__, store, root);
+}
+
+void foreignSameFamilyRoleIsInvalid() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+
+  const CanonicalSemanticBytes foreignBytes(
+      std::vector<std::uint8_t>{0x0f, 0x0e});
+  const ArtifactRootReference foreign{
+      foreignSchema.identity.str(), foreignSchema.version,
+      finalizeArtifactIdentity(foreignSchema, foreignBytes)};
+  (void)takeExpected(__func__, store.put(foreignSchema, foreignBytes));
+
+  const CanonicalSemanticBytes root = envelope(
+      __func__, FabricRootKind::Module,
+      {FabricDirectDependency{FabricDependencyRole::ImportedModule, foreign}},
+      {0x0d});
+  expectDependencyError(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      FabricArtifactDependencyFailureReason::ForeignDependency);
   requireCandidateAbsent(__func__, store, root);
 }
 
@@ -302,10 +302,10 @@ void malformedCandidateEnvelopeIsTypedInvalid() {
   ArtifactStore store(directory.path());
   const CanonicalSemanticBytes malformed(std::vector<std::uint8_t>{0x00});
 
-  expectGateError(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, malformed),
-      FabricArtifactGateFailureKind::Invalid,
-      FabricArtifactGateReason::MalformedCandidateEnvelope,
+  expectDependencyError(
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(store, malformed),
+      FabricArtifactDependencyFailureReason::MalformedCandidateEnvelope,
       "truncated semantic domain");
   requireCandidateAbsent(__func__, store, malformed);
 }
@@ -327,11 +327,10 @@ void invalidStoredFabricDependencyIsTypedInvalid() {
                {FabricDirectDependency{FabricDependencyRole::ImportedModule,
                                        dependency}},
                {0x30});
-  expectGateError(__func__,
-                  preflightCanonicalFabricArtifactDependencies(store, root),
-                  FabricArtifactGateFailureKind::Invalid,
-                  FabricArtifactGateReason::InvalidDependencyEnvelope,
-                  "truncated semantic domain");
+  expectDependencyError(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      FabricArtifactDependencyFailureReason::InvalidDependencyEnvelope,
+      "truncated semantic domain");
   requireCandidateAbsent(__func__, store, root);
 }
 
@@ -345,10 +344,10 @@ void wrongKindDependencyIsRejected() {
       __func__, FabricRootKind::Module,
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, system}},
       {0x32});
-  expectGateError(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, wrongKind),
-      FabricArtifactGateFailureKind::Invalid,
-      FabricArtifactGateReason::WrongDependencyRootKind);
+  expectDependencyError(
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(store, wrongKind),
+      FabricArtifactDependencyFailureReason::WrongDependencyRootKind);
   requireCandidateAbsent(__func__, store, wrongKind);
 }
 
@@ -364,30 +363,46 @@ void sameExactRootInDistinctRolesIsNotADuplicate() {
        FabricDirectDependency{FabricDependencyRole::ImplementationInput,
                               system}},
       {0x34});
-  expectIncompletePreflight(
+  expectDependencyError(
       __func__,
-      preflightCanonicalFabricArtifactDependencies(store, crossRoleRoot),
-      FabricArtifactPreflightBlocker::ImplementationInputRootKind);
+      validateFabricArtifactDependencyFramingClosure(store, crossRoleRoot),
+      FabricArtifactDependencyFailureReason::
+          ImplementationInputOwnerUnavailable);
   requireCandidateAbsent(__func__, store, crossRoleRoot);
 }
 
-void dependencyUseVerificationWaitsForItsSemanticOwner() {
+void sameFamilyFramingClosureDoesNotPublishTheRoot() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
   const ArtifactRootReference module =
       storeFabric(__func__, store, FabricRootKind::Module, {}, {0x41});
-  const CanonicalSemanticBytes root = envelope(
+  const CanonicalSemanticBytes systemBytes = envelope(
       __func__, FabricRootKind::System,
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, module}},
       {0x42});
-  expectIncompletePreflight(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, root),
-      FabricArtifactPreflightBlocker::DependencyUseDecoder);
-  requireCandidateAbsent(__func__, store, root);
+  if (llvm::Error error =
+          validateFabricArtifactDependencyFramingClosure(store, systemBytes))
+    fail(__func__, llvm::toString(std::move(error)));
+  requireCandidateAbsent(__func__, store, systemBytes);
+
+  const ArtifactRootReference system = fabricReference(systemBytes);
+  const ArtifactIdentity storedSystem =
+      takeExpected(__func__, store.put(fabricArtifactSchema, systemBytes));
+  require(__func__, storedSystem == system.artifact,
+          "stored System fixture identity changed");
+  requireStoredReference(__func__, store, system);
+  const CanonicalSemanticBytes implementationBytes = envelope(
+      __func__, FabricRootKind::InterconnectImplementation,
+      {FabricDirectDependency{FabricDependencyRole::RefinedSystem, system}},
+      {0x43});
+  if (llvm::Error error = validateFabricArtifactDependencyFramingClosure(
+          store, implementationBytes))
+    fail(__func__, llvm::toString(std::move(error)));
+  requireCandidateAbsent(__func__, store, implementationBytes);
 }
 
-void implementationInputKindRemainsAnIncompleteOwnerBoundary() {
+void implementationInputRequiresAClosedOwner() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
@@ -402,13 +417,14 @@ void implementationInputKindRemainsAnIncompleteOwnerBoundary() {
                               module}},
       {0x53});
 
-  expectIncompletePreflight(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, root),
-      FabricArtifactPreflightBlocker::ImplementationInputRootKind);
+  expectDependencyError(
+      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      FabricArtifactDependencyFailureReason::
+          ImplementationInputOwnerUnavailable);
   requireCandidateAbsent(__func__, store, root);
 }
 
-void candidateRootsRemainAbsentAfterFailureOrIncompletePreflight() {
+void framingClosureNeverPublishesCandidateRoots() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
@@ -420,24 +436,22 @@ void candidateRootsRemainAbsentAfterFailureOrIncompletePreflight() {
       {0x62});
   expectErrorContains(
       __func__,
-      preflightCanonicalFabricArtifactDependencies(store, missingClosure),
+      validateFabricArtifactDependencyFramingClosure(store, missingClosure),
       "artifact_store_missing");
   requireCandidateAbsent(__func__, store, missingClosure);
 
   const CanonicalSemanticBytes emptyPayloadRoot =
       envelope(__func__, FabricRootKind::Module, {}, {});
-  expectIncompletePreflight(
-      __func__,
-      preflightCanonicalFabricArtifactDependencies(store, emptyPayloadRoot),
-      FabricArtifactPreflightBlocker::DependencyUseDecoder);
+  if (llvm::Error error = validateFabricArtifactDependencyFramingClosure(
+          store, emptyPayloadRoot))
+    fail(__func__, llvm::toString(std::move(error)));
   requireCandidateAbsent(__func__, store, emptyPayloadRoot);
 
   const CanonicalSemanticBytes arbitraryPayloadRoot =
       envelope(__func__, FabricRootKind::Module, {}, {0x63, 0x64, 0x65});
-  expectIncompletePreflight(
-      __func__,
-      preflightCanonicalFabricArtifactDependencies(store, arbitraryPayloadRoot),
-      FabricArtifactPreflightBlocker::DependencyUseDecoder);
+  if (llvm::Error error = validateFabricArtifactDependencyFramingClosure(
+          store, arbitraryPayloadRoot))
+    fail(__func__, llvm::toString(std::move(error)));
   requireCandidateAbsent(__func__, store, arbitraryPayloadRoot);
 }
 
@@ -456,12 +470,12 @@ void contentAddressedCycleConstraintUsesProductionTraversal() {
           "equation");
   requireCandidateAbsent(__func__, store, selfReferential);
 
-  FabricArtifactClosureTraversal traversal;
+  FabricArtifactDependencyClosureTraversal traversal;
   require(__func__, takeExpected(__func__, traversal.enter(actual)),
           "first traversal entry was treated as already validated");
-  expectGateError(__func__, traversal.enter(actual),
-                  FabricArtifactGateFailureKind::Invalid,
-                  FabricArtifactGateReason::CyclicDependency);
+  expectDependencyError(
+      __func__, traversal.enter(actual).takeError(),
+      FabricArtifactDependencyFailureReason::CyclicDependency);
   traversal.complete(actual);
   require(__func__, !takeExpected(__func__, traversal.enter(actual)),
           "completed traversal entry was not memoized");
@@ -473,13 +487,14 @@ int main() {
   malformedCandidateEnvelopeIsTypedInvalid();
   invalidStoredFabricDependencyIsTypedInvalid();
   roleAndRootKindLegalityPrecedeDependencyLoads();
-  preflightRecursivelyLoadsExactFabricDependencies();
-  foreignDependencyIsLoadedBeforeUnsupportedImporterRejection();
+  framingClosureRecursivelyLoadsExactFabricDependencies();
+  implementationInputIsLoadedBeforeUnsupportedOwnerRejection();
+  foreignSameFamilyRoleIsInvalid();
   wrongKindDependencyIsRejected();
   sameExactRootInDistinctRolesIsNotADuplicate();
-  dependencyUseVerificationWaitsForItsSemanticOwner();
-  implementationInputKindRemainsAnIncompleteOwnerBoundary();
-  candidateRootsRemainAbsentAfterFailureOrIncompletePreflight();
+  sameFamilyFramingClosureDoesNotPublishTheRoot();
+  implementationInputRequiresAClosedOwner();
+  framingClosureNeverPublishesCandidateRoots();
   contentAddressedCycleConstraintUsesProductionTraversal();
   llvm::outs() << "fabric artifact gate ok\n";
   return 0;
