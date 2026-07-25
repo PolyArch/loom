@@ -101,6 +101,10 @@ add_executable(loom-fabric-artifact-local-reference-test
   ArtifactLocalReferenceTest.cpp
 )
 
+add_executable(loom-fabric-fu-capability-template-test
+  FuCapabilityTemplateTest.cpp
+)
+
 add_executable(loom-fabric-artifact-codec-test
   FabricArtifactCodecTest.cpp
 )
@@ -120,6 +124,13 @@ target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-artifact-local-reference-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
+  LoomFabricIdentity
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-fu-capability-template-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   LoomFabricIdentity

@@ -2,6 +2,7 @@ add_mlir_library(LoomFabricArtifact
   FabricArtifactCodec.cpp
   FabricArtifactLocalReference.cpp
   FabricArtifactPreflight.cpp
+  FabricFuCapabilityTemplate.cpp
   FabricSystemContracts.cpp
 
   ADDITIONAL_HEADER_DIRS
