@@ -1,8 +1,11 @@
 #include "Evaluation/Metric.h"
+#include "Evaluation/CaseText.h"
+
+#include "CanonicalSupport.h"
+
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -10,15 +13,19 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <initializer_list>
-#include <limits>
-#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace loom::evaluation {
 namespace {
+
+using detail::evaluationError;
+using detail::rejectUnknownFields;
+using detail::requireInteger;
+using detail::requireObject;
+using detail::requireString;
 
 constexpr llvm::StringLiteral metricSchemaIdentity = "evaluation.metric";
 constexpr SchemaVersion metricSchemaVersion{1, 0};
@@ -44,80 +51,49 @@ constexpr std::uint8_t nonCensoredObservationForms =
 constexpr CensoredReasonPolicy subjectDidNotCompletePolicy{
     CensoredReason::SubjectDidNotComplete, true, false};
 
+// Every registered metric owns the same two scope forms: the entire exact
+// Evaluation case, and one exact case subject Artifact root.
+const ScopeRoleDescriptor subjectRootRole[] = {
+    {ScopeRoleRef(0), "subject", true, {}}};
+
+const ScopeFormDescriptor metricScopeForms[] = {
+    {ScopeFormRef(0), "the entire exact Evaluation case", {}, nullptr},
+    {ScopeFormRef(1), "one exact case subject Artifact root", subjectRootRole,
+     nullptr},
+};
+
+// A quantile selects among samples of one metric request and names no target.
+const ConditionPattern sampledRequestConditions[] = {
+    {EvaluationConditionKind::Quantile, {}}};
+
 const std::array<MetricDescriptor, 3> metricDescriptors = {{
     {MetricKind::CycleCount, "cycle_count",
      "Number of subject clock cycles required by the observed work.",
      MetricValueKind::Integer, MetricDimension::Cycle, "cycle",
-     MetricValueDomain::NonNegative, true, allObservationForms,
-     subjectDidNotCompletePolicy},
-    {MetricKind::ClockPeriod, "clock_period",
+     MetricValueDomain::NonNegative, metricScopeForms, sampledRequestConditions,
+     allObservationForms, subjectDidNotCompletePolicy},
+    {MetricKind::ClockPeriod,
+     "clock_period",
      "Duration of one clock cycle for the evaluated operating condition.",
-     MetricValueKind::Decimal, MetricDimension::Time, "second",
-     MetricValueDomain::Positive, true, nonCensoredObservationForms,
+     MetricValueKind::Decimal,
+     MetricDimension::Time,
+     "second",
+     MetricValueDomain::Positive,
+     metricScopeForms,
+     {},
+     nonCensoredObservationForms,
      std::nullopt},
     {MetricKind::Runtime, "runtime",
      "Elapsed physical time for the observed work.", MetricValueKind::Decimal,
-     MetricDimension::Time, "second", MetricValueDomain::NonNegative, true,
-     allObservationForms, subjectDidNotCompletePolicy},
+     MetricDimension::Time, "second", MetricValueDomain::NonNegative,
+     metricScopeForms, sampledRequestConditions, allObservationForms,
+     subjectDidNotCompletePolicy},
 }};
-
-llvm::Error metricError(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
-}
 
 template <typename Enum>
 llvm::Expected<Enum> unknownEnum(llvm::StringRef type,
                                  llvm::StringRef spelling) {
-  return metricError("unknown " + type + " '" + spelling + "'");
-}
-
-std::uint64_t magnitude(std::int64_t value) {
-  if (value >= 0)
-    return static_cast<std::uint64_t>(value);
-  return static_cast<std::uint64_t>(-(value + 1)) + 1;
-}
-
-unsigned __int128 gcdU128(unsigned __int128 lhs, unsigned __int128 rhs) {
-  while (rhs != 0) {
-    const unsigned __int128 remainder = lhs % rhs;
-    lhs = rhs;
-    rhs = remainder;
-  }
-  return lhs;
-}
-
-int compareDecimal(DecimalValue lhs, DecimalValue rhs) {
-  const std::int64_t lhsCoefficient = lhs.coefficient();
-  const std::int64_t rhsCoefficient = rhs.coefficient();
-  if (lhsCoefficient == rhsCoefficient &&
-      lhs.base10Exponent() == rhs.base10Exponent())
-    return 0;
-  if (lhsCoefficient == 0)
-    return rhsCoefficient < 0 ? 1 : -1;
-  if (rhsCoefficient == 0)
-    return lhsCoefficient < 0 ? -1 : 1;
-  if ((lhsCoefficient < 0) != (rhsCoefficient < 0))
-    return lhsCoefficient < 0 ? -1 : 1;
-
-  std::string lhsDigits = std::to_string(magnitude(lhsCoefficient));
-  std::string rhsDigits = std::to_string(magnitude(rhsCoefficient));
-  const __int128 lhsOrder = static_cast<__int128>(lhs.base10Exponent()) +
-                            static_cast<__int128>(lhsDigits.size());
-  const __int128 rhsOrder = static_cast<__int128>(rhs.base10Exponent()) +
-                            static_cast<__int128>(rhsDigits.size());
-
-  int magnitudeComparison = 0;
-  if (lhsOrder != rhsOrder) {
-    magnitudeComparison = lhsOrder < rhsOrder ? -1 : 1;
-  } else {
-    const std::size_t width = std::max(lhsDigits.size(), rhsDigits.size());
-    lhsDigits.append(width - lhsDigits.size(), '0');
-    rhsDigits.append(width - rhsDigits.size(), '0');
-    if (lhsDigits != rhsDigits)
-      magnitudeComparison = lhsDigits < rhsDigits ? -1 : 1;
-  }
-
-  return lhsCoefficient < 0 ? -magnitudeComparison : magnitudeComparison;
+  return evaluationError("unknown " + type + " '" + spelling + "'");
 }
 
 int compareMetricValue(const MetricValue &lhs, const MetricValue &rhs) {
@@ -127,8 +103,8 @@ int compareMetricValue(const MetricValue &lhs, const MetricValue &rhs) {
       return 0;
     return lhsInteger->value() < rhsInteger.value() ? -1 : 1;
   }
-  return compareDecimal(std::get<DecimalValue>(lhs),
-                        std::get<DecimalValue>(rhs));
+  return compareDecimalValue(std::get<DecimalValue>(lhs),
+                             std::get<DecimalValue>(rhs));
 }
 
 bool isZero(const MetricValue &value) {
@@ -147,13 +123,14 @@ llvm::Error validateValue(const MetricDescriptor &descriptor,
                           const MetricValue &value) {
   const bool isInteger = std::holds_alternative<IntegerValue>(value);
   if (descriptor.valueKind == MetricValueKind::Integer && !isInteger)
-    return metricError(descriptor.spelling + " requires integer values");
+    return evaluationError(descriptor.spelling + " requires integer values");
   if (descriptor.valueKind == MetricValueKind::Decimal && isInteger)
-    return metricError(descriptor.spelling + " requires decimal values");
+    return evaluationError(descriptor.spelling + " requires decimal values");
   if (isNegative(value))
-    return metricError(descriptor.spelling + " requires non-negative values");
+    return evaluationError(descriptor.spelling +
+                           " requires non-negative values");
   if (descriptor.valueDomain == MetricValueDomain::Positive && isZero(value))
-    return metricError(descriptor.spelling + " requires positive values");
+    return evaluationError(descriptor.spelling + " requires positive values");
   return llvm::Error::success();
 }
 
@@ -165,17 +142,8 @@ llvm::Error validateOrderedValues(const MetricDescriptor &descriptor,
   if (llvm::Error error = validateValue(descriptor, upper))
     return error;
   if (compareMetricValue(lower, upper) > 0)
-    return metricError("metric observation lower bound exceeds upper bound");
-  return llvm::Error::success();
-}
-
-llvm::Error validateMetricScope(const MetricDescriptor &descriptor,
-                                const MetricScope &scope) {
-  const auto *entity = std::get_if<MetricEntityReference>(&scope);
-  if (!entity)
-    return llvm::Error::success();
-  if (!descriptor.permitsEntityScope)
-    return metricError(descriptor.spelling + " does not permit entity scope");
+    return evaluationError(
+        "metric observation lower bound exceeds upper bound");
   return llvm::Error::success();
 }
 
@@ -184,74 +152,7 @@ bool metricQueryLess(const MetricQuery &lhs, const MetricQuery &rhs) {
   const llvm::StringRef rhsSpelling = toString(rhs.metric);
   if (lhsSpelling != rhsSpelling)
     return lhsSpelling < rhsSpelling;
-  if (lhs.scope.index() != rhs.scope.index())
-    return lhs.scope.index() < rhs.scope.index();
-  if (std::holds_alternative<WholeSubjectScope>(lhs.scope))
-    return false;
-
-  const MetricEntityReference &lhsEntity =
-      std::get<MetricEntityReference>(lhs.scope);
-  const MetricEntityReference &rhsEntity =
-      std::get<MetricEntityReference>(rhs.scope);
-  if (lhsEntity.artifact.bytes() != rhsEntity.artifact.bytes())
-    return lhsEntity.artifact.bytes() < rhsEntity.artifact.bytes();
-  return lhsEntity.entity.value() < rhsEntity.entity.value();
-}
-
-bool isAllowedField(llvm::StringRef field,
-                    std::initializer_list<llvm::StringRef> allowed) {
-  return std::find(allowed.begin(), allowed.end(), field) != allowed.end();
-}
-
-llvm::Error
-rejectUnknownFields(const llvm::json::Object &object, llvm::StringRef context,
-                    std::initializer_list<llvm::StringRef> allowed) {
-  for (const auto &field : object) {
-    llvm::StringRef key = field.getFirst();
-    if (!isAllowedField(key, allowed))
-      return metricError(context + " has unknown field '" + key + "'");
-  }
-  return llvm::Error::success();
-}
-
-llvm::Expected<llvm::StringRef> requireString(const llvm::json::Object &object,
-                                              llvm::StringRef key,
-                                              llvm::StringRef context) {
-  std::optional<llvm::StringRef> value = object.getString(key);
-  if (!value)
-    return metricError(context + " field '" + key + "' must be a string");
-  return *value;
-}
-
-llvm::Expected<std::int64_t> requireInteger(const llvm::json::Object &object,
-                                            llvm::StringRef key,
-                                            llvm::StringRef context) {
-  std::optional<std::int64_t> value = object.getInteger(key);
-  if (!value)
-    return metricError(context + " field '" + key + "' must be an integer");
-  return *value;
-}
-
-llvm::Expected<std::uint64_t> requireUnsigned(const llvm::json::Object &object,
-                                              llvm::StringRef key,
-                                              llvm::StringRef context) {
-  const llvm::json::Value *value = object.get(key);
-  if (!value)
-    return metricError(context + " field '" + key + "' is required");
-  std::optional<std::uint64_t> integer = value->getAsUINT64();
-  if (!integer)
-    return metricError(context + " field '" + key +
-                       "' must be an unsigned integer");
-  return *integer;
-}
-
-llvm::Expected<const llvm::json::Object *>
-requireObject(const llvm::json::Object &object, llvm::StringRef key,
-              llvm::StringRef context) {
-  const llvm::json::Object *value = object.getObject(key);
-  if (!value)
-    return metricError(context + " field '" + key + "' must be an object");
-  return value;
+  return canonicalScopeKey(lhs.scope) < canonicalScopeKey(rhs.scope);
 }
 
 void writeMetricValue(llvm::json::OStream &json, const MetricValue &value) {
@@ -265,20 +166,6 @@ void writeMetricValue(llvm::json::OStream &json, const MetricValue &value) {
     json.attribute("kind", "decimal");
     json.attribute("coefficient", decimal.coefficient());
     json.attribute("base10_exponent", decimal.base10Exponent());
-  });
-}
-
-void writeScope(llvm::json::OStream &json, const MetricScope &scope) {
-  json.object([&] {
-    if (std::holds_alternative<WholeSubjectScope>(scope)) {
-      json.attribute("kind", "whole_subject");
-      return;
-    }
-    const MetricEntityReference &entity =
-        std::get<MetricEntityReference>(scope);
-    json.attribute("kind", "entity");
-    json.attribute("artifact", formatArtifactIdentityHex(entity.artifact));
-    json.attribute("entity_id", entity.entity.value());
   });
 }
 
@@ -352,10 +239,10 @@ llvm::Expected<MetricValue> parseMetricValue(const llvm::json::Object &object,
       return decimal.takeError();
     if (decimal->coefficient() != *coefficient ||
         decimal->base10Exponent() != *exponent)
-      return metricError("decimal is not canonical");
+      return evaluationError("decimal is not canonical");
     return MetricValue{*decimal};
   }
-  return metricError(context + " has unknown value kind '" + *kind + "'");
+  return evaluationError(context + " has unknown value kind '" + *kind + "'");
 }
 
 llvm::Expected<MetricValue>
@@ -368,33 +255,14 @@ parseMetricValueField(const llvm::json::Object &object, llvm::StringRef key,
   return parseMetricValue(**valueObject, valueContext);
 }
 
-llvm::Expected<MetricScope> parseMetricScope(const llvm::json::Object &object) {
-  auto kind = requireString(object, "kind", "metric scope");
-  if (!kind)
-    return kind.takeError();
-  if (*kind == "whole_subject") {
-    if (llvm::Error error =
-            rejectUnknownFields(object, "metric scope", {"kind"}))
-      return std::move(error);
-    return MetricScope{WholeSubjectScope{}};
-  }
-  if (*kind == "entity") {
-    if (llvm::Error error = rejectUnknownFields(
-            object, "metric scope", {"kind", "artifact", "entity_id"}))
-      return std::move(error);
-    auto artifactSpelling = requireString(object, "artifact", "metric scope");
-    if (!artifactSpelling)
-      return artifactSpelling.takeError();
-    auto artifact = parseArtifactIdentityHex(*artifactSpelling);
-    if (!artifact)
-      return artifact.takeError();
-    auto entity = requireUnsigned(object, "entity_id", "metric scope");
-    if (!entity)
-      return entity.takeError();
-    return MetricScope{
-        MetricEntityReference{std::move(*artifact), MetricEntityId(*entity)}};
-  }
-  return metricError("metric scope has unknown kind '" + *kind + "'");
+llvm::Expected<EvaluationScope> parseScopeField(const llvm::json::Object &root,
+                                                MetricKind metric,
+                                                llvm::StringRef context) {
+  auto scopeObject = requireObject(root, "scope", context);
+  if (!scopeObject)
+    return scopeObject.takeError();
+  return parseEvaluationScopeJson(**scopeObject,
+                                  metricDescriptor(metric).scopeForms);
 }
 
 llvm::Expected<MetricObservationValue>
@@ -476,6 +344,11 @@ parseObservationValue(const llvm::json::Object &object) {
 
 bool MetricDescriptor::permitsObservationForm(ObservationForm form) const {
   return (permittedObservationForms & observationFormBit(form)) != 0;
+}
+
+ConditionApplicability MetricDescriptor::requestConditionApplicability() const {
+  return ConditionApplicability{ConditionLocation::MetricRequest, spelling,
+                                permittedRequestConditions};
 }
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors() {
@@ -581,57 +454,9 @@ parseNotApplicableReason(llvm::StringRef spelling) {
   return unknownEnum<NotApplicableReason>("NotApplicableReason", spelling);
 }
 
-llvm::Expected<DecimalValue> DecimalValue::get(std::int64_t coefficient,
-                                               std::int64_t base10Exponent) {
-  if (coefficient == 0)
-    return DecimalValue(0, 0);
-  while ((coefficient % 10) == 0) {
-    if (base10Exponent == std::numeric_limits<std::int64_t>::max())
-      return metricError("decimal exponent overflow during normalization");
-    coefficient /= 10;
-    ++base10Exponent;
-  }
-  return DecimalValue(coefficient, base10Exponent);
-}
-
-llvm::Expected<ExactRatio> ExactRatio::get(std::uint64_t numerator,
-                                           std::uint64_t denominator) {
-  if (denominator == 0)
-    return metricError("exact ratio denominator must be positive");
-  if (numerator == 0)
-    return ExactRatio(0, 1);
-  const std::uint64_t divisor = std::gcd(numerator, denominator);
-  return ExactRatio(numerator / divisor, denominator / divisor);
-}
-
-llvm::Expected<ExactRatio> ExactRatio::reducedModulo(ExactRatio modulus) const {
-  if (modulus.numerator_ == 0)
-    return metricError("exact ratio modulus must be positive");
-
-  // Bring both ratios onto the common denominator b*d and take the remainder of
-  // the scaled numerators; the exact result is (a*d mod c*b) / (b*d) reduced.
-  // All intermediates fit unsigned __int128, so no step overflows or invokes
-  // undefined behavior; only the reduced result may exceed uint64.
-  using u128 = unsigned __int128;
-  const u128 scaledValue = static_cast<u128>(numerator_) * modulus.denominator_;
-  const u128 scaledModulus =
-      static_cast<u128>(modulus.numerator_) * denominator_;
-  const u128 commonDenominator =
-      static_cast<u128>(denominator_) * modulus.denominator_;
-  const u128 remainder = scaledValue % scaledModulus;
-  const u128 divisor = gcdU128(remainder, commonDenominator);
-  const u128 reducedNumerator = remainder / divisor;
-  const u128 reducedDenominator = commonDenominator / divisor;
-
-  constexpr u128 uint64Max = std::numeric_limits<std::uint64_t>::max();
-  if (reducedNumerator > uint64Max || reducedDenominator > uint64Max)
-    return metricError("exact ratio overflow during normalization");
-  return ExactRatio(static_cast<std::uint64_t>(reducedNumerator),
-                    static_cast<std::uint64_t>(reducedDenominator));
-}
-
 llvm::Error validateMetricQuery(const MetricQuery &query) {
-  return validateMetricScope(metricDescriptor(query.metric), query.scope);
+  return validateEvaluationScopeForm(metricDescriptor(query.metric).scopeForms,
+                                     query.scope);
 }
 
 llvm::Expected<std::vector<MetricQuery>>
@@ -644,8 +469,8 @@ canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries) {
   std::sort(canonical.begin(), canonical.end(), metricQueryLess);
   for (std::size_t index = 1; index < canonical.size(); ++index)
     if (canonical[index - 1] == canonical[index])
-      return metricError("duplicate metric query for '" +
-                         toString(canonical[index].metric) + "'");
+      return evaluationError("duplicate metric query for '" +
+                             toString(canonical[index].metric) + "'");
   return canonical;
 }
 
@@ -662,7 +487,7 @@ llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &query) {
                    formatSchemaVersion(metricQuerySchemaVersion));
     json.attribute("metric", toString(query.metric));
     json.attributeBegin("scope");
-    writeScope(json, query.scope);
+    writeEvaluationScopeJson(json, query.scope);
     json.attributeEnd();
   });
   return output.str().str();
@@ -674,7 +499,7 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
     return value.takeError();
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
-    return metricError("evaluation.metric_query root must be an object");
+    return evaluationError("evaluation.metric_query root must be an object");
   if (llvm::Error error =
           rejectUnknownFields(*root, "evaluation.metric_query root",
                               {"schema", "schema_version", "metric", "scope"}))
@@ -684,7 +509,7 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   if (!schema)
     return schema.takeError();
   if (*schema != metricQuerySchemaIdentity)
-    return metricError("unsupported metric query schema '" + *schema + "'");
+    return evaluationError("unsupported metric query schema '" + *schema + "'");
   auto version =
       requireString(*root, "schema_version", "evaluation.metric_query root");
   if (!version)
@@ -693,8 +518,8 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   if (!parsedVersion)
     return parsedVersion.takeError();
   if (*parsedVersion != metricQuerySchemaVersion)
-    return metricError("unsupported evaluation.metric_query version '" +
-                       *version + "'");
+    return evaluationError("unsupported evaluation.metric_query version '" +
+                           *version + "'");
 
   auto metricSpelling =
       requireString(*root, "metric", "evaluation.metric_query root");
@@ -704,11 +529,7 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   if (!metric)
     return metric.takeError();
 
-  auto scopeObject =
-      requireObject(*root, "scope", "evaluation.metric_query root");
-  if (!scopeObject)
-    return scopeObject.takeError();
-  auto scope = parseMetricScope(**scopeObject);
+  auto scope = parseScopeField(*root, *metric, "evaluation.metric_query root");
   if (!scope)
     return scope.takeError();
 
@@ -719,7 +540,7 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   if (!canonical)
     return canonical.takeError();
   if (*canonical != json)
-    return metricError("metric query JSON is not canonical");
+    return evaluationError("metric query JSON is not canonical");
   return query;
 }
 
@@ -737,10 +558,11 @@ llvm::Error validateMetricObservation(const MetricObservation &observation) {
   const MetricDescriptor &descriptor = metricDescriptor(observation.metric);
   const ObservationForm form = observationForm(observation);
   if (!descriptor.permitsObservationForm(form))
-    return metricError(descriptor.spelling + " does not permit " +
-                       toString(form) + " observations");
+    return evaluationError(descriptor.spelling + " does not permit " +
+                           toString(form) + " observations");
 
-  if (llvm::Error error = validateMetricScope(descriptor, observation.scope))
+  if (llvm::Error error =
+          validateEvaluationScopeForm(descriptor.scopeForms, observation.scope))
     return error;
 
   if (const auto *point =
@@ -755,16 +577,16 @@ llvm::Error validateMetricObservation(const MetricObservation &observation) {
           std::get_if<CensoredObservation>(&observation.observation)) {
     if (!descriptor.censoredReasonPolicy ||
         descriptor.censoredReasonPolicy->reason != censored->reason)
-      return metricError(descriptor.spelling +
-                         " does not permit censored reason '" +
-                         toString(censored->reason) + "'");
+      return evaluationError(descriptor.spelling +
+                             " does not permit censored reason '" +
+                             toString(censored->reason) + "'");
     const CensoredReasonPolicy &policy = *descriptor.censoredReasonPolicy;
     if (policy.requiresLowerBound && !censored->lower)
-      return metricError(toString(censored->reason) +
-                         " requires a lower bound");
+      return evaluationError(toString(censored->reason) +
+                             " requires a lower bound");
     if (!policy.permitsUpperBound && censored->upper)
-      return metricError(toString(censored->reason) +
-                         " does not permit an upper bound");
+      return evaluationError(toString(censored->reason) +
+                             " does not permit an upper bound");
     if (censored->lower && censored->upper)
       return validateOrderedValues(descriptor, *censored->lower,
                                    *censored->upper);
@@ -772,11 +594,11 @@ llvm::Error validateMetricObservation(const MetricObservation &observation) {
       return validateValue(descriptor, *censored->lower);
     if (censored->upper)
       return validateValue(descriptor, *censored->upper);
-    return metricError("censored observation requires at least one bound");
+    return evaluationError("censored observation requires at least one bound");
   }
 
   if (observation.uncertainty != UncertaintyKind::Unknown)
-    return metricError("not_applicable requires unknown uncertainty");
+    return evaluationError("not_applicable requires unknown uncertainty");
   return llvm::Error::success();
 }
 
@@ -793,7 +615,7 @@ serializeMetricObservation(const MetricObservation &observation) {
     json.attribute("schema_version", formatSchemaVersion(metricSchemaVersion));
     json.attribute("metric", toString(observation.metric));
     json.attributeBegin("scope");
-    writeScope(json, observation.scope);
+    writeEvaluationScopeJson(json, observation.scope);
     json.attributeEnd();
     json.attribute("uncertainty", toString(observation.uncertainty));
     json.attributeBegin("observation");
@@ -809,7 +631,7 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
     return value.takeError();
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
-    return metricError("evaluation.metric root must be an object");
+    return evaluationError("evaluation.metric root must be an object");
   if (llvm::Error error =
           rejectUnknownFields(*root, "evaluation.metric root",
                               {"schema", "schema_version", "metric", "scope",
@@ -820,7 +642,7 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
   if (!schema)
     return schema.takeError();
   if (*schema != metricSchemaIdentity)
-    return metricError("unsupported metric schema '" + *schema + "'");
+    return evaluationError("unsupported metric schema '" + *schema + "'");
   auto version =
       requireString(*root, "schema_version", "evaluation.metric root");
   if (!version)
@@ -829,8 +651,8 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
   if (!parsedVersion)
     return parsedVersion.takeError();
   if (*parsedVersion != metricSchemaVersion)
-    return metricError("unsupported evaluation.metric version '" + *version +
-                       "'");
+    return evaluationError("unsupported evaluation.metric version '" +
+                           *version + "'");
 
   auto metricSpelling =
       requireString(*root, "metric", "evaluation.metric root");
@@ -840,10 +662,7 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
   if (!metric)
     return metric.takeError();
 
-  auto scopeObject = requireObject(*root, "scope", "evaluation.metric root");
-  if (!scopeObject)
-    return scopeObject.takeError();
-  auto scope = parseMetricScope(**scopeObject);
+  auto scope = parseScopeField(*root, *metric, "evaluation.metric root");
   if (!scope)
     return scope.takeError();
 
@@ -871,7 +690,7 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
   if (!canonical)
     return canonical.takeError();
   if (*canonical != json)
-    return metricError("metric JSON is not canonical");
+    return evaluationError("metric JSON is not canonical");
   return observation;
 }
 

@@ -1,3 +1,12 @@
+add_executable(loom-evaluation-case-test
+  CaseTest.cpp
+)
+
+target_link_libraries(loom-evaluation-case-test PRIVATE
+  LoomEvaluation
+  LLVMSupport
+)
+
 add_executable(loom-evaluation-metric-test
   MetricTest.cpp
 )

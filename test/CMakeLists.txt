@@ -34,6 +34,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-memory-effect-test
   loom-dataflow-service-schema-test
   loom-dfg-sim
+  loom-evaluation-case-test
   loom-evaluation-metric-test
   loom-evaluation-tool-runner-test
   loom-fabric-artifact-gate-test

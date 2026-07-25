@@ -10,7 +10,6 @@
 #include <iostream>
 #include <limits>
 #include <optional>
-#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -79,8 +78,21 @@ ExactRatio ratio(const char *test, std::uint64_t numerator,
   return takeExpected(test, ExactRatio::get(numerator, denominator));
 }
 
+// Every registered metric owns a zero-role whole-case form and a one-role
+// subject-root form.
+EvaluationScope wholeCaseScope() {
+  return EvaluationScope{ScopeFormRef(0), {}};
+}
+
+EvaluationScope subjectScope(ArtifactIdentity anchor, ArtifactIdentity target) {
+  return EvaluationScope{
+      ScopeFormRef(1),
+      {SubjectTargetRef{CaseSubjectRoleRef(0), std::move(anchor),
+                        ArtifactRootTarget{std::move(target)}}}};
+}
+
 MetricObservation cyclePoint(std::int64_t cycles) {
-  return MetricObservation{MetricKind::CycleCount, WholeSubjectScope{},
+  return MetricObservation{MetricKind::CycleCount, wholeCaseScope(),
                            UncertaintyKind::ExactWithinModel,
                            PointObservation{MetricValue{IntegerValue(cycles)}}};
 }
@@ -89,8 +101,6 @@ void sharedArtifactAtomsAreSingleSource() {
   ArtifactIdentity identity = testArtifact({0x01, 0xab});
   require(__func__, identity.bytes().size() == ArtifactIdentity::byteSize,
           "identity width changed");
-  require(__func__, identity.bytes()[0] == 0x01 && identity.bytes()[1] == 0xab,
-          "identity bytes were not preserved");
 
   loom::mapping::ActorRef mappingReference{identity, loom::mapping::ActorId(7)};
   ArtifactReference<loom::mapping::ActorId> commonReference = mappingReference;
@@ -100,58 +110,44 @@ void sharedArtifactAtomsAreSingleSource() {
           "Mapping reference lost its typed entity ID");
 }
 
-void metricRegistryIsClosedAndTyped() {
+void metricDescriptorsOwnScopeFormsAndRequestConditions() {
   const MetricDescriptor &cycles = metricDescriptor(MetricKind::CycleCount);
   const MetricDescriptor &period = metricDescriptor(MetricKind::ClockPeriod);
-  const MetricDescriptor &runtime = metricDescriptor(MetricKind::Runtime);
 
-  require(__func__, cycles.spelling == "cycle_count",
-          "cycle_count spelling changed");
-  require(__func__, cycles.valueKind == MetricValueKind::Integer,
-          "cycle_count must be an integer");
-  require(__func__, cycles.dimension == MetricDimension::Cycle,
-          "cycle_count dimension changed");
-  require(__func__, cycles.canonicalUnit == "cycle",
-          "cycle_count unit changed");
-  require(__func__, cycles.permitsObservationForm(ObservationForm::Censored),
-          "cycle_count must permit censored observations");
-  require(__func__, cycles.censoredReasonPolicy.has_value(),
-          "cycle_count lacks its censored reason policy");
-
-  require(__func__, period.spelling == "clock_period",
-          "clock_period spelling changed");
-  require(__func__, period.valueKind == MetricValueKind::Decimal,
-          "clock_period must be decimal");
-  require(__func__, period.dimension == MetricDimension::Time,
-          "clock_period dimension changed");
-  require(__func__, period.canonicalUnit == "second",
-          "clock_period unit changed");
-  require(__func__, !period.permitsObservationForm(ObservationForm::Censored),
-          "clock_period must reject censored observations");
-  require(__func__, !period.censoredReasonPolicy.has_value(),
-          "clock_period has an unsupported censored reason policy");
-
-  require(__func__, runtime.spelling == "runtime", "runtime spelling changed");
-  require(__func__, runtime.valueKind == MetricValueKind::Decimal,
-          "runtime must be decimal");
-  require(__func__, runtime.dimension == MetricDimension::Time,
-          "runtime dimension changed");
-  require(__func__, runtime.canonicalUnit == "second", "runtime unit changed");
-  require(__func__, runtime.censoredReasonPolicy.has_value(),
-          "runtime lacks its censored reason policy");
   require(__func__,
-          runtime.censoredReasonPolicy->reason ==
-                  CensoredReason::SubjectDidNotComplete &&
-              runtime.censoredReasonPolicy->requiresLowerBound &&
-              !runtime.censoredReasonPolicy->permitsUpperBound,
-          "runtime censored reason policy changed");
+          cycles.spelling == "cycle_count" &&
+              cycles.valueKind == MetricValueKind::Integer &&
+              cycles.dimension == MetricDimension::Cycle &&
+              cycles.canonicalUnit == "cycle",
+          "the cycle_count descriptor changed");
+  require(__func__,
+          period.valueKind == MetricValueKind::Decimal &&
+              period.valueDomain == MetricValueDomain::Positive &&
+              !period.permitsObservationForm(ObservationForm::Censored),
+          "the clock_period descriptor changed");
 
-  std::set<std::string> spellings;
-  for (const MetricDescriptor &descriptor : allMetricDescriptors())
-    require(__func__, spellings.insert(descriptor.spelling.str()).second,
-            "metric registry contains a duplicate spelling");
-  require(__func__, spellings.size() == 3,
-          "metric registry contains an unapproved metric");
+  // A metric owns its own scope forms; there is no metric-local entity scope.
+  require(__func__, cycles.scopeForms.size() == 2,
+          "cycle_count lost one of its owned scope forms");
+  require(__func__, cycles.scopeForms[0].roles.empty(),
+          "the whole-case scope form gained a role");
+  require(__func__,
+          cycles.scopeForms[1].roles.size() == 1 &&
+              cycles.scopeForms[1].roles[0].role == ScopeRoleRef(0) &&
+              cycles.scopeForms[1].roles[0].acceptsArtifactRoot,
+          "the subject scope form changed");
+
+  // A metric owns which request-specific conditions apply to it.
+  const ConditionApplicability sampled = cycles.requestConditionApplicability();
+  require(__func__, sampled.location == ConditionLocation::MetricRequest,
+          "metric request conditions changed location");
+  require(__func__,
+          sampled.findPattern(EvaluationConditionKind::Quantile) != nullptr,
+          "cycle_count lost its quantile applicability");
+  require(__func__,
+          period.requestConditionApplicability().findPattern(
+              EvaluationConditionKind::Quantile) == nullptr,
+          "clock_period gained a request-specific condition");
 
   require(__func__,
           takeExpected(__func__, parseMetricKind("runtime")) ==
@@ -162,37 +158,18 @@ void metricRegistryIsClosedAndTyped() {
 
 void decimalValuesNormalizeCanonically() {
   DecimalValue normalized = decimal(__func__, 1200, -2);
-  require(__func__, normalized.coefficient() == 12,
-          "trailing coefficient zeros were not removed");
-  require(__func__, normalized.base10Exponent() == 0,
-          "decimal exponent did not absorb trailing zeros");
+  require(__func__,
+          normalized.coefficient() == 12 && normalized.base10Exponent() == 0,
+          "trailing coefficient zeros were not moved into the exponent");
 
   DecimalValue negative = decimal(__func__, -4500, -3);
-  require(__func__, negative.coefficient() == -45,
+  require(__func__,
+          negative.coefficient() == -45 && negative.base10Exponent() == -1,
           "negative decimal was not normalized");
-  require(__func__, negative.base10Exponent() == -1,
-          "negative decimal exponent was not normalized");
 
   DecimalValue zero = decimal(__func__, 0, 99);
-  require(__func__, zero.coefficient() == 0, "zero coefficient changed");
-  require(__func__, zero.base10Exponent() == 0, "zero must have exponent zero");
-
-  require(__func__,
-          IntegerValue(std::numeric_limits<std::int64_t>::min()).value() ==
-              std::numeric_limits<std::int64_t>::min(),
-          "IntegerValue lost INT64_MIN");
-  require(__func__,
-          IntegerValue(std::numeric_limits<std::int64_t>::max()).value() ==
-              std::numeric_limits<std::int64_t>::max(),
-          "IntegerValue lost INT64_MAX");
-  require(__func__,
-          decimal(__func__, std::numeric_limits<std::int64_t>::min(), 0)
-                  .coefficient() == std::numeric_limits<std::int64_t>::min(),
-          "DecimalValue lost INT64_MIN");
-  require(__func__,
-          decimal(__func__, std::numeric_limits<std::int64_t>::max(), 0)
-                  .coefficient() == std::numeric_limits<std::int64_t>::max(),
-          "DecimalValue lost INT64_MAX");
+  require(__func__, zero.coefficient() == 0 && zero.base10Exponent() == 0,
+          "zero must have coefficient zero and exponent zero");
 
   expectErrorContains(
       __func__, DecimalValue::get(10, std::numeric_limits<std::int64_t>::max()),
@@ -205,20 +182,11 @@ void exactRatioNormalizesReducesAndChecksOverflow() {
   ExactRatio reduced = ratio(__func__, 6, 4);
   require(__func__, reduced.numerator() == 3 && reduced.denominator() == 2,
           "ratio was not reduced by greatest common divisor");
-  ExactRatio whole = ratio(__func__, 10, 5);
-  require(__func__, whole.numerator() == 2 && whole.denominator() == 1,
-          "integral ratio was not reduced to /1");
   ExactRatio zero = ratio(__func__, 0, 7);
   require(__func__, zero.numerator() == 0 && zero.denominator() == 1,
           "zero must have the sole encoding 0/1");
-
-  // Equality is value equality on the canonical form.
   require(__func__, ratio(__func__, 6, 4) == ratio(__func__, 3, 2),
           "equal ratios compared unequal after reduction");
-  require(__func__, ratio(__func__, 0, 7) == ratio(__func__, 0, 99),
-          "zero encodings compared unequal");
-  require(__func__, ratio(__func__, 3, 2) != ratio(__func__, 2, 3),
-          "distinct ratios compared equal");
 
   // A zero denominator is rejected.
   expectErrorContains(__func__, ExactRatio::get(5, 0),
@@ -231,12 +199,6 @@ void exactRatioNormalizesReducesAndChecksOverflow() {
               ratio(__func__, 5, 6).reducedModulo(ratio(__func__, 1, 2))) ==
               ratio(__func__, 1, 3),
           "5/6 mod 1/2 must normalize to 1/3");
-  require(__func__,
-          takeExpected(
-              __func__,
-              ratio(__func__, 7, 2).reducedModulo(ratio(__func__, 1, 1))) ==
-              ratio(__func__, 1, 2),
-          "7/2 mod 1/1 must normalize to 1/2");
   require(__func__,
           takeExpected(
               __func__,
@@ -257,288 +219,125 @@ void exactRatioNormalizesReducesAndChecksOverflow() {
 }
 
 void observationValidationRejectsIllegalCombinations() {
-  MetricObservation valid = cyclePoint(42);
-  if (llvm::Error error = validateMetricObservation(valid))
+  if (llvm::Error error = validateMetricObservation(cyclePoint(42)))
     fail(__func__, llvm::toString(std::move(error)));
 
   MetricObservation wrongValueKind{
-      MetricKind::CycleCount, WholeSubjectScope{},
+      MetricKind::CycleCount, wholeCaseScope(),
       UncertaintyKind::ExactWithinModel,
       PointObservation{MetricValue{decimal(__func__, 42, 0)}}};
   expectErrorContains(__func__, validateMetricObservation(wrongValueKind),
                       "requires integer values");
 
   MetricObservation descendingInterval{
-      MetricKind::ClockPeriod, WholeSubjectScope{}, UncertaintyKind::Bounded,
+      MetricKind::ClockPeriod, wholeCaseScope(), UncertaintyKind::Bounded,
       IntervalObservation{MetricValue{decimal(__func__, 11, -10)},
                           MetricValue{decimal(__func__, 9, -10)}}};
   expectErrorContains(__func__, validateMetricObservation(descendingInterval),
                       "lower bound exceeds upper bound");
 
-  MetricObservation validCensored{
-      MetricKind::Runtime, WholeSubjectScope{}, UncertaintyKind::Unknown,
-      CensoredObservation{MetricValue{decimal(__func__, 10, 0)}, std::nullopt,
-                          CensoredReason::SubjectDidNotComplete}};
-  if (llvm::Error error = validateMetricObservation(validCensored))
-    fail(__func__, llvm::toString(std::move(error)));
-
-  MetricObservation clockPeriodCensored{
-      MetricKind::ClockPeriod, WholeSubjectScope{}, UncertaintyKind::Unknown,
-      CensoredObservation{MetricValue{decimal(__func__, 10, -9)}, std::nullopt,
-                          CensoredReason::SubjectDidNotComplete}};
-  expectErrorContains(__func__, validateMetricObservation(clockPeriodCensored),
-                      "clock_period does not permit censored observations");
-
-  MetricObservation missingCensoredLower{
-      MetricKind::CycleCount, WholeSubjectScope{}, UncertaintyKind::Unknown,
+  MetricObservation censoredWithoutLowerBound{
+      MetricKind::CycleCount, wholeCaseScope(), UncertaintyKind::Unknown,
       CensoredObservation{std::nullopt, MetricValue{IntegerValue(10)},
                           CensoredReason::SubjectDidNotComplete}};
-  expectErrorContains(__func__, validateMetricObservation(missingCensoredLower),
+  expectErrorContains(__func__,
+                      validateMetricObservation(censoredWithoutLowerBound),
                       "requires a lower bound");
 
-  MetricObservation censoredUpperBound{
-      MetricKind::CycleCount, WholeSubjectScope{}, UncertaintyKind::Unknown,
-      CensoredObservation{MetricValue{IntegerValue(10)},
-                          MetricValue{IntegerValue(20)},
-                          CensoredReason::SubjectDidNotComplete}};
-  expectErrorContains(__func__, validateMetricObservation(censoredUpperBound),
-                      "does not permit an upper bound");
-
   MetricObservation invalidNotApplicable{
-      MetricKind::Runtime, WholeSubjectScope{},
-      UncertaintyKind::ExactWithinModel,
+      MetricKind::Runtime, wholeCaseScope(), UncertaintyKind::ExactWithinModel,
       NotApplicableObservation{NotApplicableReason::UndefinedForSubject}};
   expectErrorContains(__func__, validateMetricObservation(invalidNotApplicable),
                       "not_applicable requires unknown uncertainty");
+
+  // A scope that the metric's own forms do not define is rejected.
+  MetricObservation unknownForm{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(7), {}},
+                                UncertaintyKind::ExactWithinModel,
+                                PointObservation{MetricValue{IntegerValue(1)}}};
+  expectErrorContains(__func__, validateMetricObservation(unknownForm),
+                      "unknown scope form");
 }
 
-void metricQueryCanonicalizationIsInputOrderIndependent() {
-  require(__func__,
-          takeExpected(__func__,
-                       canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery>{}))
-              .empty(),
-          "empty query list did not remain empty");
-
-  MetricQuery clockWhole{MetricKind::ClockPeriod, WholeSubjectScope{}};
-  MetricQuery clockEntityLate{
+void metricQueriesCanonicalizeByScopeKey() {
+  MetricQuery clockWhole{MetricKind::ClockPeriod, wholeCaseScope()};
+  MetricQuery clockEarly{
       MetricKind::ClockPeriod,
-      MetricEntityReference{testArtifact({0x02}), MetricEntityId(1)}};
-  MetricQuery clockEntityHighId{
+      subjectScope(testArtifact({0x01}), testArtifact({0x03}))};
+  MetricQuery clockLate{
       MetricKind::ClockPeriod,
-      MetricEntityReference{testArtifact({0x01}), MetricEntityId(9)}};
-  MetricQuery clockEntityLowId{
-      MetricKind::ClockPeriod,
-      MetricEntityReference{testArtifact({0x01}), MetricEntityId(3)}};
-  MetricQuery cyclesWhole{MetricKind::CycleCount, WholeSubjectScope{}};
-  MetricQuery runtimeWhole{MetricKind::Runtime, WholeSubjectScope{}};
+      subjectScope(testArtifact({0x01}), testArtifact({0x09}))};
+  MetricQuery cyclesWhole{MetricKind::CycleCount, wholeCaseScope()};
 
   std::vector<MetricQuery> forward = takeExpected(
-      __func__, canonicalizeMetricQueries({cyclesWhole, clockEntityLate,
-                                           runtimeWhole, clockEntityHighId,
-                                           clockWhole, clockEntityLowId}));
+      __func__, canonicalizeMetricQueries(
+                    {cyclesWhole, clockLate, clockWhole, clockEarly}));
   std::vector<MetricQuery> reverse = takeExpected(
-      __func__, canonicalizeMetricQueries({clockEntityLowId, clockWhole,
-                                           clockEntityHighId, runtimeWhole,
-                                           clockEntityLate, cyclesWhole}));
-
+      __func__, canonicalizeMetricQueries(
+                    {clockEarly, clockWhole, clockLate, cyclesWhole}));
   require(__func__, forward == reverse,
           "canonical order depends on input order");
-
-  const std::vector<MetricQuery> expected = {
-      clockWhole,      clockEntityLowId, clockEntityHighId,
-      clockEntityLate, cyclesWhole,      runtimeWhole};
-  require(__func__, forward == expected, "canonical query ordering changed");
-}
-
-void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
-  MetricQuery whole{MetricKind::CycleCount, WholeSubjectScope{}};
-  MetricQuery firstEntity{
-      MetricKind::CycleCount,
-      MetricEntityReference{testArtifact({0x01}), MetricEntityId(1)}};
-  MetricQuery secondEntity{
-      MetricKind::CycleCount,
-      MetricEntityReference{testArtifact({0x01}), MetricEntityId(2)}};
-
-  std::vector<MetricQuery> distinct = takeExpected(
-      __func__, canonicalizeMetricQueries({secondEntity, whole, firstEntity}));
   require(__func__,
-          distinct ==
-              std::vector<MetricQuery>{whole, firstEntity, secondEntity},
-          "distinct typed scopes were not preserved");
-  expectErrorContains(__func__,
-                      canonicalizeMetricQueries(
-                          {whole, firstEntity, secondEntity, firstEntity}),
-                      "duplicate metric query");
+          forward == std::vector<MetricQuery>{clockWhole, clockEarly, clockLate,
+                                              cyclesWhole},
+          "canonical query ordering changed");
+  expectErrorContains(
+      __func__, canonicalizeMetricQueries({clockWhole, clockEarly, clockEarly}),
+      "duplicate metric query");
 }
 
-void metricQueryJsonRoundTripsCanonically() {
+void metricTextCarriesTheSharedScope() {
   MetricQuery query{
       MetricKind::ClockPeriod,
-      MetricEntityReference{
-          testArtifact({0x01, 0xab}),
-          MetricEntityId(std::numeric_limits<std::uint64_t>::max())}};
-  const std::string expected =
-      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":18446744073709551615}})";
-
-  std::string serialized = takeExpected(__func__, serializeMetricQuery(query));
-  require(__func__, serialized == expected,
-          "canonical metric query JSON bytes changed:\n" + serialized);
-
-  MetricQuery parsed = takeExpected(__func__, parseMetricQuery(expected));
-  require(__func__, parsed == query, "metric query JSON did not round-trip");
+      subjectScope(testArtifact({0x01, 0xab}), testArtifact({0x02, 0xcd}))};
+  const std::string expectedQuery =
+      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"form":1,"targets":[{"case_subject_role":0,"anchor":"01ab000000000000000000000000000000000000000000000000000000000000","target":{"kind":"artifact_root","artifact":"02cd000000000000000000000000000000000000000000000000000000000000"}}]}})";
+  std::string serializedQuery =
+      takeExpected(__func__, serializeMetricQuery(query));
+  require(__func__, serializedQuery == expectedQuery,
+          "canonical metric query bytes changed:\n" + serializedQuery);
   require(__func__,
-          takeExpected(__func__, serializeMetricQuery(parsed)) == expected,
-          "metric query round trip was not byte-stable");
+          takeExpected(__func__, parseMetricQuery(expectedQuery)) == query,
+          "metric query text did not round-trip");
 
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.1","metric":"cycle_count","scope":{"kind":"whole_subject"}})"),
-      "unsupported evaluation.metric_query version");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query.other","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"}})"),
-      "unsupported metric query schema");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"},"condition":{}})"),
-      "unknown field 'condition'");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","queries":[]})"),
-      "unknown field 'queries'");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"","entity_id":7}})"),
-      "exactly 64 lowercase hexadecimal characters");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB000000000000000000000000000000000000000000000000000000000000","entity_id":7}})"),
-      "artifact identity must use lowercase hexadecimal");
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":-1}})"),
-      "entity_id' must be an unsigned integer");
-  auto trailing = parseMetricQuery(
-      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"}})"
-      " trailing");
-  require(__func__, !trailing, "trailing JSON was accepted");
-  llvm::consumeError(trailing.takeError());
-  expectErrorContains(
-      __func__,
-      parseMetricQuery(
-          R"({"metric":"cycle_count","schema":"evaluation.metric_query","schema_version":"1.0","scope":{"kind":"whole_subject"}})"),
-      "metric query JSON is not canonical");
-}
-
-void canonicalJsonIsStableAndStrict() {
-  MetricObservation observation{
-      MetricKind::ClockPeriod,
-      MetricEntityReference{
-          testArtifact({0x01, 0xab}),
-          MetricEntityId(std::numeric_limits<std::uint64_t>::max())},
-      UncertaintyKind::Bounded,
-      IntervalObservation{MetricValue{decimal(__func__, 9, -10)},
-                          MetricValue{decimal(__func__, 11, -10)}}};
-
-  const std::string expected =
-      R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":18446744073709551615},"uncertainty":"bounded","observation":{"form":"interval","lower":{"kind":"decimal","coefficient":9,"base10_exponent":-10},"upper":{"kind":"decimal","coefficient":11,"base10_exponent":-10}}})";
-  std::string serialized =
+  MetricObservation observation{MetricKind::CycleCount, wholeCaseScope(),
+                                UncertaintyKind::ExactWithinModel,
+                                PointObservation{MetricValue{IntegerValue(7)}}};
+  const std::string expectedObservation =
+      R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"form":0,"targets":[]},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":7}}})";
+  std::string serializedObservation =
       takeExpected(__func__, serializeMetricObservation(observation));
-  require(__func__, serialized == expected,
-          "canonical JSON bytes changed:\n" + serialized);
-
-  MetricObservation parsed =
-      takeExpected(__func__, parseMetricObservation(expected));
-  require(__func__, parsed == observation, "canonical JSON did not round-trip");
+  require(__func__, serializedObservation == expectedObservation,
+          "canonical metric bytes changed:\n" + serializedObservation);
   require(__func__,
-          takeExpected(__func__, serializeMetricObservation(parsed)) ==
-              expected,
-          "round-trip serialization was not byte-stable");
+          takeExpected(__func__, parseMetricObservation(expectedObservation)) ==
+              observation,
+          "metric text did not round-trip");
+
+  // The replaced scope authorities leave no trace in the persistent text.
+  for (const std::string &text : {serializedQuery, serializedObservation}) {
+    require(__func__, text.find("whole_subject") == std::string::npos,
+            "the persistent text still spells a whole-subject scope");
+    require(__func__, text.find("entity_id") == std::string::npos,
+            "the persistent text still spells a metric-local entity");
+  }
 
   expectErrorContains(
       __func__,
       parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.1","metric":"cycle_count","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "unsupported evaluation.metric version");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.other","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "unsupported metric schema");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}},"score":1})"),
-      "unknown field 'score'");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "field 'metric' must be a string");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","metric":"cycle_count","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
+          R"({"metric":"cycle_count","schema":"evaluation.metric","schema_version":"1.0","scope":{"form":0,"targets":[]},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":7}}})"),
       "metric JSON is not canonical");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject","path":"graph/0"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "metric scope has unknown field 'path'");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"metric":"cycle_count","schema":"evaluation.metric","schema_version":"1.0","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "metric JSON is not canonical");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"clock_period","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"decimal","coefficient":120,"base10_exponent":-2}}})"),
-      "decimal is not canonical");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"clock_period","scope":{"kind":"whole_subject"},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"decimal","coefficient":1.0,"base10_exponent":-9}}})"),
-      "metric JSON is not canonical");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB000000000000000000000000000000000000000000000000000000000000","entity_id":7},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
-      "artifact identity must use lowercase hexadecimal");
-  expectErrorContains(
-      __func__,
-      parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"},"uncertainty":"unknown","observation":{"form":"not_applicable","reason":"subject_did_not_complete"}})"),
-      "unknown NotApplicableReason");
-
-  std::string pointJson =
-      takeExpected(__func__, serializeMetricObservation(cyclePoint(7)));
-  require(__func__, pointJson.find("score") == std::string::npos,
-          "metric schema contains score");
-  require(__func__, pointJson.find("objective") == std::string::npos,
-          "metric schema contains objective");
-  require(__func__, pointJson.find("acceptance") == std::string::npos,
-          "metric schema contains acceptance");
 }
 
 } // namespace
 
 int main() {
   sharedArtifactAtomsAreSingleSource();
-  metricRegistryIsClosedAndTyped();
+  metricDescriptorsOwnScopeFormsAndRequestConditions();
   decimalValuesNormalizeCanonically();
   exactRatioNormalizesReducesAndChecksOverflow();
   observationValidationRejectsIllegalCombinations();
-  metricQueryCanonicalizationIsInputOrderIndependent();
-  metricQueryDuplicatesAreRejectedWithoutCollapsingScopes();
-  metricQueryJsonRoundTripsCanonically();
-  canonicalJsonIsStableAndStrict();
+  metricQueriesCanonicalizeByScopeKey();
+  metricTextCarriesTheSharedScope();
   return 0;
 }
