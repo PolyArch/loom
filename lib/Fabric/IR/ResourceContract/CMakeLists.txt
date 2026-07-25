@@ -1,5 +1,6 @@
 add_library(LoomFabricResourceContract
   ResourceContract.cpp
+  ResourceContractRecord.cpp
 )
 
 target_include_directories(LoomFabricResourceContract PUBLIC
