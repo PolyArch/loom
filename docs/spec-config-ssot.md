@@ -165,6 +165,16 @@ dependency closure false. Changing an unconsumed config field leaves the view
 bytes and digest unchanged; changing a consumed field or view schema changes
 them.
 
+When the consumer is selected by an exact static descriptor, such as an
+`EvaluationModelDescriptor`, that descriptor owns the component-view schema
+and registered typed projector/adopter. A persistent binding may omit the
+schema bytes only when its exact descriptor reference recovers them uniquely;
+it then stores the canonical view bytes and mechanically derived digest. Import
+must resolve the descriptor, recompute the digest, adopt an owner-typed value,
+and require decode/re-encode equality. A raw byte vector plus a validation
+callback is not an immutable typed component view, and copying the schema into
+the binding would create a competing authority.
+
 A component view may have a deliberately empty field set. Such a view has
 empty canonical view bytes and states that the component consumes no semantic
 ResolvedConfig field under that view version. This is a closed dependency set,

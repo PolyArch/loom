@@ -54,7 +54,9 @@ ScopeFormDescriptor {
   form_ref: ScopeFormRef
   semantic_definition
   roles: ordered non-repeating ScopeRoleDescriptor tuple
-  accepted_target_patterns: canonical nonempty set<OrderedTargetPattern>
+  applicability:
+      WholeExactCase
+    | ExactTargetPatterns(canonical nonempty set<OrderedTargetPattern>)
 }
 
 ScopeRoleDescriptor {
@@ -84,15 +86,22 @@ SubjectTargetPattern {
 `ScopeFormRef` is a stable ordinal local to one query-kind descriptor in the
 exact Evaluation schema version. The containing `MetricKind` or `FindingKind`
 always resolves it, so it is not a global relation registry or a free string.
-A target pattern is one complete positional alternative; accepted target types
-are not independent per-role sets whose accidental Cartesian product admits
-invalid relations. A breaking change to an existing form or pattern requires a
-new form or an incompatible schema version.
+`WholeExactCase` is legal exactly for a zero-role form and requires an empty
+target tuple. `ExactTargetPatterns` is legal exactly for a form with one or
+more roles and every admitted pattern has that exact arity. `WholeExactCase`
+denotes the one exact case recovered through the Request's model descriptor and
+is not a wildcard over Artifact roots, subject roles, or local reference kinds.
+Model capability still decides whether that exact model can produce the query
+for its exact case signature. Each exact target pattern is one complete
+positional alternative, and accepted target types are not independent per-role
+sets whose accidental Cartesian product admits invalid relations. A breaking
+change to an existing form or pattern requires a new form or an incompatible
+schema version.
 
-Pattern collections sort by exact case-signature reference, arity, and then
-each positional `(case role, root/local discriminant, owner schema,
-owner-local kind when present)` key. Duplicate patterns are invalid. This is
-descriptor canonicalization, not a second target-reference encoding.
+Exact target-pattern collections sort by exact case-signature reference,
+arity, and then each positional `(case role, root/local discriminant, owner
+schema, owner-local kind when present)` key. Duplicate patterns are invalid.
+This is descriptor canonicalization, not a second target-reference encoding.
 
 The persistent value is:
 
@@ -135,11 +144,13 @@ anchor root reference, target root reference, owner-local type descriptor, and
 family-owned canonical local payload. After owner validation, the Request
 verifier derives the exact `OrderedTargetPattern` from the case signature,
 roles, and resolved reference types and requires one descriptor-owned exact
-match. It rejects a foreign role, unbound anchor, unreachable target Artifact,
-wrong schema or local kind, malformed or noncanonical local payload, pattern
-role-order mismatch, or failed relation-specific verification. Large traces,
-waveforms, histograms, and timelines remain detailed Artifacts rather than
-scopes.
+match for an `ExactTargetPatterns` form. A `WholeExactCase` form instead
+requires zero roles and zero targets and accepts the exact case already fixed
+by the Request. Validation rejects a foreign role, unbound anchor, unreachable
+target Artifact, wrong schema or local kind, malformed or noncanonical local
+payload, pattern role-order mismatch, or failed relation-specific verification.
+Large traces, waveforms, histograms, and timelines remain detailed Artifacts
+rather than scopes.
 
 ## Metric Registry
 
@@ -158,6 +169,23 @@ The enum and its single registry definition own the exact set of kinds.
 Parsing, printing, enumeration, and descriptor lookup derive mechanically from
 that definition. Components must not repeat spellings or local unit tables.
 
+Every registered MetricKind has a nonempty scope-form table. Schema 1.0 gives
+each initial metric one owner-defined form at `ScopeFormRef(0)`:
+
+```text
+CycleCount  form 0: WholeExactCase
+ClockPeriod form 0: WholeExactCase
+Runtime     form 0: WholeExactCase
+```
+
+`Runtime` covers the exact evaluated case directly. `CycleCount` and
+`ClockPeriod` use the exact case signature's executable
+`UniqueReferenceCycle` resolver; a model must not advertise either form when
+the signature declares `Absent` and cannot choose or rederive a different basis
+locally. A later clock-domain-specific form uses an exact target pattern rather
+than changing form 0. An empty scope-form table, an unknown form ordinal, or a
+model capability naming a form not owned by the MetricKind is invalid.
+
 Cycle count and physical time are distinct kinds. Total energy and energy per
 work are distinct kinds. Quantities with different ground-truth definitions or
 scope semantics remain distinct even when a tool gives them similar labels.
@@ -174,15 +202,43 @@ Every `FindingKind` descriptor owns:
 stable enum value and canonical spelling
 semantic definition
 owned EvaluationScope form descriptors
-typed occurrence payload schema
+exact FindingOccurrenceCodec selection
+optional typed terminal-witness instance schema
 ```
 
-For an execution-terminal finding, the descriptor additionally owns the
-terminal-witness payload schema, while its Evidence occurrence carrier is the
-`TerminalWitnessRef` defined by Simulation Artifacts. The concrete witness
-instance is owned by the referenced `SimulationExecution`; Evidence never
-copies it. Nonterminal findings continue to store their registry-defined
-typed occurrence payloads inline.
+The selected occurrence schema is a complete owner codec, not a byte validator:
+
+```text
+FindingOccurrenceCodec {
+  occurrence_schema_descriptor
+  encode(owner_typed_occurrence) -> canonical bytes
+  decode(canonical bytes) -> owner_typed_occurrence
+  validate(owner_typed_occurrence, FindingOccurrenceContext)
+}
+
+FindingOccurrenceContext {
+  exact EvaluationRequest
+  FindingRequestOrdinal
+  exact descriptor-owned output bindings of the containing Evidence
+  Artifact resolution and store access required by the occurrence owner
+}
+```
+
+Registration requires all four operations. Evaluation owns only outer array
+framing, lowercase-hex text encoding, canonical byte ordering, duplicate
+rejection, and dispatch. Import resolves array position to
+`FindingRequestOrdinal`, resolves that ordinal to `FindingKind`, selects the
+descriptor's exact codec, decodes through the codec owner, validates in the
+exact Request and result context, re-encodes, and requires byte equality.
+Evaluation may retain a type-erased handle after successful owner adoption, but
+raw bytes alone are not a typed occurrence and are never exposed as a second
+semantic API.
+
+For an execution-terminal finding, the FindingKind descriptor owns the typed
+`Halted` witness-instance schema and selects the `TerminalWitnessRef` occurrence
+codec owned by Simulation Artifacts. The concrete witness instance is owned by
+the referenced `SimulationExecution`; Evidence never copies it. Nonterminal
+findings select their Finding-registry-owned inline occurrence codecs.
 
 The registry does not own severity, candidate acceptance, or a numeric score.
 For example, deadlock, functional mismatch, negative slack, or a physical-rule
@@ -381,6 +437,12 @@ sorting of a nonempty sample set, `q = 0` selects the first sample and otherwise
 selects zero-based index `ceil(q * N) - 1`. A different quantile definition is
 a different future typed condition or formula contract.
 
+MetricRequest and FindingRequest construction query the central Condition
+registry's location set. Therefore `Quantile` is accepted only in a
+MetricRequest condition set and is rejected in Base and FindingRequest
+condition sets before request canonicalization. Finding descriptors and models
+cannot widen that location set through their capability tables.
+
 The other six kinds are Base-only in schema 1.0. Their assignment keys are,
 respectively, target, power domain, thermal domain or root, clock domain,
 ordered clock pair, and activity target. `Quantile` has one empty assignment
@@ -433,16 +495,17 @@ The method is recovered from the exact model descriptor and is not copied into
 the observation. Exactness means exact within that model's declared semantics;
 it does not claim physical-world accuracy.
 
-Within persistent `EvaluationEvidence`, a `MetricResult` references the exact
-Request-local `MetricRequestOrdinal` and stores only its observation form,
-value or bounds, uncertainty, and permitted calibration-input references. The
-Request and registry recover the kind, scope, conditions, dimension, unit, and
-model method. A result must not duplicate them.
+Within persistent `EvaluationEvidence`, a `MetricResult` occupies the exact
+Request-local `MetricRequestOrdinal` array position and stores only its
+observation form, value or bounds, uncertainty, and permitted calibration-input
+references. The Request and registry recover the kind, scope, conditions,
+dimension, unit, and model method. A result must not duplicate them or
+serialize its ordinal.
 
 ## Finding Results
 
-A persistent finding result references one exact Request-local
-`FindingRequestOrdinal` and has one of these states:
+A persistent finding result occupies one exact Request-local
+`FindingRequestOrdinal` array position and has one of these states:
 
 ```text
 Absent
@@ -454,7 +517,7 @@ Absence is explicit; a missing result cannot prove that a finding is absent.
 Completed Evidence contains exactly one result for every requested metric and
 finding and no unsolicited results.
 
-For an execution-terminal `FindingKind`, each `Present` set contains the
+For an execution-terminal `FindingKind`, `Present` contains exactly one
 registry-permitted reference carrier:
 
 ```text
@@ -470,6 +533,20 @@ belong to the same Request and contain a `Halted` terminal of the requested
 kind. The witness payload remains in that terminal. No direct execution
 Artifact reference, copied witness payload, or witness ordinal is stored in
 the finding result.
+
+`FindingRequestOrdinal` is an unsigned 64-bit index into the Request's
+canonical finding-request array. A Completed Evidence finding-result array has
+length `N`; its position is the ordinal and therefore covers exactly `[0, N)`
+without serializing an ordinal field. The ordinal resolves the `FindingKind`,
+so a `FindingOccurrence` does not repeat a kind tag.
+
+For `Present`, the wire is a nonempty array of owner-produced canonical payload
+bytes, represented as lowercase hexadecimal in canonical JSON. Payloads sort
+lexicographically by those exact bytes and duplicates are invalid. The
+Simulation Artifacts owner supplies the codec for `TerminalWitnessRef`; its
+canonical payload is exactly `u32be(execution_output_slot_ref.ordinal)` followed
+by `u64be(execution_output_ordinal)`. A terminal Finding descriptor references
+that codec rather than defining another encoding.
 
 ## Derived Metrics
 
@@ -525,11 +602,13 @@ Stable tests cover:
 * shared case-signature roles producing model-independent scope keys;
 * zero-, one-, and multi-role scope validation, including foreign anchors,
   unreachable targets, wrong owner schemas or local kinds, noncanonical
-  owner-local payloads, and role-order sensitivity;
+  owner-local payloads, role-order sensitivity, and one intrinsic whole-case
+  form that carries no wildcard target authority;
 * Decimal normalization, ExactRatio normalization, invalid denominators, and
   checked-overflow rejection;
 * condition location, ordered role/reference-type applicability, exact-
-  duplicate, conflicting-assignment, and distinct-target behavior;
+  duplicate, conflicting-assignment, and distinct-target behavior, including
+  Quantile rejection in Base and FindingRequest;
 * one exact `TechnologyCornerRef` import plus wrong-platform, wrong-kind,
   malformed-payload, and unresolved-corner rejection;
 * value-domain, interval, censored, and not-applicable validation;
@@ -537,8 +616,9 @@ Stable tests cover:
 * activity-summary ordinal resolution, destination-target compatibility,
   missing-is-unknown behavior, and rejection of incompatible payload,
   coverage, or lineage;
-* completed-result totality, explicit finding absence, and terminal-witness
-  reference resolution; and
+* completed-result ordinal totality, explicit finding absence, occurrence
+  owner encode/decode/re-encode equality, and terminal-witness reference
+  resolution; and
 * derived-formula type, unit, scope, and bound propagation.
 
 Tests must not enumerate every registry entry, PVT permutation, clock ratio,

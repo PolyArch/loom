@@ -411,6 +411,15 @@ TerminalWitnessRef {
 }
 ```
 
+Simulation Artifacts owns this occurrence payload codec. Its canonical bytes
+are exactly `u32be(execution_output_slot_ref.ordinal)` followed by
+`u64be(execution_output_ordinal)`. The terminal FindingKind descriptors
+reference this codec through their `FindingOccurrenceCodec`; they do not copy
+or reinterpret the fields. The containing Evidence result's
+`FindingRequestOrdinal` recovers the FindingKind, so the payload carries no kind
+tag, Request reference, direct SimulationExecution reference, or witness
+ordinal.
+
 The reference resolves through the containing Evidence's `output_bindings`.
 Validation requires that the slot schema is `SimulationExecution`, the
 ordinal exists, the referenced execution names the same exact Request, and

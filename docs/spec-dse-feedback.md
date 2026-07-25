@@ -106,9 +106,24 @@ EvaluationCaseSignatureDescriptor {
   workload: forbidden | optional | required, with accepted Artifact schemas
   runtime_input: forbidden | optional | required, with accepted Artifact schemas
   workload/runtime-input compatibility
+  whole_case_cycle_basis:
+      Absent
+    | UniqueReferenceCycle {
+        source:
+            AbstractCaseCycle
+          | ExactSubjectCycle {
+              accepted_reference_type: SubjectReferenceType
+            }
+        resolve(exact EvaluationCase, CaseArtifactResolution, ArtifactStore)
+          -> ReferenceCycleBasis
+      }
   permitted_base_conditions:
     canonical set<ConditionApplicabilityPattern>
 }
+
+ReferenceCycleBasis =
+    AbstractCaseCycle
+  | ExactSubjectCycle(SubjectTargetRef)
 
 CaseSubjectRoleDescriptor {
   role_ref: CaseSubjectRoleRef
@@ -129,6 +144,19 @@ role, schema, cardinality, and compatibility. An
 only its capability to evaluate that case. If one implementation supports
 incompatible case signatures, the registry exposes separate model
 descriptors.
+
+`UniqueReferenceCycle` is an executable case-signature-owned projection, not a
+boolean capability flag. `AbstractCaseCycle` is legal only when the signature's
+semantics define one intrinsic tick, such as an abstract DFG cycle.
+`ExactSubjectCycle` must be a canonical `SubjectTargetRef` anchored in the exact
+case, resolve through its family-owned local-reference codec, and satisfy the
+signature's declared reference-cycle type. The resolved variant must match the
+descriptor's declared `source`. Resolution failure, a foreign anchor, a
+noncanonical local reference, or more than one possible result is invalid.
+`Absent` makes whole-case cycle-count and clock-period forms invalid.
+The resolved basis is derived from the exact case and is not serialized as a
+Request field; the exact signature ref and its registered typed resolver are
+the authority. A model cannot derive, invent, or replace the basis in config.
 
 This replaces descriptor-local subject-slot definitions. Such slots made the
 supposedly model-independent case key depend on model-specific ordinals, so two
@@ -249,6 +277,14 @@ verified against that signature. Case keys include the resolved signature
 reference so the signature participates once without becoming a second
 Request-owned authority.
 
+An API overload that accepts an already constructed `EvaluationCase` must
+compare that case's exact signature ref with the exact signature owned by the
+resolved model descriptor before projecting any case fields. A mismatch is an
+error; the API must not discard the supplied signature and reconstruct or
+rebind the fields under the descriptor's signature. An overload that accepts
+only component fields has no caller-supplied signature and constructs the case
+directly under the descriptor-owned exact signature.
+
 Finalization sorts each set by complete canonical content. The resulting
 positions are the only request-local `MetricRequestOrdinal` and
 `FindingRequestOrdinal` identities. Evidence refers to a request item by exact
@@ -272,7 +308,138 @@ Evaluation library's static typed registry, not an Artifact. It owns:
 - descriptor-owned model input slots, role-labeled typed output slots, and
   resolved model-config schema;
 - modeled phenomena, execution method, and determinism contract; and
-- supported full, domain-specific incremental, and guidance domains.
+- exact optional domain-specific incremental and guidance interaction
+  capabilities.
+
+Schema 1.0 owns these closed capability enums and stable zero-based `uint32`
+wire tags:
+
+```text
+ModeledPhenomenon =
+    StructuredProgram
+  | CanonicalDataflow
+  | SpatialResources
+  | RoutedTransport
+  | FiniteBuffering
+  | MemoryContention
+  | ClockTiming
+  | SystemMemoryHierarchy
+  | Coherence
+  | RTLBehavior
+  | PhysicalImplementation
+
+EvaluationExecutionMethod =
+    Analytic
+  | Simulation
+  | Emulation
+  | ToolMeasurement
+  | PhysicalMeasurement
+```
+
+The Evaluation registry owns the enum semantics. `StructuredProgram` covers
+pre-Dataflow program structure and analyses; `CanonicalDataflow` covers actor
+and logical-net semantics; `SpatialResources` covers compute, memory, and
+transport capabilities; `RoutedTransport` covers selected transport paths;
+`FiniteBuffering` covers bounded queues and backpressure; `MemoryContention`
+covers competing accesses to memory services; `ClockTiming` covers cycle and
+critical-path timing; `SystemMemoryHierarchy` covers caches, NoC, and external
+memory; `Coherence` covers coherence-visible behavior; `RTLBehavior` covers
+RTL execution semantics; and `PhysicalImplementation` covers synthesized or
+placed physical properties. A model lists every phenomenon whose semantics it
+directly models, not facts merely imported through typed Evidence inputs.
+
+`Analytic` performs formula-based or learned inference without executing the
+subject's dynamic implementation. `Simulation` advances an explicit state
+model of that implementation. `Emulation` executes it on a nonfinal hardware
+or accelerated proxy. `ToolMeasurement` invokes a tool flow that measures or
+derives an implementation property without being classified as workload
+simulation. `PhysicalMeasurement` observes an actual physical realization.
+Process location does not select the method: an external RTL simulator remains
+`Simulation`, while external STA remains `ToolMeasurement`. Exact model
+identity, parameter-bundle inputs, and uncertainty distinguish implementations
+within one method.
+
+The modeled-phenomenon set is sorted by ordinal and contains no duplicate. It
+may be empty for a purely derived model whose exact upstream Evidence inputs
+own all modeled facts. Execution method is exactly one value and is recovered
+from the model descriptor rather than copied into observations.
+
+The static descriptor's canonical capability projection encodes the phenomenon
+set as `u64be(count)` followed by its sorted `u32be(tag)` values and encodes the
+execution method as one `u32be(tag)`. C++ registration uses the closed enums,
+not strings or raw integers. Human-readable spellings are registry-derived and
+never an identity input.
+
+Full Evaluation has no separate domain field. Every registered model must
+implement the public full `evaluate(EvaluationRequest)` contract, and its full
+domain is operationally the exact set of Requests accepted by
+`RequestVerifier`. That verifier intersects the descriptor's case signature,
+condition capabilities, metric and finding capabilities, input and output
+slots, resolved config view, mandatory terminal findings, determinism, and
+replicate rules. Copying a second full-domain description would be another
+authority.
+
+Incremental and guidance protocols are optional cross-owner interactions:
+
+```text
+EvaluationInteractionDomainRef {
+  owner_registry_identity: canonical nonempty ASCII
+  owner_registry_version: X.Y
+  owner_local_domain_kind: uint32
+}
+
+EvaluationInteractionMode = Incremental | Guidance
+
+EvaluationInteractionCapability {
+  domain_ref: EvaluationInteractionDomainRef
+  modes: canonical nonempty set<EvaluationInteractionMode>
+}
+```
+
+The domain owner, not Evaluation, registers the exact referenced descriptor.
+That descriptor owns the immutable candidate-view type and, for each admitted
+mode, the incremental delta or guidance query/value types, completeness rules,
+typed C++ protocol, validators, and equivalence rule against the model's full
+Evaluation oracle. Incremental protocols own typed rebuild, probe, commit, and
+discard operations; guidance protocols own typed query and value operations.
+The owner creates separate domain kinds when candidate completeness or admitted
+temporary states differ. Evaluation does not add a generic candidate property
+bag or copy those domain facts.
+
+Candidate views, deltas, guidance queries, and guidance values are ephemeral
+owner-typed in-process values. They do not enter EvaluationRequest,
+EvaluationEvidence, a generic replay record, or this domain-ref wire. If an
+owner needs recovery persistence, its own checkpoint Artifact owns the codec
+and lineage. Attempting generic interaction-payload serialization is an
+unavailable capability, not permission to store opaque bytes.
+
+For example, Mapping owns a PnR interaction-domain kind whose typed values are
+`PnrCandidateView`, `PnrCandidateDelta`, `FrozenRouteQuery`, and a nonnegative
+route-guidance value. A model that lists the exact ref may support incremental,
+guidance, or both; a model that lists no interaction capabilities remains a
+complete full-only evaluator.
+
+The complete domain-ref canonical key is `u64be(owner_identity_byte_length)`,
+the exact owner-identity bytes,
+`u32be(major)`, `u32be(minor)`, and `u32be(owner_local_domain_kind)`.
+Capabilities sort by that key. Each capability then encodes
+`u64be(mode_count)` followed by its sorted `u32be(mode_tag)` values. Duplicates,
+unknown owners or kinds, and a mode not implemented by the owner descriptor are
+invalid. These capabilities belong to the static model descriptor and are not
+serialized again in EvaluationRequest.
+
+`EvaluationModelDescriptorRef` is the only persistent descriptor carrier. Its
+exact `(schema version, model kind)` tuple immutably selects one descriptor,
+including its implementation semantic identity and config-view contract.
+Ambient codebase identity may verify that the registry implementation is
+compatible, but it is not another selector. There is no descriptor Artifact or
+opaque descriptor payload in Request.
+Registry admission requires canonical enum sets, resolvable interaction refs,
+valid metric/finding form subsets, complete slot tables, one config-view
+contract, and every mode-specific typed callback. The descriptor ref recovers
+those static facts during replay; changing an existing fact without changing
+its owning schema or model kind is an incompatible registry error rather than a
+runtime fallback.
 
 An external tool's exact version, technology inputs, semantic switches, and
 result-affecting effort or threading enter the model binding. Executable paths,
@@ -287,9 +454,42 @@ ResolvedModelBinding {
   input_bindings:
     canonical table<ModelInputSlotRef,
                     canonical ArtifactRootReference collection>
-  resolved_model_config: typed canonical component view
+  resolved_model_config: ResolvedModelConfigViewWire
+}
+
+ResolvedModelConfigViewWire {
+  canonical_view_bytes: canonical byte string
+  component_view_digest: ComponentViewDigest
 }
 ```
+
+The exact model descriptor owns one `ResolvedModelConfigViewContract`:
+
+```text
+ResolvedModelConfigViewContract {
+  schema_descriptor_bytes
+  project(exact ResolvedConfig) -> owner-typed immutable view
+  encode(owner-typed view) -> canonical_view_bytes
+  adopt(canonical_view_bytes, component_view_digest)
+    -> owner-typed immutable view
+}
+```
+
+The central config library invokes the registered projector. The adopter
+recomputes Common's fixed `component_view_digest`, decodes and validates the
+owner-typed value, re-encodes it, and requires exact byte equality. The
+evaluator receives that adopted typed view and cannot inspect raw bytes or the
+full ResolvedConfig. A deliberately empty view uses empty canonical bytes and
+the digest of the descriptor plus those empty bytes.
+
+The persistent binding does not repeat the schema descriptor because the exact
+`descriptor_ref` recovers it. Canonical JSON represents view bytes as lowercase
+hexadecimal and the digest as exactly 64 lowercase hexadecimal characters.
+Omitting the digest, accepting a foreign descriptor, exposing only a raw-byte
+validator, or disagreeing on decode/re-encode is invalid. The descriptor ref
+itself encodes as `u32be(schema_major)`, `u32be(schema_minor)`, and
+`u32be(model_kind)` in canonical binary keys; Request's canonical JSON uses the
+equivalent integer fields.
 
 `ModelInputSlotRef` is a stable ordinal local to one descriptor version. Its
 slot descriptor alone owns accepted Artifact schemas, cardinality, and
@@ -314,9 +514,11 @@ terminal finding afterward.
 
 The canonical binding bytes derive a removable `resolved_model_key`; the key
 is absent from Request. Only the typed ResolvedConfig component consumed by
-the model enters the binding. Unrelated visualization or output-path settings
-cannot change Request or cache identity, while every consumed semantic model
-setting and input must.
+the model enters the binding. Its canonical view bytes and digest are both
+included in the binding, and the digest remains a checked mechanical
+projection, not a second config authority. Unrelated visualization or
+output-path settings cannot change Request or cache identity, while every
+consumed semantic model setting and input must.
 
 ### Replicates, Attempts, and Admission
 
@@ -357,10 +559,8 @@ EvaluationEvidence {
     table<ModelOutputSlotRef, canonical ArtifactRootReference collection>
   outcome:
     Completed {
-      metric_results:
-        total table<MetricRequestOrdinal, MetricResult>
-      finding_results:
-        total table<FindingRequestOrdinal, FindingResult>
+      metric_results: canonical array<MetricResult>
+      finding_results: canonical array<FindingResult>
     }
     | Unsupported { reason: OutcomeReason }
     | ExecutionFailed { reason: OutcomeReason }
@@ -369,6 +569,11 @@ EvaluationEvidence {
 }
 ```
 
+The two result arrays have exactly the cardinality of the corresponding
+canonical Request arrays. Array position is the request-local unsigned 64-bit
+ordinal; a result does not serialize that ordinal again. Missing, extra, or
+reordered results are invalid.
+
 Output bindings must satisfy the exact descriptor's cardinality for the
 selected outcome. Slot role, schema, and cardinality are recovered through the
 Request; Evidence stores only exact output references. An analytical model may
@@ -376,13 +581,13 @@ declare an empty output signature.
 
 `Completed` means the model fulfilled the Request, not that the candidate has
 good quality. Negative slack, a deadlock, a functional mismatch, or another
-adverse observation remains a Completed evaluation. Each result table is
+adverse observation remains a Completed evaluation. Each result array is
 exactly total over its corresponding request ordinals: no omissions,
-duplicates, or unsolicited results are permitted. For a finding-only Request,
-the metric table is empty and total, while every finding request has one
-result.
+duplicates, reordering, or unsolicited results are permitted. For a
+finding-only Request, the metric array is empty and total, while every finding
+request has one result.
 
-Non-completed outcomes structurally have no metric or finding result tables.
+Non-completed outcomes structurally have no metric or finding result arrays.
 Partial tool output from before a failure or cancellation stays in retained raw
 material. Controller-level unsatisfied obligations are represented by the
 controller's `Incomplete` outcome, not a fifth Evidence outcome.
@@ -393,15 +598,16 @@ or key-value bag. Human-readable messages, vendor warnings, stdout, stderr,
 and partial reports remain raw bundle material. Timestamps, host details, retry
 history, and execution-limit details remain owner-attempt material.
 
-Metric results contain the requested ordinal, observation form, value or
-bounds, uncertainty, and any referenced calibration input-slot ordinals.
+Metric result position is the requested ordinal; the result contains only its
+observation form, value or bounds, uncertainty, and any referenced calibration
+input-slot ordinals.
 Observation forms are `Point`, `Interval`, `Censored`, and `NotApplicable`;
 execution failure, timeout, and unsupported capability are not observation
 forms. Metric kind, scope, conditions, unit, dimension, permitted forms, and
 evidence method are recovered from Request and the registries rather than
 copied into Evidence.
 
-Finding results contain the requested ordinal and one of:
+Finding result position is the requested ordinal; the result contains one of:
 
 - `Absent`, with no occurrences;
 - `Present`, with a nonempty canonical typed occurrence set; or
@@ -419,7 +625,7 @@ occurrence is a `TerminalWitnessRef` containing the descriptor-local
 `SimulationExecution` output slot and the execution ordinal within that
 slot's canonical output binding. The referenced execution owns the typed
 witness instance; Evidence does not copy it. Both terminals produce Completed
-Evidence with total result tables.
+Evidence with total result arrays.
 
 Every detailed bundle reference resolves to immutable raw material for the
 same exact Request. A bundle owns generated scripts, logs, raw reports, opaque
@@ -1011,11 +1217,14 @@ Only these stable semantic anchors belong at this boundary:
 - Different model descriptors referencing one exact case signature derive the
   same case key for identical role bindings, workload, runtime input, and
   conditions, while retaining distinct Request identities.
+- An EvaluationRequest constructor given an explicit EvaluationCase rejects an
+  exact-signature mismatch with the resolved model descriptor before
+  projecting fields; it never silently rebinds those fields.
 - A finding-only Request is valid when its descriptor declares the capability,
   and Completed Evidence returns one explicit result for every finding ordinal.
 - Completed Evidence is exactly total over both request sets, while
   Unsupported, ExecutionFailed, and CancelledOrTimeout carry only a typed
-  OutcomeReason and no result tables.
+  OutcomeReason and no result arrays.
 - Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
   replay or resume with the same run closure and stable work ordinals produces
   the same formal selection as uninterrupted execution.
