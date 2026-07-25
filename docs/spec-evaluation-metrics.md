@@ -26,9 +26,11 @@ calibration.
 ## Shared Artifact Atoms
 
 The Common artifact contract owns `SchemaVersion`, `ArtifactIdentity`, and
-typed `ArtifactReference`. Evaluation reuses those types directly. It does not
-define aliases with different semantics, nullable identity sentinels, or a
-second identity recipe.
+typed `ArtifactReference`, plus the `ArtifactRootReference` and
+`EncodedArtifactLocalReference` heterogeneous carriers. Evaluation reuses
+those types directly. It does not define aliases with different semantics,
+nullable identity sentinels, a consumer-local entity erasure, or a second
+identity recipe.
 
 Canonical text uses `X.Y` schema versions and lowercase hexadecimal artifact
 identities. Individual artifact roots own their schema identity, supported
@@ -52,20 +54,45 @@ ScopeFormDescriptor {
   form_ref: ScopeFormRef
   semantic_definition
   roles: ordered non-repeating ScopeRoleDescriptor tuple
+  accepted_target_patterns: canonical nonempty set<OrderedTargetPattern>
 }
 
 ScopeRoleDescriptor {
   role_ref: ordinal in this form
   semantic_role
-  accepted artifact-root or artifact-local reference kinds
+}
+
+SubjectReferenceType =
+    ArtifactRootType {
+      schema: exact ArtifactSchemaDescriptor
+    }
+  | ArtifactLocalType {
+      type: exact ArtifactLocalReferenceTypeDescriptor
+    }
+
+OrderedTargetPattern {
+  case_signature: exact EvaluationCaseSignatureRef
+  targets: exact ordered tuple<SubjectTargetPattern>
+}
+
+SubjectTargetPattern {
+  case_subject_role: CaseSubjectRoleRef in the exact case signature
+  reference_type: SubjectReferenceType
 }
 ```
 
 `ScopeFormRef` is a stable ordinal local to one query-kind descriptor in the
 exact Evaluation schema version. The containing `MetricKind` or `FindingKind`
 always resolves it, so it is not a global relation registry or a free string.
-A breaking change to an existing form requires a new form or an incompatible
-schema version.
+A target pattern is one complete positional alternative; accepted target types
+are not independent per-role sets whose accidental Cartesian product admits
+invalid relations. A breaking change to an existing form or pattern requires a
+new form or an incompatible schema version.
+
+Pattern collections sort by exact case-signature reference, arity, and then
+each positional `(case role, root/local discriminant, owner schema,
+owner-local kind when present)` key. Duplicate patterns are invalid. This is
+descriptor canonicalization, not a second target-reference encoding.
 
 The persistent value is:
 
@@ -77,10 +104,10 @@ EvaluationScope {
 
 SubjectTargetRef {
   case_subject_role: CaseSubjectRoleRef
-  anchor_subject_artifact: exact bound Artifact reference
+  anchor_subject_artifact: exact bound ArtifactRootReference
   target:
-      ArtifactRoot(exact ArtifactIdentity)
-    | ArtifactLocal(exact typed ArtifactReference<T>)
+      ArtifactRoot(exact ArtifactRootReference)
+    | ArtifactLocal(exact EncodedArtifactLocalReference)
 }
 ```
 
@@ -93,20 +120,26 @@ relation such as `source, target` or `reference, candidate`.
 An anchor must be an exact member of the selected case subject-role binding.
 The target Artifact must be that anchor or occur in its exact semantic
 dependency closure. The target's Artifact family, not Evaluation, owns the
-closed local entity and structural-reference kinds, their payload encoding,
-and target validation. A query descriptor imports those types unchanged and
-owns any additional relation-specific verifier. Evaluation does not define a
-global `EvaluationEntityKind`, generic string path, source location, printer
-position, or consumer-local index.
+closed local entity and structural-reference kinds, each stable owner-local
+kind ordinal, canonical payload bytes, typed decoder, and target validation.
+Evaluation stores the complete existential framing from
+`docs/spec-full-stack-traceability.md`, invokes the owner codec, and then owns
+only anchor/closure/pattern and relation-specific verification. It does not
+define a global `EvaluationEntityKind`, `ofEntities` tuple, generic string
+path, source location, printer position, consumer-local index, or bare integer
+reference.
 
 The canonical scope key is the form ordinal, exact arity framing, and each
 fully framed target in descriptor role order. It includes the case role,
-anchor identity, target Artifact identity, target-kind discriminator, and
-family-owned canonical local payload. The Request verifier rejects a foreign
-role, unbound anchor, unreachable target Artifact, wrong target kind,
-malformed local payload, or failed relation-specific verification. Large
-traces, waveforms, histograms, and timelines remain detailed Artifacts rather
-than scopes.
+anchor root reference, target root reference, owner-local type descriptor, and
+family-owned canonical local payload. After owner validation, the Request
+verifier derives the exact `OrderedTargetPattern` from the case signature,
+roles, and resolved reference types and requires one descriptor-owned exact
+match. It rejects a foreign role, unbound anchor, unreachable target Artifact,
+wrong schema or local kind, malformed or noncanonical local payload, pattern
+role-order mismatch, or failed relation-specific verification. Large traces,
+waveforms, histograms, and timelines remain detailed Artifacts rather than
+scopes.
 
 ## Metric Registry
 
@@ -210,17 +243,56 @@ assignment-key projection, canonical encoder, and validator. The containing
 field determines `Base`, `MetricRequest`, or `FindingRequest`; location is not
 copied into the condition payload.
 
+Each condition descriptor also owns one typed projection from a validated
+payload to its exact ordered tuple of `SubjectTargetRef` values. The projection
+order is semantic payload-field order:
+
+```text
+ProcessCorner             -> [target]
+SupplyVoltage             -> [power_domain]
+Temperature               -> [thermal_domain_or_root]
+RequiredClockPeriod       -> [clock_domain]
+RelativeClockSchedule     -> [reference_clock, dependent_clock]
+ActivityBinding.ExecutionActivity    -> [target]
+ActivityBinding.ExplicitAssumption   -> [target, clock_domain]
+Quantile                  -> []
+```
+
+This projection is derived and never serialized as another list. It lets all
+applicability owners use the same exact value:
+
+```text
+ConditionApplicabilityPattern {
+  kind: EvaluationConditionKind
+  targets: OrderedTargetPattern
+}
+```
+
 Semantic applicability has three nonoverlapping owners:
 
-* the exact `EvaluationCaseSignature` permits base-condition kinds and targets;
-* a Metric or Finding descriptor permits request-specific condition kinds; and
-* an `EvaluationModelDescriptor` declares which permitted conditions it
-  consumes, requires, or proves irrelevant to all of its requested outputs.
+* the exact `EvaluationCaseSignature` owns a canonical set of complete
+  `ConditionApplicabilityPattern` values for Base conditions;
+* a Metric or Finding descriptor owns the corresponding complete patterns for
+  request-specific conditions; and
+* an `EvaluationModelDescriptor` declares which already-permitted exact
+  patterns it consumes, requires, or proves irrelevant to all of its requested
+  outputs.
 
 The model cannot redefine a condition payload or silently ignore an
 unrecognized condition. Model effort belongs to the model binding. Executable
 paths, timeout, host parallelism, licenses, and scratch locations remain
 nonsemantic execution bindings.
+
+Validation first invokes every target Artifact owner's codec and validator,
+then projects the ordered targets, derives their exact case roles and root or
+local reference types, and requires one exact pattern match for the containing
+location. An accepted-role set and an accepted-reference-type set are not
+matched independently. There is no wildcard target, unordered target bag,
+implicit role coercion, or model-private applicability predicate.
+For a Base pattern stored by a case signature, the pattern's exact
+`case_signature` must be that containing signature. Scope and request-specific
+patterns retain the explicit signature because their registry owners can serve
+more than one case.
 
 Schema 1.0 has these condition kinds:
 
@@ -271,10 +343,15 @@ Quantile {
 }
 ```
 
-`TechnologyCornerRef` is an exact family-owned typed reference into immutable
-technology data. Its provider Artifact owns the corner catalog; a bare
-`"slow"` or tool-private corner string is invalid. The Request verifier checks
-subject and model-input compatibility with that exact technology data.
+`TechnologyCornerRef` is exactly the `TechnologyCorner` local-reference kind
+owned by `loom.implementation_platform 1.0`. Its typed API is
+`ArtifactReference<TechnologyCornerId>`; its heterogeneous persistent form
+uses that family's local-kind ordinal and eight-byte canonical payload. The
+ImplementationPlatform owner, not Evaluation, decodes and validates it. A bare
+`"slow"`, arbitrary `uint64`, Evaluation entity tuple, or tool-private corner
+string is invalid. The Request verifier additionally checks that the exact
+platform is admitted by the selected subject and model-input closure and that
+the case-signature-owned relation permits that corner for the condition target.
 
 `RelativeClockSchedule` requires distinct clock domains. Its period ratio is
 positive. Phase is normalized modulo the dependent period into
@@ -423,7 +500,16 @@ schemas creates an independent Metric, Finding, condition, query-set, or
 report artifact family. Canonical encoders use fixed field ordering and enum
 spellings, integer JSON tokens for integer values, Decimal components, and
 ExactRatio components, and strict rejection of unknown fields or noncanonical
-bytes.
+bytes. `SubjectTargetRef` uses the complete Common root/local-reference framing;
+the owner-local payload is emitted as lowercase hexadecimal and is never
+decoded by the Evaluation serializer itself.
+
+Implementation dependency is strict: Common root/local-reference framing and
+the referenced Artifact family's codec/validator must exist before Evaluation
+can persist that local target. In particular, the ImplementationPlatform owner
+precedes `ProcessCorner` persistence. Evaluation must report an unavailable
+owner codec as an implementation/capability error; it cannot publish a fallback
+integer, tuple, path, or opaque property payload.
 
 Raw tool reports, distributions, samples, logs, and trace chunks belong to
 immutable detailed bundles. A workload execution's typed trace manifest and
@@ -438,11 +524,14 @@ Stable tests cover:
 * one registry authority for enum conversion and descriptor lookup;
 * shared case-signature roles producing model-independent scope keys;
 * zero-, one-, and multi-role scope validation, including foreign anchors,
-  unreachable targets, wrong target kinds, and role-order sensitivity;
+  unreachable targets, wrong owner schemas or local kinds, noncanonical
+  owner-local payloads, and role-order sensitivity;
 * Decimal normalization, ExactRatio normalization, invalid denominators, and
   checked-overflow rejection;
-* condition location, applicability, exact-duplicate, conflicting-assignment,
-  and distinct-target behavior;
+* condition location, ordered role/reference-type applicability, exact-
+  duplicate, conflicting-assignment, and distinct-target behavior;
+* one exact `TechnologyCornerRef` import plus wrong-platform, wrong-kind,
+  malformed-payload, and unresolved-corner rejection;
 * value-domain, interval, censored, and not-applicable validation;
 * deterministic query ordering and duplicate rejection;
 * activity-summary ordinal resolution, destination-target compatibility,

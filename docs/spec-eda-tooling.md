@@ -131,7 +131,11 @@ required clock, and other ground-truth evaluation scenario facts are typed
 `EvaluationCondition` values rather than model inputs.
 
 A process corner condition uses an exact technology-family-owned
-`TechnologyCornerRef`; it is not a free corner string. Voltage, temperature,
+`TechnologyCornerRef` into `loom.implementation_platform 1.0`; it is not a free
+corner string. The ImplementationPlatform codec and validator resolve that
+typed local reference before an adapter runs. Evaluation stores only the
+owner-framed local-reference bytes and exact platform identity, never an
+Evaluation-owned corner ordinal or property map. Voltage, temperature,
 required clock period, and relative-clock schedule use the canonical typed
 payloads in `docs/spec-evaluation-metrics.md`. An EDA adapter maps those facts
 to tool syntax through its exact model binding without redefining them.

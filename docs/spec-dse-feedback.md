@@ -106,7 +106,8 @@ EvaluationCaseSignatureDescriptor {
   workload: forbidden | optional | required, with accepted Artifact schemas
   runtime_input: forbidden | optional | required, with accepted Artifact schemas
   workload/runtime-input compatibility
-  permitted base-condition patterns
+  permitted_base_conditions:
+    canonical set<ConditionApplicabilityPattern>
 }
 
 CaseSubjectRoleDescriptor {
@@ -138,20 +139,22 @@ Evaluation uses Common's exact typed references through case-signature roles:
 
 ```text
 EvaluationSubjectBindings =
-  total table<CaseSubjectRoleRef, canonical ArtifactReference collection>
+  total table<CaseSubjectRoleRef,
+              canonical ArtifactRootReference collection>
 ```
 
-Collections contain no duplicates and are ordered by complete typed-reference
-canonical key; authoring order has no meaning. Request verification enforces
-totality relative to the exact case signature. Distinct roles may accept the
-same schema, so a comparison signature can bind `reference_execution` and
-`candidate_execution` without losing role.
+Collections contain no duplicates and are ordered by complete root-reference
+canonical key, including exact schema and identity; authoring order has no
+meaning. Request verification enforces totality relative to the exact case
+signature. Distinct roles may accept the same schema, so a comparison
+signature can bind `reference_execution` and `candidate_execution` without
+losing role.
 
 The model-independent case has two orthogonal exact references:
 
 ```text
-workload_ref: optional<ArtifactReference>
-runtime_input_ref: optional<ArtifactReference>
+workload_ref: optional<ArtifactRootReference>
+runtime_input_ref: optional<ArtifactRootReference>
 ```
 
 The workload owns the work definition, shape, or problem size. The runtime
@@ -166,13 +169,15 @@ arbitrary predicate languages, or consumer-private payloads. Model effort is
 part of the model binding; tool paths, timeout, host parallelism, and licenses
 are nonsemantic execution bindings.
 
-The exact condition kinds, payloads, allowed locations, assignment keys,
-canonical order, and duplicate/conflict rules are owned by
-`docs/spec-evaluation-metrics.md`. The case-signature descriptor owns semantic
-applicability of Base conditions. Metric and Finding descriptors own semantic
-applicability of request-specific conditions. A model descriptor declares
-which otherwise legal conditions it consumes, requires, or proves invariant;
-it cannot redefine their meaning or silently ignore an unsupported condition.
+The exact condition kinds, payloads, ordered target projection, allowed
+locations, assignment keys, canonical order, and duplicate/conflict rules are
+owned by `docs/spec-evaluation-metrics.md`. The case-signature descriptor owns
+complete ordered role/reference-type patterns for Base conditions. Metric and
+Finding descriptors own the same kind of complete patterns for
+request-specific conditions. A model descriptor declares which otherwise
+legal exact patterns it consumes, requires, or proves invariant; it cannot
+redefine their meaning, widen them through independent role/type sets, or
+silently ignore an unsupported condition.
 
 Case keys are removable derived indexes:
 
@@ -210,8 +215,8 @@ bindings.
 ```text
 EvaluationRequest {
   subject_bindings: EvaluationSubjectBindings
-  workload_ref: optional<ArtifactReference>
-  runtime_input_ref: optional<ArtifactReference>
+  workload_ref: optional<ArtifactRootReference>
+  runtime_input_ref: optional<ArtifactRootReference>
   base_conditions: canonical set<EvaluationCondition>
   metric_requests: canonical set<MetricRequest>
   finding_requests: canonical set<FindingRequest>
@@ -261,7 +266,8 @@ Evaluation library's static typed registry, not an Artifact. It owns:
 - model kind, descriptor schema and version, and implementation semantic
   identity;
 - one exact `EvaluationCaseSignatureRef`;
-- permitted-condition consume, require, and invariant capabilities;
+- permitted exact `ConditionApplicabilityPattern` consume, require, and
+  invariant capabilities;
 - supported metric and finding queries and result forms;
 - descriptor-owned model input slots, role-labeled typed output slots, and
   resolved model-config schema;
@@ -280,7 +286,7 @@ ResolvedModelBinding {
   descriptor_ref
   input_bindings:
     canonical table<ModelInputSlotRef,
-                    canonical ArtifactReference collection>
+                    canonical ArtifactRootReference collection>
   resolved_model_config: typed canonical component view
 }
 ```
@@ -348,7 +354,7 @@ layer's work.
 EvaluationEvidence {
   request_ref: exact EvaluationRequest reference
   output_bindings:
-    table<ModelOutputSlotRef, canonical ArtifactReference collection>
+    table<ModelOutputSlotRef, canonical ArtifactRootReference collection>
   outcome:
     Completed {
       metric_results:
@@ -359,7 +365,7 @@ EvaluationEvidence {
     | Unsupported { reason: OutcomeReason }
     | ExecutionFailed { reason: OutcomeReason }
     | CancelledOrTimeout { reason: OutcomeReason }
-  detailed_bundle_refs: canonical set<ArtifactReference>
+  detailed_bundle_refs: canonical set<ArtifactRootReference>
 }
 ```
 
@@ -444,7 +450,7 @@ Evaluation outcome, DSE decisions, or a second simulator result schema.
 
 ## Candidate Lineage and Evaluation DAG
 
-A central DSE candidate is an existing typed `ArtifactReference`. There is no
+A central DSE candidate is an existing exact `ArtifactRootReference`. There is no
 `DseCandidateArtifact`, generic CandidateKind, or wrapper identity. A mutable
 domain-local search state enters a central candidate set only after it is
 finalized as its domain Artifact.
@@ -453,12 +459,12 @@ Invocation lineage has exactly two edge kinds:
 
 ```text
 MechanicalDerivation:
-  exact input ArtifactReferences + producer/config
-  -> output ArtifactReference
+  exact input ArtifactRootReferences + producer/config
+  -> output ArtifactRootReference
 
 CandidateDecision:
-  parent candidate ArtifactReferences + typed decision
-  -> child ArtifactReference
+  parent candidate ArtifactRootReferences + typed decision
+  -> child ArtifactRootReference
 ```
 
 Mechanical lowering cannot be represented as an optimization decision, and a
@@ -485,7 +491,7 @@ The controller resolves each obligation before execution:
 
 ```text
 ResolvedDseConfigView
-+ exact candidate ArtifactReference
++ exact candidate ArtifactRootReference
 + objective or promotion gate
 -> EvidenceObligationTemplate instantiation
 -> ResolvedEvidenceObligation
@@ -502,7 +508,7 @@ Formal controller outcomes are:
 
 ```text
 CompletedSelection {
-  selected ArtifactReferences
+  selected ArtifactRootReferences
   satisfied Evidence obligations
 }
 
@@ -549,7 +555,7 @@ work unit. Worker count, wall time, license concurrency, process retry limits,
 and host resources are Execution Limits and cannot change the formal plan.
 
 The controller owns finite candidate sets as canonical sets of complete typed
-ArtifactReferences. They are controller-local values, not Artifacts. Every
+ArtifactRootReferences. They are controller-local values, not Artifacts. Every
 promotion has one shape:
 
 ```text
@@ -582,8 +588,10 @@ The Artifact store may maintain a removable index:
 
 ```text
 exact EvaluationRequest identity
-  -> canonical set<EvaluationEvidence ArtifactReference>
+  -> canonical set<ArtifactRootReference>
 ```
+
+Every value in this index has the exact `evaluation.evidence.1.0` schema.
 
 Completed Evidence satisfies an obligation only when its total results and
 forms match that obligation. Unsupported is a stable negative cache for the
@@ -626,12 +634,12 @@ PlanOutputSlotDescriptor {
 }
 
 PlanInputBinding =
-    ExactArtifacts(canonical set<ArtifactReference>)
+    ExactArtifacts(canonical set<ArtifactRootReference>)
   | ProducedValue(PlanOutputRef)
 ```
 
 An output slot's immutable runtime value is always a canonical set of exact
-`ArtifactReference` values satisfying its schema and cardinality. A candidate
+`ArtifactRootReference` values satisfying its schema and cardinality. A candidate
 set is therefore the `CandidateSet` role, not a distinct reference mechanism.
 The descriptor and resolved node own slot meaning; neither a container type nor
 the Artifact Store may reinterpret it.
@@ -778,7 +786,7 @@ The cache family owns one versioned derived run key:
 ```text
 DseRunKey = DomainSeparatedDigest(
   producer semantic/build identity,
-  canonical root ArtifactReferences,
+  canonical ArtifactRootReferences,
   exact ResolvedConfig ArtifactIdentity,
   canonical explicitly selected preexisting Evidence references)
 

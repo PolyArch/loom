@@ -259,10 +259,70 @@ resolve and validate exactly. The referenced artifact family owns the closed
 entity and structural-target variants admitted by `T`, their canonical
 encoding, and target validation.
 
+Heterogeneous containers such as Evaluation scope cannot name one C++ `T` at
+compile time. They use one existential wire projection without transferring
+type ownership to the container:
+
+```text
+ArtifactRootReference {
+  schema: exact ArtifactSchemaDescriptor
+  artifact: exact finalized ArtifactIdentity
+}
+
+ArtifactLocalReferenceTypeDescriptor {
+  owner_schema: exact ArtifactSchemaDescriptor
+  owner_local_kind: uint32
+}
+
+EncodedArtifactLocalReference {
+  artifact: ArtifactRootReference
+  owner_local_kind: uint32
+  payload: owner-produced canonical bytes
+}
+```
+
+The root schema is present because an `ArtifactIdentity` digest alone does not
+select an importer or validator. `owner_local_kind` is a stable closed ordinal
+owned by that exact Artifact family and schema version. It is not a global
+entity kind, consumer enum, textual type name, or native variant index.
+The complete local-reference type descriptor is derived exactly once as
+`(artifact.schema, owner_local_kind)`; it is not duplicated in the encoded
+value.
+
+Each family that permits existential import statically registers, for every
+local kind, its typed C++ target, canonical encoder, strict decoder, and
+validator against one exact imported Artifact. Common owns only the outer
+framing:
+
+```text
+u32be(length(schema identity)) || bytes(schema identity)
+|| u32be(schema major) || u32be(schema minor)
+|| 32-byte ArtifactIdentity
+|| u32be(owner-local kind)
+|| u64be(payload length) || payload bytes
+```
+
+Canonical JSON represents the payload bytes as lowercase hexadecimal. Import
+resolves the exact schema descriptor, validates and imports the exact Artifact,
+looks up that owner's local-kind codec, decodes the payload, requires exact
+decode/re-encode equality, and invokes the owner validator. Unknown schemas or
+kinds, malformed or noncanonical payloads, wrong-owner targets, and unresolved
+targets are invalid. A consumer must not reinterpret the payload, erase it to a
+consumer-local integer, or substitute an `ofEntities` tuple, path, symbol, or
+property bag.
+
+The typed in-memory API remains `ArtifactReference<T>`. An
+`EncodedArtifactLocalReference` is only the persistent or heterogeneous carrier
+used to recover that typed value through the owner codec. An Artifact root is a
+separate `ArtifactRootReference` variant; it is never represented by a reserved
+local kind or sentinel payload.
+
 An artifact root that already binds the exact referenced identity may encode
 only `T` at each internal use. This compact wire is a mechanical projection of
 the complete pair, not a weak reference, compatibility class, lookup hint, or
-rebinding permission. A symbol, path, printer position, construction handle,
+rebinding permission. A heterogeneous field may omit the complete existential
+type framing only when its containing schema statically fixes the exact owner
+schema and local kind. A symbol, path, printer position, construction handle,
 or consumer-local dense index cannot replace either component.
 
 ## Artifact Store
@@ -309,6 +369,12 @@ duplication, deterministic replay, and gem5 rejection when any of its three
 InstructionCore compatibility authorities disagree. Tests do not pin path
 layouts beyond the store contract or duplicate every producer/consumer pair in
 a fixture matrix.
+
+Reference-framing anchors cover one owner-local fixed byte vector, typed
+round-trip through the owner codec, and rejection of a wrong schema, wrong
+local kind, noncanonical payload, and unresolved target. They do not duplicate
+the same tests for every Artifact family or permit a generic reference-property
+fixture framework.
 
 Blob-digest anchors cover one fixed logical-byte vector, the zero-length blob,
 strict binary and lowercase-text widths, transparent compression round-trip,
