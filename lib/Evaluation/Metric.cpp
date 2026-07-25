@@ -1,5 +1,7 @@
 #include "Evaluation/Metric.h"
 #include "Evaluation/CaseText.h"
+#include "Evaluation/MetricText.h"
+#include "QueryText.h"
 
 #include "CanonicalSupport.h"
 
@@ -33,23 +35,26 @@ constexpr llvm::StringLiteral metricQuerySchemaIdentity =
     "evaluation.metric_query";
 constexpr SchemaVersion metricQuerySchemaVersion{1, 0};
 
-constexpr std::uint8_t observationFormBit(ObservationForm form) {
-  return std::uint8_t{1} << static_cast<std::uint8_t>(form);
-}
-
-constexpr std::uint8_t allObservationForms =
-    observationFormBit(ObservationForm::Point) |
-    observationFormBit(ObservationForm::Interval) |
-    observationFormBit(ObservationForm::Censored) |
-    observationFormBit(ObservationForm::NotApplicable);
+constexpr std::uint8_t allObservationForms = allObservationFormsMask();
 
 constexpr std::uint8_t nonCensoredObservationForms =
-    observationFormBit(ObservationForm::Point) |
-    observationFormBit(ObservationForm::Interval) |
-    observationFormBit(ObservationForm::NotApplicable);
+    observationFormMask(ObservationForm::Point) |
+    observationFormMask(ObservationForm::Interval) |
+    observationFormMask(ObservationForm::NotApplicable);
 
 constexpr CensoredReasonPolicy subjectDidNotCompletePolicy{
     CensoredReason::SubjectDidNotComplete, true, false};
+
+const ScopeFormDescriptor cycleBasedWholeCaseScopeForms[] = {
+    {ScopeFormRef(0), "the entire exact Evaluation case", {},
+     WholeExactCaseScope{}, nullptr,
+     ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle},
+};
+
+const ScopeFormDescriptor runtimeWholeCaseScopeForms[] = {
+    {ScopeFormRef(0), "the entire exact Evaluation case", {},
+     WholeExactCaseScope{}, nullptr, ReferenceCycleRequirement::NotRequired},
+};
 
 const std::array<MetricDescriptor, 3> metricDescriptors = {{
     {MetricKind::CycleCount,
@@ -59,7 +64,7 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
      MetricDimension::Cycle,
      "cycle",
      MetricValueDomain::NonNegative,
-     {},
+     cycleBasedWholeCaseScopeForms,
      {},
      allObservationForms,
      subjectDidNotCompletePolicy},
@@ -70,7 +75,7 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
      MetricDimension::Time,
      "second",
      MetricValueDomain::Positive,
-     {},
+     cycleBasedWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
      std::nullopt},
@@ -81,7 +86,7 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
      MetricDimension::Time,
      "second",
      MetricValueDomain::NonNegative,
-     {},
+     runtimeWholeCaseScopeForms,
      {},
      allObservationForms,
      subjectDidNotCompletePolicy},
@@ -338,7 +343,7 @@ parseObservationValue(const llvm::json::Object &object) {
 } // namespace
 
 bool MetricDescriptor::permitsObservationForm(ObservationForm form) const {
-  return (permittedObservationForms & observationFormBit(form)) != 0;
+  return (permittedObservationForms & observationFormMask(form)) != 0;
 }
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors() {
@@ -449,6 +454,52 @@ llvm::Error validateMetricQuery(const MetricQuery &query) {
                                      query.scope);
 }
 
+llvm::Error validateMetricScopeAdmissibility(
+    MetricKind metric, ScopeFormRef form,
+    const EvaluationCaseSignatureDescriptor &caseSignature) {
+  const ScopeFormDescriptor *scope =
+      findScopeForm(metricDescriptor(metric).scopeForms, form);
+  if (!scope)
+    return evaluationError("unknown scope form ordinal " +
+                           std::to_string(form.ordinal()));
+  switch (scope->referenceCycleRequirement) {
+  case ReferenceCycleRequirement::NotRequired:
+    return llvm::Error::success();
+  case ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle:
+    if (std::holds_alternative<AbsentReferenceCycle>(
+            caseSignature.wholeCaseCycleBasis))
+      return evaluationError("case signature '" + caseSignature.spelling +
+                             "' requires a unique whole-case reference cycle "
+                             "for metric '" + toString(metric) + "'");
+    return llvm::Error::success();
+  }
+  llvm_unreachable("unknown ReferenceCycleRequirement");
+}
+
+llvm::Error validateMetricScopeAdmissibility(
+    MetricKind metric, ScopeFormRef form,
+    const EvaluationCase &evaluationCase,
+    const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore) {
+  const EvaluationCaseSignatureDescriptor *signature =
+      evaluationCase.signature().descriptor();
+  if (!signature)
+    return evaluationError("the EvaluationCase signature is unresolved");
+  if (llvm::Error error =
+          validateMetricScopeAdmissibility(metric, form, *signature))
+    return error;
+  const ScopeFormDescriptor *scope =
+      findScopeForm(metricDescriptor(metric).scopeForms, form);
+  if (scope->referenceCycleRequirement ==
+      ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle) {
+    auto basis =
+        resolveReferenceCycleBasis(evaluationCase, resolution, artifactStore);
+    if (!basis)
+      return basis.takeError();
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<MetricQuery>>
 canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries) {
   std::vector<MetricQuery> canonical(queries.begin(), queries.end());
@@ -475,10 +526,7 @@ llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &query) {
     json.attribute("schema", metricQuerySchemaIdentity);
     json.attribute("schema_version",
                    formatSchemaVersion(metricQuerySchemaVersion));
-    json.attribute("metric", toString(query.metric));
-    json.attributeBegin("scope");
-    writeEvaluationScopeJson(json, query.scope);
-    json.attributeEnd();
+    detail::writeMetricQueryPayload(json, query);
   });
   return output.str().str();
 }
@@ -490,11 +538,6 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
     return evaluationError("evaluation.metric_query root must be an object");
-  if (llvm::Error error =
-          rejectUnknownFields(*root, "evaluation.metric_query root",
-                              {"schema", "schema_version", "metric", "scope"}))
-    return std::move(error);
-
   auto schema = requireString(*root, "schema", "evaluation.metric_query root");
   if (!schema)
     return schema.takeError();
@@ -511,60 +554,54 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
     return evaluationError("unsupported evaluation.metric_query version '" +
                            *version + "'");
 
-  auto metricSpelling =
-      requireString(*root, "metric", "evaluation.metric_query root");
-  if (!metricSpelling)
-    return metricSpelling.takeError();
-  auto metric = parseMetricKind(*metricSpelling);
-  if (!metric)
-    return metric.takeError();
-
-  auto scope = parseScopeField(*root, *metric, "evaluation.metric_query root");
-  if (!scope)
-    return scope.takeError();
-
-  MetricQuery query{*metric, std::move(*scope)};
-  if (llvm::Error error = validateMetricQuery(query))
+  const llvm::StringRef envelopeFields[] = {"schema", "schema_version"};
+  auto query = detail::parseMetricQueryPayload(
+      *root, "evaluation.metric_query root", envelopeFields);
+  if (!query)
+    return query.takeError();
+  if (llvm::Error error = validateMetricQuery(*query))
     return std::move(error);
-  auto canonical = serializeMetricQuery(query);
+  auto canonical = serializeMetricQuery(*query);
   if (!canonical)
     return canonical.takeError();
   if (*canonical != json)
     return evaluationError("metric query JSON is not canonical");
-  return query;
+  return *query;
 }
 
 ObservationForm observationForm(const MetricObservation &observation) {
-  if (std::holds_alternative<PointObservation>(observation.observation))
+  return observationForm(observation.observation);
+}
+
+ObservationForm observationForm(const MetricObservationValue &observation) {
+  if (std::holds_alternative<PointObservation>(observation))
     return ObservationForm::Point;
-  if (std::holds_alternative<IntervalObservation>(observation.observation))
+  if (std::holds_alternative<IntervalObservation>(observation))
     return ObservationForm::Interval;
-  if (std::holds_alternative<CensoredObservation>(observation.observation))
+  if (std::holds_alternative<CensoredObservation>(observation))
     return ObservationForm::Censored;
   return ObservationForm::NotApplicable;
 }
 
-llvm::Error validateMetricObservation(const MetricObservation &observation) {
-  const MetricDescriptor &descriptor = metricDescriptor(observation.metric);
+llvm::Error validateMetricObservationValue(
+    MetricKind metric, UncertaintyKind uncertainty,
+    const MetricObservationValue &observation) {
+  const MetricDescriptor &descriptor = metricDescriptor(metric);
   const ObservationForm form = observationForm(observation);
   if (!descriptor.permitsObservationForm(form))
     return evaluationError(descriptor.spelling + " does not permit " +
                            toString(form) + " observations");
 
-  if (llvm::Error error =
-          validateEvaluationScopeForm(descriptor.scopeForms, observation.scope))
-    return error;
-
   if (const auto *point =
-          std::get_if<PointObservation>(&observation.observation))
+          std::get_if<PointObservation>(&observation))
     return validateValue(descriptor, point->value);
 
   if (const auto *interval =
-          std::get_if<IntervalObservation>(&observation.observation))
+          std::get_if<IntervalObservation>(&observation))
     return validateOrderedValues(descriptor, interval->lower, interval->upper);
 
   if (const auto *censored =
-          std::get_if<CensoredObservation>(&observation.observation)) {
+          std::get_if<CensoredObservation>(&observation)) {
     if (!descriptor.censoredReasonPolicy ||
         descriptor.censoredReasonPolicy->reason != censored->reason)
       return evaluationError(descriptor.spelling +
@@ -587,9 +624,29 @@ llvm::Error validateMetricObservation(const MetricObservation &observation) {
     return evaluationError("censored observation requires at least one bound");
   }
 
-  if (observation.uncertainty != UncertaintyKind::Unknown)
+  if (uncertainty != UncertaintyKind::Unknown)
     return evaluationError("not_applicable requires unknown uncertainty");
   return llvm::Error::success();
+}
+
+llvm::Error validateMetricObservation(const MetricObservation &observation) {
+  const MetricDescriptor &descriptor = metricDescriptor(observation.metric);
+  if (llvm::Error error =
+          validateEvaluationScopeForm(descriptor.scopeForms, observation.scope))
+    return error;
+  return validateMetricObservationValue(observation.metric,
+                                        observation.uncertainty,
+                                        observation.observation);
+}
+
+void writeMetricObservationValueJson(
+    llvm::json::OStream &json, const MetricObservationValue &observation) {
+  writeObservation(json, observation);
+}
+
+llvm::Expected<MetricObservationValue>
+parseMetricObservationValueJson(const llvm::json::Object &object) {
+  return parseObservationValue(object);
 }
 
 llvm::Expected<std::string>

@@ -142,7 +142,7 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
 }
 
 llvm::Expected<SubjectTargetRef>
-parseSubjectTargetRef(const llvm::json::Value &value) {
+parseSubjectTargetRefImpl(const llvm::json::Value &value) {
   const llvm::json::Object *object = value.getAsObject();
   if (!object)
     return evaluationError(targetContext + " must be an object");
@@ -184,36 +184,97 @@ void writeRootReference(llvm::json::OStream &json,
 
 } // namespace
 
+void writeArtifactRootReferenceJson(llvm::json::OStream &json,
+                                    const ArtifactRootReference &reference) {
+  json.object([&] { writeRootReference(json, reference); });
+}
+
+llvm::Expected<ArtifactRootReference>
+parseArtifactRootReferenceJson(const llvm::json::Object &object) {
+  return parseRootReference(object, referenceContext, false);
+}
+
+void writeEncodedArtifactLocalReferenceJson(
+    llvm::json::OStream &json, const EncodedArtifactLocalReference &reference) {
+  json.object([&] {
+    writeRootReference(json, reference.artifact);
+    json.attribute("local_kind", reference.ownerLocalKind);
+    json.attribute("payload", formatArtifactLocalPayloadHex(reference.payload));
+  });
+}
+
+llvm::Expected<EncodedArtifactLocalReference>
+parseEncodedArtifactLocalReferenceJson(const llvm::json::Object &object) {
+  if (llvm::Error error = rejectUnknownFields(
+          object, referenceContext,
+          {"schema", "schema_version", "artifact", "local_kind", "payload"}))
+    return std::move(error);
+  llvm::Expected<ParsedSchema> schema = requireSchema(object, referenceContext);
+  if (!schema)
+    return schema.takeError();
+  llvm::Expected<ArtifactIdentity> artifact =
+      requireIdentity(object, "artifact", referenceContext);
+  if (!artifact)
+    return artifact.takeError();
+  llvm::Expected<std::uint32_t> localKind =
+      requireOrdinal(object, "local_kind", referenceContext);
+  if (!localKind)
+    return localKind.takeError();
+  llvm::Expected<llvm::StringRef> payloadText =
+      requireString(object, "payload", referenceContext);
+  if (!payloadText)
+    return payloadText.takeError();
+  llvm::Expected<std::vector<std::uint8_t>> payload =
+      parseArtifactLocalPayloadHex(*payloadText);
+  if (!payload)
+    return payload.takeError();
+  EncodedArtifactLocalReference reference{
+      ArtifactRootReference{std::move(schema->identity), schema->version,
+                            std::move(*artifact)},
+      *localKind, std::move(*payload)};
+  if (llvm::Error error = validateArtifactLocalReferencePayload(reference))
+    return std::move(error);
+  return reference;
+}
+
+void writeSubjectTargetRefJson(llvm::json::OStream &json,
+                               const SubjectTargetRef &target) {
+  json.object([&] {
+    json.attribute("case_subject_role", target.caseSubjectRole.ordinal());
+    json.attributeBegin("anchor");
+    writeArtifactRootReferenceJson(json, target.anchorSubjectArtifact);
+    json.attributeEnd();
+    json.attributeBegin("target");
+    json.object([&] {
+      if (const auto *root =
+              std::get_if<ArtifactRootReference>(&target.target)) {
+        json.attribute("kind", "artifact_root");
+        writeRootReference(json, *root);
+        return;
+      }
+      const auto &local =
+          std::get<EncodedArtifactLocalReference>(target.target);
+      json.attribute("kind", "artifact_local");
+      writeRootReference(json, local.artifact);
+      json.attribute("local_kind", local.ownerLocalKind);
+      json.attribute("payload", formatArtifactLocalPayloadHex(local.payload));
+    });
+    json.attributeEnd();
+  });
+}
+
+llvm::Expected<SubjectTargetRef>
+parseSubjectTargetRefJson(const llvm::json::Value &value) {
+  return parseSubjectTargetRefImpl(value);
+}
+
 void writeEvaluationScopeJson(llvm::json::OStream &json,
                               const EvaluationScope &scope) {
   json.object([&] {
     json.attribute("form", scope.form.ordinal());
     json.attributeArray("targets", [&] {
       for (const SubjectTargetRef &target : scope.targets) {
-        json.object([&] {
-          json.attribute("case_subject_role", target.caseSubjectRole.ordinal());
-          json.attributeBegin("anchor");
-          json.object(
-              [&] { writeRootReference(json, target.anchorSubjectArtifact); });
-          json.attributeEnd();
-          json.attributeBegin("target");
-          json.object([&] {
-            if (const auto *root =
-                    std::get_if<ArtifactRootReference>(&target.target)) {
-              json.attribute("kind", "artifact_root");
-              writeRootReference(json, *root);
-              return;
-            }
-            const auto &local =
-                std::get<EncodedArtifactLocalReference>(target.target);
-            json.attribute("kind", "artifact_local");
-            writeRootReference(json, local.artifact);
-            json.attribute("local_kind", local.ownerLocalKind);
-            json.attribute("payload",
-                           formatArtifactLocalPayloadHex(local.payload));
-          });
-          json.attributeEnd();
-        });
+        writeSubjectTargetRefJson(json, target);
       }
     });
   });
@@ -249,7 +310,7 @@ parseEvaluationScopeJson(const llvm::json::Object &object,
   scope.targets.reserve(arity);
   for (std::size_t index = 0; index < arity; ++index) {
     llvm::Expected<SubjectTargetRef> target =
-        parseSubjectTargetRef((**targets)[index]);
+        parseSubjectTargetRefImpl((**targets)[index]);
     if (!target)
       return target.takeError();
     scope.targets.push_back(std::move(*target));

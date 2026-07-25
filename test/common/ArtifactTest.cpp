@@ -767,6 +767,41 @@ void componentViewDigestRejectsUnrepresentableDescriptorLength() {
   }
 }
 
+void componentViewDigestHexSpellingIsCanonical() {
+  const ComponentViewDigest digest = takeExpected(
+      __func__, ComponentViewDigest::fromBytes(knownViewDigestBytes));
+  const std::string spelling = formatComponentViewDigestHex(digest);
+  require(__func__, spelling.size() == ComponentViewDigest::byteSize * 2,
+          "component view digest hex must be exactly 64 characters");
+  require(__func__,
+          std::all_of(spelling.begin(), spelling.end(), [](char character) {
+            return (character >= '0' && character <= '9') ||
+                   (character >= 'a' && character <= 'f');
+          }),
+          "component view digest hex must be lowercase hexadecimal");
+  require(__func__,
+          spelling == "91c126fb004ed922e7683c8573ad7d2de910178dfd26811edc8fbb"
+                      "2a720dc1c2",
+          "known component view digest hex spelling changed: " + spelling);
+  require(__func__,
+          takeExpected(__func__, parseComponentViewDigestHex(spelling)) ==
+              digest,
+          "component view digest hex did not round-trip");
+
+  expectErrorContains(__func__,
+                      parseComponentViewDigestHex(std::string(63, '0')),
+                      "exactly 64 lowercase hexadecimal");
+  expectErrorContains(__func__,
+                      parseComponentViewDigestHex(std::string(65, '0')),
+                      "exactly 64 lowercase hexadecimal");
+  expectErrorContains(__func__,
+                      parseComponentViewDigestHex(std::string(63, '0') + "A"),
+                      "lowercase hexadecimal");
+  expectErrorContains(__func__,
+                      parseComponentViewDigestHex(std::string(63, '0') + "g"),
+                      "lowercase hexadecimal");
+}
+
 } // namespace
 
 int main() {
@@ -790,5 +825,6 @@ int main() {
   componentViewDigestFollowsSourceBytes();
   componentViewDigestValidatesSuppliedRawDigest();
   componentViewDigestRejectsUnrepresentableDescriptorLength();
+  componentViewDigestHexSpellingIsCanonical();
   return 0;
 }

@@ -65,9 +65,60 @@ void exactRatioNormalizesAndChecksArithmetic() {
                       "overflow");
 }
 
+void builtInMetricsOwnWholeCaseFormZero() {
+  for (MetricKind metric :
+       {MetricKind::CycleCount, MetricKind::ClockPeriod, MetricKind::Runtime}) {
+    const MetricDescriptor &descriptor = metricDescriptor(metric);
+    require(__func__, descriptor.scopeForms.size() == 1,
+            "built-in metric lost its sole whole-case scope form");
+    if (llvm::Error error = validateMetricQuery(
+            MetricQuery{metric, EvaluationScope{ScopeFormRef(0), {}}}))
+      fail(__func__, llvm::toString(std::move(error)));
+  }
+
+  expectErrorContains(
+      __func__,
+      llvm::Expected<std::vector<MetricQuery>>(canonicalizeMetricQueries(
+          {{MetricKind::CycleCount,
+            EvaluationScope{ScopeFormRef(1), {}}}})),
+      "unknown scope form ordinal");
+
+  require(__func__,
+          metricDescriptor(MetricKind::CycleCount)
+                  .scopeForms[0]
+                  .referenceCycleRequirement ==
+              ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle,
+          "cycle count lost its registry-owned reference-cycle requirement");
+  require(__func__,
+          metricDescriptor(MetricKind::ClockPeriod)
+                  .scopeForms[0]
+                  .referenceCycleRequirement ==
+              ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle,
+          "clock period lost its registry-owned reference-cycle requirement");
+  require(__func__,
+          metricDescriptor(MetricKind::Runtime)
+                  .scopeForms[0]
+                  .referenceCycleRequirement ==
+              ReferenceCycleRequirement::NotRequired,
+          "runtime unexpectedly requires a reference-cycle basis");
+
+  const MetricQuery query{MetricKind::CycleCount,
+                          EvaluationScope{ScopeFormRef(0), {}}};
+  const std::string canonical = takeExpected(__func__, serializeMetricQuery(query));
+  require(__func__,
+          canonical ==
+              "{\"schema\":\"evaluation.metric_query\",\"schema_version\":"
+              "\"1.0\",\"metric\":\"cycle_count\",\"scope\":{\"form\":0,"
+              "\"targets\":[]}}",
+          "metric query wire changed");
+  require(__func__, takeExpected(__func__, parseMetricQuery(canonical)) == query,
+          "metric query payload did not roundtrip");
+}
+
 } // namespace
 
 int main() {
   exactRatioNormalizesAndChecksArithmetic();
+  builtInMetricsOwnWholeCaseFormZero();
   return 0;
 }

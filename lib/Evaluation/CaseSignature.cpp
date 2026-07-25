@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -87,37 +88,10 @@ validateRoleDefinitions(const EvaluationCaseSignatureDescriptor &descriptor) {
 }
 
 llvm::Error
-validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor,
-                       EvaluationCaseSignatureRef signatureRef) {
-  for (std::size_t index = 0; index < descriptor.permittedBaseConditions.size();
-       ++index) {
-    const ConditionApplicabilityPattern &pattern =
-        descriptor.permittedBaseConditions[index];
-    if (index != 0 &&
-        !conditionApplicabilityPatternLess(
-            descriptor.permittedBaseConditions[index - 1], pattern)) {
-      if (descriptor.permittedBaseConditions[index - 1] == pattern)
-        return evaluationError("case signature '" + descriptor.spelling +
-                               "' declares a duplicate base-condition pattern");
-      return evaluationError("case signature '" + descriptor.spelling +
-                             "' declares base-condition patterns out of "
-                             "canonical order");
-    }
-    if (!conditionDescriptor(pattern.kind)
-             .permitsLocation(ConditionLocation::Base))
-      return evaluationError("condition '" + toString(pattern.kind) +
-                             "' is not permitted in base conditions");
-    if (pattern.targets.caseSignature != signatureRef)
-      return evaluationError("a base-condition pattern of case signature '" +
-                             descriptor.spelling +
-                             "' must name that exact case signature");
-    for (const SubjectTargetPattern &target : pattern.targets.targets)
-      if (!descriptor.findSubjectRole(target.caseSubjectRole))
-        return evaluationError("a base-condition pattern of case signature '" +
-                               descriptor.spelling +
-                               "' names a foreign case subject role");
-  }
-  return llvm::Error::success();
+validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor) {
+  return validateConditionApplicabilityPatternSet(
+      descriptor.spelling, descriptor.permittedBaseConditions,
+      ConditionLocation::Base, &descriptor);
 }
 
 } // namespace
@@ -166,7 +140,25 @@ llvm::Error registerEvaluationCaseSignature(
     return evaluationError("case signature '" + descriptor.spelling +
                            "' forbids a runtime input but accepts runtime "
                            "input schemas");
-  if (llvm::Error error = validateBasePatternSet(descriptor, *signatureRef))
+  if (const auto *exact =
+          std::get_if<ExactSubjectCycle>(&descriptor.wholeCaseCycleBasis)) {
+    if (!exact->resolve)
+      return evaluationError("case signature '" + descriptor.spelling +
+                             "' requires an exact subject-cycle resolver");
+    const bool emptyReferenceType = std::visit(
+        [](const auto &referenceType) {
+          using T = std::decay_t<decltype(referenceType)>;
+          if constexpr (std::is_same_v<T, ArtifactRootType>)
+            return referenceType.schemaIdentity.empty();
+          else
+            return referenceType.type.ownerSchemaIdentity.empty();
+        },
+        exact->acceptedReferenceType);
+    if (emptyReferenceType)
+      return evaluationError("case signature '" + descriptor.spelling +
+                             "' requires an exact reference-cycle type");
+  }
+  if (llvm::Error error = validateBasePatternSet(descriptor))
     return error;
 
   std::lock_guard<std::mutex> lock(caseSignatureMutex());
@@ -194,6 +186,36 @@ findEvaluationCaseSignature(EvaluationCaseKind caseKind) {
     if (descriptor->caseKind == caseKind)
       return descriptor;
   return nullptr;
+}
+
+llvm::Expected<ReferenceCycleBasis>
+resolveReferenceCycleBasis(const EvaluationCase &evaluationCase,
+                           const CaseArtifactResolution &resolution,
+                           const ArtifactStore &artifactStore) {
+  const EvaluationCaseSignatureDescriptor *descriptor =
+      evaluationCase.signature().descriptor();
+  if (!descriptor)
+    return evaluationError("the EvaluationCase signature is unresolved");
+  if (std::holds_alternative<AbsentReferenceCycle>(
+          descriptor->wholeCaseCycleBasis))
+    return evaluationError("case signature '" + descriptor->spelling +
+                           "' has no whole-case reference cycle");
+  if (std::holds_alternative<AbstractCaseCycle>(
+          descriptor->wholeCaseCycleBasis))
+    return ReferenceCycleBasis{AbstractCaseCycle{}};
+
+  const ExactSubjectCycle &exact =
+      std::get<ExactSubjectCycle>(descriptor->wholeCaseCycleBasis);
+  auto target = exact.resolve(evaluationCase, resolution, artifactStore);
+  if (!target)
+    return target.takeError();
+  if (llvm::Error error = validateSubjectTargetRef(
+          *target, evaluationCase.targetContext(resolution, artifactStore)))
+    return std::move(error);
+  if (subjectReferenceTypeOf(target->target) != exact.acceptedReferenceType)
+    return evaluationError("case signature '" + descriptor->spelling +
+                           "' resolved a reference cycle of the wrong type");
+  return ReferenceCycleBasis{std::move(*target)};
 }
 
 llvm::Expected<EvaluationSubjectBindings>

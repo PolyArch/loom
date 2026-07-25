@@ -260,11 +260,16 @@ bool conditionApplicabilityPatternLess(
     const ConditionApplicabilityPattern &lhs,
     const ConditionApplicabilityPattern &rhs);
 
-/// Validates one descriptor-owned pattern collection: canonical order and no
-/// duplicate patterns.
+struct EvaluationCaseSignatureDescriptor;
+
+/// Validates one descriptor-owned pattern collection: canonical order, no
+/// duplicates, registered exact case signatures, and signature-local roles.
+/// The optional descriptor admits its own exact reference during registration.
 llvm::Error
 validateOrderedTargetPatternSet(llvm::StringRef owner,
-                                llvm::ArrayRef<OrderedTargetPattern> patterns);
+                                llvm::ArrayRef<OrderedTargetPattern> patterns,
+                                const EvaluationCaseSignatureDescriptor *
+                                    selfRegisteringSignature = nullptr);
 
 //===----------------------------------------------------------------------===//
 // Subject bindings and resolved case artifacts
@@ -342,13 +347,58 @@ private:
   std::vector<Entry> entries_;
 };
 
+/// The exact target of one scope position: an Artifact root or one
+/// family-owned local object in heterogeneous framing.
+using SubjectTarget =
+    std::variant<ArtifactRootReference, EncodedArtifactLocalReference>;
+
+struct SubjectTargetRef {
+  CaseSubjectRoleRef caseSubjectRole;
+  /// An exact member of the selected case subject-role binding.
+  ArtifactRootReference anchorSubjectArtifact;
+  SubjectTarget target;
+
+  const ArtifactRootReference &targetArtifact() const;
+
+  friend bool operator==(const SubjectTargetRef &lhs,
+                         const SubjectTargetRef &rhs) {
+    return lhs.caseSubjectRole == rhs.caseSubjectRole &&
+           lhs.anchorSubjectArtifact == rhs.anchorSubjectArtifact &&
+           lhs.target == rhs.target;
+  }
+  friend bool operator!=(const SubjectTargetRef &lhs,
+                         const SubjectTargetRef &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// The resolved reference type of one exact target.
+SubjectReferenceType subjectReferenceTypeOf(const SubjectTarget &target);
+
 //===----------------------------------------------------------------------===//
 // Case signature registry
 //===----------------------------------------------------------------------===//
 
+class EvaluationCase;
+
 enum class ArtifactRequirement : std::uint8_t { Forbidden, Optional, Required };
 
 enum class SubjectRoleCardinality : std::uint8_t { ExactlyOne, OneOrMore };
+
+struct AbsentReferenceCycle {};
+struct AbstractCaseCycle {};
+
+struct ExactSubjectCycle {
+  SubjectReferenceType acceptedReferenceType;
+  llvm::Expected<SubjectTargetRef> (*resolve)(
+      const EvaluationCase &evaluationCase,
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore);
+};
+
+using WholeCaseCycleBasis =
+    std::variant<AbsentReferenceCycle, AbstractCaseCycle, ExactSubjectCycle>;
+using ReferenceCycleBasis = std::variant<AbstractCaseCycle, SubjectTargetRef>;
 
 struct CaseSubjectRoleDescriptor {
   CaseSubjectRoleRef role;
@@ -383,6 +433,9 @@ struct EvaluationCaseSignatureDescriptor {
       const std::optional<ArtifactRootReference> &workload,
       const std::optional<ArtifactRootReference> &runtimeInput,
       const CaseArtifactResolution &resolution);
+  /// Whether this exact case signature defines one semantic reference-cycle
+  /// basis for whole-case cycle-count and clock-period queries.
+  WholeCaseCycleBasis wholeCaseCycleBasis;
   /// The complete exact Base-condition patterns this signature permits. Every
   /// pattern's case signature must be this signature itself.
   llvm::ArrayRef<ConditionApplicabilityPattern> permittedBaseConditions;
@@ -402,6 +455,14 @@ llvm::Error registerEvaluationCaseSignature(
 /// The registered descriptor for one case kind, or null.
 const EvaluationCaseSignatureDescriptor *
 findEvaluationCaseSignature(EvaluationCaseKind caseKind);
+
+/// Resolves the exact signature-owned whole-case cycle basis. Absent basis,
+/// resolver failure, a foreign or noncanonical target, or a target of the
+/// wrong declared reference type is an error.
+llvm::Expected<ReferenceCycleBasis>
+resolveReferenceCycleBasis(const EvaluationCase &evaluationCase,
+                           const CaseArtifactResolution &resolution,
+                           const ArtifactStore &artifactStore);
 
 //===----------------------------------------------------------------------===//
 // Evaluation scope
@@ -452,7 +513,19 @@ struct ScopeRoleDescriptor {
   llvm::StringRef semanticRole;
 };
 
-struct SubjectTargetRef;
+struct WholeExactCaseScope {};
+
+struct ExactTargetPatternsScope {
+  llvm::ArrayRef<OrderedTargetPattern> patterns;
+};
+
+using ScopeApplicability =
+    std::variant<WholeExactCaseScope, ExactTargetPatternsScope>;
+
+enum class ReferenceCycleRequirement : std::uint8_t {
+  NotRequired,
+  ExactCaseUniqueReferenceCycle,
+};
 
 struct ScopeFormDescriptor {
   ScopeFormRef form;
@@ -460,43 +533,26 @@ struct ScopeFormDescriptor {
   /// Ordered, nonrepeating role tuple: each role ordinal is its position and
   /// the semantic roles are distinct.
   llvm::ArrayRef<ScopeRoleDescriptor> roles;
-  /// The complete positional alternatives accepted at this form. Every form,
-  /// including a zero-role whole-case form, declares a canonical nonempty set
-  /// pinned to exact case signatures.
-  llvm::ArrayRef<OrderedTargetPattern> acceptedTargetPatterns;
+  /// A zero-role WholeExactCase form is intrinsic to the Request's exact case.
+  /// A targetful form instead owns a canonical nonempty set of complete
+  /// positional alternatives pinned to exact case signatures.
+  ScopeApplicability applicability;
   /// Relation-specific verification owned by this query form, such as
   /// requiring two distinct endpoints. Null when the accepted patterns are
   /// the whole contract.
   llvm::Error (*verifyRelation)(llvm::ArrayRef<SubjectTargetRef> targets);
+  ReferenceCycleRequirement referenceCycleRequirement =
+      ReferenceCycleRequirement::NotRequired;
 };
 
 const ScopeFormDescriptor *
 findScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms, ScopeFormRef form);
 
-/// The exact target of one scope position: an Artifact root or one
-/// family-owned local object in heterogeneous framing.
-using SubjectTarget =
-    std::variant<ArtifactRootReference, EncodedArtifactLocalReference>;
-
-struct SubjectTargetRef {
-  CaseSubjectRoleRef caseSubjectRole;
-  /// An exact member of the selected case subject-role binding.
-  ArtifactRootReference anchorSubjectArtifact;
-  SubjectTarget target;
-
-  const ArtifactRootReference &targetArtifact() const;
-
-  friend bool operator==(const SubjectTargetRef &lhs,
-                         const SubjectTargetRef &rhs) {
-    return lhs.caseSubjectRole == rhs.caseSubjectRole &&
-           lhs.anchorSubjectArtifact == rhs.anchorSubjectArtifact &&
-           lhs.target == rhs.target;
-  }
-  friend bool operator!=(const SubjectTargetRef &lhs,
-                         const SubjectTargetRef &rhs) {
-    return !(lhs == rhs);
-  }
-};
+/// Validates the complete immutable form table independently of one query:
+/// contiguous ordinals, exact whole-case shape, ordered unique roles, and
+/// canonical nonempty exact target patterns with valid signature-local roles.
+llvm::Error
+validateScopeFormDescriptors(llvm::ArrayRef<ScopeFormDescriptor> forms);
 
 /// The one closed scope algebra shared by every MetricKind and FindingKind.
 /// The target tuple has exactly the descriptor arity in descriptor role order
@@ -514,9 +570,6 @@ struct EvaluationScope {
     return !(lhs == rhs);
   }
 };
-
-/// The resolved reference type of one exact target.
-SubjectReferenceType subjectReferenceTypeOf(const SubjectTarget &target);
 
 /// The exact ordered target pattern of one validated target tuple under one
 /// exact case signature.
@@ -740,7 +793,18 @@ struct EvaluationConditionDescriptor {
 const EvaluationConditionDescriptor &
 conditionDescriptor(EvaluationConditionKind kind);
 
+/// Validates one condition owner's complete exact pattern set and delegates
+/// every same-kind target collection to validateOrderedTargetPatternSet.
+llvm::Error validateConditionApplicabilityPatternSet(
+    llvm::StringRef owner,
+    llvm::ArrayRef<ConditionApplicabilityPattern> patterns,
+    ConditionLocation location,
+    const EvaluationCaseSignatureDescriptor *selfRegisteringSignature =
+        nullptr);
+
 llvm::StringRef toString(EvaluationConditionKind kind);
+llvm::Expected<EvaluationConditionKind>
+parseEvaluationConditionKind(llvm::StringRef spelling);
 llvm::StringRef toString(ConditionLocation location);
 
 /// The kind-owned typed projection from a validated payload to its exact

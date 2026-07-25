@@ -56,7 +56,7 @@ void appendExactRatio(std::vector<std::uint8_t> &bytes, ExactRatio value) {
 
 llvm::Error
 rejectUnknownFields(const llvm::json::Object &object, llvm::StringRef context,
-                    std::initializer_list<llvm::StringRef> allowed) {
+                    llvm::ArrayRef<llvm::StringRef> allowed) {
   for (const auto &field : object) {
     llvm::StringRef key = field.getFirst();
     if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())

@@ -9,6 +9,21 @@
 
 namespace loom::evaluation {
 
+void writeArtifactRootReferenceJson(llvm::json::OStream &json,
+                                    const ArtifactRootReference &reference);
+llvm::Expected<ArtifactRootReference>
+parseArtifactRootReferenceJson(const llvm::json::Object &object);
+
+void writeEncodedArtifactLocalReferenceJson(
+    llvm::json::OStream &json, const EncodedArtifactLocalReference &reference);
+llvm::Expected<EncodedArtifactLocalReference>
+parseEncodedArtifactLocalReferenceJson(const llvm::json::Object &object);
+
+void writeSubjectTargetRefJson(llvm::json::OStream &json,
+                               const SubjectTargetRef &target);
+llvm::Expected<SubjectTargetRef>
+parseSubjectTargetRefJson(const llvm::json::Value &value);
+
 /// Canonical scope text with fixed field ordering and closed-variant
 /// spellings. Every reference carries its exact schema identity and version;
 /// the owner-local payload is emitted as lowercase hexadecimal and is never

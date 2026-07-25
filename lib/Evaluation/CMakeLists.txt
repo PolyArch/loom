@@ -5,10 +5,15 @@ add_library(LoomEvaluation
   CaseSignature.cpp
   CaseText.cpp
   Condition.cpp
+  ConditionText.cpp
+  Finding.cpp
   Metric.cpp
   ModelDescriptor.cpp
   NumericValue.cpp
+  OwnerError.cpp
+  QueryText.cpp
   Request.cpp
+  RequestText.cpp
   Scope.cpp
   ToolRunner.cpp
 )

@@ -26,6 +26,17 @@ enum class UncertaintyKind { ExactWithinModel, Bounded, Statistical, Unknown };
 enum class CensoredReason { SubjectDidNotComplete };
 enum class NotApplicableReason { UndefinedForSubject };
 
+constexpr std::uint8_t observationFormMask(ObservationForm form) {
+  return std::uint8_t{1} << static_cast<std::uint8_t>(form);
+}
+
+constexpr std::uint8_t allObservationFormsMask() {
+  return observationFormMask(ObservationForm::Point) |
+         observationFormMask(ObservationForm::Interval) |
+         observationFormMask(ObservationForm::Censored) |
+         observationFormMask(ObservationForm::NotApplicable);
+}
+
 struct CensoredReasonPolicy {
   CensoredReason reason;
   bool requiresLowerBound;
@@ -85,6 +96,17 @@ struct MetricQuery {
 /// MetricKind's own scope forms. Case-relative anchors, closure, and pattern
 /// applicability are checked where the exact case is known.
 llvm::Error validateMetricQuery(const MetricQuery &query);
+
+/// Metric-registry-owned admission for one exact scope form against either a
+/// case signature contract or a fully resolved exact case.
+llvm::Error validateMetricScopeAdmissibility(
+    MetricKind metric, ScopeFormRef form,
+    const EvaluationCaseSignatureDescriptor &caseSignature);
+llvm::Error validateMetricScopeAdmissibility(
+    MetricKind metric, ScopeFormRef form,
+    const EvaluationCase &evaluationCase,
+    const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore);
 
 /// Canonical query collections sort by registry kind and the complete
 /// canonical scope key; exact duplicates are invalid.
@@ -156,6 +178,10 @@ struct MetricObservation {
 };
 
 ObservationForm observationForm(const MetricObservation &observation);
+ObservationForm observationForm(const MetricObservationValue &observation);
+llvm::Error validateMetricObservationValue(
+    MetricKind metric, UncertaintyKind uncertainty,
+    const MetricObservationValue &observation);
 llvm::Error validateMetricObservation(const MetricObservation &observation);
 
 llvm::Expected<std::string>

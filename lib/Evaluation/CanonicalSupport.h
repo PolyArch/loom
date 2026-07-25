@@ -43,7 +43,7 @@ void appendSubjectTargetKey(std::vector<std::uint8_t> &bytes,
 
 llvm::Error rejectUnknownFields(const llvm::json::Object &object,
                                 llvm::StringRef context,
-                                std::initializer_list<llvm::StringRef> allowed);
+                                llvm::ArrayRef<llvm::StringRef> allowed);
 llvm::Expected<llvm::StringRef> requireString(const llvm::json::Object &object,
                                               llvm::StringRef key,
                                               llvm::StringRef context);

@@ -6,9 +6,11 @@
 #include "llvm/Support/SHA256.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace loom {
@@ -101,6 +103,46 @@ validateComponentViewDigest(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
         "component_view_digest_mismatch: supplied digest does not match the "
         "component view source bytes");
   return llvm::Error::success();
+}
+
+std::string formatComponentViewDigestHex(const ComponentViewDigest &digest) {
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(ComponentViewDigest::byteSize * 2);
+  for (std::uint8_t byte : digest.bytes()) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 0x0f]);
+  }
+  return result;
+}
+
+llvm::Expected<ComponentViewDigest>
+parseComponentViewDigestHex(llvm::StringRef spelling) {
+  if (spelling.size() != ComponentViewDigest::byteSize * 2)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "component view digest must use exactly 64 lowercase hexadecimal "
+        "characters");
+
+  auto parseNibble = [](char character) -> int {
+    if (character >= '0' && character <= '9')
+      return character - '0';
+    if (character >= 'a' && character <= 'f')
+      return character - 'a' + 10;
+    return -1;
+  };
+
+  std::array<std::uint8_t, ComponentViewDigest::byteSize> bytes;
+  for (std::size_t index = 0; index < spelling.size(); index += 2) {
+    const int high = parseNibble(spelling[index]);
+    const int low = parseNibble(spelling[index + 1]);
+    if (high < 0 || low < 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "component view digest must use lowercase hexadecimal");
+    bytes[index / 2] = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  return ComponentViewDigest::fromBytes(bytes);
 }
 
 } // namespace loom

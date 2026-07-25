@@ -107,7 +107,9 @@ bool conditionApplicabilityPatternLess(
 
 llvm::Error
 validateOrderedTargetPatternSet(llvm::StringRef owner,
-                                llvm::ArrayRef<OrderedTargetPattern> patterns) {
+                                llvm::ArrayRef<OrderedTargetPattern> patterns,
+                                const EvaluationCaseSignatureDescriptor *
+                                    selfRegisteringSignature) {
   for (std::size_t index = 0; index < patterns.size(); ++index) {
     if (index != 0 &&
         !orderedTargetPatternLess(patterns[index - 1], patterns[index])) {
@@ -118,6 +120,20 @@ validateOrderedTargetPatternSet(llvm::StringRef owner,
                              "' declares target patterns out of canonical "
                              "order");
     }
+    const OrderedTargetPattern &pattern = patterns[index];
+    const EvaluationCaseSignatureDescriptor *signature =
+        pattern.caseSignature.descriptor();
+    if (!signature && selfRegisteringSignature &&
+        pattern.caseSignature.schemaVersion() == evaluationSchemaVersion() &&
+        pattern.caseSignature.caseKind() == selfRegisteringSignature->caseKind)
+      signature = selfRegisteringSignature;
+    if (!signature)
+      return evaluationError("'" + owner +
+                             "' references an unregistered case signature");
+    for (const SubjectTargetPattern &target : pattern.targets)
+      if (!signature->findSubjectRole(target.caseSubjectRole))
+        return evaluationError("'" + owner +
+                               "' names a foreign case subject role");
   }
   return llvm::Error::success();
 }
@@ -180,38 +196,67 @@ std::vector<std::uint8_t> canonicalScopeKey(const EvaluationScope &scope) {
 }
 
 llvm::Error
-validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
-                            const EvaluationScope &scope) {
+validateScopeFormDescriptors(llvm::ArrayRef<ScopeFormDescriptor> forms) {
   for (std::size_t index = 0; index < forms.size(); ++index)
     if (forms[index].form != ScopeFormRef(static_cast<std::uint32_t>(index)))
       return evaluationError(
           "scope forms must use ordered query-kind-local ordinals");
+  for (const ScopeFormDescriptor &descriptor : forms) {
+    if (llvm::Error error = validateFormRoles(descriptor))
+      return error;
+
+    if (std::holds_alternative<WholeExactCaseScope>(
+            descriptor.applicability)) {
+      if (!descriptor.roles.empty())
+        return evaluationError("whole-case scope form " +
+                               std::to_string(descriptor.form.ordinal()) +
+                               " must have zero roles");
+      if (descriptor.verifyRelation)
+        return evaluationError("whole-case scope form " +
+                               std::to_string(descriptor.form.ordinal()) +
+                               " cannot declare relation verification");
+      continue;
+    }
+
+    const std::size_t arity = descriptor.roles.size();
+    if (arity == 0)
+      return evaluationError("target-pattern scope form " +
+                             std::to_string(descriptor.form.ordinal()) +
+                             " must declare at least one role");
+    const auto patterns =
+        std::get<ExactTargetPatternsScope>(descriptor.applicability).patterns;
+    if (patterns.empty())
+      return evaluationError("scope form " +
+                             std::to_string(descriptor.form.ordinal()) +
+                             " must declare a nonempty target pattern set");
+    if (llvm::Error error = validateOrderedTargetPatternSet(
+            descriptor.semanticDefinition, patterns))
+      return error;
+    for (const OrderedTargetPattern &pattern : patterns) {
+      if (pattern.targets.size() != arity)
+        return evaluationError("scope form " +
+                               std::to_string(descriptor.form.ordinal()) +
+                               " declares a target pattern of the wrong arity");
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
+                            const EvaluationScope &scope) {
+  if (llvm::Error error = validateScopeFormDescriptors(forms))
+    return error;
   const ScopeFormDescriptor *descriptor = findScopeForm(forms, scope.form);
   if (!descriptor)
     return evaluationError("unknown scope form ordinal " +
                            std::to_string(scope.form.ordinal()));
-  if (llvm::Error error = validateFormRoles(*descriptor))
-    return error;
-
   const std::size_t arity = descriptor->roles.size();
   if (scope.targets.size() != arity)
     return evaluationError("scope form " +
                            std::to_string(scope.form.ordinal()) +
                            " requires exactly " + std::to_string(arity) +
                            (arity == 1 ? " target" : " targets"));
-
-  if (descriptor->acceptedTargetPatterns.empty())
-    return evaluationError("scope form " +
-                           std::to_string(descriptor->form.ordinal()) +
-                           " must declare a nonempty target pattern set");
-  if (llvm::Error error = validateOrderedTargetPatternSet(
-          descriptor->semanticDefinition, descriptor->acceptedTargetPatterns))
-    return error;
-  for (const OrderedTargetPattern &pattern : descriptor->acceptedTargetPatterns)
-    if (pattern.targets.size() != arity)
-      return evaluationError("scope form " +
-                             std::to_string(descriptor->form.ordinal()) +
-                             " declares a target pattern of the wrong arity");
   return llvm::Error::success();
 }
 
@@ -254,7 +299,8 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
     return llvm::Error::success();
 
   // Common resolves the exact Artifact bytes from the explicit store; the
-  // family codec then strict-imports those bytes and validates its typed target.
+  // family codec then strict-imports those bytes and validates its typed
+  // target.
   return validateArtifactLocalReference(context.artifactStore(), *local);
 }
 
@@ -266,6 +312,9 @@ validateEvaluationScopeCase(const EvaluationScope &scope,
     return error;
   const ScopeFormDescriptor &descriptor = *findScopeForm(forms, scope.form);
 
+  if (std::holds_alternative<WholeExactCaseScope>(descriptor.applicability))
+    return llvm::Error::success();
+
   for (const SubjectTargetRef &target : scope.targets)
     if (llvm::Error error = validateSubjectTargetRef(target, context))
       return error;
@@ -273,7 +322,9 @@ validateEvaluationScopeCase(const EvaluationScope &scope,
   const OrderedTargetPattern derived =
       deriveOrderedTargetPattern(scope.targets, context.signatureRef());
   bool accepted = false;
-  for (const OrderedTargetPattern &pattern : descriptor.acceptedTargetPatterns)
+  const auto patterns =
+      std::get<ExactTargetPatternsScope>(descriptor.applicability).patterns;
+  for (const OrderedTargetPattern &pattern : patterns)
     accepted = accepted || pattern == derived;
   if (!accepted)
     return evaluationError(

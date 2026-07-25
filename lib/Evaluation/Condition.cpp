@@ -1,4 +1,5 @@
 #include "Evaluation/Case.h"
+#include "Evaluation/OwnerError.h"
 
 #include "CanonicalSupport.h"
 
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -85,8 +87,7 @@ validateRelativeClockSchedule(const RelativeClockScheduleCondition &schedule) {
 
 llvm::Error validateActivityBinding(const ActivityBindingCondition &activity) {
   if (std::holds_alternative<ExecutionActivitySource>(activity.source))
-    return evaluationError(
-        "SimulationExecution activity validation is unavailable");
+    return evaluationOwnerUnavailable("loom.simulation_execution", {1, 0});
   const auto *assumption =
       std::get_if<ExplicitAssumptionSource>(&activity.source);
   if (!isProbability(assumption->staticProbability))
@@ -185,8 +186,65 @@ conditionDescriptor(EvaluationConditionKind kind) {
   llvm_unreachable("unknown EvaluationConditionKind");
 }
 
+llvm::Error validateConditionApplicabilityPatternSet(
+    llvm::StringRef owner,
+    llvm::ArrayRef<ConditionApplicabilityPattern> patterns,
+    ConditionLocation location,
+    const EvaluationCaseSignatureDescriptor *selfRegisteringSignature) {
+  std::vector<OrderedTargetPattern> sameKindTargets;
+  std::optional<EvaluationConditionKind> currentKind;
+  auto validateCurrentKind = [&]() -> llvm::Error {
+    if (sameKindTargets.empty())
+      return llvm::Error::success();
+    return validateOrderedTargetPatternSet(owner, sameKindTargets,
+                                           selfRegisteringSignature);
+  };
+
+  for (std::size_t index = 0; index < patterns.size(); ++index) {
+    const ConditionApplicabilityPattern &pattern = patterns[index];
+    if (index != 0 &&
+        !conditionApplicabilityPatternLess(patterns[index - 1], pattern)) {
+      if (patterns[index - 1] == pattern)
+        return evaluationError("'" + owner +
+                               "' declares a duplicate condition pattern");
+      return evaluationError("'" + owner +
+                             "' declares condition patterns out of canonical "
+                             "order");
+    }
+    if (!conditionDescriptor(pattern.kind).permitsLocation(location))
+      return evaluationError("condition '" + toString(pattern.kind) +
+                             "' is not permitted in " + toString(location) +
+                             " conditions");
+    if (selfRegisteringSignature &&
+        (pattern.targets.caseSignature.schemaVersion() !=
+             evaluationSchemaVersion() ||
+         pattern.targets.caseSignature.caseKind() !=
+             selfRegisteringSignature->caseKind))
+      return evaluationError("'" + owner +
+                             "' declares a condition pattern for a foreign "
+                             "case signature");
+
+    if (currentKind && *currentKind != pattern.kind) {
+      if (llvm::Error error = validateCurrentKind())
+        return error;
+      sameKindTargets.clear();
+    }
+    currentKind = pattern.kind;
+    sameKindTargets.push_back(pattern.targets);
+  }
+  return validateCurrentKind();
+}
+
 llvm::StringRef toString(EvaluationConditionKind kind) {
   return conditionDescriptor(kind).spelling;
+}
+
+llvm::Expected<EvaluationConditionKind>
+parseEvaluationConditionKind(llvm::StringRef spelling) {
+  for (const EvaluationConditionDescriptor &descriptor : conditionDescriptors)
+    if (descriptor.spelling == spelling)
+      return descriptor.kind;
+  return evaluationError("unknown EvaluationConditionKind '" + spelling + "'");
 }
 
 llvm::StringRef toString(ConditionLocation location) {

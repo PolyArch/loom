@@ -2,11 +2,13 @@
 #define LOOM_COMMON_COMPONENTVIEWDIGEST_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace loom {
 
@@ -60,6 +62,11 @@ llvm::Error
 validateComponentViewDigest(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
                             llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
                             const ComponentViewDigest &suppliedDigest);
+
+/// External text is exactly 64 lowercase hexadecimal characters.
+std::string formatComponentViewDigestHex(const ComponentViewDigest &digest);
+llvm::Expected<ComponentViewDigest>
+parseComponentViewDigestHex(llvm::StringRef spelling);
 
 } // namespace loom
 
