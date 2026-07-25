@@ -1,4 +1,5 @@
 add_subdirectory(BoundaryDataPath)
+add_subdirectory(MemoryCapabilityDomains)
 add_subdirectory(ResourceContract)
 add_subdirectory(BoundaryTransfer)
 add_subdirectory(TemporalOperandBuffer)

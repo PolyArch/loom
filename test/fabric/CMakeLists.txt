@@ -18,6 +18,10 @@ add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp
 )
 
+add_executable(loom-fabric-memory-capability-domain-test
+  MemoryCapabilityDomainTest.cpp
+)
+
 add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
@@ -46,6 +50,18 @@ target_link_libraries(loom-fabric-boundary-data-path-test PRIVATE
 
 target_link_libraries(loom-fabric-resource-contract-test PRIVATE
   LoomFabricResourceContract
+)
+
+target_link_libraries(loom-fabric-memory-capability-domain-test PRIVATE
+  LoomCommon
+  LoomFabricMemoryCapabilityDomains
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
 )
 
 target_link_libraries(loom-fabric-boundary-transfer-test PRIVATE

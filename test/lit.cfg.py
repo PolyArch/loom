@@ -59,6 +59,7 @@ tools = [
     "loom-fabric-elaboration-alias-chain-test",
     "loom-fabric-elaboration-api-test",
     "loom-fabric-elaboration-header-test",
+    "loom-fabric-memory-capability-domain-test",
     "loom-fabric-persistent-ref-test",
     "loom-fabric-resource-contract-test",
     "loom-fabric-temporal-operand-buffer-test",

@@ -1,0 +1,12 @@
+add_library(LoomFabricMemoryCapabilityDomains
+  MemoryCapabilityDomains.cpp
+)
+
+target_include_directories(LoomFabricMemoryCapabilityDomains PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomFabricMemoryCapabilityDomains PUBLIC
+  MLIRDataflow
+  LLVMSupport
+)
