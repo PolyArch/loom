@@ -65,27 +65,34 @@ def VectorShuffleMask : SemanticsCase<14>;
 // Closed typed capability-parameter record schemas
 //===----------------------------------------------------------------------===//
 
-def NoCapabilityParams : CapabilityParamsSchema<0>;
-def IntegerComparePredicateParams : CapabilityParamsSchema<1>;
-def FloatComparePredicateParams : CapabilityParamsSchema<2>;
-def StreamRecurrenceParams : CapabilityParamsSchema<3>;
+def ScalarIntegerParams : CapabilityParamsSchema<0>;
+def ScalarIntegerCompareMinMaxParams : CapabilityParamsSchema<1>;
+def ScalarValueSelectParams : CapabilityParamsSchema<2>;
+def ScalarIntegerCastParams : CapabilityParamsSchema<3>;
+def ScalarBitReinterpretParams : CapabilityParamsSchema<4>;
+def ScalarFloatParams : CapabilityParamsSchema<5>;
+def ScalarFloatCompareMinMaxParams : CapabilityParamsSchema<6>;
+def ScalarFloatWidthCastParams : CapabilityParamsSchema<7>;
+def ScalarIntegerFloatConversionParams : CapabilityParamsSchema<8>;
+def LoopStreamParams : CapabilityParamsSchema<9>;
+def TokenPlaneParams : CapabilityParamsSchema<10>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed admission providers
 //===----------------------------------------------------------------------===//
 
-def ScalarUniformIntegerAdmission : TypedAdmissionProvider<0>;
-def ScalarIntegerCompareAdmission : TypedAdmissionProvider<1>;
-def ScalarIntegerCastAdmission : TypedAdmissionProvider<2>;
-def ScalarBitReinterpretAdmission : TypedAdmissionProvider<3>;
-def ScalarValueSelectAdmission : TypedAdmissionProvider<4>;
-def ScalarUniformFloatAdmission : TypedAdmissionProvider<5>;
-def ScalarFloatCompareAdmission : TypedAdmissionProvider<6>;
-def ScalarFloatCastAdmission : TypedAdmissionProvider<7>;
-def ScalarIntegerFloatConversionAdmission : TypedAdmissionProvider<8>;
-def StreamAdmission : TypedAdmissionProvider<9>;
-def TokenPlaneAdmission : TypedAdmissionProvider<10>;
-def ExactSchemaShapeAdmission : TypedAdmissionProvider<11>;
+def ScalarOrdinaryIntegerAdmission : TypedAdmissionProvider<0>;
+def ScalarLogicIntegerAdmission : TypedAdmissionProvider<1>;
+def ScalarIntegerCompareAdmission : TypedAdmissionProvider<2>;
+def ScalarIntegerCastAdmission : TypedAdmissionProvider<3>;
+def ScalarBitReinterpretAdmission : TypedAdmissionProvider<4>;
+def ScalarValueSelectAdmission : TypedAdmissionProvider<5>;
+def ScalarUniformFloatAdmission : TypedAdmissionProvider<6>;
+def ScalarFloatCompareAdmission : TypedAdmissionProvider<7>;
+def ScalarFloatCastAdmission : TypedAdmissionProvider<8>;
+def ScalarIntegerFloatConversionAdmission : TypedAdmissionProvider<9>;
+def StreamAdmission : TypedAdmissionProvider<10>;
+def TokenPlaneAdmission : TypedAdmissionProvider<11>;
 
 //===----------------------------------------------------------------------===//
 // Standard integer, floating-point, and cast compute schemas
@@ -343,44 +350,44 @@ def DataflowFence : ActorSchema<92, "::dataflow::FenceOp", "Memory",
 //===----------------------------------------------------------------------===//
 
 def ScalarIntegerAddSub : ImplementationFamily<0, [ArithAddI, ArithSubI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
+    ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
 def ScalarIntegerLogic : ImplementationFamily<1,
     [ArithAndI, ArithOrI, ArithXOrI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
+    ScalarIntegerParams, ScalarLogicIntegerAdmission>;
 def ScalarIntegerShift : ImplementationFamily<2,
     [ArithShLI, ArithShRSI, ArithShRUI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
+    ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
 def ScalarIntegerCompareMinMax : ImplementationFamily<3,
     [ArithCmpI, ArithMinSI, ArithMaxSI, ArithMinUI, ArithMaxUI],
-    IntegerComparePredicateParams, ScalarIntegerCompareAdmission>;
+    ScalarIntegerCompareMinMaxParams, ScalarIntegerCompareAdmission>;
 def ScalarValueSelect : ImplementationFamily<4, [ArithSelect],
-    NoCapabilityParams, ScalarValueSelectAdmission>;
+    ScalarValueSelectParams, ScalarValueSelectAdmission>;
 def ScalarIntegerCast : ImplementationFamily<5,
     [ArithExtSI, ArithExtUI, ArithTruncI, ArithIndexCast, ArithIndexCastUI],
-    NoCapabilityParams, ScalarIntegerCastAdmission>;
+    ScalarIntegerCastParams, ScalarIntegerCastAdmission>;
 def ScalarBitReinterpret : ImplementationFamily<6, [ArithBitcast],
-    NoCapabilityParams, ScalarBitReinterpretAdmission>;
+    ScalarBitReinterpretParams, ScalarBitReinterpretAdmission>;
 def ScalarFloatSign : ImplementationFamily<7, [ArithNegF, MathAbsF],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 def ScalarFloatAddSub : ImplementationFamily<8, [ArithAddF, ArithSubF],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 def ScalarFloatCompareMinMax : ImplementationFamily<9,
     [ArithCmpF, ArithMinimumF, ArithMaximumF, ArithMinNumF, ArithMaxNumF],
-    FloatComparePredicateParams, ScalarFloatCompareAdmission>;
+    ScalarFloatCompareMinMaxParams, ScalarFloatCompareAdmission>;
 def ScalarFloatWidthCast : ImplementationFamily<10, [ArithExtF, ArithTruncF],
-    NoCapabilityParams, ScalarFloatCastAdmission>;
+    ScalarFloatWidthCastParams, ScalarFloatCastAdmission>;
 def ScalarIntegerToFloat : ImplementationFamily<11,
     [ArithSIToFP, ArithUIToFP],
-    NoCapabilityParams, ScalarIntegerFloatConversionAdmission>;
+    ScalarIntegerFloatConversionParams, ScalarIntegerFloatConversionAdmission>;
 def ScalarFloatToInteger : ImplementationFamily<12,
     [ArithFPToSI, ArithFPToUI],
-    NoCapabilityParams, ScalarIntegerFloatConversionAdmission>;
+    ScalarIntegerFloatConversionParams, ScalarIntegerFloatConversionAdmission>;
 def ScalarIntegerMultiply : ImplementationFamily<13, [ArithMulI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
+    ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
 def ScalarFloatMultiply : ImplementationFamily<14, [ArithMulF],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 def ScalarFloatFma : ImplementationFamily<15, [MathFma],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 
 //===----------------------------------------------------------------------===//
 // Normative loop-control implementation families
@@ -390,79 +397,12 @@ def ScalarFloatFma : ImplementationFamily<15, [MathFma],
 //===----------------------------------------------------------------------===//
 
 def LoopStream : ImplementationFamily<16, [DataflowStream],
-    StreamRecurrenceParams, StreamAdmission>;
+    LoopStreamParams, StreamAdmission>;
 def LoopCarry : ImplementationFamily<17, [DataflowCarry],
-    NoCapabilityParams, TokenPlaneAdmission>;
+    TokenPlaneParams, TokenPlaneAdmission>;
 def LoopInvariant : ImplementationFamily<18, [DataflowInvariant],
-    NoCapabilityParams, TokenPlaneAdmission>;
+    TokenPlaneParams, TokenPlaneAdmission>;
 def LoopGate : ImplementationFamily<19, [DataflowGate],
-    NoCapabilityParams, TokenPlaneAdmission>;
-
-//===----------------------------------------------------------------------===//
-// Divider, elementary-function, token-plane, and intrinsic families
-//
-// A signed divider genuinely shares its quotient and remainder datapath, as
-// does an unsigned one. The elementary-function families each share one
-// evaluation datapath whose selected function is a control input.
-//===----------------------------------------------------------------------===//
-
-def ScalarIntegerDivideSigned : ImplementationFamily<20,
-    [ArithDivSI, ArithRemSI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
-def ScalarIntegerDivideUnsigned : ImplementationFamily<21,
-    [ArithDivUI, ArithRemUI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
-def ScalarIntegerAbsolute : ImplementationFamily<22, [MathAbsI],
-    NoCapabilityParams, ScalarUniformIntegerAdmission>;
-def ScalarFloatDivide : ImplementationFamily<23, [ArithDivF, ArithRemF],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatSquareRoot : ImplementationFamily<24, [MathSqrt, MathRsqrt],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatExponential : ImplementationFamily<25,
-    [MathExp, MathExp2, MathExpM1],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatLogarithm : ImplementationFamily<26,
-    [MathLog, MathLog2, MathLog10, MathLog1p],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatTrigonometric : ImplementationFamily<27,
-    [MathSin, MathCos, MathTan],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatHyperbolic : ImplementationFamily<28,
-    [MathSinh, MathCosh, MathTanh],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatRounding : ImplementationFamily<29,
-    [MathFloor, MathCeil, MathRound, MathTrunc, MathRoundEven],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-def ScalarFloatErrorFunction : ImplementationFamily<30, [MathErf],
-    NoCapabilityParams, ScalarUniformFloatAdmission>;
-
-def TokenConstant : ImplementationFamily<31, [DataflowConstant],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def TokenSync : ImplementationFamily<32, [DataflowSync],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def TokenMux : ImplementationFamily<33, [DataflowMux],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def TokenDemux : ImplementationFamily<34, [DataflowDemux],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def VectorParallelize : ImplementationFamily<35, [DataflowParallelize],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def VectorSerialize : ImplementationFamily<36, [DataflowSerialize],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def VectorPack : ImplementationFamily<37, [DataflowPack],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def VectorUnpack : ImplementationFamily<38, [DataflowUnpack],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-
-def FunnelShiftIntrinsic : ImplementationFamily<39, [LLVMFshl],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def ByteSwapIntrinsic : ImplementationFamily<40, [LLVMByteSwap],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def SaturatingSubtractIntrinsic : ImplementationFamily<41, [LLVMUSubSat],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def CountLeadingZerosIntrinsic : ImplementationFamily<42,
-    [MathCountLeadingZeros, LLVMCountLeadingZeros],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
-def IntegerAbsoluteIntrinsic : ImplementationFamily<43, [LLVMAbs],
-    NoCapabilityParams, ExactSchemaShapeAdmission>;
+    TokenPlaneParams, TokenPlaneAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD

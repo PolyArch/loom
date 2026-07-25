@@ -40,6 +40,7 @@ add_mlir_library(LoomFabricImplementationFamily
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRDataflow
   MLIRDataflowEnums
   MLIRFabricEnums
   MLIRIR

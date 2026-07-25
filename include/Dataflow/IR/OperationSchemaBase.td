@@ -31,9 +31,8 @@ class ActorSchema<int id, string cls, string kind, SemanticsCase case> {
 }
 
 // One closed typed `hw_params` record schema an implementation family selects.
-// `NoCapabilityParams` is the schema of a family whose concrete resources carry
-// no typed hardware parameter record at all; such a resource declaring
-// `hw_params` is a malformed concrete capability.
+// Every schema names one concrete C++ record; there is no generic record or
+// property bag.
 class CapabilityParamsSchema<int id> {
   int paramsId = id;
 }
