@@ -30,12 +30,12 @@ llvm::Error rejected(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<NormalizedLlvmModule>
-normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
-  llvm::LLVMContext context;
+llvm::Expected<std::unique_ptr<llvm::Module>>
+parseCompleteLlvmModule(llvm::ArrayRef<std::uint8_t> bitcode,
+                        llvm::LLVMContext &context) {
   const llvm::MemoryBufferRef buffer(
-      llvm::StringRef(reinterpret_cast<const char *>(sourceBitcode.data()),
-                      sourceBitcode.size()),
+      llvm::StringRef(reinterpret_cast<const char *>(bitcode.data()),
+                      bitcode.size()),
       "loom.relocatable_accelerator_payload");
 
   llvm::Expected<std::unique_ptr<llvm::Module>> parsed =
@@ -43,19 +43,29 @@ normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
   if (!parsed)
     return rejected("llvm_module_unparsable: " +
                     llvm::toString(parsed.takeError()));
-  llvm::Module &module = **parsed;
 
   // parseBitcodeFile already reads every function body. Materializing again
   // states the complete-module requirement explicitly and surfaces any deferred
   // failure before the module is treated as whole.
-  if (llvm::Error error = module.materializeAll())
+  if (llvm::Error error = (*parsed)->materializeAll())
     return rejected("llvm_module_materialization_failed: " +
                     llvm::toString(std::move(error)));
 
   std::string verifierReport;
   llvm::raw_string_ostream verifierStream(verifierReport);
-  if (llvm::verifyModule(module, &verifierStream))
+  if (llvm::verifyModule(**parsed, &verifierStream))
     return rejected("llvm_module_invalid: " + verifierReport);
+  return std::move(*parsed);
+}
+
+llvm::Expected<NormalizedLlvmModule>
+normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
+  llvm::LLVMContext context;
+  llvm::Expected<std::unique_ptr<llvm::Module>> parsed =
+      parseCompleteLlvmModule(sourceBitcode, context);
+  if (!parsed)
+    return parsed.takeError();
+  llvm::Module &module = **parsed;
 
   const std::string sourceTriple = module.getTargetTriple().str();
   if (sourceTriple.empty())

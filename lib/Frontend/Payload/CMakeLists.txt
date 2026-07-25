@@ -50,8 +50,10 @@ configure_file(
 
 add_mlir_library(LoomFrontendPayload
   AbiCompatibilityKey.cpp
+  AcceleratorFinalLink.cpp
   FrontendConfigView.cpp
   LlvmModuleNormalization.cpp
+  PayloadCarrier.cpp
   RelocatableAcceleratorPayload.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -62,6 +64,9 @@ add_mlir_library(LoomFrontendPayload
   LLVMBitReader
   LLVMBitWriter
   LLVMCore
+  LLVMLinker
+  LLVMObject
   LLVMSupport
   LLVMTargetParser
+  LLVMTransformUtils
 )

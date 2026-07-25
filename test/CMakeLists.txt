@@ -24,6 +24,7 @@ set(LOOM_TEST_DEPENDS
   loom-lower
   loom-raise
   loom-raise-opt
+  loom-accelerator-final-link-test
   loom-adg-builder-test
   loom-config-test
   loom-common-artifact-test

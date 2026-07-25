@@ -6,8 +6,14 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
+
+namespace llvm {
+class LLVMContext;
+class Module;
+} // namespace llvm
 
 namespace loom {
 
@@ -23,6 +29,17 @@ struct NormalizedLlvmModule {
   std::vector<std::uint8_t> bitcode;
   std::array<std::uint8_t, 32> bitcodeDigest = {};
 };
+
+/// Parses bitcode with the pinned LLVM provider into `context`, fully
+/// materializes it, and runs the LLVM verifier.
+///
+/// This is the sole parse contract payload version 1.0 owns. Normalization
+/// applies it when producing canonical bytes, and the final link applies it
+/// again in the linking context, so a module is never treated as whole before
+/// the pinned provider has read all of it and accepted it.
+llvm::Expected<std::unique_ptr<llvm::Module>>
+parseCompleteLlvmModule(llvm::ArrayRef<std::uint8_t> bitcode,
+                        llvm::LLVMContext &context);
 
 /// Parses the source bitcode with the pinned LLVM provider, fully materializes
 /// it, runs the LLVM verifier, canonicalizes the target triple and data layout
