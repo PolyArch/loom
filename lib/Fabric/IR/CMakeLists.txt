@@ -1,4 +1,5 @@
 add_subdirectory(BoundaryDataPath)
+add_subdirectory(ResourceContract)
 
 add_mlir_library(MLIRFabricEnums
   FabricEnums.cpp

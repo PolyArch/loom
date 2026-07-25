@@ -38,6 +38,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-elaboration-alias-chain-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test
+  loom-fabric-resource-contract-test
   loom-hwsg-test
   loom-mapping-core-test
   loom-parallel-test
