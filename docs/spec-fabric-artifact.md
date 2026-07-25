@@ -50,25 +50,42 @@ The dependency-role catalog for `loom.fabric 1.0` is:
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2
+ImplementationInput  = 2  // reserved-unavailable in schema 1.0
 ```
 
 A `Module` or `System` root admits only `ImportedModule`. An
-`InterconnectImplementation` root requires exactly one `RefinedSystem` and
-admits zero or more `ImplementationInput` dependencies. A repeated use of one
-dependency repeats its table ordinal in the payload; it does not duplicate the
-dependency row. Rows are sorted by `(role, ArtifactRootReference canonical
-bytes)` and exact duplicate rows are invalid.
+`InterconnectImplementation` root admits exactly one `RefinedSystem` and no
+other direct dependency in schema 1.0. `ImplementationInput = 2` retains its
+wire ordinal so schema 1.x never renumbers a published discriminant, but it has
+no accepted artifact family, schema version, root kind, owner-local target
+kind, or dependency-use contract in schema 1.0. It is therefore not an enabled
+dependency role and cannot appear in a canonical Fabric root.
+
+An authoring draft, encoder input, or imported envelope containing an
+`ImplementationInput` row fails structurally with
+`fabric_artifact_owner_contract_unavailable` before the referenced object is
+looked up or imported. The ordinal is not permission to accept an arbitrary
+`ArtifactRootReference`, protocol name, blob, path, or property bag. A later
+Fabric schema version may enable the role only by defining a finite table of
+exact accepted contracts. Each table entry must fix the dependency owner's
+`ArtifactSchemaDescriptor`, required root kind, any admitted owner-local target
+kind and canonical codec, and one closed dependency-use validator. The role
+ordinal alone never owns those facts.
+
+A repeated use of one enabled dependency repeats its table ordinal in the
+payload; it does not duplicate the dependency row. Rows are sorted by `(role,
+ArtifactRootReference canonical bytes)` and exact duplicate rows are invalid.
 
 The transitive dependency closure is derived mechanically. It is never stored
-as another list. Every direct dependency must already be durably published as
-its own Artifact before Fabric root publication begins. The finalizer resolves
-each exact root reference through Common `ArtifactStore::get`, invokes that
-dependency family's strict owner importer, and recursively validates the
-reachable closure. Common validates object framing, schema, and identity; the
-dependency owner validates its canonical semantic bytes and root kind; Fabric
-validates the dependency role, referenced local targets, use, uniqueness, and
-acyclic closure. None of these layers duplicates another layer's checks.
+as another list. Every enabled direct dependency must already be durably
+published as its own Artifact before Fabric root publication begins. After
+rejecting unavailable roles, the finalizer resolves each exact root reference
+through Common `ArtifactStore::get`, invokes that dependency family's strict
+owner importer, and recursively validates the reachable closure. Common
+validates object framing, schema, and identity; the dependency owner validates
+its canonical semantic bytes and root kind; Fabric validates the dependency
+role, referenced local targets, use, uniqueness, and acyclic closure. None of
+these layers duplicates another layer's checks.
 
 Missing, foreign, wrong-kind, duplicate, cyclic, or unused direct dependencies
 make finalization fail before the root `put`. A dependency publication that is
@@ -122,6 +139,8 @@ root ordinals are immutable throughout schema 1.x. Counts and lengths are
 unsigned big-endian values, there is no padding or native layout, and the
 decoder rejects truncation, trailing bytes, noncanonical dependency order,
 duplicates, unused rows, and payload references outside the dependency table.
+Decoding the known ordinal `ImplementationInput = 2` does not make it legal;
+schema validation rejects it as reserved-unavailable before dependency lookup.
 
 The MLIR payload encodes each external root use as a `u64be` dependency-table
 ordinal followed by the referenced owner's canonical local target bytes when
@@ -147,6 +166,7 @@ Finalization is failure-atomic:
 authoring draft
   -> close scopes and helpers
   -> resolve direct typed references
+  -> validate root/role cardinality and reject unavailable dependency roles
   -> get and strict-import every already-published direct dependency
   -> recursively validate the exact dependency closure
   -> expand instantiations
@@ -179,6 +199,8 @@ contains either no root or the complete expected root, never a partial root.
 Failure classes retain their existing owners:
 
 * an absent exact dependency is a missing-artifact failure;
+* a reserved-unavailable dependency role is
+  `fabric_artifact_owner_contract_unavailable` and is rejected before lookup;
 * a role, root-kind, local-target, duplicate, cycle, or owner-semantic mismatch
   is structurally `Invalid` Fabric input;
 * malformed dependency storage, key/preimage mismatch, or identity collision
@@ -189,7 +211,8 @@ Failure classes retain their existing owners:
   successful root reference for that attempt.
 
 Import uses the same boundary. Common validates the root object, the Fabric
-importer recursively resolves and owner-imports its exact dependencies, and a
+importer first validates root/role cardinality and rejects unavailable roles,
+then recursively resolves and owner-imports its exact enabled dependencies. A
 sealed `FabricArtifactView` is produced only after the complete closure passes.
 A stored root whose dependency later becomes unavailable remains a complete
 stored object but cannot be imported as a complete Fabric root; import reports
@@ -345,6 +368,8 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * fixed byte vectors for every root variant, zero and multiple dependencies,
   dependency-table target uses, and malformed count or length framing;
+* preservation of the `ImplementationInput = 2` wire ordinal together with
+  authoring, encoding, finalization, and import rejection before object lookup;
 * owner-local reference kind round trips and rejection of unknown or
   repurposed kind ordinals;
 * rejection before root publication when one exact dependency is missing or

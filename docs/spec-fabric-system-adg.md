@@ -922,6 +922,16 @@ owns every concrete endpoint, bundle, channel, field, packet, flit, queue, and
 state type in the implementation body. Adding a new protocol requires a typed
 schema version; a protocol name string cannot admit arbitrary payload.
 
+In `loom.fabric 1.0`, the protocol-schema identity is a closed root-local schema
+tag interpreted by the typed interconnect implementation body. It is not an
+external Artifact reference and does not authorize a generic implementation
+dependency. The root has exactly one direct `RefinedSystem` dependency and no
+`ImplementationInput` dependency. All protocol endpoint, resource, transfer,
+and configuration references are local to that canonical implementation body.
+An external protocol or IP artifact may be admitted only after a later Fabric
+schema version defines its exact owner, root kind, local-reference codec, and
+dependency-use contract as specified by `docs/spec-fabric-artifact.md`.
+
 The refinement region contains only `fabric.interconnect.refinement` records.
 Each record is one closed typed variant:
 

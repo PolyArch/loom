@@ -138,6 +138,12 @@ representation locators. `external_implementation_bindings` cover other
 Fabric-declared black boxes or external IP through typed provider-owned
 references. Paths and free-form property maps are forbidden.
 
+These bindings are downstream `HardwareImplementation` facts. They are not
+Fabric `ImplementationInput` dependencies and cannot be used to make that
+reserved-unavailable `loom.fabric 1.0` role legal. An Interconnect
+Implementation remains self-contained apart from its exact RefinedSystem root;
+provider-owned external implementation state is selected and validated here.
+
 An implementation provider may report `Unsupported` when an otherwise valid
 Fabric resource lacks an implementation. It cannot emit a substituted,
 truncated, or placeholder implementation.
