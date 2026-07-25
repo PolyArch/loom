@@ -6,6 +6,8 @@ add_library(LoomEvaluation
   CaseText.cpp
   Condition.cpp
   ConditionText.cpp
+  Evidence.cpp
+  EvidenceText.cpp
   Finding.cpp
   Metric.cpp
   ModelDescriptor.cpp

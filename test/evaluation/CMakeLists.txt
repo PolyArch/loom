@@ -17,6 +17,15 @@ target_link_libraries(loom-evaluation-metric-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-evaluation-evidence-test
+  EvidenceTest.cpp
+)
+
+target_link_libraries(loom-evaluation-evidence-test PRIVATE
+  LoomEvaluation
+  LLVMSupport
+)
+
 add_executable(loom-evaluation-tool-runner-test
   ToolRunnerTest.cpp
 )
