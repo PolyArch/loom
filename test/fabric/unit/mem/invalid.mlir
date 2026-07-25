@@ -155,12 +155,12 @@ fabric.module @mem_reject_memory_operation_table(
 }
 
 // -----
-// The confirmed optional LocalMemoryService is outside this manager-backed
-// operation-engine implementation slice.
+// The raw hw_params dictionary is not a Local Memory Service owner; the typed
+// memory_contract is the only owner.
 fabric.module @mem_reject_local_service(
     %mgr : memref<?x!fabric.bits<32>>,
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{'hw_params' key 'local_memory_service' describes the confirmed optional LocalMemoryService, which is outside this manager-backed operation-engine implementation slice}}
+  // expected-error @+1 {{'hw_params' key 'local_memory_service' describes the confirmed optional LocalMemoryService, which must be represented by the typed memory_contract}}
   %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32,
@@ -178,7 +178,7 @@ fabric.module @mem_reject_local_service(
 // Engine-only memory requires a manager backing path.
 fabric.module @mem_no_manager(
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{operation engine requires at least one manager endpoint}}
+  // expected-error @+1 {{operation-engine-only occurrence requires at least one manager endpoint}}
   %data, %done = fabric.mem [spatial] mgr() load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32,
@@ -222,7 +222,11 @@ fabric.module @mem_reject_generic_discardable(
       store_group_size = 0 : i32
     }],
     inner_input_types = [],
-    schedule = 0 : i32
+    memory_contract = #fabric.memory_contract<
+      engine = <schedule = spatial>,
+      manager_endpoints = [0],
+      subordinate_endpoints = []
+    >
   }> {service_target_selection = 0 : i32}
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
@@ -404,9 +408,187 @@ fabric.module @mem_reject_arbitrary_generic_property(
       store_group_size = 0 : i32
     }],
     inner_input_types = [],
-    schedule = 0 : i32,
+    memory_contract = #fabric.memory_contract<
+      engine = <schedule = spatial>,
+      manager_endpoints = [0],
+      subordinate_endpoints = []
+    >,
     unowned_property = "state"
   }> : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
   fabric.yield
 }
+
+// -----
+// A fabric.mem occurrence needs an engine or a local service.
+// expected-error @+1 {{requires an Operation Engine or Local Memory Service}}
+"fabric.mem"() <{
+  function_type = () -> (),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    manager_endpoints = [],
+    subordinate_endpoints = []
+  >,
+  sym_name = "NoMemoryComponent"
+}> : () -> ()
+
+// -----
+// A subordinate endpoint alone is not storage backing.
+// expected-error @+1 {{subordinate endpoint requires an Operation Engine or Local Memory Service}}
+"fabric.mem"() <{
+  function_type = () -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    manager_endpoints = [],
+    subordinate_endpoints = [0]
+  >,
+  sym_name = "SubordinateWithoutOwner"
+}> : () -> ()
+
+// -----
+// A manager endpoint needs an issuer even when local storage is present.
+// expected-error @+1 {{manager endpoint requires an Operation Engine}}
+"fabric.mem"() <{
+  function_type = (memref<?x!fabric.bits<32>>) -> (),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      capacity_bytes = 4096,
+      service_contract = <behavior = storage>
+    >,
+    manager_endpoints = [0],
+    subordinate_endpoints = []
+  >,
+  sym_name = "ManagerWithoutEngine"
+}> : () -> ()
+
+// -----
+// An engine cannot be constructed without its exact schedule.
+"fabric.mem"() <{
+  function_type = () -> (),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    // expected-error @+3 {{expected a parameter name in struct}}
+    // expected-error @+2 {{expected valid keyword}}
+    // expected-error @+1 {{failed to parse Fabric_MemoryContractAttr parameter 'engine'}}
+    engine = <>,
+    manager_endpoints = [],
+    subordinate_endpoints = []
+  >,
+  sym_name = "EngineWithoutSchedule"
+}> : () -> ()
+
+// -----
+// Legacy schedule shorthand cannot coexist with a typed memory_contract.
+// expected-error @+1 {{expected '('}}
+fabric.mem @DuplicateScheduleAuthority [spatial]
+    contract #fabric.memory_contract<
+      engine = <schedule = temporal>,
+      manager_endpoints = [0],
+      subordinate_endpoints = []
+    >
+    (memref<?x!fabric.bits<32>>) -> ()
+
+// -----
+// Schedule is not an independently editable fabric.mem property.
+// expected-error @+1 {{unknown key}}
+"fabric.mem"() <{
+  function_type = () -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      capacity_bytes = 4096,
+      service_contract = <behavior = storage>
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = [0]
+  >,
+  schedule = 0 : i32,
+  sym_name = "ScheduleWithoutEngine"
+}> : () -> ()
+
+// -----
+// Storage-only memory needs a provider-facing endpoint.
+// expected-error @+1 {{storage-only occurrence requires at least one subordinate endpoint}}
+"fabric.mem"() <{
+  function_type = () -> (),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      capacity_bytes = 4096,
+      service_contract = <behavior = storage>
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = []
+  >,
+  sym_name = "StorageWithoutSubordinate"
+}> : () -> ()
+
+// -----
+// Storage-only memory has no owner for operation input ports.
+// expected-error @+1 {{storage-only occurrence must have zero input ports}}
+"fabric.mem"() <{
+  function_type = (!fabric.bits<8>) -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      capacity_bytes = 4096,
+      service_contract = <behavior = storage>
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = [0]
+  >,
+  sym_name = "StorageWithStrayInput"
+}> : () -> ()
+
+// -----
+// Every memref position is classified by the typed endpoint owner.
+// expected-error @+1 {{memory_contract does not classify subordinate endpoint}}
+"fabric.mem"() <{
+  function_type = () -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      capacity_bytes = 4096,
+      service_contract = <behavior = storage>
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = []
+  >,
+  sym_name = "UnclassifiedSubordinate"
+}> : () -> ()
+
+// -----
+// Local storage capacity is an explicit nonzero architecture fact.
+"fabric.mem"() <{
+  function_type = () -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    // expected-error @+1 {{local memory service capacity_bytes must be greater than zero}}
+    local_service = <
+      capacity_bytes = 0,
+      service_contract = <behavior = storage>
+    // expected-error @+1 {{failed to parse Fabric_MemoryContractAttr parameter 'local_service'}}
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = [0]
+  >,
+  sym_name = "ZeroCapacityStorage"
+}> : () -> ()
+
+// -----
+// Local service behavior has no implicit or defaulted contract.
+"fabric.mem"() <{
+  function_type = () -> (memref<?x!fabric.bits<32>>),
+  inner_input_types = [],
+  memory_contract = #fabric.memory_contract<
+    local_service = <
+      // expected-error @+1 {{expected ','}}
+      capacity_bytes = 4096
+    // expected-error @+1 {{failed to parse Fabric_MemoryContractAttr parameter 'local_service'}}
+    >,
+    manager_endpoints = [],
+    subordinate_endpoints = [0]
+  >,
+  sym_name = "DefaultedLocalService"
+}> : () -> ()

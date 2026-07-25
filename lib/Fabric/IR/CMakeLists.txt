@@ -26,6 +26,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricDialect.cpp
   FabricElaboration.cpp
   FabricInstantiateOp.cpp
+  FabricMemoryAttrs.cpp
   FabricMemOp.cpp
   FabricModuleOp.cpp
   FabricOpUtils.cpp
@@ -40,6 +41,7 @@ add_mlir_dialect_library(MLIRFabric
 
   DEPENDS
   MLIRDataflowEnumsIncGen
+  MLIRFabricAttrsIncGen
   MLIRFabricDialectIncGen
   MLIRFabricEnumsIncGen
   MLIRFabricTypesIncGen

@@ -2,7 +2,8 @@
 #define FABRIC_IR_FABRICATTRS_H
 
 #include "Fabric/IR/FabricEnums.h"
-#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/DialectImplementation.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "Fabric/IR/FabricAttrs.h.inc"

@@ -1,10 +1,8 @@
 //===- FabricMemOp.cpp - Parser/printer/verifier for fabric.mem -----------===//
 //
-// Implements the operation-engine hardware capability ABI for fabric.mem.
-// Manager and subordinate endpoint counts are derived from the signature.
-// The hardware dictionary owns independent L, S, and W parameters. Temporal
-// engines additionally own T and K. Fixed dispatch eligibility connects each
-// operation-port or subordinate request source to manager endpoints.
+// Implements the typed occurrence contract and the existing operation-engine
+// port ABI for fabric.mem. Endpoint roles reference signature positions;
+// function_type remains the sole owner of their MLIR kinds and widths.
 //
 //===----------------------------------------------------------------------===//
 
@@ -206,6 +204,104 @@ static void readCountsForPrinting(ArrayAttr parameters, unsigned &loadCount,
       storeCount = static_cast<unsigned>(attr.getInt());
 }
 
+static SmallVector<int32_t> makeOrdinalRange(unsigned count) {
+  SmallVector<int32_t> ordinals;
+  ordinals.reserve(count);
+  for (unsigned ordinal = 0; ordinal < count; ++ordinal)
+    ordinals.push_back(static_cast<int32_t>(ordinal));
+  return ordinals;
+}
+
+static unsigned countLeadingMemoryEndpoints(ArrayRef<Type> types) {
+  unsigned count = 0;
+  for (Type type : types) {
+    if (!isa<MemRefType>(type))
+      break;
+    ++count;
+  }
+  return count;
+}
+
+static void addLegacyMemoryContract(MLIRContext *context,
+                                    OperationState &result, Schedule schedule,
+                                    ArrayRef<Type> inputs,
+                                    ArrayRef<Type> results) {
+  SmallVector<int32_t> managers =
+      makeOrdinalRange(countLeadingMemoryEndpoints(inputs));
+  SmallVector<int32_t> subordinates =
+      makeOrdinalRange(countLeadingMemoryEndpoints(results));
+  result.addAttribute(
+      "memory_contract",
+      MemoryContractAttr::get(context, MemoryEngineAttr::get(context, schedule),
+                              LocalMemoryServiceAttr(),
+                              DenseI32ArrayAttr::get(context, managers),
+                              DenseI32ArrayAttr::get(context, subordinates)));
+}
+
+static ParseResult
+parseMemoryContractPrefix(OpAsmParser &parser, OperationState &result,
+                          std::optional<Schedule> &legacySchedule) {
+  if (succeeded(parser.parseOptionalLSquare())) {
+    StringRef scheduleKeyword;
+    SMLoc scheduleLocation = parser.getCurrentLocation();
+    if (parser.parseKeyword(&scheduleKeyword) || parser.parseRSquare())
+      return failure();
+    legacySchedule = symbolizeSchedule(scheduleKeyword);
+    if (!legacySchedule)
+      return parser.emitError(
+                 scheduleLocation,
+                 "expected fabric mem schedule keyword 'spatial' or "
+                 "'temporal', got '")
+             << scheduleKeyword << "'";
+    return success();
+  }
+
+  if (parser.parseKeyword("contract"))
+    return failure();
+  MemoryContractAttr contract;
+  if (parser.parseAttribute(contract))
+    return failure();
+  result.addAttribute("memory_contract", contract);
+  return success();
+}
+
+static bool matchesOrdinalRange(DenseI32ArrayAttr endpoints, unsigned count) {
+  if (!endpoints || endpoints.size() != count)
+    return false;
+  for (auto [ordinal, endpoint] : llvm::enumerate(endpoints.asArrayRef()))
+    if (endpoint != static_cast<int32_t>(ordinal))
+      return false;
+  return true;
+}
+
+static bool canPrintLegacyEngineShorthand(MemOp op) {
+  MemoryContractAttr contract = op.getMemoryContract();
+  if (!contract || !contract.getEngine() || contract.getLocalService())
+    return false;
+
+  SmallVector<Type> inputs;
+  SmallVector<Type> results;
+  if (auto functionTypeAttr = op.getFunctionTypeAttr()) {
+    auto functionType = dyn_cast<FunctionType>(functionTypeAttr.getValue());
+    if (!functionType)
+      return false;
+    inputs.append(functionType.getInputs().begin(),
+                  functionType.getInputs().end());
+    results.append(functionType.getResults().begin(),
+                   functionType.getResults().end());
+  } else {
+    for (Value input : op.getInputs())
+      inputs.push_back(input.getType());
+    results.append(op.getResultTypes().begin(), op.getResultTypes().end());
+  }
+
+  unsigned managerCount = countLeadingMemoryEndpoints(inputs);
+  unsigned subordinateCount = countLeadingMemoryEndpoints(results);
+  return matchesOrdinalRange(contract.getManagerEndpoints(), managerCount) &&
+         matchesOrdinalRange(contract.getSubordinateEndpoints(),
+                             subordinateCount);
+}
+
 static LogicalResult
 collectAnonymousInputPortTypes(MemOp op,
                                SmallVectorImpl<Type> &inputPortTypes) {
@@ -290,15 +386,15 @@ static LogicalResult verifyDictionaryKeys(MemOp op, DictionaryAttr dictionary,
 }
 
 static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
+                                           Schedule schedule,
                                            EngineInfo &engine) {
   if (dictionary.get(kLocalMemoryService))
     return op.emitOpError("'hw_params' key '")
            << kLocalMemoryService
            << "' describes the confirmed optional LocalMemoryService, which "
-              "is outside this manager-backed operation-engine "
-              "implementation slice";
+              "must be represented by the typed memory_contract";
 
-  bool temporal = op.getSchedule() == Schedule::Temporal;
+  bool temporal = schedule == Schedule::Temporal;
   if (!temporal) {
     for (StringRef key : {StringRef(kTagWidth), StringRef(kOperationTableSize)})
       if (dictionary.get(key))
@@ -334,9 +430,9 @@ static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
   return success();
 }
 
-static LogicalResult verifyTemporalResidentCapacity(MemOp op,
+static LogicalResult verifyTemporalResidentCapacity(MemOp op, Schedule schedule,
                                                     const EngineInfo &engine) {
-  if (op.getSchedule() != Schedule::Temporal)
+  if (schedule != Schedule::Temporal)
     return success();
 
   uint64_t physicalPortCount =
@@ -396,11 +492,60 @@ static LogicalResult verifyCapabilityEndpoint(MemOp op, Type type,
   return success();
 }
 
+static LogicalResult verifyEndpointReferences(MemOp op, ArrayRef<Type> inputs,
+                                              ArrayRef<Type> results,
+                                              MemoryContractAttr contract) {
+  auto verifyRole = [&](DenseI32ArrayAttr endpoints, ArrayRef<Type> types,
+                        StringRef role) -> LogicalResult {
+    SmallVector<bool> classified(types.size(), false);
+    for (int32_t endpoint : endpoints.asArrayRef()) {
+      if (endpoint < 0 || static_cast<uint64_t>(endpoint) >= types.size())
+        return op.emitOpError(role)
+               << " endpoint ordinal " << endpoint << " is outside [0, "
+               << types.size() << ')';
+      unsigned ordinal = static_cast<unsigned>(endpoint);
+      if (failed(verifyCapabilityEndpoint(op, types[ordinal], role, ordinal)))
+        return failure();
+      classified[ordinal] = true;
+    }
+
+    for (auto [ordinal, type] : llvm::enumerate(types)) {
+      if (isa<MemRefType>(type) && !classified[ordinal])
+        return op.emitOpError("memory_contract does not classify ")
+               << role << " endpoint at " << role << " signature ordinal "
+               << ordinal;
+    }
+    return success();
+  };
+
+  if (failed(verifyRole(contract.getManagerEndpoints(), inputs, "manager")) ||
+      failed(verifyRole(contract.getSubordinateEndpoints(), results,
+                        "subordinate")))
+    return failure();
+  return success();
+}
+
+static LogicalResult verifyEngineEndpointLayout(MemOp op,
+                                                MemoryContractAttr contract,
+                                                const SignatureLayout &layout) {
+  if (!matchesOrdinalRange(contract.getManagerEndpoints(), layout.managerCount))
+    return op.emitOpError(
+        "operation engine manager endpoints must be the leading input "
+        "positions implied by its port parameters");
+  if (!matchesOrdinalRange(contract.getSubordinateEndpoints(),
+                           layout.subordinateCount))
+    return op.emitOpError(
+        "operation engine subordinate endpoints must be the leading result "
+        "positions implied by its port parameters");
+  return success();
+}
+
 static LogicalResult verifyOperationPortTypes(MemOp op, ArrayRef<Type> inputs,
                                               ArrayRef<Type> results,
+                                              Schedule schedule,
                                               const EngineInfo &engine,
                                               const SignatureLayout &layout) {
-  bool temporal = op.getSchedule() == Schedule::Temporal;
+  bool temporal = schedule == Schedule::Temporal;
   auto makePortType = [&](unsigned width) -> Type {
     if (temporal)
       return BitsTagType::get(op.getContext(), width, engine.tagWidth);
@@ -541,25 +686,26 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   bool named = succeeded(parser.parseOptionalSymbolName(
       name, SymbolTable::getSymbolAttrName(), result.attributes));
 
-  StringRef scheduleKeyword;
-  SMLoc scheduleLocation = parser.getCurrentLocation();
-  if (parser.parseLSquare() || parser.parseKeyword(&scheduleKeyword) ||
-      parser.parseRSquare())
+  std::optional<Schedule> legacySchedule;
+  if (parseMemoryContractPrefix(parser, result, legacySchedule))
     return failure();
-  std::optional<Schedule> schedule = symbolizeSchedule(scheduleKeyword);
-  if (!schedule)
-    return parser.emitError(scheduleLocation,
-                            "expected fabric mem schedule keyword 'spatial' or "
-                            "'temporal', got '")
-           << scheduleKeyword << "'";
-  result.addAttribute("schedule",
-                      ScheduleAttr::get(parser.getContext(), *schedule));
 
   if (named) {
     if (parseFunctionType(parser, result) ||
         parseHardwareParameters(parser, result) ||
         parseDiscardableAttributes(parser, result))
       return failure();
+    if (legacySchedule) {
+      auto typeAttr =
+          dyn_cast<TypeAttr>(result.attributes.get("function_type"));
+      auto functionType = typeAttr ? dyn_cast<FunctionType>(typeAttr.getValue())
+                                   : FunctionType{};
+      if (!functionType)
+        return failure();
+      addLegacyMemoryContract(parser.getContext(), result, *legacySchedule,
+                              functionType.getInputs(),
+                              functionType.getResults());
+    }
     return success();
   }
 
@@ -641,6 +787,9 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   if (!llvm::equal(sourceTypes, inputPortTypes))
     result.getOrAddProperties<Properties>().setInnerInputTypes(inputPortTypes);
   result.addTypes(resultTypes);
+  if (legacySchedule)
+    addLegacyMemoryContract(parser.getContext(), result, *legacySchedule,
+                            inputPortTypes, resultTypes);
   return success();
 }
 
@@ -650,11 +799,18 @@ void MemOp::print(OpAsmPrinter &printer) {
     printer << ' ';
     printer.printSymbolName(getSymNameAttr().getValue());
   }
-  printer << " [" << stringifySchedule(getSchedule()) << "]";
 
   unsigned loadCount = 0;
   unsigned storeCount = 0;
   readCountsForPrinting(getHwParamsAttr(), loadCount, storeCount);
+  if (canPrintLegacyEngineShorthand(*this)) {
+    printer << " ["
+            << stringifySchedule(getMemoryContract().getEngine().getSchedule())
+            << "]";
+  } else {
+    printer << " contract ";
+    printer.printAttribute(getMemoryContract());
+  }
 
   if (named) {
     FunctionType type;
@@ -772,33 +928,70 @@ LogicalResult MemOp::verify() {
     results.append(getResultTypes().begin(), getResultTypes().end());
   }
 
+  MemoryContractAttr contract = getMemoryContract();
+  if (!contract)
+    return emitOpError("requires a typed memory_contract");
+  if (failed(verifyEndpointReferences(*this, inputs, results, contract)))
+    return failure();
+
+  MemoryEngineAttr engineContract = contract.getEngine();
+  LocalMemoryServiceAttr localService = contract.getLocalService();
+  ArrayRef<int32_t> managerEndpoints =
+      contract.getManagerEndpoints().asArrayRef();
+  ArrayRef<int32_t> subordinateEndpoints =
+      contract.getSubordinateEndpoints().asArrayRef();
+
+  if (!engineContract && !localService && !subordinateEndpoints.empty())
+    return emitOpError(
+        "subordinate endpoint requires an Operation Engine or Local Memory "
+        "Service");
+  if (!engineContract && !managerEndpoints.empty())
+    return emitOpError("manager endpoint requires an Operation Engine");
+  if (!engineContract && !localService)
+    return emitOpError("requires an Operation Engine or Local Memory Service");
+  if (!engineContract) {
+    if (subordinateEndpoints.empty())
+      return emitOpError(
+          "storage-only occurrence requires at least one subordinate "
+          "endpoint");
+    if (!inputs.empty())
+      return emitOpError("storage-only occurrence must have zero input ports");
+    if (results.size() != subordinateEndpoints.size())
+      return emitOpError(
+          "storage-only occurrence results must exactly match the "
+          "subordinate endpoint inventory");
+    if (getHwParamsAttr())
+      return emitOpError(
+          "storage-only occurrence must not carry operation-engine "
+          "hw_params");
+    return success();
+  }
+  if (!localService && managerEndpoints.empty())
+    return emitOpError(
+        "operation-engine-only occurrence requires at least one manager "
+        "endpoint");
+
+  Schedule schedule = engineContract.getSchedule();
   DictionaryAttr hardware;
   if (failed(readHardwareParameters(*this, hardware)))
     return failure();
   EngineInfo engine;
-  if (failed(verifyOperationEngine(*this, hardware, engine)))
+  if (failed(verifyOperationEngine(*this, hardware, schedule, engine)))
     return failure();
-  if (failed(verifyTemporalResidentCapacity(*this, engine)))
+  if (failed(verifyTemporalResidentCapacity(*this, schedule, engine)))
     return failure();
 
   SignatureLayout layout;
   if (failed(deriveSignatureLayout(*this, inputs, results, engine, layout)))
     return failure();
-  if (layout.managerCount == 0)
-    return emitOpError(
-        "operation engine requires at least one manager endpoint");
-  for (unsigned index = 0; index < layout.managerCount; ++index)
-    if (failed(
-            verifyCapabilityEndpoint(*this, inputs[index], "manager", index)))
-      return failure();
-  for (unsigned index = 0; index < layout.subordinateCount; ++index)
-    if (failed(verifyCapabilityEndpoint(*this, results[index], "subordinate",
-                                        index)))
-      return failure();
-
-  if (failed(verifyOperationPortTypes(*this, inputs, results, engine, layout)))
+  if (failed(verifyEngineEndpointLayout(*this, contract, layout)))
     return failure();
-  if (failed(verifyDispatchEligibility(*this, hardware, engine, layout)))
+
+  if (failed(verifyOperationPortTypes(*this, inputs, results, schedule, engine,
+                                      layout)))
+    return failure();
+  if ((hardware.get(kDispatchEligibility) || !localService) &&
+      failed(verifyDispatchEligibility(*this, hardware, engine, layout)))
     return failure();
   return success();
 }

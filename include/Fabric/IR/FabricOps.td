@@ -2,6 +2,7 @@
 #define FABRIC_OPS_TD
 
 include "Fabric/IR/FabricDialect.td"
+include "Fabric/IR/FabricAttrs.td"
 include "Fabric/IR/FabricEnums.td"
 include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -533,11 +534,12 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
 def Fabric_MemOp : Fabric_Op<"mem", [
     DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
 ]> {
-  let summary = "fabric memory operation-engine hardware capability";
+  let summary = "fabric memory capability occurrence";
   let description = [{
-    The accepted ABI describes one manager-backed operation engine. The
-    confirmed optional LocalMemoryService contract is outside this
-    implementation slice.
+    One typed memory_contract owns the optional Operation Engine, optional
+    Local Memory Service, and endpoint positions. The function_type remains
+    the sole owner of endpoint kinds and widths. An Operation Engine owns its
+    exact Spatial or Temporal schedule; a storage-only occurrence has none.
 
     Anonymous operands contain all manager/requester memrefs, followed by
     per-load `(addr, ctrl)` groups and per-store `(addr, data, ctrl)` groups.
@@ -549,12 +551,10 @@ def Fabric_MemOp : Fabric_Op<"mem", [
 
     Named template form has zero SSA operands and zero SSA results in
     the host scope; the port signature is captured in `function_type`.
-    `hw_params` is a length-one array containing the closed operation-engine
-    hardware dictionary. It owns independent load/store port counts and
-    operation data width, plus fixed request-source-to-manager dispatch
-    eligibility. Temporal engines additionally own tag width and
-    configured-row capacity. The registered schema is the closed canonical
-    attribute set; the operation accepts no discardable attributes.
+    `hw_params` remains legacy engine-port authoring syntax for the deferred
+    typed port-inventory increment. It owns no occurrence, schedule, endpoint
+    classification, or Local Memory Service fact. The registered schema is
+    closed; the operation accepts no discardable attributes.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];
@@ -563,7 +563,7 @@ def Fabric_MemOp : Fabric_Op<"mem", [
       Variadic<Fabric_ModulePortType>:$inputs,
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
-      Fabric_ScheduleAttr:$schedule,
+      Fabric_MemoryContractAttr:$memory_contract,
       Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params
   );
