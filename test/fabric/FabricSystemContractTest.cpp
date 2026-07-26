@@ -207,8 +207,9 @@ void checkSystemStructuralRelations() {
   expectRejected(
       test,
       FabricSpatialAttachmentEndpointRef::create(FabricTransportEndpointRef{
-          FabricTransportEndpointOwnerRef::of(AccCoreOccurrenceRef(23)), 0}),
-      "accepted an AccCore endpoint outside its SpatialCore occurrence");
+          FabricTransportEndpointOwnerRef::of(SystemServiceEndpointRef(24)),
+          0}),
+      "accepted a service endpoint outside its SpatialCore occurrence");
 
   const FabricTransportEndpointRef source{
       FabricTransportEndpointOwnerRef::of(SystemTransportResourceRef(31)), 0};

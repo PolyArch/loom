@@ -158,6 +158,8 @@ std::optional<FabricEntityKind> entityKind(Operation *operation) {
     return FabricEntityKind::SystemServiceEndpoint;
   if (isa<::fabric::SystemServiceTransformOp>(operation))
     return FabricEntityKind::SystemServiceTransform;
+  if (isa<::fabric::SystemExternalBoundaryOp>(operation))
+    return FabricEntityKind::ExternalBoundary;
   if (isa<::fabric::SystemTransportResourceOp>(operation))
     return FabricEntityKind::SystemTransportResource;
   if (isa<::fabric::SystemHardwareDomainOp>(operation))
@@ -591,8 +593,18 @@ private:
         return record.takeError();
       return memoryServiceIntrinsic(*record);
     }
-    if (isa<::fabric::SystemServiceEndpointOp>(operation)) {
+    if (auto endpoint =
+            dyn_cast<::fabric::SystemServiceEndpointOp>(operation)) {
       appendText(intrinsic, "system.service_endpoint");
+      if (TypeAttr carrier = endpoint.getCarrierTypeAttr()) {
+        appendU32(intrinsic, 1);
+        if (llvm::Error error = appendExpectedBytes(
+                intrinsic,
+                ::fabric::encodeFabricTransportType(carrier.getValue())))
+          return std::move(error);
+      } else {
+        appendU32(intrinsic, 0);
+      }
       return intrinsic;
     }
     if (auto transform =
@@ -602,6 +614,10 @@ private:
       if (!record)
         return record.takeError();
       return serviceTransformIntrinsic(*record);
+    }
+    if (isa<::fabric::SystemExternalBoundaryOp>(operation)) {
+      appendText(intrinsic, "system.external_boundary");
+      return intrinsic;
     }
     if (auto domain = dyn_cast<::fabric::SystemHardwareDomainOp>(operation)) {
       auto record = decodeHardwareDomainContractRecord(
@@ -613,11 +629,11 @@ private:
     if (auto resource =
             dyn_cast<::fabric::SystemTransportResourceOp>(operation)) {
       appendText(intrinsic, "system.transport_resource");
-      std::string typeBytes;
-      llvm::raw_string_ostream typeStream(typeBytes);
-      cast<FunctionType>(resource.getFunctionTypeAttr().getValue())
-          .print(typeStream);
-      appendText(intrinsic, typeBytes);
+      if (llvm::Error error = appendExpectedBytes(
+              intrinsic,
+              ::fabric::encodeFabricTransportFunctionType(cast<FunctionType>(
+                  resource.getFunctionTypeAttr().getValue()))))
+        return std::move(error);
       appendBytes(intrinsic, unsignedBytes(resource.getResourceContractAttr()));
       if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
         appendU32(intrinsic, 1);

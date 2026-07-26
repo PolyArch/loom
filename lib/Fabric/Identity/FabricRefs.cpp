@@ -14,11 +14,6 @@ FabricInventoryOwnerRef inventoryOwnerFor(const Ref &ref) {
   return FabricInventoryOwnerRef::of(ref);
 }
 
-FabricInventoryOwnerRef
-inventoryOwnerFor(const SystemMemoryServiceRef &service) {
-  return FabricInventoryOwnerRef::of(FabricMemoryServiceRef::system(service));
-}
-
 } // namespace
 
 // Every keyword table below is a projection of the one catalog declaration.

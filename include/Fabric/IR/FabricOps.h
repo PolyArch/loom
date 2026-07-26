@@ -12,8 +12,11 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -47,6 +50,11 @@ bool isFabricModulePortType(::mlir::Type type);
 bool haveSameFabricModulePortKind(::mlir::Type source,
                                   ::mlir::Type destination);
 std::optional<unsigned> getFabricBitsWidth(::mlir::Type type);
+std::optional<unsigned> getFabricTransportPayloadWidth(::mlir::Type type);
+::llvm::Expected<std::vector<std::uint8_t>>
+encodeFabricTransportType(::mlir::Type type);
+::llvm::Expected<std::vector<std::uint8_t>>
+encodeFabricTransportFunctionType(::mlir::FunctionType type);
 ::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
                                                     std::string &error);
 ::mlir::LogicalResult

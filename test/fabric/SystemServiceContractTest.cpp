@@ -146,8 +146,9 @@ AddressedMemoryCapabilityDomain addressed(dataflow::OperationSchemaId schema,
                                           singleton(0, 4095), 128, domain));
 }
 
-CanonicalServiceCapabilityRecord
-capability(dataflow::semantics::ServiceKind kind) {
+CanonicalServiceCapabilityRecord capability(
+    dataflow::semantics::ServiceKind kind,
+    CanonicalServiceEndpointRole role = CanonicalServiceEndpointRole::Serve) {
   using Kind = dataflow::semantics::ServiceKind;
   CanonicalServiceCapabilityDomain domain = [&]() {
     switch (kind) {
@@ -174,23 +175,24 @@ capability(dataflow::semantics::ServiceKind kind) {
     }
     std::abort();
   }();
-  return take("service capability",
-              CanonicalServiceCapabilityRecord::create(
-                  kind, CanonicalServiceEndpointRole::Serve, std::move(domain),
-                  rate()));
+  return take("service capability", CanonicalServiceCapabilityRecord::create(
+                                        kind, role, std::move(domain), rate()));
 }
 
 void checkCapabilityCatalog(mlir::MLIRContext &context) {
   constexpr llvm::StringLiteral test = "Canonical Service capability catalog";
   using Kind = dataflow::semantics::ServiceKind;
-  std::vector<CanonicalServiceCapabilityRecord> records;
-  records.push_back(take(
+  CanonicalServiceCapabilityRecord message = take(
       test, CanonicalServiceCapabilityRecord::create(
                 Kind::MessageTransfer, CanonicalServiceEndpointRole::Initiate,
                 take(test, MessageTransferCapabilityDomain::create(
                                {mlir::VectorType::get(
                                    {4}, mlir::Float32Type::get(&context))})),
-                rate())));
+                rate()));
+  CanonicalServiceCapabilitySet messageCapabilities =
+      take(test, CanonicalServiceCapabilitySet::create({std::move(message)}));
+
+  std::vector<CanonicalServiceCapabilityRecord> records;
   for (Kind kind : {Kind::MemoryRead, Kind::MemoryWrite, Kind::MemoryAtomicRmw,
                     Kind::MemoryCompareExchange, Kind::MemoryFence})
     records.push_back(capability(kind));
@@ -203,8 +205,8 @@ void checkCapabilityCatalog(mlir::MLIRContext &context) {
       take(test, decodeCanonicalServiceCapabilitySet(encoded, &context));
   if (take(test, encodeCanonicalServiceCapabilitySet(decoded)) != encoded)
     fail(test, "strict roundtrip changed capability bytes");
-  if (decoded.capabilities().size() != 6)
-    fail(test, "closed six-kind catalog lost a capability");
+  if (decoded.capabilities().size() != 5)
+    fail(test, "closed memory-service catalog lost a capability");
 
   expectRejected(test,
                  CanonicalServiceCapabilityRecord::create(
@@ -227,6 +229,78 @@ void checkCapabilityCatalog(mlir::MLIRContext &context) {
                      rate()));
   expectRejected(test, CanonicalServiceCapabilitySet::create(
                            {std::move(messageI32), std::move(messageI64)}));
+
+  CanonicalServiceCapabilityRecord mixedMessage =
+      take(test, CanonicalServiceCapabilityRecord::create(
+                     Kind::MessageTransfer, CanonicalServiceEndpointRole::Serve,
+                     take(test, MessageTransferCapabilityDomain::create(
+                                    {mlir::IntegerType::get(&context, 32)})),
+                     rate()));
+  expectRejected(test,
+                 CanonicalServiceCapabilitySet::create(
+                     {std::move(mixedMessage), capability(Kind::MemoryRead)}));
+  expectRejected(test,
+                 CanonicalServiceCapabilitySet::create(
+                     {capability(Kind::MemoryRead),
+                      capability(Kind::MemoryWrite,
+                                 CanonicalServiceEndpointRole::Initiate)}));
+
+  std::vector<std::uint8_t> messageBytes =
+      take(test, encodeCanonicalServiceCapabilitySet(messageCapabilities));
+  SystemServiceEndpointOwnerRef endpointOwner =
+      take(test, SystemServiceEndpointOwnerRef::create(
+                     FabricInventoryOwnerRef::of(AccCoreOccurrenceRef(12))));
+  std::vector<std::uint8_t> ownerBytes =
+      encodeSystemServiceEndpointOwnerRef(endpointOwner);
+  const std::string validMessage =
+      "module { fabric.system @soc { "
+      "fabric.system.service_endpoint owner = " +
+      denseI8Assembly(context, ownerBytes) +
+      " capabilities = " + denseI8Assembly(context, messageBytes) +
+      " carrier = !fabric.bits<128> "
+      "{entity_id = #fabric.entity_id<30>} } }";
+  mlir::OwningOpRef<mlir::ModuleOp> messageModule =
+      mlir::parseSourceString<mlir::ModuleOp>(validMessage, &context);
+  if (!messageModule || mlir::failed(mlir::verify(*messageModule)))
+    fail(test, "valid message service endpoint did not verify");
+
+  const std::string missingCarrier =
+      "module { fabric.system @soc { "
+      "fabric.system.service_endpoint owner = " +
+      denseI8Assembly(context, ownerBytes) +
+      " capabilities = " + denseI8Assembly(context, messageBytes) +
+      " {entity_id = #fabric.entity_id<30>} } }";
+  mlir::OwningOpRef<mlir::ModuleOp> missingCarrierModule =
+      mlir::parseSourceString<mlir::ModuleOp>(missingCarrier, &context);
+  if (missingCarrierModule &&
+      mlir::succeeded(mlir::verify(*missingCarrierModule)))
+    fail(test, "message service endpoint accepted no carrier");
+
+  const std::string narrowCarrier =
+      "module { fabric.system @soc { "
+      "fabric.system.service_endpoint owner = " +
+      denseI8Assembly(context, ownerBytes) +
+      " capabilities = " + denseI8Assembly(context, messageBytes) +
+      " carrier = !fabric.bits<64> "
+      "{entity_id = #fabric.entity_id<30>} } }";
+  mlir::OwningOpRef<mlir::ModuleOp> narrowCarrierModule =
+      mlir::parseSourceString<mlir::ModuleOp>(narrowCarrier, &context);
+  if (narrowCarrierModule &&
+      mlir::succeeded(mlir::verify(*narrowCarrierModule)))
+    fail(test, "message service endpoint accepted a narrow carrier");
+
+  const std::string memoryWithCarrier =
+      "module { fabric.system @soc { "
+      "fabric.system.service_endpoint owner = " +
+      denseI8Assembly(context, ownerBytes) +
+      " capabilities = " + denseI8Assembly(context, encoded) +
+      " carrier = !fabric.bits<128> "
+      "{entity_id = #fabric.entity_id<30>} } }";
+  mlir::OwningOpRef<mlir::ModuleOp> memoryWithCarrierModule =
+      mlir::parseSourceString<mlir::ModuleOp>(memoryWithCarrier, &context);
+  if (memoryWithCarrierModule &&
+      mlir::succeeded(mlir::verify(*memoryWithCarrierModule)))
+    fail(test, "memory service endpoint accepted a message carrier");
 }
 
 void checkOwnerAndTransform(mlir::MLIRContext &context) {
@@ -243,12 +317,13 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
 
   FabricMemoryEndpointRef input{
       FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(30)), 0};
-  FabricMemoryEndpointOwnerRef transformOwner =
-      FabricMemoryEndpointOwnerRef::of(SystemServiceTransformRef(31));
-  SystemServiceTransformRecord interleave =
-      take(test, SystemServiceTransformRecord::create(
-                     {input}, {{transformOwner, 0}, {transformOwner, 1}},
-                     StaticInterleaveTransform{64, 2}));
+  SystemServiceTransformRecord interleave = take(
+      test,
+      SystemServiceTransformRecord::create(
+          {input},
+          {{FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(32)), 0},
+           {FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(33)), 0}},
+          StaticInterleaveTransform{64, 2}));
   std::vector<std::uint8_t> encoded =
       take(test, encodeSystemServiceTransformRecord(interleave));
   SystemServiceTransformRecord decoded =
@@ -256,18 +331,23 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
   if (take(test, encodeSystemServiceTransformRecord(decoded)) != encoded)
     fail(test, "strict roundtrip changed transform bytes");
 
-  expectRejected(test, SystemServiceTransformRecord::create(
-                           {input}, {{transformOwner, 0}},
-                           StaticInterleaveTransform{64, 2}));
+  expectRejected(
+      test,
+      SystemServiceTransformRecord::create(
+          {input},
+          {{FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(32)), 0}},
+          StaticInterleaveTransform{64, 2}));
 
   FabricMemoryServiceRef memory =
       FabricMemoryServiceRef::system(SystemMemoryServiceRef(20));
-  SystemServiceTransformRecord coherent =
-      take(test, SystemServiceTransformRecord::create(
-                     {input}, {{transformOwner, 0}},
-                     CoherentMemoryTransform{
-                         MemoryConsistencyDomainRef(HardwareDomainRef(91)),
-                         {{{memory, 0}, {memory, 1}}}}));
+  SystemServiceTransformRecord coherent = take(
+      test,
+      SystemServiceTransformRecord::create(
+          {input},
+          {{FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(32)), 0}},
+          CoherentMemoryTransform{
+              MemoryConsistencyDomainRef(HardwareDomainRef(91)),
+              {{{memory, 0}, {memory, 1}}}}));
   std::vector<std::uint8_t> coherentBytes =
       take(test, encodeSystemServiceTransformRecord(coherent));
   SystemServiceTransformRecord coherentDecoded =
@@ -287,16 +367,28 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
                     rate()))}));
   std::vector<std::uint8_t> capabilityBytes =
       take(test, encodeCanonicalServiceCapabilitySet(capabilities));
+  SystemServiceEndpointOwnerRef externalOwner =
+      take(test, SystemServiceEndpointOwnerRef::create(
+                     FabricInventoryOwnerRef::of(ExternalBoundaryRef(40))));
   const std::string source =
       "module {\n"
       "  fabric.system @soc {\n"
       "    fabric.system.service_endpoint owner = " +
       denseI8Assembly(context, encodedOwner) +
       " capabilities = " + denseI8Assembly(context, capabilityBytes) +
+      " carrier = !fabric.bits<32>" +
       " {entity_id = #fabric.entity_id<30>}\n"
       "    fabric.system.service_transform contract = " +
       denseI8Assembly(context, encoded) +
       " {entity_id = #fabric.entity_id<31>}\n"
+      "    fabric.system.external_boundary "
+      "{entity_id = #fabric.entity_id<40>}\n"
+      "    fabric.system.service_endpoint owner = " +
+      denseI8Assembly(context,
+                      encodeSystemServiceEndpointOwnerRef(externalOwner)) +
+      " capabilities = " + denseI8Assembly(context, capabilityBytes) +
+      " carrier = !fabric.bits<32> "
+      "{entity_id = #fabric.entity_id<41>}\n"
       "  }\n"
       "}\n";
   mlir::OwningOpRef<mlir::ModuleOp> module =

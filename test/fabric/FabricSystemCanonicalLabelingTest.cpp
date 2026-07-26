@@ -1,9 +1,11 @@
 #include "FabricSystemCanonicalLabeling.h"
 
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -26,6 +28,8 @@ namespace {
 
 using loom::fabric::FabricTransportEndpointOwnerRef;
 using loom::fabric::FabricTransportEndpointRef;
+using loom::fabric::HardwareDomainRef;
+using loom::fabric::SystemServiceEndpointRef;
 using loom::fabric::SystemTransportResourceRef;
 using loom::fabric::detail::FabricSystemCanonicalLabeling;
 
@@ -138,6 +142,67 @@ std::string systemSource(bool reverseOrder, bool reverseConnection) {
   return text;
 }
 
+std::string serviceEndpointSystemSource(std::uint32_t carrierWidth) {
+  const llvm::StringRef test = __func__;
+  constexpr std::uint64_t boundaryId = 40;
+  constexpr std::uint64_t endpointId = 41;
+  constexpr std::uint64_t clockId = 42;
+
+  loom::fabric::SystemServiceEndpointOwnerRef owner =
+      take(test, loom::fabric::SystemServiceEndpointOwnerRef::create(
+                     loom::fabric::FabricInventoryOwnerRef::of(
+                         loom::fabric::ExternalBoundaryRef(boundaryId))));
+  loom::fabric::ClockDomainRef clock{HardwareDomainRef(clockId)};
+  loom::fabric::ServiceRateContractRecord rate =
+      take(test, loom::fabric::ServiceRateContractRecord::create(
+                     clock, 1, 1, 4,
+                     loom::fabric::ServiceProgress(
+                         std::in_place_type<::fabric::FairEventual>)));
+  loom::fabric::MessageTransferCapabilityDomain domain =
+      take(test, loom::fabric::MessageTransferCapabilityDomain::create(
+                     {mlir::IntegerType::get(&context(), 32)}));
+  loom::fabric::CanonicalServiceCapabilityRecord capability =
+      take(test, loom::fabric::CanonicalServiceCapabilityRecord::create(
+                     dataflow::semantics::ServiceKind::MessageTransfer,
+                     loom::fabric::CanonicalServiceEndpointRole::Initiate,
+                     std::move(domain), std::move(rate)));
+  loom::fabric::CanonicalServiceCapabilitySet capabilities =
+      take(test, loom::fabric::CanonicalServiceCapabilitySet::create(
+                     {std::move(capability)}));
+  std::vector<std::uint8_t> capabilityBytes = take(
+      test, loom::fabric::encodeCanonicalServiceCapabilitySet(capabilities));
+
+  loom::fabric::ClockDomainContractRecord clockContract =
+      take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
+  loom::fabric::HardwareDomainContractRecord hardwareDomain =
+      take(test, loom::fabric::HardwareDomainContractRecord::create(
+                     {loom::fabric::FabricInventoryOwnerRef::of(
+                          loom::fabric::ExternalBoundaryRef(boundaryId)),
+                      loom::fabric::FabricInventoryOwnerRef::of(
+                          SystemServiceEndpointRef(endpointId))},
+                     std::move(clockContract)));
+  std::vector<std::uint8_t> domainBytes = take(
+      test, loom::fabric::encodeHardwareDomainContractRecord(hardwareDomain));
+
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module { fabric.system @soc {\n"
+         << "fabric.system.external_boundary "
+            "{entity_id = #fabric.entity_id<"
+         << boundaryId << ">}\n"
+         << "fabric.system.service_endpoint owner = "
+         << denseI8Assembly(
+                loom::fabric::encodeSystemServiceEndpointOwnerRef(owner))
+         << " capabilities = " << denseI8Assembly(capabilityBytes)
+         << " carrier = !fabric.bits<" << carrierWidth
+         << "> {entity_id = #fabric.entity_id<" << endpointId << ">}\n"
+         << "fabric.system.hardware_domain contract = "
+         << denseI8Assembly(domainBytes) << " {entity_id = #fabric.entity_id<"
+         << clockId << ">}\n"
+         << "} }\n";
+  return text;
+}
+
 FabricSystemCanonicalLabeling label(llvm::StringRef test,
                                     llvm::StringRef source) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -211,12 +276,39 @@ void materializationPreservesConnectionReferenceSemantics() {
       "materializing canonical refs changed System semantics");
 }
 
+void serviceEndpointCarrierIsIdentityCritical() {
+  const FabricSystemCanonicalLabeling narrow =
+      label(__func__, serviceEndpointSystemSource(32));
+  const FabricSystemCanonicalLabeling wide =
+      label(__func__, serviceEndpointSystemSource(64));
+  require(__func__,
+          !narrow.relationBytes.bytes().equals(wide.relationBytes.bytes()),
+          "message carrier width did not affect System identity");
+
+  ParsedSystem parsed = parseSystem(__func__, serviceEndpointSystemSource(32));
+  FabricSystemCanonicalLabeling labeling =
+      take(__func__, loom::fabric::detail::computeFabricSystemCanonicalLabeling(
+                         parsed.root, {}));
+  if (llvm::Error error =
+          loom::fabric::detail::materializeFabricSystemCanonicalForm(
+              parsed.root, labeling))
+    fail(__func__, llvm::toString(std::move(error)));
+  FabricSystemCanonicalLabeling relabeled =
+      take(__func__, loom::fabric::detail::computeFabricSystemCanonicalLabeling(
+                         parsed.root, {}));
+  require(
+      __func__,
+      labeling.relationBytes.bytes().equals(relabeled.relationBytes.bytes()),
+      "service endpoint materialization changed System identity");
+}
+
 } // namespace
 
 int main() {
   provisionalIdentityAndOrderDoNotAffectCanonicalRelation();
   relationDirectionAffectsCanonicalRelation();
   materializationPreservesConnectionReferenceSemantics();
+  serviceEndpointCarrierIsIdentityCritical();
   llvm::outs() << "fabric system canonical labeling ok\n";
   return 0;
 }

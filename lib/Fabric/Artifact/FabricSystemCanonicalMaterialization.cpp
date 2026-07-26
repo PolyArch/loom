@@ -755,7 +755,8 @@ llvm::Error remapOperation(Operation *operation,
   if (auto attachment =
           dyn_cast<::fabric::SystemSpatialAttachmentOp>(operation))
     return remapSpatialAttachment(attachment, remapper);
-  if (isa<::fabric::SystemHostCoreOp>(operation))
+  if (isa<::fabric::SystemHostCoreOp, ::fabric::SystemExternalBoundaryOp>(
+          operation))
     return llvm::Error::success();
   return invalid("System materialization encountered an unknown child op");
 }

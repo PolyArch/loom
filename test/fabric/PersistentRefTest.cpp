@@ -65,6 +65,23 @@ void requireRejected(llvm::StringRef test, llvm::Expected<T> value) {
   llvm::consumeError(value.takeError());
 }
 
+template <typename T, typename = void>
+struct IsTransportEndpointOwner : std::false_type {};
+
+template <typename T>
+struct IsTransportEndpointOwner<
+    T, std::void_t<decltype(FabricTransportEndpointOwnerRef::of(
+           std::declval<T>()))>> : std::true_type {};
+
+template <typename T, typename = void>
+struct IsMemoryEndpointOwner : std::false_type {};
+
+template <typename T>
+struct IsMemoryEndpointOwner<
+    T,
+    std::void_t<decltype(FabricMemoryEndpointOwnerRef::of(std::declval<T>()))>>
+    : std::true_type {};
+
 void typedFamiliesRemainDistinct() {
   const llvm::StringRef test = __func__;
   static_assert(!std::is_same_v<FabricFuTemplateRef, FabricFuOccurrenceRef>);
@@ -108,6 +125,46 @@ void typedFamiliesRemainDistinct() {
               projectFabricInventoryOwner(
                   FabricMemoryEndpointOwnerRef::of(spatial)) == expected,
           "endpoint owner projection changed the spatial-core owner");
+}
+
+void systemServiceEndpointOwnsOperationServicePlanes() {
+  const llvm::StringRef test = __func__;
+  static_assert(IsTransportEndpointOwner<SystemServiceEndpointRef>::value);
+  static_assert(IsMemoryEndpointOwner<SystemServiceEndpointRef>::value);
+  static_assert(!IsTransportEndpointOwner<AccCoreOccurrenceRef>::value);
+  static_assert(!IsTransportEndpointOwner<ExternalBoundaryRef>::value);
+  static_assert(!IsMemoryEndpointOwner<AccCoreOccurrenceRef>::value);
+  static_assert(!IsMemoryEndpointOwner<SystemMemoryServiceRef>::value);
+  static_assert(!IsMemoryEndpointOwner<SystemServiceTransformRef>::value);
+  static_assert(!IsMemoryEndpointOwner<ExternalBoundaryRef>::value);
+
+  std::vector<std::uint8_t> transport = canonicalFabricBytes(
+      FabricTransportEndpointOwnerRef::of(SystemServiceEndpointRef(30)));
+  require(test,
+          transport.size() >= 4 && transport[0] == 0 && transport[1] == 0 &&
+              transport[2] == 0 && transport[3] == 8,
+          "System service transport owner changed its stable discriminant");
+  transport[3] = 7;
+  llvm::Expected<FabricTransportEndpointOwnerRef> retiredTransport =
+      decodeFabricRef<FabricTransportEndpointOwnerRef>(transport);
+  if (retiredTransport)
+    fail(test, "accepted retired direct AccCore transport ownership");
+  requireKind(test, retiredTransport.takeError(),
+              FabricRefErrorKind::MalformedSyntax);
+
+  std::vector<std::uint8_t> memory = canonicalFabricBytes(
+      FabricMemoryEndpointOwnerRef::of(SystemServiceEndpointRef(30)));
+  require(test,
+          memory.size() >= 4 && memory[0] == 0 && memory[1] == 0 &&
+              memory[2] == 0 && memory[3] == 4,
+          "System service memory owner changed its stable discriminant");
+  memory[3] = 2;
+  llvm::Expected<FabricMemoryEndpointOwnerRef> retiredMemory =
+      decodeFabricRef<FabricMemoryEndpointOwnerRef>(memory);
+  if (retiredMemory)
+    fail(test, "accepted retired direct AccCore memory ownership");
+  requireKind(test, retiredMemory.takeError(),
+              FabricRefErrorKind::MalformedSyntax);
 }
 
 void refinementsAddNoIdentity() {
@@ -199,6 +256,7 @@ void canonicalByteRoundTrip() {
 
 int main() {
   typedFamiliesRemainDistinct();
+  systemServiceEndpointOwnsOperationServicePlanes();
   refinementsAddNoIdentity();
   strictTextLanguage();
   canonicalByteRoundTrip();

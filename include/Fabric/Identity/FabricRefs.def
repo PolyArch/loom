@@ -3,12 +3,13 @@
 // Single source of truth for every closed sum of the Mapping-visible Fabric
 // persistent reference catalog owned by docs/spec-fabric-identity.md.
 //
-// Each list below assigns zero-based unsigned 32-bit discriminants in
-// declaration order. Those values are immutable for every Fabric root schema
-// version that imports this catalog: entries are appended, never reordered or
-// reinterpreted. The schema records, the strict text codec, the canonical byte
-// codec, and the importer all read this file, so no tag number or canonical
-// keyword is written down a second time.
+// Lists without an explicit Ordinal assign zero-based unsigned 32-bit
+// discriminants in declaration order. Lists with an Ordinal preserve stable
+// wire values and may contain retired holes. Those values are immutable for
+// every Fabric root schema version that imports this catalog: entries are
+// appended, never reordered or reinterpreted. The schema records, the strict
+// text codec, the canonical byte codec, and the importer all read this file,
+// so no tag number or canonical keyword is written down a second time.
 //
 //===---------------------------------------------------------------------===//
 
@@ -73,12 +74,12 @@
 
 // Closed union of owners exposing a token transport endpoint inventory.
 #ifndef LOOM_FABRIC_TRANSPORT_OWNER
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)
 #endif
 
 // Closed union of owners exposing a memory-service endpoint inventory.
 #ifndef LOOM_FABRIC_MEMORY_OWNER
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)
 #endif
 
 // Closed constructor catalog shared by every owner projection below.
@@ -198,26 +199,33 @@ LOOM_FABRIC_INVENTORY(BoundaryOutput, "boundary_output")
 LOOM_FABRIC_INVENTORY(RegisterFifo, "register_fifo")
 LOOM_FABRIC_INVENTORY(TransferPatternEgress, "transfer_pattern_egress")
 
-LOOM_FABRIC_TRANSPORT_OWNER(SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricPeOccurrence, FabricPeOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricFuOccurrence, FabricFuOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricMemoryOccurrence, FabricMemoryOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricSwitchOccurrence, FabricSwitchOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricFifoOccurrence, FabricFifoOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(FabricBoundaryOccurrence,
+LOOM_FABRIC_TRANSPORT_OWNER(0, SpatialCoreOccurrence,
+                            SpatialCoreOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(1, FabricPeOccurrence, FabricPeOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(2, FabricFuOccurrence, FabricFuOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(3, FabricMemoryOccurrence,
+                            FabricMemoryOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(4, FabricSwitchOccurrence,
+                            FabricSwitchOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(5, FabricFifoOccurrence,
+                            FabricFifoOccurrenceRef)
+LOOM_FABRIC_TRANSPORT_OWNER(6, FabricBoundaryOccurrence,
                             FabricBoundaryOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(SystemServiceEndpoint, SystemServiceEndpointRef)
-LOOM_FABRIC_TRANSPORT_OWNER(SystemTransportResource, SystemTransportResourceRef)
-LOOM_FABRIC_TRANSPORT_OWNER(ExternalBoundary, ExternalBoundaryRef)
+// Ordinal 7 retired: AccCoreOccurrence exposed no direct physical port.
+LOOM_FABRIC_TRANSPORT_OWNER(8, SystemServiceEndpoint,
+                            SystemServiceEndpointRef)
+LOOM_FABRIC_TRANSPORT_OWNER(9, SystemTransportResource,
+                            SystemTransportResourceRef)
+// Ordinal 10 retired: ExternalBoundary exposed no direct physical port.
 
-LOOM_FABRIC_MEMORY_OWNER(SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(FabricMemoryOccurrence, FabricMemoryOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(AccCoreOccurrence, AccCoreOccurrenceRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemMemoryService, SystemMemoryServiceRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemServiceEndpoint, SystemServiceEndpointRef)
-LOOM_FABRIC_MEMORY_OWNER(SystemServiceTransform, SystemServiceTransformRef)
-LOOM_FABRIC_MEMORY_OWNER(ExternalBoundary, ExternalBoundaryRef)
+LOOM_FABRIC_MEMORY_OWNER(0, SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
+LOOM_FABRIC_MEMORY_OWNER(1, FabricMemoryOccurrence,
+                         FabricMemoryOccurrenceRef)
+// Ordinals 2 and 3 retired: AccCoreOccurrence and SystemMemoryService exposed
+// no direct physical port.
+LOOM_FABRIC_MEMORY_OWNER(4, SystemServiceEndpoint, SystemServiceEndpointRef)
+// Ordinals 5 and 6 retired: SystemServiceTransform and ExternalBoundary
+// exposed no direct physical port.
 
 LOOM_FABRIC_INVENTORY_OWNER(ModuleTemplate, FabricModuleTemplateRef)
 LOOM_FABRIC_INVENTORY_OWNER(PeOccurrence, FabricPeOccurrenceRef)

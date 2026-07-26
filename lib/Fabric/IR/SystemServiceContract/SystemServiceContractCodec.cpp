@@ -415,7 +415,16 @@ encodeTransform(const SystemServiceTransformRecord &record) {
 llvm::Error validateCapabilityKeys(
     llvm::ArrayRef<CanonicalServiceCapabilityRecord> capabilities) {
   std::set<std::pair<std::uint32_t, std::uint32_t>> keys;
+  const CanonicalServiceEndpointRole role = capabilities.front().role();
+  const bool transport = capabilities.front().kind() ==
+                         dataflow::semantics::ServiceKind::MessageTransfer;
   for (const CanonicalServiceCapabilityRecord &capability : capabilities) {
+    if (capability.role() != role)
+      return malformed("service endpoint mixes operation-relative roles");
+    const bool capabilityTransport =
+        capability.kind() == dataflow::semantics::ServiceKind::MessageTransfer;
+    if (capabilityTransport != transport)
+      return malformed("service endpoint mixes transport and memory planes");
     const auto key =
         std::make_pair(static_cast<std::uint32_t>(capability.kind()),
                        static_cast<std::uint32_t>(capability.role()));
@@ -426,6 +435,13 @@ llvm::Error validateCapabilityKeys(
 }
 
 } // namespace
+
+CanonicalServiceEndpointPlane CanonicalServiceCapabilitySet::plane() const {
+  return capabilities_.front().kind() ==
+                 dataflow::semantics::ServiceKind::MessageTransfer
+             ? CanonicalServiceEndpointPlane::Transport
+             : CanonicalServiceEndpointPlane::Memory;
+}
 
 std::vector<std::uint8_t> loom::fabric::encodeSystemServiceEndpointOwnerRef(
     const SystemServiceEndpointOwnerRef &reference) {

@@ -53,7 +53,7 @@ bool isEntityFamily(llvm::StringRef keyword) {
 }
 
 bool isTransportOwnerFamily(llvm::StringRef keyword) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
   if (keyword == Type::familyKeyword)                                          \
     return true;
 #include "Fabric/Identity/FabricRefs.def"
@@ -61,7 +61,7 @@ bool isTransportOwnerFamily(llvm::StringRef keyword) {
 }
 
 bool isMemoryOwnerFamily(llvm::StringRef keyword) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
   if (keyword == Type::familyKeyword)                                          \
     return true;
 #include "Fabric/Identity/FabricRefs.def"
@@ -168,7 +168,7 @@ llvm::Error loom::fabric::fabricExpectFamily(FabricRefScanner &scanner,
 void loom::fabric::printFabricRef(
     llvm::raw_ostream &os, const FabricTransportEndpointOwnerRef &owner) {
   switch (owner.kind()) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
   case FabricTransportEndpointOwnerKind::Name:                                 \
     return printFabricRef(os, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
@@ -178,7 +178,7 @@ void loom::fabric::printFabricRef(
 void loom::fabric::printFabricRef(llvm::raw_ostream &os,
                                   const FabricMemoryEndpointOwnerRef &owner) {
   switch (owner.kind()) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
   case FabricMemoryEndpointOwnerKind::Name:                                    \
     return printFabricRef(os, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
@@ -228,7 +228,7 @@ llvm::Error
 loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
                                  FabricTransportEndpointOwnerRef &owner) {
   const llvm::StringRef keyword = scanner.peekKeyword();
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
   if (keyword == Type::familyKeyword)                                          \
     return parseFabricRefInto(scanner, owner.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"
@@ -240,7 +240,7 @@ llvm::Error
 loom::fabric::parseFabricRefInto(FabricRefScanner &scanner,
                                  FabricMemoryEndpointOwnerRef &owner) {
   const llvm::StringRef keyword = scanner.peekKeyword();
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
   if (keyword == Type::familyKeyword)                                          \
     return parseFabricRefInto(scanner, owner.payload.emplace<Type>());
 #include "Fabric/Identity/FabricRefs.def"

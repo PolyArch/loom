@@ -324,9 +324,6 @@ std::uint64_t FabricArtifactView::transportEndpointCount(
     entity =
         storage_->entity(std::get<FabricBoundaryOccurrenceRef>(owner.payload));
     break;
-  case FabricTransportEndpointOwnerKind::AccCoreOccurrence:
-    entity = storage_->entity(std::get<AccCoreOccurrenceRef>(owner.payload));
-    break;
   case FabricTransportEndpointOwnerKind::SystemServiceEndpoint:
     entity =
         storage_->entity(std::get<SystemServiceEndpointRef>(owner.payload));
@@ -334,9 +331,6 @@ std::uint64_t FabricArtifactView::transportEndpointCount(
   case FabricTransportEndpointOwnerKind::SystemTransportResource:
     entity =
         storage_->entity(std::get<SystemTransportResourceRef>(owner.payload));
-    break;
-  case FabricTransportEndpointOwnerKind::ExternalBoundary:
-    entity = storage_->entity(std::get<ExternalBoundaryRef>(owner.payload));
     break;
   }
   return entity ? entity->owner.transportEndpointCount : 0;
@@ -355,22 +349,9 @@ std::uint64_t FabricArtifactView::memoryEndpointCount(
     entity =
         storage_->entity(std::get<FabricMemoryOccurrenceRef>(owner.payload));
     break;
-  case FabricMemoryEndpointOwnerKind::AccCoreOccurrence:
-    entity = storage_->entity(std::get<AccCoreOccurrenceRef>(owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::SystemMemoryService:
-    entity = storage_->entity(std::get<SystemMemoryServiceRef>(owner.payload));
-    break;
   case FabricMemoryEndpointOwnerKind::SystemServiceEndpoint:
     entity =
         storage_->entity(std::get<SystemServiceEndpointRef>(owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::SystemServiceTransform:
-    entity =
-        storage_->entity(std::get<SystemServiceTransformRef>(owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::ExternalBoundary:
-    entity = storage_->entity(std::get<ExternalBoundaryRef>(owner.payload));
     break;
   }
   return entity ? entity->owner.memoryEndpointRoles.size() : 0;
@@ -433,25 +414,9 @@ std::optional<FabricMemoryEndpointRole> FabricArtifactView::memoryEndpointRole(
     entity = storage_->entity(
         std::get<FabricMemoryOccurrenceRef>(endpoint.owner.payload));
     break;
-  case FabricMemoryEndpointOwnerKind::AccCoreOccurrence:
-    entity = storage_->entity(
-        std::get<AccCoreOccurrenceRef>(endpoint.owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::SystemMemoryService:
-    entity = storage_->entity(
-        std::get<SystemMemoryServiceRef>(endpoint.owner.payload));
-    break;
   case FabricMemoryEndpointOwnerKind::SystemServiceEndpoint:
     entity = storage_->entity(
         std::get<SystemServiceEndpointRef>(endpoint.owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::SystemServiceTransform:
-    entity = storage_->entity(
-        std::get<SystemServiceTransformRef>(endpoint.owner.payload));
-    break;
-  case FabricMemoryEndpointOwnerKind::ExternalBoundary:
-    entity =
-        storage_->entity(std::get<ExternalBoundaryRef>(endpoint.owner.payload));
     break;
   }
   const auto *roles = nested   ? &nested->memoryEndpointRoles
@@ -861,7 +826,7 @@ llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricTransportEndpointOwnerRef &owner) {
   switch (owner.kind()) {
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
   case FabricTransportEndpointOwnerKind::Name:                                 \
     return validateFabricRef(view, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"
@@ -873,7 +838,7 @@ llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricMemoryEndpointOwnerRef &owner) {
   switch (owner.kind()) {
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
   case FabricMemoryEndpointOwnerKind::Name:                                    \
     return validateFabricRef(view, std::get<Type>(owner.payload));
 #include "Fabric/Identity/FabricRefs.def"

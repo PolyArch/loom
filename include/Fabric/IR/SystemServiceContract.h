@@ -44,6 +44,11 @@ enum class CanonicalServiceEndpointRole : std::uint32_t {
   Serve,
 };
 
+enum class CanonicalServiceEndpointPlane : std::uint32_t {
+  Transport,
+  Memory,
+};
+
 using ServiceProgress =
     std::variant<::fabric::BoundedCompletion, ::fabric::FairEventual>;
 
@@ -196,6 +201,10 @@ public:
   llvm::ArrayRef<CanonicalServiceCapabilityRecord> capabilities() const {
     return capabilities_;
   }
+  CanonicalServiceEndpointRole role() const {
+    return capabilities_.front().role();
+  }
+  CanonicalServiceEndpointPlane plane() const;
 
 private:
   explicit CanonicalServiceCapabilitySet(

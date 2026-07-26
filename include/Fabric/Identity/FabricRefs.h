@@ -3,8 +3,10 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -80,12 +82,12 @@ enum class FabricInventoryKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) Name,
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type) Name = Ordinal,
 enum class FabricTransportEndpointOwnerKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
 
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) Name,
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type) Name = Ordinal,
 enum class FabricMemoryEndpointOwnerKind : std::uint32_t {
 #include "Fabric/Identity/FabricRefs.def"
 };
@@ -224,21 +226,23 @@ inline llvm::StringRef fabricClosedName(FabricInventoryKind) {
   return "inventory kind";
 }
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
 inline std::uint32_t fabricClosedBound(FabricTransportEndpointOwnerKind) {
-  std::uint32_t count = 0;
+  std::uint32_t bound = 0;
 #include "Fabric/Identity/FabricRefs.def"
-  return count;
+  return bound;
 }
 inline llvm::StringRef fabricClosedName(FabricTransportEndpointOwnerKind) {
   return "transport endpoint owner";
 }
 
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
+  bound = std::max(bound, static_cast<std::uint32_t>(Ordinal) + 1);
 inline std::uint32_t fabricClosedBound(FabricMemoryEndpointOwnerKind) {
-  std::uint32_t count = 0;
+  std::uint32_t bound = 0;
 #include "Fabric/Identity/FabricRefs.def"
-  return count;
+  return bound;
 }
 inline llvm::StringRef fabricClosedName(FabricMemoryEndpointOwnerKind) {
   return "memory endpoint owner";
@@ -616,24 +620,21 @@ LOOM_FABRIC_REF_EQUALITY(FabricTransferPatternRef,
 /// Closed union of Mapping-visible owners exposing token terminals.
 struct FabricTransportEndpointOwnerRef {
   using Payload = typename FabricCatalogVariant<void
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) , Type
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
                                                 >::type;
 
   Payload payload;
 
   FabricTransportEndpointOwnerKind kind() const {
-    return static_cast<FabricTransportEndpointOwnerKind>(payload.index());
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
+  if (std::holds_alternative<Type>(payload))                                   \
+    return FabricTransportEndpointOwnerKind::Name;
+#include "Fabric/Identity/FabricRefs.def"
+    llvm_unreachable("unknown transport endpoint owner payload");
   }
 
-#define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type)                                \
-  static_assert(                                                               \
-      std::is_same_v<std::variant_alternative_t<                               \
-                         static_cast<std::size_t>(                             \
-                             FabricTransportEndpointOwnerKind::Name),          \
-                         Payload>,                                             \
-                     Type>,                                                    \
-      "alternative order must match the discriminants");                       \
+#define LOOM_FABRIC_TRANSPORT_OWNER(Ordinal, Name, Type)                       \
   static FabricTransportEndpointOwnerRef of(const Type &value) {               \
     return FabricTransportEndpointOwnerRef{                                    \
         Payload(std::in_place_type<Type>, value)};                             \
@@ -654,24 +655,21 @@ inline bool operator!=(const FabricTransportEndpointOwnerRef &lhs,
 /// endpoint inventory.
 struct FabricMemoryEndpointOwnerRef {
   using Payload = typename FabricCatalogVariant<void
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type) , Type
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type) , Type
 #include "Fabric/Identity/FabricRefs.def"
                                                 >::type;
 
   Payload payload;
 
   FabricMemoryEndpointOwnerKind kind() const {
-    return static_cast<FabricMemoryEndpointOwnerKind>(payload.index());
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
+  if (std::holds_alternative<Type>(payload))                                   \
+    return FabricMemoryEndpointOwnerKind::Name;
+#include "Fabric/Identity/FabricRefs.def"
+    llvm_unreachable("unknown memory endpoint owner payload");
   }
 
-#define LOOM_FABRIC_MEMORY_OWNER(Name, Type)                                   \
-  static_assert(                                                               \
-      std::is_same_v<                                                          \
-          std::variant_alternative_t<static_cast<std::size_t>(                 \
-                                         FabricMemoryEndpointOwnerKind::Name), \
-                                     Payload>,                                 \
-          Type>,                                                               \
-      "alternative order must match the discriminants");                       \
+#define LOOM_FABRIC_MEMORY_OWNER(Ordinal, Name, Type)                          \
   static FabricMemoryEndpointOwnerRef of(const Type &value) {                  \
     return FabricMemoryEndpointOwnerRef{                                       \
         Payload(std::in_place_type<Type>, value)};                             \

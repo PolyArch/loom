@@ -655,11 +655,13 @@ def Fabric_SystemServiceEndpointOp : Fabric_Op<"system.service_endpoint", [
   let arguments = (ins
       OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
       DenseI8ArrayAttr:$owner,
-      DenseI8ArrayAttr:$capabilities
+      DenseI8ArrayAttr:$capabilities,
+      OptionalAttr<TypeAttr>:$carrier_type
   );
 
   let assemblyFormat = [{
-    `owner` `=` $owner `capabilities` `=` $capabilities attr-dict
+    `owner` `=` $owner `capabilities` `=` $capabilities
+    (`carrier` `=` $carrier_type^)? attr-dict
   }];
   let hasVerifier = 1;
 }
@@ -680,6 +682,21 @@ def Fabric_SystemServiceTransformOp : Fabric_Op<"system.service_transform", [
   );
 
   let assemblyFormat = "`contract` `=` $contract attr-dict";
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemExternalBoundaryOp : Fabric_Op<"system.external_boundary", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "external System interface owner";
+  let description = [{
+    One external interface grouping. Its complete physical interface is
+    derived from the SystemServiceEndpoint entities that name this entity as
+    owner; the boundary stores no parallel endpoint inventory.
+  }];
+
+  let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id);
+  let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
 

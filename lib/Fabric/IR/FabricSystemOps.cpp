@@ -87,9 +87,9 @@ LogicalResult SystemOp::verify() {
   for (Operation &operation : block) {
     if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
              SystemServiceEndpointOp, SystemServiceTransformOp,
-             SystemHardwareDomainOp, SystemTransportResourceOp,
-             SystemTransferPatternOp, SystemConnectionOp,
-             SystemSpatialAttachmentOp>(operation))
+             SystemExternalBoundaryOp, SystemHardwareDomainOp,
+             SystemTransportResourceOp, SystemTransferPatternOp,
+             SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
           "is not in the closed fabric.system child catalog");
     if (std::optional<std::uint64_t> id = entityId(operation))
@@ -148,6 +148,38 @@ LogicalResult SystemServiceEndpointOp::verify() {
   if (!capabilities)
     return emitOpError("has invalid capability set: ")
            << llvm::toString(capabilities.takeError());
+
+  TypeAttr carrierAttribute = getCarrierTypeAttr();
+  if (capabilities->plane() ==
+      loom::fabric::CanonicalServiceEndpointPlane::Memory) {
+    if (carrierAttribute)
+      return emitOpError("memory service endpoint must not declare a message "
+                         "carrier type");
+    return success();
+  }
+  if (!carrierAttribute)
+    return emitOpError("message service endpoint requires a carrier type");
+  Type carrier = carrierAttribute.getValue();
+  std::optional<unsigned> carrierWidth =
+      getFabricTransportPayloadWidth(carrier);
+  if (!carrierWidth)
+    return emitOpError("has non-transport message carrier type ") << carrier;
+
+  for (const loom::fabric::CanonicalServiceCapabilityRecord &capability :
+       capabilities->capabilities()) {
+    const auto &domain =
+        std::get<loom::fabric::MessageTransferCapabilityDomain>(
+            capability.domain());
+    for (Type payload : domain.payloadTypes()) {
+      std::string error;
+      FailureOr<unsigned> width = getSemanticPayloadWidth(payload, error);
+      if (failed(width))
+        return emitOpError("has unsupported message payload: ") << error;
+      if (*width > *carrierWidth)
+        return emitOpError("message payload width ")
+               << *width << " exceeds carrier width " << *carrierWidth;
+    }
+  }
   return success();
 }
 
@@ -160,6 +192,10 @@ LogicalResult SystemServiceTransformOp::verify() {
     return emitOpError("has invalid service transform contract: ")
            << llvm::toString(contract.takeError());
   return success();
+}
+
+LogicalResult SystemExternalBoundaryOp::verify() {
+  return verifyClosedAttributes(getOperation());
 }
 
 LogicalResult SystemHardwareDomainOp::verify() {
