@@ -176,6 +176,28 @@ Resolved cycles are ordinary explicit FU SSA edges in the Graph region. The
 Fabric finalizer canonicalizes that cyclic relation directly; it must not
 impose CFG-style SSA topological order on Module, PE, or FU Graph regions.
 
+### SpatialCore Feedback Edges
+
+Module-level cyclic topology uses the same owner-checked construction rule:
+
+```text
+SpatialCoreBuilder::createBackedge(type) -> Expected<SpatialBackedge>
+SpatialCoreBuilder::resolveBackedge(SpatialBackedge &&, source) -> Error
+```
+
+`SpatialBackedge` accepts any exact `SpatialValue` port type and must resolve
+to the same physical type. Width normalization and port-kind conversion remain
+properties of the explicit resource endpoint through which the edge passes;
+the placeholder never performs either operation. Every placeholder is
+move-only, belongs to one SpatialCore, and must be resolved exactly once before
+root closure.
+
+Resolution replaces every placeholder use with the exact source and removes
+the placeholder operation. Final Fabric therefore contains only the ordinary
+explicit cyclic SSA relation. This single primitive is sufficient for rings,
+torus-like links, feedback pipelines, and arbitrary verifier-legal cyclic
+topology without introducing a second connection graph.
+
 ## Failure-Atomic Finalization
 
 Finalization consumes the draft design. Its conceptual public boundary is:

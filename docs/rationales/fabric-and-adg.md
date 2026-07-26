@@ -26,6 +26,13 @@ implicit cycle would hide a real Fabric edge. Requiring explicit resolution
 before FU closure keeps the public surface small and prevents authoring
 placeholders from leaking into persistent hardware.
 
+The same move-only placeholder is scoped at the SpatialCore boundary because
+arbitrary hardware topology includes rings and torus-like cycles whose source
+may be authored after its sink. Making cyclic module construction a special
+topology helper would add a shadow connection model; resolving one typed
+backedge into the ordinary Fabric SSA edge keeps cyclic and acyclic hardware
+under the same semantic owner.
+
 Builtin Small, Default, and Large targets are complete hardware examples, not
 size knobs or capability summaries. Their FU distribution, memory, transport,
 InstructionCore, clocks, resets, and semantic capabilities must be

@@ -95,6 +95,37 @@ private:
   friend class PeBuilder;
 };
 
+/// A move-only placeholder for one SpatialCore-local feedback edge. The
+/// placeholder must be resolved to an exact SpatialValue before the root is
+/// closed and never becomes part of finalized Fabric IR.
+class SpatialBackedge final {
+public:
+  SpatialBackedge(const SpatialBackedge &) = delete;
+  SpatialBackedge &operator=(const SpatialBackedge &) = delete;
+
+  SpatialBackedge(SpatialBackedge &&other) noexcept
+      : value_(std::move(other.value_)),
+        placeholder_(std::exchange(other.placeholder_, nullptr)) {}
+  SpatialBackedge &operator=(SpatialBackedge &&other) noexcept {
+    if (this == &other)
+      return *this;
+    value_ = std::move(other.value_);
+    placeholder_ = std::exchange(other.placeholder_, nullptr);
+    return *this;
+  }
+
+  SpatialValue value() const { return value_; }
+
+private:
+  SpatialBackedge(SpatialValue value, mlir::Operation *placeholder)
+      : value_(std::move(value)), placeholder_(placeholder) {}
+
+  SpatialValue value_;
+  mlir::Operation *placeholder_ = nullptr;
+
+  friend class SpatialCoreBuilder;
+};
+
 /// An owner-checked value on one PE's internal untagged boundary.
 class PeValue final {
 public:
@@ -464,6 +495,10 @@ private:
 class SpatialCoreBuilder final {
 public:
   llvm::Expected<SpatialValue> input(std::size_t ordinal) const;
+
+  llvm::Expected<SpatialBackedge> createBackedge(const PortType &type);
+
+  llvm::Error resolveBackedge(SpatialBackedge &&backedge, SpatialValue source);
 
   llvm::Expected<SpatialValue> addFifo(SpatialValue input,
                                        const FifoSpec &spec);

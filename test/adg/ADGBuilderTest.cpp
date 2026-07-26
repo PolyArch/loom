@@ -936,6 +936,44 @@ void fuBackedgesAreExplicitAndResolved() {
           "resolved FU backedge did not finalize");
 }
 
+void spatialBackedgesEnableCyclicTopology() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  {
+    DesignBuilder incomplete(store);
+    auto spatial = take(test, incomplete.createSpatialCore("unresolved-cycle",
+                                                           {bits32}, {bits32}));
+    auto backedge = take(test, spatial.createBackedge(bits32));
+    expectError(test, spatial.close({backedge.value()}), "unresolved backedge");
+  }
+
+  DesignBuilder design(store);
+  auto spatial =
+      take(test, design.createSpatialCore("cyclic-switch", {bits32}, {bits32}));
+  auto backedge = take(test, spatial.createBackedge(bits32));
+  auto routed = take(
+      test,
+      spatial.addSwitch({take(test, spatial.input(0)), backedge.value()},
+                        SwitchSpec::spatial({bits32, bits32}, {bits32, bits32},
+                                            {{0, 1}, {0, 1}})));
+  SpatialValue buffered =
+      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}));
+  if (llvm::Error error =
+          spatial.resolveBackedge(std::move(backedge), buffered))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({routed[1]}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test,
+          finalized.roots().size() == 1 &&
+              !finalized.roots().front().view().admittedTraversals().empty(),
+          "resolved SpatialCore cycle did not finalize as explicit topology");
+}
+
 void routedFuLibraryBuildsHeterogeneousBoundaries() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -1169,6 +1207,7 @@ int main() {
   typedMemoryFormsFinalize();
   publicFuLibraryBuildsTypedGraphs();
   fuBackedgesAreExplicitAndResolved();
+  spatialBackedgesEnableCyclicTopology();
   routedFuLibraryBuildsHeterogeneousBoundaries();
   heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;

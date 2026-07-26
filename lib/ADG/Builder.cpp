@@ -820,6 +820,68 @@ SpatialCoreBuilder::input(std::size_t ordinal) const {
   return SpatialValue(*state, rootOrdinal_, body.getArgument(ordinal));
 }
 
+llvm::Expected<SpatialBackedge>
+SpatialCoreBuilder::createBackedge(const PortType &type) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
+  if (root.closed)
+    return invalid("SpatialCore is already closed");
+
+  mlir::Type resultType = materializePortType((*state)->context, type);
+  mlir::OpBuilder builder(&(*state)->context);
+  builder.setInsertionPointToEnd(&root.operation.getBody().front());
+  auto placeholder = mlir::UnrealizedConversionCastOp::create(
+      builder, root.operation.getLoc(), mlir::TypeRange{resultType},
+      mlir::ValueRange{});
+  root.unresolvedBackedges.push_back(placeholder.getOperation());
+  SpatialValue value(*state, rootOrdinal_, placeholder.getResult(0));
+  return SpatialBackedge(value, placeholder.getOperation());
+}
+
+llvm::Error SpatialCoreBuilder::resolveBackedge(SpatialBackedge &&backedge,
+                                                SpatialValue source) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
+  if (root.closed)
+    return invalid("SpatialCore is already closed");
+  if (!backedge.placeholder_)
+    return invalid("SpatialCore backedge is already resolved or moved");
+
+  auto placeholder = resolveValue(*state, backedge.value_);
+  if (!placeholder)
+    return placeholder.takeError();
+  auto resolvedSource = resolveValue(*state, source);
+  if (!resolvedSource)
+    return resolvedSource.takeError();
+  auto found = llvm::find(root.unresolvedBackedges, backedge.placeholder_);
+  if (found == root.unresolvedBackedges.end() ||
+      placeholder->getDefiningOp() != backedge.placeholder_)
+    return invalid(
+        "SpatialCore backedge does not belong to this unresolved graph");
+  if (*placeholder == *resolvedSource)
+    return invalid(
+        "SpatialCore backedge cannot resolve to its own placeholder");
+  if (placeholder->getType() != resolvedSource->getType())
+    return invalid(
+        "SpatialCore backedge source type does not match its declaration");
+
+  mlir::Operation *placeholderOperation = backedge.placeholder_;
+  placeholder->replaceAllUsesWith(*resolvedSource);
+  backedge.value_ = SpatialValue();
+  backedge.placeholder_ = nullptr;
+  root.unresolvedBackedges.erase(found);
+  placeholderOperation->erase();
+  return llvm::Error::success();
+}
+
 llvm::Expected<SpatialValue> SpatialCoreBuilder::addFifo(SpatialValue input,
                                                          const FifoSpec &spec) {
   auto state = activeState(state_);
@@ -1298,6 +1360,8 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
   detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
+  if (!root.unresolvedBackedges.empty())
+    return invalid("SpatialCore contains an unresolved backedge");
   for (const detail::PeState &pe : (*state)->pes)
     if (pe.rootOrdinal == rootOrdinal_ && !pe.closed)
       return invalid("SpatialCore contains a PE that is not closed");
@@ -1375,8 +1439,11 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
 
   const std::size_t ordinal = state_->spatialRoots.size();
   state_->spatialRoots.push_back(detail::SpatialRootState{
-      root, label.str(),
-      std::vector<mlir::Type>(resultTypes.begin(), resultTypes.end()), false});
+      root,
+      label.str(),
+      std::vector<mlir::Type>(resultTypes.begin(), resultTypes.end()),
+      {},
+      false});
   return SpatialCoreBuilder(state_, ordinal);
 }
 

@@ -24,6 +24,7 @@ struct SpatialRootState final {
   ::fabric::ModuleOp operation;
   std::string label;
   std::vector<mlir::Type> resultTypes;
+  std::vector<mlir::Operation *> unresolvedBackedges;
   bool closed = false;
 };
 
