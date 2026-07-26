@@ -38,6 +38,20 @@ llvm::Expected<semantics::ServiceValueRole>
 decodeServiceValueRole(llvm::ArrayRef<std::uint8_t> bytes);
 
 llvm::Expected<loom::CanonicalSemanticBytes>
+encodeServiceKind(semantics::ServiceKind kind);
+llvm::Expected<semantics::ServiceKind>
+decodeServiceKind(llvm::ArrayRef<std::uint8_t> bytes);
+
+/// The standalone production codec for exact service payload types. It is the
+/// same closed type vocabulary used inside actor schema projections, with its
+/// own domain framing so downstream records never depend on MLIR printing.
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeCanonicalType(::mlir::Type type);
+llvm::Expected<::mlir::Type>
+decodeCanonicalType(llvm::ArrayRef<std::uint8_t> bytes,
+                    ::mlir::MLIRContext *context);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
 encodeMemoryAccessForm(semantics::MemoryAccessForm form);
 llvm::Expected<semantics::MemoryAccessForm>
 decodeMemoryAccessForm(llvm::ArrayRef<std::uint8_t> bytes);

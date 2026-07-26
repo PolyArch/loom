@@ -16,6 +16,7 @@
 namespace {
 
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
+constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
 constexpr char kMemoryMaskFormDomain[] = "loom.dataflow.memory-mask-form\0";
 constexpr char kAtomicOrderingDomain[] = "loom.dataflow.atomic-ordering\0";
@@ -198,6 +199,47 @@ llvm::StringRef asString(llvm::ArrayRef<std::uint8_t> bytes) {
 } // namespace
 
 namespace dataflow::detail {
+
+llvm::Expected<std::uint32_t>
+serviceKindWireTag(semantics::ServiceKind kind) {
+  using Kind = semantics::ServiceKind;
+  switch (kind) {
+  case Kind::MessageTransfer:
+    return 1;
+  case Kind::MemoryRead:
+    return 2;
+  case Kind::MemoryWrite:
+    return 3;
+  case Kind::MemoryAtomicRmw:
+    return 4;
+  case Kind::MemoryCompareExchange:
+    return 5;
+  case Kind::MemoryFence:
+    return 6;
+  }
+  return invalid("unknown service kind");
+}
+
+llvm::Expected<semantics::ServiceKind>
+serviceKindFromWireTag(std::uint32_t wireTag) {
+  using Kind = semantics::ServiceKind;
+  switch (wireTag) {
+  case 1:
+    return Kind::MessageTransfer;
+  case 2:
+    return Kind::MemoryRead;
+  case 3:
+    return Kind::MemoryWrite;
+  case 4:
+    return Kind::MemoryAtomicRmw;
+  case 5:
+    return Kind::MemoryCompareExchange;
+  case 6:
+    return Kind::MemoryFence;
+  default:
+    return invalid("unknown service kind wire tag");
+  }
+}
 
 llvm::Expected<std::uint32_t>
 serviceValueRoleWireTag(semantics::ServiceValueRole role) {
@@ -506,6 +548,18 @@ llvm::Expected<AtomicRmwKind> atomicRmwKindFromWireTag(std::uint32_t wireTag) {
 }
 
 } // namespace dataflow::detail
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+dataflow::encodeServiceKind(semantics::ServiceKind kind) {
+  return encodeVocabulary(kind, kServiceKindDomain, detail::serviceKindWireTag);
+}
+
+llvm::Expected<dataflow::semantics::ServiceKind>
+dataflow::decodeServiceKind(llvm::ArrayRef<std::uint8_t> bytes) {
+  return decodeVocabulary<sizeof(kServiceKindDomain), semantics::ServiceKind>(
+      bytes, kServiceKindDomain, detail::serviceKindFromWireTag,
+      "service kind");
+}
 
 llvm::Expected<loom::CanonicalSemanticBytes>
 dataflow::encodeServiceValueRole(semantics::ServiceValueRole role) {

@@ -27,6 +27,7 @@ namespace {
 constexpr char kSchemaDomain[] = "loom.dataflow.operation-schema-id\0";
 constexpr char kSemanticsDomain[] = "loom.dataflow.operation-semantics-case\0";
 constexpr char kProjectionDomain[] = "loom.dataflow.actor-schema-projection\0";
+constexpr char kServiceKindDomain[] = "loom.dataflow.service-kind\0";
 constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
 constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
 constexpr char kMemoryMaskFormDomain[] = "loom.dataflow.memory-mask-form\0";
@@ -226,9 +227,18 @@ bool checkOwnedEnumCodec(Value value, Encoder encode, Decoder decode,
 bool checkOwnedAtomCodecs(MLIRContext &context) {
   using semantics::MemoryAccessForm;
   using semantics::MemoryMaskForm;
+  using semantics::ServiceKind;
   using semantics::ServiceValueRole;
 
   bool ok = true;
+  ok &= checkOwnedEnumCodec(
+      ServiceKind::MemoryCompareExchange,
+      [](ServiceKind value) { return encodeServiceKind(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeServiceKind(bytes);
+      },
+      llvm::StringRef(kServiceKindDomain, sizeof(kServiceKindDomain) - 1), 5,
+      "service kind");
   ok &= checkOwnedEnumCodec(
       ServiceValueRole::Mask,
       [](ServiceValueRole value) { return encodeServiceValueRole(value); },
@@ -289,6 +299,27 @@ bool checkOwnedAtomCodecs(MLIRContext &context) {
   } else {
     ok &= expectFailure(decodeMemoryAccessForm(roleBytes->bytes()),
                         "wrong semantic domain");
+  }
+
+  Type payload = VectorType::get({4}, Float32Type::get(&context));
+  auto payloadBytes = encodeCanonicalType(payload);
+  if (!payloadBytes) {
+    llvm::errs() << llvm::toString(payloadBytes.takeError()) << '\n';
+    ok = false;
+  } else {
+    auto decoded = decodeCanonicalType(payloadBytes->bytes(), &context);
+    if (!decoded || *decoded != payload) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "canonical type roundtrip changed vector<4xf32>\n";
+      ok = false;
+    }
+    std::vector<std::uint8_t> trailing(payloadBytes->bytes().begin(),
+                                       payloadBytes->bytes().end());
+    trailing.push_back(0);
+    ok &= expectFailure(decodeCanonicalType(trailing, &context),
+                        "trailing bytes");
   }
 
   for (std::optional<VectorAtomicGranularity> value :

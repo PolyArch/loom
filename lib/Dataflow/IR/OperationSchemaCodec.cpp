@@ -8,6 +8,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/MathExtras.h"
@@ -30,6 +31,7 @@ namespace {
 constexpr char kSchemaDomain[] = "loom.dataflow.operation-schema-id\0";
 constexpr char kSemanticsDomain[] = "loom.dataflow.operation-semantics-case\0";
 constexpr char kProjectionDomain[] = "loom.dataflow.actor-schema-projection\0";
+constexpr char kCanonicalTypeDomain[] = "loom.dataflow.canonical-type\0";
 constexpr std::uint32_t kCodecMajor = 1;
 constexpr std::uint32_t kCodecMinor = 0;
 constexpr unsigned kMaximumTypeDepth = 64;
@@ -402,6 +404,50 @@ llvm::Expected<std::uint32_t> floatFormatWireTag(FloatType type) {
   return invalid("unknown floating type");
 }
 
+llvm::Expected<FloatType> floatTypeFromWireTag(std::uint32_t wireTag,
+                                                MLIRContext *context) {
+  switch (wireTag) {
+  case 1:
+    return Float8E5M2Type::get(context);
+  case 2:
+    return Float8E4M3Type::get(context);
+  case 3:
+    return Float8E4M3FNType::get(context);
+  case 4:
+    return Float8E5M2FNUZType::get(context);
+  case 5:
+    return Float8E4M3FNUZType::get(context);
+  case 6:
+    return Float8E4M3B11FNUZType::get(context);
+  case 7:
+    return Float8E3M4Type::get(context);
+  case 8:
+    return Float4E2M1FNType::get(context);
+  case 9:
+    return Float6E2M3FNType::get(context);
+  case 10:
+    return Float6E3M2FNType::get(context);
+  case 11:
+    return Float8E8M0FNUType::get(context);
+  case 12:
+    return BFloat16Type::get(context);
+  case 13:
+    return Float16Type::get(context);
+  case 14:
+    return FloatTF32Type::get(context);
+  case 15:
+    return Float32Type::get(context);
+  case 16:
+    return Float64Type::get(context);
+  case 17:
+    return Float80Type::get(context);
+  case 18:
+    return Float128Type::get(context);
+  default:
+    return invalid("unknown floating type tag");
+  }
+}
+
 std::uint32_t fastMathWireBits(arith::FastMathFlags flags, bool &valid) {
   using Flags = arith::FastMathFlags;
   valid = (flags | Flags::fast) == Flags::fast;
@@ -572,6 +618,160 @@ struct TypeSummary {
 };
 
 llvm::Expected<TypeSummary> validateType(Reader &reader, unsigned depth);
+
+llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
+                                unsigned depth);
+
+llvm::Expected<std::uint64_t>
+readCount(Reader &reader, const llvm::Twine &what,
+          std::size_t minimumBytes);
+
+llvm::Expected<SmallVector<std::int64_t>>
+decodeShape(Reader &reader, bool requirePositive) {
+  auto rank = readCount(reader, "type rank", 8);
+  if (!rank)
+    return rank.takeError();
+  if (requirePositive && *rank == 0)
+    return invalid("canonical vector type has zero rank");
+  SmallVector<std::int64_t> shape;
+  shape.reserve(static_cast<std::size_t>(*rank));
+  for (std::uint64_t index = 0; index < *rank; ++index) {
+    auto dimension = reader.u64("type dimension");
+    if (!dimension)
+      return dimension.takeError();
+    if (*dimension == std::numeric_limits<std::uint64_t>::max()) {
+      if (requirePositive)
+        return invalid("fixed vector shape contains a dynamic dimension");
+      shape.push_back(ShapedType::kDynamic);
+      continue;
+    }
+    if (*dimension >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+      return invalid("type dimension exceeds int64_t");
+    if (requirePositive && *dimension == 0)
+      return invalid("canonical vector dimension is zero");
+    shape.push_back(static_cast<std::int64_t>(*dimension));
+  }
+  return shape;
+}
+
+llvm::Expected<SmallVector<Type>> decodeTypeList(Reader &reader,
+                                                 MLIRContext *context,
+                                                 unsigned depth) {
+  auto count = readCount(reader, "type count", 4);
+  if (!count)
+    return count.takeError();
+  SmallVector<Type> types;
+  types.reserve(static_cast<std::size_t>(*count));
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto type = decodeType(reader, context, depth);
+    if (!type)
+      return type.takeError();
+    types.push_back(*type);
+  }
+  return types;
+}
+
+llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
+                                unsigned depth) {
+  if (depth >= kMaximumTypeDepth)
+    return invalid("type nesting exceeds the canonical limit");
+  auto rawTag = reader.u32("type tag");
+  if (!rawTag)
+    return rawTag.takeError();
+  switch (static_cast<TypeWireTag>(*rawTag)) {
+  case TypeWireTag::None:
+    return NoneType::get(context);
+  case TypeWireTag::Index:
+    return IndexType::get(context);
+  case TypeWireTag::Integer: {
+    auto signedness = readClosedTag(reader, 3, "integer signedness tag");
+    if (!signedness)
+      return signedness.takeError();
+    auto width = reader.u32("integer width");
+    if (!width)
+      return width.takeError();
+    if (*width == 0)
+      return invalid("integer type has zero width");
+    using Signedness = IntegerType::SignednessSemantics;
+    const Signedness semantics[] = {Signedness::Signless, Signedness::Signed,
+                                    Signedness::Unsigned};
+    return IntegerType::get(context, *width, semantics[*signedness - 1]);
+  }
+  case TypeWireTag::Float: {
+    auto format = readClosedTag(reader, 18, "floating type tag");
+    if (!format)
+      return format.takeError();
+    return floatTypeFromWireTag(*format, context);
+  }
+  case TypeWireTag::Vector: {
+    auto shape = decodeShape(reader, true);
+    if (!shape)
+      return shape.takeError();
+    auto element = decodeType(reader, context, depth + 1);
+    if (!element)
+      return element.takeError();
+    if (!VectorType::isValidElementType(*element))
+      return invalid("vector element type is not valid");
+    return VectorType::get(*shape, *element);
+  }
+  case TypeWireTag::MemRef: {
+    auto shape = decodeShape(reader, false);
+    if (!shape)
+      return shape.takeError();
+    auto element = decodeType(reader, context, depth + 1);
+    if (!element)
+      return element.takeError();
+    if (!BaseMemRefType::isValidElementType(*element))
+      return invalid("memref element type is not valid");
+    return MemRefType::get(*shape, *element);
+  }
+  case TypeWireTag::Tuple: {
+    auto types = decodeTypeList(reader, context, depth + 1);
+    if (!types)
+      return types.takeError();
+    return TupleType::get(context, *types);
+  }
+  case TypeWireTag::RankedTensor: {
+    auto shape = decodeShape(reader, false);
+    if (!shape)
+      return shape.takeError();
+    auto element = decodeType(reader, context, depth + 1);
+    if (!element)
+      return element.takeError();
+    if (!TensorType::isValidElementType(*element))
+      return invalid("tensor element type is not valid");
+    return RankedTensorType::get(*shape, *element);
+  }
+  case TypeWireTag::Complex: {
+    auto element = decodeType(reader, context, depth + 1);
+    if (!element)
+      return element.takeError();
+    if (!llvm::isa<IntegerType, FloatType>(*element))
+      return invalid("complex element type is not scalar integer or float");
+    return ComplexType::get(*element);
+  }
+  case TypeWireTag::LLVMArray: {
+    auto count = reader.u64("LLVM array element count");
+    if (!count)
+      return count.takeError();
+    auto element = decodeType(reader, context, depth + 1);
+    if (!element)
+      return element.takeError();
+    return LLVM::LLVMArrayType::get(*element, *count);
+  }
+  case TypeWireTag::LLVMLiteralStruct: {
+    auto packed = reader.boolean("LLVM struct packed flag");
+    if (!packed)
+      return packed.takeError();
+    auto body = decodeTypeList(reader, context, depth + 1);
+    if (!body)
+      return body.takeError();
+    return LLVM::LLVMStructType::getLiteral(context, *body, *packed);
+  }
+  }
+  return invalid("unknown type tag");
+}
 
 llvm::Expected<std::uint64_t> readCount(Reader &reader, const llvm::Twine &what,
                                         std::size_t minimumBytes) {
@@ -1399,6 +1599,36 @@ llvm::Expected<dataflow::OperationSemanticsCase>
 dataflow::decodeOperationSemanticsCase(llvm::ArrayRef<std::uint8_t> bytes) {
   return decodeVocabulary<OperationSemanticsCase>(
       bytes, kSemanticsDomain, "operation semantics", semanticsFromWireTag);
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+dataflow::encodeCanonicalType(mlir::Type type) {
+  Writer writer;
+  writeDomain(writer, kCanonicalTypeDomain);
+  if (llvm::Error error = encodeType(writer, type, 0))
+    return std::move(error);
+  return loom::CanonicalSemanticBytes(writer.take());
+}
+
+llvm::Expected<mlir::Type>
+dataflow::decodeCanonicalType(llvm::ArrayRef<std::uint8_t> bytes,
+                              mlir::MLIRContext *context) {
+  if (!context)
+    return invalid("canonical type decode requires an MLIR context");
+  Reader reader(bytes);
+  if (llvm::Error error = readDomain(reader, kCanonicalTypeDomain))
+    return std::move(error);
+  auto type = decodeType(reader, context, 0);
+  if (!type)
+    return type.takeError();
+  if (!reader.empty())
+    return invalid("trailing bytes");
+  auto canonical = encodeCanonicalType(*type);
+  if (!canonical)
+    return canonical.takeError();
+  if (canonical->bytes() != bytes)
+    return invalid("canonical type bytes are not in canonical form");
+  return *type;
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>
