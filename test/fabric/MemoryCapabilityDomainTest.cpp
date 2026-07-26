@@ -336,6 +336,43 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
           "atomic access did not use its owner-projected source alignment");
 }
 
+void checkReducedAccessRelation() {
+  MemoryAccessClass width32 = accessClass(MemoryAccessForm::Contiguous, 32, 4);
+  MemoryAccessClass width64 = accessClass(MemoryAccessForm::Contiguous, 64, 4);
+
+  ParameterizedMemoryAccessDomain normalized =
+      take("reduced relation",
+           ParameterizedMemoryAccessDomain::create({width64, width32}));
+  require("reduced relation", normalized.accessClasses().size() == 1,
+          "equivalent suffix relations were not factored");
+  const MemoryAccessClass &merged = normalized.accessClasses().front();
+  const UnsignedInterval expectedWidths[] = {{32, 32}, {64, 64}};
+  require("reduced relation",
+          merged.elementWidths().intervals() == llvm::ArrayRef(expectedWidths),
+          "factored width domain is not canonical");
+
+  expectRejected<ParameterizedMemoryAccessDomain>(
+      "noncanonical relation",
+      ParameterizedMemoryAccessDomain::fromCanonical({width32, width64}));
+  ParameterizedMemoryAccessDomain imported =
+      take("canonical relation", ParameterizedMemoryAccessDomain::fromCanonical(
+                                     normalized.accessClasses()));
+  require("canonical relation", imported.accessClasses().size() == 1,
+          "strict import changed a canonical relation");
+
+  MemoryAccessClass width32Lanes12 = accessClass(
+      MemoryAccessForm::Contiguous, singleton(32),
+      take("lane set",
+           UnsignedDomain::fromCanonical({UnsignedInterval{1, 2}})));
+  MemoryAccessClass width64Lane1 =
+      accessClass(MemoryAccessForm::Contiguous, 64, 1);
+  ParameterizedMemoryAccessDomain correlated = take(
+      "correlated relation",
+      ParameterizedMemoryAccessDomain::create({width64Lane1, width32Lanes12}));
+  require("correlated relation", correlated.accessClasses().size() == 2,
+          "normalization over-admitted a Cartesian width/lane product");
+}
+
 } // namespace
 
 int main() {
@@ -352,5 +389,6 @@ int main() {
   if (!module)
     fail("access fixture", "failed to parse");
   checkTypedAccessMembership(*module);
+  checkReducedAccessRelation();
   return EXIT_SUCCESS;
 }

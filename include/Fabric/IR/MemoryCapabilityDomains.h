@@ -255,11 +255,15 @@ private:
 
 class ParameterizedMemoryAccessDomain {
 public:
-  /// Builds a nonpersistent membership relation. Persistent field-byte
-  /// reduction remains unavailable until every Dataflow-owned field has its
-  /// owner codec; this helper only proves that the products do not overlap.
+  /// Normalizes an authoring relation into the unique reduced ordered product
+  /// relation owned by the Fabric memory capability schema.
   static llvm::Expected<ParameterizedMemoryAccessDomain>
   create(llvm::ArrayRef<MemoryAccessClass> accessClasses);
+
+  /// Strictly imports an already canonical relation. Equivalent but split,
+  /// reordered, or otherwise noncanonical products are rejected.
+  static llvm::Expected<ParameterizedMemoryAccessDomain>
+  fromCanonical(llvm::ArrayRef<MemoryAccessClass> accessClasses);
 
   const MemoryAccessClass *matchingClass(
       const dataflow::semantics::CanonicalMemoryAccessView &access) const;
