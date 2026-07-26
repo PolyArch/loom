@@ -327,6 +327,18 @@ still apply: an `element` view has lane count one; contiguous and indexed
 views carry their exact flattened lane counts; payload and mask widths must
 fit the selected physical endpoints.
 
+The shared reduced-relation wire is a `u64be` row count followed by framed
+rows. A row is a `u64be` field count followed by framed domains. A domain
+starts with the stable `u32be` tag `Finite(0)` or `Unsigned(1)`. A finite
+domain then stores a `u64be` atom count and framed semantic-owner atom bytes;
+an unsigned domain stores a `u64be` interval count followed by `u64be` lower
+and upper bounds. All frame lengths are `u64be`. Rows and finite atoms are
+strictly increasing by their complete encoded bytes; unsigned intervals use
+the canonical order and merging rules above. Unknown domain tags, empty
+domains, inconsistent field counts or domain kinds, trailing bytes, and any
+decode-and-reencode difference are invalid. The relation codec owns only this
+framing; it never interprets or assigns a second encoding to finite atoms.
+
 Dynamic-mask admission has one invariant meaning: inactive addresses are not
 evaluated, inactive operations are suppressed, inactive load-like result
 lanes are zero-filled, and an all-zero mask completes without a service

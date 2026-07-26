@@ -35,6 +35,12 @@ reduceProductRelation(llvm::ArrayRef<ReducedProductRow> rows,
 std::vector<std::uint8_t>
 encodeReducedProductRelation(llvm::ArrayRef<ReducedProductRow> rows);
 
+/// Strictly decodes the shared relation framing and validates canonical finite
+/// and unsigned domains. The semantic owner of each finite atom remains
+/// responsible for decoding and validating the atom bytes.
+llvm::Expected<std::vector<ReducedProductRow>>
+decodeReducedProductRelation(llvm::ArrayRef<std::uint8_t> bytes);
+
 } // namespace fabric::detail
 
 #endif // LOOM_FABRIC_IR_REDUCED_PRODUCT_RELATION_H

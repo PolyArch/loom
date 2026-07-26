@@ -31,6 +31,133 @@ void appendFramed(std::vector<std::uint8_t> &bytes,
   bytes.insert(bytes.end(), field.begin(), field.end());
 }
 
+class Reader {
+public:
+  explicit Reader(llvm::ArrayRef<std::uint8_t> bytes) : bytes_(bytes) {}
+
+  llvm::Expected<std::uint32_t> readU32(const llvm::Twine &field) {
+    if (remaining() < 4)
+      return invalid(field + " is truncated");
+    std::uint32_t value = 0;
+    for (unsigned index = 0; index < 4; ++index)
+      value = (value << 8) | bytes_[offset_++];
+    return value;
+  }
+
+  llvm::Expected<std::uint64_t> readU64(const llvm::Twine &field) {
+    if (remaining() < 8)
+      return invalid(field + " is truncated");
+    std::uint64_t value = 0;
+    for (unsigned index = 0; index < 8; ++index)
+      value = (value << 8) | bytes_[offset_++];
+    return value;
+  }
+
+  llvm::Expected<llvm::ArrayRef<std::uint8_t>>
+  readFrame(const llvm::Twine &field) {
+    auto size = readU64(field + " length");
+    if (!size)
+      return size.takeError();
+    if (*size > remaining())
+      return invalid(field + " is truncated");
+    llvm::ArrayRef<std::uint8_t> result = bytes_.slice(offset_, *size);
+    offset_ += *size;
+    return result;
+  }
+
+  llvm::Error finish(const llvm::Twine &record) const {
+    if (remaining() != 0)
+      return invalid(record + " has trailing bytes");
+    return llvm::Error::success();
+  }
+
+  std::size_t remaining() const { return bytes_.size() - offset_; }
+
+private:
+  llvm::ArrayRef<std::uint8_t> bytes_;
+  std::size_t offset_ = 0;
+};
+
+llvm::Expected<ReducedProductDomain>
+decodeDomain(llvm::ArrayRef<std::uint8_t> bytes) {
+  Reader reader(bytes);
+  auto tag = reader.readU32("relation domain tag");
+  if (!tag)
+    return tag.takeError();
+  auto count = reader.readU64("relation domain element count");
+  if (!count)
+    return count.takeError();
+  if (*count == 0)
+    return invalid("relation domain must not be empty");
+
+  if (*tag == 0) {
+    if (*count > reader.remaining() / 8)
+      return invalid("finite relation domain has an invalid atom count");
+    std::vector<ReducedFiniteAtom> atoms;
+    atoms.reserve(*count);
+    for (std::uint64_t index = 0; index < *count; ++index) {
+      auto atom = reader.readFrame("finite relation atom");
+      if (!atom)
+        return atom.takeError();
+      if (!atoms.empty() &&
+          !(llvm::ArrayRef<std::uint8_t>(atoms.back().bytes) < *atom))
+        return invalid("finite relation atoms are not sorted and unique");
+      atoms.push_back({std::vector<std::uint8_t>(atom->begin(), atom->end())});
+    }
+    if (llvm::Error error = reader.finish("finite relation domain"))
+      return std::move(error);
+    return ReducedProductDomain(ReducedFiniteDomain{std::move(atoms)});
+  }
+
+  if (*tag == 1) {
+    if (*count > reader.remaining() / 16)
+      return invalid("unsigned relation domain has an invalid interval count");
+    std::vector<UnsignedInterval> intervals;
+    intervals.reserve(*count);
+    for (std::uint64_t index = 0; index < *count; ++index) {
+      auto lower = reader.readU64("unsigned interval lower bound");
+      if (!lower)
+        return lower.takeError();
+      auto upper = reader.readU64("unsigned interval upper bound");
+      if (!upper)
+        return upper.takeError();
+      intervals.push_back({*lower, *upper});
+    }
+    if (llvm::Error error = reader.finish("unsigned relation domain"))
+      return std::move(error);
+    auto domain = UnsignedDomain::fromCanonical(intervals);
+    if (!domain)
+      return domain.takeError();
+    return ReducedProductDomain(std::move(*domain));
+  }
+
+  return invalid("unknown reduced relation domain tag");
+}
+
+llvm::Expected<ReducedProductRow>
+decodeRow(llvm::ArrayRef<std::uint8_t> bytes) {
+  Reader reader(bytes);
+  auto count = reader.readU64("relation row field count");
+  if (!count)
+    return count.takeError();
+  if (*count == 0 || *count > reader.remaining() / 8)
+    return invalid("relation row has an invalid field count");
+  ReducedProductRow row;
+  row.reserve(*count);
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto domainBytes = reader.readFrame("relation field domain");
+    if (!domainBytes)
+      return domainBytes.takeError();
+    auto domain = decodeDomain(*domainBytes);
+    if (!domain)
+      return domain.takeError();
+    row.push_back(std::move(*domain));
+  }
+  if (llvm::Error error = reader.finish("relation row"))
+    return std::move(error);
+  return row;
+}
+
 bool domainsIntersect(const UnsignedDomain &lhs, const UnsignedDomain &rhs) {
   std::size_t left = 0;
   std::size_t right = 0;
@@ -271,6 +398,44 @@ encodeReducedProductRelation(llvm::ArrayRef<ReducedProductRow> rows) {
     appendFramed(bytes, encoded);
   }
   return bytes;
+}
+
+llvm::Expected<std::vector<ReducedProductRow>>
+decodeReducedProductRelation(llvm::ArrayRef<std::uint8_t> bytes) {
+  Reader reader(bytes);
+  auto count = reader.readU64("reduced relation row count");
+  if (!count)
+    return count.takeError();
+  if (*count == 0 || *count > reader.remaining() / 8)
+    return invalid("reduced relation has an invalid row count");
+
+  std::vector<ReducedProductRow> rows;
+  rows.reserve(*count);
+  std::vector<std::uint8_t> previousBytes;
+  std::size_t fieldCount = 0;
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto rowBytes = reader.readFrame("reduced relation row");
+    if (!rowBytes)
+      return rowBytes.takeError();
+    if (!previousBytes.empty() &&
+        !(llvm::ArrayRef<std::uint8_t>(previousBytes) < *rowBytes))
+      return invalid("reduced relation rows are not sorted and unique");
+    auto row = decodeRow(*rowBytes);
+    if (!row)
+      return row.takeError();
+    if (rows.empty())
+      fieldCount = row->size();
+    else if (row->size() != fieldCount)
+      return invalid("reduced relation rows have inconsistent field counts");
+    for (std::size_t field = 0; field < row->size(); ++field)
+      if (!rows.empty() && (*row)[field].index() != rows.front()[field].index())
+        return invalid("reduced relation field changes domain kind");
+    previousBytes.assign(rowBytes->begin(), rowBytes->end());
+    rows.push_back(std::move(*row));
+  }
+  if (llvm::Error error = reader.finish("reduced relation"))
+    return std::move(error);
+  return rows;
 }
 
 } // namespace fabric::detail

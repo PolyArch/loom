@@ -252,26 +252,10 @@ llvm::Expected<std::vector<Value>> valuesOf(const RelationDomain &domain) {
 }
 
 llvm::Expected<std::vector<MemoryAccessClass>>
-normalizeAccessClasses(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
-  if (accessClasses.empty())
-    return invalid("parameterized memory access domain must not be empty");
-
-  std::vector<RelationRow> rows;
-  rows.reserve(accessClasses.size());
-  for (const MemoryAccessClass &accessClass : accessClasses) {
-    auto row = accessClassRelationRow(accessClass);
-    if (!row)
-      return row.takeError();
-    rows.push_back(std::move(*row));
-  }
-  const bool groupFiniteFields[] = {false, true, true, true, true, true, true};
-  auto normalized = detail::reduceProductRelation(rows, groupFiniteFields);
-  if (!normalized)
-    return normalized.takeError();
-
+accessClassesFromRows(llvm::ArrayRef<RelationRow> rows) {
   std::vector<MemoryAccessClass> result;
-  result.reserve(normalized->size());
-  for (const RelationRow &row : *normalized) {
+  result.reserve(rows.size());
+  for (const RelationRow &row : rows) {
     if (row.size() != 7)
       return invalid("canonical access relation has the wrong field count");
     auto forms = valuesOf<MemoryAccessForm>(row[0]);
@@ -313,6 +297,26 @@ normalizeAccessClasses(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
     result.push_back(std::move(*accessClass));
   }
   return result;
+}
+
+llvm::Expected<std::vector<MemoryAccessClass>>
+normalizeAccessClasses(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
+  if (accessClasses.empty())
+    return invalid("parameterized memory access domain must not be empty");
+
+  std::vector<RelationRow> rows;
+  rows.reserve(accessClasses.size());
+  for (const MemoryAccessClass &accessClass : accessClasses) {
+    auto row = accessClassRelationRow(accessClass);
+    if (!row)
+      return row.takeError();
+    rows.push_back(std::move(*row));
+  }
+  const bool groupFiniteFields[] = {false, true, true, true, true, true, true};
+  auto normalized = detail::reduceProductRelation(rows, groupFiniteFields);
+  if (!normalized)
+    return normalized.takeError();
+  return accessClassesFromRows(*normalized);
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -648,6 +652,31 @@ const MemoryAccessClass *ParameterizedMemoryAccessDomain::matchingClass(
     if (candidate.contains(access))
       return &candidate;
   return nullptr;
+}
+
+llvm::Expected<std::vector<std::uint8_t>> encodeParameterizedMemoryAccessDomain(
+    const ParameterizedMemoryAccessDomain &domain) {
+  return encodeAccessRelation(domain.accessClasses());
+}
+
+llvm::Expected<ParameterizedMemoryAccessDomain>
+decodeParameterizedMemoryAccessDomain(llvm::ArrayRef<std::uint8_t> bytes) {
+  auto rows = detail::decodeReducedProductRelation(bytes);
+  if (!rows)
+    return rows.takeError();
+  auto accessClasses = accessClassesFromRows(*rows);
+  if (!accessClasses)
+    return accessClasses.takeError();
+  auto domain = ParameterizedMemoryAccessDomain::fromCanonical(*accessClasses);
+  if (!domain)
+    return domain.takeError();
+  auto canonical = encodeParameterizedMemoryAccessDomain(*domain);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*canonical) != bytes)
+    return invalid(
+        "parameterized memory access domain bytes are not canonical");
+  return domain;
 }
 
 } // namespace fabric

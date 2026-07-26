@@ -371,6 +371,19 @@ void checkReducedAccessRelation() {
       ParameterizedMemoryAccessDomain::create({width64Lane1, width32Lanes12}));
   require("correlated relation", correlated.accessClasses().size() == 2,
           "normalization over-admitted a Cartesian width/lane product");
+
+  std::vector<std::uint8_t> bytes =
+      take("access codec", encodeParameterizedMemoryAccessDomain(correlated));
+  ParameterizedMemoryAccessDomain decoded =
+      take("access codec", decodeParameterizedMemoryAccessDomain(bytes));
+  std::vector<std::uint8_t> rewritten =
+      take("access codec", encodeParameterizedMemoryAccessDomain(decoded));
+  require("access codec", bytes == rewritten,
+          "strict access-domain round trip changed canonical bytes");
+
+  bytes.push_back(0);
+  expectRejected<ParameterizedMemoryAccessDomain>(
+      "access trailing bytes", decodeParameterizedMemoryAccessDomain(bytes));
 }
 
 } // namespace

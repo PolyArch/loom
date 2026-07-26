@@ -285,6 +285,12 @@ private:
   std::vector<MemoryAccessClass> accessClasses_;
 };
 
+llvm::Expected<std::vector<std::uint8_t>> encodeParameterizedMemoryAccessDomain(
+    const ParameterizedMemoryAccessDomain &domain);
+
+llvm::Expected<ParameterizedMemoryAccessDomain>
+decodeParameterizedMemoryAccessDomain(llvm::ArrayRef<std::uint8_t> bytes);
+
 } // namespace fabric
 
 #endif // LOOM_FABRIC_IR_MEMORY_CAPABILITY_DOMAINS_H
