@@ -66,6 +66,7 @@ tools = [
     "loom-fabric-elaboration-header-test",
     "loom-fabric-fifo-resource-contract-test",
     "loom-fabric-memory-capability-domain-test",
+    "loom-fabric-memory-actor-contract-domain-test",
     "loom-fabric-memory-capability-finalization-test",
     "loom-fabric-memory-port-transaction-test",
     "loom-fabric-memory-role-bindings-test",

@@ -401,6 +401,28 @@ repeat it. Plain access derives alignment one for this compatibility query;
 atomic actors use their exact declared source alignment. Thus actor semantics
 and physical alignment capability each have one owner.
 
+The Fabric-owned clause tags are stable version 1.0 wire values:
+
+```text
+LoadStorePlain(0)
+LoadStoreAtomic(1)
+AtomicRmw(2)
+CompareExchange(3)
+Fence(4)
+```
+
+The actor-domain record is one framed OperationSchema owner encoding, followed
+by a `u64be` clause count and that many framed clause records. A clause record
+is its `u32be` Fabric tag, its exact `u64be` field count, and one framed finite
+domain per field in the declaration order above. A finite domain is a `u64be`
+atom count followed by that many framed bytes from the atom's semantic owner.
+A compare-exchange ordering-pair atom is the framed success-ordering owner
+encoding followed by the framed failure-ordering owner encoding. All framing
+lengths are `u64be`. Unknown tags, wrong field counts, trailing bytes, empty
+domains, noncanonical owner atoms, and any byte sequence that differs from a
+strict decode-and-reencode are invalid. Fabric assigns no local encoding to a
+Dataflow-owned atom.
+
 One persistent port record is exactly:
 
 ```text

@@ -30,6 +30,10 @@ add_executable(loom-fabric-memory-capability-domain-test
   MemoryCapabilityDomainTest.cpp
 )
 
+add_executable(loom-fabric-memory-actor-contract-domain-test
+  MemoryActorContractDomainTest.cpp
+)
+
 add_executable(loom-fabric-memory-capability-finalization-test
   MemoryCapabilityFinalizationTest.cpp
 )
@@ -96,6 +100,14 @@ target_link_libraries(loom-fabric-memory-capability-domain-test PRIVATE
   MLIRFuncDialect
   MLIRIR
   MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-actor-contract-domain-test PRIVATE
+  LoomFabricMemoryCapabilityDomains
+  MLIRDataflow
+  MLIRIR
   MLIRSupport
   LLVMSupport
 )
