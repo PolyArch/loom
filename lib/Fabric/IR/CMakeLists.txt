@@ -5,6 +5,7 @@ add_subdirectory(MemoryOperationPort)
 add_subdirectory(MemoryRoleBindings)
 add_subdirectory(MemoryConsistencyContract)
 add_subdirectory(MemoryServiceContract)
+add_subdirectory(SystemServiceContract)
 add_subdirectory(ResourceContract)
 add_subdirectory(BoundaryTransfer)
 add_subdirectory(FifoResourceContract)
@@ -87,6 +88,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricMemoryOperationPort
   LoomFabricMemoryServiceContract
   LoomFabricSystemContracts
+  LoomFabricSystemServiceContract
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums

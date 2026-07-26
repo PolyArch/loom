@@ -76,6 +76,7 @@ tools = [
     "loom-fabric-resource-contract-record-test",
     "loom-fabric-resource-contract-test",
     "loom-fabric-system-contract-test",
+    "loom-fabric-system-service-contract-test",
     "loom-fabric-temporal-operand-buffer-test",
     "loom-lower",
     "loom-raise",

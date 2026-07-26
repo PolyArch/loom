@@ -217,6 +217,10 @@ add_executable(loom-fabric-system-contract-test
   FabricSystemContractTest.cpp
 )
 
+add_executable(loom-fabric-system-service-contract-test
+  SystemServiceContractTest.cpp
+)
+
 target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
   LoomCommon
   LoomFabricIdentity
@@ -281,5 +285,15 @@ target_link_libraries(loom-fabric-system-contract-test PRIVATE
   LoomFabricIdentity
   MLIRFabric
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-system-service-contract-test PRIVATE
+  LoomFabricSystemServiceContract
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  MLIRSupport
   LLVMSupport
 )

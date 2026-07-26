@@ -65,6 +65,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-resource-contract-record-test
   loom-fabric-resource-contract-test
   loom-fabric-system-contract-test
+  loom-fabric-system-service-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-frontend-payload-framing-test
   loom-mapping-core-test

@@ -642,6 +642,47 @@ def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
   let hasVerifier = 1;
 }
 
+def Fabric_SystemServiceEndpointOp : Fabric_Op<"system.service_endpoint", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "typed Canonical Service endpoint entity";
+  let description = [{
+    One endpoint owned by an exact System entity. Its capability set binds the
+    closed Canonical Service kinds to typed accepted domains and one exact
+    rate, outstanding-capacity, and progress contract.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$owner,
+      DenseI8ArrayAttr:$capabilities
+  );
+
+  let assemblyFormat = [{
+    `owner` `=` $owner `capabilities` `=` $capabilities attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemServiceTransformOp : Fabric_Op<"system.service_transform", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "closed typed System memory-service transform";
+  let description = [{
+    One complete input/output relation and one AddressOffset, AddressMaskXor,
+    StaticInterleave, or CoherentMemory contract. Identity remains a direct
+    connection and has no transform operation.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$contract
+  );
+
+  let assemblyFormat = "`contract` `=` $contract attr-dict";
+  let hasVerifier = 1;
+}
+
 def Fabric_SystemTransportResourceOp :
     Fabric_Op<"system.transport_resource", [
       HasParent<"::fabric::SystemOp">

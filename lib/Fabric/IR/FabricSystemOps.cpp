@@ -3,6 +3,7 @@
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -84,6 +85,7 @@ LogicalResult SystemOp::verify() {
   llvm::DenseSet<std::uint64_t> entityIds;
   for (Operation &operation : block) {
     if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
+             SystemServiceEndpointOp, SystemServiceTransformOp,
              SystemTransportResourceOp, SystemTransferPatternOp,
              SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
@@ -128,6 +130,33 @@ LogicalResult SystemMemoryServiceOp::verify() {
   if (!decoded)
     return emitOpError("has invalid System memory service contract: ")
            << llvm::toString(decoded.takeError());
+  return success();
+}
+
+LogicalResult SystemServiceEndpointOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto owner = loom::fabric::decodeSystemServiceEndpointOwnerRef(
+      unsignedBytes(getOwnerAttr()));
+  if (!owner)
+    return emitOpError("has invalid owner reference: ")
+           << llvm::toString(owner.takeError());
+  auto capabilities = loom::fabric::decodeCanonicalServiceCapabilitySet(
+      unsignedBytes(getCapabilitiesAttr()), getContext());
+  if (!capabilities)
+    return emitOpError("has invalid capability set: ")
+           << llvm::toString(capabilities.takeError());
+  return success();
+}
+
+LogicalResult SystemServiceTransformOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto contract = loom::fabric::decodeSystemServiceTransformRecord(
+      unsignedBytes(getContractAttr()));
+  if (!contract)
+    return emitOpError("has invalid service transform contract: ")
+           << llvm::toString(contract.takeError());
   return success();
 }
 

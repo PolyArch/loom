@@ -43,6 +43,11 @@ private:
   std::vector<UnsignedInterval> intervals_;
 };
 
+llvm::Expected<std::vector<std::uint8_t>>
+encodeUnsignedDomain(const UnsignedDomain &domain);
+llvm::Expected<UnsignedDomain>
+decodeUnsignedDomain(llvm::ArrayRef<std::uint8_t> bytes);
+
 class AlignmentDomain {
 public:
   static llvm::Expected<AlignmentDomain> create(UnsignedDomain exponents);

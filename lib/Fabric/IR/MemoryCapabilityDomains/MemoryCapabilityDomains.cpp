@@ -681,6 +681,49 @@ decodeParameterizedMemoryAccessDomain(llvm::ArrayRef<std::uint8_t> bytes) {
   return domain;
 }
 
+llvm::Expected<std::vector<std::uint8_t>>
+encodeUnsignedDomain(const UnsignedDomain &domain) {
+  std::vector<std::uint8_t> bytes;
+  appendU64(bytes, domain.intervals().size());
+  for (UnsignedInterval interval : domain.intervals()) {
+    appendU64(bytes, interval.lower);
+    appendU64(bytes, interval.upper);
+  }
+  return bytes;
+}
+
+llvm::Expected<UnsignedDomain>
+decodeUnsignedDomain(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::size_t offset = 0;
+  auto count = readU64(bytes, offset);
+  if (!count)
+    return count.takeError();
+  if (*count > (bytes.size() - offset) / 16)
+    return invalid("unsigned domain interval count exceeds framing");
+  std::vector<UnsignedInterval> intervals;
+  intervals.reserve(static_cast<std::size_t>(*count));
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto lower = readU64(bytes, offset);
+    if (!lower)
+      return lower.takeError();
+    auto upper = readU64(bytes, offset);
+    if (!upper)
+      return upper.takeError();
+    intervals.push_back({*lower, *upper});
+  }
+  if (offset != bytes.size())
+    return invalid("unsigned domain has trailing bytes");
+  auto domain = UnsignedDomain::fromCanonical(intervals);
+  if (!domain)
+    return domain.takeError();
+  auto canonical = encodeUnsignedDomain(*domain);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*canonical) != bytes)
+    return invalid("unsigned domain bytes are not canonical");
+  return domain;
+}
+
 llvm::Expected<detail::ReducedProductRow>
 detail::projectMemoryAccessClass(const MemoryAccessClass &accessClass) {
   return accessClassRelationRow(accessClass);
