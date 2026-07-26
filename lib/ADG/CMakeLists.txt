@@ -16,6 +16,7 @@ add_mlir_library(LoomADGBuilder
   LoomCommon
   LoomFabricArtifact
   LoomFabricVisualization
+  LoomFabricTemporalSwitchResourceContract
   LLVMSupport
   MLIRFabricEnums
   MLIRFabric

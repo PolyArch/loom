@@ -31,6 +31,24 @@ def Fabric_FuCapabilityDomainAttr
   let genVerifyDecl = 1;
 }
 
+def Fabric_SwitchFixedPriorityAttr
+    : Fabric_Attr<"SwitchFixedPriority", "switch_fixed_priority"> {
+  let summary = "fixed-priority temporal-switch requester order";
+  let parameters = (ins "::mlir::DenseI64ArrayAttr":$requester_order);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Fabric_SwitchRoundRobinAttr
+    : Fabric_Attr<"SwitchRoundRobin", "switch_round_robin"> {
+  let summary = "round-robin temporal-switch requester cycle";
+  let parameters = (ins
+      "::mlir::DenseI64ArrayAttr":$requester_cycle,
+      "uint64_t":$reset_requester);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def Fabric_MemoryServiceContractAttr
     : Fabric_Attr<"MemoryServiceContract", "memory_service_contract"> {
   let summary = "canonical typed memory service contract record";

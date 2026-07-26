@@ -12,6 +12,7 @@ add_subdirectory(ResourceContract)
 add_subdirectory(BoundaryTransfer)
 add_subdirectory(FifoResourceContract)
 add_subdirectory(TemporalOperandBuffer)
+add_subdirectory(TemporalSwitchResourceContract)
 
 add_mlir_library(MLIRFabricEnums
   FabricEnums.cpp
@@ -95,6 +96,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricMemoryServiceContract
   LoomFabricSystemContracts
   LoomFabricSystemServiceContract
+  LoomFabricTemporalSwitchResourceContract
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums

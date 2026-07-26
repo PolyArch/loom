@@ -76,7 +76,8 @@ fabric ops). `fabric.switch` requires `hw_params` to be present.
 
 ```
 [{connectivity_table = ["0110", "1011", "1111"]}]                              // spatial
-[{connectivity_table = ["0110", "1011", "1111"], route_table_size = 8 : i32}]  // temporal
+[{connectivity_table = ["0110", "1011", "1111"], route_table_size = 8 : i32,
+  grant_policy = #fabric.switch_round_robin<requester_cycle = array<i64: 0, 1, 2, 3>, reset_requester = 0>}] // temporal
 ```
 
 ### connectivity_table
@@ -101,6 +102,23 @@ fabric ops). `fabric.switch` requires `hw_params` to be present.
   explicit bounded capacity, independent of `2^T`, and does not allocate one
   row for every representable tag value.
 * Spatial switches MUST NOT carry `route_table_size`.
+
+### grant_policy (temporal only)
+
+The optional value is exactly one typed Fabric attribute:
+
+```text
+#fabric.switch_fixed_priority<requester_order = array<i64: ...>>
+#fabric.switch_round_robin<requester_cycle = array<i64: ...>,
+                           reset_requester = ...>
+```
+
+Requester ordinals are the switch input-port ordinals. The sequence is a
+permutation of the complete input domain and contains no duplicate. The reset
+requester of a round-robin policy occurs in its cycle. A temporal switch whose
+physical connectivity admits two inputs to one output requires one exact
+policy in Fabric 1.0. A switch without such fan-in must omit it. Spatial
+switches must omit it.
 
 ## Configured Mapping Projection
 
@@ -244,20 +262,27 @@ round_robin(exact requester order, reset cursor, advance on successful grant)
 
 The switch schema is the unique owner of its typed `ResourceState` values,
 canonical initial state, capacity dimensions, atomic transfer UsePatterns,
-and stable typed requester order. One broadcast pattern atomically claims the
-ingress and every selected egress or crosspoint state; it cannot be split into
-independent per-egress grants. Mapping selects only a declared exact policy
-refinement and supplies typed route and workload values. Cursor, occupancy,
-queue, and reservation state is nonpersistent execution state.
+and stable typed requester order. Its normalized resource projection is
+linear in physical connectivity:
 
-No policy is required when complete Mapping proves that at most one requester
-can be eligible at once. If reachable contention exists, an exact policy must
-be part of Fabric capability or a Mapping-selected exact refinement and must
-participate in exact Fabric/Mapping identity. A deterministic exact simulator
-rejects a contended switch whose contract gives only loose guarantees. Runtime,
-Mapping, simulation, and RTL lowering may not supply a default policy. The
-implementation owns the arbiter circuit and transient cursor, but not the
-cycle-visible policy semantics.
+* every input and output port owns one unit-capacity service state;
+* every admitted `(input, output)` traversal owns one UsePattern that claims
+  those two service states at one atomic transfer event; and
+* all patterns sourced by one input share that input's requester.
+
+For one selected broadcast, the traversal uses have the same owner, trigger,
+and concrete logical parameters and therefore form the derived atomic
+activation set defined by `docs/spec-pnr.md`. Repeated claims on the shared
+ingress normalize to one physical claim. The source cannot retire until the
+whole set acquires and commits, so no egress can be granted independently.
+Fabric does not enumerate the power set of possible broadcast destinations.
+
+Fabric 1.0 requires an exact policy whenever the physical connectivity admits
+fan-in. A later exact Fabric-owned refinement domain may broaden that authoring
+surface, but Mapping, simulation, runtime, and RTL lowering may not fill in a
+missing policy or choose a default. Cursor and reservation state are
+nonpersistent execution state. The implementation owns the arbiter circuit
+and transient cursor, but not the cycle-visible policy semantics.
 
 ### Broadcast backpressure contract
 
@@ -283,7 +308,9 @@ Anonymous temporal:
 
 ```mlir
 %o:3 = fabric.switch [temporal] %i0, %i1, %i2, %i3
-       [{connectivity_table = ["0110", "1011", "1111"], route_table_size = 8 : i32}]
+       [{connectivity_table = ["0110", "1011", "1111"],
+         route_table_size = 8 : i32,
+         grant_policy = #fabric.switch_round_robin<requester_cycle = array<i64: 0, 1, 2, 3>, reset_requester = 0>}]
        : (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
       -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
 ```
@@ -318,7 +345,8 @@ Named hardware template (temporal):
 fabric.switch @MySwT [temporal]
        (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
-       [{connectivity_table = ["11", "11"], route_table_size = 1 : i32}]
+       [{connectivity_table = ["11", "11"], route_table_size = 1 : i32,
+         grant_policy = #fabric.switch_fixed_priority<requester_order = array<i64: 0, 1>>}]
 ```
 
 Hardware-only forms have no selected configured projection.
@@ -341,6 +369,12 @@ stored on the template as shared workload state. Its
   per-row `>= 1` `'1'`, per-column `>= 1` `'1'`.
 * Spatial: `route_table_size` MUST NOT be present.
 * Temporal: `route_table_size` MUST be present and `>= 1`.
+* Spatial: `grant_policy` MUST NOT be present.
+* Temporal: an authored typed `grant_policy` has a non-empty, duplicate-free
+  requester sequence, and a round-robin reset requester is in the cycle.
+  Root-complete Fabric finalization requires exactly one policy for physical
+  fan-in, forbids one without fan-in, and validates that its sequence is a
+  permutation of every input ordinal.
 * A configured occurrence is exactly `Disabled` or `Active`; the inactive
   variant carries no route fields.
 * Active: `route_table` shape and per-row constraints, with an all-`Unused`

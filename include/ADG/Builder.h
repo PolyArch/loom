@@ -13,6 +13,7 @@
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/IR/SystemServiceContract.h"
+#include "Fabric/IR/TemporalSwitchResourceContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -314,6 +315,7 @@ struct SwitchSpec final {
   std::vector<PortType> outputTypes;
   std::vector<std::vector<std::uint32_t>> sourcesByOutput;
   std::optional<std::uint32_t> routeTableSize;
+  std::optional<::fabric::TemporalSwitchGrantPolicy> grantPolicy;
 
   static SwitchSpec
   spatial(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
@@ -322,7 +324,8 @@ struct SwitchSpec final {
   static SwitchSpec
   temporal(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
            std::vector<std::vector<std::uint32_t>> sourcesByOutput,
-           std::uint32_t routeTableSize);
+           std::uint32_t routeTableSize,
+           std::optional<::fabric::TemporalSwitchGrantPolicy> grantPolicy);
 };
 
 /// One exact optional fabric.mem Operation Engine declaration.

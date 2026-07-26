@@ -62,6 +62,10 @@ add_executable(loom-fabric-temporal-operand-buffer-test
   TemporalOperandBufferTest.cpp
 )
 
+add_executable(loom-fabric-temporal-switch-resource-contract-test
+  TemporalSwitchResourceContractTest.cpp
+)
+
 target_link_libraries(loom-fabric-elaboration-api-test PRIVATE
   MLIRFabric
   MLIRParser
@@ -173,6 +177,10 @@ target_link_libraries(loom-fabric-fifo-resource-contract-test PRIVATE
 target_link_libraries(loom-fabric-temporal-operand-buffer-test PRIVATE
   LoomFabricTemporalOperandBuffer
   MLIRFabricEnums
+)
+
+target_link_libraries(loom-fabric-temporal-switch-resource-contract-test PRIVATE
+  LoomFabricTemporalSwitchResourceContract
 )
 
 add_executable(loom-fabric-implementation-family-test

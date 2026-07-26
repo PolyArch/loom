@@ -7,6 +7,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/FuCapabilityDomain.h"
+#include "Fabric/IR/TemporalSwitchResourceContract.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -22,6 +23,7 @@
 #include <limits>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace loom::adg {
@@ -144,17 +146,25 @@ SwitchSpec
 SwitchSpec::spatial(std::vector<PortType> inputTypes,
                     std::vector<PortType> outputTypes,
                     std::vector<std::vector<std::uint32_t>> sourcesByOutput) {
-  return {::fabric::Schedule::Spatial, std::move(inputTypes),
-          std::move(outputTypes), std::move(sourcesByOutput), std::nullopt};
+  return {::fabric::Schedule::Spatial,
+          std::move(inputTypes),
+          std::move(outputTypes),
+          std::move(sourcesByOutput),
+          std::nullopt,
+          std::nullopt};
 }
 
-SwitchSpec
-SwitchSpec::temporal(std::vector<PortType> inputTypes,
-                     std::vector<PortType> outputTypes,
-                     std::vector<std::vector<std::uint32_t>> sourcesByOutput,
-                     std::uint32_t routeTableSize) {
-  return {::fabric::Schedule::Temporal, std::move(inputTypes),
-          std::move(outputTypes), std::move(sourcesByOutput), routeTableSize};
+SwitchSpec SwitchSpec::temporal(
+    std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+    std::vector<std::vector<std::uint32_t>> sourcesByOutput,
+    std::uint32_t routeTableSize,
+    std::optional<::fabric::TemporalSwitchGrantPolicy> grantPolicy) {
+  return {::fabric::Schedule::Temporal,
+          std::move(inputTypes),
+          std::move(outputTypes),
+          std::move(sourcesByOutput),
+          routeTableSize,
+          std::move(grantPolicy)};
 }
 
 MemoryEngineSpec MemoryEngineSpec::spatial(
@@ -987,9 +997,23 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
     return invalid("Switch connectivity row count does not match its outputs");
   if (spec.schedule == ::fabric::Schedule::Spatial && spec.routeTableSize)
     return invalid("Spatial switch cannot declare a route-table capacity");
+  if (spec.schedule == ::fabric::Schedule::Spatial && spec.grantPolicy)
+    return invalid("Spatial switch cannot declare temporal arbitration");
   if (spec.schedule == ::fabric::Schedule::Temporal &&
       (!spec.routeTableSize || *spec.routeTableSize == 0))
     return invalid("Temporal switch requires a positive route-table capacity");
+
+  if (spec.schedule == ::fabric::Schedule::Temporal) {
+    if (spec.inputTypes.size() > std::numeric_limits<std::uint32_t>::max() ||
+        spec.outputTypes.size() > std::numeric_limits<std::uint32_t>::max())
+      return invalid("Temporal switch port domain exceeds u32");
+    auto resources = ::fabric::TemporalSwitchResourceContract::create(
+        {static_cast<std::uint32_t>(spec.inputTypes.size()),
+         static_cast<std::uint32_t>(spec.outputTypes.size()),
+         spec.sourcesByOutput, spec.grantPolicy});
+    if (!resources)
+      return resources.takeError();
+  }
 
   llvm::SmallVector<mlir::Value, 8> values;
   llvm::SmallVector<mlir::Type, 8> inputTypes;
@@ -1040,6 +1064,30 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
         "route_table_size",
         mlir::IntegerAttr::get(mlir::IntegerType::get(&(*state)->context, 32),
                                *spec.routeTableSize));
+  if (spec.grantPolicy) {
+    mlir::Attribute policy = std::visit(
+        [&](auto &&selected) -> mlir::Attribute {
+          using Policy = std::decay_t<decltype(selected)>;
+          std::vector<std::int64_t> requesters;
+          if constexpr (std::is_same_v<Policy,
+                                       ::fabric::TemporalSwitchFixedPriority>) {
+            requesters.assign(selected.requesterOrder.begin(),
+                              selected.requesterOrder.end());
+            return ::fabric::SwitchFixedPriorityAttr::get(
+                &(*state)->context,
+                mlir::DenseI64ArrayAttr::get(&(*state)->context, requesters));
+          } else {
+            requesters.assign(selected.requesterCycle.begin(),
+                              selected.requesterCycle.end());
+            return ::fabric::SwitchRoundRobinAttr::get(
+                &(*state)->context,
+                mlir::DenseI64ArrayAttr::get(&(*state)->context, requesters),
+                selected.resetRequester);
+          }
+        },
+        *spec.grantPolicy);
+    hardware.set(::fabric::kSwitchGrantPolicyParameterName, policy);
+  }
   mlir::ArrayAttr hardwareParameters = mlir::ArrayAttr::get(
       &(*state)->context, {hardware.getDictionary(&(*state)->context)});
 

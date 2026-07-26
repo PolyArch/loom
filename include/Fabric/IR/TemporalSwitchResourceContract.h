@@ -1,0 +1,92 @@
+#ifndef FABRIC_IR_TEMPORALSWITCHRESOURCECONTRACT_H
+#define FABRIC_IR_TEMPORALSWITCHRESOURCECONTRACT_H
+
+#include "Fabric/IR/ResourceContract.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <optional>
+#include <variant>
+#include <vector>
+
+namespace fabric {
+
+class SwitchOp;
+
+inline constexpr llvm::StringLiteral
+    kSwitchGrantPolicyParameterName("grant_policy");
+
+struct TemporalSwitchFixedPriority final {
+  std::vector<std::uint32_t> requesterOrder;
+};
+
+struct TemporalSwitchRoundRobin final {
+  std::vector<std::uint32_t> requesterCycle;
+  std::uint32_t resetRequester = 0;
+};
+
+using TemporalSwitchGrantPolicy =
+    std::variant<TemporalSwitchFixedPriority, TemporalSwitchRoundRobin>;
+
+struct TemporalSwitchResourceDeclaration final {
+  std::uint32_t inputCount = 0;
+  std::uint32_t outputCount = 0;
+  std::vector<std::vector<std::uint32_t>> sourcesByOutput;
+  std::optional<TemporalSwitchGrantPolicy> grantPolicy;
+};
+
+/// The complete Mapping-visible resource projection of one temporal switch.
+/// It remains linear in the physical connectivity: every admitted input/output
+/// traversal is one use pattern, patterns from one input share one requester,
+/// and each pattern claims exactly that ingress and egress service. A selected
+/// broadcast is the atomic same-requester activation set of its traversals, so
+/// it neither enumerates output subsets nor permits partial delivery.
+class TemporalSwitchResourceContract final {
+public:
+  static llvm::Expected<TemporalSwitchResourceContract>
+  create(TemporalSwitchResourceDeclaration declaration);
+
+  std::uint32_t inputCount() const { return inputCount_; }
+  std::uint32_t outputCount() const { return outputCount_; }
+
+  const ResourceContract &resourceContract() const { return contract_; }
+
+  StateKey inputState(std::uint32_t input) const;
+  StateKey outputState(std::uint32_t output) const;
+  RequesterKey inputRequester(std::uint32_t input) const;
+
+  /// Resolves the unique canonical use-pattern key for one admitted physical
+  /// traversal. A disconnected or out-of-range pair is rejected.
+  llvm::Expected<UsePatternKey> traversalPattern(std::uint32_t input,
+                                                 std::uint32_t output) const;
+
+private:
+  TemporalSwitchResourceContract(std::uint32_t inputCount,
+                                 std::uint32_t outputCount,
+                                 std::vector<std::uint32_t> inputOffsets,
+                                 std::vector<std::uint32_t> outputsByInput,
+                                 ResourceContract contract)
+      : inputCount_(inputCount), outputCount_(outputCount),
+        inputOffsets_(std::move(inputOffsets)),
+        outputsByInput_(std::move(outputsByInput)),
+        contract_(std::move(contract)) {}
+
+  std::uint32_t inputCount_ = 0;
+  std::uint32_t outputCount_ = 0;
+  std::vector<std::uint32_t> inputOffsets_;
+  std::vector<std::uint32_t> outputsByInput_;
+  ResourceContract contract_;
+};
+
+/// Projects one verified temporal fabric.switch occurrence into its complete
+/// Mapping-visible resource contract. This is the only IR-to-contract
+/// projection used by the op verifier and Fabric finalizer.
+llvm::Expected<TemporalSwitchResourceContract>
+deriveTemporalSwitchResourceContract(SwitchOp operation);
+
+} // namespace fabric
+
+#endif // FABRIC_IR_TEMPORALSWITCHRESOURCECONTRACT_H

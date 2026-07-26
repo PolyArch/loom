@@ -21,6 +21,7 @@
 
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/TemporalSwitchResourceContract.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -30,8 +31,55 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <system_error>
+#include <vector>
+
 using namespace mlir;
 using namespace fabric;
+
+namespace {
+
+LogicalResult
+verifyRequesterSequence(llvm::function_ref<InFlightDiagnostic()> emitError,
+                        DenseI64ArrayAttr requesters,
+                        std::optional<std::uint64_t> reset) {
+  if (!requesters || requesters.empty())
+    return emitError() << "switch grant policy requires a non-empty requester "
+                          "sequence";
+  llvm::DenseSet<std::uint64_t> seen;
+  for (std::int64_t requester : requesters.asArrayRef()) {
+    if (requester < 0 || static_cast<std::uint64_t>(requester) >
+                             std::numeric_limits<std::uint32_t>::max())
+      return emitError() << "switch requester ordinal is outside u32";
+    if (!seen.insert(static_cast<std::uint64_t>(requester)).second)
+      return emitError() << "switch grant policy repeats requester "
+                         << requester;
+  }
+  if (reset && !seen.contains(*reset))
+    return emitError() << "round-robin reset requester is absent from its "
+                          "requester cycle";
+  return success();
+}
+
+} // namespace
+
+LogicalResult SwitchFixedPriorityAttr::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError,
+    DenseI64ArrayAttr requesterOrder) {
+  return verifyRequesterSequence(emitError, requesterOrder, std::nullopt);
+}
+
+LogicalResult
+SwitchRoundRobinAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                             DenseI64ArrayAttr requesterCycle,
+                             std::uint64_t resetRequester) {
+  if (resetRequester > std::numeric_limits<std::uint32_t>::max())
+    return emitError() << "round-robin reset requester is outside u32";
+  return verifyRequesterSequence(emitError, requesterCycle, resetRequester);
+}
 
 //===----------------------------------------------------------------------===//
 // fabric.switch: parser
@@ -701,6 +749,10 @@ static LogicalResult verifySpatialNoTemporalKeys(SwitchOp op,
     return op.emitOpError(
         "spatial fabric.switch must not carry temporal-only attribute "
         "'route_table_size'");
+  if (hwDict.get(kSwitchGrantPolicyParameterName))
+    return op.emitOpError(
+               "spatial fabric.switch must not carry temporal-only attribute '")
+           << kSwitchGrantPolicyParameterName << "'";
   return success();
 }
 
@@ -728,6 +780,102 @@ static LogicalResult verifyAllOrNothing(SwitchOp op, DictionaryAttr swDict,
 }
 
 } // namespace
+
+llvm::Expected<TemporalSwitchResourceContract>
+fabric::deriveTemporalSwitchResourceContract(SwitchOp operation) {
+  auto invalid = [](const llvm::Twine &message)
+      -> llvm::Expected<TemporalSwitchResourceContract> {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "invalid temporal fabric.switch resource projection: " + message);
+  };
+  if (operation.getSchedule() != Schedule::Temporal)
+    return invalid("operation is not temporal");
+
+  std::uint64_t inputCount = operation.getNumOperands();
+  std::uint64_t outputCount = operation.getNumResults();
+  if (operation.getSymNameAttr()) {
+    auto functionType = operation.getFunctionTypeAttr();
+    auto type = functionType ? dyn_cast<FunctionType>(functionType.getValue())
+                             : FunctionType();
+    if (!type)
+      return invalid("named operation has no function type");
+    inputCount = type.getNumInputs();
+    outputCount = type.getNumResults();
+  }
+  if (inputCount == 0 || outputCount == 0 ||
+      inputCount > std::numeric_limits<std::uint32_t>::max() ||
+      outputCount > std::numeric_limits<std::uint32_t>::max())
+    return invalid("port domain is empty or exceeds u32");
+
+  ArrayAttr parameters = operation.getHwParamsAttr();
+  auto hardware = parameters && parameters.size() == 1
+                      ? dyn_cast<DictionaryAttr>(parameters[0])
+                      : DictionaryAttr();
+  if (!hardware)
+    return invalid("hardware parameters are malformed");
+  auto connectivity =
+      dyn_cast_or_null<ArrayAttr>(hardware.get("connectivity_table"));
+  if (!connectivity || connectivity.size() != outputCount)
+    return invalid("connectivity does not cover the output domain");
+
+  std::vector<std::vector<std::uint32_t>> sourcesByOutput;
+  sourcesByOutput.reserve(connectivity.size());
+  for (Attribute rowAttribute : connectivity) {
+    auto row = dyn_cast<StringAttr>(rowAttribute);
+    if (!row || row.getValue().size() != inputCount)
+      return invalid("connectivity row is malformed");
+    std::vector<std::uint32_t> sources;
+    for (std::uint32_t input = 0; input != inputCount; ++input) {
+      const char selected = row.getValue()[inputCount - 1 - input];
+      if (selected != '0' && selected != '1')
+        return invalid("connectivity row has a non-binary entry");
+      if (selected == '1')
+        sources.push_back(input);
+    }
+    sourcesByOutput.push_back(std::move(sources));
+  }
+
+  std::optional<TemporalSwitchGrantPolicy> policy;
+  Attribute policyAttribute = hardware.get(kSwitchGrantPolicyParameterName);
+  auto decodeRequesters = [&](DenseI64ArrayAttr values)
+      -> llvm::Expected<std::vector<std::uint32_t>> {
+    std::vector<std::uint32_t> result;
+    result.reserve(values.size());
+    for (std::int64_t requester : values.asArrayRef()) {
+      if (requester < 0 || static_cast<std::uint64_t>(requester) >
+                               std::numeric_limits<std::uint32_t>::max())
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "switch requester is outside u32");
+      result.push_back(static_cast<std::uint32_t>(requester));
+    }
+    return result;
+  };
+  if (auto fixed = dyn_cast_or_null<SwitchFixedPriorityAttr>(policyAttribute)) {
+    auto requesters = decodeRequesters(fixed.getRequesterOrder());
+    if (!requesters)
+      return requesters.takeError();
+    policy = TemporalSwitchFixedPriority{std::move(*requesters)};
+  } else if (auto roundRobin =
+                 dyn_cast_or_null<SwitchRoundRobinAttr>(policyAttribute)) {
+    auto requesters = decodeRequesters(roundRobin.getRequesterCycle());
+    if (!requesters)
+      return requesters.takeError();
+    if (roundRobin.getResetRequester() >
+        std::numeric_limits<std::uint32_t>::max())
+      return invalid("round-robin reset requester is outside u32");
+    policy = TemporalSwitchRoundRobin{
+        std::move(*requesters),
+        static_cast<std::uint32_t>(roundRobin.getResetRequester())};
+  } else if (policyAttribute) {
+    return invalid("grant policy has an unknown typed variant");
+  }
+
+  return TemporalSwitchResourceContract::create(
+      {static_cast<std::uint32_t>(inputCount),
+       static_cast<std::uint32_t>(outputCount), std::move(sourcesByOutput),
+       std::move(policy)});
+}
 
 //===----------------------------------------------------------------------===//
 // fabric.switch: verifier

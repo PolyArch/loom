@@ -18,6 +18,7 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
+#include "Fabric/IR/TemporalSwitchResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactDependencyClosureInternal.h"
@@ -138,10 +139,13 @@ deriveResourceContract(
         derived->resourceContract());
   }
   if (auto sw = dyn_cast<::fabric::SwitchOp>(operation);
-      sw && sw.getSchedule() == ::fabric::Schedule::Temporal)
-    return ownerUnavailable(
-        "temporal fabric.switch finalization requires its complete switch "
-        "resource projection");
+      sw && sw.getSchedule() == ::fabric::Schedule::Temporal) {
+    auto derived = ::fabric::deriveTemporalSwitchResourceContract(sw);
+    if (!derived)
+      return derived.takeError();
+    return std::optional<::fabric::ResourceContract>(
+        derived->resourceContract());
+  }
   return std::optional<::fabric::ResourceContract>();
 }
 
@@ -1544,7 +1548,8 @@ strictImportSystem(const ArtifactRootReference &reference,
     if (!stored || stored.getId() != carrier.id)
       return invalid(llvm::Twine("canonical System payload has stale entity ") +
                      llvm::Twine(stored ? stored.getId() : ~0ULL) +
-                     "; expected " + llvm::Twine(carrier.id));
+                     "; expected " + llvm::Twine(carrier.id) + " on " +
+                     carrier.op->getName().getStringRef());
   }
 
   auto rewritten = detail::writeCanonicalFabricBytecode(module);

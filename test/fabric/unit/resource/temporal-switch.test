@@ -1,0 +1,2 @@
+# RUN: loom-fabric-temporal-switch-resource-contract-test
+# CHECK: temporal switch resource contract ok

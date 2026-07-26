@@ -39,6 +39,13 @@ InstructionCore, clocks, resets, and semantic capabilities must be
 deterministic so the same public API can reproduce and teach the exact
 hardware.
 
+A temporal switch projects one resource pattern per physical traversal, not
+one pattern per configured broadcast subset. The latter is an exponential
+restatement of the route table. Patterns from one ingress share one requester,
+and the existing event-derived atomic activation set joins the selected
+egresses. This keeps physical capability linear in connectivity while retaining
+all-or-nothing broadcast and exact fan-in arbitration.
+
 The initial fixed-vector families are separate from scalar families even when
 they use the same software operation schema. Shape is a physical organization
 fact, while the canonical actor type remains the semantic owner. Adapter and
