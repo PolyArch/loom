@@ -371,6 +371,57 @@ ServiceKind dataflow::semantics::getServiceKind(MemoryAccessOperation op) {
   llvm_unreachable("unhandled canonical memory access operation");
 }
 
+const ServiceRoleSchema &
+dataflow::semantics::getServiceRoleSchema(ServiceKind kind) {
+  static const ServiceRoleSchema message{messageSchema.arguments,
+                                         messageSchema.results};
+  static const ServiceRoleSchema read{readSchema.arguments,
+                                      readSchema.results};
+  static const ServiceRoleSchema write{writeSchema.arguments,
+                                       writeSchema.results};
+  static const ServiceRoleSchema rmw{rmwSchema.arguments, rmwSchema.results};
+  static const ServiceRoleSchema compareExchange{
+      compareExchangeSchema.arguments, compareExchangeSchema.results};
+  static const ServiceRoleSchema fence{fenceSchema.arguments,
+                                       fenceSchema.results};
+
+  switch (kind) {
+  case ServiceKind::MessageTransfer:
+    return message;
+  case ServiceKind::MemoryRead:
+    return read;
+  case ServiceKind::MemoryWrite:
+    return write;
+  case ServiceKind::MemoryAtomicRmw:
+    return rmw;
+  case ServiceKind::MemoryCompareExchange:
+    return compareExchange;
+  case ServiceKind::MemoryFence:
+    return fence;
+  }
+  llvm_unreachable("unhandled canonical service kind");
+}
+
+llvm::Expected<ServiceKind>
+dataflow::semantics::getMemoryServiceKind(OperationSchemaId actorSchema) {
+  switch (actorSchema) {
+  case OperationSchemaId::DataflowLoad:
+    return ServiceKind::MemoryRead;
+  case OperationSchemaId::DataflowStore:
+    return ServiceKind::MemoryWrite;
+  case OperationSchemaId::DataflowAtomicRmw:
+    return ServiceKind::MemoryAtomicRmw;
+  case OperationSchemaId::DataflowCmpXchg:
+    return ServiceKind::MemoryCompareExchange;
+  case OperationSchemaId::DataflowFence:
+    return ServiceKind::MemoryFence;
+  default:
+    return schemaError("operation schema '" +
+                       operationSchemaSpelling(actorSchema) +
+                       "' is not a canonical memory actor");
+  }
+}
+
 llvm::Expected<CanonicalService>
 CanonicalService::messageTransfer(Type payload) {
   if (!payload)
@@ -486,7 +537,7 @@ Type CanonicalService::typeOf(ServiceValueRole role) const {
 
 ServiceValues CanonicalService::arguments() const {
   ServiceValues values;
-  for (Role role : getKindSchema(kind()).arguments) {
+  for (Role role : getServiceRoleSchema(kind()).arguments) {
     // Only an addressed kind lists a mask, and it names one exactly when its
     // actor carries a dynamic mask.
     if (role == Role::Mask && access().maskForm() == MemoryMaskForm::Absent)
@@ -498,7 +549,7 @@ ServiceValues CanonicalService::arguments() const {
 
 ServiceValues CanonicalService::results() const {
   ServiceValues values;
-  for (Role role : getKindSchema(kind()).results)
+  for (Role role : getServiceRoleSchema(kind()).results)
     values.push_back({role, typeOf(role)});
   return values;
 }

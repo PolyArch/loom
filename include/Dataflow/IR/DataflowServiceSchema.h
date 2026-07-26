@@ -233,11 +233,28 @@ enum class ServiceLegDirection : std::uint8_t {
   ServerToInitiator,
 };
 
+/// The maximal ordered role inventory owned by one Canonical Service kind.
+/// Optional roles, currently only a dynamic memory mask, remain in this
+/// schema and are activated by the exact service parameter.
+struct ServiceRoleSchema {
+  llvm::ArrayRef<ServiceValueRole> arguments;
+  llvm::ArrayRef<ServiceValueRole> results;
+};
+
 /// The schema spelling of one kind.
 llvm::StringRef stringifyServiceKind(ServiceKind kind);
 
 /// The service kind one addressed access operation obliges.
 ServiceKind getServiceKind(MemoryAccessOperation operation);
+
+/// The maximal role order of one service kind. This is the sole static role
+/// authority consumed by hardware capability schemas.
+const ServiceRoleSchema &getServiceRoleSchema(ServiceKind kind);
+
+/// Projects a registered canonical memory actor schema to its service kind.
+/// A non-memory actor schema is rejected rather than assigned a fallback.
+llvm::Expected<ServiceKind>
+getMemoryServiceKind(OperationSchemaId actorSchema);
 
 /// One nonpersistent Canonical Service Schema 2.0 service: an exact kind bound
 /// to the one parameter that kind takes -- a message payload type, an

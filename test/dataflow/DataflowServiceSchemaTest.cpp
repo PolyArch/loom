@@ -608,6 +608,59 @@ bool checkService(llvm::StringRef subject, const CanonicalService &service,
   return ok;
 }
 
+bool checkMemoryServiceRoleProjection() {
+  struct SchemaExpectation {
+    OperationSchemaId actor;
+    ServiceKind kind;
+    llvm::ArrayRef<Role> arguments;
+    llvm::ArrayRef<Role> results;
+  };
+
+  const SchemaExpectation schemas[] = {
+      {OperationSchemaId::DataflowLoad, ServiceKind::MemoryRead,
+       maskedReadArguments, readResults},
+      {OperationSchemaId::DataflowStore, ServiceKind::MemoryWrite,
+       maskedWriteArguments, writeResults},
+      {OperationSchemaId::DataflowAtomicRmw, ServiceKind::MemoryAtomicRmw,
+       maskedRmwArguments, rmwResults},
+      {OperationSchemaId::DataflowCmpXchg,
+       ServiceKind::MemoryCompareExchange, maskedCmpxchgArguments,
+       cmpxchgResults},
+      {OperationSchemaId::DataflowFence, ServiceKind::MemoryFence,
+       fenceArguments, fenceResults},
+  };
+
+  bool ok = true;
+  for (const SchemaExpectation &expected : schemas) {
+    llvm::Expected<ServiceKind> kind = getMemoryServiceKind(expected.actor);
+    if (!kind) {
+      llvm::consumeError(kind.takeError());
+      ok = fail("memory_service_role_projection",
+                "a canonical memory actor schema was rejected");
+      continue;
+    }
+    if (*kind != expected.kind)
+      ok = fail("memory_service_role_projection",
+                "an actor schema projected the wrong service kind");
+
+    const ServiceRoleSchema &roles = getServiceRoleSchema(*kind);
+    if (!llvm::equal(roles.arguments, expected.arguments) ||
+        !llvm::equal(roles.results, expected.results))
+      ok = fail("memory_service_role_projection",
+                "the static maximal role order differs from the service owner");
+  }
+
+  llvm::Expected<ServiceKind> compute =
+      getMemoryServiceKind(OperationSchemaId::ArithAddI);
+  if (compute) {
+    ok = fail("memory_service_role_projection",
+              "a non-memory actor schema projected a memory service");
+  } else {
+    llvm::consumeError(compute.takeError());
+  }
+  return ok;
+}
+
 /// A message transfer is the one kind no memory actor projects: it carries one
 /// exact supported payload type over a single leg whose acceptance is its
 /// completion. The kind has no addressed geometry, so it derives no width.
@@ -1159,5 +1212,6 @@ int main() {
   ok &= checkUnrepresentableProjection(*module);
   ok &= checkCorrespondenceIncludesIndexScope(*module);
   ok &= checkSourceTracking(*module);
+  ok &= checkMemoryServiceRoleProjection();
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
