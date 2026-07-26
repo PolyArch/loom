@@ -1,6 +1,7 @@
 #include "Fabric/IR/MemoryActorContractDomain.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Fabric/IR/MemoryCapabilityRelation.h"
 #include "Fabric/IR/ReducedProductRelation.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -1127,6 +1128,42 @@ decodeMemoryActorContractDomain(llvm::ArrayRef<std::uint8_t> bytes,
   if (llvm::ArrayRef<std::uint8_t>(*canonical) != bytes)
     return invalid("memory actor contract domain bytes are not canonical");
   return result;
+}
+
+llvm::Expected<detail::MemoryActorClauseRelation>
+detail::projectMemoryActorContractClause(
+    const MemoryActorContractClause &clause) {
+  auto fields = std::visit(
+      [](const auto &typed) -> llvm::Expected<ReducedProductRow> {
+        return clauseRow(typed);
+      },
+      clause);
+  if (!fields)
+    return fields.takeError();
+  return MemoryActorClauseRelation{
+      static_cast<std::uint32_t>(clauseTag(clause)), std::move(*fields)};
+}
+
+llvm::Expected<MemoryActorContractClause>
+detail::importMemoryActorContractClause(
+    const MemoryActorClauseRelation &relation, mlir::MLIRContext *context) {
+  if (!context)
+    return invalid("memory actor clause import requires an MLIR context");
+
+  std::vector<std::uint8_t> bytes;
+  appendU32(bytes, relation.tag);
+  appendU64(bytes, relation.fields.size());
+  for (const ReducedProductDomain &field : relation.fields) {
+    const auto *finite = std::get_if<ReducedFiniteDomain>(&field);
+    if (!finite)
+      return invalid("memory actor contract relation field is not finite");
+    std::vector<std::uint8_t> domain;
+    appendU64(domain, finite->atoms.size());
+    for (const ReducedFiniteAtom &atom : finite->atoms)
+      appendFramed(domain, atom.bytes);
+    appendFramed(bytes, domain);
+  }
+  return decodeClause(bytes, context);
 }
 
 } // namespace fabric

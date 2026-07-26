@@ -467,6 +467,21 @@ The projection tags above are stable `loom.fabric 1.0` wire values. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 
+The persistent port wire uses the field order above. It begins with a
+`u64be` endpoint count and that many `u64be` endpoint ordinals, followed by a
+framed `ResourceContractRecord`, a `u64be` operation-pattern count and that
+many `u32be` transaction-projection tags, then a `u64be` capability count and
+that many framed capability-alternative records. One capability alternative
+contains, in order, a framed actor-contract domain, a `u64be` role-binding
+count, each framed owner-encoded `ServiceValueRole` followed by its `u64be`
+endpoint ordinal, a `u32be` access-domain presence tag (`Absent(0)` or
+`Present(1)`) and the framed access domain when present, then a `u64be`
+use-pattern count and that many `u32be` owner-local `UsePatternKey` ordinals.
+All lengths and counts not otherwise stated are `u64be`. Strict import checks
+every frame, owner codec, count, stable tag, ordering, uniqueness, and trailing
+byte before decode-and-reencode equality; no host enum layout or raw MLIR
+attribute encoding enters this wire.
+
 `ServiceValueRole` is the Dataflow Canonical Service Schema role enum. Fabric
 does not declare a second memory endpoint-role enum. The access domain is
 absent exactly for the registered fence schema and present for every addressed
@@ -528,8 +543,10 @@ consumer convention may widen these structural rules.
 
 `operation_pattern_semantics` has exactly the same length and ordinal order as
 `resource_contract.use_patterns`. Array position is the one `UsePatternKey`;
-there is no repeated key or second pattern inventory. Its closed projection
-has these meanings:
+there is no repeated key or second pattern inventory. Every declared use
+pattern must be referenced by at least one capability alternative; an
+unreachable pattern is invalid configuration space rather than dormant
+capacity. Its closed projection has these meanings:
 
 * `Direct` preserves one typed parent Canonical Service request and projects
   exactly one port-local child transaction. The child preserves the selected

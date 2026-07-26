@@ -1,4 +1,6 @@
 #include "Fabric/IR/MemoryCapabilityDomains.h"
+
+#include "Fabric/IR/MemoryCapabilityRelation.h"
 #include "Fabric/IR/ReducedProductRelation.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -677,6 +679,21 @@ decodeParameterizedMemoryAccessDomain(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid(
         "parameterized memory access domain bytes are not canonical");
   return domain;
+}
+
+llvm::Expected<detail::ReducedProductRow>
+detail::projectMemoryAccessClass(const MemoryAccessClass &accessClass) {
+  return accessClassRelationRow(accessClass);
+}
+
+llvm::Expected<MemoryAccessClass>
+detail::importMemoryAccessClass(const ReducedProductRow &relation) {
+  auto accessClasses = accessClassesFromRows({relation});
+  if (!accessClasses)
+    return accessClasses.takeError();
+  if (accessClasses->size() != 1)
+    return invalid("one access relation row did not import as one class");
+  return std::move(accessClasses->front());
 }
 
 } // namespace fabric

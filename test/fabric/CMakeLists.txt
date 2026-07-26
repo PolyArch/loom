@@ -42,6 +42,10 @@ add_executable(loom-fabric-memory-port-transaction-test
   MemoryPortTransactionTest.cpp
 )
 
+add_executable(loom-fabric-memory-operation-port-test
+  MemoryOperationPortTest.cpp
+)
+
 add_executable(loom-fabric-memory-role-bindings-test
   MemoryRoleBindingsTest.cpp
 )
@@ -124,6 +128,18 @@ target_link_libraries(loom-fabric-memory-port-transaction-test PRIVATE
   LoomFabricResourceContract
   MLIRDLTIDialect
   MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-operation-port-test PRIVATE
+  LoomFabricMemoryOperationPort
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFabric
   MLIRFuncDialect
   MLIRIR
   MLIRParser

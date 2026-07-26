@@ -1,6 +1,7 @@
 add_subdirectory(BoundaryDataPath)
 add_subdirectory(MemoryCapabilityDomains)
 add_subdirectory(MemoryPortTransaction)
+add_subdirectory(MemoryOperationPort)
 add_subdirectory(MemoryRoleBindings)
 add_subdirectory(MemoryConsistencyContract)
 add_subdirectory(ResourceContract)

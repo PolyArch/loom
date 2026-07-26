@@ -69,6 +69,7 @@ tools = [
     "loom-fabric-memory-actor-contract-domain-test",
     "loom-fabric-memory-capability-finalization-test",
     "loom-fabric-memory-port-transaction-test",
+    "loom-fabric-memory-operation-port-test",
     "loom-fabric-memory-role-bindings-test",
     "loom-fabric-memory-consistency-contract-test",
     "loom-fabric-persistent-ref-test",
