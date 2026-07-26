@@ -58,12 +58,18 @@ llvm::Error validateDependencyRoles(const DecodedFabricArtifact &artifact) {
 
   switch (artifact.rootKind) {
   case FabricRootKind::Module:
+    if (!artifact.dependencies.empty())
+      return dependencyError(
+          FabricArtifactDependencyFailureReason::InvalidDependencyRoles,
+          "Module roots admit no direct dependencies");
+    return llvm::Error::success();
+
   case FabricRootKind::System:
     for (const FabricDirectDependency &dependency : artifact.dependencies)
       if (dependency.role != FabricDependencyRole::ImportedModule)
         return dependencyError(
             FabricArtifactDependencyFailureReason::InvalidDependencyRoles,
-            "Module and System roots admit only ImportedModule dependencies");
+            "System roots admit only ImportedModule dependencies");
     return llvm::Error::success();
 
   case FabricRootKind::InterconnectImplementation: {

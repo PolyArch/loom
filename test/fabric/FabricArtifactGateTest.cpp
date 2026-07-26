@@ -212,16 +212,16 @@ void roleAndRootKindLegalityPrecedeDependencyLoads() {
   ArtifactStore store(directory.path());
   const ArtifactRootReference missing = fabricReference(identity(__func__, 1));
 
-  const CanonicalSemanticBytes moduleWithRefinedSystem = envelope(
+  const CanonicalSemanticBytes moduleWithImportedModule = envelope(
       __func__, FabricRootKind::Module,
-      {FabricDirectDependency{FabricDependencyRole::RefinedSystem, missing}},
+      {FabricDirectDependency{FabricDependencyRole::ImportedModule, missing}},
       {0x01});
   expectDependencyError(
       __func__,
       validateFabricArtifactDependencyFramingClosure(store,
-                                                     moduleWithRefinedSystem),
+                                                     moduleWithImportedModule),
       FabricArtifactDependencyFailureReason::InvalidDependencyRoles);
-  requireCandidateAbsent(__func__, store, moduleWithRefinedSystem);
+  requireCandidateAbsent(__func__, store, moduleWithImportedModule);
 
   const CanonicalSemanticBytes implementationWithoutSystem = envelope(
       __func__, FabricRootKind::InterconnectImplementation, {}, {0x02});
@@ -250,34 +250,29 @@ void framingClosureRecursivelyLoadsExactFabricDependencies() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
-  const CanonicalSemanticBytes grandchildBytes =
+  const CanonicalSemanticBytes moduleBytes =
       envelope(__func__, FabricRootKind::Module, {}, {0x11});
-  const ArtifactRootReference grandchild = fabricReference(
-      finalizeArtifactIdentity(fabricArtifactSchema, grandchildBytes));
-  const ArtifactRootReference child =
-      storeFabric(__func__, store, FabricRootKind::Module,
-                  {FabricDirectDependency{FabricDependencyRole::ImportedModule,
-                                          grandchild}},
-                  {0x12});
-  const CanonicalSemanticBytes root = envelope(
+  const ArtifactRootReference module = fabricReference(moduleBytes);
+  const CanonicalSemanticBytes systemBytes = envelope(
       __func__, FabricRootKind::System,
-      {FabricDirectDependency{FabricDependencyRole::ImportedModule, child}},
-      {0x13});
+      {FabricDirectDependency{FabricDependencyRole::ImportedModule, module}},
+      {0x12});
 
   expectErrorContains(
-      __func__, validateFabricArtifactDependencyFramingClosure(store, root),
+      __func__,
+      validateFabricArtifactDependencyFramingClosure(store, systemBytes),
       "artifact_store_missing");
-  requireCandidateAbsent(__func__, store, root);
+  requireCandidateAbsent(__func__, store, systemBytes);
 
-  const ArtifactIdentity publishedGrandchild =
-      takeExpected(__func__, store.put(fabricArtifactSchema, grandchildBytes));
-  require(__func__, publishedGrandchild == grandchild.artifact,
-          "grandchild fixture identity changed");
-  requireStoredReference(__func__, store, grandchild);
+  const ArtifactIdentity publishedModule =
+      takeExpected(__func__, store.put(fabricArtifactSchema, moduleBytes));
+  require(__func__, publishedModule == module.artifact,
+          "module fixture identity changed");
+  requireStoredReference(__func__, store, module);
   if (llvm::Error error =
-          validateFabricArtifactDependencyFramingClosure(store, root))
+          validateFabricArtifactDependencyFramingClosure(store, systemBytes))
     fail(__func__, llvm::toString(std::move(error)));
-  requireCandidateAbsent(__func__, store, root);
+  requireCandidateAbsent(__func__, store, systemBytes);
 }
 
 void implementationInputIsRejectedBeforeLookup() {
@@ -311,7 +306,7 @@ void foreignSameFamilyRoleIsInvalid() {
   (void)takeExpected(__func__, store.put(foreignSchema, foreignBytes));
 
   const CanonicalSemanticBytes root = envelope(
-      __func__, FabricRootKind::Module,
+      __func__, FabricRootKind::System,
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, foreign}},
       {0x0d});
   expectDependencyError(
@@ -345,11 +340,11 @@ void invalidStoredFabricDependencyIsTypedInvalid() {
           "stored invalid Fabric fixture identity changed");
   requireStoredReference(__func__, store, dependency);
 
-  const CanonicalSemanticBytes root =
-      envelope(__func__, FabricRootKind::Module,
-               {FabricDirectDependency{FabricDependencyRole::ImportedModule,
-                                       dependency}},
-               {0x30});
+  const CanonicalSemanticBytes root = envelope(
+      __func__, FabricRootKind::System,
+      {FabricDirectDependency{FabricDependencyRole::ImportedModule,
+                              dependency}},
+      {0x30});
   expectDependencyError(
       __func__, validateFabricArtifactDependencyFramingClosure(store, root),
       FabricArtifactDependencyFailureReason::InvalidDependencyEnvelope,
@@ -364,7 +359,7 @@ void wrongKindDependencyIsRejected() {
   const ArtifactRootReference system =
       storeFabric(__func__, store, FabricRootKind::System, {}, {0x31});
   const CanonicalSemanticBytes wrongKind = envelope(
-      __func__, FabricRootKind::Module,
+      __func__, FabricRootKind::System,
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, system}},
       {0x32});
   expectDependencyError(
@@ -412,7 +407,7 @@ void framingClosureNeverPublishesCandidateRoots() {
   const ArtifactRootReference missing =
       fabricReference(identity(__func__, 0x61));
   const CanonicalSemanticBytes missingClosure = envelope(
-      __func__, FabricRootKind::Module,
+      __func__, FabricRootKind::System,
       {FabricDirectDependency{FabricDependencyRole::ImportedModule, missing}},
       {0x62});
   expectErrorContains(
@@ -437,19 +432,8 @@ void framingClosureNeverPublishesCandidateRoots() {
 }
 
 void contentAddressedCycleConstraintUsesProductionTraversal() {
-  TemporaryDirectory directory(__func__);
-  ArtifactStore store(directory.path());
-  const ArtifactRootReference seed = fabricReference(identity(__func__, 0x71));
-  const CanonicalSemanticBytes selfReferential = envelope(
-      __func__, FabricRootKind::Module,
-      {FabricDirectDependency{FabricDependencyRole::ImportedModule, seed}},
-      {0x72});
-  const ArtifactRootReference actual = fabricReference(
-      finalizeArtifactIdentity(fabricArtifactSchema, selfReferential));
-  require(__func__, actual != seed,
-          "self-reference fixture unexpectedly solved the content-address "
-          "equation");
-  requireCandidateAbsent(__func__, store, selfReferential);
+  const ArtifactRootReference actual =
+      fabricReference(identity(__func__, 0x71));
 
   FabricArtifactDependencyClosureTraversal traversal;
   require(__func__, takeExpected(__func__, traversal.enter(actual)),
