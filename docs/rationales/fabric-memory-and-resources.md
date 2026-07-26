@@ -41,6 +41,21 @@ targets. Temporal rows may share tagged ingress only through explicit role
 matchers, queues, and capacity. Same-row outputs remain injective so one
 transaction cannot silently duplicate distinct response roles.
 
+Resident row count, service reachability, and selected Mapping configuration
+are deliberately separate. The engine owns the finite row domain, the
+occurrence owns fixed dispatch and internal-connectivity eligibility, and
+Mapping chooses active rows, targets, tags, and edges. Putting those facts in
+every port would duplicate one hardware cross-connect; persisting configured
+rows in Fabric would duplicate Mapping. Queue and holding capacities remain in
+the operation port's ResourceContract rather than being repeated beside the
+resident count.
+
+Subordinate provider decode is part of the same connectivity owner because it
+uses the same physical service targets and response tracking. A bounded set of
+match fields and an optional constant base offset cover the direct hardware
+case. Hashing, translation, cache, or coherence remain explicit service
+transforms instead of growing a predicate language inside `fabric.mem`.
+
 Local and System memory services share one exact service-capability record
 because actor admission, regions, physical beats, resource use, and progress
 mean the same thing at either scope. They differ only where root locality is a

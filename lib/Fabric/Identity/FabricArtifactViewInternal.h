@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -55,6 +56,9 @@ struct FabricEntityViewData {
   std::vector<FabricFuNodeViewData> fuNodes;
   std::vector<FabricFuCapabilityTemplateRecord> fuCapabilityTemplates;
   std::vector<FabricMemoryOperationPortViewData> memoryOperationPorts;
+  std::optional<::fabric::Schedule> memorySchedule;
+  std::optional<std::uint64_t> memoryResidentContextCount;
+  std::optional<::fabric::MemoryConnectivityContractRecord> memoryConnectivity;
   std::vector<FabricNestedOwnerViewData> instructionContexts;
   std::vector<FabricNestedOwnerViewData> transferPatterns;
   std::vector<FabricTransferPatternRef> transferPatternRefs;

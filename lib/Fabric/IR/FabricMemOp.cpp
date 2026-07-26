@@ -11,6 +11,7 @@
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -250,12 +251,15 @@ static void addLegacyMemoryContract(MLIRContext *context,
       makeOrdinalRange(countLeadingMemoryEndpoints(inputs));
   SmallVector<int32_t> subordinates =
       makeOrdinalRange(countLeadingMemoryEndpoints(results));
-  result.addAttribute(
-      "memory_contract",
-      MemoryContractAttr::get(context, MemoryEngineAttr::get(context, schedule),
-                              LocalMemoryServiceAttr(),
-                              DenseI32ArrayAttr::get(context, managers),
-                              DenseI32ArrayAttr::get(context, subordinates)));
+  result.addAttribute("memory_contract",
+                      MemoryContractAttr::get(
+                          context,
+                          MemoryEngineAttr::get(context, schedule,
+                                                MemoryResidentContextsAttr()),
+                          LocalMemoryServiceAttr(),
+                          MemoryConnectivityContractAttr(),
+                          DenseI32ArrayAttr::get(context, managers),
+                          DenseI32ArrayAttr::get(context, subordinates)));
 }
 
 static ParseResult
@@ -297,6 +301,10 @@ static bool matchesOrdinalRange(DenseI32ArrayAttr endpoints, unsigned count) {
 static bool canPrintLegacyEngineShorthand(MemOp op) {
   MemoryContractAttr contract = op.getMemoryContract();
   if (!contract || !contract.getEngine() || contract.getLocalService())
+    return false;
+  if (contract.getConnectivity() ||
+      contract.getEngine().getResidentContexts() ||
+      op.getMemoryOperationPortsAttr())
     return false;
 
   SmallVector<Type> inputs;
@@ -703,6 +711,19 @@ static LogicalResult verifyCanonicalAttributeSet(MemOp op) {
   return success();
 }
 
+static llvm::Expected<MemoryConnectivityContractRecord>
+decodeConnectivity(MemoryConnectivityContractAttr attribute) {
+  if (!attribute)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fabric.mem requires an exact memory connectivity contract");
+  SmallVector<std::uint8_t, 64> bytes;
+  bytes.reserve(attribute.getRecord().size());
+  for (std::int8_t byte : attribute.getRecord().asArrayRef())
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  return decodeMemoryConnectivityContractRecord(bytes);
+}
+
 } // namespace
 
 ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -1009,6 +1030,17 @@ LogicalResult MemOp::verify() {
       return emitOpError(
           "storage-only occurrence must not carry operation-engine "
           "hw_params");
+    auto connectivity = decodeConnectivity(contract.getConnectivity());
+    if (!connectivity)
+      return emitOpError() << llvm::toString(connectivity.takeError());
+    auto endpoints = deriveMemoryTransportEndpointInventory(
+        FunctionType::get(getContext(), inputs, results));
+    if (!endpoints)
+      return emitOpError() << llvm::toString(endpoints.takeError());
+    if (llvm::Error error = validateMemoryConnectivityContract(
+            *connectivity, {}, *endpoints, managerEndpoints.size(),
+            subordinateEndpoints.size(), static_cast<bool>(localService)))
+      return emitOpError() << llvm::toString(std::move(error));
     return success();
   }
   if (!localService && managerEndpoints.empty())
@@ -1030,8 +1062,23 @@ LogicalResult MemOp::verify() {
                                                       schedule, *endpoints);
     if (!decoded)
       return emitOpError() << llvm::toString(decoded.takeError());
+    if (schedule == Schedule::Temporal && !engineContract.getResidentContexts())
+      return emitOpError(
+          "exact temporal memory engine requires resident contexts");
+    auto connectivity = decodeConnectivity(contract.getConnectivity());
+    if (!connectivity)
+      return emitOpError() << llvm::toString(connectivity.takeError());
+    if (llvm::Error error = validateMemoryConnectivityContract(
+            *connectivity, *decoded, *endpoints, managerEndpoints.size(),
+            subordinateEndpoints.size(), static_cast<bool>(localService)))
+      return emitOpError() << llvm::toString(std::move(error));
     return success();
   }
+
+  if (contract.getConnectivity() || engineContract.getResidentContexts())
+    return emitOpError(
+        "legacy operation-engine hw_params cannot coexist with exact memory "
+        "connectivity or resident contexts");
 
   DictionaryAttr hardware;
   if (failed(readHardwareParameters(*this, hardware)))

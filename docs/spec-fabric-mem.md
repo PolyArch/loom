@@ -883,6 +883,24 @@ and `K = P` is only one possible hardware choice. The hardware description
 must bound `K` to a physically realizable value compatible with its declared
 ingress match domains.
 
+The Operation Engine owns this fact through one typed resident-context
+contract:
+
+```text
+MemoryEngineContract =
+    Spatial
+  | Temporal { resident_context_count: positive uint64 }
+```
+
+A Spatial engine has no resident-context field. For a Temporal engine every
+operation port owns the structural context-reference range `[0, K)`, so
+`FabricMemoryOperationContextRef(port, row)` is valid exactly when `row < K`.
+Equal row ordinals under different ports are alternative views of the same
+physical operation-table row; one Mapping cannot activate more than one port
+selection for that row. This projection does not copy queue capacity. The
+selected port's existing `ResourceContractRecord` remains the sole owner of
+operand/result holding, issue, retirement, and arbitration capacity.
+
 Each Active Temporal row selects one physical port, one capability alternative,
 and one correspondence per active actor role. An external input role has:
 
@@ -1252,6 +1270,67 @@ The verifier checks `C_dispatch` is a subset of `H_dispatch`. It is a partial
 function that selects one target for each enabled concrete request domain. A request that accesses
 several targets requires an explicit sharding, replication, mirroring, or
 coherence service; it is not a special dispatch mode.
+
+One occurrence carries exactly one canonical
+`MemoryConnectivityContractRecord`. Its closed wire is:
+
+```text
+MemoryConnectivityContractRecord {
+  operation_ports : array<OperationPortDispatchRecord>
+  subordinate_endpoints : array<SubordinateDispatchRecord>
+  internal_connections : sorted unique array<InternalConnectionRecord>
+}
+
+OperationPortDispatchRecord {
+  capability_target_domains : array<non-empty sorted unique
+      MemoryDispatchTarget>
+}
+
+MemoryDispatchTarget =
+    LocalMemoryService
+  | ManagerEndpoint { manager_endpoint_ordinal: uint64 }
+
+SubordinateDispatchRecord {
+  max_exposed_bindings : positive uint64
+  match_fields : sorted unique set<Range | Prefix | AddressSpace | Context>
+  address_transform : None | ConstantBaseOffset
+  target_domain : non-empty sorted unique set<MemoryDispatchTarget>
+}
+
+InternalConnectionRecord {
+  source_endpoint_ordinal : uint64
+  sink_endpoint_ordinal : uint64
+}
+```
+
+The operation-port array follows the canonical port inventory. Its nested
+array follows that port's canonical capability-alternative inventory, so
+source identity is structural and is never repeated as an ID. The subordinate
+array follows the subordinate endpoint inventory. A single-binding provider
+may have an empty match-field set because its selector is constant; a provider
+with more than one configured binding must declare at least one bounded match
+field. `ConstantBaseOffset` admits only the simple base translation derived
+from one Memory Binding. It is not a generic transform.
+
+Manager ordinals index the occurrence's manager endpoint inventory, not the
+function signature and not a PnR dense index. `LocalMemoryService` is legal
+only when the occurrence declares that optional resource. Every target domain
+is non-empty. These rules make unreachable request sources invalid hardware
+rather than dormant configuration space.
+
+Internal-connection ordinals index the occurrence's token endpoint inventory,
+with inputs first and outputs second. The source must be an output, the sink
+must be an input, and the source payload must be at least as wide as the sink.
+The selected actor roles and capability alternative provide the semantic type
+check. A Temporal internal edge addresses the destination row directly and
+therefore does not transport or compare the external Physical Tag. The
+relation is eligibility only; Mapping owns the selected sink-to-source edges.
+
+The persistent wire uses `u64be` counts and ordinals and `u32be` closed-union
+tags. Array positions own operation-port, capability-alternative, and
+subordinate source identity. Strict import decodes, validates against the
+exact occurrence, re-encodes, and requires byte equality; reordered target
+sets or internal connections are noncanonical.
 
 An operation row carries its derived `service_target_sel`. A subordinate
 endpoint that exposes several logical memories uses bounded provider decode

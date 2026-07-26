@@ -82,6 +82,9 @@ using loom::adg::FifoSpec;
 using loom::adg::FuConfigurationMode;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
+using loom::adg::LocalMemoryServiceSpec;
+using loom::adg::MemoryConnectivitySpec;
+using loom::adg::MemoryEngineSpec;
 using loom::adg::MemorySpec;
 using loom::adg::OperationCapabilitySpec;
 using loom::adg::PeSpec;
@@ -266,6 +269,24 @@ systemMemoryContract(llvm::StringRef test, mlir::MLIRContext &context) {
                         std::move(declaration)));
 }
 
+::fabric::MemoryServiceContractRecord
+localMemoryContract(llvm::StringRef test, mlir::MLIRContext &context) {
+  auto accesses = take(test, ::fabric::ParameterizedMemoryAccessDomain::create(
+                                 {systemElementAccess(test)}));
+  ::fabric::MemoryServiceContractDeclaration declaration{
+      {{0, 4096, ::fabric::MemoryServiceRegionBehavior::Storage, std::nullopt}},
+      singleUseResourceContract(test),
+      {{plainLoadActorDomain(test),
+        std::move(accesses),
+        {0},
+        128,
+        {::fabric::UsePatternKey(0)},
+        ::fabric::NoMemoryServiceConsistency{}}}};
+  return take(test, ::fabric::MemoryServiceContractRecord::create(
+                        &context, ::fabric::MemoryServiceOwnerKind::Local,
+                        std::move(declaration)));
+}
+
 loom::fabric::CanonicalServiceCapabilitySet
 systemMemoryCapabilities(llvm::StringRef test,
                          loom::fabric::ServiceRateContractRecord serviceRate) {
@@ -343,11 +364,40 @@ systemMemoryCapabilities(llvm::StringRef test,
           {{::fabric::MemoryPortTransactionProjection::Direct}},
           {{std::move(actorDomain),
             {{::dataflow::semantics::ServiceValueRole::Address, 0},
-             {::dataflow::semantics::ServiceValueRole::Control, 1},
              {::dataflow::semantics::ServiceValueRole::Data, 2},
+             {::dataflow::semantics::ServiceValueRole::Control, 1},
              {::dataflow::semantics::ServiceValueRole::Completion, 3}},
             std::move(accessDomain),
             {::fabric::UsePatternKey(0)}}}};
+}
+
+::fabric::MemoryDispatchTarget localMemoryTarget() {
+  return ::fabric::MemoryDispatchTarget(
+      std::in_place_type<::fabric::LocalMemoryDispatchTarget>);
+}
+
+::fabric::MemoryDispatchTarget managerMemoryTarget(std::uint64_t ordinal) {
+  return ::fabric::MemoryDispatchTarget(
+      std::in_place_type<::fabric::ManagerMemoryDispatchTarget>,
+      ::fabric::ManagerMemoryDispatchTarget{ordinal});
+}
+
+MemoryConnectivitySpec
+operationConnectivity(llvm::StringRef test,
+                      ::fabric::MemoryDispatchTarget target) {
+  ::fabric::MemoryConnectivityDeclaration declaration;
+  declaration.operationPorts = {{{{std::move(target)}}}};
+  return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
+}
+
+MemoryConnectivitySpec storageConnectivity(llvm::StringRef test) {
+  ::fabric::MemoryConnectivityDeclaration declaration;
+  declaration.subordinateEndpoints = {
+      {1,
+       {},
+       ::fabric::MemoryProviderAddressTransform::None,
+       {localMemoryTarget()}}};
+  return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
 }
 
 void regularAndIrregularSpatialCoresFinalize() {
@@ -537,7 +587,7 @@ void typedPeFuGraphsFinalize() {
           "temporal PE lost its operand-buffer resource contract");
 }
 
-void typedMemoryEngineFinalizes() {
+void typedMemoryFormsFinalize() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -550,27 +600,91 @@ void typedMemoryEngineFinalizes() {
   auto spatial = take(test, design.createSpatialCore("memory-engine",
                                                      {memory32, bits32, bits0},
                                                      {bits32, bits0}));
-  auto outputs = take(
-      test, spatial.addMemory(
-                {take(test, spatial.input(0)), take(test, spatial.input(1)),
-                 take(test, spatial.input(2))},
-                MemorySpec::spatial({memory32, bits32, bits0}, {bits32, bits0},
-                                    {0}, {}, {loadPortDeclaration()})));
+  auto outputs =
+      take(test,
+           spatial.addMemory(
+               {take(test, spatial.input(0)), take(test, spatial.input(1)),
+                take(test, spatial.input(2))},
+               take(test,
+                    MemorySpec::create(
+                        {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+                        MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                        std::nullopt,
+                        operationConnectivity(test, managerMemoryTarget(0))))));
   if (llvm::Error error = spatial.close(outputs))
+    fail(test, llvm::toString(std::move(error)));
+
+  const PortType tagged0 = take(test, PortType::taggedBits(0, 4));
+  const PortType tagged32 = take(test, PortType::taggedBits(32, 4));
+  mlir::MLIRContext localContractContext;
+  auto temporal = take(test, design.createSpatialCore("temporal-local-memory",
+                                                      {tagged32, tagged0},
+                                                      {tagged32, tagged0}));
+  auto temporalOutputs = take(
+      test,
+      temporal.addMemory(
+          {take(test, temporal.input(0)), take(test, temporal.input(1))},
+          take(test, MemorySpec::create(
+                         {tagged32, tagged0}, {tagged32, tagged0}, {}, {},
+                         MemoryEngineSpec::temporal(4, {loadPortDeclaration()}),
+                         take(test, LocalMemoryServiceSpec::create(
+                                        4096, localMemoryContract(
+                                                  test, localContractContext))),
+                         operationConnectivity(test, localMemoryTarget())))));
+  if (llvm::Error error = temporal.close(temporalOutputs))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto storage =
+      take(test, design.createSpatialCore("local-storage", {}, {memory32}));
+  auto storageOutputs = take(
+      test,
+      storage.addMemory(
+          {},
+          take(test, MemorySpec::create(
+                         {}, {memory32}, {}, {0}, std::nullopt,
+                         take(test, LocalMemoryServiceSpec::create(
+                                        4096, localMemoryContract(
+                                                  test, localContractContext))),
+                         storageConnectivity(test)))));
+  if (llvm::Error error = storage.close(storageOutputs))
     fail(test, llvm::toString(std::move(error)));
 
   loom::adg::FinalizedFabricDesign finalized =
       take(test, std::move(design).finalize());
-  require(test, finalized.roots().size() == 1,
-          "memory design did not publish one SpatialCore root");
-  const auto &view = finalized.roots().front().view();
-  const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
-      test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
-  auto ports = view.memoryOperationPorts(memory);
-  require(test,
-          ports.size() == 1 && view.memoryOperationPort(ports.front()) &&
-              view.memoryCapabilityAlternative({ports.front(), 0}),
-          "typed memory capability was not preserved by Fabric finalization");
+  require(test, finalized.roots().size() == 3,
+          "memory forms did not publish three SpatialCore roots");
+  std::size_t localServices = 0;
+  std::size_t operationEngines = 0;
+  std::size_t storageOnly = 0;
+  for (const auto &root : finalized.roots()) {
+    const auto &view = root.view();
+    const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
+        test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
+    auto ports = view.memoryOperationPorts(memory);
+    if (view.declaresLocalMemoryService(memory))
+      ++localServices;
+    if (!ports.empty()) {
+      ++operationEngines;
+      require(test,
+              ports.size() == 1 && view.memoryOperationPort(ports.front()) &&
+                  view.memoryCapabilityAlternative({ports.front(), 0}),
+              "typed memory capability was not preserved by finalization");
+      if (view.memorySchedule(memory) == ::fabric::Schedule::Temporal) {
+        require(test, view.memoryResidentContextCount(memory) == 4,
+                "temporal resident-context inventory was not preserved");
+        require(
+            test,
+            view.inventorySize(
+                loom::fabric::FabricInventoryOwnerRef::of(ports.front()),
+                loom::fabric::FabricInventoryKind::MemoryOperationContext) == 4,
+            "temporal operation-context references were not projected");
+      }
+    } else {
+      ++storageOnly;
+    }
+  }
+  require(test, localServices == 2 && operationEngines == 2 && storageOnly == 1,
+          "Fabric lost the orthogonal memory engine and local service forms");
 }
 
 void heterogeneousSystemFinalizes() {
@@ -686,7 +800,7 @@ int main() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
   typedPeFuGraphsFinalize();
-  typedMemoryEngineFinalizes();
+  typedMemoryFormsFinalize();
   heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;
 }

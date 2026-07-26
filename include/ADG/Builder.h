@@ -8,6 +8,7 @@
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/FabricEnums.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContract.h"
@@ -220,32 +221,101 @@ struct SwitchSpec final {
            std::uint32_t routeTableSize);
 };
 
-/// One exact spatial fabric.mem Operation Engine declaration.
-class MemorySpec final {
+/// One exact optional fabric.mem Operation Engine declaration.
+class MemoryEngineSpec final {
 public:
-  static MemorySpec
-  spatial(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
-          std::vector<std::uint32_t> managerInputOrdinals,
-          std::vector<std::uint32_t> subordinateOutputOrdinals,
-          std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
+  static MemoryEngineSpec
+  spatial(std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
+  static MemoryEngineSpec temporal(
+      std::uint64_t residentContextCount,
+      std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
 
 private:
-  MemorySpec(
-      std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
-      std::vector<std::uint32_t> managerInputOrdinals,
-      std::vector<std::uint32_t> subordinateOutputOrdinals,
+  MemoryEngineSpec(
+      ::fabric::Schedule schedule,
+      std::optional<std::uint64_t> residentContextCount,
       std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts)
+      : schedule_(schedule), residentContextCount_(residentContextCount),
+        operationPorts_(std::move(operationPorts)) {}
+
+  ::fabric::Schedule schedule_;
+  std::optional<std::uint64_t> residentContextCount_;
+  std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts_;
+
+  friend class MemorySpec;
+  friend class SpatialCoreBuilder;
+};
+
+/// One exact occurrence-level memory dispatch and internal-connectivity
+/// contract in its canonical owner wire.
+class MemoryConnectivitySpec final {
+public:
+  static llvm::Expected<MemoryConnectivitySpec>
+  create(::fabric::MemoryConnectivityDeclaration declaration);
+
+private:
+  explicit MemoryConnectivitySpec(std::vector<std::uint8_t> canonicalBytes)
+      : canonicalBytes_(std::move(canonicalBytes)) {}
+
+  std::vector<std::uint8_t> canonicalBytes_;
+
+  friend class MemorySpec;
+  friend class SpatialCoreBuilder;
+};
+
+/// One exact optional fabric.mem Local Memory Service declaration.
+class LocalMemoryServiceSpec final {
+public:
+  static llvm::Expected<LocalMemoryServiceSpec>
+  create(std::uint64_t capacityBytes,
+         const ::fabric::MemoryServiceContractRecord &contract);
+
+private:
+  LocalMemoryServiceSpec(std::uint64_t capacityBytes,
+                         std::vector<std::uint8_t> contractBytes)
+      : capacityBytes_(capacityBytes),
+        contractBytes_(std::move(contractBytes)) {}
+
+  std::uint64_t capacityBytes_;
+  std::vector<std::uint8_t> contractBytes_;
+
+  friend class MemorySpec;
+  friend class SpatialCoreBuilder;
+};
+
+/// One fabric.mem declaration composed from its two orthogonal resources.
+class MemorySpec final {
+public:
+  static llvm::Expected<MemorySpec>
+  create(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+         std::vector<std::uint32_t> managerInputOrdinals,
+         std::vector<std::uint32_t> subordinateOutputOrdinals,
+         std::optional<MemoryEngineSpec> engine,
+         std::optional<LocalMemoryServiceSpec> localService,
+         MemoryConnectivitySpec connectivity);
+
+private:
+  MemorySpec(std::vector<PortType> inputTypes,
+             std::vector<PortType> outputTypes,
+             std::vector<std::uint32_t> managerInputOrdinals,
+             std::vector<std::uint32_t> subordinateOutputOrdinals,
+             std::optional<MemoryEngineSpec> engine,
+             std::optional<LocalMemoryServiceSpec> localService,
+             MemoryConnectivitySpec connectivity)
       : inputTypes_(std::move(inputTypes)),
         outputTypes_(std::move(outputTypes)),
         managerInputOrdinals_(std::move(managerInputOrdinals)),
         subordinateOutputOrdinals_(std::move(subordinateOutputOrdinals)),
-        operationPorts_(std::move(operationPorts)) {}
+        engine_(std::move(engine)), localService_(std::move(localService)),
+        connectivity_(std::move(connectivity)) {}
 
   std::vector<PortType> inputTypes_;
   std::vector<PortType> outputTypes_;
   std::vector<std::uint32_t> managerInputOrdinals_;
   std::vector<std::uint32_t> subordinateOutputOrdinals_;
-  std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts_;
+  std::optional<MemoryEngineSpec> engine_;
+  std::optional<LocalMemoryServiceSpec> localService_;
+  MemoryConnectivitySpec connectivity_;
 
   friend class SpatialCoreBuilder;
 };

@@ -632,6 +632,27 @@ FabricArtifactView::memoryCapabilityAlternative(
   return &port->capabilityAlternatives()[alternative.ordinal];
 }
 
+std::optional<::fabric::Schedule>
+FabricArtifactView::memorySchedule(FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record ? record->memorySchedule : std::nullopt;
+}
+
+std::uint64_t FabricArtifactView::memoryResidentContextCount(
+    FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->memoryResidentContextCount
+             ? *record->memoryResidentContextCount
+             : 0;
+}
+
+const ::fabric::MemoryConnectivityContractRecord *
+FabricArtifactView::memoryConnectivity(FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->memoryConnectivity ? &*record->memoryConnectivity
+                                              : nullptr;
+}
+
 bool FabricArtifactView::hasPointConnection(
     const FabricTransportEndpointRef &source,
     const FabricTransportEndpointRef &destination) const {
@@ -761,6 +782,58 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       if (llvm::Error error =
               validateNestedOwner(port.owner, "memory operation port"))
         return std::move(error);
+    const bool isMemory =
+        entity.kind == FabricEntityKind::FabricMemoryOccurrence;
+    if (!isMemory &&
+        (entity.memorySchedule || entity.memoryResidentContextCount ||
+         entity.memoryConnectivity || !entity.memoryOperationPorts.empty() ||
+         entity.localMemoryService))
+      return invalidView("non-memory entity owns memory occurrence state");
+    if (isMemory) {
+      if (!entity.memoryConnectivity)
+        return invalidView("memory occurrence has no connectivity contract");
+      if (entity.memoryConnectivity->operationPorts().size() !=
+          entity.memoryOperationPorts.size())
+        return invalidView(
+            "memory connectivity operation ports do not match the view");
+      const std::uint64_t subordinateCount = llvm::count_if(
+          entity.owner.memoryEndpoints,
+          [](const FabricMemoryEndpointViewData &endpoint) {
+            return endpoint.role == FabricMemoryEndpointRole::Subordinate;
+          });
+      if (entity.memoryConnectivity->subordinateEndpoints().size() !=
+          subordinateCount)
+        return invalidView(
+            "memory connectivity subordinate endpoints do not match the "
+            "view");
+      if (!entity.memorySchedule) {
+        if (entity.memoryResidentContextCount ||
+            !entity.memoryOperationPorts.empty())
+          return invalidView(
+              "storage-only memory occurrence owns operation-engine state");
+      } else if (*entity.memorySchedule == ::fabric::Schedule::Spatial) {
+        if (entity.memoryResidentContextCount)
+          return invalidView(
+              "spatial memory occurrence owns resident contexts");
+      } else if (*entity.memorySchedule == ::fabric::Schedule::Temporal) {
+        if (!entity.memoryResidentContextCount ||
+            *entity.memoryResidentContextCount == 0)
+          return invalidView(
+              "temporal memory occurrence has no resident contexts");
+      } else {
+        return invalidView("memory occurrence has an unknown schedule");
+      }
+      const std::uint64_t expectedContexts =
+          entity.memoryResidentContextCount.value_or(0);
+      for (const FabricMemoryOperationPortViewData &port :
+           entity.memoryOperationPorts)
+        if (inventoryCount(port.owner.inventoryCounts,
+                           FabricInventoryKind::MemoryOperationContext) !=
+            expectedContexts)
+          return invalidView(
+              "memory operation-context inventory does not match its "
+              "engine");
+    }
     for (FabricNestedOwnerViewData &context : entity.instructionContexts)
       if (llvm::Error error =
               validateNestedOwner(context, "instruction context"))

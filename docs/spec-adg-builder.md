@@ -60,6 +60,14 @@ Graph-region connectivity as owned by the corresponding Fabric specifications.
 An FU remains PE-local; the Builder cannot promote it into a parallel
 module-level resource kind.
 
+For an exact memory Operation Engine declaration, the public API requires its
+canonical operation-port inventory. A Temporal engine additionally requires
+the positive resident-context count `K`; a Spatial engine cannot carry it.
+Every memory declaration also supplies one typed connectivity contract owning
+operation capability target domains, bounded subordinate provider decode, and
+eligible internal token connections. The Builder never infers those hardware
+facts from the presence of a local service or from endpoint count.
+
 System-family construction covers an architecture-only `fabric.system` object
 with heterogeneous AccCore occurrences, InstructionCore descriptions,
 SpatialCore attachments, memory and service capabilities, Transport

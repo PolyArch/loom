@@ -41,11 +41,32 @@ def Fabric_LocalMemoryServiceAttr
   let genVerifyDecl = 1;
 }
 
+def Fabric_MemoryResidentContextsAttr
+    : Fabric_Attr<"MemoryResidentContexts", "memory_resident_contexts"> {
+  let summary = "bounded temporal memory operation-table row domain";
+  let parameters = (ins "uint64_t":$count);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Fabric_MemoryConnectivityContractAttr
+    : Fabric_Attr<"MemoryConnectivityContract",
+                  "memory_connectivity_contract"> {
+  let summary = "canonical fixed memory dispatch and internal connectivity";
+  let parameters = (ins "::mlir::DenseI8ArrayAttr":$record);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def Fabric_MemoryEngineAttr
     : Fabric_Attr<"MemoryEngine", "memory_engine"> {
   let summary = "memory operation engine occurrence contract";
-  let parameters = (ins EnumParameter<Fabric_ScheduleAttr>:$schedule);
+  let parameters = (ins
+      EnumParameter<Fabric_ScheduleAttr>:$schedule,
+      OptionalParameter<"::fabric::MemoryResidentContextsAttr">:
+          $resident_contexts);
   let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
 }
 
 def Fabric_MemoryContractAttr
@@ -54,6 +75,8 @@ def Fabric_MemoryContractAttr
   let parameters = (ins
       OptionalParameter<"::fabric::MemoryEngineAttr">:$engine,
       OptionalParameter<"::fabric::LocalMemoryServiceAttr">:$local_service,
+      OptionalParameter<"::fabric::MemoryConnectivityContractAttr">:
+          $connectivity,
       "::mlir::DenseI32ArrayAttr":$manager_endpoints,
       "::mlir::DenseI32ArrayAttr":$subordinate_endpoints);
   let assemblyFormat = "`<` struct(params) `>`";

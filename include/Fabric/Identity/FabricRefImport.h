@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
@@ -132,6 +133,13 @@ public:
   memoryOperationPort(FabricMemoryOperationPortRef port) const;
   const MemoryCapabilityAlternativeView *memoryCapabilityAlternative(
       FabricMemoryCapabilityAlternativeRef alternative) const;
+
+  std::optional<::fabric::Schedule>
+  memorySchedule(FabricMemoryOccurrenceRef memory) const;
+  std::uint64_t
+  memoryResidentContextCount(FabricMemoryOccurrenceRef memory) const;
+  const ::fabric::MemoryConnectivityContractRecord *
+  memoryConnectivity(FabricMemoryOccurrenceRef memory) const;
 
   /// Whether the fully elaborated Fabric contains the one unique directed
   /// fixed connection between exactly these endpoints.

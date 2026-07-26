@@ -1,5 +1,6 @@
 #include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -49,6 +50,14 @@ fabric::validateMemoryCapabilityFinalization(MemoryContractAttr contract,
   if (contract.getEngine() && (!operationPorts || operationPorts.empty()))
     return llvm::make_error<MemoryCapabilityFinalizationError>(
         MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
+  if (MemoryEngineAttr engine = contract.getEngine())
+    if (engine.getSchedule() == Schedule::Temporal &&
+        !engine.getResidentContexts())
+      return llvm::make_error<MemoryCapabilityFinalizationError>(
+          MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
+  if (!contract.getConnectivity())
+    return llvm::make_error<MemoryCapabilityFinalizationError>(
+        MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
   return llvm::Error::success();
 }
 
@@ -77,6 +86,39 @@ LogicalResult LocalMemoryServiceAttr::verify(
   return success();
 }
 
+LogicalResult MemoryResidentContextsAttr::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError, uint64_t count) {
+  if (count == 0)
+    return emitError() << "memory resident-context count must be greater than "
+                          "zero";
+  return success();
+}
+
+LogicalResult MemoryConnectivityContractAttr::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError,
+    DenseI8ArrayAttr record) {
+  if (!record)
+    return emitError() << "memory connectivity requires a canonical record";
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(record.size());
+  for (std::int8_t byte : record.asArrayRef())
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  auto decoded = decodeMemoryConnectivityContractRecord(bytes);
+  if (!decoded)
+    return emitError() << llvm::toString(decoded.takeError());
+  return success();
+}
+
+LogicalResult
+MemoryEngineAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                         Schedule schedule,
+                         MemoryResidentContextsAttr residentContexts) {
+  if (schedule == Schedule::Spatial && residentContexts)
+    return emitError()
+           << "spatial memory engine cannot carry resident contexts";
+  return success();
+}
+
 namespace {
 
 LogicalResult
@@ -100,10 +142,13 @@ verifyEndpointOrdinals(llvm::function_ref<InFlightDiagnostic()> emitError,
 
 } // namespace
 
-LogicalResult MemoryContractAttr::verify(
-    llvm::function_ref<InFlightDiagnostic()> emitError, MemoryEngineAttr engine,
-    LocalMemoryServiceAttr localService, DenseI32ArrayAttr managerEndpoints,
-    DenseI32ArrayAttr subordinateEndpoints) {
+LogicalResult
+MemoryContractAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                           MemoryEngineAttr engine,
+                           LocalMemoryServiceAttr localService,
+                           MemoryConnectivityContractAttr connectivity,
+                           DenseI32ArrayAttr managerEndpoints,
+                           DenseI32ArrayAttr subordinateEndpoints) {
   if (failed(verifyEndpointOrdinals(emitError, managerEndpoints, "manager")) ||
       failed(verifyEndpointOrdinals(emitError, subordinateEndpoints,
                                     "subordinate")))

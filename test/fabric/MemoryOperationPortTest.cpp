@@ -6,6 +6,7 @@
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -237,6 +238,24 @@ MemoryOperationPortRecord hybridPort(mlir::MLIRContext &context) {
                                                 std::move(declaration)));
 }
 
+MemoryConnectivityContractAttr managerConnectivity(mlir::MLIRContext &context) {
+  MemoryConnectivityDeclaration declaration;
+  declaration.operationPorts = {
+      {{{MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
+                              ManagerMemoryDispatchTarget{0})}}}};
+  MemoryConnectivityContractRecord record =
+      take("memory connectivity",
+           MemoryConnectivityContractRecord::create(std::move(declaration)));
+  auto bytes = take("memory connectivity encoding",
+                    encodeMemoryConnectivityContractRecord(record));
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return MemoryConnectivityContractAttr::get(
+      &context, mlir::DenseI8ArrayAttr::get(&context, signedBytes));
+}
+
 void checkHybridGeometry(mlir::ModuleOp module, mlir::MLIRContext &context) {
   MemoryOperationPortRecord port = hybridPort(context);
   for (llvm::StringRef accepted : {"element_f32", "vector4_f32"}) {
@@ -310,6 +329,40 @@ void checkCompleteRelationNormalization(mlir::MLIRContext &context) {
                                    hybridEndpoints(context), std::move(split)));
 }
 
+void checkConnectivityContract(mlir::MLIRContext &context) {
+  MemoryConnectivityDeclaration declaration;
+  declaration.operationPorts = {
+      {{{MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
+                              ManagerMemoryDispatchTarget{0})}}}};
+  MemoryConnectivityContractRecord record =
+      take("connectivity contract",
+           MemoryConnectivityContractRecord::create(declaration));
+  auto bytes = take("connectivity encoding",
+                    encodeMemoryConnectivityContractRecord(record));
+  MemoryConnectivityContractRecord decoded = take(
+      "connectivity decoding", decodeMemoryConnectivityContractRecord(bytes));
+  require("connectivity roundtrip",
+          take("connectivity reencoding",
+               encodeMemoryConnectivityContractRecord(decoded)) == bytes,
+          "strict import changed canonical connectivity bytes");
+
+  llvm::Error wrongOwner = validateMemoryConnectivityContract(
+      decoded, {hybridPort(context)}, hybridEndpoints(context), 0, 0, false);
+  require("connectivity owner", static_cast<bool>(wrongOwner),
+          "accepted an unknown manager target");
+  llvm::consumeError(std::move(wrongOwner));
+
+  MemoryConnectivityDeclaration reordered;
+  reordered.operationPorts = {
+      {{{MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
+                              ManagerMemoryDispatchTarget{1}),
+         MemoryDispatchTarget(std::in_place_type<ManagerMemoryDispatchTarget>,
+                              ManagerMemoryDispatchTarget{0})}}}};
+  expectRejected<MemoryConnectivityContractRecord>(
+      "connectivity order",
+      MemoryConnectivityContractRecord::fromCanonical(std::move(reordered)));
+}
+
 void checkExactFabricCarrier(mlir::MLIRContext &context) {
   const llvm::StringRef test = "exact fabric.mem carrier";
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -345,8 +398,10 @@ void checkExactFabricCarrier(mlir::MLIRContext &context) {
   auto managers = mlir::DenseI32ArrayAttr::get(&context, {0});
   auto contract = fabric::MemoryContractAttr::get(
       &context,
-      fabric::MemoryEngineAttr::get(&context, fabric::Schedule::Spatial),
-      fabric::LocalMemoryServiceAttr(), managers, noEndpoints);
+      fabric::MemoryEngineAttr::get(&context, fabric::Schedule::Spatial,
+                                    fabric::MemoryResidentContextsAttr()),
+      fabric::LocalMemoryServiceAttr(), managerConnectivity(context), managers,
+      noEndpoints);
   llvm::SmallVector<mlir::Value> inputs = {
       body.getArgument(0), fifo.getResult(), body.getArgument(2),
       body.getArgument(3)};
@@ -399,6 +454,14 @@ void checkExactFabricCarrier(mlir::MLIRContext &context) {
       port && port->capabilityAlternatives().size() == 1 &&
           finalized.view().memoryCapabilityAlternative({portRefs.front(), 0}),
       "finalized Fabric omitted the exact operation-port relation");
+  const MemoryConnectivityContractRecord *connectivity =
+      finalized.view().memoryConnectivity(*memory);
+  require(test,
+          connectivity && connectivity->operationPorts().size() == 1 &&
+              connectivity->operationPorts()
+                      .front()
+                      .capabilityTargetDomains.size() == 1,
+          "finalized Fabric omitted its memory connectivity owner");
   auto transportOwner =
       loom::fabric::FabricTransportEndpointOwnerRef::of(*memory);
   auto memoryOwner = loom::fabric::FabricMemoryEndpointOwnerRef::of(*memory);
@@ -431,6 +494,7 @@ int main() {
   checkHybridGeometry(*module, context);
   checkRoleDirection(context);
   checkCompleteRelationNormalization(context);
+  checkConnectivityContract(context);
   checkExactFabricCarrier(context);
   return EXIT_SUCCESS;
 }

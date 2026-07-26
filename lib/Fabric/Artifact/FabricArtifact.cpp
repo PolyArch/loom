@@ -12,6 +12,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
@@ -96,16 +97,6 @@ deriveResourceContract(
     if (llvm::Error error = ::fabric::validateMemoryCapabilityFinalization(
             memory.getMemoryContract(), memory.getMemoryOperationPortsAttr()))
       return std::move(error);
-    ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
-    if (contract.getEngine().getSchedule() == ::fabric::Schedule::Temporal)
-      return ownerUnavailable(
-          "temporal fabric.mem finalization requires its exact resident "
-          "operation-context contract");
-    if (contract.getManagerEndpoints().size() != 1 ||
-        !contract.getSubordinateEndpoints().empty())
-      return ownerUnavailable(
-          "fabric.mem finalization requires its exact nontrivial service "
-          "dispatch contract");
     return std::optional<::fabric::ResourceContract>();
   }
   if (auto pe = dyn_cast<::fabric::PeOp>(operation);
@@ -635,9 +626,37 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
         {FabricMemoryEndpointRole::Subordinate, std::move(*encoded)});
   }
 
+  auto connectivity = ::fabric::decodeMemoryConnectivityContractRecord(
+      unsignedBytes(contract.getConnectivity().getRecord().asArrayRef()));
+  if (!connectivity)
+    return connectivity.takeError();
+  entity.memoryConnectivity = std::move(*connectivity);
+
+  if (::fabric::LocalMemoryServiceAttr local = contract.getLocalService()) {
+    auto service = ::fabric::decodeMemoryServiceContractRecord(
+        unsignedBytes(local.getServiceContract().getRecord().asArrayRef()),
+        memory.getContext(), ::fabric::MemoryServiceOwnerKind::Local);
+    if (!service)
+      return service.takeError();
+    detail::FabricNestedOwnerViewData owner;
+    owner.inventoryCounts = emptyInventories();
+    owner.inventoryCounts[static_cast<std::size_t>(
+        FabricInventoryKind::MemoryServiceRegion)] = service->regions().size();
+    owner.resourceContract = service->resourceContract();
+    entity.localMemoryService = std::move(owner);
+  }
+
+  ::fabric::MemoryEngineAttr engine = contract.getEngine();
+  if (!engine)
+    return llvm::Error::success();
+  entity.memorySchedule = engine.getSchedule();
+  if (::fabric::MemoryResidentContextsAttr contexts =
+          engine.getResidentContexts())
+    entity.memoryResidentContextCount = contexts.getCount();
+
   auto records = ::fabric::decodeMemoryOperationPortInventory(
       memory.getMemoryOperationPortsAttr(), memory.getContext(),
-      contract.getEngine().getSchedule(), *endpoints);
+      engine.getSchedule(), *endpoints);
   if (!records)
     return records.takeError();
   entity.owner.inventoryCounts[static_cast<std::size_t>(
@@ -649,6 +668,10 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
     owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::MemoryCapabilityAlternative)] =
         record.capabilityAlternatives().size();
+    if (entity.memoryResidentContextCount)
+      owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::MemoryOperationContext)] =
+          *entity.memoryResidentContextCount;
     owner.resourceContract = record.resourceContract();
     entity.memoryOperationPorts.push_back(
         {std::move(owner), std::move(record)});

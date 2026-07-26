@@ -155,15 +155,75 @@ SwitchSpec::temporal(std::vector<PortType> inputTypes,
           std::move(outputTypes), std::move(sourcesByOutput), routeTableSize};
 }
 
-MemorySpec MemorySpec::spatial(
-    std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
-    std::vector<std::uint32_t> managerInputOrdinals,
-    std::vector<std::uint32_t> subordinateOutputOrdinals,
+MemoryEngineSpec MemoryEngineSpec::spatial(
     std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts) {
+  return MemoryEngineSpec(::fabric::Schedule::Spatial, std::nullopt,
+                          std::move(operationPorts));
+}
+
+MemoryEngineSpec MemoryEngineSpec::temporal(
+    std::uint64_t residentContextCount,
+    std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts) {
+  return MemoryEngineSpec(::fabric::Schedule::Temporal, residentContextCount,
+                          std::move(operationPorts));
+}
+
+llvm::Expected<MemoryConnectivitySpec> MemoryConnectivitySpec::create(
+    ::fabric::MemoryConnectivityDeclaration declaration) {
+  auto record = ::fabric::MemoryConnectivityContractRecord::create(
+      std::move(declaration));
+  if (!record)
+    return record.takeError();
+  auto bytes = ::fabric::encodeMemoryConnectivityContractRecord(*record);
+  if (!bytes)
+    return bytes.takeError();
+  return MemoryConnectivitySpec(std::move(*bytes));
+}
+
+llvm::Expected<LocalMemoryServiceSpec> LocalMemoryServiceSpec::create(
+    std::uint64_t capacityBytes,
+    const ::fabric::MemoryServiceContractRecord &contract) {
+  if (capacityBytes == 0)
+    return invalid("local memory service requires a positive capacity");
+  if (llvm::Error error =
+          ::fabric::validateLocalMemoryServiceCapacity(contract, capacityBytes))
+    return std::move(error);
+  auto bytes = ::fabric::encodeMemoryServiceContractRecord(contract);
+  if (!bytes)
+    return bytes.takeError();
+  return LocalMemoryServiceSpec(capacityBytes, std::move(*bytes));
+}
+
+llvm::Expected<MemorySpec>
+MemorySpec::create(std::vector<PortType> inputTypes,
+                   std::vector<PortType> outputTypes,
+                   std::vector<std::uint32_t> managerInputOrdinals,
+                   std::vector<std::uint32_t> subordinateOutputOrdinals,
+                   std::optional<MemoryEngineSpec> engine,
+                   std::optional<LocalMemoryServiceSpec> localService,
+                   MemoryConnectivitySpec connectivity) {
+  if (!engine && !localService)
+    return invalid(
+        "memory requires an Operation Engine or Local Memory Service");
+  if (engine && engine->operationPorts_.empty())
+    return invalid("memory Operation Engine requires an operation port");
+  if (engine && engine->schedule_ == ::fabric::Schedule::Temporal &&
+      (!engine->residentContextCount_ || *engine->residentContextCount_ == 0))
+    return invalid(
+        "temporal memory Operation Engine requires resident contexts");
+  if (!engine && !managerInputOrdinals.empty())
+    return invalid("manager endpoint requires a memory Operation Engine");
+  if (!engine && !inputTypes.empty())
+    return invalid("storage-only memory must have zero input ports");
+  if (!engine && outputTypes.size() != subordinateOutputOrdinals.size())
+    return invalid(
+        "storage-only memory results must match its subordinate endpoints");
+  if (engine && !localService && managerInputOrdinals.empty())
+    return invalid("operation-engine-only memory requires a manager endpoint");
   return MemorySpec(std::move(inputTypes), std::move(outputTypes),
                     std::move(managerInputOrdinals),
-                    std::move(subordinateOutputOrdinals),
-                    std::move(operationPorts));
+                    std::move(subordinateOutputOrdinals), std::move(engine),
+                    std::move(localService), std::move(connectivity));
 }
 
 namespace {
@@ -779,8 +839,6 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
     return invalid("SpatialCore is already closed");
   if (inputs.size() != spec.inputTypes_.size())
     return invalid("memory input count does not match its typed contract");
-  if (spec.operationPorts_.empty())
-    return invalid("memory Operation Engine requires an operation port");
 
   llvm::SmallVector<mlir::Value, 8> values;
   llvm::SmallVector<mlir::Type, 8> inputTypes;
@@ -841,31 +899,61 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
   if (!endpoints)
     return endpoints.takeError();
 
-  llvm::SmallVector<mlir::Attribute, 4> encodedPorts;
-  encodedPorts.reserve(spec.operationPorts_.size());
-  for (const ::fabric::MemoryOperationPortDeclaration &declaration :
-       spec.operationPorts_) {
-    auto record = ::fabric::MemoryOperationPortRecord::create(
-        &(*state)->context, ::fabric::Schedule::Spatial, *endpoints,
-        declaration);
-    if (!record)
-      return record.takeError();
-    auto bytes = ::fabric::encodeMemoryOperationPortRecord(*record);
-    if (!bytes)
-      return bytes.takeError();
-    llvm::SmallVector<std::int8_t, 64> signedBytes;
-    signedBytes.reserve(bytes->size());
-    for (std::uint8_t byte : *bytes)
-      signedBytes.push_back(static_cast<std::int8_t>(byte));
-    encodedPorts.push_back(
-        mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
+  ::fabric::MemoryEngineAttr engineAttr;
+  mlir::ArrayAttr operationPortsAttr;
+  if (spec.engine_) {
+    ::fabric::MemoryResidentContextsAttr residentContexts;
+    if (spec.engine_->residentContextCount_)
+      residentContexts = ::fabric::MemoryResidentContextsAttr::get(
+          &(*state)->context, *spec.engine_->residentContextCount_);
+    engineAttr = ::fabric::MemoryEngineAttr::get(
+        &(*state)->context, spec.engine_->schedule_, residentContexts);
+    llvm::SmallVector<mlir::Attribute, 4> encodedPorts;
+    encodedPorts.reserve(spec.engine_->operationPorts_.size());
+    for (const ::fabric::MemoryOperationPortDeclaration &declaration :
+         spec.engine_->operationPorts_) {
+      auto record = ::fabric::MemoryOperationPortRecord::fromCanonical(
+          &(*state)->context, spec.engine_->schedule_, *endpoints, declaration);
+      if (!record)
+        return record.takeError();
+      auto bytes = ::fabric::encodeMemoryOperationPortRecord(*record);
+      if (!bytes)
+        return bytes.takeError();
+      llvm::SmallVector<std::int8_t, 64> signedBytes;
+      signedBytes.reserve(bytes->size());
+      for (std::uint8_t byte : *bytes)
+        signedBytes.push_back(static_cast<std::int8_t>(byte));
+      encodedPorts.push_back(
+          mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
+    }
+    operationPortsAttr = mlir::ArrayAttr::get(&(*state)->context, encodedPorts);
   }
 
-  auto contract = ::fabric::MemoryContractAttr::get(
+  ::fabric::LocalMemoryServiceAttr localServiceAttr;
+  if (spec.localService_) {
+    llvm::SmallVector<std::int8_t, 64> signedBytes;
+    signedBytes.reserve(spec.localService_->contractBytes_.size());
+    for (std::uint8_t byte : spec.localService_->contractBytes_)
+      signedBytes.push_back(static_cast<std::int8_t>(byte));
+    auto serviceContract = ::fabric::MemoryServiceContractAttr::get(
+        &(*state)->context,
+        mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
+    localServiceAttr = ::fabric::LocalMemoryServiceAttr::get(
+        &(*state)->context, spec.localService_->capacityBytes_,
+        serviceContract);
+  }
+
+  llvm::SmallVector<std::int8_t, 64> signedConnectivity;
+  signedConnectivity.reserve(spec.connectivity_.canonicalBytes_.size());
+  for (std::uint8_t byte : spec.connectivity_.canonicalBytes_)
+    signedConnectivity.push_back(static_cast<std::int8_t>(byte));
+  auto connectivityAttr = ::fabric::MemoryConnectivityContractAttr::get(
       &(*state)->context,
-      ::fabric::MemoryEngineAttr::get(&(*state)->context,
-                                      ::fabric::Schedule::Spatial),
-      ::fabric::LocalMemoryServiceAttr(), *managers, *subordinates);
+      mlir::DenseI8ArrayAttr::get(&(*state)->context, signedConnectivity));
+
+  auto contract = ::fabric::MemoryContractAttr::get(
+      &(*state)->context, engineAttr, localServiceAttr, connectivityAttr,
+      *managers, *subordinates);
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&root.operation.getBody().front());
   auto memory = ::fabric::MemOp::create(
@@ -873,8 +961,7 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
       mlir::TypeAttr(), contract,
       hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(inputTypes)
                          : llvm::ArrayRef<mlir::Type>(),
-      mlir::ArrayAttr(),
-      mlir::ArrayAttr::get(&(*state)->context, encodedPorts));
+      mlir::ArrayAttr(), operationPortsAttr);
   if (llvm::Error error = verifyNewOperation(memory, "memory"))
     return std::move(error);
 

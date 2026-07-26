@@ -1,4 +1,5 @@
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 
 #include "Fabric/IR/FabricDialect.h"
@@ -48,11 +49,12 @@ void expectInvalid(const char *test, llvm::Error error,
 }
 
 MemoryContractAttr contract(mlir::MLIRContext &context, MemoryEngineAttr engine,
-                            LocalMemoryServiceAttr localService) {
+                            LocalMemoryServiceAttr localService,
+                            MemoryConnectivityContractAttr connectivity = {}) {
   mlir::DenseI32ArrayAttr noEndpoints =
       mlir::DenseI32ArrayAttr::get(&context, {});
-  return MemoryContractAttr::get(&context, engine, localService, noEndpoints,
-                                 noEndpoints);
+  return MemoryContractAttr::get(&context, engine, localService, connectivity,
+                                 noEndpoints, noEndpoints);
 }
 
 template <typename T> T take(const char *test, llvm::Expected<T> value) {
@@ -146,6 +148,25 @@ MemoryServiceContractAttr serviceAttr(mlir::MLIRContext &context,
       &context, mlir::DenseI8ArrayAttr::get(&context, signedBytes));
 }
 
+MemoryConnectivityContractAttr
+emptyConnectivityAttr(mlir::MLIRContext &context) {
+  MemoryConnectivityContractRecord record =
+      take("empty connectivity", MemoryConnectivityContractRecord::create({}));
+  std::vector<std::uint8_t> bytes = take(
+      "connectivity encoding", encodeMemoryConnectivityContractRecord(record));
+  MemoryConnectivityContractRecord decoded = take(
+      "connectivity roundtrip", decodeMemoryConnectivityContractRecord(bytes));
+  if (take("connectivity reencoding",
+           encodeMemoryConnectivityContractRecord(decoded)) != bytes)
+    fail("connectivity roundtrip", "canonical bytes changed");
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return MemoryConnectivityContractAttr::get(
+      &context, mlir::DenseI8ArrayAttr::get(&context, signedBytes));
+}
+
 } // namespace
 
 int main() {
@@ -157,7 +178,8 @@ int main() {
   if (llvm::Error error = validateMemoryCapabilityFinalization({}, {}))
     fail("empty occurrence", llvm::toString(std::move(error)));
 
-  MemoryEngineAttr engine = MemoryEngineAttr::get(&context, Schedule::Spatial);
+  MemoryEngineAttr engine = MemoryEngineAttr::get(&context, Schedule::Spatial,
+                                                  MemoryResidentContextsAttr());
   expectInvalid(
       "incomplete engine",
       validateMemoryCapabilityFinalization(contract(context, engine, {}), {}),
@@ -222,7 +244,7 @@ int main() {
   LocalMemoryServiceAttr local =
       LocalMemoryServiceAttr::get(&context, 4096, serviceContract);
   if (llvm::Error error = validateMemoryCapabilityFinalization(
-          contract(context, {}, local), {}))
+          contract(context, {}, local, emptyConnectivityAttr(context)), {}))
     fail("local service", llvm::toString(std::move(error)));
   llvm::Error zeroCapacity = validateLocalMemoryServiceCapacity(decoded, 0);
   if (!zeroCapacity)
