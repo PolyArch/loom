@@ -1,6 +1,6 @@
 //===- ImplementationFamilyTest.cpp - HSG family admission anchors -------===//
 //
-// Anchors the generated 20-family registry and one discriminating example for
+// Anchors the generated family registry and one discriminating example for
 // each closed capability schema. Pair relations deliberately reject a pair
 // whose source and destination both occur in other admitted pairs.
 //
@@ -12,6 +12,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -94,8 +95,8 @@ bool checkDescriptorRelations() {
   llvm::StringSet<> keywords;
   const std::uint32_t families = implementationFamilyCount();
   const std::uint32_t schemas = dataflow::operationSchemaCount();
-  if (families != 20) {
-    llvm::errs() << "the registry must contain exactly 20 families, found "
+  if (families != 64) {
+    llvm::errs() << "the registry must contain exactly 64 families, found "
                  << families << '\n';
     ok = false;
   }
@@ -150,7 +151,7 @@ bool checkMembership() {
     ok = false;
   }
   if (findImplementationFamily("NoSuchFamily") ||
-      findImplementationFamily("ScalarFloatDivide")) {
+      findImplementationFamily("UniversalCompute")) {
     llvm::errs() << "an unregistered or speculative family is representable\n";
     ok = false;
   }
@@ -175,6 +176,21 @@ bool checkCapabilityCodec(MLIRContext &context) {
   }
   if (getFamilyCapabilityParamsAttr(&context, *decoded) != encoded) {
     llvm::errs() << "canonical typed hw_params did not round-trip\n";
+    return false;
+  }
+
+  FamilyCapabilityParams vectorCapability = FixedVectorAdapterParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I32}),
+      FloatFormatSet::get({FloatFormat::F16, FloatFormat::F32}), 128};
+  DictionaryAttr encodedVector =
+      getFamilyCapabilityParamsAttr(&context, vectorCapability);
+  auto decodedVector = parseFamilyCapabilityParams(
+      ImplementationFamilyId::FixedVectorPack, encodedVector);
+  if (!decodedVector || getFamilyCapabilityParamsAttr(
+                            &context, *decodedVector) != encodedVector) {
+    if (!decodedVector)
+      llvm::errs() << llvm::toString(decodedVector.takeError()) << '\n';
+    llvm::errs() << "fixed-vector typed hw_params did not round-trip\n";
     return false;
   }
 
@@ -506,6 +522,87 @@ bool checkLoopAndTokenAdmission(MLIRContext &context) {
   return ok;
 }
 
+bool checkFixedVectorAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type i32 = fixture.builder.getI32Type();
+  VectorType vector4 = VectorType::get({4}, i32);
+  VectorType vector8 = VectorType::get({8}, i32);
+  Operation *vectorAdd =
+      arith::AddIOp::create(fixture.builder, fixture.loc,
+                            fixture.poison(vector4), fixture.poison(vector4));
+  Operation *wideVectorAdd =
+      arith::AddIOp::create(fixture.builder, fixture.loc,
+                            fixture.poison(vector8), fixture.poison(vector8));
+  Operation *scalarAdd = arith::AddIOp::create(
+      fixture.builder, fixture.loc, fixture.poison(i32), fixture.poison(i32));
+
+  FamilyCapabilityParams vectorParams = FixedVectorIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16,
+                            IntegerWidth::I32, IntegerWidth::I64}),
+      128};
+  FamilyCapabilityParams scalarParams = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16,
+                            IntegerWidth::I32, IntegerWidth::I64})};
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams &params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, &params, *projection, admitted, reason);
+  };
+  check(vectorAdd, ImplementationFamilyId::FixedVectorIntegerAddSub,
+        vectorParams, true, {});
+  check(scalarAdd, ImplementationFamilyId::FixedVectorIntegerAddSub,
+        vectorParams, false, "fixed vector");
+  check(vectorAdd, ImplementationFamilyId::ScalarIntegerAddSub, scalarParams,
+        false, "scalar");
+  check(wideVectorAdd, ImplementationFamilyId::FixedVectorIntegerAddSub,
+        vectorParams, false, "payload capacity");
+  return ok;
+}
+
+bool checkAdapterAndTokenAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  VectorType vector4 = VectorType::get({4}, fixture.builder.getF32Type());
+  VectorType vector2 = VectorType::get({2}, fixture.builder.getF64Type());
+  Type i128 = fixture.builder.getIntegerType(128);
+  Operation *pack4 = dataflow::PackOp::create(fixture.builder, fixture.loc,
+                                              i128, fixture.poison(vector4));
+  Operation *pack2 = dataflow::PackOp::create(fixture.builder, fixture.loc,
+                                              i128, fixture.poison(vector2));
+
+  FamilyCapabilityParams adapter = FixedVectorAdapterParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16,
+                            IntegerWidth::I32, IntegerWidth::I64}),
+      FloatFormatSet::get(
+          {FloatFormat::F16, FloatFormat::BF16, FloatFormat::F32}),
+      128};
+  FamilyCapabilityParams routed = RoutedTokenParams{128, 4};
+
+  Value selector = fixture.poison(fixture.builder.getI1Type());
+  Value lane0 = fixture.poison(fixture.builder.getI32Type());
+  Value lane1 = fixture.poison(fixture.builder.getI32Type());
+  Operation *mux = dataflow::MuxOp::create(fixture.builder, fixture.loc,
+                                           fixture.builder.getI32Type(),
+                                           selector, ValueRange{lane0, lane1});
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams &params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, &params, *projection, admitted, reason);
+  };
+  check(pack4, ImplementationFamilyId::FixedVectorPack, adapter, true, {});
+  check(pack2, ImplementationFamilyId::FixedVectorPack, adapter, false,
+        "element type");
+  check(mux, ImplementationFamilyId::TokenMux, routed, true, {});
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -523,5 +620,7 @@ int main() {
   ok &= checkFloatingAdmission(context);
   ok &= checkCastRelations(context);
   ok &= checkLoopAndTokenAdmission(context);
+  ok &= checkFixedVectorAdmission(context);
+  ok &= checkAdapterAndTokenAdmission(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

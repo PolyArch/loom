@@ -99,6 +99,10 @@ llvm::Expected<::mlir::arith::FastMathFlags>
 floatingFlags(const CanonicalActorSchemaProjection &actor);
 std::optional<::mlir::arith::RoundingMode>
 arithmeticRounding(const CanonicalActorSchemaProjection &actor);
+llvm::Expected<::mlir::arith::CmpIPredicate>
+integerPredicate(const CanonicalActorSchemaProjection &actor);
+llvm::Expected<::mlir::arith::CmpFPredicate>
+floatPredicate(const CanonicalActorSchemaProjection &actor);
 
 llvm::Error admitScalarOrdinaryIntegerAdmission(
     const FamilyCapabilityParams &capability,
@@ -134,6 +138,38 @@ llvm::Error admitStreamAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorOrdinaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorLogicIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorIntegerCompareAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorValueSelectAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorUniformFloatAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorFloatCompareAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitFixedVectorAdapterAdmission(const FamilyCapabilityParams &capability,
+                                 const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitConstantTokenAdmission(const FamilyCapabilityParams &capability,
+                            const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
+                        const CanonicalActorSchemaProjection &actor);
+llvm::Error admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
+                                   const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
                          const CanonicalActorSchemaProjection &actor);
 
 bool isValidStreamStepKind(::dataflow::StreamStepKind kind) {
@@ -261,6 +297,474 @@ admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
   return admitTokenPlanePayload(payloadType);
 }
 
+llvm::Expected<::mlir::VectorType> fixedVector(::mlir::Type type,
+                                               std::uint32_t maxPayloadBits,
+                                               llvm::StringRef relation) {
+  llvm::Expected<::mlir::VectorType> vector =
+      ::dataflow::semantics::analyzeFixedRankDataVector(
+          type, ::dataflow::semantics::VectorRank::AnyFixed);
+  if (!vector)
+    return reject(relation + " requires a fixed vector: " +
+                  llvm::toString(vector.takeError()));
+  llvm::Expected<std::uint64_t> width =
+      ::dataflow::semantics::getFlattenedVectorBitWidth(*vector);
+  if (!width)
+    return reject(relation + " has no finite payload width: " +
+                  llvm::toString(width.takeError()));
+  if (*width > maxPayloadBits)
+    return reject(relation + " exceeds payload capacity");
+  return *vector;
+}
+
+llvm::Error admitVectorIntegerElement(::mlir::VectorType vector,
+                                      IntegerWidthSet widths,
+                                      llvm::StringRef relation) {
+  llvm::Expected<IntegerWidth> width =
+      integerWidth(vector.getElementType(), relation);
+  if (!width)
+    return width.takeError();
+  if (!widths.contains(*width))
+    return reject(relation + " element width is not admitted");
+  return llvm::Error::success();
+}
+
+llvm::Error admitVectorFloatElement(::mlir::VectorType vector,
+                                    FloatFormatSet formats,
+                                    llvm::StringRef relation) {
+  llvm::Expected<FloatFormat> format =
+      floatFormat(vector.getElementType(), relation);
+  if (!format)
+    return format.takeError();
+  if (!formats.contains(*format))
+    return reject(relation + " element type is not admitted");
+  return llvm::Error::success();
+}
+
+llvm::Error validateVectorCapacity(std::uint32_t capacity) {
+  if (capacity == 0)
+    return reject("fixed-vector payload capacity must be positive");
+  return llvm::Error::success();
+}
+
+llvm::Error admitFixedVectorOrdinaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::FixedVectorIntegerParams>(capability);
+  if (llvm::Error error = validateIntegerWidths(
+          params.elementWidths, ordinaryIntegerWidths(), "fixed vector"))
+    return error;
+  if (llvm::Error error = validateVectorCapacity(params.maxPayloadBits))
+    return error;
+  switch (actor.schema) {
+  case OperationSchemaId::ArithAddI:
+  case OperationSchemaId::ArithSubI:
+  case OperationSchemaId::ArithShLI:
+  case OperationSchemaId::ArithShRSI:
+  case OperationSchemaId::ArithShRUI:
+  case OperationSchemaId::ArithMulI:
+    break;
+  default:
+    return reject(
+        "fixed-vector integer provider received an unsupported schema");
+  }
+  if (llvm::Error error = requireUniformType(actor, 2))
+    return error;
+  auto vector = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                            "fixed-vector integer admission");
+  if (!vector)
+    return vector.takeError();
+  return admitVectorIntegerElement(*vector, params.elementWidths,
+                                   "fixed-vector integer admission");
+}
+
+llvm::Error admitFixedVectorLogicIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::FixedVectorIntegerParams>(capability);
+  if (llvm::Error error = validateIntegerWidths(
+          params.elementWidths, logicIntegerWidths(), "fixed vector logic"))
+    return error;
+  switch (actor.schema) {
+  case OperationSchemaId::ArithAndI:
+  case OperationSchemaId::ArithOrI:
+  case OperationSchemaId::ArithXOrI:
+    break;
+  default:
+    return reject("fixed-vector logic provider received an unsupported schema");
+  }
+  if (llvm::Error error = requireUniformType(actor, 2))
+    return error;
+  auto vector = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                            "fixed-vector logic admission");
+  if (!vector)
+    return vector.takeError();
+  return admitVectorIntegerElement(*vector, params.elementWidths,
+                                   "fixed-vector logic admission");
+}
+
+llvm::Error admitFixedVectorIntegerCompareAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params =
+      std::get<fabric::FixedVectorIntegerCompareMinMaxParams>(capability);
+  if (llvm::Error error =
+          validateIntegerWidths(params.elementWidths, ordinaryIntegerWidths(),
+                                "fixed vector comparison"))
+    return error;
+  if (!params.predicates.valid() || params.predicates.empty())
+    return reject("fixed-vector integer predicates must be non-empty");
+
+  ::mlir::Type operandType;
+  if (actor.schema == OperationSchemaId::ArithCmpI) {
+    if (llvm::Error error = requireArity(actor, 2, 1))
+      return error;
+    if (actor.type.getInput(0) != actor.type.getInput(1))
+      return reject("fixed-vector comparison operand types do not agree");
+    auto operands = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                                "fixed-vector integer comparison");
+    if (!operands)
+      return operands.takeError();
+    auto result = fixedVector(actor.type.getResult(0), params.maxPayloadBits,
+                              "fixed-vector integer comparison result");
+    if (!result)
+      return result.takeError();
+    if (result->getShape() != operands->getShape() ||
+        !result->getElementType().isInteger(1))
+      return reject(
+          "fixed-vector comparison result must be matching vector<i1>");
+    operandType = actor.type.getInput(0);
+  } else {
+    if (llvm::Error error = requireUniformType(actor, 2))
+      return error;
+    operandType = actor.type.getInput(0);
+  }
+  auto vector = fixedVector(operandType, params.maxPayloadBits,
+                            "fixed-vector integer comparison");
+  if (!vector)
+    return vector.takeError();
+  if (llvm::Error error = admitVectorIntegerElement(
+          *vector, params.elementWidths, "fixed-vector integer comparison"))
+    return error;
+  llvm::Expected<::mlir::arith::CmpIPredicate> predicate =
+      integerPredicate(actor);
+  if (!predicate)
+    return predicate.takeError();
+  if (!params.predicates.contains(*predicate))
+    return reject("fixed-vector integer predicate is not admitted");
+  return llvm::Error::success();
+}
+
+llvm::Error admitFixedVectorValueSelectAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params =
+      std::get<fabric::FixedVectorValueSelectParams>(capability);
+  if (llvm::Error error = requireArity(actor, 3, 1))
+    return error;
+  ::mlir::Type valueType = actor.type.getInput(1);
+  if (actor.type.getInput(2) != valueType ||
+      actor.type.getResult(0) != valueType)
+    return reject("fixed-vector select value types do not agree");
+  auto values = fixedVector(valueType, params.maxPayloadBits,
+                            "fixed-vector value select");
+  if (!values)
+    return values.takeError();
+  auto condition = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                               "fixed-vector select condition");
+  if (!condition)
+    return condition.takeError();
+  if (condition->getShape() != values->getShape() ||
+      !condition->getElementType().isInteger(1))
+    return reject("fixed-vector select condition must be matching vector<i1>");
+  if (::llvm::isa<::mlir::IntegerType>(values->getElementType()))
+    return admitVectorIntegerElement(*values, params.integerElementWidths,
+                                     "fixed-vector value select");
+  return admitVectorFloatElement(*values, params.floatElementFormats,
+                                 "fixed-vector value select");
+}
+
+unsigned fixedVectorFloatInputCount(OperationSchemaId schema) {
+  switch (schema) {
+  case OperationSchemaId::ArithNegF:
+  case OperationSchemaId::MathAbsF:
+    return 1;
+  case OperationSchemaId::ArithAddF:
+  case OperationSchemaId::ArithSubF:
+  case OperationSchemaId::ArithMulF:
+    return 2;
+  case OperationSchemaId::MathFma:
+    return 3;
+  default:
+    return 0;
+  }
+}
+
+llvm::Error admitFixedVectorUniformFloatAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::FixedVectorFloatParams>(capability);
+  if (llvm::Error error =
+          validateFloatFormats(params.elementFormats, "fixed vector"))
+    return error;
+  unsigned inputCount = fixedVectorFloatInputCount(actor.schema);
+  if (inputCount == 0)
+    return reject(
+        "fixed-vector floating provider received an unsupported schema");
+  if (llvm::Error error = requireUniformType(actor, inputCount))
+    return error;
+  auto vector = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                            "fixed-vector floating admission");
+  if (!vector)
+    return vector.takeError();
+  if (llvm::Error error = admitVectorFloatElement(
+          *vector, params.elementFormats, "fixed-vector floating admission"))
+    return error;
+  llvm::Expected<::mlir::arith::FastMathFlags> flags = floatingFlags(actor);
+  if (!flags)
+    return flags.takeError();
+  const bool rounded = actor.schema == OperationSchemaId::ArithAddF ||
+                       actor.schema == OperationSchemaId::ArithSubF ||
+                       actor.schema == OperationSchemaId::ArithMulF ||
+                       actor.schema == OperationSchemaId::MathFma;
+  return admitFloatBehavior(params.behavior, *flags,
+                            rounded ? arithmeticRounding(actor) : std::nullopt,
+                            FloatNaNBehavior::IEEE);
+}
+
+llvm::Error admitFixedVectorFloatCompareAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params =
+      std::get<fabric::FixedVectorFloatCompareMinMaxParams>(capability);
+  if (llvm::Error error = validateFloatFormats(params.elementFormats,
+                                               "fixed vector comparison"))
+    return error;
+  if (!params.predicates.valid() || params.predicates.empty())
+    return reject("fixed-vector floating predicates must be non-empty");
+  ::mlir::Type operandType;
+  if (actor.schema == OperationSchemaId::ArithCmpF) {
+    if (llvm::Error error = requireArity(actor, 2, 1))
+      return error;
+    if (actor.type.getInput(0) != actor.type.getInput(1))
+      return reject("fixed-vector floating operands do not agree");
+    auto operands = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                                "fixed-vector floating comparison");
+    if (!operands)
+      return operands.takeError();
+    auto result = fixedVector(actor.type.getResult(0), params.maxPayloadBits,
+                              "fixed-vector floating comparison result");
+    if (!result)
+      return result.takeError();
+    if (result->getShape() != operands->getShape() ||
+        !result->getElementType().isInteger(1))
+      return reject("fixed-vector floating result must be matching vector<i1>");
+    operandType = actor.type.getInput(0);
+  } else {
+    if (llvm::Error error = requireUniformType(actor, 2))
+      return error;
+    operandType = actor.type.getInput(0);
+  }
+  auto vector = fixedVector(operandType, params.maxPayloadBits,
+                            "fixed-vector floating comparison");
+  if (!vector)
+    return vector.takeError();
+  if (llvm::Error error = admitVectorFloatElement(
+          *vector, params.elementFormats, "fixed-vector floating comparison"))
+    return error;
+  llvm::Expected<::mlir::arith::CmpFPredicate> predicate =
+      floatPredicate(actor);
+  if (!predicate)
+    return predicate.takeError();
+  if (!params.predicates.contains(*predicate))
+    return reject("fixed-vector floating predicate is not admitted");
+  llvm::Expected<::mlir::arith::FastMathFlags> flags = floatingFlags(actor);
+  if (!flags)
+    return flags.takeError();
+  FloatNaNBehavior nanBehavior =
+      actor.schema == OperationSchemaId::ArithMinNumF ||
+              actor.schema == OperationSchemaId::ArithMaxNumF
+          ? FloatNaNBehavior::NumberPreferred
+          : FloatNaNBehavior::IEEE;
+  return admitFloatBehavior(params.behavior, *flags, std::nullopt, nanBehavior);
+}
+
+llvm::Error admitAdapterVector(::mlir::Type type,
+                               const fabric::FixedVectorAdapterParams &params,
+                               llvm::StringRef relation,
+                               bool requireRankOne = false) {
+  auto vector = fixedVector(type, params.maxPayloadBits, relation);
+  if (!vector)
+    return vector.takeError();
+  if (requireRankOne && vector->getRank() != 1)
+    return reject(relation + " requires a rank-one vector");
+  if (::llvm::isa<::mlir::IntegerType>(vector->getElementType()))
+    return admitVectorIntegerElement(*vector, params.integerElementWidths,
+                                     relation);
+  return admitVectorFloatElement(*vector, params.floatElementFormats, relation);
+}
+
+llvm::Error
+admitFixedVectorAdapterAdmission(const FamilyCapabilityParams &capability,
+                                 const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::FixedVectorAdapterParams>(capability);
+  switch (actor.schema) {
+  case OperationSchemaId::DataflowPack:
+  case OperationSchemaId::DataflowUnpack: {
+    if (llvm::Error error = requireArity(actor, 1, 1))
+      return error;
+    ::mlir::Type vectorType = actor.schema == OperationSchemaId::DataflowPack
+                                  ? actor.type.getInput(0)
+                                  : actor.type.getResult(0);
+    ::mlir::Type packedType = actor.schema == OperationSchemaId::DataflowPack
+                                  ? actor.type.getResult(0)
+                                  : actor.type.getInput(0);
+    if (llvm::Error error =
+            admitAdapterVector(vectorType, params, "fixed-vector adapter"))
+      return error;
+    auto packed = ::llvm::dyn_cast<::mlir::IntegerType>(packedType);
+    auto vector = ::llvm::cast<::mlir::VectorType>(vectorType);
+    auto width = ::dataflow::semantics::getFlattenedVectorBitWidth(vector);
+    if (!packed || !packed.isSignless() || !width ||
+        packed.getWidth() != *width)
+      return reject("fixed-vector adapter packed width does not match");
+    return llvm::Error::success();
+  }
+  case OperationSchemaId::DataflowParallelize: {
+    if (llvm::Error error = requireArity(actor, 2, 3))
+      return error;
+    if (llvm::Error error = admitAdapterVector(actor.type.getResult(0), params,
+                                               "parallelize", true))
+      return error;
+    auto vector = ::llvm::cast<::mlir::VectorType>(actor.type.getResult(0));
+    auto mask = ::llvm::dyn_cast<::mlir::VectorType>(actor.type.getResult(1));
+    if (actor.type.getInput(0) != vector.getElementType() || !mask ||
+        mask.getShape() != vector.getShape() ||
+        !mask.getElementType().isInteger(1) ||
+        !actor.type.getInput(1).isInteger(1) ||
+        !actor.type.getResult(2).isInteger(1))
+      return reject("parallelize type relation is malformed");
+    return llvm::Error::success();
+  }
+  case OperationSchemaId::DataflowSerialize: {
+    if (llvm::Error error = requireArity(actor, 3, 2))
+      return error;
+    if (llvm::Error error = admitAdapterVector(actor.type.getInput(0), params,
+                                               "serialize", true))
+      return error;
+    auto vector = ::llvm::cast<::mlir::VectorType>(actor.type.getInput(0));
+    auto mask = ::llvm::dyn_cast<::mlir::VectorType>(actor.type.getInput(1));
+    if (!mask || mask.getShape() != vector.getShape() ||
+        !mask.getElementType().isInteger(1) ||
+        !actor.type.getInput(2).isInteger(1) ||
+        actor.type.getResult(0) != vector.getElementType() ||
+        !actor.type.getResult(1).isInteger(1))
+      return reject("serialize type relation is malformed");
+    return llvm::Error::success();
+  }
+  default:
+    return reject("fixed-vector adapter received an unsupported schema");
+  }
+}
+
+llvm::Expected<std::uint64_t> payloadBitWidth(::mlir::Type type) {
+  if (::llvm::isa<::mlir::NoneType>(type))
+    return 0;
+  if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type)) {
+    if (!integer.isSignless())
+      return reject("payload integer must be signless");
+    return integer.getWidth();
+  }
+  if (auto floating = ::llvm::dyn_cast<::mlir::FloatType>(type))
+    return floating.getWidth();
+  if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(type))
+    return ::dataflow::semantics::getFlattenedVectorBitWidth(vector);
+  return reject("payload must be scalar, fixed vector, or none");
+}
+
+llvm::Error admitPayload(::mlir::Type type, std::uint32_t capacity) {
+  if (llvm::Error error = admitTokenPlanePayload(type))
+    return error;
+  auto width = payloadBitWidth(type);
+  if (!width)
+    return width.takeError();
+  if (*width > capacity)
+    return reject("token payload exceeds payload capacity");
+  return llvm::Error::success();
+}
+
+llvm::Error
+admitConstantTokenAdmission(const FamilyCapabilityParams &capability,
+                            const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::PayloadCapacityParams>(capability);
+  if (llvm::Error error = requireArity(actor, 1, 1))
+    return error;
+  if (!::llvm::isa<::mlir::NoneType>(actor.type.getInput(0)))
+    return reject("constant control input must be none");
+  return admitPayload(actor.type.getResult(0), params.maxPayloadBits);
+}
+
+llvm::Error
+admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
+                        const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  const unsigned lanes = actor.type.getNumInputs();
+  if (lanes == 0 || lanes > params.maxFan ||
+      actor.type.getNumResults() != lanes)
+    return reject("sync lane count exceeds routed-token fan capacity");
+  for (unsigned lane = 0; lane < lanes; ++lane) {
+    if (actor.type.getInput(lane) != actor.type.getResult(lane))
+      return reject("sync lane types do not agree");
+    if (llvm::Error error =
+            admitPayload(actor.type.getInput(lane), params.maxPayloadBits))
+      return error;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateSelector(::mlir::Type selector, unsigned fan) {
+  if (fan == 2)
+    return selector.isInteger(1)
+               ? llvm::Error::success()
+               : reject("two-way token route requires an i1 selector");
+  return ::llvm::isa<::mlir::IndexType>(selector)
+             ? llvm::Error::success()
+             : reject("multi-way token route requires an index selector");
+}
+
+llvm::Error
+admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
+                       const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  if (actor.type.getNumInputs() < 3 || actor.type.getNumResults() != 1)
+    return reject("token mux arity is malformed");
+  const unsigned fan = actor.type.getNumInputs() - 1;
+  if (fan > params.maxFan)
+    return reject("token mux exceeds routed-token fan capacity");
+  if (llvm::Error error = validateSelector(actor.type.getInput(0), fan))
+    return error;
+  ::mlir::Type payload = actor.type.getResult(0);
+  for (unsigned lane = 1; lane < actor.type.getNumInputs(); ++lane)
+    if (actor.type.getInput(lane) != payload)
+      return reject("token mux payload types do not agree");
+  return admitPayload(payload, params.maxPayloadBits);
+}
+
+llvm::Error
+admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::RoutedTokenParams>(capability);
+  const unsigned fan = actor.type.getNumResults();
+  if (actor.type.getNumInputs() != 2 || fan < 2 || fan > params.maxFan)
+    return reject("token demux exceeds routed-token fan capacity");
+  if (llvm::Error error = validateSelector(actor.type.getInput(0), fan))
+    return error;
+  ::mlir::Type payload = actor.type.getInput(1);
+  for (unsigned lane = 0; lane < fan; ++lane)
+    if (actor.type.getResult(lane) != payload)
+      return reject("token demux payload types do not agree");
+  return admitPayload(payload, params.maxPayloadBits);
+}
+
 } // namespace
 
 fabric::CapabilityParamsSchemaId
@@ -377,11 +881,34 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
   switch (actor.schema) {
   case OperationSchemaId::ArithNegF:
   case OperationSchemaId::MathAbsF:
+  case OperationSchemaId::MathSin:
+  case OperationSchemaId::MathCos:
+  case OperationSchemaId::MathTan:
+  case OperationSchemaId::MathSinh:
+  case OperationSchemaId::MathCosh:
+  case OperationSchemaId::MathTanh:
+  case OperationSchemaId::MathExp:
+  case OperationSchemaId::MathExp2:
+  case OperationSchemaId::MathExpM1:
+  case OperationSchemaId::MathLog:
+  case OperationSchemaId::MathLog2:
+  case OperationSchemaId::MathLog10:
+  case OperationSchemaId::MathLog1p:
+  case OperationSchemaId::MathFloor:
+  case OperationSchemaId::MathCeil:
+  case OperationSchemaId::MathRound:
+  case OperationSchemaId::MathTrunc:
+  case OperationSchemaId::MathRoundEven:
+  case OperationSchemaId::MathSqrt:
+  case OperationSchemaId::MathRsqrt:
+  case OperationSchemaId::MathErf:
     inputCount = 1;
     break;
   case OperationSchemaId::ArithAddF:
   case OperationSchemaId::ArithSubF:
   case OperationSchemaId::ArithMulF:
+  case OperationSchemaId::ArithDivF:
+  case OperationSchemaId::ArithRemF:
     inputCount = 2;
     hasArithmeticRounding = true;
     break;
@@ -875,6 +1402,10 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
   case OperationSchemaId::ArithShRSI:
   case OperationSchemaId::ArithShRUI:
   case OperationSchemaId::ArithMulI:
+  case OperationSchemaId::ArithDivSI:
+  case OperationSchemaId::ArithDivUI:
+  case OperationSchemaId::ArithRemSI:
+  case OperationSchemaId::ArithRemUI:
     return admitUniformInteger(actor, params.integerWidths, 2);
   default:
     return reject("integer admission provider received an unsupported schema");

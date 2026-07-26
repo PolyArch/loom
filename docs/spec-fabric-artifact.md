@@ -513,7 +513,8 @@ Anchor tests cover:
   `fabric.interconnect_implementation` owner provider is absent;
 * a valid custom Fabric with a missing backend provider reporting
   `Unsupported`; and
-* a builtin target refusing publication when provider closure is incomplete.
+* a builtin target publishing with complete semantic capability while a later
+  backend request reports typed `Unsupported` for missing provider closure.
 
 Tests do not freeze one canonical-labeling implementation, MLIR printer
 whitespace, Builder handle order, filesystem layout, or a large topology

@@ -322,11 +322,9 @@ The initial scale anchors are:
 These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource
 inventory, hardware parameters, switch construction, memory-port capacity, and
-buffer capacities are part of the same versioned family contract and must be
-fixed before that catalog version is implementation-complete. The
-`CoreAluFu` and `MacFu` scalar portions and the complete initial
-`LoopControlFu` contract are fixed below; the other helpers, switch
-construction, and remaining capacities are not implied by those definitions.
+buffer capacities are part of the same versioned family contract. The helper
+families use the exact generated registry in
+`docs/spec-fabric-hw-share-group.md`; no Builder-local member table exists.
 Helper resource tables reference normative
 `ImplementationFamilyId` values; operation-family membership remains owned by
 the HSG registry. They do not duplicate member lists, spell operation names as
@@ -705,10 +703,11 @@ being duplicated in each schedule kind. For example, the Small preset has
 order.
 
 A builtin descriptor may claim this catalog version only when every listed
-software operation has a registered typed operation schema, a legal concrete
-Fabric capability, and provider closure for every referenced implementation
-family. Operation names, backend-local classifications, or equal port widths
-cannot substitute for any of these requirements.
+software operation has a registered typed operation schema and a legal
+concrete Fabric capability. Backend provider closure is checked only when a
+consumer requests RTL, FPGA implementation, or EDA realization. Operation
+names, backend-local classifications, or equal port widths cannot substitute
+for semantic capability closure.
 
 ## Builtins As Public Examples
 

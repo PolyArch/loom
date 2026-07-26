@@ -354,13 +354,78 @@ struct TokenPlaneParams {
       CapabilityParamsSchemaId::TokenPlaneParams;
 };
 
+struct FixedVectorIntegerParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorIntegerParams;
+  IntegerWidthSet elementWidths;
+  std::uint32_t maxPayloadBits;
+};
+
+struct FixedVectorIntegerCompareMinMaxParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorIntegerCompareMinMaxParams;
+  IntegerWidthSet elementWidths;
+  IntegerPredicateSet predicates;
+  std::uint32_t maxPayloadBits;
+};
+
+struct FixedVectorValueSelectParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorValueSelectParams;
+  IntegerWidthSet integerElementWidths;
+  FloatFormatSet floatElementFormats;
+  std::uint32_t maxPayloadBits;
+};
+
+struct FixedVectorFloatParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorFloatParams;
+  FloatFormatSet elementFormats;
+  FloatBehaviorProfile behavior;
+  std::uint32_t maxPayloadBits;
+};
+
+struct FixedVectorFloatCompareMinMaxParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorFloatCompareMinMaxParams;
+  FloatFormatSet elementFormats;
+  FloatBehaviorProfile behavior;
+  FloatPredicateSet predicates;
+  std::uint32_t maxPayloadBits;
+};
+
+struct FixedVectorAdapterParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::FixedVectorAdapterParams;
+  IntegerWidthSet integerElementWidths;
+  FloatFormatSet floatElementFormats;
+  std::uint32_t maxPayloadBits;
+};
+
+struct PayloadCapacityParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::PayloadCapacityParams;
+  std::uint32_t maxPayloadBits;
+};
+
+struct RoutedTokenParams {
+  static constexpr CapabilityParamsSchemaId schemaId =
+      CapabilityParamsSchemaId::RoutedTokenParams;
+  std::uint32_t maxPayloadBits;
+  std::uint32_t maxFan;
+};
+
 using FamilyCapabilityParams =
     std::variant<ScalarIntegerParams, ScalarIntegerCompareMinMaxParams,
                  ScalarValueSelectParams, ScalarIntegerCastParams,
                  ScalarBitReinterpretParams, ScalarFloatParams,
                  ScalarFloatCompareMinMaxParams, ScalarFloatWidthCastParams,
                  ScalarIntegerFloatConversionParams, LoopStreamParams,
-                 TokenPlaneParams>;
+                 TokenPlaneParams, FixedVectorIntegerParams,
+                 FixedVectorIntegerCompareMinMaxParams,
+                 FixedVectorValueSelectParams, FixedVectorFloatParams,
+                 FixedVectorFloatCompareMinMaxParams, FixedVectorAdapterParams,
+                 PayloadCapacityParams, RoutedTokenParams>;
 
 /// Count of registered families. Every family id is in `[0, count)`.
 std::uint32_t implementationFamilyCount();

@@ -76,6 +76,14 @@ def ScalarFloatWidthCastParams : CapabilityParamsSchema<7>;
 def ScalarIntegerFloatConversionParams : CapabilityParamsSchema<8>;
 def LoopStreamParams : CapabilityParamsSchema<9>;
 def TokenPlaneParams : CapabilityParamsSchema<10>;
+def FixedVectorIntegerParams : CapabilityParamsSchema<11>;
+def FixedVectorIntegerCompareMinMaxParams : CapabilityParamsSchema<12>;
+def FixedVectorValueSelectParams : CapabilityParamsSchema<13>;
+def FixedVectorFloatParams : CapabilityParamsSchema<14>;
+def FixedVectorFloatCompareMinMaxParams : CapabilityParamsSchema<15>;
+def FixedVectorAdapterParams : CapabilityParamsSchema<16>;
+def PayloadCapacityParams : CapabilityParamsSchema<17>;
+def RoutedTokenParams : CapabilityParamsSchema<18>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed admission providers
@@ -93,6 +101,17 @@ def ScalarFloatCastAdmission : TypedAdmissionProvider<8>;
 def ScalarIntegerFloatConversionAdmission : TypedAdmissionProvider<9>;
 def StreamAdmission : TypedAdmissionProvider<10>;
 def TokenPlaneAdmission : TypedAdmissionProvider<11>;
+def FixedVectorOrdinaryIntegerAdmission : TypedAdmissionProvider<12>;
+def FixedVectorLogicIntegerAdmission : TypedAdmissionProvider<13>;
+def FixedVectorIntegerCompareAdmission : TypedAdmissionProvider<14>;
+def FixedVectorValueSelectAdmission : TypedAdmissionProvider<15>;
+def FixedVectorUniformFloatAdmission : TypedAdmissionProvider<16>;
+def FixedVectorFloatCompareAdmission : TypedAdmissionProvider<17>;
+def FixedVectorAdapterAdmission : TypedAdmissionProvider<18>;
+def ConstantTokenAdmission : TypedAdmissionProvider<19>;
+def SyncTokenAdmission : TypedAdmissionProvider<20>;
+def MuxTokenAdmission : TypedAdmissionProvider<21>;
+def DemuxTokenAdmission : TypedAdmissionProvider<22>;
 
 //===----------------------------------------------------------------------===//
 // Standard integer, floating-point, and cast compute schemas
@@ -404,5 +423,110 @@ def LoopInvariant : ImplementationFamily<18, [DataflowInvariant],
     TokenPlaneParams, TokenPlaneAdmission>;
 def LoopGate : ImplementationFamily<19, [DataflowGate],
     TokenPlaneParams, TokenPlaneAdmission>;
+
+// Fixed-vector compute resources use the same canonical actor schemas as
+// scalar compute, but a distinct physical family and typed shape admission.
+def FixedVectorIntegerAddSub : ImplementationFamily<20,
+    [ArithAddI, ArithSubI], FixedVectorIntegerParams,
+    FixedVectorOrdinaryIntegerAdmission>;
+def FixedVectorIntegerLogic : ImplementationFamily<21,
+    [ArithAndI, ArithOrI, ArithXOrI], FixedVectorIntegerParams,
+    FixedVectorLogicIntegerAdmission>;
+def FixedVectorIntegerShift : ImplementationFamily<22,
+    [ArithShLI, ArithShRSI, ArithShRUI], FixedVectorIntegerParams,
+    FixedVectorOrdinaryIntegerAdmission>;
+def FixedVectorIntegerCompareMinMax : ImplementationFamily<23,
+    [ArithCmpI, ArithMinSI, ArithMaxSI, ArithMinUI, ArithMaxUI],
+    FixedVectorIntegerCompareMinMaxParams,
+    FixedVectorIntegerCompareAdmission>;
+def FixedVectorValueSelect : ImplementationFamily<24, [ArithSelect],
+    FixedVectorValueSelectParams, FixedVectorValueSelectAdmission>;
+def FixedVectorIntegerMultiply : ImplementationFamily<25, [ArithMulI],
+    FixedVectorIntegerParams, FixedVectorOrdinaryIntegerAdmission>;
+def FixedVectorFloatSign : ImplementationFamily<26, [ArithNegF, MathAbsF],
+    FixedVectorFloatParams, FixedVectorUniformFloatAdmission>;
+def FixedVectorFloatAddSub : ImplementationFamily<27, [ArithAddF, ArithSubF],
+    FixedVectorFloatParams, FixedVectorUniformFloatAdmission>;
+def FixedVectorFloatCompareMinMax : ImplementationFamily<28,
+    [ArithCmpF, ArithMinimumF, ArithMaximumF, ArithMinNumF, ArithMaxNumF],
+    FixedVectorFloatCompareMinMaxParams, FixedVectorFloatCompareAdmission>;
+def FixedVectorFloatMultiply : ImplementationFamily<29, [ArithMulF],
+    FixedVectorFloatParams, FixedVectorUniformFloatAdmission>;
+def FixedVectorFloatFma : ImplementationFamily<30, [MathFma],
+    FixedVectorFloatParams, FixedVectorUniformFloatAdmission>;
+
+// Adapter and token-control resources remain physically distinct. Their
+// common parameter records describe capacity, not circuit sharing.
+def FixedVectorPack : ImplementationFamily<31, [DataflowPack],
+    FixedVectorAdapterParams, FixedVectorAdapterAdmission>;
+def FixedVectorUnpack : ImplementationFamily<32, [DataflowUnpack],
+    FixedVectorAdapterParams, FixedVectorAdapterAdmission>;
+def FixedVectorParallelize : ImplementationFamily<33, [DataflowParallelize],
+    FixedVectorAdapterParams, FixedVectorAdapterAdmission>;
+def FixedVectorSerialize : ImplementationFamily<34, [DataflowSerialize],
+    FixedVectorAdapterParams, FixedVectorAdapterAdmission>;
+def TokenConstant : ImplementationFamily<35, [DataflowConstant],
+    PayloadCapacityParams, ConstantTokenAdmission>;
+def TokenSync : ImplementationFamily<36, [DataflowSync],
+    RoutedTokenParams, SyncTokenAdmission>;
+def TokenMux : ImplementationFamily<37, [DataflowMux],
+    RoutedTokenParams, MuxTokenAdmission>;
+def TokenDemux : ImplementationFamily<38, [DataflowDemux],
+    RoutedTokenParams, DemuxTokenAdmission>;
+
+// Special operations are singleton physical families unless quotient and
+// remainder are two projections of the same signedness-specific divider.
+def ScalarSignedIntegerDivRem : ImplementationFamily<39,
+    [ArithDivSI, ArithRemSI], ScalarIntegerParams,
+    ScalarOrdinaryIntegerAdmission>;
+def ScalarUnsignedIntegerDivRem : ImplementationFamily<40,
+    [ArithDivUI, ArithRemUI], ScalarIntegerParams,
+    ScalarOrdinaryIntegerAdmission>;
+def ScalarFloatDivide : ImplementationFamily<41, [ArithDivF],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarFloatRemainder : ImplementationFamily<42, [ArithRemF],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathSin : ImplementationFamily<43, [MathSin],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathCos : ImplementationFamily<44, [MathCos],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathTan : ImplementationFamily<45, [MathTan],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathSinh : ImplementationFamily<46, [MathSinh],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathCosh : ImplementationFamily<47, [MathCosh],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathTanh : ImplementationFamily<48, [MathTanh],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathExp : ImplementationFamily<49, [MathExp],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathExp2 : ImplementationFamily<50, [MathExp2],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathExpM1 : ImplementationFamily<51, [MathExpM1],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathLog : ImplementationFamily<52, [MathLog],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathLog2 : ImplementationFamily<53, [MathLog2],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathLog10 : ImplementationFamily<54, [MathLog10],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathLog1p : ImplementationFamily<55, [MathLog1p],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathFloor : ImplementationFamily<56, [MathFloor],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathCeil : ImplementationFamily<57, [MathCeil],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathRound : ImplementationFamily<58, [MathRound],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathTrunc : ImplementationFamily<59, [MathTrunc],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathRoundEven : ImplementationFamily<60, [MathRoundEven],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathSqrt : ImplementationFamily<61, [MathSqrt],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathRsqrt : ImplementationFamily<62, [MathRsqrt],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarMathErf : ImplementationFamily<63, [MathErf],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD

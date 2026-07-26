@@ -21,8 +21,24 @@ while preserving Fabric as the only semantic owner.
 
 Builtin Small, Default, and Large targets are complete hardware examples, not
 size knobs or capability summaries. Their FU distribution, memory, transport,
-InstructionCore, clocks, resets, and provider closure must be deterministic so
-the same public API can reproduce and teach the exact hardware.
+InstructionCore, clocks, resets, and semantic capabilities must be
+deterministic so the same public API can reproduce and teach the exact
+hardware.
+
+The initial fixed-vector families are separate from scalar families even when
+they use the same software operation schema. Shape is a physical organization
+fact, while the canonical actor type remains the semantic owner. Adapter and
+token-control actors use singleton families because co-location does not prove
+shared circuitry. Special math is also singleton except where quotient and
+remainder are genuine projections of one signedness-specific divider. This
+larger generated family vocabulary is preferable to a smaller but false
+hardware-sharing claim.
+
+Fabric publication proves semantic hardware closure, not tool availability.
+Requiring every builtin to have an RTL or EDA provider would make an external
+backend installation alter whether the same hardware description exists.
+Provider closure is therefore checked by the requested realization stage and
+reported as typed `Unsupported` without changing Fabric identity.
 
 ## Why Module And System Are Separate Fabric Roots
 

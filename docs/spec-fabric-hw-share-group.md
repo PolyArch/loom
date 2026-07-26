@@ -163,6 +163,96 @@ their physical implementation while preserving every registered transition,
 state, timing, and backpressure contract. FU co-location alone is not such
 evidence.
 
+### Initial Fixed-Vector Compute Families
+
+Fixed-vector compute uses the same canonical operation schemas as scalar
+compute, but distinct implementation families and typed shape admission. The
+actor type owns rank, shape, element type, and active lane count. A concrete
+capability owns admitted element domains and a positive maximum flattened
+payload width; it has no independent lane-count field.
+
+| `ImplementationFamilyId` | Admitted canonical operation schemas |
+| ------------------------ | ------------------------------------ |
+| `FixedVectorIntegerAddSub` | `arith.addi`, `arith.subi` |
+| `FixedVectorIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
+| `FixedVectorIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
+| `FixedVectorIntegerCompareMinMax` | `arith.cmpi`, integer min/max schemas |
+| `FixedVectorValueSelect` | `arith.select` |
+| `FixedVectorIntegerMultiply` | `arith.muli` |
+| `FixedVectorFloatSign` | `arith.negf`, `math.absf` |
+| `FixedVectorFloatAddSub` | `arith.addf`, `arith.subf` |
+| `FixedVectorFloatCompareMinMax` | `arith.cmpf`, floating min/max schemas |
+| `FixedVectorFloatMultiply` | `arith.mulf` |
+| `FixedVectorFloatFma` | `math.fma` |
+
+Scalar and fixed-vector families reject one another's actor shapes even when
+the flattened physical width agrees. Fixed-vector comparison results and
+select conditions have the exact operand shape with `i1` elements.
+
+### Initial Adapter And Token Families
+
+The initial adapter and token resources are physically distinct singleton
+families. Shared parameter records describe payload and fan capacity; they do
+not imply circuit sharing.
+
+| `ImplementationFamilyId` | Admitted canonical operation schema |
+| ------------------------ | ----------------------------------- |
+| `FixedVectorPack` | `dataflow.pack` |
+| `FixedVectorUnpack` | `dataflow.unpack` |
+| `FixedVectorParallelize` | `dataflow.parallelize` |
+| `FixedVectorSerialize` | `dataflow.serialize` |
+| `TokenConstant` | `dataflow.constant` |
+| `TokenSync` | `dataflow.sync` |
+| `TokenMux` | `dataflow.mux` |
+| `TokenDemux` | `dataflow.demux` |
+
+Adapter admission requires an exact fixed-vector element domain, flattened
+width within capacity, and the operation schema's exact scalar/vector/mask
+relation. `TokenConstant` owns a payload-capacity domain. The other token
+families own payload capacity and positive maximum fan; actor arity and exact
+types remain part of the canonical actor projection.
+
+### Initial Special-Math Families
+
+Signed quotient and signed remainder are two outputs of one signed divider
+family; unsigned quotient and unsigned remainder similarly share one unsigned
+divider family. Every other initial special operation is a singleton physical
+family. This is deliberately conservative: FU co-location and a common
+floating-point format do not prove datapath sharing.
+
+```text
+ScalarSignedIntegerDivRem   = { arith.divsi, arith.remsi }
+ScalarUnsignedIntegerDivRem = { arith.divui, arith.remui }
+ScalarFloatDivide           = { arith.divf }
+ScalarFloatRemainder        = { arith.remf }
+ScalarMathSin               = { math.sin }
+ScalarMathCos               = { math.cos }
+ScalarMathTan               = { math.tan }
+ScalarMathSinh              = { math.sinh }
+ScalarMathCosh              = { math.cosh }
+ScalarMathTanh              = { math.tanh }
+ScalarMathExp               = { math.exp }
+ScalarMathExp2              = { math.exp2 }
+ScalarMathExpM1             = { math.expm1 }
+ScalarMathLog               = { math.log }
+ScalarMathLog2              = { math.log2 }
+ScalarMathLog10             = { math.log10 }
+ScalarMathLog1p             = { math.log1p }
+ScalarMathFloor             = { math.floor }
+ScalarMathCeil              = { math.ceil }
+ScalarMathRound             = { math.round }
+ScalarMathTrunc             = { math.trunc }
+ScalarMathRoundEven         = { math.roundeven }
+ScalarMathSqrt              = { math.sqrt }
+ScalarMathRsqrt             = { math.rsqrt }
+ScalarMathErf               = { math.erf }
+```
+
+Integer divider capabilities use the scalar integer-width record. Floating
+special capabilities use the strict scalar floating-point record. Backend
+provider availability is not part of family admission and does not affect a
+valid Fabric artifact's identity.
+
 ## Genuine Physical Sharing
 
 Multi-member families are legal only when one backend-supported circuit truly

@@ -58,6 +58,15 @@ llvm::Expected<StringAttr> requireString(DictionaryAttr params,
   return value;
 }
 
+llvm::Expected<std::uint32_t> requirePositiveU32(DictionaryAttr params,
+                                                 llvm::StringRef field) {
+  auto value = dyn_cast_or_null<IntegerAttr>(params.get(field));
+  if (!value || value.getValue().isNegative() ||
+      value.getValue().getActiveBits() > 32 || value.getValue().isZero())
+    return reject("hw_params field '" + field + "' must be a positive uint32");
+  return static_cast<std::uint32_t>(value.getValue().getZExtValue());
+}
+
 llvm::Expected<IntegerWidth> parseIntegerWidth(Attribute attr,
                                                llvm::StringRef field) {
   auto integer = dyn_cast<IntegerAttr>(attr);
@@ -498,6 +507,142 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
     if (llvm::Error error = checkFields(params, {}))
       return std::move(error);
     return FamilyCapabilityParams(TokenPlaneParams{});
+  case Schema::FixedVectorIntegerParams: {
+    if (llvm::Error error =
+            checkFields(params, {"element_widths", "max_payload_bits"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "element_widths");
+    if (!widths)
+      return widths.takeError();
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(FixedVectorIntegerParams{*widths, *capacity});
+  }
+  case Schema::FixedVectorIntegerCompareMinMaxParams: {
+    if (llvm::Error error = checkFields(
+            params, {"element_widths", "predicates", "max_payload_bits"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "element_widths");
+    if (!widths)
+      return widths.takeError();
+    auto predicates = parseEnumSet<arith::CmpIPredicate, IntegerPredicateSet>(
+        params, "predicates", [](llvm::StringRef spelling) {
+          return arith::symbolizeCmpIPredicate(spelling);
+        });
+    if (!predicates)
+      return predicates.takeError();
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(
+        FixedVectorIntegerCompareMinMaxParams{*widths, *predicates, *capacity});
+  }
+  case Schema::FixedVectorValueSelectParams: {
+    if (llvm::Error error =
+            checkFields(params, {"integer_element_widths",
+                                 "float_element_formats", "max_payload_bits"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "integer_element_widths",
+                                     /*allowEmpty=*/true);
+    if (!widths)
+      return widths.takeError();
+    auto formats = parseFloatFormats(params, "float_element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (widths->empty() && formats->empty())
+      return reject("hw_params fixed-vector value domain must not be empty");
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(
+        FixedVectorValueSelectParams{*widths, *formats, *capacity});
+  }
+  case Schema::FixedVectorFloatParams: {
+    if (llvm::Error error = checkFields(
+            params, {"element_formats", "behavior", "max_payload_bits"}))
+      return std::move(error);
+    auto formats = parseFloatFormats(params, "element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (formats->empty())
+      return reject("hw_params field 'element_formats' must not be empty");
+    auto behavior = parseFloatBehavior(params);
+    if (!behavior)
+      return behavior.takeError();
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(
+        FixedVectorFloatParams{*formats, *behavior, *capacity});
+  }
+  case Schema::FixedVectorFloatCompareMinMaxParams: {
+    if (llvm::Error error =
+            checkFields(params, {"element_formats", "behavior", "predicates",
+                                 "max_payload_bits"}))
+      return std::move(error);
+    auto formats = parseFloatFormats(params, "element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (formats->empty())
+      return reject("hw_params field 'element_formats' must not be empty");
+    auto behavior = parseFloatBehavior(params);
+    if (!behavior)
+      return behavior.takeError();
+    auto predicates = parseEnumSet<arith::CmpFPredicate, FloatPredicateSet>(
+        params, "predicates", [](llvm::StringRef spelling) {
+          return arith::symbolizeCmpFPredicate(spelling);
+        });
+    if (!predicates)
+      return predicates.takeError();
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(FixedVectorFloatCompareMinMaxParams{
+        *formats, *behavior, *predicates, *capacity});
+  }
+  case Schema::FixedVectorAdapterParams: {
+    if (llvm::Error error =
+            checkFields(params, {"integer_element_widths",
+                                 "float_element_formats", "max_payload_bits"}))
+      return std::move(error);
+    auto widths = parseIntegerWidths(params, "integer_element_widths",
+                                     /*allowEmpty=*/true);
+    if (!widths)
+      return widths.takeError();
+    auto formats = parseFloatFormats(params, "float_element_formats");
+    if (!formats)
+      return formats.takeError();
+    if (widths->empty() && formats->empty())
+      return reject("hw_params fixed-vector adapter domain must not be empty");
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(
+        FixedVectorAdapterParams{*widths, *formats, *capacity});
+  }
+  case Schema::PayloadCapacityParams: {
+    if (llvm::Error error = checkFields(params, {"max_payload_bits"}))
+      return std::move(error);
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    return FamilyCapabilityParams(PayloadCapacityParams{*capacity});
+  }
+  case Schema::RoutedTokenParams: {
+    if (llvm::Error error =
+            checkFields(params, {"max_payload_bits", "max_fan"}))
+      return std::move(error);
+    auto capacity = requirePositiveU32(params, "max_payload_bits");
+    if (!capacity)
+      return capacity.takeError();
+    auto fan = requirePositiveU32(params, "max_fan");
+    if (!fan)
+      return fan.takeError();
+    if (*fan < 2)
+      return reject("hw_params field 'max_fan' must be at least two");
+    return FamilyCapabilityParams(RoutedTokenParams{*capacity, *fan});
+  }
   }
   llvm_unreachable("unregistered capability parameter schema");
 }
@@ -798,9 +943,110 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
                   enumSetAttr(builder, typed.continuationPredicates, predicates,
                               arith::stringifyCmpIPredicate)),
           });
-        } else {
-          static_assert(std::is_same_v<T, TokenPlaneParams>);
+        } else if constexpr (std::is_same_v<T, TokenPlaneParams>) {
           return builder.getDictionaryAttr({});
+        } else if constexpr (std::is_same_v<T, FixedVectorIntegerParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "element_widths",
+                  integerWidthsAttr(builder, typed.elementWidths)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<
+                                 T, FixedVectorIntegerCompareMinMaxParams>) {
+          constexpr std::array<arith::CmpIPredicate, 10> predicates = {
+              arith::CmpIPredicate::eq,  arith::CmpIPredicate::ne,
+              arith::CmpIPredicate::slt, arith::CmpIPredicate::sle,
+              arith::CmpIPredicate::sgt, arith::CmpIPredicate::sge,
+              arith::CmpIPredicate::ult, arith::CmpIPredicate::ule,
+              arith::CmpIPredicate::ugt, arith::CmpIPredicate::uge};
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "element_widths",
+                  integerWidthsAttr(builder, typed.elementWidths)),
+              builder.getNamedAttr("predicates",
+                                   enumSetAttr(builder, typed.predicates,
+                                               predicates,
+                                               arith::stringifyCmpIPredicate)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<T, FixedVectorValueSelectParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "integer_element_widths",
+                  integerWidthsAttr(builder, typed.integerElementWidths)),
+              builder.getNamedAttr(
+                  "float_element_formats",
+                  floatFormatsAttr(builder, typed.floatElementFormats)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<T, FixedVectorFloatParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "element_formats",
+                  floatFormatsAttr(builder, typed.elementFormats)),
+              builder.getNamedAttr("behavior",
+                                   floatBehaviorAttr(builder, typed.behavior)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<
+                                 T, FixedVectorFloatCompareMinMaxParams>) {
+          constexpr std::array<arith::CmpFPredicate, 16> predicates = {
+              arith::CmpFPredicate::AlwaysFalse,
+              arith::CmpFPredicate::OEQ,
+              arith::CmpFPredicate::OGT,
+              arith::CmpFPredicate::OGE,
+              arith::CmpFPredicate::OLT,
+              arith::CmpFPredicate::OLE,
+              arith::CmpFPredicate::ONE,
+              arith::CmpFPredicate::ORD,
+              arith::CmpFPredicate::UEQ,
+              arith::CmpFPredicate::UGT,
+              arith::CmpFPredicate::UGE,
+              arith::CmpFPredicate::ULT,
+              arith::CmpFPredicate::ULE,
+              arith::CmpFPredicate::UNE,
+              arith::CmpFPredicate::UNO,
+              arith::CmpFPredicate::AlwaysTrue};
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "element_formats",
+                  floatFormatsAttr(builder, typed.elementFormats)),
+              builder.getNamedAttr("behavior",
+                                   floatBehaviorAttr(builder, typed.behavior)),
+              builder.getNamedAttr("predicates",
+                                   enumSetAttr(builder, typed.predicates,
+                                               predicates,
+                                               arith::stringifyCmpFPredicate)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<T, FixedVectorAdapterParams>) {
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr(
+                  "integer_element_widths",
+                  integerWidthsAttr(builder, typed.integerElementWidths)),
+              builder.getNamedAttr(
+                  "float_element_formats",
+                  floatFormatsAttr(builder, typed.floatElementFormats)),
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+          });
+        } else if constexpr (std::is_same_v<T, PayloadCapacityParams>) {
+          return builder.getDictionaryAttr({builder.getNamedAttr(
+              "max_payload_bits", integerAttr(builder, typed.maxPayloadBits))});
+        } else {
+          static_assert(std::is_same_v<T, RoutedTokenParams>);
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr("max_payload_bits",
+                                   integerAttr(builder, typed.maxPayloadBits)),
+              builder.getNamedAttr("max_fan",
+                                   integerAttr(builder, typed.maxFan)),
+          });
         }
       },
       params);
