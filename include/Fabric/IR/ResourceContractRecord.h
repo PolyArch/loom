@@ -11,6 +11,9 @@
 
 namespace fabric {
 
+inline constexpr char kResourceContractRecordAttrName[] =
+    "fabric.resource_contract";
+
 /// Encodes one validated ResourceContract as its complete embedded persistent
 /// record. The surrounding Fabric owner supplies artifact identity and schema
 /// versioning; these bytes contain only the canonical record fields.

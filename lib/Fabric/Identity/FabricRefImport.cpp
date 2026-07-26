@@ -1,11 +1,641 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
+#include "FabricArtifactViewInternal.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 using namespace loom;
 using namespace loom::fabric;
 
+struct FabricArtifactView::Storage {
+  detail::FabricArtifactViewData data;
+  std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
+  std::vector<std::vector<std::uint8_t>> traversalKeys;
+
+  const detail::FabricEntityViewData *entity(FabricEntityId id,
+                                             FabricEntityKind expected) const {
+    if (id >= data.entities.size())
+      return nullptr;
+    const detail::FabricEntityViewData &record = data.entities[id];
+    return record.kind == expected ? &record : nullptr;
+  }
+
+  template <FabricEntityKind Kind>
+  const detail::FabricEntityViewData *
+  entity(FabricTypedEntityRef<Kind> ref) const {
+    return entity(ref.id(), Kind);
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  spatialCore(SpatialCoreOccurrenceRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.core);
+    return record && record->spatialCore ? &*record->spatialCore : nullptr;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  instructionCore(InstructionCoreContextRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.core);
+    return record && record->instructionCore ? &*record->instructionCore
+                                             : nullptr;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  instructionContext(InstructionContextRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.pe);
+    if (!record || ref.ordinal >= record->instructionContexts.size())
+      return nullptr;
+    return &record->instructionContexts[ref.ordinal];
+  }
+
+  const std::vector<detail::FabricFuNodeViewData> *
+  fuNodes(FabricFuTemplateRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref);
+    return record ? &record->fuNodes : nullptr;
+  }
+
+  const std::vector<detail::FabricFuNodeViewData> *
+  fuNodes(FabricFuOccurrenceRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref);
+    if (!record)
+      return nullptr;
+    if (!record->fuNodes.empty())
+      return &record->fuNodes;
+    return record->fuTemplate ? fuNodes(*record->fuTemplate) : nullptr;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  fuNode(FabricFuTemplateNodeRef ref) const {
+    const auto *nodes = fuNodes(ref.fu);
+    if (!nodes || ref.ordinal >= nodes->size() ||
+        (*nodes)[ref.ordinal].kind != ref.node)
+      return nullptr;
+    return &(*nodes)[ref.ordinal].owner;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  fuNode(FabricFuOccurrenceNodeRef ref) const {
+    const auto *nodes = fuNodes(ref.fu);
+    if (!nodes || ref.ordinal >= nodes->size() ||
+        (*nodes)[ref.ordinal].kind != ref.node)
+      return nullptr;
+    return &(*nodes)[ref.ordinal].owner;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  memoryPort(FabricMemoryOperationPortRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.memory);
+    if (!record || ref.ordinal >= record->memoryOperationPorts.size())
+      return nullptr;
+    return &record->memoryOperationPorts[ref.ordinal];
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  memoryService(const FabricMemoryServiceRef &ref) const {
+    switch (ref.kind()) {
+    case FabricMemoryServiceKind::Local: {
+      const detail::FabricEntityViewData *record =
+          entity(std::get<FabricMemoryOccurrenceRef>(ref.payload));
+      return record && record->localMemoryService ? &*record->localMemoryService
+                                                  : nullptr;
+    }
+    case FabricMemoryServiceKind::System:
+      return nullptr;
+    }
+    return nullptr;
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  transferPattern(FabricTransferPatternRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.resource);
+    if (!record || ref.ordinal >= record->transferPatterns.size())
+      return nullptr;
+    return &record->transferPatterns[ref.ordinal];
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  inventoryOwner(const FabricInventoryOwnerRef &owner) const {
+    const detail::FabricEntityViewData *record = nullptr;
+    switch (owner.kind()) {
+    case FabricInventoryOwnerKind::ModuleTemplate:
+      record = entity(std::get<FabricModuleTemplateRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::PeOccurrence:
+      record = entity(std::get<FabricPeOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::FuTemplate:
+      record = entity(std::get<FabricFuTemplateRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::FuOccurrence:
+      record = entity(std::get<FabricFuOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::FuTemplateNode:
+      return fuNode(std::get<FabricFuTemplateNodeRef>(owner.payload));
+    case FabricInventoryOwnerKind::FuOccurrenceNode:
+      return fuNode(std::get<FabricFuOccurrenceNodeRef>(owner.payload));
+    case FabricInventoryOwnerKind::MemoryOccurrence:
+      record = entity(std::get<FabricMemoryOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::MemoryOperationPort:
+      return memoryPort(std::get<FabricMemoryOperationPortRef>(owner.payload));
+    case FabricInventoryOwnerKind::MemoryService: {
+      const FabricMemoryServiceRef &service =
+          std::get<FabricMemoryServiceRef>(owner.payload);
+      if (service.kind() == FabricMemoryServiceKind::Local)
+        return memoryService(service);
+      record = entity(std::get<SystemMemoryServiceRef>(service.payload));
+      break;
+    }
+    case FabricInventoryOwnerKind::SwitchOccurrence:
+      record = entity(std::get<FabricSwitchOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::FifoOccurrence:
+      record = entity(std::get<FabricFifoOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::BoundaryOccurrence:
+      record = entity(std::get<FabricBoundaryOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::InstructionContext:
+      return instructionContext(std::get<InstructionContextRef>(owner.payload));
+    case FabricInventoryOwnerKind::InstructionCoreContext:
+      return instructionCore(
+          std::get<InstructionCoreContextRef>(owner.payload));
+    case FabricInventoryOwnerKind::HostCoreOccurrence:
+      record = entity(std::get<HostCoreOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::AccCoreOccurrence:
+      record = entity(std::get<AccCoreOccurrenceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::SystemServiceEndpoint:
+      record = entity(std::get<SystemServiceEndpointRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::SystemServiceTransform:
+      record = entity(std::get<SystemServiceTransformRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::SystemTransportResource:
+      record = entity(std::get<SystemTransportResourceRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::TransferPattern:
+      return transferPattern(std::get<FabricTransferPatternRef>(owner.payload));
+    case FabricInventoryOwnerKind::HardwareDomain:
+      record = entity(std::get<HardwareDomainRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::ExternalBoundary:
+      record = entity(std::get<ExternalBoundaryRef>(owner.payload));
+      break;
+    case FabricInventoryOwnerKind::SpatialCoreOccurrence:
+      return spatialCore(std::get<SpatialCoreOccurrenceRef>(owner.payload));
+    }
+    return record ? &record->owner : nullptr;
+  }
+};
+
 FabricArtifactView::~FabricArtifactView() = default;
+
+namespace {
+
+std::uint64_t inventoryCount(llvm::ArrayRef<std::uint64_t> counts,
+                             FabricInventoryKind kind) {
+  const std::size_t index = static_cast<std::size_t>(kind);
+  return index < counts.size() ? counts[index] : 0;
+}
+
+template <typename Row>
+bool containsCanonicalRow(const std::vector<Row> &rows, const Row &needle) {
+  return std::binary_search(rows.begin(), rows.end(), needle);
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+std::vector<std::uint8_t>
+pointConnectionKey(const FabricTransportEndpointRef &source,
+                   const FabricTransportEndpointRef &destination) {
+  std::vector<std::uint8_t> sourceBytes = canonicalFabricBytes(source);
+  std::vector<std::uint8_t> destinationBytes =
+      canonicalFabricBytes(destination);
+  std::vector<std::uint8_t> key;
+  key.reserve(16 + sourceBytes.size() + destinationBytes.size());
+  appendU64(key, sourceBytes.size());
+  key.insert(key.end(), sourceBytes.begin(), sourceBytes.end());
+  appendU64(key, destinationBytes.size());
+  key.insert(key.end(), destinationBytes.begin(), destinationBytes.end());
+  return key;
+}
+
+llvm::Error invalidView(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "fabric_artifact_invalid: " + message);
+}
+
+llvm::Error
+validateInventoryShape(llvm::ArrayRef<std::uint64_t> inventoryCounts,
+                       llvm::StringRef ownerDescription) {
+  if (inventoryCounts.size() != fabricClosedBound(FabricInventoryKind{}))
+    return invalidView(llvm::Twine(ownerDescription) +
+                       " has an incomplete canonical inventory catalog");
+  return llvm::Error::success();
+}
+
+llvm::Error validateNestedOwner(const detail::FabricNestedOwnerViewData &owner,
+                                llvm::StringRef ownerDescription) {
+  if (llvm::Error error =
+          validateInventoryShape(owner.inventoryCounts, ownerDescription))
+    return error;
+  if (inventoryCount(owner.inventoryCounts,
+                     FabricInventoryKind::ResourceState) != 0 ||
+      inventoryCount(owner.inventoryCounts, FabricInventoryKind::UsePattern) !=
+          0)
+    return invalidView(llvm::Twine(ownerDescription) +
+                       " duplicates ResourceContract-owned inventories");
+  return llvm::Error::success();
+}
+
+} // namespace
+
+const ArtifactIdentity &FabricArtifactView::identity() const {
+  return storage_->data.identity;
+}
+
+FabricRootKind FabricArtifactView::rootKind() const {
+  return storage_->data.rootKind;
+}
+
+std::optional<FabricEntityKind>
+FabricArtifactView::entityKind(FabricEntityId id) const {
+  if (id >= storage_->data.entities.size())
+    return std::nullopt;
+  return storage_->data.entities[id].kind;
+}
+
+std::uint64_t FabricArtifactView::transportEndpointCount(
+    const FabricTransportEndpointOwnerRef &owner) const {
+  const detail::FabricEntityViewData *entity = nullptr;
+  switch (owner.kind()) {
+  case FabricTransportEndpointOwnerKind::SpatialCoreOccurrence: {
+    const auto *nested = storage_->spatialCore(
+        std::get<SpatialCoreOccurrenceRef>(owner.payload));
+    return nested ? nested->transportEndpointCount : 0;
+  }
+  case FabricTransportEndpointOwnerKind::FabricPeOccurrence:
+    entity = storage_->entity(std::get<FabricPeOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::FabricFuOccurrence:
+    entity = storage_->entity(std::get<FabricFuOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::FabricMemoryOccurrence:
+    entity =
+        storage_->entity(std::get<FabricMemoryOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::FabricSwitchOccurrence:
+    entity =
+        storage_->entity(std::get<FabricSwitchOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::FabricFifoOccurrence:
+    entity = storage_->entity(std::get<FabricFifoOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::FabricBoundaryOccurrence:
+    entity =
+        storage_->entity(std::get<FabricBoundaryOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::AccCoreOccurrence:
+    entity = storage_->entity(std::get<AccCoreOccurrenceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::SystemServiceEndpoint:
+    entity =
+        storage_->entity(std::get<SystemServiceEndpointRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::SystemTransportResource:
+    entity =
+        storage_->entity(std::get<SystemTransportResourceRef>(owner.payload));
+    break;
+  case FabricTransportEndpointOwnerKind::ExternalBoundary:
+    entity = storage_->entity(std::get<ExternalBoundaryRef>(owner.payload));
+    break;
+  }
+  return entity ? entity->owner.transportEndpointCount : 0;
+}
+
+std::uint64_t FabricArtifactView::memoryEndpointCount(
+    const FabricMemoryEndpointOwnerRef &owner) const {
+  const detail::FabricEntityViewData *entity = nullptr;
+  switch (owner.kind()) {
+  case FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence: {
+    const auto *nested = storage_->spatialCore(
+        std::get<SpatialCoreOccurrenceRef>(owner.payload));
+    return nested ? nested->memoryEndpointRoles.size() : 0;
+  }
+  case FabricMemoryEndpointOwnerKind::FabricMemoryOccurrence:
+    entity =
+        storage_->entity(std::get<FabricMemoryOccurrenceRef>(owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::AccCoreOccurrence:
+    entity = storage_->entity(std::get<AccCoreOccurrenceRef>(owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemMemoryService:
+    entity = storage_->entity(std::get<SystemMemoryServiceRef>(owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemServiceEndpoint:
+    entity =
+        storage_->entity(std::get<SystemServiceEndpointRef>(owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemServiceTransform:
+    entity =
+        storage_->entity(std::get<SystemServiceTransformRef>(owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::ExternalBoundary:
+    entity = storage_->entity(std::get<ExternalBoundaryRef>(owner.payload));
+    break;
+  }
+  return entity ? entity->owner.memoryEndpointRoles.size() : 0;
+}
+
+std::uint64_t
+FabricArtifactView::inventorySize(const FabricInventoryOwnerRef &owner,
+                                  FabricInventoryKind inventory) const {
+  const detail::FabricNestedOwnerViewData *resolved =
+      storage_->inventoryOwner(owner);
+  if (!resolved)
+    return 0;
+  if (inventory == FabricInventoryKind::ResourceState)
+    return resolved->resourceContract ? resolved->resourceContract->stateCount()
+                                      : 0;
+  if (inventory == FabricInventoryKind::UsePattern)
+    return resolved->resourceContract
+               ? resolved->resourceContract->usePatternCount()
+               : 0;
+  return inventoryCount(resolved->inventoryCounts, inventory);
+}
+
+const ::fabric::ResourceContract *FabricArtifactView::resourceContract(
+    const FabricInventoryOwnerRef &owner) const {
+  const detail::FabricNestedOwnerViewData *resolved =
+      storage_->inventoryOwner(owner);
+  return resolved && resolved->resourceContract ? &*resolved->resourceContract
+                                                : nullptr;
+}
+
+std::optional<FabricFuNodeKind>
+FabricArtifactView::fuNodeKind(const FabricInventoryOwnerRef &owner,
+                               FabricOrdinal ordinal) const {
+  const std::vector<detail::FabricFuNodeViewData> *nodes = nullptr;
+  if (owner.kind() == FabricInventoryOwnerKind::FuTemplate)
+    nodes = storage_->fuNodes(std::get<FabricFuTemplateRef>(owner.payload));
+  else if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence)
+    nodes = storage_->fuNodes(std::get<FabricFuOccurrenceRef>(owner.payload));
+  if (!nodes || ordinal >= nodes->size())
+    return std::nullopt;
+  return (*nodes)[ordinal].kind;
+}
+
+bool FabricArtifactView::declaresLocalMemoryService(
+    FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->localMemoryService.has_value();
+}
+
+std::optional<FabricMemoryEndpointRole> FabricArtifactView::memoryEndpointRole(
+    const FabricMemoryEndpointRef &endpoint) const {
+  const detail::FabricEntityViewData *entity = nullptr;
+  const detail::FabricNestedOwnerViewData *nested = nullptr;
+  switch (endpoint.owner.kind()) {
+  case FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence:
+    nested = storage_->spatialCore(
+        std::get<SpatialCoreOccurrenceRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::FabricMemoryOccurrence:
+    entity = storage_->entity(
+        std::get<FabricMemoryOccurrenceRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::AccCoreOccurrence:
+    entity = storage_->entity(
+        std::get<AccCoreOccurrenceRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemMemoryService:
+    entity = storage_->entity(
+        std::get<SystemMemoryServiceRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemServiceEndpoint:
+    entity = storage_->entity(
+        std::get<SystemServiceEndpointRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::SystemServiceTransform:
+    entity = storage_->entity(
+        std::get<SystemServiceTransformRef>(endpoint.owner.payload));
+    break;
+  case FabricMemoryEndpointOwnerKind::ExternalBoundary:
+    entity =
+        storage_->entity(std::get<ExternalBoundaryRef>(endpoint.owner.payload));
+    break;
+  }
+  const auto *roles = nested   ? &nested->memoryEndpointRoles
+                      : entity ? &entity->owner.memoryEndpointRoles
+                               : nullptr;
+  if (!roles || endpoint.ordinal >= roles->size())
+    return std::nullopt;
+  return (*roles)[endpoint.ordinal];
+}
+
+std::optional<FabricHardwareDomainKind>
+FabricArtifactView::hardwareDomainKind(HardwareDomainRef domain) const {
+  const detail::FabricEntityViewData *record = storage_->entity(domain);
+  return record ? record->hardwareDomainKind : std::nullopt;
+}
+
+std::optional<FabricFuTemplateRef>
+FabricArtifactView::fuTemplateOf(FabricFuOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->fuTemplate : std::nullopt;
+}
+
+bool FabricArtifactView::hasPointConnection(
+    const FabricTransportEndpointRef &source,
+    const FabricTransportEndpointRef &destination) const {
+  return containsCanonicalRow(storage_->pointConnectionKeys,
+                              pointConnectionKey(source, destination));
+}
+
+llvm::ArrayRef<FabricPointConnectionPayload>
+FabricArtifactView::pointConnections() const {
+  return storage_->data.pointConnections;
+}
+
+bool FabricArtifactView::admitsTraversal(
+    const FabricPhysicalTraversalRef &traversal) const {
+  return containsCanonicalRow(storage_->traversalKeys,
+                              canonicalFabricBytes(traversal));
+}
+
+llvm::ArrayRef<FabricPhysicalTraversalRef>
+FabricArtifactView::admittedTraversals() const {
+  return storage_->data.admittedTraversals;
+}
+
+llvm::Expected<FabricArtifactView>
+loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
+  auto validClosedValue = [](auto value) {
+    return static_cast<std::uint32_t>(value) < fabricClosedBound(value);
+  };
+
+  for (std::size_t index = 0; index < data.entities.size(); ++index) {
+    FabricEntityViewData &entity = data.entities[index];
+    if (!validClosedValue(entity.kind))
+      return invalidView("entity has an unknown kind");
+    if (llvm::Error error = validateNestedOwner(entity.owner, "Fabric entity"))
+      return std::move(error);
+    for (FabricMemoryEndpointRole role : entity.owner.memoryEndpointRoles)
+      if (!validClosedValue(role))
+        return invalidView("memory endpoint has an unknown role");
+
+    for (FabricFuNodeViewData &node : entity.fuNodes) {
+      if (!validClosedValue(node.kind))
+        return invalidView("FU node has an unknown kind");
+      if (llvm::Error error = validateNestedOwner(node.owner, "FU node"))
+        return std::move(error);
+    }
+    for (FabricNestedOwnerViewData &port : entity.memoryOperationPorts)
+      if (llvm::Error error =
+              validateNestedOwner(port, "memory operation port"))
+        return std::move(error);
+    for (FabricNestedOwnerViewData &context : entity.instructionContexts)
+      if (llvm::Error error =
+              validateNestedOwner(context, "instruction context"))
+        return std::move(error);
+    for (FabricNestedOwnerViewData &pattern : entity.transferPatterns)
+      if (llvm::Error error = validateNestedOwner(pattern, "transfer pattern"))
+        return std::move(error);
+    if (entity.spatialCore)
+      if (llvm::Error error =
+              validateNestedOwner(*entity.spatialCore, "spatial core"))
+        return std::move(error);
+    if (entity.instructionCore)
+      if (llvm::Error error =
+              validateNestedOwner(*entity.instructionCore, "instruction core"))
+        return std::move(error);
+    if (entity.localMemoryService)
+      if (llvm::Error error = validateNestedOwner(*entity.localMemoryService,
+                                                  "local memory service"))
+        return std::move(error);
+
+    if (inventoryCount(entity.owner.inventoryCounts,
+                       FabricInventoryKind::FuNode) != entity.fuNodes.size())
+      return invalidView("FU node inventory does not match its records");
+    if (inventoryCount(entity.owner.inventoryCounts,
+                       FabricInventoryKind::MemoryOperationPort) !=
+        entity.memoryOperationPorts.size())
+      return invalidView(
+          "memory operation-port inventory does not match its records");
+    if (inventoryCount(entity.owner.inventoryCounts,
+                       FabricInventoryKind::InstructionContext) !=
+        entity.instructionContexts.size())
+      return invalidView(
+          "instruction-context inventory does not match its records");
+    if (inventoryCount(entity.owner.inventoryCounts,
+                       FabricInventoryKind::TransferPattern) !=
+        entity.transferPatterns.size())
+      return invalidView(
+          "transfer-pattern inventory does not match its records");
+
+    if (entity.fuTemplate) {
+      if (entity.kind != FabricEntityKind::FabricFuOccurrence)
+        return invalidView("only an FU occurrence may select an FU template");
+      const FabricEntityId templateId = entity.fuTemplate->id();
+      if (templateId >= data.entities.size() ||
+          data.entities[templateId].kind != FabricEntityKind::FabricFuTemplate)
+        return invalidView("FU occurrence selects an invalid FU template");
+    } else if (entity.kind == FabricEntityKind::FabricFuOccurrence) {
+      return invalidView("FU occurrence has no FU template relation");
+    }
+
+    if (entity.hardwareDomainKind &&
+        (entity.kind != FabricEntityKind::HardwareDomain ||
+         !validClosedValue(*entity.hardwareDomainKind)))
+      return invalidView("invalid hardware-domain kind projection");
+    if (entity.kind == FabricEntityKind::HardwareDomain &&
+        !entity.hardwareDomainKind)
+      return invalidView("hardware-domain entity has no domain kind");
+    (void)index;
+  }
+
+  using PointConnectionRow =
+      std::pair<std::vector<std::uint8_t>, FabricPointConnectionPayload>;
+  std::vector<PointConnectionRow> pointConnectionRows;
+  pointConnectionRows.reserve(data.pointConnections.size());
+  for (FabricPointConnectionPayload &connection : data.pointConnections)
+    pointConnectionRows.emplace_back(
+        pointConnectionKey(connection.source, connection.destination),
+        std::move(connection));
+  std::sort(pointConnectionRows.begin(), pointConnectionRows.end(),
+            [](const PointConnectionRow &lhs, const PointConnectionRow &rhs) {
+              return lhs.first < rhs.first;
+            });
+  for (std::size_t index = 1; index < pointConnectionRows.size(); ++index)
+    if (pointConnectionRows[index - 1].first ==
+        pointConnectionRows[index].first)
+      return invalidView("point connections contain a duplicate");
+
+  data.pointConnections.clear();
+  std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
+  data.pointConnections.reserve(pointConnectionRows.size());
+  pointConnectionKeys.reserve(pointConnectionRows.size());
+  for (PointConnectionRow &row : pointConnectionRows) {
+    pointConnectionKeys.push_back(std::move(row.first));
+    data.pointConnections.push_back(std::move(row.second));
+  }
+
+  using TraversalRow =
+      std::pair<std::vector<std::uint8_t>, FabricPhysicalTraversalRef>;
+  std::vector<TraversalRow> traversalRows;
+  traversalRows.reserve(data.admittedTraversals.size());
+  for (FabricPhysicalTraversalRef &traversal : data.admittedTraversals)
+    traversalRows.emplace_back(canonicalFabricBytes(traversal),
+                               std::move(traversal));
+  std::sort(traversalRows.begin(), traversalRows.end(),
+            [](const TraversalRow &lhs, const TraversalRow &rhs) {
+              return lhs.first < rhs.first;
+            });
+  for (std::size_t index = 1; index < traversalRows.size(); ++index)
+    if (traversalRows[index - 1].first == traversalRows[index].first)
+      return invalidView("admitted traversals contain a duplicate");
+
+  data.admittedTraversals.clear();
+  std::vector<std::vector<std::uint8_t>> traversalKeys;
+  data.admittedTraversals.reserve(traversalRows.size());
+  traversalKeys.reserve(traversalRows.size());
+  for (TraversalRow &row : traversalRows) {
+    traversalKeys.push_back(std::move(row.first));
+    data.admittedTraversals.push_back(std::move(row.second));
+  }
+
+  auto storage =
+      std::make_shared<FabricArtifactView::Storage>(FabricArtifactView::Storage{
+          std::move(data), std::move(pointConnectionKeys),
+          std::move(traversalKeys)});
+  FabricArtifactView view(std::move(storage));
+  for (const FabricPointConnectionPayload &connection :
+       view.pointConnections()) {
+    if (llvm::Error error = validateFabricRef(view, connection.source))
+      return std::move(error);
+    if (llvm::Error error = validateFabricRef(view, connection.destination))
+      return std::move(error);
+  }
+  for (const FabricPhysicalTraversalRef &traversal : view.admittedTraversals())
+    if (llvm::Error error = validateFabricRef(view, traversal))
+      return std::move(error);
+  return view;
+}
 
 namespace {
 

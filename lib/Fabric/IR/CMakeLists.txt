@@ -5,6 +5,7 @@ add_subdirectory(MemoryRoleBindings)
 add_subdirectory(MemoryConsistencyContract)
 add_subdirectory(ResourceContract)
 add_subdirectory(BoundaryTransfer)
+add_subdirectory(FifoResourceContract)
 add_subdirectory(TemporalOperandBuffer)
 
 add_mlir_library(MLIRFabricEnums

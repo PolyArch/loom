@@ -1,8 +1,6 @@
 #include "Fabric/IR/MemoryConsistencyContract.h"
 
-#include "Common/Artifact.h"
 #include "Fabric/IR/ResourceContract.h"
-#include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -19,7 +17,6 @@
 #include <vector>
 
 using namespace fabric;
-using namespace loom;
 using namespace loom::fabric;
 
 namespace {
@@ -47,101 +44,9 @@ void expectRejected(llvm::StringRef test, llvm::Expected<T> value) {
   llvm::consumeError(value.takeError());
 }
 
-void requireFabricError(llvm::StringRef test, llvm::Error error,
-                        FabricRefErrorKind expected) {
-  if (!error)
-    fail(test, "accepted an invalid Fabric reference");
-  const FabricRefErrorKind actual = takeFabricRefErrorKind(std::move(error));
-  require(test, actual == expected,
-          "unexpected Fabric reference failure classification");
-}
-
-ArtifactIdentity artifact(llvm::StringRef test, std::uint8_t seed) {
-  return take(test, ArtifactIdentity::fromBytes(std::vector<std::uint8_t>(
-                        ArtifactIdentity::byteSize, seed)));
-}
-
 constexpr FabricEntityId kMemory = 31;
 constexpr FabricEntityId kSystemService = 61;
-constexpr FabricEntityId kConsistencyDomain = 71;
 constexpr FabricEntityId kClockDomain = 72;
-
-class AnchorFabric final : public FabricArtifactView {
-public:
-  explicit AnchorFabric(ArtifactIdentity identity)
-      : identity_(std::move(identity)) {}
-
-  const ArtifactIdentity &identity() const override { return identity_; }
-  FabricRootKind rootKind() const override { return FabricRootKind::System; }
-
-  std::optional<FabricEntityKind> entityKind(FabricEntityId id) const override {
-    switch (id) {
-    case kMemory:
-      return FabricEntityKind::FabricMemoryOccurrence;
-    case kSystemService:
-      return FabricEntityKind::SystemMemoryService;
-    case kConsistencyDomain:
-    case kClockDomain:
-      return FabricEntityKind::HardwareDomain;
-    default:
-      return std::nullopt;
-    }
-  }
-
-  std::uint64_t transportEndpointCount(
-      const FabricTransportEndpointOwnerRef &) const override {
-    return 0;
-  }
-  std::uint64_t memoryEndpointCount(
-      const FabricMemoryEndpointOwnerRef &owner) const override {
-    return owner.kind() == FabricMemoryEndpointOwnerKind::FabricMemoryOccurrence
-               ? 1
-               : 0;
-  }
-  std::uint64_t inventorySize(const FabricInventoryOwnerRef &,
-                              FabricInventoryKind) const override {
-    return 0;
-  }
-  std::optional<FabricFuNodeKind> fuNodeKind(const FabricInventoryOwnerRef &,
-                                             FabricOrdinal) const override {
-    return std::nullopt;
-  }
-  bool
-  declaresLocalMemoryService(FabricMemoryOccurrenceRef memory) const override {
-    return memory.id() == kMemory;
-  }
-  std::optional<FabricMemoryEndpointRole>
-  memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const override {
-    if (endpoint.owner.kind() ==
-            FabricMemoryEndpointOwnerKind::FabricMemoryOccurrence &&
-        std::get<FabricMemoryOccurrenceRef>(endpoint.owner.payload).id() ==
-            kMemory)
-      return FabricMemoryEndpointRole::Subordinate;
-    return std::nullopt;
-  }
-  std::optional<FabricHardwareDomainKind>
-  hardwareDomainKind(HardwareDomainRef domain) const override {
-    if (domain.id() == kClockDomain)
-      return FabricHardwareDomainKind::Clock;
-    if (domain.id() == kConsistencyDomain)
-      return FabricHardwareDomainKind::MemoryConsistency;
-    return std::nullopt;
-  }
-  std::optional<FabricFuTemplateRef>
-  fuTemplateOf(FabricFuOccurrenceRef) const override {
-    return std::nullopt;
-  }
-  bool hasPointConnection(const FabricTransportEndpointRef &,
-                          const FabricTransportEndpointRef &) const override {
-    return false;
-  }
-  bool admitsTraversal(const FabricPhysicalTraversalRef &) const override {
-    return false;
-  }
-
-private:
-  ArtifactIdentity identity_;
-};
 
 ResourceContract resourceContract(llvm::StringRef test) {
   ResourceContractDeclaration declaration;
@@ -332,39 +237,6 @@ void checkDeclarationFailures() {
                 BoundedCompletion{clock(), 0})));
 }
 
-void checkReferenceValidation() {
-  const llvm::StringRef test = "reference-validation";
-  const ArtifactIdentity expected = artifact(test, 0x11);
-  const AnchorFabric view(expected);
-  const FabricImportBinding binding{expected, FabricRootKind::System};
-
-  MemoryConsistencyContract valid =
-      take(test, MemoryConsistencyContract::create(
-                     declaration(test, {provider(), localService()},
-                                 ReleaseVisibilityPoint::AtLinearization,
-                                 BoundedCompletion{clock(), 7})));
-  if (llvm::Error error =
-          validateMemoryConsistencyContractReferences(valid, view, binding))
-    fail(test, llvm::toString(std::move(error)));
-
-  MemoryConsistencyContract wrongClock =
-      take(test,
-           MemoryConsistencyContract::create(declaration(
-               test, {localService()}, ReleaseVisibilityPoint::AtLinearization,
-               BoundedCompletion{
-                   ClockDomainRef(HardwareDomainRef(kConsistencyDomain)), 7})));
-  requireFabricError(
-      test,
-      validateMemoryConsistencyContractReferences(wrongClock, view, binding),
-      FabricRefErrorKind::WrongEntityKind);
-
-  const FabricImportBinding foreign{artifact(test, 0x22),
-                                    FabricRootKind::System};
-  requireFabricError(
-      test, validateMemoryConsistencyContractReferences(valid, view, foreign),
-      FabricRefErrorKind::ForeignArtifact);
-}
-
 void checkFixedSemanticsHaveNoWireOverrides() {
   const llvm::StringRef test = "fixed-semantics-have-no-wire-overrides";
   MemoryConsistencyContract contract =
@@ -383,7 +255,6 @@ void checkFixedSemanticsHaveNoWireOverrides() {
 int main() {
   checkCanonicalRoundTripAndChoices();
   checkDeclarationFailures();
-  checkReferenceValidation();
   checkFixedSemanticsHaveNoWireOverrides();
   return EXIT_SUCCESS;
 }

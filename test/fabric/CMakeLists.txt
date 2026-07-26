@@ -46,6 +46,10 @@ add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
 
+add_executable(loom-fabric-fifo-resource-contract-test
+  FifoResourceContractTest.cpp
+)
+
 add_executable(loom-fabric-temporal-operand-buffer-test
   TemporalOperandBufferTest.cpp
 )
@@ -131,6 +135,10 @@ target_link_libraries(loom-fabric-boundary-transfer-test PRIVATE
   LoomFabricBoundaryTransfer
 )
 
+target_link_libraries(loom-fabric-fifo-resource-contract-test PRIVATE
+  LoomFabricFifoResourceContract
+)
+
 target_link_libraries(loom-fabric-temporal-operand-buffer-test PRIVATE
   LoomFabricTemporalOperandBuffer
   MLIRFabricEnums
@@ -168,6 +176,10 @@ add_executable(loom-fabric-artifact-gate-test
 
 add_executable(loom-fabric-canonical-labeling-test
   FabricCanonicalLabelingTest.cpp
+)
+
+add_executable(loom-fabric-artifact-finalizer-test
+  FabricArtifactFinalizerTest.cpp
 )
 
 add_executable(loom-fabric-system-contract-test
@@ -215,6 +227,15 @@ target_link_libraries(loom-fabric-artifact-gate-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-canonical-labeling-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRFabric

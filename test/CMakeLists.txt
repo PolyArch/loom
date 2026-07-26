@@ -44,6 +44,7 @@ set(LOOM_TEST_DEPENDS
   loom-evaluation-tool-runner-test
   loom-fabric-artifact-gate-test
   loom-fabric-artifact-codec-test
+  loom-fabric-artifact-finalizer-test
   loom-fabric-boundary-data-path-test
   loom-fabric-boundary-transfer-test
   loom-fabric-canonical-labeling-test
@@ -51,6 +52,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-implementation-family-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test
+  loom-fabric-fifo-resource-contract-test
   loom-fabric-memory-capability-domain-test
   loom-fabric-memory-capability-finalization-test
   loom-fabric-memory-port-transaction-test

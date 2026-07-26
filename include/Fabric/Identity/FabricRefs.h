@@ -214,6 +214,16 @@ inline llvm::StringRef fabricClosedName(FabricPhysicalTraversalKind) {
   return "physical traversal kind";
 }
 
+#define LOOM_FABRIC_INVENTORY(Name, Keyword) LOOM_FABRIC_COUNT_ENTRY
+inline std::uint32_t fabricClosedBound(FabricInventoryKind) {
+  std::uint32_t count = 0;
+#include "Fabric/Identity/FabricRefs.def"
+  return count;
+}
+inline llvm::StringRef fabricClosedName(FabricInventoryKind) {
+  return "inventory kind";
+}
+
 #define LOOM_FABRIC_TRANSPORT_OWNER(Name, Type) LOOM_FABRIC_COUNT_ENTRY
 inline std::uint32_t fabricClosedBound(FabricTransportEndpointOwnerKind) {
   std::uint32_t count = 0;

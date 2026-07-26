@@ -27,9 +27,16 @@ struct FabricEntityCarrier {
   mlir::Operation *op = nullptr;
 };
 
+struct FabricFuTemplateCarrier {
+  std::uint64_t id = 0;
+  mlir::Operation *representative = nullptr;
+  std::vector<mlir::Operation *> canonicalNodeOrder;
+};
+
 struct FabricCanonicalLabeling {
   CanonicalSemanticBytes relationBytes;
   std::vector<FabricEntityCarrier> carriers;
+  std::vector<FabricFuTemplateCarrier> fuTemplates;
   std::vector<mlir::Operation *> canonicalOperationOrder;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> fuTemplateIdByOccurrence;
 };

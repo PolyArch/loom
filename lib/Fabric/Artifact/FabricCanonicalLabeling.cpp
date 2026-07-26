@@ -254,7 +254,12 @@ public:
     if (fuDefinition_)
       return invalid("an FU definition graph is not a Fabric Module root");
 
-    std::map<std::vector<std::uint8_t>, std::uint32_t> templateVertices;
+    struct FuTemplateDraft {
+      std::uint32_t vertex = 0;
+      Operation *representative = nullptr;
+      std::vector<Operation *> canonicalNodeOrder;
+    };
+    std::map<std::vector<std::uint8_t>, FuTemplateDraft> templates;
     llvm::DenseMap<Operation *, std::uint32_t> templateVertexByOccurrence;
     for (const auto &entry : operationVertices_) {
       auto fu = dyn_cast<::fabric::FuOp>(entry.first);
@@ -271,17 +276,28 @@ public:
       llvm::ArrayRef<std::uint8_t> definitionBytes = canonical->bytes.bytes();
       std::vector<std::uint8_t> key(definitionBytes.begin(),
                                     definitionBytes.end());
-      auto [position, inserted] = templateVertices.emplace(key, 0);
+      auto [position, inserted] = templates.emplace(key, FuTemplateDraft{});
       if (inserted) {
         std::string intrinsic = "FU_TEMPLATE\x1f";
         intrinsic.append(reinterpret_cast<const char *>(key.data()),
                          key.size());
-        position->second = addVertex(std::move(intrinsic));
-        carriers_[position->second] = {FabricEntityKind::FabricFuTemplate, 0,
-                                       nullptr};
+        position->second.vertex = addVertex(std::move(intrinsic));
+        position->second.representative = fu.getOperation();
+        llvm::DenseMap<std::uint32_t, Operation *> definitionOperationByVertex;
+        for (const auto &definitionEntry : definition->operationVertices_)
+          definitionOperationByVertex[definitionEntry.second] =
+              definitionEntry.first;
+        for (std::uint32_t vertex : canonical->canonicalOrder) {
+          Operation *node = definitionOperationByVertex.lookup(vertex);
+          if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp,
+                              ::fabric::DemuxOp>(node))
+            position->second.canonicalNodeOrder.push_back(node);
+        }
+        carriers_[position->second.vertex] = {
+            FabricEntityKind::FabricFuTemplate, 0, nullptr};
       }
-      templateVertexByOccurrence[fu.getOperation()] = position->second;
-      addEdge(entry.second, position->second, EdgeKind::FuDefinition, 0);
+      templateVertexByOccurrence[fu.getOperation()] = position->second.vertex;
+      addEdge(entry.second, position->second.vertex, EdgeKind::FuDefinition, 0);
     }
 
     llvm::Expected<::loom::CanonicalRelationResult> canonical = canonicalize();
@@ -318,9 +334,22 @@ public:
     for (const auto &entry : templateVertexByOccurrence)
       fuTemplateIds[entry.first] = ids[entry.second];
 
-    return FabricCanonicalLabeling{
-        std::move(canonical->bytes), std::move(carriers),
-        std::move(operationOrder), std::move(fuTemplateIds)};
+    std::vector<FabricFuTemplateCarrier> fuTemplates;
+    fuTemplates.reserve(templates.size());
+    for (auto &entry : templates) {
+      FuTemplateDraft &draft = entry.second;
+      fuTemplates.push_back({ids[draft.vertex], draft.representative,
+                             std::move(draft.canonicalNodeOrder)});
+    }
+    llvm::sort(fuTemplates, [](const FabricFuTemplateCarrier &lhs,
+                               const FabricFuTemplateCarrier &rhs) {
+      return lhs.id < rhs.id;
+    });
+
+    return FabricCanonicalLabeling{std::move(canonical->bytes),
+                                   std::move(carriers), std::move(fuTemplates),
+                                   std::move(operationOrder),
+                                   std::move(fuTemplateIds)};
   }
 
 private:

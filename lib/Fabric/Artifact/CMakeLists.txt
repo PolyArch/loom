@@ -1,4 +1,5 @@
 add_mlir_library(LoomFabricArtifact
+  FabricArtifact.cpp
   FabricArtifactCodec.cpp
   FabricCanonicalLabeling.cpp
   FabricArtifactDependencyClosure.cpp
@@ -11,8 +12,13 @@ add_mlir_library(LoomFabricArtifact
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomFabricBoundaryTransfer
+  LoomFabricFifoResourceContract
   LoomFabricIdentity
+  LoomFabricResourceContract
   MLIRFabric
+  MLIRBytecodeReader
+  MLIRBytecodeWriter
   MLIRIR
   LLVMSupport
 )
