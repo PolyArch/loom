@@ -1,6 +1,7 @@
 #include "Common/CanonicalRelation.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -87,12 +88,42 @@ void symmetricGraphProducesACompletePermutation() {
   }
 }
 
+void materializedSymmetricOrderIsIdempotent() {
+  const char *test = __func__;
+  const std::vector<std::string> vertices(4, "vertex");
+  const std::vector<CanonicalRelationEdge> edges{{0, 1, "next"},
+                                                  {1, 2, "next"},
+                                                  {2, 3, "next"},
+                                                  {3, 0, "next"}};
+
+  CanonicalRelationResult first = canonicalize(test, vertices, edges);
+  std::vector<std::uint32_t> canonicalPosition(vertices.size());
+  std::vector<std::string> reorderedVertices;
+  reorderedVertices.reserve(vertices.size());
+  for (auto [position, vertex] : llvm::enumerate(first.canonicalOrder)) {
+    canonicalPosition[vertex] = position;
+    reorderedVertices.push_back(vertices[vertex]);
+  }
+  std::vector<CanonicalRelationEdge> reorderedEdges;
+  reorderedEdges.reserve(edges.size());
+  for (const CanonicalRelationEdge &edge : edges)
+    reorderedEdges.push_back({canonicalPosition[edge.source],
+                              canonicalPosition[edge.target], edge.label});
+
+  CanonicalRelationResult second =
+      canonicalize(test, reorderedVertices, reorderedEdges);
+  for (auto [position, vertex] : llvm::enumerate(second.canonicalOrder))
+    require(test, position == vertex,
+            "materialized symmetric canonical order was not a fixed point");
+}
+
 } // namespace
 
 int main() {
   relabelingDoesNotChangeCanonicalResult();
   semanticRelationChangeChangesCanonicalResult();
   symmetricGraphProducesACompletePermutation();
+  materializedSymmetricOrderIsIdempotent();
   llvm::outs() << "all canonical relation tests passed\n";
   return EXIT_SUCCESS;
 }

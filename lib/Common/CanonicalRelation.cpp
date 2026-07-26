@@ -191,11 +191,6 @@ private:
       return leaf;
     }
 
-    std::uint64_t fresh = 0;
-    for (std::uint64_t color : colors)
-      fresh = std::max(fresh, color);
-    ++fresh;
-
     std::vector<std::uint32_t> parent(intrinsics_.size());
     for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
       parent[vertex] = vertex;
@@ -228,7 +223,10 @@ private:
       if (!exploredOrbits.insert(find(candidate)).second)
         continue;
       std::vector<std::uint64_t> individualized = colors;
-      individualized[candidate] = fresh;
+      const std::uint64_t targetColor = individualized[candidate];
+      for (std::uint64_t &color : individualized)
+        color = color * 2 + 1;
+      individualized[candidate] = targetColor * 2;
       path.push_back(candidate);
       Leaf leaf = search(std::move(individualized), path);
       path.pop_back();
