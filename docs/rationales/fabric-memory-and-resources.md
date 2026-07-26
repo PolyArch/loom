@@ -41,10 +41,19 @@ targets. Temporal rows may share tagged ingress only through explicit role
 matchers, queues, and capacity. Same-row outputs remain injective so one
 transaction cannot silently duplicate distinct response roles.
 
-The Local Memory Service persistent owner remains deliberately unavailable
-until its exact schema is defined. Selecting it fails closed. An empty record or
-generic service path would make consumers invent storage, region, and
-consistency semantics independently.
+Local and System memory services share one exact service-capability record
+because actor admission, regions, physical beats, resource use, and progress
+mean the same thing at either scope. They differ only where root locality is a
+real hardware distinction: a local service provides its own consistency
+guarantee relative to the occurrence clock, while a System service may bind to
+an explicit `MemoryConsistencyDomainRef`.
+
+A behavior-only service attribute was rejected because `Storage` does not
+state which actors, widths, regions, beats, timing, or contention the hardware
+supports. A generic service path was rejected because each consumer would
+then invent those facts independently. Reusing the operation-port actor and
+access domains keeps software compatibility single-owned, while the service's
+one ResourceContract keeps physical capacity and arbitration single-owned.
 
 ## Why One Memory Consistency Kernel Spans Fidelity
 

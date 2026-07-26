@@ -1,7 +1,11 @@
 #include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/MemoryServiceContract.h"
 
 #include "llvm/ADT/StringRef.h"
+
+#include <cstdint>
+#include <vector>
 
 using namespace mlir;
 using namespace fabric;
@@ -13,9 +17,6 @@ void MemoryCapabilityFinalizationError::log(llvm::raw_ostream &stream) const {
   switch (reason_) {
   case MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract:
     stream << "missing-memory-capability-contract";
-    break;
-  case MemoryCapabilityFinalizationReason::MissingMemoryServiceContract:
-    stream << "missing-memory-service-contract";
     break;
   }
   stream << ')';
@@ -30,9 +31,21 @@ fabric::validateMemoryCapabilityFinalization(MemoryContractAttr contract,
                                              ArrayAttr operationPorts) {
   if (!contract)
     return llvm::Error::success();
-  if (contract.getLocalService())
-    return llvm::make_error<MemoryCapabilityFinalizationError>(
-        MemoryCapabilityFinalizationReason::MissingMemoryServiceContract);
+  if (LocalMemoryServiceAttr local = contract.getLocalService()) {
+    llvm::ArrayRef<std::int8_t> signedBytes =
+        local.getServiceContract().getRecord().asArrayRef();
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(signedBytes.size());
+    for (std::int8_t byte : signedBytes)
+      bytes.push_back(static_cast<std::uint8_t>(byte));
+    auto service = decodeMemoryServiceContractRecord(
+        bytes, contract.getContext(), MemoryServiceOwnerKind::Local);
+    if (!service)
+      return service.takeError();
+    if (llvm::Error error = validateLocalMemoryServiceCapacity(
+            *service, local.getCapacityBytes()))
+      return error;
+  }
   if (contract.getEngine() && (!operationPorts || operationPorts.empty()))
     return llvm::make_error<MemoryCapabilityFinalizationError>(
         MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
@@ -48,6 +61,19 @@ LogicalResult LocalMemoryServiceAttr::verify(
   if (!serviceContract)
     return emitError() << "local memory service requires an explicit "
                           "memory service contract";
+  llvm::ArrayRef<std::int8_t> signedBytes =
+      serviceContract.getRecord().asArrayRef();
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(signedBytes.size());
+  for (std::int8_t byte : signedBytes)
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  auto decoded = decodeMemoryServiceContractRecord(
+      bytes, serviceContract.getContext(), MemoryServiceOwnerKind::Local);
+  if (!decoded)
+    return emitError() << llvm::toString(decoded.takeError());
+  if (llvm::Error error =
+          validateLocalMemoryServiceCapacity(*decoded, capacityBytes))
+    return emitError() << llvm::toString(std::move(error));
   return success();
 }
 

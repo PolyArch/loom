@@ -763,9 +763,7 @@ fabric.system.acc_core
 
 fabric.system.memory_service
   EntityId
-  canonical ServiceRegion records
-  CanonicalServiceCapability records
-  Fabric-owned ResourceState, UsePattern, capacity, timing, and grant contracts
+  exact MemoryServiceContractRecord
 
 fabric.system.service_endpoint
   EntityId
@@ -821,6 +819,13 @@ For an addressed memory kind, the domain is tested against the exact derived
 consistency-domain reference is present exactly when required by the selected
 service kind or accepted actor contract. Fields not owned by that service kind
 are absent rather than populated with defaults.
+
+`MemoryServiceContractRecord` is defined once by
+`docs/spec-fabric-mem.md`. A System memory service imports that exact record in
+the `System` owner context: region addresses are absolute, `SystemDomain` is
+admitted, and `LocalProvider` is rejected. It does not repeat service regions,
+actor or access admission, ResourceState, UsePattern, capacity, timing,
+progress, or grant fields as sibling System properties.
 
 `ServiceTransformContract` is a closed sum. Version 2.0 admits
 `AddressOffset`, `AddressMaskXor`, `StaticInterleave`, and `CoherentMemory`;

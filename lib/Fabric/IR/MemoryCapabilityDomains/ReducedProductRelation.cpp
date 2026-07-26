@@ -2,6 +2,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
@@ -215,6 +216,72 @@ bool relationRowsOverlap(const ReducedProductRow &lhs,
   return true;
 }
 
+llvm::Expected<bool>
+rowCoveredFromField(const ReducedProductRow &subset,
+                    llvm::ArrayRef<ReducedProductRow> candidates,
+                    std::size_t field) {
+  if (field == subset.size())
+    return !candidates.empty();
+
+  if (candidates.empty())
+    return false;
+  for (const ReducedProductRow &candidate : candidates)
+    if (candidate.size() != subset.size() ||
+        candidate[field].index() != subset[field].index())
+      return invalid("relation coverage compares incompatible row shapes");
+
+  if (const auto *finite = std::get_if<ReducedFiniteDomain>(&subset[field])) {
+    for (const ReducedFiniteAtom &atom : finite->atoms) {
+      std::vector<ReducedProductRow> selected;
+      for (const ReducedProductRow &candidate : candidates) {
+        const auto &domain = std::get<ReducedFiniteDomain>(candidate[field]);
+        if (llvm::any_of(domain.atoms, [&](const ReducedFiniteAtom &value) {
+              return value.bytes == atom.bytes;
+            }))
+          selected.push_back(candidate);
+      }
+      auto covered = rowCoveredFromField(subset, selected, field + 1);
+      if (!covered || !*covered)
+        return covered;
+    }
+    return true;
+  }
+
+  const UnsignedDomain &domain = std::get<UnsignedDomain>(subset[field]);
+  for (UnsignedInterval interval : domain.intervals()) {
+    std::vector<std::uint64_t> boundaries{interval.lower};
+    if (interval.upper != std::numeric_limits<std::uint64_t>::max())
+      boundaries.push_back(interval.upper + 1);
+    for (const ReducedProductRow &candidate : candidates) {
+      for (UnsignedInterval accepted :
+           std::get<UnsignedDomain>(candidate[field]).intervals()) {
+        if (accepted.upper < interval.lower || accepted.lower > interval.upper)
+          continue;
+        boundaries.push_back(std::max(accepted.lower, interval.lower));
+        const std::uint64_t clippedUpper =
+            std::min(accepted.upper, interval.upper);
+        if (clippedUpper != std::numeric_limits<std::uint64_t>::max())
+          boundaries.push_back(clippedUpper + 1);
+      }
+    }
+    llvm::sort(boundaries);
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+    for (std::uint64_t lower : boundaries) {
+      if (lower < interval.lower || lower > interval.upper)
+        continue;
+      std::vector<ReducedProductRow> selected;
+      for (const ReducedProductRow &candidate : candidates)
+        if (std::get<UnsignedDomain>(candidate[field]).contains(lower))
+          selected.push_back(candidate);
+      auto covered = rowCoveredFromField(subset, selected, field + 1);
+      if (!covered || !*covered)
+        return covered;
+    }
+  }
+  return true;
+}
+
 std::vector<std::uint8_t> encodeDomain(const ReducedProductDomain &domain) {
   std::vector<std::uint8_t> bytes;
   if (const auto *finite = std::get_if<ReducedFiniteDomain>(&domain)) {
@@ -387,6 +454,64 @@ reduceProductRelation(llvm::ArrayRef<ReducedProductRow> rows,
       if (relationRowsOverlap(rows[left], rows[right]))
         return invalid("reduced product relation rows overlap");
   return reduceAtField(rows, 0, groupFiniteFields);
+}
+
+llvm::Expected<bool>
+reducedProductRelationCovers(llvm::ArrayRef<ReducedProductRow> superset,
+                             llvm::ArrayRef<ReducedProductRow> subset) {
+  if (superset.empty() || subset.empty())
+    return invalid("relation coverage requires two nonempty relations");
+  const std::size_t fieldCount = superset.front().size();
+  if (fieldCount == 0)
+    return invalid("relation coverage requires nonempty product rows");
+  auto validateShape = [&](llvm::ArrayRef<ReducedProductRow> rows) {
+    for (const ReducedProductRow &row : rows) {
+      if (row.size() != fieldCount)
+        return false;
+      for (std::size_t field = 0; field < fieldCount; ++field)
+        if (row[field].index() != superset.front()[field].index())
+          return false;
+    }
+    return true;
+  };
+  if (!validateShape(superset) || !validateShape(subset))
+    return invalid("relation coverage compares incompatible relations");
+
+  for (const ReducedProductRow &row : subset) {
+    auto covered = rowCoveredFromField(row, superset, 0);
+    if (!covered || !*covered)
+      return covered;
+  }
+  return true;
+}
+
+llvm::Expected<bool>
+reducedProductRelationsOverlap(llvm::ArrayRef<ReducedProductRow> left,
+                               llvm::ArrayRef<ReducedProductRow> right) {
+  if (left.empty() || right.empty())
+    return invalid("relation overlap requires two nonempty relations");
+  const std::size_t fieldCount = left.front().size();
+  if (fieldCount == 0)
+    return invalid("relation overlap requires nonempty product rows");
+  for (const ReducedProductRow &row : left) {
+    if (row.size() != fieldCount)
+      return invalid("left relation has inconsistent row shapes");
+    for (std::size_t field = 0; field < fieldCount; ++field)
+      if (row[field].index() != left.front()[field].index())
+        return invalid("left relation has incompatible domain kinds");
+  }
+  for (const ReducedProductRow &row : right) {
+    if (row.size() != fieldCount)
+      return invalid("relation overlap compares incompatible row shapes");
+    for (std::size_t field = 0; field < fieldCount; ++field)
+      if (row[field].index() != left.front()[field].index())
+        return invalid("relation overlap compares incompatible domain kinds");
+  }
+  for (const ReducedProductRow &lhs : left)
+    for (const ReducedProductRow &rhs : right)
+      if (relationRowsOverlap(lhs, rhs))
+        return true;
+  return false;
 }
 
 std::vector<std::uint8_t>

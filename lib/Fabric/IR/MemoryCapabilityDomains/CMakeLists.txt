@@ -1,5 +1,6 @@
 add_library(LoomFabricMemoryCapabilityDomains
   MemoryActorContractDomain.cpp
+  MemoryCapabilityRelation.cpp
   MemoryCapabilityDomains.cpp
   ReducedProductRelation.cpp
 )

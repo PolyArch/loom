@@ -25,9 +25,9 @@ def Fabric_EntityIdAttr : Fabric_Attr<"EntityId", "entity_id"> {
 
 def Fabric_MemoryServiceContractAttr
     : Fabric_Attr<"MemoryServiceContract", "memory_service_contract"> {
-  let summary = "closed typed local memory service behavior";
+  let summary = "canonical typed memory service contract record";
   let parameters = (ins
-      EnumParameter<Fabric_MemoryServiceBehaviorAttr>:$behavior);
+      "::mlir::DenseI8ArrayAttr":$record);
   let assemblyFormat = "`<` struct(params) `>`";
 }
 

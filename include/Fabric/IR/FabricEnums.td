@@ -24,16 +24,6 @@ def Fabric_BoundaryDirectionAttr : I32EnumAttr<"BoundaryDirection",
   let cppNamespace = "::fabric";
 }
 
-def Fabric_MemoryServiceBehaviorAttr : I32EnumAttr<
-    "MemoryServiceBehavior",
-    "closed local memory service behavior",
-    [
-      I32EnumAttrCase<"Storage", 0, "storage">
-    ]> {
-  let cppNamespace = "::fabric";
-  let genSpecializedAttr = 0;
-}
-
 def Fabric_OperandBufferMode : I32EnumAttr<"OperandBufferMode",
     "temporal PE operand-buffer physical storage organization",
     [

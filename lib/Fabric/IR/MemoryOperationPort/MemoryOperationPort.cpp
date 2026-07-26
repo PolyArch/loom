@@ -9,10 +9,8 @@
 
 #include <algorithm>
 #include <limits>
-#include <map>
 #include <set>
 #include <system_error>
-#include <tuple>
 
 using namespace dataflow;
 using namespace dataflow::semantics;
@@ -20,11 +18,6 @@ using namespace loom::fabric;
 
 namespace fabric {
 namespace {
-
-using detail::ReducedFiniteAtom;
-using detail::ReducedFiniteDomain;
-using detail::ReducedProductDomain;
-using detail::ReducedProductRow;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(std::errc::invalid_argument, "%s",
@@ -37,47 +30,6 @@ llvm::Expected<std::vector<std::uint8_t>> roleBytes(ServiceValueRole role) {
     return encoded.takeError();
   return std::vector<std::uint8_t>(encoded->bytes().begin(),
                                    encoded->bytes().end());
-}
-
-std::vector<std::uint8_t> u32Bytes(std::uint32_t value) {
-  return {static_cast<std::uint8_t>(value >> 24),
-          static_cast<std::uint8_t>(value >> 16),
-          static_cast<std::uint8_t>(value >> 8),
-          static_cast<std::uint8_t>(value)};
-}
-
-llvm::Expected<std::uint32_t> decodeU32Atom(llvm::ArrayRef<std::uint8_t> bytes,
-                                            llvm::StringRef field) {
-  if (bytes.size() != 4)
-    return invalid(field + " does not use one canonical u32be atom");
-  return (static_cast<std::uint32_t>(bytes[0]) << 24) |
-         (static_cast<std::uint32_t>(bytes[1]) << 16) |
-         (static_cast<std::uint32_t>(bytes[2]) << 8) |
-         static_cast<std::uint32_t>(bytes[3]);
-}
-
-llvm::Expected<ReducedFiniteDomain>
-singletonFinite(std::vector<std::uint8_t> bytes) {
-  if (bytes.empty())
-    return invalid("finite relation atom must not be empty");
-  return ReducedFiniteDomain{{ReducedFiniteAtom{std::move(bytes)}}};
-}
-
-llvm::Expected<ReducedFiniteDomain>
-usePatternDomain(llvm::ArrayRef<UsePatternKey> patterns) {
-  if (patterns.empty())
-    return invalid("memory capability alternative has no use pattern");
-  std::vector<ReducedFiniteAtom> atoms;
-  atoms.reserve(patterns.size());
-  for (UsePatternKey pattern : patterns)
-    atoms.push_back({u32Bytes(pattern.ordinal())});
-  llvm::sort(atoms, [](const auto &left, const auto &right) {
-    return left.bytes < right.bytes;
-  });
-  for (std::size_t index = 1; index < atoms.size(); ++index)
-    if (atoms[index - 1].bytes == atoms[index].bytes)
-      return invalid("memory capability alternative repeats a use pattern");
-  return ReducedFiniteDomain{std::move(atoms)};
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -521,259 +473,34 @@ llvm::Error validateRoleRelation(
 llvm::Expected<std::vector<MemoryCapabilityAlternativeRecord>>
 normalizeAlternatives(mlir::MLIRContext *context,
                       llvm::ArrayRef<MemoryCapabilityAlternativeRecord> input) {
-  if (input.empty())
-    return invalid("memory operation port has no capability alternative");
-
-  struct PartitionKey {
-    OperationSchemaId schema;
-    std::uint32_t clauseTag;
-    bool hasAccess;
-
-    bool operator<(const PartitionKey &other) const {
-      return std::tie(schema, clauseTag, hasAccess) <
-             std::tie(other.schema, other.clauseTag, other.hasAccess);
-    }
-  };
-  std::map<PartitionKey, std::vector<ReducedProductRow>> partitions;
-
+  std::vector<detail::MemoryCapabilityRelationEntry> relation;
+  relation.reserve(input.size());
   for (const MemoryCapabilityAlternativeRecord &alternative : input) {
-    auto binding = bindingBytes(alternative.roleToEndpoint);
-    auto patterns = usePatternDomain(alternative.admissibleUsePatterns);
-    if (!binding)
-      return binding.takeError();
-    if (!patterns)
-      return patterns.takeError();
-    auto bindingDomain = singletonFinite(std::move(*binding));
-    if (!bindingDomain)
-      return bindingDomain.takeError();
-
-    for (const MemoryActorContractClause &clause :
-         alternative.actorContractDomain.clauses()) {
-      auto actor = detail::projectMemoryActorContractClause(clause);
-      if (!actor)
-        return actor.takeError();
-      if (!alternative.accessDomain) {
-        ReducedProductRow row = actor->fields;
-        row.push_back(*bindingDomain);
-        row.push_back(*patterns);
-        partitions[{alternative.actorContractDomain.actorSchema(), actor->tag,
-                    false}]
-            .push_back(std::move(row));
-        continue;
-      }
-      for (const MemoryAccessClass &access :
-           alternative.accessDomain->accessClasses()) {
-        auto accessRow = detail::projectMemoryAccessClass(access);
-        if (!accessRow)
-          return accessRow.takeError();
-        ReducedProductRow row = actor->fields;
-        row.insert(row.end(), accessRow->begin(), accessRow->end());
-        row.push_back(*bindingDomain);
-        row.push_back(*patterns);
-        partitions[{alternative.actorContractDomain.actorSchema(), actor->tag,
-                    true}]
-            .push_back(std::move(row));
-      }
-    }
+    auto physicalFacts = bindingBytes(alternative.roleToEndpoint);
+    if (!physicalFacts)
+      return physicalFacts.takeError();
+    relation.push_back({alternative.actorContractDomain,
+                        alternative.accessDomain, std::move(*physicalFacts),
+                        alternative.admissibleUsePatterns});
   }
 
-  std::vector<MemoryCapabilityAlternativeRecord> pieces;
-  for (auto &[partition, rows] : partitions) {
-    const std::size_t actorFieldCount =
-        rows.front().size() - (partition.hasAccess ? 9 : 2);
-    llvm::SmallVector<bool, 16> grouping(actorFieldCount, true);
-    if (partition.hasAccess) {
-      grouping.push_back(false);
-      grouping.append(6, true);
-    }
-    grouping.push_back(false);
-    grouping.push_back(true);
-    auto reduced = detail::reduceProductRelation(rows, grouping);
-    if (!reduced)
-      return reduced.takeError();
+  auto normalized =
+      detail::normalizeMemoryCapabilityRelation(context, relation);
+  if (!normalized)
+    return normalized.takeError();
 
-    for (const ReducedProductRow &row : *reduced) {
-      detail::MemoryActorClauseRelation actorRelation{
-          partition.clauseTag,
-          ReducedProductRow(row.begin(), row.begin() + actorFieldCount)};
-      auto clause =
-          detail::importMemoryActorContractClause(actorRelation, context);
-      if (!clause)
-        return clause.takeError();
-      auto actorDomain =
-          MemoryActorContractDomain::fromCanonical(partition.schema, {*clause});
-      if (!actorDomain)
-        return actorDomain.takeError();
-
-      std::optional<ParameterizedMemoryAccessDomain> accessDomain;
-      std::size_t cursor = actorFieldCount;
-      if (partition.hasAccess) {
-        ReducedProductRow accessRow(row.begin() + cursor,
-                                    row.begin() + cursor + 7);
-        auto access = detail::importMemoryAccessClass(accessRow);
-        if (!access)
-          return access.takeError();
-        auto domain = ParameterizedMemoryAccessDomain::fromCanonical({*access});
-        if (!domain)
-          return domain.takeError();
-        accessDomain = std::move(*domain);
-        cursor += 7;
-      }
-
-      const auto *bindingDomain =
-          std::get_if<ReducedFiniteDomain>(&row[cursor++]);
-      const auto *patternDomain =
-          std::get_if<ReducedFiniteDomain>(&row[cursor++]);
-      if (!bindingDomain || bindingDomain->atoms.size() != 1 ||
-          !patternDomain || cursor != row.size())
-        return invalid("normalized memory capability has malformed domains");
-      auto bindings = decodeBindingBytes(bindingDomain->atoms.front().bytes);
-      if (!bindings)
-        return bindings.takeError();
-      std::vector<UsePatternKey> usePatterns;
-      usePatterns.reserve(patternDomain->atoms.size());
-      for (const ReducedFiniteAtom &atom : patternDomain->atoms) {
-        auto ordinal = decodeU32Atom(atom.bytes, "use pattern");
-        if (!ordinal)
-          return ordinal.takeError();
-        usePatterns.emplace_back(*ordinal);
-      }
-      pieces.push_back({std::move(*actorDomain), std::move(*bindings),
-                        std::move(accessDomain), std::move(usePatterns)});
-    }
-  }
-
-  auto actorKey = [](const MemoryCapabilityAlternativeRecord &alternative)
-      -> llvm::Expected<std::vector<std::uint8_t>> {
-    return encodeMemoryActorContractDomain(alternative.actorContractDomain);
-  };
-  auto accessKey = [](const MemoryCapabilityAlternativeRecord &alternative)
-      -> llvm::Expected<std::vector<std::uint8_t>> {
-    if (!alternative.accessDomain)
-      return std::vector<std::uint8_t>{};
-    return encodeParameterizedMemoryAccessDomain(*alternative.accessDomain);
-  };
-  auto patternKey = [](llvm::ArrayRef<UsePatternKey> patterns) {
-    std::vector<std::uint8_t> bytes;
-    for (UsePatternKey pattern : patterns) {
-      std::vector<std::uint8_t> atom = u32Bytes(pattern.ordinal());
-      bytes.insert(bytes.end(), atom.begin(), atom.end());
-    }
-    return bytes;
-  };
-
-  // Actor is the first relation field. Merge all actor clauses with one exact
-  // suffix, then merge access rows with one exact actor prefix. Repeat until
-  // the canonical alternative bytes stabilize, without enumerating widths or
-  // lane values.
-  std::vector<std::vector<std::uint8_t>> previousEncoding;
-  while (true) {
-    using Key =
-        std::tuple<OperationSchemaId, std::vector<std::uint8_t>,
-                   std::vector<std::uint8_t>, std::vector<std::uint8_t>>;
-    std::map<Key, std::vector<MemoryCapabilityAlternativeRecord>> bySuffix;
-    for (MemoryCapabilityAlternativeRecord &piece : pieces) {
-      auto access = accessKey(piece);
-      auto binding = bindingBytes(piece.roleToEndpoint);
-      if (!access)
-        return access.takeError();
-      if (!binding)
-        return binding.takeError();
-      bySuffix[{piece.actorContractDomain.actorSchema(), std::move(*access),
-                std::move(*binding), patternKey(piece.admissibleUsePatterns)}]
-          .push_back(std::move(piece));
-    }
-    pieces.clear();
-    for (auto &[key, group] : bySuffix) {
-      std::vector<MemoryActorContractClause> clauses;
-      for (const auto &piece : group)
-        clauses.insert(clauses.end(),
-                       piece.actorContractDomain.clauses().begin(),
-                       piece.actorContractDomain.clauses().end());
-      auto actors =
-          MemoryActorContractDomain::create(std::get<0>(key), clauses);
-      if (!actors)
-        return actors.takeError();
-      MemoryCapabilityAlternativeRecord merged = std::move(group.front());
-      merged.actorContractDomain = std::move(*actors);
-      pieces.push_back(std::move(merged));
-    }
-
-    using AccessMergeKey =
-        std::tuple<std::vector<std::uint8_t>, std::vector<std::uint8_t>,
-                   std::vector<std::uint8_t>>;
-    std::map<AccessMergeKey, std::vector<MemoryCapabilityAlternativeRecord>>
-        byPrefix;
-    for (MemoryCapabilityAlternativeRecord &piece : pieces) {
-      auto actor = actorKey(piece);
-      auto binding = bindingBytes(piece.roleToEndpoint);
-      if (!actor)
-        return actor.takeError();
-      if (!binding)
-        return binding.takeError();
-      byPrefix[{std::move(*actor), std::move(*binding),
-                patternKey(piece.admissibleUsePatterns)}]
-          .push_back(std::move(piece));
-    }
-    pieces.clear();
-    for (auto &[key, group] : byPrefix) {
-      const bool hasAccess = group.front().accessDomain.has_value();
-      for (const auto &piece : group)
-        if (piece.accessDomain.has_value() != hasAccess)
-          return invalid("fence and addressed alternatives share one prefix");
-      std::optional<ParameterizedMemoryAccessDomain> mergedAccess;
-      if (hasAccess) {
-        std::vector<MemoryAccessClass> classes;
-        for (const auto &piece : group)
-          classes.insert(classes.end(),
-                         piece.accessDomain->accessClasses().begin(),
-                         piece.accessDomain->accessClasses().end());
-        auto accesses = ParameterizedMemoryAccessDomain::create(classes);
-        if (!accesses)
-          return accesses.takeError();
-        mergedAccess = std::move(*accesses);
-      }
-      MemoryCapabilityAlternativeRecord merged = std::move(group.front());
-      merged.accessDomain = std::move(mergedAccess);
-      pieces.push_back(std::move(merged));
-    }
-
-    std::vector<std::vector<std::uint8_t>> encoding;
-    encoding.reserve(pieces.size());
-    for (const MemoryCapabilityAlternativeRecord &piece : pieces) {
-      auto bytes = detail::encodeMemoryCapabilityAlternativeRecord(piece);
-      if (!bytes)
-        return bytes.takeError();
-      encoding.push_back(std::move(*bytes));
-    }
-    llvm::sort(encoding);
-    if (encoding == previousEncoding)
-      break;
-    previousEncoding = std::move(encoding);
-  }
-
-  struct EncodedAlternative {
-    std::vector<std::uint8_t> bytes;
-    MemoryCapabilityAlternativeRecord alternative;
-  };
-  std::vector<EncodedAlternative> ordered;
-  ordered.reserve(pieces.size());
-  for (MemoryCapabilityAlternativeRecord &alternative : pieces) {
-    auto bytes = detail::encodeMemoryCapabilityAlternativeRecord(alternative);
-    if (!bytes)
-      return bytes.takeError();
-    ordered.push_back({std::move(*bytes), std::move(alternative)});
-  }
-  llvm::sort(ordered, [](const auto &left, const auto &right) {
-    return left.bytes < right.bytes;
-  });
   std::vector<MemoryCapabilityAlternativeRecord> result;
-  result.reserve(ordered.size());
-  for (EncodedAlternative &entry : ordered)
-    result.push_back(std::move(entry.alternative));
+  result.reserve(normalized->size());
+  for (detail::MemoryCapabilityRelationEntry &entry : *normalized) {
+    auto bindings = decodeBindingBytes(entry.physicalFacts);
+    if (!bindings)
+      return bindings.takeError();
+    result.push_back({std::move(entry.actorContractDomain),
+                      std::move(*bindings), std::move(entry.accessDomain),
+                      std::move(entry.admissibleUsePatterns)});
+  }
   return result;
 }
-
 llvm::Error validateAlternatives(
     Schedule schedule,
     llvm::ArrayRef<MemoryTransportEndpointDescriptor> endpoints,

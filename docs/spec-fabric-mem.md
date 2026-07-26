@@ -1074,13 +1074,85 @@ Local Memory Service
 
 The canonical `memory_service_contract` is the sole owner of the service's
 ResourceState, UsePattern, capability, timing, progress, and grant records.
-They are not repeated as sibling fields of `LocalMemoryService`. Closing the
-exact persistent Canonical Service record and its typed view is a separate
-owner task; this operation-port capability closure neither invents a partial
-service record nor permits a Local Memory Service to finalize through the
-legacy behavior-only attribute. Until that owner record exists, an occurrence
-that declares a Local Memory Service fails Fabric finalization as
-`Invalid(missing-memory-service-contract)`.
+They are not repeated as sibling fields of `LocalMemoryService`. The same
+typed `MemoryServiceContractRecord` is embedded by a local `fabric.mem` service
+and by a System `memory_service`; neither owner may replace it with a behavior
+enum or endpoint-local capability copy.
+
+The exact record is:
+
+```text
+MemoryServiceContractRecord {
+  regions           : canonical non-empty sequence<MemoryServiceRegionRecord>
+  resource_contract : ResourceContractRecord
+  capabilities      : canonical non-empty sequence<MemoryServiceCapabilityRecord>
+}
+
+MemoryServiceRegionRecord {
+  address_base_bytes : uint64
+  size_bytes         : positive uint64, base + size representable
+  behavior           : Storage
+                     | Mmio { accepted_access_domain }
+}
+
+MemoryServiceCapabilityRecord {
+  actor_contract_domain      : MemoryActorContractDomain
+  access_domain              : ParameterizedMemoryAccessDomain | NoAccess
+  service_region_ordinals    : canonical sorted unique uint64 sequence
+  service_beat_width_bits    : uint64
+  admissible_use_patterns    : canonical non-empty set<UsePatternKey>
+  consistency_binding        : None
+                             | LocalProvider {
+                                 release_visibility_point
+                                 progress
+                               }
+                             | SystemDomain(MemoryConsistencyDomainRef)
+}
+
+LocalProviderProgress =
+    BoundedCompletionCycles { max_issue_to_retire_cycles: positive uint64 }
+  | FairEventual
+```
+
+The actor schema derives the Canonical Service kind. `NoAccess` is required
+exactly for a fence; every addressed kind requires one access domain and a
+non-empty service-region set. A fence has an empty region set and
+`service_beat_width_bits = 0`; every addressed capability has a positive beat
+width. Region ordinals index the containing record and every selected region
+must accept the complete access domain. Region address intervals are sorted,
+disjoint, and non-adjacent unless their complete behavior records differ;
+equivalent adjacent records are merged. A local region is an offset interval
+inside `capacity_bytes`; a System region uses the same field as an absolute
+service address.
+
+`None` is legal only when every admitted actor clause is plain and needs no
+MemoryConsistency provider. An atomic, RMW, compare-exchange, or fence clause
+requires one consistency binding. `LocalProvider` means that the exact local
+service is the sole participant; its progress cycles are measured by the
+memory occurrence's effective Fabric clock. `SystemDomain` is legal only for a
+System memory service and references the exact separate domain contract.
+Local Memory Service rejects `SystemDomain`, and System memory service rejects
+`LocalProvider`. The service's one ResourceContract remains the only owner of
+its state, capacity, timing, requester order, and grant behavior in all three
+cases.
+
+Capabilities use the same actor-domain and access-domain codecs as operation
+ports. Authoring alternatives with equal actor/access/region/beat/consistency
+fields are merged by checked set union of `admissible_use_patterns`; the
+result is sorted by complete canonical bytes. Overlapping alternatives that
+assign different physical facts to one concrete actor/access point are
+invalid. This is the one service-admission relation; endpoints and Mapping
+reference it rather than reconstructing it.
+
+The persistent wire follows the field order above. Counts, region ordinals,
+address fields, sizes, beat widths, bounded progress, and frame lengths are
+`u64be`; closed variants and `UsePatternKey` values are `u32be`. Actor, access,
+ResourceContract, and Fabric-reference payloads are framed exact production
+bytes from their semantic owners. Strict import validates every nested owner,
+reconstructs the normalized relation, re-encodes through the production codec,
+and requires byte equality. `MemoryServiceContractAttr.record` is exactly this
+canonical production wire carried as bytes by MLIR. Generic MLIR attribute
+encodings, property bags, behavior-only records, and trailing data are invalid.
 
 The Operation Engine endpoint payload width and the selected memory service's
 transaction or beat width are independent Fabric facts. Operation endpoints
@@ -1258,10 +1330,10 @@ Only `ConfigurationABI` owns their physical wires, addresses, codebooks, and
 inactive encodings; backend-local `cfg_*` names or structs cannot become a
 public configuration authority.
 
-The operation-port capability schema above is closed. The exact Canonical
-Local Memory Service persistent schema remains a separate deferred owner; an
-engine that selects Local service fails finalization with
-`Invalid(missing-memory-service-contract)` until that owner is present.
+The operation-port and memory-service capability schemas above are closed.
+An occurrence that selects a Local Memory Service must carry one strict
+`MemoryServiceContractRecord`; a missing, malformed, noncanonical, or
+behavior-only record is invalid.
 Concrete SRAM, controller, cache, queue, comparator, and provider-decode
 structure is implementation-owned only where a closed Fabric contract leaves
 it unobservable. An implementation refinement must preserve the capability
@@ -1454,8 +1526,9 @@ Anchor-level tests should cover:
 * selected `load.data -> store.data` and `done -> ctrl` internal dependencies,
   including joint load `data + done` retirement and store `done` retirement;
 * operation-engine-only, engine-plus-local-service, and storage-only forms;
-* fail-closed rejection of Local Memory Service selection while its exact
-  persistent owner contract is unavailable;
+* one Local Memory Service and one System memory service importing the same
+  canonical service capability record, with owner-incompatible consistency
+  bindings rejected;
 * many logical memories sharing one physical service through distinct
   bindings;
 * fixed `H_dispatch` versus Mapping-selected `C_dispatch`;

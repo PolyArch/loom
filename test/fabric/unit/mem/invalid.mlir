@@ -452,10 +452,6 @@ fabric.module @mem_reject_arbitrary_generic_property(
   function_type = (memref<?x!fabric.bits<32>>) -> (),
   inner_input_types = [],
   memory_contract = #fabric.memory_contract<
-    local_service = <
-      capacity_bytes = 4096,
-      service_contract = <behavior = storage>
-    >,
     manager_endpoints = [0],
     subordinate_endpoints = []
   >,
@@ -496,49 +492,12 @@ fabric.mem @DuplicateScheduleAuthority [spatial]
   function_type = () -> (memref<?x!fabric.bits<32>>),
   inner_input_types = [],
   memory_contract = #fabric.memory_contract<
-    local_service = <
-      capacity_bytes = 4096,
-      service_contract = <behavior = storage>
-    >,
+    engine = <schedule = spatial>,
     manager_endpoints = [],
     subordinate_endpoints = [0]
   >,
   schedule = 0 : i32,
   sym_name = "ScheduleWithoutEngine"
-}> : () -> ()
-
-// -----
-// Storage-only memory needs a provider-facing endpoint.
-// expected-error @+1 {{storage-only occurrence requires at least one subordinate endpoint}}
-"fabric.mem"() <{
-  function_type = () -> (),
-  inner_input_types = [],
-  memory_contract = #fabric.memory_contract<
-    local_service = <
-      capacity_bytes = 4096,
-      service_contract = <behavior = storage>
-    >,
-    manager_endpoints = [],
-    subordinate_endpoints = []
-  >,
-  sym_name = "StorageWithoutSubordinate"
-}> : () -> ()
-
-// -----
-// Storage-only memory has no owner for operation input ports.
-// expected-error @+1 {{storage-only occurrence must have zero input ports}}
-"fabric.mem"() <{
-  function_type = (!fabric.bits<8>) -> (memref<?x!fabric.bits<32>>),
-  inner_input_types = [],
-  memory_contract = #fabric.memory_contract<
-    local_service = <
-      capacity_bytes = 4096,
-      service_contract = <behavior = storage>
-    >,
-    manager_endpoints = [],
-    subordinate_endpoints = [0]
-  >,
-  sym_name = "StorageWithStrayInput"
 }> : () -> ()
 
 // -----
@@ -548,32 +507,11 @@ fabric.mem @DuplicateScheduleAuthority [spatial]
   function_type = () -> (memref<?x!fabric.bits<32>>),
   inner_input_types = [],
   memory_contract = #fabric.memory_contract<
-    local_service = <
-      capacity_bytes = 4096,
-      service_contract = <behavior = storage>
-    >,
+    engine = <schedule = spatial>,
     manager_endpoints = [],
     subordinate_endpoints = []
   >,
   sym_name = "UnclassifiedSubordinate"
-}> : () -> ()
-
-// -----
-// Local storage capacity is an explicit nonzero architecture fact.
-"fabric.mem"() <{
-  function_type = () -> (memref<?x!fabric.bits<32>>),
-  inner_input_types = [],
-  memory_contract = #fabric.memory_contract<
-    // expected-error @+1 {{local memory service capacity_bytes must be greater than zero}}
-    local_service = <
-      capacity_bytes = 0,
-      service_contract = <behavior = storage>
-    // expected-error @+1 {{failed to parse Fabric_MemoryContractAttr parameter 'local_service'}}
-    >,
-    manager_endpoints = [],
-    subordinate_endpoints = [0]
-  >,
-  sym_name = "ZeroCapacityStorage"
 }> : () -> ()
 
 // -----

@@ -11,7 +11,6 @@ namespace fabric {
 
 enum class MemoryCapabilityFinalizationReason {
   MissingMemoryCapabilityContract,
-  MissingMemoryServiceContract,
 };
 
 class MemoryCapabilityFinalizationError final

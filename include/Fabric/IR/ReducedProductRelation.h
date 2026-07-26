@@ -30,6 +30,18 @@ llvm::Expected<std::vector<ReducedProductRow>>
 reduceProductRelation(llvm::ArrayRef<ReducedProductRow> rows,
                       llvm::ArrayRef<bool> groupFiniteFields);
 
+/// Returns whether every point in `subset` belongs to `superset`. The check is
+/// exact for the finite and unsigned-interval domains used by Fabric memory
+/// capabilities; it partitions interval boundaries without enumerating values.
+llvm::Expected<bool>
+reducedProductRelationCovers(llvm::ArrayRef<ReducedProductRow> superset,
+                             llvm::ArrayRef<ReducedProductRow> subset);
+
+/// Returns whether the two relations contain at least one common point.
+llvm::Expected<bool>
+reducedProductRelationsOverlap(llvm::ArrayRef<ReducedProductRow> left,
+                               llvm::ArrayRef<ReducedProductRow> right);
+
 /// Encodes rows in their current order. Callers use this both for persistent
 /// framing and to distinguish strict canonical import from authoring input.
 std::vector<std::uint8_t>

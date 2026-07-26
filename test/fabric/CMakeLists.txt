@@ -117,6 +117,8 @@ target_link_libraries(loom-fabric-memory-actor-contract-domain-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-memory-capability-finalization-test PRIVATE
+  LoomFabricMemoryServiceContract
+  MLIRAsmParser
   MLIRFabric
   MLIRIR
   MLIRSupport
