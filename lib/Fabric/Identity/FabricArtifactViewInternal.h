@@ -2,6 +2,7 @@
 #define LOOM_LIB_FABRIC_IDENTITY_FABRICARTIFACTVIEWINTERNAL_H
 
 #include "Common/Artifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -14,11 +15,28 @@
 
 namespace loom::fabric::detail {
 
+struct FabricTransportEndpointViewData {
+  FabricPortDirection direction = FabricPortDirection::Input;
+  std::vector<std::uint8_t> canonicalType;
+};
+
+struct FabricMemoryEndpointViewData {
+  FabricMemoryEndpointRole role = FabricMemoryEndpointRole::Manager;
+  std::vector<std::uint8_t> canonicalType;
+};
+
 struct FabricNestedOwnerViewData {
-  std::uint64_t transportEndpointCount = 0;
-  std::vector<FabricMemoryEndpointRole> memoryEndpointRoles;
+  std::vector<FabricTransportEndpointViewData> transportEndpoints;
+  std::vector<FabricMemoryEndpointViewData> memoryEndpoints;
   std::vector<std::uint64_t> inventoryCounts;
   std::optional<::fabric::ResourceContract> resourceContract;
+};
+
+struct FabricModuleBoundaryEndpointViewData {
+  FabricSpatialAttachmentEndpointRef::Plane plane =
+      FabricSpatialAttachmentEndpointRef::Plane::Transport;
+  FabricOrdinal occurrenceOrdinal = 0;
+  std::vector<std::uint8_t> canonicalType;
 };
 
 struct FabricFuNodeViewData {
@@ -39,11 +57,17 @@ struct FabricEntityViewData {
   std::vector<FabricMemoryOperationPortViewData> memoryOperationPorts;
   std::vector<FabricNestedOwnerViewData> instructionContexts;
   std::vector<FabricNestedOwnerViewData> transferPatterns;
+  std::vector<FabricTransferPatternRef> transferPatternRefs;
+  std::vector<SystemTransferPatternRecord> transferPatternRecords;
   std::optional<FabricNestedOwnerViewData> spatialCore;
   std::optional<FabricNestedOwnerViewData> instructionCore;
   std::optional<FabricNestedOwnerViewData> localMemoryService;
   std::optional<FabricFuTemplateRef> fuTemplate;
   std::optional<FabricHardwareDomainKind> hardwareDomainKind;
+  std::optional<HardwareDomainContractRecord> hardwareDomainContract;
+  std::optional<ClockCrossingContractRecord> clockCrossing;
+  std::vector<FabricModuleBoundaryEndpointViewData> moduleBoundaryInputs;
+  std::vector<FabricModuleBoundaryEndpointViewData> moduleBoundaryOutputs;
 };
 
 struct FabricArtifactViewData {
@@ -52,6 +76,10 @@ struct FabricArtifactViewData {
   std::vector<FabricEntityViewData> entities;
   std::vector<FabricPointConnectionPayload> pointConnections;
   std::vector<FabricPhysicalTraversalRef> admittedTraversals;
+  std::vector<FabricArtifactView> importedModules;
+  std::vector<FabricSpatialAttachmentRecordView> spatialAttachments;
+  std::vector<HardwareDomainRef> hardwareDomains;
+  std::vector<SystemTransportResourceRef> transportResources;
 };
 
 llvm::Expected<FabricArtifactView>

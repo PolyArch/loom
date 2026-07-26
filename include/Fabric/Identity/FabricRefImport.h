@@ -23,6 +23,7 @@ using MemoryCapabilityAlternativeView =
     ::fabric::MemoryCapabilityAlternativeRecord;
 
 class FabricArtifactView;
+class FabricSystemRootView;
 
 namespace detail {
 struct FabricArtifactViewData;
@@ -56,6 +57,13 @@ public:
   std::uint64_t
   transportEndpointCount(const FabricTransportEndpointOwnerRef &owner) const;
 
+  /// Direction and exact canonical physical type of one token endpoint.
+  /// Invalid references return no direction and an empty type range.
+  std::optional<FabricPortDirection>
+  transportEndpointDirection(const FabricTransportEndpointRef &endpoint) const;
+  llvm::ArrayRef<std::uint8_t>
+  transportEndpointType(const FabricTransportEndpointRef &endpoint) const;
+
   /// Size of the owner's canonical memory-service endpoint inventory. It is a
   /// separate plane, so equal ordinals never select the same object.
   std::uint64_t
@@ -84,6 +92,8 @@ public:
   /// The role the owner's inventory declares for this memory endpoint.
   std::optional<FabricMemoryEndpointRole>
   memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const;
+  llvm::ArrayRef<std::uint8_t>
+  memoryEndpointType(const FabricMemoryEndpointRef &endpoint) const;
 
   /// The declared kind of one hardware domain entity.
   std::optional<FabricHardwareDomainKind>
@@ -127,6 +137,7 @@ private:
 
   friend llvm::Expected<FabricArtifactView>
   detail::buildFabricArtifactView(detail::FabricArtifactViewData data);
+  friend class FabricSystemRootView;
 };
 
 /// The exact upstream Fabric binding a consuming root declares. A compact

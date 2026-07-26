@@ -14,7 +14,8 @@
 
 namespace fabric {
 class ModuleOp;
-}
+class SystemOp;
+} // namespace fabric
 
 namespace loom::fabric {
 
@@ -50,6 +51,10 @@ private:
   friend llvm::Expected<FinalizedFabricRoot>
   finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store);
   friend llvm::Expected<FinalizedFabricRoot>
+  finalizeFabricRoot(::fabric::SystemOp source,
+                     llvm::ArrayRef<ArtifactRootReference> importedModules,
+                     const ArtifactStore &store);
+  friend llvm::Expected<FinalizedFabricRoot>
   importEntireFabricRoot(const ArtifactRootReference &reference,
                          const ArtifactStore &store);
 };
@@ -58,6 +63,13 @@ private:
 /// canonical loom.fabric object after strict independent reimport succeeds.
 llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store);
+
+/// Finalizes one complete System authoring root. Every supplied reference is
+/// an ImportedModule dependency; fields inside the root own dependency use.
+llvm::Expected<FinalizedFabricRoot>
+finalizeFabricRoot(::fabric::SystemOp source,
+                   llvm::ArrayRef<ArtifactRootReference> importedModules,
+                   const ArtifactStore &store);
 
 /// Resolves and strictly imports one exact published loom.fabric root.
 llvm::Expected<FinalizedFabricRoot>

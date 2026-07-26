@@ -2,6 +2,8 @@
 
 #include "../Identity/FabricArtifactViewInternal.h"
 #include "Common/ArtifactFinalizer.h"
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/BoundaryTransfer.h"
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
@@ -10,18 +12,19 @@
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/MemoryOperationPort.h"
+#include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/IR/SystemServiceContract.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactDependencyClosureInternal.h"
 #include "FabricCanonicalLabeling.h"
 #include "FabricFuCapabilityDerivation.h"
+#include "FabricSystemCanonicalLabeling.h"
 
-#include "mlir/Bytecode/BytecodeReader.h"
-#include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -36,16 +39,18 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -55,6 +60,7 @@ namespace loom::fabric {
 namespace {
 
 constexpr llvm::StringLiteral canonicalRootName("__loom_fabric_root");
+constexpr llvm::StringLiteral systemEntityIdAttrName("entity_id");
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -359,70 +365,6 @@ llvm::Error reorderCanonicalGraphRegions(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<std::uint8_t>>
-writeBytecodeOnce(Operation *operation) {
-  llvm::SmallVector<char> storage;
-  llvm::raw_svector_ostream stream(storage);
-  BytecodeWriterConfig config("loom.fabric.1.0");
-  config.setElideLocations();
-  if (failed(writeBytecodeToFile(operation, stream, config)))
-    return invalid("MLIR bytecode writer rejected the canonical root");
-  return std::vector<std::uint8_t>(storage.begin(), storage.end());
-}
-
-struct ParsedBytecodeModule {
-  std::unique_ptr<MLIRContext> context;
-  OwningOpRef<ModuleOp> module;
-};
-
-llvm::Expected<ParsedBytecodeModule>
-parseBytecodeModule(llvm::ArrayRef<std::uint8_t> bytes) {
-  DialectRegistry registry;
-  registry.insert<::fabric::FabricDialect>();
-  auto context = std::make_unique<MLIRContext>(registry);
-  context->loadAllAvailableDialects();
-
-  llvm::StringRef byteString(reinterpret_cast<const char *>(bytes.data()),
-                             bytes.size());
-  llvm::MemoryBufferRef buffer(byteString, "<canonical-fabric>");
-  ParserConfig parserConfig(context.get());
-  Block topLevel;
-  if (failed(readBytecodeFile(buffer, &topLevel, parserConfig)))
-    return invalid("canonical MLIR bytecode cannot be parsed");
-  if (!llvm::hasSingleElement(topLevel))
-    return invalid("canonical MLIR bytecode has multiple top-level roots");
-  auto module = dyn_cast<ModuleOp>(&topLevel.front());
-  if (!module || failed(verify(module)))
-    return invalid("canonical MLIR bytecode is not a valid builtin module");
-  module->remove();
-  return ParsedBytecodeModule{std::move(context),
-                              OwningOpRef<ModuleOp>(module)};
-}
-
-llvm::Expected<std::vector<std::uint8_t>>
-writeCanonicalBytecode(Operation *operation) {
-  auto initial = writeBytecodeOnce(operation);
-  if (!initial)
-    return initial.takeError();
-  auto normalizedModule = parseBytecodeModule(*initial);
-  if (!normalizedModule)
-    return normalizedModule.takeError();
-  auto canonical = writeBytecodeOnce(normalizedModule->module.get());
-  if (!canonical)
-    return canonical.takeError();
-
-  auto verificationModule = parseBytecodeModule(*canonical);
-  if (!verificationModule)
-    return verificationModule.takeError();
-  auto verified = writeBytecodeOnce(verificationModule->module.get());
-  if (!verified)
-    return verified.takeError();
-  if (*verified != *canonical)
-    return invalid("the Fabric schema writer did not reach a byte-stable "
-                   "canonical form");
-  return canonical;
-}
-
 std::vector<std::uint64_t> emptyInventories() {
   return std::vector<std::uint64_t>(fabricClosedBound(FabricInventoryKind{}),
                                     0);
@@ -457,14 +399,139 @@ FabricFuNodeKind fuNodeKind(Operation *operation) {
 }
 
 void setPortInventories(detail::FabricNestedOwnerViewData &owner,
-                        std::uint64_t inputs, std::uint64_t outputs,
-                        bool transport) {
+                        std::uint64_t inputs, std::uint64_t outputs) {
   owner.inventoryCounts = emptyInventories();
   owner.inventoryCounts[static_cast<std::size_t>(
       FabricInventoryKind::InputPort)] = inputs;
   owner.inventoryCounts[static_cast<std::size_t>(
       FabricInventoryKind::OutputPort)] = outputs;
-  owner.transportEndpointCount = transport ? inputs + outputs : 0;
+}
+
+llvm::Error setTransportEndpoints(detail::FabricNestedOwnerViewData &owner,
+                                  ArrayRef<Type> inputs,
+                                  ArrayRef<Type> outputs) {
+  setPortInventories(owner, inputs.size(), outputs.size());
+  owner.transportEndpoints.clear();
+  owner.transportEndpoints.reserve(inputs.size() + outputs.size());
+  auto append = [&](Type type, FabricPortDirection direction) -> llvm::Error {
+    auto encoded = ::fabric::encodeFabricTransportType(type);
+    if (!encoded)
+      return encoded.takeError();
+    owner.transportEndpoints.push_back({direction, std::move(*encoded)});
+    return llvm::Error::success();
+  };
+  for (Type type : inputs)
+    if (llvm::Error error = append(type, FabricPortDirection::Input))
+      return error;
+  for (Type type : outputs)
+    if (llvm::Error error = append(type, FabricPortDirection::Output))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<std::uint8_t>> projectMemoryEndpointType(Type type) {
+  if (!isa<MemRefType>(type))
+    return invalid("memory endpoint has a non-memref physical type");
+  std::string spelling;
+  llvm::raw_string_ostream stream(spelling);
+  type.print(stream);
+  return std::vector<std::uint8_t>(spelling.begin(), spelling.end());
+}
+
+llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory);
+
+llvm::Error
+setOperationTransportEndpoints(Operation *operation,
+                               detail::FabricNestedOwnerViewData &owner) {
+  llvm::SmallVector<Type> inputs;
+  if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
+    auto type = memoryFunctionType(memory);
+    if (!type)
+      return type.takeError();
+    for (Type input : type->getInputs())
+      if (!isa<MemRefType>(input))
+        inputs.push_back(input);
+  } else if (auto boundary = dyn_cast<::fabric::BoundaryOp>(operation)) {
+    ArrayRef<Type> inner = boundary.getInnerInputTypes();
+    if (!inner.empty())
+      inputs.append(inner.begin(), inner.end());
+    else
+      for (Value input : operation->getOperands())
+        inputs.push_back(input.getType());
+  } else if (auto sw = dyn_cast<::fabric::SwitchOp>(operation)) {
+    ArrayRef<Type> inner = sw.getInnerInputTypes();
+    if (!inner.empty())
+      inputs.append(inner.begin(), inner.end());
+    else
+      for (Value input : operation->getOperands())
+        inputs.push_back(input.getType());
+  } else {
+    for (Value input : operation->getOperands())
+      inputs.push_back(input.getType());
+  }
+
+  llvm::SmallVector<Type> outputs;
+  for (Type output : operation->getResultTypes())
+    if (!isa<MemRefType>(output))
+      outputs.push_back(output);
+  return setTransportEndpoints(owner, inputs, outputs);
+}
+
+llvm::Error setModuleBoundaryInventory(::fabric::ModuleOp root,
+                                       detail::FabricEntityViewData &entity) {
+  FunctionType type = root.getFunctionType();
+  setPortInventories(entity.owner, type.getNumInputs(), type.getNumResults());
+
+  std::uint64_t tokenInput = 0;
+  std::uint64_t memoryInput = 0;
+  std::uint64_t tokenOutput = 0;
+  std::uint64_t memoryOutput = 0;
+  for (Type input : type.getInputs()) {
+    const bool memory = isa<MemRefType>(input);
+    std::vector<std::uint8_t> typeBytes;
+    if (memory) {
+      auto encoded = projectMemoryEndpointType(input);
+      if (!encoded)
+        return encoded.takeError();
+      typeBytes = std::move(*encoded);
+    } else {
+      auto encoded = ::fabric::encodeFabricTransportType(input);
+      if (!encoded)
+        return encoded.takeError();
+      typeBytes = std::move(*encoded);
+    }
+    entity.moduleBoundaryInputs.push_back(
+        {memory ? FabricSpatialAttachmentEndpointRef::Plane::Memory
+                : FabricSpatialAttachmentEndpointRef::Plane::Transport,
+         memory ? memoryInput++ : tokenInput++, std::move(typeBytes)});
+  }
+  for (Type output : type.getResults()) {
+    const bool memory = isa<MemRefType>(output);
+    std::vector<std::uint8_t> typeBytes;
+    if (memory) {
+      auto encoded = projectMemoryEndpointType(output);
+      if (!encoded)
+        return encoded.takeError();
+      typeBytes = std::move(*encoded);
+    } else {
+      auto encoded = ::fabric::encodeFabricTransportType(output);
+      if (!encoded)
+        return encoded.takeError();
+      typeBytes = std::move(*encoded);
+    }
+    entity.moduleBoundaryOutputs.push_back(
+        {memory ? FabricSpatialAttachmentEndpointRef::Plane::Memory
+                : FabricSpatialAttachmentEndpointRef::Plane::Transport,
+         memory ? memoryOutput++ : tokenOutput++, std::move(typeBytes)});
+  }
+
+  for (detail::FabricModuleBoundaryEndpointViewData &endpoint :
+       entity.moduleBoundaryOutputs)
+    endpoint.occurrenceOrdinal +=
+        endpoint.plane == FabricSpatialAttachmentEndpointRef::Plane::Memory
+            ? memoryInput
+            : tokenInput;
+  return llvm::Error::success();
 }
 
 llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory) {
@@ -534,24 +601,38 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
   if (!endpoints)
     return endpoints.takeError();
 
-  std::uint64_t tokenInputs = 0;
-  std::uint64_t tokenOutputs = 0;
-  for (const ::fabric::MemoryTransportEndpointDescriptor &endpoint :
-       *endpoints) {
-    if (endpoint.direction == FabricPortDirection::Input)
-      ++tokenInputs;
-    else
-      ++tokenOutputs;
-  }
-  setPortInventories(entity.owner, tokenInputs, tokenOutputs, true);
+  llvm::SmallVector<Type> tokenInputTypes;
+  llvm::SmallVector<Type> tokenOutputTypes;
+  for (Type input : type->getInputs())
+    if (!isa<MemRefType>(input))
+      tokenInputTypes.push_back(input);
+  for (Type output : type->getResults())
+    if (!isa<MemRefType>(output))
+      tokenOutputTypes.push_back(output);
+  if (llvm::Error error = setTransportEndpoints(entity.owner, tokenInputTypes,
+                                                tokenOutputTypes))
+    return error;
 
   ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
-  entity.owner.memoryEndpointRoles.assign(contract.getManagerEndpoints().size(),
-                                          FabricMemoryEndpointRole::Manager);
-  entity.owner.memoryEndpointRoles.insert(
-      entity.owner.memoryEndpointRoles.end(),
-      contract.getSubordinateEndpoints().size(),
-      FabricMemoryEndpointRole::Subordinate);
+  entity.owner.memoryEndpoints.clear();
+  for (Type input : type->getInputs()) {
+    if (!isa<MemRefType>(input))
+      continue;
+    auto encoded = projectMemoryEndpointType(input);
+    if (!encoded)
+      return encoded.takeError();
+    entity.owner.memoryEndpoints.push_back(
+        {FabricMemoryEndpointRole::Manager, std::move(*encoded)});
+  }
+  for (Type output : type->getResults()) {
+    if (!isa<MemRefType>(output))
+      continue;
+    auto encoded = projectMemoryEndpointType(output);
+    if (!encoded)
+      return encoded.takeError();
+    entity.owner.memoryEndpoints.push_back(
+        {FabricMemoryEndpointRole::Subordinate, std::move(*encoded)});
+  }
 
   auto records = ::fabric::decodeMemoryOperationPortInventory(
       memory.getMemoryOperationPortsAttr(), memory.getContext(),
@@ -579,7 +660,7 @@ buildModuleView(::fabric::ModuleOp root,
                 const detail::FabricCanonicalLabeling &labeling,
                 const ArtifactIdentity &identity) {
   detail::FabricArtifactViewData data{
-      identity, FabricRootKind::Module, {}, {}, {}};
+      identity, FabricRootKind::Module, {}, {}, {}, {}, {}, {}, {}};
   data.entities.resize(labeling.carriers.size());
 
   llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *> carrierByOp;
@@ -596,15 +677,17 @@ buildModuleView(::fabric::ModuleOp root,
       continue;
     const std::uint64_t inputs = carrier.op->getNumOperands();
     const std::uint64_t outputs = carrier.op->getNumResults();
-    setPortInventories(entity.owner, inputs, outputs,
-                       transportOwner(carrier.kind, carrier.id).has_value());
+    setPortInventories(entity.owner, inputs, outputs);
+    if (transportOwner(carrier.kind, carrier.id))
+      if (llvm::Error error =
+              setOperationTransportEndpoints(carrier.op, entity.owner))
+        return std::move(error);
     if (auto memory = dyn_cast<::fabric::MemOp>(carrier.op))
       if (llvm::Error error = populateMemoryView(memory, entity))
         return std::move(error);
     if (carrier.kind == FabricEntityKind::FabricModuleTemplate) {
-      FunctionType type = root.getFunctionType();
-      setPortInventories(entity.owner, type.getNumInputs(),
-                         type.getNumResults(), false);
+      if (llvm::Error error = setModuleBoundaryInventory(root, entity))
+        return std::move(error);
     }
     if (carrier.kind == FabricEntityKind::FabricFuOccurrence) {
       auto found = labeling.fuTemplateIdByOccurrence.find(carrier.op);
@@ -637,14 +720,14 @@ buildModuleView(::fabric::ModuleOp root,
     if (!fu)
       return invalid("an FU template has no representative definition");
     setPortInventories(entity.owner, fu.getInputs().size(),
-                       fu.getOutputs().size(), false);
+                       fu.getOutputs().size());
     entity.owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::FuNode)] = carrier.canonicalNodeOrder.size();
     for (Operation *operation : carrier.canonicalNodeOrder) {
       detail::FabricFuNodeViewData node;
       node.kind = fuNodeKind(operation);
       setPortInventories(node.owner, operation->getNumOperands(),
-                         operation->getNumResults(), false);
+                         operation->getNumResults());
       entity.fuNodes.push_back(std::move(node));
     }
     auto templates = detail::deriveFabricFuCapabilityTemplates(
@@ -743,38 +826,30 @@ buildModuleView(::fabric::ModuleOp root,
 struct StrictImportResult {
   DecodedFabricArtifact decoded;
   FabricArtifactView view;
+  std::vector<detail::FabricModuleBoundaryEndpointViewData>
+      moduleBoundaryInputs;
+  std::vector<detail::FabricModuleBoundaryEndpointViewData>
+      moduleBoundaryOutputs;
 };
 
 llvm::Expected<StrictImportResult>
-strictImport(const ArtifactRootReference &reference,
-             const CanonicalSemanticBytes &canonicalBytes) {
-  if (reference.schemaIdentity != fabricArtifactSchema.identity ||
-      reference.schemaVersion != fabricArtifactSchema.version)
-    return invalid("root reference has the wrong Fabric schema");
-  if (finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes) !=
-      reference.artifact)
-    return invalid("root reference identity does not match canonical bytes");
-
-  auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
-  if (!decoded)
-    return decoded.takeError();
-  if (decoded->rootKind != FabricRootKind::Module)
-    return ownerUnavailable(
-        "only the Module root finalizer is available in the current owner");
-  if (!decoded->dependencies.empty())
+strictImportModule(const ArtifactRootReference &reference,
+                   const CanonicalSemanticBytes &canonicalBytes,
+                   DecodedFabricArtifact decoded) {
+  if (decoded.rootKind != FabricRootKind::Module)
+    return invalid("Module importer received the wrong root kind");
+  if (!decoded.dependencies.empty())
     return invalid("a fully elaborated Module root has a direct dependency");
 
-  auto parsed = parseBytecodeModule(decoded->canonicalMlirBytecode);
+  auto parsed =
+      detail::parseFabricBytecodeModule(decoded.canonicalMlirBytecode);
   if (!parsed)
     return parsed.takeError();
   ModuleOp module = parsed->module.get();
 
-  ::fabric::ModuleOp root;
-  for (::fabric::ModuleOp candidate : module.getOps<::fabric::ModuleOp>()) {
-    if (root)
-      return invalid("canonical payload has multiple Fabric roots");
-    root = candidate;
-  }
+  if (!llvm::hasSingleElement(module.getBody()->getOperations()))
+    return invalid("canonical payload does not contain exactly one root");
+  auto root = dyn_cast<::fabric::ModuleOp>(&module.getBody()->front());
   if (!root || root.getSymName() != canonicalRootName)
     return invalid("canonical payload has no canonical Module root");
   bool residualInstance = false;
@@ -803,15 +878,758 @@ strictImport(const ArtifactRootReference &reference,
     }
   }
 
-  auto rewritten = writeCanonicalBytecode(module);
+  auto rewritten = detail::writeCanonicalFabricBytecode(module);
   if (!rewritten)
     return rewritten.takeError();
-  if (*rewritten != decoded->canonicalMlirBytecode)
+  if (*rewritten != decoded.canonicalMlirBytecode)
     return invalid("canonical MLIR bytecode is not byte stable");
+  detail::FabricEntityViewData boundaryProjection;
+  boundaryProjection.owner.inventoryCounts = emptyInventories();
+  if (llvm::Error error = setModuleBoundaryInventory(root, boundaryProjection))
+    return std::move(error);
   auto view = buildModuleView(root, *labeling, reference.artifact);
   if (!view)
     return view.takeError();
-  return StrictImportResult{std::move(*decoded), std::move(*view)};
+  return StrictImportResult{
+      std::move(decoded), std::move(*view),
+      std::move(boundaryProjection.moduleBoundaryInputs),
+      std::move(boundaryProjection.moduleBoundaryOutputs)};
+}
+
+llvm::Expected<FabricEntityId> canonicalEntityId(Operation *operation) {
+  auto attribute =
+      operation->getAttrOfType<::fabric::EntityIdAttr>(systemEntityIdAttrName);
+  if (!attribute)
+    return invalid("canonical System entity has no EntityId");
+  return attribute.getId();
+}
+
+llvm::Expected<const StrictImportResult *>
+resolveImportedModule(llvm::ArrayRef<StrictImportResult> importedModules,
+                      const FabricImportedModuleTargetRef &target) {
+  if (target.dependencyOrdinal >= importedModules.size())
+    return invalid("System field references a dependency outside its table");
+  const StrictImportResult &module = importedModules[target.dependencyOrdinal];
+  if (llvm::Error error = validateFabricRef(module.view, target.target))
+    return std::move(error);
+  return &module;
+}
+
+llvm::Expected<const detail::FabricModuleBoundaryEndpointViewData *>
+resolveImportedModuleBoundary(
+    llvm::ArrayRef<StrictImportResult> importedModules,
+    const FabricImportedModuleBoundaryEndpointRef &reference) {
+  auto module = resolveImportedModule(
+      importedModules,
+      FabricImportedModuleTargetRef{reference.dependencyOrdinal,
+                                    reference.target.module});
+  if (!module)
+    return module.takeError();
+  const auto &endpoints =
+      reference.target.direction == FabricPortDirection::Input
+          ? (*module)->moduleBoundaryInputs
+          : (*module)->moduleBoundaryOutputs;
+  if (reference.target.ordinal >= endpoints.size())
+    return invalid("ImportedModule boundary endpoint ordinal is out of range");
+  return &endpoints[reference.target.ordinal];
+}
+
+llvm::Expected<detail::FabricNestedOwnerViewData>
+instructionCoreView(DenseI8ArrayAttr microarchitecture) {
+  auto realization = decodeInstructionCoreMicroarchitecturalRealization(
+      unsignedBytes(microarchitecture));
+  if (!realization)
+    return realization.takeError();
+  detail::FabricNestedOwnerViewData owner;
+  owner.inventoryCounts = emptyInventories();
+  owner.resourceContract = realization->resourceContract();
+  return owner;
+}
+
+llvm::Expected<detail::FabricNestedOwnerViewData>
+spatialCoreView(const StrictImportResult &module) {
+  detail::FabricNestedOwnerViewData owner;
+  owner.inventoryCounts = emptyInventories();
+  for (const detail::FabricModuleBoundaryEndpointViewData &endpoint :
+       module.moduleBoundaryInputs) {
+    if (endpoint.plane == FabricSpatialAttachmentEndpointRef::Plane::Transport)
+      owner.transportEndpoints.push_back(
+          {FabricPortDirection::Input, endpoint.canonicalType});
+    else
+      owner.memoryEndpoints.push_back(
+          {FabricMemoryEndpointRole::Manager, endpoint.canonicalType});
+  }
+  for (const detail::FabricModuleBoundaryEndpointViewData &endpoint :
+       module.moduleBoundaryOutputs) {
+    if (endpoint.plane == FabricSpatialAttachmentEndpointRef::Plane::Transport)
+      owner.transportEndpoints.push_back(
+          {FabricPortDirection::Output, endpoint.canonicalType});
+    else
+      owner.memoryEndpoints.push_back(
+          {FabricMemoryEndpointRole::Subordinate, endpoint.canonicalType});
+  }
+  std::uint64_t inputs = 0;
+  std::uint64_t outputs = 0;
+  for (const detail::FabricTransportEndpointViewData &endpoint :
+       owner.transportEndpoints) {
+    inputs += endpoint.direction == FabricPortDirection::Input;
+    outputs += endpoint.direction == FabricPortDirection::Output;
+  }
+  setPortInventories(owner, inputs, outputs);
+  return owner;
+}
+
+llvm::Error validateServiceCapabilityReferences(
+    const CanonicalServiceCapabilitySet &capabilities,
+    const FabricArtifactView &view) {
+  for (const CanonicalServiceCapabilityRecord &capability :
+       capabilities.capabilities()) {
+    if (llvm::Error error =
+            validateFabricRef(view, capability.rate().rateClock()))
+      return error;
+    if (const auto *bounded = std::get_if<::fabric::BoundedCompletion>(
+            &capability.rate().progress()))
+      if (llvm::Error error = validateFabricRef(view, bounded->progressClock))
+        return error;
+    if (const auto *addressed = std::get_if<AddressedMemoryCapabilityDomain>(
+            &capability.domain())) {
+      if (addressed->consistencyDomain())
+        if (llvm::Error error =
+                validateFabricRef(view, *addressed->consistencyDomain()))
+          return error;
+      continue;
+    }
+    if (const auto *fence =
+            std::get_if<FenceCapabilityDomain>(&capability.domain()))
+      if (llvm::Error error =
+              validateFabricRef(view, fence->consistencyDomain()))
+        return error;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateSystemRelations(
+    ::fabric::SystemOp root, const FabricSystemRootView &systemView,
+    llvm::ArrayRef<StrictImportResult> importedModules,
+    llvm::ArrayRef<FabricImportedModuleTargetRef> coreTargets) {
+  const FabricArtifactView &view = systemView.artifact();
+  const FabricImportBinding binding{view.identity(), FabricRootKind::System};
+  std::map<std::pair<std::uint32_t, std::vector<std::uint8_t>>,
+           HardwareDomainRef>
+      domainMembership;
+  std::set<FabricEntityId> externalBoundariesWithEndpoints;
+  std::map<FabricEntityId,
+           std::set<std::pair<FabricPortDirection, FabricOrdinal>>>
+      attachmentCoverage;
+
+  for (Operation &operation : root.getBody().front()) {
+    if (auto endpoint =
+            dyn_cast<::fabric::SystemServiceEndpointOp>(&operation)) {
+      auto owner = decodeSystemServiceEndpointOwnerRef(
+          unsignedBytes(endpoint.getOwnerAttr()));
+      if (!owner)
+        return owner.takeError();
+      if (llvm::Error error = validateFabricRef(view, owner->owner()))
+        return error;
+      if (const auto *boundary =
+              std::get_if<ExternalBoundaryRef>(&owner->owner().payload))
+        externalBoundariesWithEndpoints.insert(boundary->id());
+      auto capabilities = decodeCanonicalServiceCapabilitySet(
+          unsignedBytes(endpoint.getCapabilitiesAttr()), root.getContext());
+      if (!capabilities)
+        return capabilities.takeError();
+      if (llvm::Error error =
+              validateServiceCapabilityReferences(*capabilities, view))
+        return error;
+      continue;
+    }
+
+    if (auto memory = dyn_cast<::fabric::SystemMemoryServiceOp>(&operation)) {
+      auto record = ::fabric::decodeMemoryServiceContractRecord(
+          unsignedBytes(memory.getServiceContractAttr().getRecord()),
+          root.getContext(), ::fabric::MemoryServiceOwnerKind::System);
+      if (!record)
+        return record.takeError();
+      for (const ::fabric::MemoryServiceCapabilityDeclaration &capability :
+           record->capabilities())
+        if (const auto *domain = std::get_if<MemoryConsistencyDomainRef>(
+                &capability.consistencyBinding))
+          if (llvm::Error error = validateFabricRef(view, *domain))
+            return error;
+      continue;
+    }
+
+    if (auto transform =
+            dyn_cast<::fabric::SystemServiceTransformOp>(&operation)) {
+      auto record = decodeSystemServiceTransformRecord(
+          unsignedBytes(transform.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      for (const FabricMemoryEndpointRef &endpoint : record->inputs())
+        if (llvm::Error error = validateFabricRef(view, endpoint))
+          return error;
+      for (const FabricMemoryEndpointRef &endpoint : record->outputs())
+        if (llvm::Error error = validateFabricRef(view, endpoint))
+          return error;
+      if (const auto *coherent =
+              std::get_if<CoherentMemoryTransform>(&record->contract())) {
+        if (llvm::Error error =
+                validateFabricRef(view, coherent->consistencyDomain))
+          return error;
+        for (const CoherentMemoryRegionCorrespondence &region :
+             coherent->regions) {
+          if (llvm::Error error = validateFabricRef(view, region.input))
+            return error;
+          if (llvm::Error error = validateFabricRef(view, region.output))
+            return error;
+        }
+      }
+      continue;
+    }
+
+    if (auto domain = dyn_cast<::fabric::SystemHardwareDomainOp>(&operation)) {
+      auto record = decodeHardwareDomainContractRecord(
+          unsignedBytes(domain.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      auto id = canonicalEntityId(domain);
+      if (!id)
+        return id.takeError();
+      for (const FabricInventoryOwnerRef &member : record->members()) {
+        if (llvm::Error error = validateFabricRef(view, member))
+          return error;
+        auto key = std::make_pair(static_cast<std::uint32_t>(record->kind()),
+                                  canonicalFabricBytes(member));
+        if (!domainMembership.emplace(std::move(key), HardwareDomainRef(*id))
+                 .second)
+          return invalid(
+              "a Fabric owner belongs to multiple domains of one kind");
+      }
+      if (const auto *reset =
+              std::get_if<ResetDomainContractRecord>(&record->contract())) {
+        if (reset->synchronousTo())
+          if (llvm::Error error =
+                  validateFabricRef(view, *reset->synchronousTo()))
+            return error;
+      } else if (const auto *consistency =
+                     std::get_if<::fabric::MemoryConsistencyContract>(
+                         &record->contract())) {
+        if (llvm::Error error =
+                ::fabric::validateMemoryConsistencyContractReferences(
+                    *consistency, view, binding))
+          return error;
+      }
+      continue;
+    }
+
+    if (auto resource =
+            dyn_cast<::fabric::SystemTransportResourceOp>(&operation)) {
+      if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
+        auto record =
+            decodeClockCrossingContractRecord(unsignedBytes(crossing));
+        if (!record)
+          return record.takeError();
+        if (llvm::Error error =
+                validateFabricRef(view, record->transferPattern()))
+          return error;
+        auto id = canonicalEntityId(resource);
+        if (!id)
+          return id.takeError();
+        if (record->transferPattern().resource !=
+            SystemTransportResourceRef(*id))
+          return invalid("clock crossing selects a foreign transfer pattern");
+        if (llvm::Error error = validateFabricRef(view, record->sourceClock()))
+          return error;
+        if (llvm::Error error =
+                validateFabricRef(view, record->destinationClock()))
+          return error;
+      }
+      continue;
+    }
+
+    if (auto pattern =
+            dyn_cast<::fabric::SystemTransferPatternOp>(&operation)) {
+      auto record = decodeSystemTransferPatternRecord(
+          unsignedBytes(pattern.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      if (llvm::Error error = validateFabricRef(view, record->pattern()))
+        return error;
+      if (llvm::Error error = validateFabricRef(view, record->ingress()))
+        return error;
+      if (view.transportEndpointDirection(record->ingress()) !=
+          FabricPortDirection::Input)
+        return invalid("transfer-pattern ingress is not an input endpoint");
+      for (const FabricTransportEndpointRef &egress : record->egresses()) {
+        if (llvm::Error error = validateFabricRef(view, egress))
+          return error;
+        if (view.transportEndpointDirection(egress) !=
+            FabricPortDirection::Output)
+          return invalid("transfer-pattern egress is not an output endpoint");
+      }
+      if (llvm::Error error = validateFabricRef(view, record->usePattern()))
+        return error;
+      if (record->usePattern().owner.catalog() !=
+          FabricInventoryOwnerRef::of(record->pattern().resource))
+        return invalid("transfer pattern selects a foreign UsePattern");
+      continue;
+    }
+
+    if (auto attachment =
+            dyn_cast<::fabric::SystemSpatialAttachmentOp>(&operation)) {
+      auto moduleEndpoint = decodeFabricImportedModuleBoundaryEndpointRef(
+          unsignedBytes(attachment.getModuleEndpointAttr()));
+      if (!moduleEndpoint)
+        return moduleEndpoint.takeError();
+      auto moduleRecord =
+          resolveImportedModuleBoundary(importedModules, *moduleEndpoint);
+      if (!moduleRecord)
+        return moduleRecord.takeError();
+      auto spatialEndpoint = decodeFabricSpatialAttachmentEndpointRef(
+          unsignedBytes(attachment.getSpatialEndpointAttr()));
+      if (!spatialEndpoint)
+        return spatialEndpoint.takeError();
+
+      AccCoreOccurrenceRef core;
+      FabricOrdinal occurrenceOrdinal = 0;
+      llvm::ArrayRef<std::uint8_t> occurrenceType;
+      if (const FabricTransportEndpointRef *transport =
+              spatialEndpoint->transport()) {
+        if (transport->owner.kind() !=
+            FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+          return invalid("attachment token endpoint is not SpatialCore-owned");
+        core =
+            std::get<SpatialCoreOccurrenceRef>(transport->owner.payload).core;
+        occurrenceOrdinal = transport->ordinal;
+        if (llvm::Error error = validateFabricRef(view, *transport))
+          return error;
+        occurrenceType = view.transportEndpointType(*transport);
+      } else {
+        const FabricMemoryEndpointRef &memory = *spatialEndpoint->memory();
+        if (memory.owner.kind() !=
+            FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+          return invalid("attachment memory endpoint is not SpatialCore-owned");
+        core = std::get<SpatialCoreOccurrenceRef>(memory.owner.payload).core;
+        occurrenceOrdinal = memory.ordinal;
+        if (llvm::Error error = validateFabricRef(view, memory))
+          return error;
+        occurrenceType = view.memoryEndpointType(memory);
+      }
+      if (core.id() >= coreTargets.size())
+        return invalid("attachment names an unknown AccCore SpatialCore");
+      const FabricImportedModuleTargetRef &target = coreTargets[core.id()];
+      if (target.dependencyOrdinal != moduleEndpoint->dependencyOrdinal ||
+          target.target != moduleEndpoint->target.module)
+        return invalid("attachment module endpoint disagrees with its AccCore");
+      if ((*moduleRecord)->plane != spatialEndpoint->plane() ||
+          (*moduleRecord)->occurrenceOrdinal != occurrenceOrdinal ||
+          llvm::ArrayRef<std::uint8_t>((*moduleRecord)->canonicalType) !=
+              occurrenceType)
+        return invalid("attachment does not preserve endpoint plane, ordinal, "
+                       "and type");
+      auto key = std::make_pair(moduleEndpoint->target.direction,
+                                moduleEndpoint->target.ordinal);
+      if (!attachmentCoverage[core.id()].insert(key).second)
+        return invalid("SpatialCore boundary endpoint is attached twice");
+    }
+  }
+
+  for (FabricEntityId id = 0; id < coreTargets.size(); ++id) {
+    if (view.entityKind(id) != FabricEntityKind::AccCoreOccurrence)
+      continue;
+    const StrictImportResult &module =
+        importedModules[coreTargets[id].dependencyOrdinal];
+    const std::size_t expected = module.moduleBoundaryInputs.size() +
+                                 module.moduleBoundaryOutputs.size();
+    if (attachmentCoverage[id].size() != expected)
+      return invalid("an AccCore does not attach every module boundary "
+                     "endpoint exactly once");
+  }
+  for (FabricEntityId id = 0; id < coreTargets.size(); ++id)
+    if (view.entityKind(id) == FabricEntityKind::ExternalBoundary &&
+        !externalBoundariesWithEndpoints.count(id))
+      return invalid("external boundary has no owned service endpoint");
+  return llvm::Error::success();
+}
+
+llvm::Expected<FabricArtifactView>
+buildSystemView(::fabric::SystemOp root,
+                const detail::FabricSystemCanonicalLabeling &labeling,
+                const ArtifactIdentity &identity,
+                llvm::ArrayRef<StrictImportResult> importedModules) {
+  detail::FabricArtifactViewData data{
+      identity, FabricRootKind::System, {}, {}, {}, {}, {}, {}, {}};
+  data.entities.resize(labeling.carriers.size());
+  data.importedModules.reserve(importedModules.size());
+  for (const StrictImportResult &module : importedModules)
+    data.importedModules.push_back(module.view);
+
+  std::vector<FabricImportedModuleTargetRef> coreTargets(
+      labeling.carriers.size());
+  std::vector<bool> dependencyUsed(importedModules.size(), false);
+
+  for (const detail::FabricSystemEntityCarrier &carrier : labeling.carriers) {
+    if (!carrier.op || carrier.id >= data.entities.size())
+      return invalid("canonical System entity inventory is malformed");
+    detail::FabricEntityViewData &entity = data.entities[carrier.id];
+    entity.kind = carrier.kind;
+    entity.owner.inventoryCounts = emptyInventories();
+
+    if (auto host = dyn_cast<::fabric::SystemHostCoreOp>(carrier.op)) {
+      auto owner = instructionCoreView(host.getMicroarchitectureAttr());
+      if (!owner)
+        return owner.takeError();
+      entity.owner.resourceContract = owner->resourceContract;
+      continue;
+    }
+
+    if (auto core = dyn_cast<::fabric::SystemAccCoreOp>(carrier.op)) {
+      auto target = decodeFabricImportedModuleTargetRef(
+          unsignedBytes(core.getSpatialCoreAttr()));
+      if (!target)
+        return target.takeError();
+      auto module = resolveImportedModule(importedModules, *target);
+      if (!module)
+        return module.takeError();
+      dependencyUsed[target->dependencyOrdinal] = true;
+      coreTargets[carrier.id] = *target;
+      auto instruction = instructionCoreView(core.getMicroarchitectureAttr());
+      if (!instruction)
+        return instruction.takeError();
+      entity.instructionCore = std::move(*instruction);
+      auto spatial = spatialCoreView(**module);
+      if (!spatial)
+        return spatial.takeError();
+      entity.spatialCore = std::move(*spatial);
+      continue;
+    }
+
+    if (auto memory = dyn_cast<::fabric::SystemMemoryServiceOp>(carrier.op)) {
+      auto record = ::fabric::decodeMemoryServiceContractRecord(
+          unsignedBytes(memory.getServiceContractAttr().getRecord()),
+          root.getContext(), ::fabric::MemoryServiceOwnerKind::System);
+      if (!record)
+        return record.takeError();
+      entity.owner.resourceContract = record->resourceContract();
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::MemoryServiceRegion)] = record->regions().size();
+      continue;
+    }
+
+    if (auto endpoint =
+            dyn_cast<::fabric::SystemServiceEndpointOp>(carrier.op)) {
+      auto capabilities = decodeCanonicalServiceCapabilitySet(
+          unsignedBytes(endpoint.getCapabilitiesAttr()), root.getContext());
+      if (!capabilities)
+        return capabilities.takeError();
+      if (capabilities->plane() == CanonicalServiceEndpointPlane::Transport) {
+        TypeAttr carrierType = endpoint.getCarrierTypeAttr();
+        if (!carrierType)
+          return invalid("message service endpoint has no carrier type");
+        auto encoded =
+            ::fabric::encodeFabricTransportType(carrierType.getValue());
+        if (!encoded)
+          return encoded.takeError();
+        const FabricPortDirection direction =
+            capabilities->role() == CanonicalServiceEndpointRole::Initiate
+                ? FabricPortDirection::Output
+                : FabricPortDirection::Input;
+        entity.owner.transportEndpoints.push_back(
+            {direction, std::move(*encoded)});
+        setPortInventories(entity.owner,
+                           direction == FabricPortDirection::Input,
+                           direction == FabricPortDirection::Output);
+      } else {
+        entity.owner.memoryEndpoints.push_back(
+            {capabilities->role() == CanonicalServiceEndpointRole::Initiate
+                 ? FabricMemoryEndpointRole::Manager
+                 : FabricMemoryEndpointRole::Subordinate,
+             {}});
+      }
+      continue;
+    }
+
+    if (auto domain = dyn_cast<::fabric::SystemHardwareDomainOp>(carrier.op)) {
+      auto record = decodeHardwareDomainContractRecord(
+          unsignedBytes(domain.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      entity.hardwareDomainKind = record->kind();
+      entity.hardwareDomainContract = std::move(*record);
+      data.hardwareDomains.push_back(HardwareDomainRef(carrier.id));
+      continue;
+    }
+
+    if (auto resource =
+            dyn_cast<::fabric::SystemTransportResourceOp>(carrier.op)) {
+      auto functionType =
+          dyn_cast<FunctionType>(resource.getFunctionTypeAttr().getValue());
+      if (!functionType)
+        return invalid("System transport resource has no function type");
+      if (llvm::Error error =
+              setTransportEndpoints(entity.owner, functionType.getInputs(),
+                                    functionType.getResults()))
+        return std::move(error);
+      auto contract = ::fabric::decodeResourceContractRecord(
+          unsignedBytes(resource.getResourceContractAttr()));
+      if (!contract)
+        return contract.takeError();
+      entity.owner.resourceContract = std::move(*contract);
+      if (DenseI8ArrayAttr crossing = resource.getClockCrossingAttr()) {
+        auto decoded =
+            decodeClockCrossingContractRecord(unsignedBytes(crossing));
+        if (!decoded)
+          return decoded.takeError();
+        entity.clockCrossing = std::move(*decoded);
+      }
+      data.transportResources.push_back(SystemTransportResourceRef(carrier.id));
+      continue;
+    }
+  }
+
+  for (Operation &operation : root.getBody().front()) {
+    if (auto pattern =
+            dyn_cast<::fabric::SystemTransferPatternOp>(&operation)) {
+      auto record = decodeSystemTransferPatternRecord(
+          unsignedBytes(pattern.getContractAttr()));
+      if (!record)
+        return record.takeError();
+      const SystemTransportResourceRef resource = record->pattern().resource;
+      if (resource.id() >= data.entities.size() ||
+          data.entities[resource.id()].kind !=
+              FabricEntityKind::SystemTransportResource)
+        return invalid("transfer pattern has an unknown resource owner");
+      auto ordinal = labeling.transferPatternOrdinalByOperation.find(
+          pattern.getOperation());
+      if (ordinal == labeling.transferPatternOrdinalByOperation.end() ||
+          ordinal->second !=
+              data.entities[resource.id()].transferPatternRecords.size() ||
+          record->pattern().ordinal != ordinal->second)
+        return invalid("transfer-pattern ordinal is not canonical");
+      detail::FabricNestedOwnerViewData owner;
+      owner.inventoryCounts = emptyInventories();
+      owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::TransferPatternEgress)] =
+          record->egresses().size();
+      detail::FabricEntityViewData &resourceEntity =
+          data.entities[resource.id()];
+      resourceEntity.transferPatterns.push_back(std::move(owner));
+      resourceEntity.transferPatternRefs.push_back(record->pattern());
+      resourceEntity.transferPatternRecords.push_back(std::move(*record));
+      resourceEntity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::TransferPattern)] =
+          resourceEntity.transferPatternRecords.size();
+      for (std::uint64_t egress = 0;
+           egress <
+           resourceEntity.transferPatternRecords.back().egresses().size();
+           ++egress)
+        data.admittedTraversals.push_back(
+            FabricPhysicalTraversalRef::transferPatternLeg(
+                resourceEntity.transferPatternRecords.back().pattern(),
+                egress));
+      continue;
+    }
+
+    if (auto connection = dyn_cast<::fabric::SystemConnectionOp>(&operation)) {
+      auto source = decodeFabricRef<FabricTransportEndpointRef>(
+          unsignedBytes(connection.getSourceAttr()));
+      if (!source)
+        return source.takeError();
+      auto destination = decodeFabricRef<FabricTransportEndpointRef>(
+          unsignedBytes(connection.getDestinationAttr()));
+      if (!destination)
+        return destination.takeError();
+      data.pointConnections.push_back({*source, *destination});
+      data.admittedTraversals.push_back(
+          FabricPhysicalTraversalRef::pointConnection(*source, *destination));
+      continue;
+    }
+
+    if (auto attachment =
+            dyn_cast<::fabric::SystemSpatialAttachmentOp>(&operation)) {
+      auto moduleEndpoint = decodeFabricImportedModuleBoundaryEndpointRef(
+          unsignedBytes(attachment.getModuleEndpointAttr()));
+      if (!moduleEndpoint)
+        return moduleEndpoint.takeError();
+      auto spatialEndpoint = decodeFabricSpatialAttachmentEndpointRef(
+          unsignedBytes(attachment.getSpatialEndpointAttr()));
+      if (!spatialEndpoint)
+        return spatialEndpoint.takeError();
+      data.spatialAttachments.push_back(
+          {*moduleEndpoint, std::move(*spatialEndpoint)});
+    }
+  }
+
+  for (std::size_t index = 0; index < dependencyUsed.size(); ++index)
+    if (!dependencyUsed[index])
+      return invalid("unused ImportedModule dependency");
+
+  auto view = detail::buildFabricArtifactView(std::move(data));
+  if (!view)
+    return view.takeError();
+  auto systemView = requireSystemRoot(*view);
+  if (!systemView)
+    return systemView.takeError();
+  if (llvm::Error error = validateSystemRelations(root, *systemView,
+                                                  importedModules, coreTargets))
+    return std::move(error);
+  return std::move(*view);
+}
+
+llvm::Expected<StrictImportResult>
+strictImportSystem(const ArtifactRootReference &reference,
+                   const CanonicalSemanticBytes &canonicalBytes,
+                   DecodedFabricArtifact decoded, const ArtifactStore &store);
+
+llvm::Expected<StrictImportResult>
+strictImport(const ArtifactRootReference &reference,
+             const CanonicalSemanticBytes &canonicalBytes,
+             const ArtifactStore &store) {
+  if (reference.schemaIdentity != fabricArtifactSchema.identity ||
+      reference.schemaVersion != fabricArtifactSchema.version)
+    return invalid("root reference has the wrong Fabric schema");
+  if (finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes) !=
+      reference.artifact)
+    return invalid("root reference identity does not match canonical bytes");
+  auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
+  if (!decoded)
+    return decoded.takeError();
+  switch (decoded->rootKind) {
+  case FabricRootKind::Module:
+    return strictImportModule(reference, canonicalBytes, std::move(*decoded));
+  case FabricRootKind::System:
+    return strictImportSystem(reference, canonicalBytes, std::move(*decoded),
+                              store);
+  case FabricRootKind::InterconnectImplementation:
+    return ownerUnavailable(
+        "InterconnectImplementation strict import provider is unavailable");
+  }
+  llvm_unreachable("closed Fabric root kind");
+}
+
+llvm::Expected<StrictImportResult>
+strictImportSystem(const ArtifactRootReference &reference,
+                   const CanonicalSemanticBytes &canonicalBytes,
+                   DecodedFabricArtifact decoded, const ArtifactStore &store) {
+  if (decoded.rootKind != FabricRootKind::System)
+    return invalid("System importer received the wrong root kind");
+
+  std::vector<StrictImportResult> importedModules;
+  importedModules.reserve(decoded.dependencies.size());
+  for (const FabricDirectDependency &dependency : decoded.dependencies) {
+    if (dependency.role != FabricDependencyRole::ImportedModule)
+      return invalid("System root has a non-ImportedModule dependency");
+    auto bytes = store.get(dependency.root);
+    if (!bytes)
+      return bytes.takeError();
+    auto imported = strictImport(dependency.root, *bytes, store);
+    if (!imported)
+      return imported.takeError();
+    if (imported->view.rootKind() != FabricRootKind::Module)
+      return invalid("ImportedModule dependency has the wrong root kind");
+    importedModules.push_back(std::move(*imported));
+  }
+
+  auto parsed =
+      detail::parseFabricBytecodeModule(decoded.canonicalMlirBytecode);
+  if (!parsed)
+    return parsed.takeError();
+  ModuleOp module = parsed->module.get();
+  if (!llvm::hasSingleElement(module.getBody()->getOperations()))
+    return invalid("canonical payload does not contain exactly one root");
+  auto root = dyn_cast<::fabric::SystemOp>(&module.getBody()->front());
+  if (!root || root.getSymName() != canonicalRootName)
+    return invalid("canonical payload has no canonical System root");
+
+  auto labeling =
+      detail::computeFabricSystemCanonicalLabeling(root, decoded.dependencies);
+  if (!labeling)
+    return labeling.takeError();
+  for (const detail::FabricSystemEntityCarrier &carrier : labeling->carriers) {
+    auto stored = carrier.op->getAttrOfType<::fabric::EntityIdAttr>(
+        systemEntityIdAttrName);
+    if (!stored || stored.getId() != carrier.id)
+      return invalid(llvm::Twine("canonical System payload has stale entity ") +
+                     llvm::Twine(stored ? stored.getId() : ~0ULL) +
+                     "; expected " + llvm::Twine(carrier.id));
+  }
+
+  auto rewritten = detail::writeCanonicalFabricBytecode(module);
+  if (!rewritten)
+    return rewritten.takeError();
+  if (*rewritten != decoded.canonicalMlirBytecode)
+    return invalid("canonical System MLIR bytecode is not byte stable");
+  auto view =
+      buildSystemView(root, *labeling, reference.artifact, importedModules);
+  if (!view)
+    return view.takeError();
+  return StrictImportResult{std::move(decoded), std::move(*view), {}, {}};
+}
+
+struct CanonicalSystemCandidate {
+  OwningOpRef<ModuleOp> module;
+  std::vector<FabricDirectDependency> dependencies;
+};
+
+llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules) {
+  auto sourceModule = source->getParentOfType<ModuleOp>();
+  if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
+    return invalid("the selected Fabric System must be top-level");
+  if (failed(verify(sourceModule)))
+    return invalid("the System authoring module does not verify");
+
+  std::vector<FabricDirectDependency> sourceDependencies;
+  sourceDependencies.reserve(importedModules.size());
+  for (const ArtifactRootReference &module : importedModules)
+    sourceDependencies.push_back(
+        {FabricDependencyRole::ImportedModule, module});
+
+  OwningOpRef<ModuleOp> scratch(cast<ModuleOp>(sourceModule->clone()));
+  Operation *clonedOperation =
+      SymbolTable::lookupSymbolIn(*scratch, source.getSymNameAttr());
+  auto clonedRoot = dyn_cast_or_null<::fabric::SystemOp>(clonedOperation);
+  if (!clonedRoot)
+    return invalid("the selected Fabric System was not cloned");
+
+  for (Operation &operation :
+       llvm::make_early_inc_range(scratch->getBody()->getOperations()))
+    if (&operation != clonedRoot.getOperation())
+      operation.erase();
+  clonedRoot.setSymName(canonicalRootName);
+
+  auto labeling = detail::computeFabricSystemCanonicalLabeling(
+      clonedRoot, sourceDependencies);
+  if (!labeling)
+    return labeling.takeError();
+  if (llvm::Error error =
+          detail::materializeFabricSystemCanonicalForm(clonedRoot, *labeling))
+    return std::move(error);
+
+  std::vector<FabricDirectDependency> canonicalDependencies =
+      sourceDependencies;
+  for (auto [sourceOrdinal, canonicalOrdinal] :
+       llvm::enumerate(labeling->sourceDependencyToCanonical)) {
+    if (canonicalOrdinal >= canonicalDependencies.size())
+      return invalid("canonical dependency permutation is out of range");
+    canonicalDependencies[canonicalOrdinal] = sourceDependencies[sourceOrdinal];
+  }
+
+  auto canonicalLabeling = detail::computeFabricSystemCanonicalLabeling(
+      clonedRoot, canonicalDependencies);
+  if (!canonicalLabeling)
+    return canonicalLabeling.takeError();
+  if (canonicalLabeling->relationBytes.bytes() !=
+      labeling->relationBytes.bytes())
+    return invalid("System canonicalization changed the semantic relation");
+  if (llvm::Error error = detail::materializeFabricSystemCanonicalForm(
+          clonedRoot, *canonicalLabeling))
+    return std::move(error);
+  if (failed(verify(*scratch)))
+    return invalid("canonical Fabric System produced invalid IR");
+  return CanonicalSystemCandidate{std::move(scratch),
+                                  std::move(canonicalDependencies)};
 }
 
 llvm::Expected<OwningOpRef<ModuleOp>>
@@ -876,7 +1694,7 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
   auto candidate = buildCanonicalCandidate(source);
   if (!candidate)
     return candidate.takeError();
-  auto bytecode = writeCanonicalBytecode(candidate->get());
+  auto bytecode = detail::writeCanonicalFabricBytecode(candidate->get());
   if (!bytecode)
     return bytecode.takeError();
   auto canonical =
@@ -886,13 +1704,47 @@ finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
   ArtifactRootReference reference{
       fabricArtifactSchema.identity.str(), fabricArtifactSchema.version,
       finalizeArtifactIdentity(fabricArtifactSchema, *canonical)};
-  auto imported = strictImport(reference, *canonical);
+  auto imported = strictImport(reference, *canonical, store);
   if (!imported)
     return imported.takeError();
   if (llvm::Error error =
           detail::validateFabricArtifactDependencyFramingClosure(store,
                                                                  *canonical))
     return std::move(error);
+  auto stored = store.put(fabricArtifactSchema, *canonical);
+  if (!stored)
+    return stored.takeError();
+  if (*stored != reference.artifact)
+    return invalid("ArtifactStore returned a different Fabric identity");
+  return FinalizedFabricRoot(reference, std::move(*canonical),
+                             std::move(imported->decoded.dependencies),
+                             std::move(imported->view));
+}
+
+llvm::Expected<FinalizedFabricRoot>
+finalizeFabricRoot(::fabric::SystemOp source,
+                   llvm::ArrayRef<ArtifactRootReference> importedModules,
+                   const ArtifactStore &store) {
+  auto candidate = buildCanonicalSystemCandidate(source, importedModules);
+  if (!candidate)
+    return candidate.takeError();
+  auto bytecode = detail::writeCanonicalFabricBytecode(candidate->module.get());
+  if (!bytecode)
+    return bytecode.takeError();
+  auto canonical = encodeFabricArtifactEnvelope(
+      FabricRootKind::System, candidate->dependencies, *bytecode);
+  if (!canonical)
+    return canonical.takeError();
+  ArtifactRootReference reference{
+      fabricArtifactSchema.identity.str(), fabricArtifactSchema.version,
+      finalizeArtifactIdentity(fabricArtifactSchema, *canonical)};
+  if (llvm::Error error =
+          detail::validateFabricArtifactDependencyFramingClosure(store,
+                                                                 *canonical))
+    return std::move(error);
+  auto imported = strictImport(reference, *canonical, store);
+  if (!imported)
+    return imported.takeError();
   auto stored = store.put(fabricArtifactSchema, *canonical);
   if (!stored)
     return stored.takeError();
@@ -913,7 +1765,7 @@ importEntireFabricRoot(const ArtifactRootReference &reference,
           detail::validateFabricArtifactDependencyFramingClosure(store,
                                                                  *canonical))
     return std::move(error);
-  auto imported = strictImport(reference, *canonical);
+  auto imported = strictImport(reference, *canonical, store);
   if (!imported)
     return imported.takeError();
   return FinalizedFabricRoot(reference, std::move(*canonical),

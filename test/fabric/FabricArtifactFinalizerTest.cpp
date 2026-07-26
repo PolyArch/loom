@@ -1,5 +1,9 @@
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -117,6 +121,240 @@ mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef test,
   if (!selected)
     fail(test, "fixture has no Fabric root");
   return selected;
+}
+
+::fabric::SystemOp systemRoot(llvm::StringRef test, mlir::ModuleOp module) {
+  ::fabric::SystemOp selected;
+  for (::fabric::SystemOp candidate : module.getOps<::fabric::SystemOp>()) {
+    if (selected)
+      fail(test, "fixture has more than one System root");
+    selected = candidate;
+  }
+  if (!selected)
+    fail(test, "fixture has no System root");
+  return selected;
+}
+
+std::string denseI8Assembly(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  mlir::DenseI8ArrayAttr::get(&context(), signedBytes).print(stream);
+  return text;
+}
+
+::fabric::ResourceContract instructionContextContract(llvm::StringRef test) {
+  ::fabric::ResourceContractDeclaration declaration;
+  declaration.states = {::fabric::ResourceStateDeclaration{
+      ::fabric::StateKey(0),
+      {::fabric::CapacityDimensionDeclaration{::fabric::CapacityDimensionKey(0),
+                                              ::fabric::CapacityUnits(1),
+                                              ::fabric::CapacityUnits(0)}}}};
+  declaration.timingContracts = {::fabric::TimingContractDeclaration{
+      ::fabric::TimingContractKey(0), {0, 1}}};
+  declaration.requesters = {::fabric::RequesterKey(0)};
+  declaration.eligibilityCount = 1;
+  declaration.eventCount = 2;
+  declaration.usePatterns = {::fabric::UsePatternDeclaration{
+      ::fabric::UsePatternKey(0),
+      ::fabric::RequesterKey(0),
+      ::fabric::EligibilityKey(0),
+      ::fabric::EventKey(0),
+      ::fabric::EventKey(1),
+      std::nullopt,
+      ::fabric::TimingContractKey(0),
+      {::fabric::ClaimDeclaration{::fabric::ClaimKey(0), ::fabric::StateKey(0),
+                                  ::fabric::CapacityDimensionKey(0),
+                                  ::fabric::CapacityUnits(1)}},
+      {::fabric::InternalTransactionDeclaration{{::fabric::ClaimKey(0)}}}}};
+  return take(test, ::fabric::ResourceContract::create(declaration));
+}
+
+std::vector<std::uint8_t> instructionArchitecture(llvm::StringRef test) {
+  loom::fabric::RiscVArchitectureDeclaration declaration;
+  declaration.xlen = loom::fabric::RiscVXLen::X64;
+  declaration.base = loom::fabric::RiscVBase::I;
+  declaration.extensions = {loom::fabric::RiscVExtension::M,
+                            loom::fabric::RiscVExtension::Zicsr};
+  declaration.endianness = loom::fabric::InstructionEndianness::Little;
+  declaration.physicalAddressWidthBits = 48;
+  declaration.privilegeModes = {loom::fabric::PrivilegeMode::Machine};
+  declaration.abiCapabilities = {loom::fabric::RiscVAbi::Lp64};
+  declaration.memoryOrdering = loom::fabric::RiscVMemoryOrdering::Rvwmo;
+  declaration.syncScopes = {loom::fabric::InstructionSyncScope::Hart};
+  declaration.codeModels = {loom::fabric::RiscVCodeModel::MediumAny};
+  declaration.relocationModels = {loom::fabric::RelocationModel::Static};
+  declaration.runtimeServices = {
+      loom::fabric::InstructionRuntimeService::ThreadDispatch,
+      loom::fabric::InstructionRuntimeService::SpatialLaunch};
+  auto contract =
+      take(test, loom::fabric::InstructionCoreArchitecturalContract::create(
+                     std::move(declaration)));
+  return take(
+      test, loom::fabric::encodeInstructionCoreArchitecturalContract(contract));
+}
+
+std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
+  loom::fabric::InstructionCoreCommonDeclaration common{
+      1,
+      {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
+      instructionContextContract(test)};
+  loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
+                                                             1, 1, 2, 1};
+  auto realization = take(
+      test,
+      loom::fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
+          std::move(common), pipeline));
+  return take(test,
+              loom::fabric::encodeInstructionCoreMicroarchitecturalRealization(
+                  realization));
+}
+
+std::string
+accCoreSystemSource(llvm::StringRef test,
+                    const loom::fabric::FabricImportedModuleTargetRef &target) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module { fabric.system @soc {\n"
+         << "fabric.system.acc_core architecture = "
+         << denseI8Assembly(instructionArchitecture(test))
+         << " microarchitecture = "
+         << denseI8Assembly(instructionMicroarchitecture(test))
+         << " spatial_core = "
+         << denseI8Assembly(
+                loom::fabric::encodeFabricImportedModuleTargetRef(target))
+         << "\n} }\n";
+  return text;
+}
+
+std::string attachedAccCoreSystemSource(
+    llvm::StringRef test,
+    const loom::fabric::FabricImportedModuleTargetRef &target,
+    bool attachOutput) {
+  constexpr std::uint64_t coreId = 17;
+  const loom::fabric::FabricImportedModuleBoundaryEndpointRef moduleInput{
+      target.dependencyOrdinal,
+      {target.target, loom::fabric::FabricPortDirection::Input, 0}};
+  const loom::fabric::FabricImportedModuleBoundaryEndpointRef moduleOutput{
+      target.dependencyOrdinal,
+      {target.target, loom::fabric::FabricPortDirection::Output, 0}};
+  const auto spatialOwner = loom::fabric::FabricTransportEndpointOwnerRef::of(
+      loom::fabric::SpatialCoreOccurrenceRef{
+          loom::fabric::AccCoreOccurrenceRef(coreId)});
+  const auto spatialInput = take(
+      test, loom::fabric::FabricSpatialAttachmentEndpointRef::create(
+                loom::fabric::FabricTransportEndpointRef{spatialOwner, 0}));
+  const auto spatialOutput = take(
+      test, loom::fabric::FabricSpatialAttachmentEndpointRef::create(
+                loom::fabric::FabricTransportEndpointRef{spatialOwner, 1}));
+
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module { fabric.system @soc {\n"
+         << "fabric.system.acc_core architecture = "
+         << denseI8Assembly(instructionArchitecture(test))
+         << " microarchitecture = "
+         << denseI8Assembly(instructionMicroarchitecture(test))
+         << " spatial_core = "
+         << denseI8Assembly(
+                loom::fabric::encodeFabricImportedModuleTargetRef(target))
+         << " {entity_id = #fabric.entity_id<" << coreId << ">}\n"
+         << "fabric.system.spatial_attachment module_endpoint = "
+         << denseI8Assembly(
+                loom::fabric::encodeFabricImportedModuleBoundaryEndpointRef(
+                    moduleInput))
+         << " spatial_endpoint = "
+         << denseI8Assembly(
+                loom::fabric::encodeFabricSpatialAttachmentEndpointRef(
+                    spatialInput))
+         << "\n";
+  if (attachOutput)
+    stream << "fabric.system.spatial_attachment module_endpoint = "
+           << denseI8Assembly(
+                  loom::fabric::encodeFabricImportedModuleBoundaryEndpointRef(
+                      moduleOutput))
+           << " spatial_endpoint = "
+           << denseI8Assembly(
+                  loom::fabric::encodeFabricSpatialAttachmentEndpointRef(
+                      spatialOutput))
+           << "\n";
+  stream << "} }\n";
+  return text;
+}
+
+std::string transportResource(llvm::StringRef test, std::uint64_t id,
+                              std::uint32_t width) {
+  const std::vector<std::uint8_t> contract = take(
+      test,
+      ::fabric::encodeResourceContractRecord(instructionContextContract(test)));
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.transport_resource ports = (!fabric.bits<" << width
+         << ">) -> (!fabric.bits<" << width
+         << ">) contract = " << denseI8Assembly(contract)
+         << " {entity_id = #fabric.entity_id<" << id << ">}\n";
+  return text;
+}
+
+std::string systemConnection(std::uint64_t sourceId,
+                             std::uint64_t destinationId) {
+  const loom::fabric::FabricTransportEndpointRef source{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(
+          loom::fabric::SystemTransportResourceRef(sourceId)),
+      1};
+  const loom::fabric::FabricTransportEndpointRef destination{
+      loom::fabric::FabricTransportEndpointOwnerRef::of(
+          loom::fabric::SystemTransportResourceRef(destinationId)),
+      0};
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.connection source = "
+         << denseI8Assembly(loom::fabric::canonicalFabricBytes(source))
+         << " destination = "
+         << denseI8Assembly(loom::fabric::canonicalFabricBytes(destination))
+         << "\n";
+  return text;
+}
+
+std::string connectedTransportSystemSource(llvm::StringRef name,
+                                           std::uint64_t sourceId,
+                                           std::uint64_t destinationId,
+                                           bool reverseOrder) {
+  const llvm::StringRef test = __func__;
+  const std::string source = transportResource(test, sourceId, 8);
+  const std::string destination = transportResource(test, destinationId, 16);
+  const std::string connection = systemConnection(sourceId, destinationId);
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module { fabric.system @" << name << " {\n";
+  if (reverseOrder)
+    stream << destination << connection << source;
+  else
+    stream << source << destination << connection;
+  stream << "} }\n";
+  return text;
+}
+
+loom::fabric::FabricModuleTemplateRef
+uniqueModuleTemplate(llvm::StringRef test,
+                     const loom::fabric::FabricArtifactView &view) {
+  std::optional<loom::fabric::FabricModuleTemplateRef> result;
+  for (std::uint64_t id = 0;; ++id) {
+    auto kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != loom::fabric::FabricEntityKind::FabricModuleTemplate)
+      continue;
+    if (result)
+      fail(test, "fixture has more than one canonical module template");
+    result = loom::fabric::FabricModuleTemplateRef(id);
+  }
+  if (!result)
+    fail(test, "fixture has no canonical module template");
+  return *result;
 }
 
 loom::fabric::FabricFuTemplateRef
@@ -420,6 +658,190 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           "strict import changed the FU capability-template inventory");
 }
 
+void systemPublicationUsesExactImportedModule() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  mlir::OwningOpRef<mlir::ModuleOp> moduleSource = parse(test, R"mlir(
+    module {
+      fabric.module @empty() {
+        fabric.yield
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot module = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *moduleSource), store));
+  const loom::fabric::FabricModuleTemplateRef moduleTemplate =
+      uniqueModuleTemplate(test, module.view());
+
+  mlir::OwningOpRef<mlir::ModuleOp> systemSource =
+      parse(test, accCoreSystemSource(test, {0, moduleTemplate}));
+  FinalizedFabricRoot system = take(
+      test, loom::fabric::finalizeFabricRoot(systemRoot(test, *systemSource),
+                                             {module.reference()}, store));
+  require(test,
+          system.view().rootKind() == loom::fabric::FabricRootKind::System,
+          "System finalizer returned the wrong root kind");
+  require(test,
+          system.directDependencies().size() == 1 &&
+              system.directDependencies().front().root == module.reference(),
+          "System finalizer changed its ImportedModule dependency");
+  loom::fabric::FabricSystemRootView view =
+      take(test, loom::fabric::requireSystemRoot(system.view()));
+  require(test, view.spatialAttachments().empty(),
+          "zero-port SpatialCore gained an attachment");
+
+  FinalizedFabricRoot imported = take(
+      test, loom::fabric::importEntireFabricRoot(system.reference(), store));
+  require(test, imported.reference().artifact == system.reference().artifact,
+          "strict System import changed artifact identity");
+  take(test, loom::fabric::requireSystemRoot(imported.view()));
+}
+
+void systemPublishesCompleteSpatialAttachments() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto moduleSource = parse(test, R"mlir(
+    module {
+      fabric.module @stream(%input: !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %buffered = fabric.fifo %input [max_depth = 2, bypassable = true]
+            : !fabric.bits<32>
+        fabric.yield %buffered : !fabric.bits<32>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot module = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *moduleSource), store));
+  const loom::fabric::FabricModuleTemplateRef moduleTemplate =
+      uniqueModuleTemplate(test, module.view());
+
+  auto completeSource =
+      parse(test, attachedAccCoreSystemSource(test, {0, moduleTemplate},
+                                              /*attachOutput=*/true));
+  FinalizedFabricRoot system = take(
+      test, loom::fabric::finalizeFabricRoot(systemRoot(test, *completeSource),
+                                             {module.reference()}, store));
+  loom::fabric::FabricSystemRootView systemView =
+      take(test, loom::fabric::requireSystemRoot(system.view()));
+  require(test, systemView.spatialAttachments().size() == 2,
+          "complete SpatialCore boundary did not retain both attachments");
+
+  bool sawInput = false;
+  bool sawOutput = false;
+  for (const loom::fabric::FabricSpatialAttachmentRecordView &attachment :
+       systemView.spatialAttachments()) {
+    require(test,
+            attachment.moduleEndpoint.dependencyOrdinal == 0 &&
+                attachment.moduleEndpoint.target.module == moduleTemplate,
+            "attachment changed its exact ImportedModule target");
+    const auto *endpoint = attachment.spatialEndpoint.transport();
+    require(test, endpoint != nullptr,
+            "token module boundary became a memory attachment");
+    const auto direction = system.view().transportEndpointDirection(*endpoint);
+    require(test, direction.has_value(),
+            "attachment names an unknown SpatialCore endpoint");
+    require(test, *direction == attachment.moduleEndpoint.target.direction,
+            "attachment changed its boundary direction");
+    sawInput |= *direction == loom::fabric::FabricPortDirection::Input;
+    sawOutput |= *direction == loom::fabric::FabricPortDirection::Output;
+  }
+  require(test, sawInput && sawOutput,
+          "complete SpatialCore boundary lost an input or output attachment");
+
+  auto incompleteSource =
+      parse(test, attachedAccCoreSystemSource(test, {0, moduleTemplate},
+                                              /*attachOutput=*/false));
+  expectRejected(
+      test,
+      loom::fabric::finalizeFabricRoot(systemRoot(test, *incompleteSource),
+                                       {module.reference()}, store),
+      "does not attach every module boundary endpoint exactly once");
+}
+
+void systemRejectsUnusedImportedModule() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto firstSource = parse(test, R"mlir(
+    module { fabric.module @empty() { fabric.yield } }
+  )mlir");
+  auto secondSource = parse(test, R"mlir(
+    module {
+      fabric.module @input(%x: !fabric.bits<8>) {
+        fabric.yield
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot first = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *firstSource), store));
+  FinalizedFabricRoot second = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *secondSource), store));
+  auto systemSource = parse(
+      test,
+      accCoreSystemSource(test, {0, loom::fabric::FabricModuleTemplateRef(0)}));
+  expectRejected(test,
+                 loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *systemSource),
+                     {first.reference(), second.reference()}, store),
+                 "unused ImportedModule dependency");
+}
+
+void systemRejectsWrongImportedModuleTarget() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto moduleSource = parse(test, R"mlir(
+    module { fabric.module @empty() { fabric.yield } }
+  )mlir");
+  FinalizedFabricRoot module = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *moduleSource), store));
+  auto systemSource =
+      parse(test, accCoreSystemSource(
+                      test, {0, loom::fabric::FabricModuleTemplateRef(999)}));
+  expectRejected(
+      test,
+      loom::fabric::finalizeFabricRoot(systemRoot(test, *systemSource),
+                                       {module.reference()}, store),
+      "unknown_entity");
+}
+
+void systemRejectsImplicitConnectionFanout() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "module { fabric.system @soc {\n"
+         << transportResource(test, 10, 8) << transportResource(test, 20, 16)
+         << transportResource(test, 30, 32) << systemConnection(10, 20)
+         << systemConnection(10, 30) << "} }\n";
+  auto systemSource = parse(test, source);
+  expectRejected(test,
+                 loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *systemSource), {}, store),
+                 "point connection source is connected more than once");
+}
+
+void systemPublicationIgnoresAuthoringIdentityAndOrder() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto firstSource =
+      parse(test, connectedTransportSystemSource("first", 10, 20, false));
+  auto secondSource =
+      parse(test, connectedTransportSystemSource("second", 91, 4, true));
+  FinalizedFabricRoot first =
+      take(test, loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *firstSource), {}, store));
+  FinalizedFabricRoot second =
+      take(test, loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *secondSource), {}, store));
+  require(test, first.reference().artifact == second.reference().artifact,
+          "System authoring names, IDs, or order changed artifact identity");
+}
+
 } // namespace
 
 int main() {
@@ -427,5 +849,11 @@ int main() {
   malformedStoredPayloadIsRejected();
   spatialSwitchConnectivityBecomesTraversals();
   fuCapabilityTemplatesComeFromThePhysicalGraph();
+  systemPublicationUsesExactImportedModule();
+  systemPublishesCompleteSpatialAttachments();
+  systemRejectsUnusedImportedModule();
+  systemRejectsWrongImportedModuleTarget();
+  systemRejectsImplicitConnectionFanout();
+  systemPublicationIgnoresAuthoringIdentityAndOrder();
   return EXIT_SUCCESS;
 }

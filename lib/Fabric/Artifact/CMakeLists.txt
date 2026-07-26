@@ -3,6 +3,7 @@ add_subdirectory(SystemHardwareDomains)
 
 add_mlir_library(LoomFabricArtifact
   FabricArtifact.cpp
+  FabricArtifactBytecode.cpp
   FabricArtifactCodec.cpp
   FabricCanonicalLabeling.cpp
   FabricSystemCanonicalLabeling.cpp
