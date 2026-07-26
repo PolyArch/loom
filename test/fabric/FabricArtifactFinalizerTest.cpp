@@ -1,4 +1,5 @@
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -116,6 +117,25 @@ mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef test,
   if (!selected)
     fail(test, "fixture has no Fabric root");
   return selected;
+}
+
+loom::fabric::FabricFuTemplateRef
+uniqueFuTemplate(llvm::StringRef test,
+                 const loom::fabric::FabricArtifactView &view) {
+  std::optional<loom::fabric::FabricFuTemplateRef> result;
+  for (std::uint64_t id = 0;; ++id) {
+    std::optional<loom::fabric::FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != loom::fabric::FabricEntityKind::FabricFuTemplate)
+      continue;
+    if (result)
+      fail(test, "fixture has more than one canonical FU template");
+    result = loom::fabric::FabricFuTemplateRef(id);
+  }
+  if (!result)
+    fail(test, "fixture has no canonical FU template");
+  return *result;
 }
 
 std::string moduleSource(llvm::StringRef name, bool reverse) {
@@ -298,11 +318,114 @@ void spatialSwitchConnectivityBecomesTraversals() {
           "switch traversal ordinals do not follow the MSB-left convention");
 }
 
+void fuCapabilityTemplatesComeFromThePhysicalGraph() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+
+  mlir::OwningOpRef<mlir::ModuleOp> singleSource = parse(test, R"mlir(
+    module {
+      fabric.module @single(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %pe = fabric.pe [spatial]
+            (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fa = %pa : !fabric.bits<32>,
+               %fb = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %sum = fabric.op [@arith.addi, @arith.subi] (%fa, %fb)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %sum : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe : !fabric.bits<32>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot single = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *singleSource), store));
+  const loom::fabric::FabricFuTemplateRef singleFu =
+      uniqueFuTemplate(test, single.view());
+  auto singleTemplates = single.view().fuCapabilityTemplates(singleFu);
+  require(test, singleTemplates.size() == 1,
+          "single operation FU did not produce one capability template");
+  require(test,
+          singleTemplates.front().activeNodes.size() == 1 &&
+              singleTemplates.front().activeEdges.size() == 3,
+          "single operation FU capability template is incomplete");
+
+  mlir::OwningOpRef<mlir::ModuleOp> branchSource = parse(test, R"mlir(
+    module {
+      fabric.module @branch(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %pe = fabric.pe [spatial]
+            (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fa = %pa : !fabric.bits<32>,
+               %fb = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %a0, %a1 = fabric.demux %fa : !fabric.bits<32> -> 2
+            %b0, %b1 = fabric.demux %fb : !fabric.bits<32> -> 2
+            %sum = fabric.op [@arith.addi] (%a0, %b0)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            %product = fabric.op [@arith.muli] (%a1, %b1)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerMultiply>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            %selected = fabric.mux %sum, %product : !fabric.bits<32>
+            fabric.yield %selected : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe : !fabric.bits<32>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot branch = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *branchSource), store));
+  const loom::fabric::FabricFuTemplateRef branchFu =
+      uniqueFuTemplate(test, branch.view());
+  auto branchTemplates = branch.view().fuCapabilityTemplates(branchFu);
+  require(test, branchTemplates.size() == 2,
+          "branch FU did not produce exactly two coherent templates");
+  for (const loom::fabric::FabricFuCapabilityTemplateRecord &record :
+       branchTemplates) {
+    unsigned opCount = 0;
+    unsigned muxCount = 0;
+    unsigned demuxCount = 0;
+    for (const loom::fabric::FabricFuTemplateNodeRef &node :
+         record.activeNodes) {
+      opCount += node.node == loom::fabric::FabricFuNodeKind::Op;
+      muxCount += node.node == loom::fabric::FabricFuNodeKind::Mux;
+      demuxCount += node.node == loom::fabric::FabricFuNodeKind::Demux;
+    }
+    require(test,
+            opCount == 1 && muxCount == 1 && demuxCount == 2 &&
+                record.activeEdges.size() == 6,
+            "branch FU capability template contains a mixed route selection");
+  }
+
+  FinalizedFabricRoot imported = take(
+      test, loom::fabric::importEntireFabricRoot(branch.reference(), store));
+  require(test,
+          imported.view().fuCapabilityTemplates(branchFu) == branchTemplates,
+          "strict import changed the FU capability-template inventory");
+}
+
 } // namespace
 
 int main() {
   canonicalPublicationAndStrictImport();
   malformedStoredPayloadIsRejected();
   spatialSwitchConnectivityBecomesTraversals();
+  fuCapabilityTemplatesComeFromThePhysicalGraph();
   return EXIT_SUCCESS;
 }

@@ -1,6 +1,6 @@
 #include "MappingCoreTestSupport.h"
 
-#include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 namespace loom::mapping::test {
 namespace {

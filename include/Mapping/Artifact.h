@@ -4,9 +4,9 @@
 #include "Common/Artifact.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/OperationSchema.h"
-#include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
 #include "Fabric/IR/BoundaryDataPath.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 #include <cstdint>
 #include <optional>

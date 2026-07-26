@@ -1,6 +1,6 @@
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricArtifactLocalReference.h"
-#include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"

@@ -4,7 +4,7 @@ add_mlir_library(LoomFabricArtifact
   FabricCanonicalLabeling.cpp
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp
-  FabricFuCapabilityTemplate.cpp
+  FabricFuCapabilityDerivation.cpp
   FabricSystemContracts.cpp
 
   ADDITIONAL_HEADER_DIRS

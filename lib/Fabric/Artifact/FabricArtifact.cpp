@@ -13,6 +13,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "FabricArtifactDependencyClosureInternal.h"
 #include "FabricCanonicalLabeling.h"
+#include "FabricFuCapabilityDerivation.h"
 
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
@@ -480,6 +481,11 @@ buildModuleView(::fabric::ModuleOp root,
                          operation->getNumResults(), false);
       entity.fuNodes.push_back(std::move(node));
     }
+    auto templates = detail::deriveFabricFuCapabilityTemplates(
+        fu, FabricFuTemplateRef(carrier.id), carrier.canonicalNodeOrder);
+    if (!templates)
+      return templates.takeError();
+    entity.fuCapabilityTemplates = std::move(*templates);
   }
 
   for (const auto &entry : carrierByOp) {

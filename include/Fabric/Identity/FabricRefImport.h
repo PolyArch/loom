@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -86,6 +87,11 @@ public:
   /// The FU template this occurrence was elaborated from.
   std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const;
+
+  /// The complete canonical capability-template inventory owned by one FU
+  /// definition. An invalid owner has an empty range.
+  llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
+  fuCapabilityTemplates(FabricFuTemplateRef definition) const;
 
   /// Whether the fully elaborated Fabric contains the one unique directed
   /// fixed connection between exactly these endpoints.
@@ -181,6 +187,8 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricMemoryServiceRegionRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricTransferPatternRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const FabricFuCapabilityTemplateRef &ref);
 #define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
   llvm::Error validateFabricRef(const FabricArtifactView &view,                \
                                 const Family &ref);

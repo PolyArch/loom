@@ -64,6 +64,12 @@ struct FabricArtifactView::Storage {
     return record ? &record->fuNodes : nullptr;
   }
 
+  const std::vector<FabricFuCapabilityTemplateRecord> *
+  fuCapabilityTemplates(FabricFuTemplateRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref);
+    return record ? &record->fuCapabilityTemplates : nullptr;
+  }
+
   const std::vector<detail::FabricFuNodeViewData> *
   fuNodes(FabricFuOccurrenceRef ref) const {
     const detail::FabricEntityViewData *record = entity(ref);
@@ -460,6 +466,14 @@ FabricArtifactView::fuTemplateOf(FabricFuOccurrenceRef occurrence) const {
   return record ? record->fuTemplate : std::nullopt;
 }
 
+llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
+FabricArtifactView::fuCapabilityTemplates(
+    FabricFuTemplateRef definition) const {
+  const auto *records = storage_->fuCapabilityTemplates(definition);
+  return records ? llvm::ArrayRef<FabricFuCapabilityTemplateRecord>(*records)
+                 : llvm::ArrayRef<FabricFuCapabilityTemplateRecord>();
+}
+
 bool FabricArtifactView::hasPointConnection(
     const FabricTransportEndpointRef &source,
     const FabricTransportEndpointRef &destination) const {
@@ -504,6 +518,17 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         return invalidView("FU node has an unknown kind");
       if (llvm::Error error = validateNestedOwner(node.owner, "FU node"))
         return std::move(error);
+    }
+    if (entity.kind == FabricEntityKind::FabricFuTemplate) {
+      auto normalized = normalizeFabricFuCapabilityTemplateInventory(
+          entity.fuCapabilityTemplates);
+      if (!normalized)
+        return normalized.takeError();
+      if (*normalized != entity.fuCapabilityTemplates)
+        return invalidView("FU capability-template inventory is not canonical");
+    } else if (!entity.fuCapabilityTemplates.empty()) {
+      return invalidView(
+          "only an FU template may own capability-template records");
     }
     for (FabricNestedOwnerViewData &port : entity.memoryOperationPorts)
       if (llvm::Error error =
@@ -634,6 +659,37 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   for (const FabricPhysicalTraversalRef &traversal : view.admittedTraversals())
     if (llvm::Error error = validateFabricRef(view, traversal))
       return std::move(error);
+  for (std::size_t id = 0; id < view.storage_->data.entities.size(); ++id) {
+    if (view.entityKind(id) != FabricEntityKind::FabricFuTemplate)
+      continue;
+    const FabricFuTemplateRef owner(id);
+    for (auto [ordinal, record] :
+         llvm::enumerate(view.fuCapabilityTemplates(owner))) {
+      FabricFuCapabilityTemplateRef ref{owner,
+                                        static_cast<FabricOrdinal>(ordinal)};
+      if (llvm::Error error = validateFabricRef(view, ref))
+        return std::move(error);
+      for (const FabricFuTemplateNodeRef &node : record.activeNodes)
+        if (llvm::Error error = validateFabricRef(view, node))
+          return std::move(error);
+      for (const FabricFuCapabilityTemplateEdge &edge : record.activeEdges) {
+        llvm::Error error = std::visit(
+            [&](const auto &endpoint) {
+              return validateFabricRef(view, endpoint);
+            },
+            edge.source.payload);
+        if (error)
+          return std::move(error);
+        error = std::visit(
+            [&](const auto &endpoint) {
+              return validateFabricRef(view, endpoint);
+            },
+            edge.destination.payload);
+        if (error)
+          return std::move(error);
+      }
+    }
+  }
   return view;
 }
 
@@ -921,6 +977,17 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const FabricTransferPatternRef &ref) {
   return checkInventory(view, FabricInventoryOwnerRef::of(ref.resource),
                         FabricInventoryKind::TransferPattern, ref.ordinal);
+}
+
+llvm::Error
+loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                const FabricFuCapabilityTemplateRef &ref) {
+  if (llvm::Error error = validateFabricRef(view, ref.fu))
+    return error;
+  const std::uint64_t bound = view.fuCapabilityTemplates(ref.fu).size();
+  if (ref.ordinal >= bound)
+    return ordinalOutOfRange("FU capability template", ref.ordinal, bound);
+  return llvm::Error::success();
 }
 
 #define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \

@@ -1,4 +1,4 @@
-#include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 #include "Fabric/Identity/FabricRefBytes.h"
 
