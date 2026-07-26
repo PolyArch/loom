@@ -1705,49 +1705,27 @@ def build_clz():
     return dag, contract
 
 
-def _crc32_true_arm_trace(N=256):
-    polynomial = 0xEDB88320
-    crc = 0xFFFFFFFF
-    trace = []
-    for i in range(N):
-        data = (i * 0x12345678) & 0xFFFFFFFF
-        for byte_idx in range(4):
-            byte = (data >> (byte_idx * 8)) & 0xFF
-            crc ^= byte
-            byte_trace = []
-            for _ in range(8):
-                take = bool(crc & 1)
-                byte_trace.append(take)
-                if take:
-                    crc = ((crc >> 1) ^ polynomial) & 0xFFFFFFFF
-                else:
-                    crc = (crc >> 1) & 0xFFFFFFFF
-            trace.append(byte_trace)
-    return trace
-
-
 def build_crc32(N=256):
-    """CRC32 over the concrete main.cpp data stream.
+    """CRC32 using the optimized byte-at-a-time lookup-table DAG.
 
-    The CRC scalar is a non-associative carried state, so the byte and bit
-    loops form one long sequential chain. The builder simulates the source
-    recurrence to choose the taken arm of every bit iteration (K=4065 true XOR
-    arms) and constructs the counted dynamic DAG for that trace. Off-path
-    induction work is counted separately. Reproduces CP=50152, A=51682,
-    LD=18945, ST=19971, aggregate 50152.
+    Clang/LLVM replaces the source's eight bit-serial updates per byte with
+    ``crc = (crc >> 8) ^ table[(data_byte ^ crc) & 0xff]``. The golden-model
+    exception follows that post-optimization algorithmic shape while retaining
+    the standard ASAP conventions for memory-backed source scalars, induction,
+    and unit-latency P/L/S operations. The CRC value remains a non-associative
+    carry across all four bytes and all N words. Reproduces CP=28*N+7,
+    A=34*N+2, LD=14*N+1, and ST=10*N+3.
     """
-    trace = _crc32_true_arm_trace(N)
-    K = sum(1 for byte in trace for take in byte if take)
-    if K != 4065:
-        raise AssertionError(f"crc32 trace K={K}, expected 4065")
 
     dag = Dag()
     r = dag.region("crc32")
 
+    # The optimized IR tests the zero-length case before entering the loops.
+    # For N>0 this compare is counted work but is off the longer output path.
+    n_zero_cmp = r.arith(kind="N_eq_0")
     prev_crc = r.store(kind="crc_init")
     r.store(kind="i_init")
 
-    byte_iter = iter(trace)
     first_outer = True
     first_byte = True
     for _ in range(N):
@@ -1756,45 +1734,40 @@ def build_crc32(N=256):
         # steady crc recurrence. Use existing counted induction work to gate the
         # first input load; later input loads overlap the carried crc chain.
         if first_outer:
-            ld_input = r.load(i_iv["store"], kind="input_data")
+            ld_input = r.load(i_iv["store"], n_zero_cmp, kind="input_data")
             first_outer = False
         else:
             ld_input = r.load(kind="input_data")
         r.store(kind="byte_idx_init")
         for _ in range(4):
             byte_iv = r.induction(kind="byte_idx", compare_depends_on_read=True)
-            r.store(kind="bit_init")
             gate = prev_crc
             byte_deps = [byte_iv["read"], ld_input]
             if first_byte:
                 byte_deps.extend([i_iv["cmp"], byte_iv["cmp"]])
                 first_byte = False
-            # Pre-bit crc ^= byte path: five cycles from the current gate to the
-            # new crc store, matching the eval's steady-state byte contribution.
-            mul = r.arith(gate, *byte_deps, kind="byte_mul")
-            data_shift = r.arith(mul, kind="data_shift")
-            byte_mask = r.arith(data_shift, kind="byte_and")
-            ld_crc = r.load(gate, prev_crc, kind="crc_prebit")
-            xor_byte = r.arith(byte_mask, ld_crc, kind="crc_xor_byte")
-            prev_crc = r.store(xor_byte, kind="crc_store_prebit")
-            for take in next(byte_iter):
-                r.induction(kind="bit", compare_depends_on_read=True)
-                ld_crc = r.load(prev_crc, kind="crc_bit")
-                bit = r.arith(ld_crc, kind="crc_and_1")
-                cmp = r.arith(bit, kind="crc_lsb_cmp")
-                shift = r.arith(cmp, ld_crc, kind="crc_shift")
-                if take:
-                    x = r.arith(shift, kind="crc_xor_poly")
-                    prev_crc = r.store(x, kind="crc_store_true")
-                else:
-                    prev_crc = r.store(shift, kind="crc_store_false")
+            # Seven-cycle carried byte update. The shift-amount/data path is
+            # longer than the parallel crc>>8 path and therefore binds:
+            # shamt -> data shift -> xor -> mask -> table load -> xor -> store.
+            shift_amount = r.arith(gate, *byte_deps,
+                                    kind="byte_shift_amount")
+            data_shift = r.arith(shift_amount, kind="data_shift")
+            ld_crc = r.load(gate, prev_crc, kind="crc_byte")
+            table_index = r.arith(data_shift, ld_crc,
+                                  kind="crc_table_index_xor")
+            table_index = r.arith(table_index, kind="crc_table_index_mask")
+            table_value = r.load(table_index, kind="crc_table")
+            crc_shift = r.arith(ld_crc, kind="crc_shift_8")
+            crc_next = r.arith(crc_shift, table_value,
+                               kind="crc_xor_table")
+            prev_crc = r.store(crc_next, kind="crc_store_byte")
 
     ld_final = r.load(prev_crc, kind="crc_final")
     inv = r.arith(ld_final, kind="crc_not")
     r.store(inv, output=True, kind="output_checksum")
 
-    contract = [RegionContract("crc32", A=51682, LD=18945, ST=19971, CP=50152,
-                               aggregate=50152)]
+    contract = [RegionContract("crc32", A=8706, LD=3585, ST=2563, CP=7175,
+                               aggregate=7175)]
     return dag, contract
 
 
@@ -2560,9 +2533,8 @@ def _run_golden_tests(errors):
             "regions": [("bitonic_stage-tweak", 17, 92, 31, 24, 17)]},
         "clz": {"aggregate": 621,
                 "regions": [("clz", 163, 14122, 7445, 7445, 621)]},
-        "crc32": {"aggregate": 50152,
-                  "regions": [("crc32", 50152, 51682, 18945, 19971,
-                               50152)]},
+        "crc32": {"aggregate": 7175,
+                  "regions": [("crc32", 7175, 8706, 3585, 2563, 7175)]},
         "kmp_table": {"aggregate": 157,
                       "regions": [("kmp_table", 157, 96, 88, 50, 157)]},
         "sort_insertion": {

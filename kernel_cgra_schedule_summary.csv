@@ -15,7 +15,7 @@ edge_update,default,tests/app/edge_update/edge_update_eval.md,6x6,1,40,38,37,6,6
 interpolate_linear,default,tests/app/interpolate_linear/interpolate_linear_eval.md,6x6,1,5699,3523,1216,289,294,297,3,1.0102,1,1,28,293,293,282,34,6,52,"interpolate_linear:CP=289,A=5699,LD=3523,ST=1216,agg=294,sched=297"
 bitonic_stage-tweak,default,tests/app/bitonic_stage-tweak/bitonic_stage-tweak_eval.md,6x6,1,92,31,24,17,17,17,0,1.0000,0,0,0,1,1,1,0,0,0,"bitonic_stage-tweak:CP=17,A=92,LD=31,ST=24,agg=17,sched=17"
 clz,default,tests/app/clz/clz_eval.md,6x6,1,14122,7445,7445,163,621,623,2,1.0032,204,20,220,620,620,501,620,620,255,"clz:CP=163,A=14122,LD=7445,ST=7445,agg=621,sched=623"
-crc32,default,tests/app/crc32/crc32_eval.md,6x6,1,51682,18945,19971,50152,50152,50152,0,1.0000,0,0,0,823,823,9715,910,910,1270,"crc32:CP=50152,A=51682,LD=18945,ST=19971,agg=50152,sched=50152"
+crc32,default,tests/app/crc32/crc32_eval.md,6x6,1,8706,3585,2563,7175,7175,7175,0,1.0000,0,0,0,131,131,1523,114,96,246,"crc32:CP=7175,A=8706,LD=3585,ST=2563,agg=7175,sched=7175"
 kmp_table,default,tests/app/kmp_table/kmp_table_eval.md,6x6,1,96,88,50,157,157,157,0,1.0000,0,0,0,2,2,19,0,0,0,"kmp_table:CP=157,A=96,LD=88,ST=50,agg=157,sched=157"
 wildcard_match,TC1,tests/app/wildcard_match/wildcard_match_eval.md,6x6,1,111,77,52,203,203,203,0,1.0000,0,0,0,1,1,2,1,1,11,"TC1:CP=203,A=111,LD=77,ST=52,agg=203,sched=203"
 wildcard_match,TC2,tests/app/wildcard_match/wildcard_match_eval.md,6x6,1,402,288,230,745,745,745,0,1.0000,0,0,0,5,5,48,9,9,103,"TC2:CP=745,A=402,LD=288,ST=230,agg=745,sched=745"

@@ -11,7 +11,7 @@ bitonic_stage-tweak,tests/app/bitonic_stage-tweak/bitonic_stage-tweak_loom_dse.m
 clz,tests/app/clz/clz_loom_dse.md,i:P1U64,584,584,584,resource-bound,saturation knee; unroll amortizes outer control and reaches the load/store floor at exposure 64
 col2im,tests/app/col2im/col2im_loom_dse.md,c:P1U1 kh:P1U1,357,357,355,resource-bound,smallest saturation-knee representative; compute-bound with equivalent fully consumed kh factorizations
 conv2d,tests/app/conv2d/conv2d_loom_dse.md,co:P1U4 oh:P1U4 ow:P1U4 tap:P1U1 order=co>oh>ow>tap jam=share-all,511,511,511,resource-bound,"family knee; explicit share-all; 1200 B whole resident input/weight set; scratchpad port lb/s=511/511; direct fallback below 1200 B"
-crc32,tests/app/crc32/crc32_loom_dse.md,i:P1U1,50152,50152,50152,latency-bound,serial CRC recurrence; equivalent unroll labels use the canonical fully consumed DAG
+crc32,tests/app/crc32/crc32_loom_dse.md,i:P1U1,7175,7175,7175,latency-bound,serial optimized table-lookup CRC recurrence; equivalent labels use the canonical P1U1 DAG
 edge_update,tests/app/edge_update/edge_update_loom_dse.md,kernel:P1U1,6,6,6,latency-bound,only legal representative; source has no parallel or unroll pragma level to sweep
 fft_butterfly,tests/app/fft_butterfly/fft_butterfly_loom_dse.md,copy_i:P1U16,71,75,71,resource-bound,phase-composed best estimate; full copy unroll reaches the floor while fixed ordered FFT stages dominate
 gather,tests/app/gather/gather_loom_dse.md,i:P1U32,128,192,107,resource-bound,saturation knee; indirect source loads remain scalar while unroll coalesces boundary streams and amortizes control

@@ -22,183 +22,180 @@ Enter outer i loop:
 
 
 # CRC32 Performance
-Parameters: `N = 256` (from `main.cpp`).
-- `input[i] = i * 0x12345678` for `i ∈ [0, N)`.
-- Expected `*output_checksum = 0xB8B4D336 = 3098858294`.
-- `K = 4065` is the data-dependent number of bit iters where `(crc & 1)` is true (the taken arm of the inner `if`). For this input, simulating the recurrence gives 4065 of the 32·N = 8192 bit iters firing the `^ polynomial`; the remaining 4127 take the shorter false arm.
+
+Parameters: `N = 256` from `main.cpp`; `input[i] = i * 0x12345678` and the
+expected checksum is `0xB8B4D336 = 3098858294`.
+
+## Modeling basis: optimized-IR exception
+
+The protected notes above describe the bit-serial C++ source. This evaluation
+instead follows the post-`-O1` algorithmic DAG that Loom receives from
+Clang/LLVM, because the compiler transformation makes the source-level golden
+model vastly different from the simulated DFG. The optimized IR replaces the
+eight-iteration bit loop with the standard byte-at-a-time transition:
+
+```text
+table_index = ((data >> (byte_idx << 3)) ^ crc) & 0xff
+crc_next    = (crc >> 8) ^ crctable[table_index]
+```
+
+The generated Handshake IR contains the 256-entry global `.crctable.2` and one
+table load per byte. There is no dynamic `bit` loop and no data-dependent
+true-arm count `K` in this model.
+
+Only the algorithmic DAG shape follows the optimized IR. The standard golden
+counting conventions remain in force: the named loop-carried `crc` and induction
+variables charge their normal loads/stores, loop induction is counted per
+iteration, and every counted operation has unit latency. The IR's integer/index
+casts are not separate golden-model op categories and are not counted.
 
 ## Loop classification
 
 | dim | trip_count | kind | II | notes |
-|-----|------------|------|----|-------|
-| `i` | `N` = 256 | sequential | 180 + ⟨k⟩ avg (worst 212, best 180) | carries `crc` through every byte and bit iter. The per-bit conditional shift-XOR is a non-associative recurrence, so neither tree-reduction nor independent unrolled lanes apply; the outer loop must execute sequentially. Per-outer-iter cycle count = 180 + `k_i`, where `k_i` is the number of true arms in that outer iter; Σ`k_i` = K = 4065 for this input. |
-| `byte_idx` | 4 | sequential | 45 + `k_b` (worst 53, best 45) | carries `crc` through `crc ^= byte` and the 8 inner bit iters. `k_b` = # of true arms in that byte iter ∈ [0, 8]. |
-| `bit` | 8 | sequential | 6 if true arm, 5 if false arm | carries `crc` through the conditional `(crc >> 1) ^ polynomial` / `crc >> 1` update. Non-associative — cannot tree-reduce. Per-iter cycle count is data-dependent: only the taken arm's ops are on the chain (no-pred convention). |
+|-----|-----------:|------|---:|-------|
+| `i` | `N = 256` | sequential | 28 | Carries `crc` across four sequential byte updates. The source `LOOM_PARALLEL`/`LOOM_UNROLL(8)` hints do not remove this dependence. |
+| `byte_idx` | 4 | sequential | 7 | Each table index depends on the current `crc`, and the loaded table value produces the next `crc`. |
 
-`polynomial` is assigned once at its declaration and not loop-carried, so it is anonymous dataflow — the constant fans freely to every `^ polynomial` site with no scalar L/S. `data` and `byte` are likewise single-assignment per iter with no carry, so they flow directly via dataflow with no named load/store round-trip. `crc` is reassigned per byte iter and per bit iter (loop-carried), so it is memory-backed and charges 1 load and 1 store per named access.
+The source `bit` dimension is absent from the optimized DAG. A different
+parallel-CRC algorithm could combine independent partial CRCs, but the single
+lookup-table transformation does not do that.
 
 ## Critical path (`total_cycles`)
 
-The carried recurrence on `crc` dominates the schedule. Per-iter recurrences from inside out:
+For one byte, the carried path is seven cycles. Operations shown on the same
+line execute in parallel:
 
-**Per bit iter** — through `crc`. Under strict no-pred, only the taken arm's ops are on the chain:
+```text
+1  byte_idx << 3                         || load crc
+2  data >> shift_amount                  || crc >> 8
+3  shifted_data ^ crc
+4  & 0xff
+5  load crctable[table_index]
+6  (crc >> 8) ^ table_value
+7  store crc
 ```
-True arm (6 cycles):  load crc → (crc & 1) → (cmp != 0) → (crc >> 1) → (^ polynomial) → store crc
-False arm (5 cycles): load crc → (crc & 1) → (cmp != 0) → (crc >> 1)                  → store crc
-```
-The body op (`crc >> 1`) fires the cycle after the gating compare retires. The taken arm is data-dependent: across the run, `K = 4065` iters take the true arm and `32·N − K = 4127` take the false arm.
 
-**Per byte iter** — through `crc`:
-```
-1 (cmp byte_idx < 4)                         [bound check, gates body]
-+ 1 (byte_idx * 8 ‖ load crc)                [load crc is a body op gated on cmp; no dep on byte chain → parallel]
-+ 1 (data >> (byte_idx*8))
-+ 1 (& 0xFF) → byte
-+ 1 (crc ^ byte)
-+ 1 (store crc)                              [closes pre-bit chain]
-+ 8 inner bit iters                          [6·k_b + 5·(8 − k_b) = 40 + k_b cycles, where k_b ∈ [0,8] is # true arms in this byte iter]
-= 5 (pre-bit) + 40 + k_b = 45 + k_b
-```
-`byte_idx`'s iv chain (load → add → store → next-iter cmp) runs in parallel with the body and never bottlenecks. Worst case k_b = 8 → II = 53; best case k_b = 0 → II = 45.
+The table index for byte `b+1` cannot be formed until byte `b` produces its new
+CRC state. Therefore the four byte transitions contribute `4 * 7 = 28` cycles
+per input word. The fixed path is:
 
-**Per outer iter** — 4 byte iters: per-outer-iter contribution to the chain = 4·(5) + 6·k_i + 5·(32 − k_i) = 20 + 160 + k_i = 180 + k_i, where k_i = Σ k_b over that outer iter. Setup of `byte_idx = 0` and `bit = 0` happens in parallel with the prior iter's tail and is fully absorbed in steady state.
-
-**Total cycles (data-dependent on K):**
+```text
+4        cold path to the first input load
++ 28*N   four carried lookup-table updates per word
++ 3      final load crc -> bitwise not -> store output
+= 28*N + 7
 ```
-1 (init store crc = 0xFFFFFFFF)
-+ 3 (cold start of iter 0: cmp i<N ‖ byte_idx=0 → load input_data ‖ load byte_idx → cmp byte_idx<4)
-+ Σ_i (180 + k_i) = 180·N + K        [steady-state outer iter recurrence with actual taken arms]
-+ 3 (final: load crc → ~crc → store *output_checksum)
-= 180·N + K + 7
-```
-For `N = 256, K = 4065`: `total_cycles = 180·256 + 4065 + 7 = 50152`.
-Worst-case bound (all true arms, K = 32·N = 8192): `212·N + 7 = 54279`.
-Best-case bound (all false arms, K = 0): `180·N + 7 = 46087`.
 
-The binding chain is:
-`init store crc → load crc (iter 0, byte 0) → crc^byte → store crc → 8 × bit-iter [load crc → AND → cmp → shift → (^poly if true arm) → store crc] → … repeated 4 × N times … → load crc (final) → ~crc → store *output_checksum`. Each bit-iter contributes 5 or 6 cycles depending on whether `crc & 1` resolves false or true at that step.
+For `N = 256`:
+
+```text
+total_cycles = 28*256 + 7 = 7175
+```
+
+For the previously compared `N = 4` simulation fixture, the kernel-DAG model is
+`28*4 + 7 = 119` cycles. A reported 120-cycle simulation is therefore separated
+by only one boundary/control-retirement cycle rather than by a different CRC
+algorithm.
 
 ## Op counts
 
-### Per-outer-iter formulas
-- crc loads (loop-carried memory cell): `4` (byte pre-bit headers) + `32` (bit headers) = `36`
-- crc stores: `4` (byte pre-bit closers) + `32` (bit closers) = `36`
-- iv loads (per iter bound-check read): `1` (i) + `4` (byte_idx) + `32` (bit) = `37`
-- iv stores (per-iter writebacks + per-loop-entry inits): `1` (i body) + `1` (byte_idx init) + `4` (byte_idx body) + `4` (bit inits, once per byte iter) + `32` (bit body) = `42`
-- iv adds (i++, byte_idx++, bit++): `1 + 4 + 32 = 37`
-- iv compares (bound checks): `1 + 4 + 32 = 37`
-- algorithmic bitops: `4` (`& 0xFF`) + `4` (`^ byte`) + `32` (`& 1`) + `k_i` (taken-arm `^ polynomial`) = `40 + k_i`
-- algorithmic compares: `32` (implicit `(crc & 1) != 0`)
-- muls: `4` (`byte_idx * 8`)
-- shifts: `4` (`data >>`) + `32` (`crc >> 1`, both arms always shift) = `36`
-- address_adds: `0` (`input_data[i]` is a bare-variable subscript — no inline arithmetic in the brackets, so it charges no address_add)
-- input_data loads: `1`
+All counts below use the optimized lookup-table shape with the standard golden
+load/store and induction conventions.
 
-Plus once per kernel: `1` init store (`crc = 0xFFFFFFFF`), `1` i-iv init store, `1` final load `crc`, `1` `~crc` bitop, `1` store `*output_checksum`.
+### Per-outer-iteration formulas
 
-For the test inputs (`N = 256`, `K = Σ k_i = 4065`):
+- algorithmic loads: `1` input load + `4` table loads = `5`
+- `crc` loads: `4`; `crc` stores: `4`
+- induction loads/adds/compares: `1` outer + `4` byte = `5` each
+- induction stores: `1` outer-body store + `1` byte initialization + `4` byte-body stores = `6`
+- shifts: `4 * (byte_idx << 3, data >> shift, crc >> 8) = 12`
+- bitops: `4 * (index xor, index mask, table-result xor) = 12`
+- address adds: `0`; both `input_data[i]` and `crctable[table_index]` use bare computed indices
+
+Once per kernel, count the initial stores of `crc` and `i`, the zero-length
+compare, the final load and bitwise-not of `crc`, and the output store.
 
 ### Algorithmic
-| op | count | source |
-|----|-------|-------|
-| loads    | 256    | `input_data[i]` (N = 256) |
-| stores   | 1      | `*output_checksum` (1) |
-| muls     | 1024   | `byte_idx * 8` per byte iter (4·N) |
-| shifts   | 9216   | `data >>` (4·N = 1024) + `crc >> 1` per bit iter, both arms (32·N = 8192) |
-| bitops   | 14306  | `& 0xFF` (1024) + `crc ^ byte` (1024) + `crc & 1` (8192) + `^ polynomial` taken-arm only (K = 4065) + `~crc` (1) |
-| compares | 8192   | implicit `(crc & 1) != 0` per bit iter (32·N) |
 
-### Overhead (loop-carried `crc` L/S, induction, address-gen)
-| op | count | source |
-|----|-------|-------|
-| loads        | 18689 | crc loads: 36·N + 1 = 9217 (4·N byte pre-bit + 32·N bit headers + 1 final) + iv loads: 37·N = 9472 |
-| stores       | 19970 | crc stores: 36·N + 1 = 9217 (1 init + 4·N byte pre-bit + 32·N bit body) + iv stores: 42·N + 1 = 10753 (1 i init + N byte_idx inits + 4·N bit inits + 37·N body writebacks) |
-| adds         | 9472  | iv increments: i++ (256) + byte_idx++ (1024) + bit++ (8192) |
-| compares     | 9472  | iv bound checks: i<N (256) + byte_idx<4 (1024) + bit<8 (8192) |
-| address_adds | 0     | `input_data[i]` is a bare-variable subscript with no inline arithmetic in the brackets — charges no address_add. `*output_checksum` is a bare pointer deref — no `[]`, no address_add. |
+| op | formula | `N = 256` | source |
+|----|---------|----------:|--------|
+| loads | `5N` | 1280 | `N` input loads + `4N` CRC-table loads |
+| stores | `1` | 1 | final `*output_checksum` |
+| shifts | `12N` | 3072 | byte shift amount, data shift, and `crc >> 8` per byte |
+| bitops | `12N + 1` | 3073 | three per byte plus final `~crc` |
+
+### Overhead
+
+| op | formula | `N = 256` | source |
+|----|---------|----------:|--------|
+| loads | `9N + 1` | 2305 | `4N + 1` `crc` loads + `5N` induction loads |
+| stores | `10N + 2` | 2562 | `4N + 1` `crc` stores + `6N + 1` induction stores |
+| adds | `5N` | 1280 | outer and byte induction increments |
+| compares | `5N + 1` | 1281 | outer/byte bounds plus the optimized zero-length guard |
+| address_adds | `0` | 0 | no arithmetic appears inside either subscript expression |
 
 ### Totals
+
 | op | total |
 |----|------:|
-| loads        | **18945** |
-| stores       | **19971** |
-| adds         | **9472**  |
-| muls         | **1024**  |
-| shifts       | **9216**  |
-| bitops       | **14306** |
-| compares     | **17664** |
-| address_adds | **0**     |
-| divs / mods / transcendentals | 0 |
+| loads | **3585** |
+| stores | **2563** |
+| adds | **1280** |
+| address_adds | **0** |
+| multiplies / divides | **0** |
+| shifts | **3072** |
+| bitops | **3073** |
+| compares | **1281** |
+| transcendentals | **0** |
 
-The `crc` carried chain dominates the memory traffic: 9217 of 18945 loads and 9217 of 19971 stores are `crc` round-trips across the 1024 byte iters and 8192 bit iters. The 32·N implicit `!= 0` compares from `if (crc & 1)` (8192) are nearly half the compare count; without strict no-pred those would fuse into a bit-test branch and disappear.
+The arithmetic demand is
+`A = 1280 + 3072 + 3073 + 1281 = 8706`, and the total counted dynamic work is
+`8706 + 3585 + 2563 = 14854` operations. The optimized DAG is static-affine;
+its counts no longer depend on the distribution of CRC bits.
 
 ## Data Dependency Graph
-Inner bit iter — the binding recurrence on `crc`. Per iter it takes 6 cycles when the true arm is taken (`^ polynomial` on the chain) and 5 cycles when the false arm is taken. The carry edge `store crc → next-iter load crc` closes the loop. The outer byte iter wraps this with a `crc ^= byte` step (one load/store round-trip on crc) before the 8-iter bit loop. The outermost `i` loop wraps that with `data = input_data[i]` and re-runs the byte loop 4 times.
+
+The table precomputes the effect of the source's eight bit updates for every
+possible low-byte value. It shortens each carried transition, but the next table
+index still depends on the previous table result.
 
 ```mermaid
 graph TD
-    %% Carried scalar — memory-backed; each named read is a 1-cycle load
-    crc_hdr(("crc"))
+    data["input data"] --> shift_amount["byte_idx << 3"]
+    shift_amount --> data_shift["data >> shift"]
 
-    %% Anonymous dataflow — constant, fans freely
-    poly(("polynomial (fan-out)"))
+    crc_load["load current crc"] --> index_xor["shifted data XOR crc"]
+    data_shift --> index_xor
+    index_xor --> index_mask["AND 0xff"]
+    index_mask --> table_load["load crctable[index]"]
 
-    %% Inner if-test compute
-    and1((" & 1 "))
-    cmp_ne((" != 0 "))
-
-    %% Body ops (gated on cmp_ne under strict no-pred)
-    shift_r((" crc >> 1 "))
-    xor_poly((" ^ polynomial "))
-
-    %% Carry-out
-    crc_next(("store crc"))
-
-    %% Header
-    crc_hdr -->|load| and1
-    and1 --> cmp_ne
-
-    %% Body fires after cmp_ne resolves (true arm — taken on K of 32·N iters)
-    cmp_ne -. T: enter if-body .-> shift_r
-    crc_hdr -->|load: already issued| shift_r
-    shift_r --> xor_poly
-    poly --> xor_poly
-    xor_poly --> crc_next
-
-    %% False arm (shorter, off-critical)
-    cmp_ne -. F: enter else .-> crc_next
-
-    %% Carry edge closes the recurrence
-    crc_next -.->|next-iter load| crc_hdr
-
-    %% Critical path (6 cycles): load crc → AND → cmp != 0 → [gate] → shift → ^poly → store crc
-    linkStyle 0,1,2,4,5,6 stroke:#ff0000,stroke-width:3px;
+    crc_load --> crc_shift["crc >> 8"]
+    crc_shift --> result_xor["XOR table value"]
+    table_load --> result_xor
+    result_xor --> crc_store["store next crc"]
+    crc_store -. "next byte carry" .-> crc_load
 ```
-
-The bit-iter II varies with the taken arm: 6 cycles on true-arm iters, 5 on false-arm iters. The false-arm short-circuit does reduce `total_cycles` — under strict no-pred only the actually-taken arm's ops sit on the chain, so for `N = 256, K = 4065` the depth is 50152 cycles, 4127 cycles below the worst-case bound. The byte and outer loops add no additional recurrence — they multiply the recurrence count (4 × N byte iters × 8 bit iters = 32·N bit iters total).
 
 ## CGRA-Constrained Model
 
-The ASAP bound above assumes unlimited functional units and memory bandwidth.
-This section adds the aggregate lower bound for a CGRA with separate arithmetic
-and memory-issue resources, following `docs/spec-kernel-performance.md`.
+The aggregate lower bound uses the same optimized dynamic operation set and the
+`6x6` resource configuration (`P = 36`, `L = 12`, `S = 12`):
 
-With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+- `CP = 7175`
+- `A = 8706`
+- `LD = 3585`
+- `ST = 2563`
 
-- `CP = 50152`
-- `A = adds (9472) + muls (1024) + shifts (9216) + bitops (14306) + compares (17664) = 51682`
-- `LD = 18945`
-- `ST = 19971`
-
-```
-compute = ceil(51682 / 36) = 1436
-load    = ceil(18945 / 12) = 1579
-store   = ceil(19971 / 12) = 1665
-cycles  = max(50152, 1436, 1579, 1665) = 50152
+```text
+compute = ceil(8706 / 36) = 242
+load    = ceil(3585 / 12) = 299
+store   = ceil(2563 / 12) = 214
+cycles  = max(7175, 242, 299, 214) = 7175
 ```
 
-**Bottleneck: dependency-bound.** The non-associative `crc` recurrence is far
-longer than the aggregate P/L/S resource terms for this input trace.
+**Bottleneck: dependency-bound.** The lookup table removes most of the source
+work, but the 1024 byte updates remain one carried CRC chain. The aggregate
+resource terms are all far below the critical-path depth.
 
 <!-- BEGIN CGRA-SCHED:crc32 -->
 ### Finite-Resource Schedule Estimate (time-local)
@@ -209,16 +206,16 @@ longer than the aggregate P/L/S resource terms for this input trace.
 
 | region | CP | A | LD | ST | aggregate | scheduled (makespan) |
 |--------|---:|--:|---:|---:|----------:|---------------------:|
-| crc32 | 50152 | 51682 | 18945 | 19971 | 50152 | 50152 |
+| crc32 | 7175 | 8706 | 3585 | 2563 | 7175 | 7175 |
 
-- **scheduled_cycles** = 50152  (sum of ordered-region makespans)
-- **aggregate_cycles** = 50152  (the lower bound above, unchanged)
+- **scheduled_cycles** = 7175  (sum of ordered-region makespans)
+- **aggregate_cycles** = 7175  (the lower bound above, unchanged)
 - **gap_cycles** = 0  (scheduled − aggregate)
 - **gap_ratio** = 1  (scheduled / aggregate)
 
 **Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
 - `P`: 0 / 0 / 0
-- `L`: 823 / 823 / 9715
-- `S`: 910 / 910 / 1270
+- `L`: 131 / 131 / 1523
+- `S`: 114 / 96 / 246
 
 <!-- END CGRA-SCHED:crc32 -->

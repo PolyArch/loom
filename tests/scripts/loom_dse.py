@@ -2360,10 +2360,10 @@ def _register():
         levels=(Level("i", 256, "sequential"),),
         build_chunk=_crc32_chunk,
         coalesce_note=(
-            "crc is a non-associative carried state across all bytes and bits. "
-            "Parallel factors are illegal and unroll cannot flatten the trace, "
-            "so equivalent unroll labels use the canonical P1U1 representative "
-            "for the fully consumed serial DAG."),
+            "the optimized lookup-table DAG carries crc across all byte updates. "
+            "Each next table address depends on the preceding crc result, so "
+            "parallel factors are illegal and unroll cannot flatten the trace; "
+            "equivalent labels use the canonical P1U1 representative."),
     )
     KERNELS["edge_update"] = KernelSpec(
         name="edge_update",
@@ -4814,7 +4814,7 @@ def _run_self_tests() -> int:
     new_expected = {
         "clz": (163, 13612, 6997, 6998, 6997),
         "col2im": (13, 12756, 1945, 1952, 1165),
-        "crc32": (50152, 51682, 18945, 18945, 19971),
+        "crc32": (7175, 8706, 3585, 3585, 2563),
         "edge_update": (6, 40, 38, 38, 37),
         "fft_butterfly": (71, 701, 252, 253, 302),
         "gauss_seidel_step": (198, 3136, 527, 536, 64),
