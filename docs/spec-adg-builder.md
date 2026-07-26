@@ -265,6 +265,12 @@ Each fully resolved preset owns a complete construction recipe for:
   capacity, and dispatch capability; and
 * every required Spatial-to-Temporal or Temporal-to-Spatial boundary.
 
+System operation-service ports are always emitted as explicit
+`fabric.system.service_endpoint` entities through the typed API defined by
+`docs/spec-fabric-system-adg.md`. Host cores, AccCores, memory services,
+service transforms, and external boundaries are endpoint owners only; Builder
+state does not maintain a parallel per-owner endpoint inventory.
+
 Every Temporal PE recipe explicitly supplies a positive
 `operand_buffer_size`, including `per_instruction`. The value is entries per
 allocation unit under the mode semantics in

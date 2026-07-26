@@ -768,7 +768,8 @@ fabric.system.memory_service
 fabric.system.service_endpoint
   EntityId
   exact owner reference
-  CanonicalServiceCapability records
+  canonical non-empty CanonicalServiceCapability set
+  absent | exact message carrier type
 
 fabric.system.service_transform
   EntityId
@@ -806,8 +807,6 @@ fabric.system.hardware_domain
 
 fabric.system.external_boundary
   EntityId
-  canonical owned endpoint references
-  external service and transfer contract
 ```
 
 `CanonicalServiceCapability` binds one exact Canonical Service kind, one
@@ -819,6 +818,37 @@ For an addressed memory kind, the domain is tested against the exact derived
 consistency-domain reference is present exactly when required by the selected
 service kind or accepted actor contract. Fields not owned by that service kind
 are absent rather than populated with defaults.
+
+`fabric.system.service_endpoint` is the sole System-level physical owner of an
+operation-service endpoint. Its owner is exactly one `HostCoreOccurrenceRef`,
+`AccCoreOccurrenceRef`, `SystemMemoryServiceRef`,
+`SystemServiceTransformRef`, or `ExternalBoundaryRef`. Those entities own the
+endpoint entity but do not expose a second endpoint inventory. Multiple
+physical ports are represented by multiple endpoint entities, never by a
+nonzero endpoint ordinal.
+
+All capabilities in one endpoint have one common role and belong to one common
+plane. `MessageTransfer` selects the token-transport plane; every memory read,
+write, atomic, compare-exchange, and fence kind selects the memory-service
+plane. Mixing planes or roles in one endpoint is invalid. The selected plane
+has exactly one endpoint at ordinal zero. On the transport plane, `Initiate`
+is an output and `Serve` is an input. On the memory plane, `Initiate` is a
+manager endpoint and `Serve` is a subordinate endpoint.
+
+A message endpoint has exactly one physical carrier type, either
+`!fabric.bits<W>` or `!fabric.bits_tag<W,T>`. The carrier must represent every
+admitted payload type under the canonical low-bit-aligned transport rule. A
+memory endpoint has no carrier type because its beat width and accepted
+operation domain are already owned by its capabilities. No owner, connection,
+or Mapping record may override these derived plane, direction, role, or type
+facts.
+
+`fabric.system.external_boundary` is only the identity of one external
+interface grouping. Its complete outward contract is the canonical non-empty
+set of `fabric.system.service_endpoint` entities whose owner refers to that
+boundary. The boundary operation stores no endpoint list, capability copy, or
+generic external-contract bag. A boundary with no owned endpoint is invalid at
+root-complete finalization.
 
 `MemoryServiceContractRecord` is defined once by
 `docs/spec-fabric-mem.md`. A System memory service imports that exact record in
@@ -992,6 +1022,13 @@ Connections are directed and one-to-one from one output to one input. Fanout,
 fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
 must be represented by explicit resources and transfer patterns. A
 `spatial_attachment` is likewise one-to-one and has no hidden behavior.
+
+Every System operation-service reference in a connection, transform, or domain
+resolves through a `SystemServiceEndpointRef` at ordinal zero.
+Host cores, AccCores, memory services, transforms, and external boundaries are
+not accepted as endpoint substitutes. A service transform owns only its typed
+transformation relation; any physical input or output port it exposes is an
+explicit service-endpoint entity owned by that transform.
 
 Clock/reset validation walks the complete root-owned point-connection and
 spatial-attachment ranges. Every endpoint owner must resolve through its exact

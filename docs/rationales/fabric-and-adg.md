@@ -74,6 +74,35 @@ traversal.
 Builder handles, symbols, source paths, and printer order are authoring aids.
 They never cross the finalization boundary as identity.
 
+## Why System Service Ports Are Explicit Endpoint Entities
+
+A System operation-service port has independent physical meaning: it has one
+plane, one direction or memory role, one capability set, and for message
+transfer one exact physical carrier. Making every host core, AccCore, memory
+service, transform, and external boundary own a separate endpoint inventory
+would duplicate the same schema and let the logical owner become a second
+physical-interface authority. A generic shared inventory record would merely
+move that duplication into an untyped bag.
+
+Fabric therefore uses one `fabric.system.service_endpoint` entity for one
+physical operation-service port. The surrounding System entity owns that
+endpoint by an exact typed reference, while the endpoint alone owns its
+physical interface facts. Multiple ports are multiple entities, so the
+endpoint's selected transport or memory inventory contains only ordinal zero.
+This removes an unnecessary ordinal namespace and makes connection, domain,
+Mapping, and backend references converge on one persistent object.
+
+`SystemMemoryService` still owns storage regions and service behavior;
+`SystemServiceTransform` still owns its transformation relation; an external
+boundary still groups the hardware interface. Those distinctions are
+essential, but none requires another endpoint schema. Their outward ports are
+mechanically the service-endpoint entities that name them as owner.
+
+SpatialCore module-boundary ports and System transport-resource ports remain
+direct inventories because their ordered port topology is intrinsic to those
+resources. They are not operation-service endpoints and collapsing them into
+service-endpoint entities would erase a real structural distinction.
+
 ## Why Fabric Finalization Is Root-Complete
 
 Canonical identity must reflect the complete elaborated hardware, including

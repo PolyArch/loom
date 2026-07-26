@@ -319,10 +319,8 @@ FabricMemoryOccurrenceRef
 FabricSwitchOccurrenceRef
 FabricFifoOccurrenceRef
 FabricBoundaryOccurrenceRef
-AccCoreOccurrenceRef
 SystemServiceEndpointRef
 SystemTransportResourceRef
-ExternalBoundaryRef
 ```
 
 `FabricMemoryEndpointOwnerRef` is the closed union of owners that expose a
@@ -331,17 +329,24 @@ manager/requester or subordinate/provider memory-service endpoint:
 ```text
 SpatialCoreOccurrenceRef
 FabricMemoryOccurrenceRef
-AccCoreOccurrenceRef
-SystemMemoryServiceRef
 SystemServiceEndpointRef
-SystemServiceTransformRef
-ExternalBoundaryRef
 ```
 
 Each owner specification supplies one canonical ordered inventory for each
 plane. Direction, `bits` versus `bits_tag`, payload and tag widths, service
 role, accepted operation domain, and all other endpoint facts are derived
 from that inventory. A reference never copies them.
+
+At System scope, `SystemServiceEndpointRef` is the only operation-service
+endpoint owner. Its selected plane contains exactly one endpoint at ordinal
+zero. `HostCoreOccurrenceRef`, `AccCoreOccurrenceRef`,
+`SystemMemoryServiceRef`, `SystemServiceTransformRef`, and
+`ExternalBoundaryRef` may own `fabric.system.service_endpoint` entities, but
+they do not expose parallel endpoint inventories. A System message endpoint
+projects to the transport plane; a System addressed-memory or fence endpoint
+projects to the memory plane. `SystemTransportResourceRef` separately owns its
+explicit token-port inventory and `SpatialCoreOccurrenceRef` retains the
+module-boundary inventories derived from its exact imported module.
 
 An endpoint ordinal is valid only in the inventory selected by the typed
 owner and reference plane. A token endpoint cannot be reinterpreted as a
@@ -493,11 +498,11 @@ Every `FabricTransportEndpointOwnerRef` and
 `FabricMemoryEndpointOwnerRef` has one total, exact projection into
 `FabricInventoryOwnerRef`. The projection preserves the complete typed owner
 payload. For example, a `SpatialCoreOccurrenceRef` remains
-`SpatialCoreOccurrence`, and a `SystemMemoryServiceRef` becomes the `System`
-variant of `FabricMemoryServiceRef` inside `MemoryService`. It never collapses
-an owner-relative reference to its parent `EntityId`, substitutes a child or
-parent owner, or returns absent. Hardware-domain membership and other
-owner-based relations use this projection rather than an entity-ID helper.
+`SpatialCoreOccurrence`, and a `SystemServiceEndpointRef` remains
+`SystemServiceEndpoint`. It never collapses an owner-relative reference to its
+parent `EntityId`, substitutes the logical owner of a System endpoint, or
+returns absent. Hardware-domain membership and other owner-based relations use
+this projection rather than an entity-ID helper.
 
 ## Directed Physical Traversals
 
