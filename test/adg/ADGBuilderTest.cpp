@@ -791,15 +791,16 @@ void publicFuLibraryBuildsTypedGraphs() {
   DesignBuilder design(store);
   const PortType bits128 = take(test, PortType::bits(128));
 
-  auto spatial = take(
-      test, design.createSpatialCore(
-                "fu-library", {bits128, bits128, bits128, bits128}, {bits128}));
+  auto spatial =
+      take(test, design.createSpatialCore("fu-library",
+                                          {bits128, bits128, bits128, bits128},
+                                          {bits128, bits128, bits128}));
   auto pe = take(
-      test,
-      spatial.addPe(
-          {take(test, spatial.input(0)), take(test, spatial.input(1)),
-           take(test, spatial.input(2)), take(test, spatial.input(3))},
-          PeSpec::spatial({bits128, bits128, bits128, bits128}, {bits128})));
+      test, spatial.addPe(
+                {take(test, spatial.input(0)), take(test, spatial.input(1)),
+                 take(test, spatial.input(2)), take(test, spatial.input(3))},
+                PeSpec::spatial({bits128, bits128, bits128, bits128},
+                                {bits128, bits128, bits128})));
   std::vector<loom::adg::PeValue> inputs;
   for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
     inputs.push_back(take(test, pe.input(ordinal)));
@@ -808,6 +809,15 @@ void publicFuLibraryBuildsTypedGraphs() {
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addMacFu(pe, inputs))
     fail(test, llvm::toString(std::move(error)));
+  expectError(test,
+              loom::adg::addLoopControlFu(pe, inputs,
+                                          ::dataflow::StreamStepKind::Add,
+                                          ::dataflow::StreamStepKind::Add),
+              "distinct step kinds");
+  if (llvm::Error error = loom::adg::addLoopControlFu(
+          pe, inputs, ::dataflow::StreamStepKind::Add,
+          ::dataflow::StreamStepKind::Sub))
+    fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addSpecialMathFu(
@@ -815,15 +825,18 @@ void publicFuLibraryBuildsTypedGraphs() {
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = pe.close())
     fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+  if (llvm::Error error =
+          spatial.close({take(test, pe.output(0)), take(test, pe.output(1)),
+                         take(test, pe.output(2))}))
     fail(test, llvm::toString(std::move(error)));
 
   auto finalized = take(test, std::move(design).finalize());
   require(test,
           entityCount(finalized.roots().front().view(),
-                      loom::fabric::FabricEntityKind::FabricFuOccurrence) == 4,
-          "public FU helpers did not create four ordinary FU occurrences");
+                      loom::fabric::FabricEntityKind::FabricFuOccurrence) == 5,
+          "public FU helpers did not create five ordinary FU occurrences");
   bool sawMacDomain = false;
+  bool sawLoopControlDomain = false;
   for (std::uint64_t id = 0;; ++id) {
     auto kind = finalized.roots().front().view().entityKind(id);
     if (!kind)
@@ -832,19 +845,31 @@ void publicFuLibraryBuildsTypedGraphs() {
       continue;
     auto templates = finalized.roots().front().view().fuCapabilityTemplates(
         loom::fabric::FabricFuTemplateRef(id));
-    if (templates.size() != 8)
-      continue;
-    bool hasRecurrence = false;
-    for (const auto &record : templates) {
-      unsigned activeOperations = 0;
-      for (const auto &node : record.activeNodes)
-        activeOperations += node.node == loom::fabric::FabricFuNodeKind::Op;
-      hasRecurrence |= activeOperations == 3;
+    if (templates.size() == 8) {
+      bool hasRecurrence = false;
+      for (const auto &record : templates) {
+        unsigned activeOperations = 0;
+        for (const auto &node : record.activeNodes)
+          activeOperations += node.node == loom::fabric::FabricFuNodeKind::Op;
+        hasRecurrence |= activeOperations == 3;
+      }
+      sawMacDomain |= hasRecurrence;
     }
-    sawMacDomain |= hasRecurrence;
+    if (templates.size() == 7) {
+      unsigned fusedTemplates = 0;
+      for (const auto &record : templates) {
+        unsigned activeOperations = 0;
+        for (const auto &node : record.activeNodes)
+          activeOperations += node.node == loom::fabric::FabricFuNodeKind::Op;
+        fusedTemplates += activeOperations == 2;
+      }
+      sawLoopControlDomain |= fusedTemplates == 2;
+    }
   }
   require(test, sawMacDomain,
           "MacFu did not expose its complete carry-recurrence domain");
+  require(test, sawLoopControlDomain,
+          "LoopControlFu did not expose its seven coherent templates");
   std::string text;
   llvm::raw_string_ostream stream(text);
   if (llvm::Error error =
@@ -854,6 +879,9 @@ void publicFuLibraryBuildsTypedGraphs() {
   require(test,
           llvm::StringRef(text).contains("ScalarIntegerAddSub") &&
               llvm::StringRef(text).contains("LoopCarry") &&
+              llvm::StringRef(text).contains("LoopStream") &&
+              llvm::StringRef(text).contains("LoopInvariant") &&
+              llvm::StringRef(text).contains("LoopGate") &&
               llvm::StringRef(text).contains("FixedVectorFloatFma") &&
               llvm::StringRef(text).contains("ScalarMathSqrt"),
           "public FU helpers lost generated implementation-family bindings");

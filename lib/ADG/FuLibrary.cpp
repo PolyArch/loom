@@ -630,6 +630,257 @@ llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   return fu->close({*output});
 }
 
+llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                             ::dataflow::StreamStepKind firstStep,
+                             ::dataflow::StreamStepKind secondStep) {
+  if (inputs.size() != 4)
+    return invalid(
+        "LoopControlFu requires data0, data1, data2, and phase inputs");
+  if (firstStep == secondStep)
+    return invalid("LoopControlFu requires distinct step kinds");
+
+  auto bits128 = PortType::bits(128);
+  if (!bits128)
+    return bits128.takeError();
+  auto bits1 = PortType::bits(1);
+  if (!bits1)
+    return bits1.takeError();
+
+  auto fu = pe.addFu(inputs, FuSpec{{*bits128, *bits128, *bits128, *bits1},
+                                    {*bits128, *bits128, *bits128}});
+  if (!fu)
+    return fu.takeError();
+  llvm::SmallVector<FuValue, 4> boundary;
+  for (std::size_t ordinal = 0; ordinal != 4; ++ordinal) {
+    auto value = fu->input(ordinal);
+    if (!value)
+      return value.takeError();
+    boundary.push_back(*value);
+  }
+
+  auto d0 = fu->addDemux(boundary[0], 5);
+  if (!d0)
+    return d0.takeError();
+  auto d1 = fu->addDemux(boundary[1], 3);
+  if (!d1)
+    return d1.takeError();
+  auto d2 = fu->addDemux(boundary[2], 2);
+  if (!d2)
+    return d2.takeError();
+  auto phase = fu->addDemux(boundary[3], 5);
+  if (!phase)
+    return phase.takeError();
+  auto d0Values = nodeOutputs(*d0, 5);
+  if (!d0Values)
+    return d0Values.takeError();
+  auto d1Values = nodeOutputs(*d1, 3);
+  if (!d1Values)
+    return d1Values.takeError();
+  auto d2Values = nodeOutputs(*d2, 2);
+  if (!d2Values)
+    return d2Values.takeError();
+  auto phaseValues = nodeOutputs(*phase, 5);
+  if (!phaseValues)
+    return phaseValues.takeError();
+
+  auto carryPhase = fu->addMux({(*phaseValues)[0], (*phaseValues)[3]});
+  if (!carryPhase)
+    return carryPhase.takeError();
+  auto invariantPhase = fu->addMux({(*phaseValues)[1], (*phaseValues)[4]});
+  if (!invariantPhase)
+    return invariantPhase.takeError();
+  auto gatePhase =
+      fu->addMux({(*phaseValues)[2], (*phaseValues)[3], (*phaseValues)[4]});
+  if (!gatePhase)
+    return gatePhase.takeError();
+  auto carryPhaseValue = carryPhase->output(0);
+  if (!carryPhaseValue)
+    return carryPhaseValue.takeError();
+  auto invariantPhaseValue = invariantPhase->output(0);
+  if (!invariantPhaseValue)
+    return invariantPhaseValue.takeError();
+  auto gatePhaseValue = gatePhase->output(0);
+  if (!gatePhaseValue)
+    return gatePhaseValue.takeError();
+
+  const auto operationSpec = [&](ImplementationFamilyId family,
+                                 const FamilyCapabilityParams &parameters,
+                                 std::vector<PortType> results) {
+    return OperationCapabilitySpec{family, parameters, familyMembers(family),
+                                   std::move(results)};
+  };
+  const auto streamSpec = [&](::dataflow::StreamStepKind step) {
+    return operationSpec(ImplementationFamilyId::LoopStream,
+                         ::fabric::LoopStreamParams{ordinaryIntegerWidths(),
+                                                    step, integerPredicates()},
+                         {*bits128, *bits1});
+  };
+  const auto tokenSpec = [&](ImplementationFamilyId family,
+                             std::vector<PortType> results) {
+    return operationSpec(family, ::fabric::TokenPlaneParams{},
+                         std::move(results));
+  };
+
+  auto firstStream = fu->addOperation(
+      {(*d0Values)[0], (*d1Values)[0], (*d2Values)[0]}, streamSpec(firstStep));
+  if (!firstStream)
+    return firstStream.takeError();
+  auto secondStream = fu->addOperation(
+      {(*d0Values)[1], (*d1Values)[1], (*d2Values)[1]}, streamSpec(secondStep));
+  if (!secondStream)
+    return secondStream.takeError();
+  auto carry = fu->addOperation(
+      {*carryPhaseValue, (*d0Values)[2], (*d1Values)[2]},
+      tokenSpec(ImplementationFamilyId::LoopCarry, {*bits128}));
+  if (!carry)
+    return carry.takeError();
+  auto invariant = fu->addOperation(
+      {*invariantPhaseValue, (*d0Values)[3]},
+      tokenSpec(ImplementationFamilyId::LoopInvariant, {*bits128}));
+  if (!invariant)
+    return invariant.takeError();
+
+  auto firstStreamValues = nodeOutputs(*firstStream, 2);
+  if (!firstStreamValues)
+    return firstStreamValues.takeError();
+  auto secondStreamValues = nodeOutputs(*secondStream, 2);
+  if (!secondStreamValues)
+    return secondStreamValues.takeError();
+  auto carryValue = carry->output(0);
+  if (!carryValue)
+    return carryValue.takeError();
+  auto invariantValue = invariant->output(0);
+  if (!invariantValue)
+    return invariantValue.takeError();
+  auto carryRoutes = fu->addDemux(*carryValue, 2);
+  if (!carryRoutes)
+    return carryRoutes.takeError();
+  auto invariantRoutes = fu->addDemux(*invariantValue, 2);
+  if (!invariantRoutes)
+    return invariantRoutes.takeError();
+  auto carryRouteValues = nodeOutputs(*carryRoutes, 2);
+  if (!carryRouteValues)
+    return carryRouteValues.takeError();
+  auto invariantRouteValues = nodeOutputs(*invariantRoutes, 2);
+  if (!invariantRouteValues)
+    return invariantRouteValues.takeError();
+
+  auto gateValue = fu->addMux(
+      {(*d0Values)[4], (*carryRouteValues)[1], (*invariantRouteValues)[1]});
+  if (!gateValue)
+    return gateValue.takeError();
+  auto selectedGateValue = gateValue->output(0);
+  if (!selectedGateValue)
+    return selectedGateValue.takeError();
+  auto gate = fu->addOperation(
+      {*gatePhaseValue, *selectedGateValue},
+      tokenSpec(ImplementationFamilyId::LoopGate, {*bits1, *bits128}));
+  if (!gate)
+    return gate.takeError();
+  auto gateValues = nodeOutputs(*gate, 2);
+  if (!gateValues)
+    return gateValues.takeError();
+  auto gatePhaseRoutes = fu->addDemux((*gateValues)[0], 3);
+  if (!gatePhaseRoutes)
+    return gatePhaseRoutes.takeError();
+  auto gateValueRoutes = fu->addDemux((*gateValues)[1], 3);
+  if (!gateValueRoutes)
+    return gateValueRoutes.takeError();
+  auto gatePhaseRouteValues = nodeOutputs(*gatePhaseRoutes, 3);
+  if (!gatePhaseRouteValues)
+    return gatePhaseRouteValues.takeError();
+  auto gateValueRouteValues = nodeOutputs(*gateValueRoutes, 3);
+  if (!gateValueRouteValues)
+    return gateValueRouteValues.takeError();
+
+  auto r0 = fu->addMux({(*firstStreamValues)[0], (*secondStreamValues)[0],
+                        (*carryRouteValues)[0], (*invariantRouteValues)[0],
+                        (*gateValueRouteValues)[0], (*carryRouteValues)[1],
+                        (*invariantRouteValues)[1]});
+  if (!r0)
+    return r0.takeError();
+  auto r1 =
+      fu->addMux({(*gateValueRouteValues)[1], (*gateValueRouteValues)[2]});
+  if (!r1)
+    return r1.takeError();
+  auto p0 = fu->addMux({(*firstStreamValues)[1], (*secondStreamValues)[1],
+                        (*gatePhaseRouteValues)[0], (*gatePhaseRouteValues)[1],
+                        (*gatePhaseRouteValues)[2]});
+  if (!p0)
+    return p0.takeError();
+
+  auto addTemplate = [&](std::vector<FuNode> operations,
+                         std::vector<FuRouteSelection> routes) {
+    return fu->addCapabilityTemplate(
+        FuCapabilityTemplateSpec{std::move(operations), std::move(routes)});
+  };
+  if (llvm::Error error = addTemplate(
+          {*firstStream}, {{*d0, 0}, {*d1, 0}, {*d2, 0}, {*r0, 0}, {*p0, 0}}))
+    return error;
+  if (llvm::Error error = addTemplate(
+          {*secondStream}, {{*d0, 1}, {*d1, 1}, {*d2, 1}, {*r0, 1}, {*p0, 1}}))
+    return error;
+  if (llvm::Error error = addTemplate({*carry}, {{*phase, 0},
+                                                 {*carryPhase, 0},
+                                                 {*d0, 2},
+                                                 {*d1, 2},
+                                                 {*carryRoutes, 0},
+                                                 {*r0, 2}}))
+    return error;
+  if (llvm::Error error = addTemplate({*invariant}, {{*phase, 1},
+                                                     {*invariantPhase, 0},
+                                                     {*d0, 3},
+                                                     {*invariantRoutes, 0},
+                                                     {*r0, 3}}))
+    return error;
+  if (llvm::Error error = addTemplate({*gate}, {{*phase, 2},
+                                                {*gatePhase, 0},
+                                                {*d0, 4},
+                                                {*gateValue, 0},
+                                                {*gatePhaseRoutes, 0},
+                                                {*gateValueRoutes, 0},
+                                                {*r0, 4},
+                                                {*p0, 2}}))
+    return error;
+  if (llvm::Error error = addTemplate({*carry, *gate}, {{*phase, 3},
+                                                        {*carryPhase, 1},
+                                                        {*gatePhase, 1},
+                                                        {*d0, 2},
+                                                        {*d1, 2},
+                                                        {*carryRoutes, 1},
+                                                        {*gateValue, 1},
+                                                        {*gatePhaseRoutes, 1},
+                                                        {*gateValueRoutes, 1},
+                                                        {*r0, 5},
+                                                        {*r1, 0},
+                                                        {*p0, 3}}))
+    return error;
+  if (llvm::Error error =
+          addTemplate({*invariant, *gate}, {{*phase, 4},
+                                            {*invariantPhase, 1},
+                                            {*gatePhase, 2},
+                                            {*d0, 3},
+                                            {*invariantRoutes, 1},
+                                            {*gateValue, 2},
+                                            {*gatePhaseRoutes, 2},
+                                            {*gateValueRoutes, 2},
+                                            {*r0, 6},
+                                            {*r1, 1},
+                                            {*p0, 4}}))
+    return error;
+
+  auto r0Value = r0->output(0);
+  if (!r0Value)
+    return r0Value.takeError();
+  auto r1Value = r1->output(0);
+  if (!r1Value)
+    return r1Value.takeError();
+  auto p0Value = p0->output(0);
+  if (!p0Value)
+    return p0Value.takeError();
+  return fu->close({*r0Value, *r1Value, *p0Value});
+}
+
 llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   if (inputs.size() != 4)
     return invalid(

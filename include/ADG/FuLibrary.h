@@ -2,6 +2,7 @@
 #define LOOM_ADG_FULIBRARY_H
 
 #include "ADG/Builder.h"
+#include "Dataflow/IR/DataflowEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -16,6 +17,13 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
 /// Adds scalar multiply, fused and non-fused multiply-add, and local carry
 /// recurrence graphs. Inputs are data0, data1, data2, and phase.
 llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+
+/// Adds two fixed-step stream resources plus carry, invariant, and gate
+/// resources. Inputs are data0, data1, data2, and phase. The two stream step
+/// kinds identify distinct physical resources and must differ.
+llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                             ::dataflow::StreamStepKind firstStep,
+                             ::dataflow::StreamStepKind secondStep);
 
 /// Adds the fixed-vector compute FU. Inputs are data0, data1, data2, and
 /// vector condition, in that order.
