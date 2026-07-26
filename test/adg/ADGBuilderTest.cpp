@@ -1,4 +1,5 @@
 #include "ADG/Builder.h"
+#include "ADG/Builtin.h"
 #include "ADG/Export.h"
 #include "ADG/FuLibrary.h"
 #include "ADG/MemoryLibrary.h"
@@ -20,6 +21,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -846,6 +848,65 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
           "memory library changed a requested schedule");
 }
 
+void builtinPresetsExpandThroughPublicBuilder() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  struct Expectation {
+    loom::adg::BuiltinTargetPreset preset;
+    std::uint32_t accCores;
+    std::uint32_t spatialPes;
+    std::uint32_t temporalPes;
+    std::uint32_t spatialMemories;
+    std::uint32_t temporalMemories;
+  };
+  const std::array<Expectation, 3> expectations{{
+      {loom::adg::BuiltinTargetPreset::Small, 4, 12, 4, 1, 1},
+      {loom::adg::BuiltinTargetPreset::Default, 8, 27, 9, 2, 2},
+      {loom::adg::BuiltinTargetPreset::Large, 16, 48, 16, 4, 4},
+  }};
+
+  for (const Expectation &expected : expectations) {
+    const auto &descriptor =
+        loom::adg::getBuiltinTargetDescriptor(expected.preset);
+    require(
+        test,
+        descriptor.scale.accCoreCount == expected.accCores &&
+            descriptor.scale.spatialPeCount == expected.spatialPes &&
+            descriptor.scale.temporalPeCount == expected.temporalPes &&
+            descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
+            descriptor.scale.temporalMemoryCount == expected.temporalMemories,
+        "builtin descriptor changed its scale contract");
+
+    auto target =
+        take(test, loom::adg::buildBuiltinTarget(store, expected.preset));
+    require(test, target.roots().size() == 1,
+            "builtin expansion did not publish one System root");
+    const auto &root = target.roots().front();
+    require(
+        test,
+        root.view().rootKind() == loom::fabric::FabricRootKind::System &&
+            root.directDependencies().size() == 1 &&
+            entityCount(root.view(),
+                        loom::fabric::FabricEntityKind::AccCoreOccurrence) ==
+                expected.accCores,
+        "builtin lost its SpatialCore dependency or AccCore scale");
+
+    auto module =
+        take(test, loom::fabric::importEntireFabricRoot(
+                       root.directDependencies().front().root, store));
+    require(test,
+            entityCount(module.view(),
+                        loom::fabric::FabricEntityKind::FabricPeOccurrence) ==
+                    expected.spatialPes + expected.temporalPes &&
+                entityCount(
+                    module.view(),
+                    loom::fabric::FabricEntityKind::FabricMemoryOccurrence) ==
+                    expected.spatialMemories + expected.temporalMemories,
+            "builtin SpatialCore lost its PE or memory scale");
+  }
+}
+
 void publicFuLibraryBuildsTypedGraphs() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -1268,6 +1329,7 @@ int main() {
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
   publicMemoryLibraryBuildsHybridLocalMemories();
+  builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();

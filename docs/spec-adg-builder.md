@@ -308,6 +308,27 @@ The initial general-purpose family has three closed authoring presets:
 BuiltinTargetPreset = Small | Default | Large
 ```
 
+The public builtin boundary is:
+
+```text
+getBuiltinTargetDescriptor(BuiltinTargetPreset)
+  -> const BuiltinTargetDescriptor &
+parseBuiltinTargetPreset(StringRef)
+  -> Expected<BuiltinTargetPreset>
+buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset)
+  -> Expected<FinalizedFabricDesign>
+```
+
+`buildBuiltinTarget` returns one finalized System root. Its exact SpatialCore
+Module is an independently published direct dependency in the supplied Common
+ArtifactStore. The function uses only the same public typed Builder operations
+available to external hardware authors.
+
+`BuiltinTargetDescriptor` separately carries the user-facing preset spelling,
+the stable template identity `loom.adg.builtin.{small,default,large}`, schema
+major/minor, and the closed typed scale parameters below. The spelling is not
+an alias for the template identity.
+
 The enum is accepted only at authoring boundaries. Resolution replaces it
 with the exact template identity, version, and fully expanded typed parameters.
 The preset spelling is provenance; it is not a hardware fact or a substitute
