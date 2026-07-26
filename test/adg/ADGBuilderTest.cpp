@@ -806,6 +806,8 @@ void publicFuLibraryBuildsTypedGraphs() {
   if (llvm::Error error = loom::adg::addCoreAluFu(
           pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3)))
     fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = loom::adg::addMacFu(pe, inputs))
+    fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addSpecialMathFu(
@@ -819,8 +821,30 @@ void publicFuLibraryBuildsTypedGraphs() {
   auto finalized = take(test, std::move(design).finalize());
   require(test,
           entityCount(finalized.roots().front().view(),
-                      loom::fabric::FabricEntityKind::FabricFuOccurrence) == 3,
-          "public FU helpers did not create three ordinary FU occurrences");
+                      loom::fabric::FabricEntityKind::FabricFuOccurrence) == 4,
+          "public FU helpers did not create four ordinary FU occurrences");
+  bool sawMacDomain = false;
+  for (std::uint64_t id = 0;; ++id) {
+    auto kind = finalized.roots().front().view().entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != loom::fabric::FabricEntityKind::FabricFuTemplate)
+      continue;
+    auto templates = finalized.roots().front().view().fuCapabilityTemplates(
+        loom::fabric::FabricFuTemplateRef(id));
+    if (templates.size() != 8)
+      continue;
+    bool hasRecurrence = false;
+    for (const auto &record : templates) {
+      unsigned activeOperations = 0;
+      for (const auto &node : record.activeNodes)
+        activeOperations += node.node == loom::fabric::FabricFuNodeKind::Op;
+      hasRecurrence |= activeOperations == 3;
+    }
+    sawMacDomain |= hasRecurrence;
+  }
+  require(test, sawMacDomain,
+          "MacFu did not expose its complete carry-recurrence domain");
   std::string text;
   llvm::raw_string_ostream stream(text);
   if (llvm::Error error =
@@ -829,6 +853,7 @@ void publicFuLibraryBuildsTypedGraphs() {
   stream.flush();
   require(test,
           llvm::StringRef(text).contains("ScalarIntegerAddSub") &&
+              llvm::StringRef(text).contains("LoopCarry") &&
               llvm::StringRef(text).contains("FixedVectorFloatFma") &&
               llvm::StringRef(text).contains("ScalarMathSqrt"),
           "public FU helpers lost generated implementation-family bindings");

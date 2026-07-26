@@ -440,7 +440,8 @@ explicit accumulator graph can remain FU-local. That resource binds the
 normative `LoopCarry` implementation family and references its exact Fabric
 resource contract rather than duplicating either authority.
 
-The finite normalized FU template domain includes:
+The finite normalized FU template domain contains exactly these eight physical
+topology rows:
 
 ```text
 integer multiply
@@ -448,7 +449,9 @@ floating-point multiply
 true fused floating-point FMA
 integer multiply -> add/sub
 non-fused floating-point multiply -> add/sub
-multiply or FMA -> add/carry recurrence
+integer multiply -> add/sub -> carry recurrence
+non-fused floating-point multiply -> add/sub -> carry recurrence
+true fused floating-point FMA -> carry recurrence
 ```
 
 These templates select explicit resources, internal edges, and coherent FU
@@ -456,6 +459,12 @@ boundary correspondence. They do not define a synthetic MAC operation or HSG.
 An LLVM `fmuladd` spelling is never sufficient to select the fused template;
 canonical actor semantics determine whether the input is `math.fma` or an
 explicit multiply-add graph.
+
+All recurrence rows use the same physical `LoopCarry` resource. Its output is
+a real broadcast to the FU result and the selected recurrence operand; the
+selected arithmetic result supplies `carry.next`. The three recurrence rows
+remain distinct because they activate different arithmetic resources and
+internal routes. They are not one row with an independent arithmetic selector.
 
 #### LoopControlFu Resource Inventory
 

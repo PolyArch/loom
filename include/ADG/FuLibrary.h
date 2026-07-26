@@ -13,6 +13,10 @@ namespace loom::adg {
 /// resources and closes the FU before returning.
 llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
 
+/// Adds scalar multiply, fused and non-fused multiply-add, and local carry
+/// recurrence graphs. Inputs are data0, data1, data2, and phase.
+llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+
 /// Adds the fixed-vector compute FU. Inputs are data0, data1, data2, and
 /// vector condition, in that order.
 llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);

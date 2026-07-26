@@ -125,6 +125,19 @@ std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family) {
   return {members.begin(), members.end()};
 }
 
+llvm::Expected<std::vector<FuValue>> nodeOutputs(const FuNode &node,
+                                                 std::uint32_t count) {
+  std::vector<FuValue> outputs;
+  outputs.reserve(count);
+  for (std::uint32_t ordinal = 0; ordinal != count; ++ordinal) {
+    auto output = node.output(ordinal);
+    if (!output)
+      return output.takeError();
+    outputs.push_back(*output);
+  }
+  return outputs;
+}
+
 llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                         std::vector<PortType> innerInputTypes,
                         std::vector<PortType> outerOutputTypes,
@@ -354,6 +367,267 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
                        {0}});
   return addSelectableFu(pe, inputs, {*bits64, *bits64, *bits1}, *bits64,
                          *bits128, resources);
+}
+
+llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+  if (inputs.size() != 4)
+    return invalid("MacFu requires data0, data1, data2, and phase inputs");
+  auto bits64 = PortType::bits(64);
+  if (!bits64)
+    return bits64.takeError();
+  auto bits1 = PortType::bits(1);
+  if (!bits1)
+    return bits1.takeError();
+  auto bits128 = PortType::bits(128);
+  if (!bits128)
+    return bits128.takeError();
+
+  auto fu =
+      pe.addFu(inputs, FuSpec{{*bits64, *bits64, *bits64, *bits1}, {*bits128}});
+  if (!fu)
+    return fu.takeError();
+  llvm::SmallVector<FuValue, 4> boundary;
+  for (std::size_t ordinal = 0; ordinal != 4; ++ordinal) {
+    auto value = fu->input(ordinal);
+    if (!value)
+      return value.takeError();
+    boundary.push_back(*value);
+  }
+
+  auto d0 = fu->addDemux(boundary[0], 3);
+  if (!d0)
+    return d0.takeError();
+  auto d1 = fu->addDemux(boundary[1], 3);
+  if (!d1)
+    return d1.takeError();
+  auto d2 = fu->addDemux(boundary[2], 4);
+  if (!d2)
+    return d2.takeError();
+  auto d0Values = nodeOutputs(*d0, 3);
+  if (!d0Values)
+    return d0Values.takeError();
+  auto d1Values = nodeOutputs(*d1, 3);
+  if (!d1Values)
+    return d1Values.takeError();
+  auto d2Values = nodeOutputs(*d2, 4);
+  if (!d2Values)
+    return d2Values.takeError();
+  auto carryBackedge = fu->createBackedge(*bits64);
+  if (!carryBackedge)
+    return carryBackedge.takeError();
+  auto carryFeedback = fu->addDemux(carryBackedge->value(), 3);
+  if (!carryFeedback)
+    return carryFeedback.takeError();
+  auto carryFeedbackValues = nodeOutputs(*carryFeedback, 3);
+  if (!carryFeedbackValues)
+    return carryFeedbackValues.takeError();
+
+  auto integerAddRhs = fu->addMux({(*d2Values)[1], (*carryFeedbackValues)[0]});
+  if (!integerAddRhs)
+    return integerAddRhs.takeError();
+  auto floatAddRhs = fu->addMux({(*d2Values)[2], (*carryFeedbackValues)[1]});
+  if (!floatAddRhs)
+    return floatAddRhs.takeError();
+  auto fmaAddend = fu->addMux({(*d2Values)[0], (*carryFeedbackValues)[2]});
+  if (!fmaAddend)
+    return fmaAddend.takeError();
+  auto integerAddRhsValue = integerAddRhs->output(0);
+  if (!integerAddRhsValue)
+    return integerAddRhsValue.takeError();
+  auto floatAddRhsValue = floatAddRhs->output(0);
+  if (!floatAddRhsValue)
+    return floatAddRhsValue.takeError();
+  auto fmaAddendValue = fmaAddend->output(0);
+  if (!fmaAddendValue)
+    return fmaAddendValue.takeError();
+
+  const auto integerParams =
+      ::fabric::ScalarIntegerParams{ordinaryIntegerWidths()};
+  const auto floatParams = ::fabric::ScalarFloatParams{
+      floatFormats(), ::fabric::FloatBehaviorProfile::strictIEEE()};
+  const auto operationSpec = [&](ImplementationFamilyId family,
+                                 const FamilyCapabilityParams &parameters) {
+    return OperationCapabilitySpec{
+        family, parameters, familyMembers(family), {*bits64}};
+  };
+
+  auto integerMultiply = fu->addOperation(
+      {(*d0Values)[0], (*d1Values)[0]},
+      operationSpec(ImplementationFamilyId::ScalarIntegerMultiply,
+                    integerParams));
+  if (!integerMultiply)
+    return integerMultiply.takeError();
+  auto floatMultiply = fu->addOperation(
+      {(*d0Values)[1], (*d1Values)[1]},
+      operationSpec(ImplementationFamilyId::ScalarFloatMultiply, floatParams));
+  if (!floatMultiply)
+    return floatMultiply.takeError();
+
+  auto integerMultiplyValue = integerMultiply->output(0);
+  if (!integerMultiplyValue)
+    return integerMultiplyValue.takeError();
+  auto floatMultiplyValue = floatMultiply->output(0);
+  if (!floatMultiplyValue)
+    return floatMultiplyValue.takeError();
+  auto integerMultiplyRoutes = fu->addDemux(*integerMultiplyValue, 2);
+  if (!integerMultiplyRoutes)
+    return integerMultiplyRoutes.takeError();
+  auto floatMultiplyRoutes = fu->addDemux(*floatMultiplyValue, 2);
+  if (!floatMultiplyRoutes)
+    return floatMultiplyRoutes.takeError();
+  auto integerMultiplyRouteValues = nodeOutputs(*integerMultiplyRoutes, 2);
+  if (!integerMultiplyRouteValues)
+    return integerMultiplyRouteValues.takeError();
+  auto floatMultiplyRouteValues = nodeOutputs(*floatMultiplyRoutes, 2);
+  if (!floatMultiplyRouteValues)
+    return floatMultiplyRouteValues.takeError();
+
+  auto integerAdd = fu->addOperation(
+      {(*integerMultiplyRouteValues)[1], *integerAddRhsValue},
+      operationSpec(ImplementationFamilyId::ScalarIntegerAddSub,
+                    integerParams));
+  if (!integerAdd)
+    return integerAdd.takeError();
+  auto floatAdd = fu->addOperation(
+      {(*floatMultiplyRouteValues)[1], *floatAddRhsValue},
+      operationSpec(ImplementationFamilyId::ScalarFloatAddSub, floatParams));
+  if (!floatAdd)
+    return floatAdd.takeError();
+  auto fusedFma = fu->addOperation(
+      {(*d0Values)[2], (*d1Values)[2], *fmaAddendValue},
+      operationSpec(ImplementationFamilyId::ScalarFloatFma, floatParams));
+  if (!fusedFma)
+    return fusedFma.takeError();
+
+  auto integerAddValue = integerAdd->output(0);
+  if (!integerAddValue)
+    return integerAddValue.takeError();
+  auto floatAddValue = floatAdd->output(0);
+  if (!floatAddValue)
+    return floatAddValue.takeError();
+  auto fusedFmaValue = fusedFma->output(0);
+  if (!fusedFmaValue)
+    return fusedFmaValue.takeError();
+  auto integerAddRoutes = fu->addDemux(*integerAddValue, 2);
+  if (!integerAddRoutes)
+    return integerAddRoutes.takeError();
+  auto floatAddRoutes = fu->addDemux(*floatAddValue, 2);
+  if (!floatAddRoutes)
+    return floatAddRoutes.takeError();
+  auto fmaRoutes = fu->addDemux(*fusedFmaValue, 2);
+  if (!fmaRoutes)
+    return fmaRoutes.takeError();
+  auto integerAddRouteValues = nodeOutputs(*integerAddRoutes, 2);
+  if (!integerAddRouteValues)
+    return integerAddRouteValues.takeError();
+  auto floatAddRouteValues = nodeOutputs(*floatAddRoutes, 2);
+  if (!floatAddRouteValues)
+    return floatAddRouteValues.takeError();
+  auto fmaRouteValues = nodeOutputs(*fmaRoutes, 2);
+  if (!fmaRouteValues)
+    return fmaRouteValues.takeError();
+
+  auto carryNext =
+      fu->addMux({(*integerAddRouteValues)[1], (*floatAddRouteValues)[1],
+                  (*fmaRouteValues)[1]});
+  if (!carryNext)
+    return carryNext.takeError();
+  auto carryNextValue = carryNext->output(0);
+  if (!carryNextValue)
+    return carryNextValue.takeError();
+  auto carry = fu->addOperation({boundary[3], (*d2Values)[3], *carryNextValue},
+                                operationSpec(ImplementationFamilyId::LoopCarry,
+                                              ::fabric::TokenPlaneParams{}));
+  if (!carry)
+    return carry.takeError();
+  auto carryOutput = carry->output(0);
+  if (!carryOutput)
+    return carryOutput.takeError();
+  if (llvm::Error error =
+          fu->resolveBackedge(std::move(*carryBackedge), *carryOutput))
+    return error;
+
+  auto result = fu->addMux({(*integerMultiplyRouteValues)[0],
+                            (*floatMultiplyRouteValues)[0],
+                            (*fmaRouteValues)[0], (*integerAddRouteValues)[0],
+                            (*floatAddRouteValues)[0], *carryOutput});
+  if (!result)
+    return result.takeError();
+
+  auto addTemplate = [&](std::vector<FuNode> operations,
+                         std::vector<FuRouteSelection> routes) {
+    return fu->addCapabilityTemplate(
+        FuCapabilityTemplateSpec{std::move(operations), std::move(routes)});
+  };
+  if (llvm::Error error = addTemplate(
+          {*integerMultiply},
+          {{*d0, 0}, {*d1, 0}, {*integerMultiplyRoutes, 0}, {*result, 0}}))
+    return error;
+  if (llvm::Error error = addTemplate(
+          {*floatMultiply},
+          {{*d0, 1}, {*d1, 1}, {*floatMultiplyRoutes, 0}, {*result, 1}}))
+    return error;
+  if (llvm::Error error = addTemplate({*fusedFma}, {{*d0, 2},
+                                                    {*d1, 2},
+                                                    {*d2, 0},
+                                                    {*fmaAddend, 0},
+                                                    {*fmaRoutes, 0},
+                                                    {*result, 2}}))
+    return error;
+  if (llvm::Error error = addTemplate({*integerMultiply, *integerAdd},
+                                      {{*d0, 0},
+                                       {*d1, 0},
+                                       {*d2, 1},
+                                       {*integerMultiplyRoutes, 1},
+                                       {*integerAddRhs, 0},
+                                       {*integerAddRoutes, 0},
+                                       {*result, 3}}))
+    return error;
+  if (llvm::Error error =
+          addTemplate({*floatMultiply, *floatAdd}, {{*d0, 1},
+                                                    {*d1, 1},
+                                                    {*d2, 2},
+                                                    {*floatMultiplyRoutes, 1},
+                                                    {*floatAddRhs, 0},
+                                                    {*floatAddRoutes, 0},
+                                                    {*result, 4}}))
+    return error;
+  if (llvm::Error error = addTemplate({*integerMultiply, *integerAdd, *carry},
+                                      {{*d0, 0},
+                                       {*d1, 0},
+                                       {*d2, 3},
+                                       {*integerMultiplyRoutes, 1},
+                                       {*carryFeedback, 0},
+                                       {*integerAddRhs, 1},
+                                       {*integerAddRoutes, 1},
+                                       {*carryNext, 0},
+                                       {*result, 5}}))
+    return error;
+  if (llvm::Error error = addTemplate({*floatMultiply, *floatAdd, *carry},
+                                      {{*d0, 1},
+                                       {*d1, 1},
+                                       {*d2, 3},
+                                       {*floatMultiplyRoutes, 1},
+                                       {*carryFeedback, 1},
+                                       {*floatAddRhs, 1},
+                                       {*floatAddRoutes, 1},
+                                       {*carryNext, 1},
+                                       {*result, 5}}))
+    return error;
+  if (llvm::Error error = addTemplate({*fusedFma, *carry}, {{*d0, 2},
+                                                            {*d1, 2},
+                                                            {*d2, 3},
+                                                            {*carryFeedback, 2},
+                                                            {*fmaAddend, 1},
+                                                            {*fmaRoutes, 1},
+                                                            {*carryNext, 2},
+                                                            {*result, 5}}))
+    return error;
+
+  auto output = result->output(0);
+  if (!output)
+    return output.takeError();
+  return fu->close({*output});
 }
 
 llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
