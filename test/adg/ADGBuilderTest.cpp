@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 
 #include "Common/ArtifactStore.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
 
@@ -78,6 +79,7 @@ using loom::adg::FifoSpec;
 using loom::adg::FuConfigurationMode;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
+using loom::adg::MemorySpec;
 using loom::adg::OperationCapabilitySpec;
 using loom::adg::PeSpec;
 using loom::adg::PortType;
@@ -121,6 +123,75 @@ integerCapability(::fabric::ImplementationFamilyId family,
           ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I32})},
       {operation},
       {outputType}};
+}
+
+::fabric::UnsignedDomain singleton(std::uint64_t value) {
+  return take("memory singleton",
+              ::fabric::UnsignedDomain::fromCanonical({{value, value}}));
+}
+
+::fabric::MemoryOperationPortDeclaration loadPortDeclaration() {
+  ::fabric::ResourceContractDeclaration resource;
+  resource.states = {::fabric::ResourceStateDeclaration{
+      ::fabric::StateKey(0),
+      {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
+        ::fabric::CapacityUnits(0)}}}};
+  resource.requesters = {::fabric::RequesterKey(0)};
+  resource.eligibilityCount = 1;
+  resource.eventCount = 1;
+  resource.timingContracts = {{::fabric::TimingContractKey(0), {0}}};
+  resource.usePatterns = {{::fabric::UsePatternKey(0),
+                           ::fabric::RequesterKey(0),
+                           ::fabric::EligibilityKey(0),
+                           ::fabric::EventKey(0),
+                           ::fabric::EventKey(0),
+                           std::nullopt,
+                           ::fabric::TimingContractKey(0),
+                           {},
+                           {{{}}}}};
+
+  auto alignment =
+      take("memory alignment",
+           ::fabric::AlignmentDomain::create(
+               take("memory alignment range",
+                    ::fabric::UnsignedDomain::fromCanonical({{0, 63}}))));
+  auto read = take(
+      "memory read semantics",
+      ::fabric::ClosedEnumDomain<::fabric::ReadSubwordSemantics>::fromCanonical(
+          {::fabric::ReadSubwordSemantics::Exact}));
+  auto write =
+      take("memory write semantics",
+           ::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
+               fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
+  auto access =
+      take("memory access class",
+           ::fabric::MemoryAccessClass::create(
+               ::dataflow::semantics::MemoryAccessForm::Element, singleton(32),
+               singleton(1),
+               {{::dataflow::semantics::MemoryMaskForm::Absent,
+                 ::fabric::InactiveLaneSemantics::NotApplicable}},
+               std::move(alignment), std::move(read), std::move(write)));
+  auto accessDomain = take(
+      "memory access domain",
+      ::fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
+  ::fabric::MemoryActorContractClause plain =
+      ::fabric::LoadStorePlainContractClause{{false}};
+  auto actorDomain =
+      take("memory actor domain",
+           ::fabric::MemoryActorContractDomain::create(
+               ::dataflow::OperationSchemaId::DataflowLoad, {plain}));
+
+  return {{0, 1, 2, 3},
+          take("memory resource contract",
+               ::fabric::ResourceContract::create(std::move(resource))),
+          {{::fabric::MemoryPortTransactionProjection::Direct}},
+          {{std::move(actorDomain),
+            {{::dataflow::semantics::ServiceValueRole::Address, 0},
+             {::dataflow::semantics::ServiceValueRole::Control, 1},
+             {::dataflow::semantics::ServiceValueRole::Data, 2},
+             {::dataflow::semantics::ServiceValueRole::Completion, 3}},
+            std::move(accessDomain),
+            {::fabric::UsePatternKey(0)}}}};
 }
 
 void regularAndIrregularSpatialCoresFinalize() {
@@ -193,6 +264,7 @@ void foreignHandlesAndIncompleteRootsFailClosed() {
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
   const PortType bits32 = take(test, PortType::bits(32));
+  expectError(test, PortType::memory({-1}, bits32), "invalid extent");
 
   auto first =
       take(test, design.createSpatialCore("first", {bits32}, {bits32}));
@@ -309,11 +381,48 @@ void typedPeFuGraphsFinalize() {
           "temporal PE lost its operand-buffer resource contract");
 }
 
+void typedMemoryEngineFinalizes() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+
+  const PortType bits0 = take(test, PortType::bits(0));
+  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType memory32 =
+      take(test, PortType::memory({PortType::kDynamicExtent}, bits32));
+  auto spatial = take(test, design.createSpatialCore("memory-engine",
+                                                     {memory32, bits32, bits0},
+                                                     {bits32, bits0}));
+  auto outputs = take(
+      test, spatial.addMemory(
+                {take(test, spatial.input(0)), take(test, spatial.input(1)),
+                 take(test, spatial.input(2))},
+                MemorySpec::spatial({memory32, bits32, bits0}, {bits32, bits0},
+                                    {0}, {}, {loadPortDeclaration()})));
+  if (llvm::Error error = spatial.close(outputs))
+    fail(test, llvm::toString(std::move(error)));
+
+  loom::adg::FinalizedFabricDesign finalized =
+      take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "memory design did not publish one SpatialCore root");
+  const auto &view = finalized.roots().front().view();
+  const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
+      test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
+  auto ports = view.memoryOperationPorts(memory);
+  require(test,
+          ports.size() == 1 && view.memoryOperationPort(ports.front()) &&
+              view.memoryCapabilityAlternative({ports.front(), 0}),
+          "typed memory capability was not preserved by Fabric finalization");
+}
+
 } // namespace
 
 int main() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
   typedPeFuGraphsFinalize();
+  typedMemoryEngineFinalizes();
   return EXIT_SUCCESS;
 }

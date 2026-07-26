@@ -6,6 +6,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricEnums.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -15,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -31,6 +33,9 @@ class PeBuilder;
 class PortType final {
 public:
   enum class Kind : std::uint8_t { Bits, TaggedBits, Memory };
+
+  static constexpr std::int64_t kDynamicExtent =
+      std::numeric_limits<std::int64_t>::min();
 
   static llvm::Expected<PortType> bits(std::uint32_t width);
   static llvm::Expected<PortType> taggedBits(std::uint32_t width,
@@ -205,6 +210,36 @@ struct SwitchSpec final {
            std::uint32_t routeTableSize);
 };
 
+/// One exact spatial fabric.mem Operation Engine declaration.
+class MemorySpec final {
+public:
+  static MemorySpec
+  spatial(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+          std::vector<std::uint32_t> managerInputOrdinals,
+          std::vector<std::uint32_t> subordinateOutputOrdinals,
+          std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
+
+private:
+  MemorySpec(
+      std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+      std::vector<std::uint32_t> managerInputOrdinals,
+      std::vector<std::uint32_t> subordinateOutputOrdinals,
+      std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts)
+      : inputTypes_(std::move(inputTypes)),
+        outputTypes_(std::move(outputTypes)),
+        managerInputOrdinals_(std::move(managerInputOrdinals)),
+        subordinateOutputOrdinals_(std::move(subordinateOutputOrdinals)),
+        operationPorts_(std::move(operationPorts)) {}
+
+  std::vector<PortType> inputTypes_;
+  std::vector<PortType> outputTypes_;
+  std::vector<std::uint32_t> managerInputOrdinals_;
+  std::vector<std::uint32_t> subordinateOutputOrdinals_;
+  std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts_;
+
+  friend class SpatialCoreBuilder;
+};
+
 class FuBuilder final {
 public:
   llvm::Expected<FuValue> input(std::size_t ordinal) const;
@@ -277,6 +312,9 @@ public:
 
   llvm::Expected<std::vector<SpatialValue>>
   addSwitch(llvm::ArrayRef<SpatialValue> inputs, const SwitchSpec &spec);
+
+  llvm::Expected<std::vector<SpatialValue>>
+  addMemory(llvm::ArrayRef<SpatialValue> inputs, const MemorySpec &spec);
 
   llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
                                   const PeSpec &spec);

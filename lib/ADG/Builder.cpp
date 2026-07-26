@@ -104,15 +104,11 @@ public:
 } // namespace detail
 
 llvm::Expected<PortType> PortType::bits(std::uint32_t width) {
-  if (width == 0)
-    return invalid("Fabric bits port requires a positive width");
   return PortType(Kind::Bits, width, 0, {});
 }
 
 llvm::Expected<PortType> PortType::taggedBits(std::uint32_t width,
                                               std::uint32_t tagWidth) {
-  if (width == 0)
-    return invalid("Fabric tagged-bits port requires a positive data width");
   if (tagWidth == 0)
     return invalid("tagged Fabric port requires a positive tag width");
   return PortType(Kind::TaggedBits, width, tagWidth, {});
@@ -124,8 +120,10 @@ llvm::Expected<PortType> PortType::memory(llvm::ArrayRef<std::int64_t> shape,
     return invalid("Fabric memory element cannot itself be a memory port");
   if (elementType.kind() == Kind::TaggedBits)
     return invalid("Fabric memref element must be untagged bits");
+  if (elementType.width() == 0)
+    return invalid("Fabric memref element requires a positive data width");
   for (std::int64_t extent : shape)
-    if (extent == 0 || extent < mlir::ShapedType::kDynamic)
+    if (extent <= 0 && extent != PortType::kDynamicExtent)
       return invalid("Fabric memory shape contains an invalid extent");
   return PortType(Kind::Memory, elementType.width(), elementType.tagWidth(),
                   std::vector<std::int64_t>(shape.begin(), shape.end()));
@@ -173,6 +171,17 @@ SwitchSpec::temporal(std::vector<PortType> inputTypes,
                      std::uint32_t routeTableSize) {
   return {::fabric::Schedule::Temporal, std::move(inputTypes),
           std::move(outputTypes), std::move(sourcesByOutput), routeTableSize};
+}
+
+MemorySpec MemorySpec::spatial(
+    std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+    std::vector<std::uint32_t> managerInputOrdinals,
+    std::vector<std::uint32_t> subordinateOutputOrdinals,
+    std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts) {
+  return MemorySpec(std::move(inputTypes), std::move(outputTypes),
+                    std::move(managerInputOrdinals),
+                    std::move(subordinateOutputOrdinals),
+                    std::move(operationPorts));
 }
 
 namespace {
@@ -779,6 +788,125 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
   std::vector<SpatialValue> results;
   results.reserve(sw.getNumResults());
   for (mlir::Value result : sw.getResults())
+    results.push_back(SpatialValue(*state, rootOrdinal_, result));
+  return results;
+}
+
+llvm::Expected<std::vector<SpatialValue>>
+SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
+                              const MemorySpec &spec) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (rootOrdinal_ >= (*state)->roots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  if (root.closed)
+    return invalid("SpatialCore is already closed");
+  if (inputs.size() != spec.inputTypes_.size())
+    return invalid("memory input count does not match its typed contract");
+  if (spec.operationPorts_.empty())
+    return invalid("memory Operation Engine requires an operation port");
+
+  llvm::SmallVector<mlir::Value, 8> values;
+  llvm::SmallVector<mlir::Type, 8> inputTypes;
+  llvm::SmallVector<mlir::Type, 8> outputTypes;
+  bool hasNormalizedInput = false;
+  for (auto [value, type] : llvm::zip(inputs, spec.inputTypes_)) {
+    auto resolved = resolveValue(*state, value);
+    if (!resolved)
+      return resolved.takeError();
+    if (!resolved->use_empty())
+      return invalid("SpatialCore transport source already has a consumer");
+    mlir::Type inputType = materializePortType((*state)->context, type);
+    if (!sameFabricKind(resolved->getType(), inputType) ||
+        (mlir::isa<mlir::MemRefType>(inputType) &&
+         resolved->getType() != inputType))
+      return invalid("memory source and input port have incompatible types");
+    hasNormalizedInput |= resolved->getType() != inputType;
+    values.push_back(*resolved);
+    inputTypes.push_back(inputType);
+  }
+  for (const PortType &type : spec.outputTypes_)
+    outputTypes.push_back(materializePortType((*state)->context, type));
+
+  auto encodeOrdinals =
+      [&](llvm::ArrayRef<std::uint32_t> ordinals, std::size_t endpointCount,
+          llvm::StringRef role) -> llvm::Expected<mlir::DenseI32ArrayAttr> {
+    llvm::SmallVector<std::int32_t, 4> encoded;
+    encoded.reserve(ordinals.size());
+    std::optional<std::uint32_t> previous;
+    for (std::uint32_t ordinal : ordinals) {
+      if (ordinal >= endpointCount)
+        return invalid(role + " memory endpoint ordinal is out of range");
+      if (ordinal >
+          static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+        return invalid(role + " memory endpoint ordinal does not fit i32");
+      if (previous && ordinal <= *previous)
+        return invalid(role +
+                       " memory endpoint ordinals must be strictly increasing");
+      previous = ordinal;
+      encoded.push_back(static_cast<std::int32_t>(ordinal));
+    }
+    return mlir::DenseI32ArrayAttr::get(&(*state)->context, encoded);
+  };
+
+  auto managers =
+      encodeOrdinals(spec.managerInputOrdinals_, inputTypes.size(), "manager");
+  if (!managers)
+    return managers.takeError();
+  auto subordinates = encodeOrdinals(spec.subordinateOutputOrdinals_,
+                                     outputTypes.size(), "subordinate");
+  if (!subordinates)
+    return subordinates.takeError();
+
+  mlir::FunctionType functionType =
+      mlir::FunctionType::get(&(*state)->context, inputTypes, outputTypes);
+  auto endpoints =
+      ::fabric::deriveMemoryTransportEndpointInventory(functionType);
+  if (!endpoints)
+    return endpoints.takeError();
+
+  llvm::SmallVector<mlir::Attribute, 4> encodedPorts;
+  encodedPorts.reserve(spec.operationPorts_.size());
+  for (const ::fabric::MemoryOperationPortDeclaration &declaration :
+       spec.operationPorts_) {
+    auto record = ::fabric::MemoryOperationPortRecord::create(
+        &(*state)->context, ::fabric::Schedule::Spatial, *endpoints,
+        declaration);
+    if (!record)
+      return record.takeError();
+    auto bytes = ::fabric::encodeMemoryOperationPortRecord(*record);
+    if (!bytes)
+      return bytes.takeError();
+    llvm::SmallVector<std::int8_t, 64> signedBytes;
+    signedBytes.reserve(bytes->size());
+    for (std::uint8_t byte : *bytes)
+      signedBytes.push_back(static_cast<std::int8_t>(byte));
+    encodedPorts.push_back(
+        mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes));
+  }
+
+  auto contract = ::fabric::MemoryContractAttr::get(
+      &(*state)->context,
+      ::fabric::MemoryEngineAttr::get(&(*state)->context,
+                                      ::fabric::Schedule::Spatial),
+      ::fabric::LocalMemoryServiceAttr(), *managers, *subordinates);
+  mlir::OpBuilder builder(&(*state)->context);
+  builder.setInsertionPointToEnd(&root.operation.getBody().front());
+  auto memory = ::fabric::MemOp::create(
+      builder, root.operation.getLoc(), outputTypes, values, mlir::StringAttr(),
+      mlir::TypeAttr(), contract,
+      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(inputTypes)
+                         : llvm::ArrayRef<mlir::Type>(),
+      mlir::ArrayAttr(),
+      mlir::ArrayAttr::get(&(*state)->context, encodedPorts));
+  if (llvm::Error error = verifyNewOperation(memory, "memory"))
+    return std::move(error);
+
+  std::vector<SpatialValue> results;
+  results.reserve(memory.getNumResults());
+  for (mlir::Value result : memory.getResults())
     results.push_back(SpatialValue(*state, rootOrdinal_, result));
   return results;
 }
