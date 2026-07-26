@@ -811,6 +811,81 @@ void fuBackedgesAreExplicitAndResolved() {
           "resolved FU backedge did not finalize");
 }
 
+void routedFuLibraryBuildsHeterogeneousBoundaries() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits128 = take(test, PortType::bits(128));
+
+  auto adapter = take(test, design.createSpatialCore(
+                                "vector-adapter", {bits128, bits128, bits128},
+                                {bits128, bits128, bits128}));
+  auto adapterPe =
+      take(test, adapter.addPe({take(test, adapter.input(0)),
+                                take(test, adapter.input(1)),
+                                take(test, adapter.input(2))},
+                               PeSpec::spatial({bits128, bits128, bits128},
+                                               {bits128, bits128, bits128})));
+  std::vector<loom::adg::PeValue> adapterInputs;
+  for (std::size_t ordinal = 0; ordinal != 3; ++ordinal)
+    adapterInputs.push_back(take(test, adapterPe.input(ordinal)));
+  if (llvm::Error error =
+          loom::adg::addVectorAdapterFu(adapterPe, adapterInputs))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = adapterPe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = adapter.close({take(test, adapterPe.output(0)),
+                                         take(test, adapterPe.output(1)),
+                                         take(test, adapterPe.output(2))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto token = take(test, design.createSpatialCore(
+                              "token-control",
+                              {bits128, bits128, bits128, bits128, bits128},
+                              {bits128, bits128, bits128, bits128}));
+  auto tokenPe = take(
+      test,
+      token.addPe({take(test, token.input(0)), take(test, token.input(1)),
+                   take(test, token.input(2)), take(test, token.input(3)),
+                   take(test, token.input(4))},
+                  PeSpec::spatial({bits128, bits128, bits128, bits128, bits128},
+                                  {bits128, bits128, bits128, bits128})));
+  std::vector<loom::adg::PeValue> tokenInputs;
+  for (std::size_t ordinal = 0; ordinal != 5; ++ordinal)
+    tokenInputs.push_back(take(test, tokenPe.input(ordinal)));
+  if (llvm::Error error = loom::adg::addTokenControlFu(tokenPe, tokenInputs))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = tokenPe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = token.close(
+          {take(test, tokenPe.output(0)), take(test, tokenPe.output(1)),
+           take(test, tokenPe.output(2)), take(test, tokenPe.output(3))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "routed FU helpers did not finalize both boundary shapes");
+  for (const auto &root : finalized.roots())
+    require(test,
+            root.view()
+                    .fuCapabilityTemplates(uniqueFuTemplate(test, root.view()))
+                    .size() == 4,
+            "routed FU helper did not derive four complete templates");
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  for (const auto &root : finalized.roots())
+    if (llvm::Error error = loom::fabric::writeFabricMlir(root, stream))
+      fail(test, llvm::toString(std::move(error)));
+  stream.flush();
+  require(test,
+          llvm::StringRef(text).contains("FixedVectorParallelize") &&
+              llvm::StringRef(text).contains("FixedVectorSerialize") &&
+              llvm::StringRef(text).contains("TokenSync") &&
+              llvm::StringRef(text).contains("TokenDemux"),
+          "routed FU helpers lost heterogeneous operation capabilities");
+}
+
 void heterogeneousSystemFinalizes() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -968,6 +1043,7 @@ int main() {
   typedMemoryFormsFinalize();
   publicFuLibraryBuildsTypedGraphs();
   fuBackedgesAreExplicitAndResolved();
+  routedFuLibraryBuildsHeterogeneousBoundaries();
   heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;
 }

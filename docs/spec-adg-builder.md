@@ -671,6 +671,40 @@ a distinct software graph. The helper does not imply one shared special-math
 circuit: each genuine sharing relation remains owned by its registered
 implementation family.
 
+#### VectorAdapterFu Resource Inventory
+
+`VectorAdapterFu` contains one resource from each of `FixedVectorPack`,
+`FixedVectorUnpack`, `FixedVectorParallelize`, and `FixedVectorSerialize`.
+Its fixed boundary is:
+
+```text
+outer: bits<128>, bits<128>, bits<128>
+    -> bits<128>, bits<128>, bits<128>
+inner: data/vector bits<128>, mask bits<128>, phase bits<1>
+    -> data/vector bits<128>, mask bits<128>, phase bits<1>
+```
+
+Pack and unpack use the first data role and first result role. Parallelize
+uses data and phase and produces all three result roles. Serialize uses data,
+mask, and phase and produces data plus phase. The helper derives exactly four
+complete structural templates; omitted required results are not legal
+configurations.
+
+#### TokenControlFu Resource Inventory
+
+`TokenControlFu` contains one resource from each of `TokenConstant`,
+`TokenSync`, `TokenMux`, and `TokenDemux`. Its fixed boundary has one 64-bit
+inner selector/control role followed by four 128-bit payload roles and exposes
+four 128-bit result roles. All outer ports are 128-bit payload ports; the FU
+boundary truncates the selector/control input to its low 64 bits.
+
+The initial runtime mux and demux fan capacity is four. Sync consumes and
+publishes all four payload roles, mux consumes selector plus all payload roles,
+demux consumes selector plus the first payload role and publishes all four,
+and constant consumes the control role and publishes the first result role.
+These are four distinct physical operation families and exactly four complete
+structural templates, not one shared token-control circuit.
+
 ### Payload And Type Floor
 
 Every preset in the initial family uses a 128-bit ordinary PE and

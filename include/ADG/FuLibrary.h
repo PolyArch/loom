@@ -17,6 +17,15 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
 /// vector condition, in that order.
 llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
 
+/// Adds fixed-vector representation and stream-group adapters. Inputs are
+/// data/vector, mask, and phase. Results are data/vector, mask, and phase.
+llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+
+/// Adds constant, rendezvous, and runtime token-routing resources. Inputs are
+/// selector/control followed by four payload lanes. Four payload lanes are
+/// exposed as results.
+llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+
 /// Adds the low-density scalar divide, remainder, and elementary math FU.
 /// Inputs are data0 and data1, in that order.
 llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);

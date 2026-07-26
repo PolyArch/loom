@@ -24,6 +24,14 @@ struct SelectableResource {
   std::vector<std::uint32_t> inputRoles;
 };
 
+struct RoutedResource {
+  ImplementationFamilyId family;
+  FamilyCapabilityParams parameters;
+  std::vector<std::uint32_t> inputRoles;
+  std::vector<PortType> resultTypes;
+  std::vector<std::uint32_t> outputRoles;
+};
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "adg_fu_library_invalid: " + message);
@@ -116,27 +124,36 @@ std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family) {
   return {members.begin(), members.end()};
 }
 
-llvm::Error addSelectableFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
-                            std::vector<PortType> innerInputTypes,
-                            PortType innerOutputType, PortType outerOutputType,
-                            llvm::ArrayRef<SelectableResource> resources) {
+llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                        std::vector<PortType> innerInputTypes,
+                        std::vector<PortType> outerOutputTypes,
+                        llvm::ArrayRef<RoutedResource> resources) {
   if (inputs.size() != innerInputTypes.size())
     return invalid("helper input count does not match its boundary");
-  if (resources.size() < 2)
-    return invalid("selectable FU requires at least two physical resources");
+  if (resources.empty() || outerOutputTypes.empty())
+    return invalid("routed FU requires physical resources and outputs");
 
-  auto fu = pe.addFu(
-      inputs, FuSpec{std::move(innerInputTypes), {std::move(outerOutputType)}});
+  auto fu =
+      pe.addFu(inputs, FuSpec{std::move(innerInputTypes), outerOutputTypes});
   if (!fu)
     return fu.takeError();
 
   std::vector<std::uint32_t> useCounts(inputs.size(), 0);
-  for (const SelectableResource &resource : resources)
+  std::vector<std::uint32_t> producerCounts(outerOutputTypes.size(), 0);
+  for (const RoutedResource &resource : resources) {
+    if (resource.resultTypes.size() != resource.outputRoles.size())
+      return invalid("routed resource result roles do not match its results");
     for (std::uint32_t role : resource.inputRoles) {
       if (role >= useCounts.size())
         return invalid("physical resource names an unknown FU input role");
       ++useCounts[role];
     }
+    for (std::uint32_t role : resource.outputRoles) {
+      if (role >= producerCounts.size())
+        return invalid("physical resource names an unknown FU output role");
+      ++producerCounts[role];
+    }
+  }
 
   std::vector<std::vector<FuValue>> routed(inputs.size());
   for (std::size_t role = 0; role != inputs.size(); ++role) {
@@ -156,28 +173,60 @@ llvm::Error addSelectableFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   }
 
   std::vector<std::uint32_t> nextRoute(inputs.size(), 0);
-  std::vector<FuValue> results;
-  results.reserve(resources.size());
-  for (const SelectableResource &resource : resources) {
-    llvm::SmallVector<FuValue, 4> operationInputs;
+  std::vector<std::vector<FuValue>> outputSources(outerOutputTypes.size());
+  for (const RoutedResource &resource : resources) {
+    llvm::SmallVector<FuValue, 8> operationInputs;
     for (std::uint32_t role : resource.inputRoles)
       operationInputs.push_back(routed[role][nextRoute[role]++]);
     auto operationResults = fu->addOperation(
-        operationInputs, OperationCapabilitySpec{resource.family,
-                                                 resource.parameters,
-                                                 familyMembers(resource.family),
-                                                 {innerOutputType}});
+        operationInputs,
+        OperationCapabilitySpec{resource.family, resource.parameters,
+                                familyMembers(resource.family),
+                                resource.resultTypes});
     if (!operationResults)
       return operationResults.takeError();
-    if (operationResults->size() != 1)
-      return invalid("catalog compute resource must have one physical result");
-    results.push_back(operationResults->front());
+    if (operationResults->size() != resource.outputRoles.size())
+      return invalid("routed resource produced an unexpected result count");
+    for (auto [result, role] :
+         llvm::zip(*operationResults, resource.outputRoles))
+      outputSources[role].push_back(result);
   }
 
-  auto selected = fu->addMux(results);
-  if (!selected)
-    return selected.takeError();
-  return fu->close({*selected});
+  std::vector<FuValue> outputs;
+  outputs.reserve(outputSources.size());
+  for (auto [role, sources] : llvm::enumerate(outputSources)) {
+    if (sources.empty() || producerCounts[role] != sources.size())
+      return invalid("FU output role has no complete physical producer set");
+    if (sources.size() == 1) {
+      outputs.push_back(sources.front());
+      continue;
+    }
+    auto selected = fu->addMux(sources);
+    if (!selected)
+      return selected.takeError();
+    outputs.push_back(*selected);
+  }
+  return fu->close(outputs);
+}
+
+llvm::Error addSelectableFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                            std::vector<PortType> innerInputTypes,
+                            PortType innerOutputType, PortType outerOutputType,
+                            llvm::ArrayRef<SelectableResource> resources) {
+  if (inputs.size() != innerInputTypes.size())
+    return invalid("helper input count does not match its boundary");
+  if (resources.size() < 2)
+    return invalid("selectable FU requires at least two physical resources");
+  std::vector<RoutedResource> routed;
+  routed.reserve(resources.size());
+  for (const SelectableResource &resource : resources)
+    routed.push_back({resource.family,
+                      resource.parameters,
+                      resource.inputRoles,
+                      {innerOutputType},
+                      {0}});
+  return addRoutedFu(pe, inputs, std::move(innerInputTypes),
+                     {std::move(outerOutputType)}, routed);
 }
 
 SelectableResource scalarInteger(ImplementationFamilyId family,
@@ -315,6 +364,81 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   };
   return addSelectableFu(pe, inputs, {*bits128, *bits128, *bits128, *bits128},
                          *bits128, *bits128, resources);
+}
+
+llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+  if (inputs.size() != 3)
+    return invalid("VectorAdapterFu requires data, mask, and phase inputs");
+  auto bits128 = PortType::bits(128);
+  if (!bits128)
+    return bits128.takeError();
+  auto bits1 = PortType::bits(1);
+  if (!bits1)
+    return bits1.takeError();
+  const ::fabric::FixedVectorAdapterParams parameters{logicIntegerWidths(),
+                                                      floatFormats(), 128};
+  std::vector<RoutedResource> resources = {
+      {ImplementationFamilyId::FixedVectorPack,
+       parameters,
+       {0},
+       {*bits128},
+       {0}},
+      {ImplementationFamilyId::FixedVectorUnpack,
+       parameters,
+       {0},
+       {*bits128},
+       {0}},
+      {ImplementationFamilyId::FixedVectorParallelize,
+       parameters,
+       {0, 2},
+       {*bits128, *bits128, *bits1},
+       {0, 1, 2}},
+      {ImplementationFamilyId::FixedVectorSerialize,
+       parameters,
+       {0, 1, 2},
+       {*bits128, *bits1},
+       {0, 2}},
+  };
+  return addRoutedFu(pe, inputs, {*bits128, *bits128, *bits1},
+                     {*bits128, *bits128, *bits128}, resources);
+}
+
+llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+  if (inputs.size() != 5)
+    return invalid(
+        "TokenControlFu requires selector/control and four payload inputs");
+  auto bits128 = PortType::bits(128);
+  if (!bits128)
+    return bits128.takeError();
+  auto bits64 = PortType::bits(64);
+  if (!bits64)
+    return bits64.takeError();
+  const ::fabric::RoutedTokenParams routed{128, 4};
+  std::vector<RoutedResource> resources = {
+      {ImplementationFamilyId::TokenConstant,
+       ::fabric::PayloadCapacityParams{128},
+       {0},
+       {*bits128},
+       {0}},
+      {ImplementationFamilyId::TokenSync,
+       routed,
+       {1, 2, 3, 4},
+       {*bits128, *bits128, *bits128, *bits128},
+       {0, 1, 2, 3}},
+      {ImplementationFamilyId::TokenMux,
+       routed,
+       {0, 1, 2, 3, 4},
+       {*bits128},
+       {0}},
+      {ImplementationFamilyId::TokenDemux,
+       routed,
+       {0, 1},
+       {*bits128, *bits128, *bits128, *bits128},
+       {0, 1, 2, 3}},
+  };
+  return addRoutedFu(pe, inputs,
+                     {*bits64, *bits128, *bits128, *bits128, *bits128},
+                     {*bits128, *bits128, *bits128, *bits128}, resources);
 }
 
 llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
