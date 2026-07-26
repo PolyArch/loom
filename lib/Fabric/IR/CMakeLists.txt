@@ -67,6 +67,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricPrimitiveOps.cpp
   FabricPeTemporalOps.cpp
   FabricSwitchOp.cpp
+  FabricSystemOps.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric
@@ -85,6 +86,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricImplementationFamily
   LoomFabricMemoryOperationPort
   LoomFabricMemoryServiceContract
+  LoomFabricSystemContracts
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums

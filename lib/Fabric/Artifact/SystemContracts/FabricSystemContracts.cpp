@@ -452,6 +452,29 @@ bool allPositive(const OutOfOrderMicroarchitectureDeclaration &pipeline) {
 
 } // namespace
 
+std::vector<std::uint8_t> loom::fabric::encodeFabricImportedModuleTargetRef(
+    const FabricImportedModuleTargetRef &reference) {
+  FabricByteWriter writer;
+  writer.field(reference.dependencyOrdinal);
+  encodeFabricRef(writer, reference.target);
+  return writer.take();
+}
+
+llvm::Expected<FabricImportedModuleTargetRef>
+loom::fabric::decodeFabricImportedModuleTargetRef(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  FabricByteReader reader(bytes);
+  llvm::Expected<std::uint64_t> dependencyOrdinal = reader.field();
+  if (!dependencyOrdinal)
+    return dependencyOrdinal.takeError();
+  FabricModuleTemplateRef target;
+  if (llvm::Error error = decodeFabricRefInto(reader, target))
+    return std::move(error);
+  if (llvm::Error error = requireFinished(reader, "ImportedModule target"))
+    return std::move(error);
+  return FabricImportedModuleTargetRef{*dependencyOrdinal, target};
+}
+
 llvm::Expected<InstructionCoreArchitecturalContract>
 InstructionCoreArchitecturalContract::create(
     RiscVArchitectureDeclaration declaration) {

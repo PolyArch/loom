@@ -556,111 +556,88 @@ def Fabric_MemOp : Fabric_Op<"mem", [
 
 def Fabric_SystemOp : Fabric_Op<"system", [
     IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    Symbol,
-    SymbolTable
+    SingleBlock,
+    NoTerminator,
+    Symbol
 ]> {
-  let summary = "fabric system: system-level heterogeneous SoC ADG container";
+  let summary = "typed system-level heterogeneous hardware root";
   let description = [{
-    Top-level system ADG container. Carries a required symbol name and a
-    required memory model. The body is a symbolic hardware graph made of
-    `fabric.node`, `fabric.external_port`, and `fabric.link` operations.
-    Connectivity is represented by explicit `fabric.link` endpoint fields,
-    not by SSA values.
+    The single declarative architecture root. Its body has no block arguments,
+    SSA values, CFG successors, symbol table, or runtime terminator. Only the
+    closed `fabric.system.*` child operation catalog is admitted.
   }];
 
-  let arguments = (ins
-      SymbolNameAttr:$sym_name,
-      StrAttr:$memory_model,
-      OptionalAttr<StrAttr>:$model_name,
-      OptionalAttr<DictionaryAttr>:$params
-  );
+  let arguments = (ins SymbolNameAttr:$sym_name);
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = [{
-    $sym_name `memory_model` `=` $memory_model attr-dict-with-keyword $body
-  }];
+  let assemblyFormat = "$sym_name attr-dict-with-keyword $body";
   let hasVerifier = 1;
 }
 
-def Fabric_NodeOp : Fabric_Op<"node", [
-    HasParent<"::fabric::SystemOp">,
-    Symbol
-]> {
-  let summary = "fabric system node";
-  let description = [{
-    Physical system-level hardware instance. The baseline implementation uses
-    explicit string channel descriptors in the form `port.channel:direction`.
-    Later structured port attributes must preserve the same endpoint identity
-    and direction checks.
-  }];
-
-  let arguments = (ins
-      SymbolNameAttr:$sym_name,
-      StrAttr:$kind,
-      ArrayAttr:$ports,
-      OptionalAttr<FlatSymbolRefAttr>:$spatial,
-      OptionalAttr<StrAttr>:$scalar,
-      OptionalAttr<StrAttr>:$function,
-      OptionalAttr<I64Attr>:$bytes,
-      OptionalAttr<DictionaryAttr>:$params
-  );
-
-  let assemblyFormat = [{
-    $sym_name `kind` `=` $kind `ports` `=` $ports attr-dict-with-keyword
-  }];
-  let hasVerifier = 1;
-}
-
-def Fabric_ExternalPortOp : Fabric_Op<"external_port", [
-    HasParent<"::fabric::SystemOp">,
-    Symbol
-]> {
-  let summary = "fabric system external port";
-  let description = [{
-    Intentional system-boundary protocol exposure. The baseline implementation
-    uses the same `port.channel:direction` descriptors as `fabric.node`.
-  }];
-
-  let arguments = (ins
-      SymbolNameAttr:$sym_name,
-      ArrayAttr:$ports,
-      OptionalAttr<DictionaryAttr>:$params
-  );
-
-  let assemblyFormat = [{
-    $sym_name `ports` `=` $ports attr-dict-with-keyword
-  }];
-  let hasVerifier = 1;
-}
-
-def Fabric_LinkOp : Fabric_Op<"link", [
+def Fabric_SystemHostCoreOp : Fabric_Op<"system.host_core", [
     HasParent<"::fabric::SystemOp">
 ]> {
-  let summary = "fabric system point-to-point channel link";
+  let summary = "InstructionCore-only system compute entity";
   let description = [{
-    Directed point-to-point system link. The source endpoint must name an
-    output channel, and the destination endpoint must name an input channel
-    owned by a `fabric.node` or `fabric.external_port` in the same
-    `fabric.system`.
+    One HostCore with exact InstructionCore architecture and
+    microarchitecture records. `entity_id` is absent during authoring and is
+    assigned by Fabric canonical finalization.
   }];
 
   let arguments = (ins
-      FlatSymbolRefAttr:$src,
-      StrAttr:$src_port,
-      StrAttr:$src_channel,
-      FlatSymbolRefAttr:$dst,
-      StrAttr:$dst_port,
-      StrAttr:$dst_channel,
-      OptionalAttr<StrAttr>:$protocol,
-      OptionalAttr<I64Attr>:$latency,
-      OptionalAttr<DictionaryAttr>:$params
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$architecture,
+      DenseI8ArrayAttr:$microarchitecture
   );
 
   let assemblyFormat = [{
-    `src` `=` $src `src_port` `=` $src_port `src_channel` `=` $src_channel
-    `dst` `=` $dst `dst_port` `=` $dst_port `dst_channel` `=` $dst_channel
-    attr-dict-with-keyword
+    `architecture` `=` $architecture
+    `microarchitecture` `=` $microarchitecture attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemAccCoreOp : Fabric_Op<"system.acc_core", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "coupled InstructionCore and SpatialCore system entity";
+  let description = [{
+    One AccCore with exact InstructionCore architecture and microarchitecture
+    records plus one compact ImportedModule target for its SpatialCore.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$architecture,
+      DenseI8ArrayAttr:$microarchitecture,
+      DenseI8ArrayAttr:$spatial_core
+  );
+
+  let assemblyFormat = [{
+    `architecture` `=` $architecture
+    `microarchitecture` `=` $microarchitecture
+    `spatial_core` `=` $spatial_core attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "system-addressed memory service entity";
+  let description = [{
+    One exact MemoryServiceContractRecord interpreted in the System owner
+    context. The record remains the sole owner of regions, service admission,
+    resource state, timing, progress, and grant semantics.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      Fabric_MemoryServiceContractAttr:$service_contract
+  );
+
+  let assemblyFormat = [{
+    `contract` `=` $service_contract attr-dict
   }];
   let hasVerifier = 1;
 }
@@ -669,11 +646,10 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure
 ]> {
-  let summary = "terminator of a fabric.fu, named fabric.pe, fabric.module, or "
-                "fabric.system region";
+  let summary = "terminator of a fabric.fu, named fabric.pe, or fabric.module region";
   let description = [{
-    Closes the enclosing `fabric.fu`, named `fabric.pe`, `fabric.module`,
-    or `fabric.system` body.
+    Closes the enclosing `fabric.fu`, named `fabric.pe`, or `fabric.module`
+    body.
 
     Inside `fabric.fu`, `$values` supplies the values that leave the FU
     on its results; the number and types must match the parent op's
@@ -694,8 +670,6 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
 
       fabric.yield %v : !fabric.bits<32> to !fabric.bits<16>
 
-    Inside `fabric.system`, the terminator carries no values. System
-    connectivity is represented by `fabric.link` operations.
   }];
 
   // Yield operands are the SSA values being yielded. They must be one of

@@ -1,3 +1,5 @@
+add_subdirectory(SystemContracts)
+
 add_mlir_library(LoomFabricArtifact
   FabricArtifact.cpp
   FabricArtifactCodec.cpp
@@ -5,7 +7,6 @@ add_mlir_library(LoomFabricArtifact
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp
   FabricFuCapabilityDerivation.cpp
-  FabricSystemContracts.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Artifact
@@ -16,6 +17,7 @@ add_mlir_library(LoomFabricArtifact
   LoomFabricFifoResourceContract
   LoomFabricIdentity
   LoomFabricResourceContract
+  LoomFabricSystemContracts
   LoomFabricTemporalOperandBuffer
   MLIRFabric
   MLIRBytecodeReader

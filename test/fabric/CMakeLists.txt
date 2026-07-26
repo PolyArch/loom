@@ -279,5 +279,7 @@ target_link_libraries(loom-fabric-system-contract-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   LoomFabricIdentity
+  MLIRFabric
+  MLIRParser
   LLVMSupport
 )

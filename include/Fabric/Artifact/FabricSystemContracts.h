@@ -16,6 +16,26 @@
 namespace loom {
 namespace fabric {
 
+/// Compact target stored by a System field whose dependency role is
+/// statically ImportedModule. The dependency table owns the Artifact root;
+/// this record owns only its ordinal and the Module-owned local target.
+struct FabricImportedModuleTargetRef {
+  std::uint64_t dependencyOrdinal = 0;
+  FabricModuleTemplateRef target;
+
+  friend bool operator==(const FabricImportedModuleTargetRef &lhs,
+                         const FabricImportedModuleTargetRef &rhs) {
+    return lhs.dependencyOrdinal == rhs.dependencyOrdinal &&
+           lhs.target == rhs.target;
+  }
+};
+
+std::vector<std::uint8_t> encodeFabricImportedModuleTargetRef(
+    const FabricImportedModuleTargetRef &reference);
+
+llvm::Expected<FabricImportedModuleTargetRef>
+decodeFabricImportedModuleTargetRef(llvm::ArrayRef<std::uint8_t> bytes);
+
 enum class RiscVXLen : std::uint32_t { X32, X64 };
 enum class RiscVBase : std::uint32_t { I, E };
 enum class RiscVExtension : std::uint32_t {

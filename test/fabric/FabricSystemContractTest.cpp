@@ -1,7 +1,14 @@
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -10,6 +17,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -80,7 +88,8 @@ FabricTransferPatternRef patternA() {
               ::fabric::ResourceContract::create(declaration));
 }
 
-InstructionCoreArchitecturalContract representativeArchitecture() {
+InstructionCoreArchitecturalContract
+representativeArchitecture(bool acceleratorDispatcher = true) {
   RiscVArchitectureDeclaration declaration;
   declaration.xlen = RiscVXLen::X64;
   declaration.base = RiscVBase::I;
@@ -99,10 +108,24 @@ InstructionCoreArchitecturalContract representativeArchitecture() {
                             RiscVCodeModel::MediumAny};
   declaration.relocationModels = {RelocationModel::Static,
                                   RelocationModel::PositionIndependent};
-  declaration.runtimeServices = {InstructionRuntimeService::ThreadDispatch,
-                                 InstructionRuntimeService::SpatialLaunch};
+  if (acceleratorDispatcher)
+    declaration.runtimeServices = {InstructionRuntimeService::ThreadDispatch,
+                                   InstructionRuntimeService::SpatialLaunch};
   return take("representative architecture",
               InstructionCoreArchitecturalContract::create(declaration));
+}
+
+InstructionCoreMicroarchitecturalRealization representativeMicroarchitecture() {
+  InstructionCoreCommonDeclaration common{
+      2,
+      {{InstructionOperationClass::LoadStore, 1, 3, 1},
+       {InstructionOperationClass::IntegerAlu, 1, 1, 1},
+       {InstructionOperationClass::IntegerAlu, 2, 1, 1}},
+      instructionContextContract()};
+  InOrderMicroarchitectureDeclaration pipeline{2, 2, 2, 2, 1, 1, 8, 4};
+  return take("representative microarchitecture",
+              InstructionCoreMicroarchitecturalRealization::createInOrder(
+                  std::move(common), pipeline));
 }
 
 void checkInstructionArchitectureContract() {
@@ -134,18 +157,27 @@ void checkInstructionArchitectureContract() {
                  "accepted D without F");
 }
 
+void checkImportedModuleTargetReference() {
+  constexpr llvm::StringLiteral test = "ImportedModule target reference";
+  const FabricImportedModuleTargetRef expected{7, FabricModuleTemplateRef(19)};
+  const std::vector<std::uint8_t> encoded =
+      encodeFabricImportedModuleTargetRef(expected);
+  require(test, encoded.size() == 20,
+          "target must contain one u64 and one typed entity reference");
+  require(test,
+          take(test, decodeFabricImportedModuleTargetRef(encoded)) == expected,
+          "target changed during canonical round trip");
+
+  std::vector<std::uint8_t> trailing = encoded;
+  trailing.push_back(0);
+  expectRejected(test, decodeFabricImportedModuleTargetRef(trailing),
+                 "accepted noncanonical trailing bytes");
+}
+
 void checkInstructionMicroarchitectureContract() {
   constexpr llvm::StringLiteral test = "instruction microarchitecture contract";
-  InstructionCoreCommonDeclaration common{
-      2,
-      {{InstructionOperationClass::LoadStore, 1, 3, 1},
-       {InstructionOperationClass::IntegerAlu, 1, 1, 1},
-       {InstructionOperationClass::IntegerAlu, 2, 1, 1}},
-      instructionContextContract()};
-  InOrderMicroarchitectureDeclaration pipeline{2, 2, 2, 2, 1, 1, 8, 4};
   InstructionCoreMicroarchitecturalRealization inOrder =
-      take(test, InstructionCoreMicroarchitecturalRealization::createInOrder(
-                     std::move(common), pipeline));
+      representativeMicroarchitecture();
   require(test, inOrder.kind() == InstructionCoreRealizationKind::InOrder,
           "lost in-order realization variant");
   require(test,
@@ -179,6 +211,107 @@ void checkInstructionMicroarchitectureContract() {
               take(test, encodeInstructionCoreMicroarchitecturalRealization(
                              outOfOrder)) != encoded,
           "out-of-order realization did not retain distinct identity bytes");
+}
+
+std::string denseI8Assembly(mlir::MLIRContext &context,
+                            llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  mlir::DenseI8ArrayAttr::get(&context, signedBytes).print(stream);
+  return text;
+}
+
+void checkTypedSystemRoot() {
+  constexpr llvm::StringLiteral test = "typed System root";
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+
+  const std::vector<std::uint8_t> architecture = take(
+      test,
+      encodeInstructionCoreArchitecturalContract(representativeArchitecture()));
+  const std::vector<std::uint8_t> microarchitecture =
+      take(test, encodeInstructionCoreMicroarchitecturalRealization(
+                     representativeMicroarchitecture()));
+  const std::string source =
+      "module {\n"
+      "  fabric.system @soc {\n"
+      "    fabric.system.host_core architecture = " +
+      denseI8Assembly(context, architecture) +
+      " microarchitecture = " + denseI8Assembly(context, microarchitecture) +
+      "\n"
+      "  }\n"
+      "}\n";
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  require(test, static_cast<bool>(module),
+          "typed System root did not parse:\n" + source);
+  require(test, mlir::succeeded(mlir::verify(*module)),
+          "typed System root did not verify");
+}
+
+void checkTypedSystemRejections() {
+  constexpr llvm::StringLiteral test = "typed System rejection";
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+  mlir::ScopedDiagnosticHandler diagnostics(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+
+  const std::vector<std::uint8_t> dispatcherArchitecture = take(
+      test,
+      encodeInstructionCoreArchitecturalContract(representativeArchitecture()));
+  std::vector<std::uint8_t> malformedArchitecture = dispatcherArchitecture;
+  malformedArchitecture[3] = 1;
+  const std::vector<std::uint8_t> hostArchitecture = take(
+      test, encodeInstructionCoreArchitecturalContract(
+                representativeArchitecture(/*acceleratorDispatcher=*/false)));
+  const std::vector<std::uint8_t> microarchitecture =
+      take(test, encodeInstructionCoreMicroarchitecturalRealization(
+                     representativeMicroarchitecture()));
+  const std::vector<std::uint8_t> spatialCore =
+      encodeFabricImportedModuleTargetRef(
+          FabricImportedModuleTargetRef{0, FabricModuleTemplateRef(1)});
+
+  const std::string malformed =
+      "module { fabric.system @soc { "
+      "fabric.system.host_core architecture = " +
+      denseI8Assembly(context, malformedArchitecture) +
+      " microarchitecture = " + denseI8Assembly(context, microarchitecture) +
+      " } }";
+  require(test, !mlir::parseSourceString<mlir::ModuleOp>(malformed, &context),
+          "accepted a malformed InstructionCore architecture record");
+
+  const std::string missingServices =
+      "module { fabric.system @soc { "
+      "fabric.system.acc_core architecture = " +
+      denseI8Assembly(context, hostArchitecture) +
+      " microarchitecture = " + denseI8Assembly(context, microarchitecture) +
+      " spatial_core = " + denseI8Assembly(context, spatialCore) + " } }";
+  require(test,
+          !mlir::parseSourceString<mlir::ModuleOp>(missingServices, &context),
+          "accepted an AccCore without dispatch and launch services");
+
+  const std::string host =
+      "fabric.system.host_core architecture = " +
+      denseI8Assembly(context, dispatcherArchitecture) +
+      " microarchitecture = " + denseI8Assembly(context, microarchitecture) +
+      " {entity_id = #fabric.entity_id<9>} ";
+  const std::string duplicateIds =
+      "module { fabric.system @soc { " + host + host + "} }";
+  require(test,
+          !mlir::parseSourceString<mlir::ModuleOp>(duplicateIds, &context),
+          "accepted duplicate Fabric EntityIds");
+
+  const std::string genericNode =
+      "module { fabric.system @soc { \"fabric.node\"() : () -> () } }";
+  require(test, !mlir::parseSourceString<mlir::ModuleOp>(genericNode, &context),
+          "accepted the retired generic fabric.node operation");
 }
 
 void checkClockContract() {
@@ -316,8 +449,11 @@ void checkClockCrossingContract() {
 } // namespace
 
 int main() {
+  checkImportedModuleTargetReference();
   checkInstructionArchitectureContract();
   checkInstructionMicroarchitectureContract();
+  checkTypedSystemRoot();
+  checkTypedSystemRejections();
   checkClockContract();
   checkResetContract();
   checkClockCrossingContract();
