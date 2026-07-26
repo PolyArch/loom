@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -81,8 +82,8 @@ LogicalResult SystemOp::verify() {
 
   llvm::DenseSet<std::uint64_t> entityIds;
   for (Operation &operation : block) {
-    if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp>(
-            operation))
+    if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
+             SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
           "is not in the closed fabric.system child catalog");
     if (std::optional<std::uint64_t> id = entityId(operation))
@@ -125,5 +126,40 @@ LogicalResult SystemMemoryServiceOp::verify() {
   if (!decoded)
     return emitOpError("has invalid System memory service contract: ")
            << llvm::toString(decoded.takeError());
+  return success();
+}
+
+LogicalResult SystemConnectionOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto source =
+      loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
+          unsignedBytes(getSourceAttr()));
+  if (!source)
+    return emitOpError("has invalid source endpoint: ")
+           << llvm::toString(source.takeError());
+  auto destination =
+      loom::fabric::decodeFabricRef<loom::fabric::FabricTransportEndpointRef>(
+          unsignedBytes(getDestinationAttr()));
+  if (!destination)
+    return emitOpError("has invalid destination endpoint: ")
+           << llvm::toString(destination.takeError());
+  return success();
+}
+
+LogicalResult SystemSpatialAttachmentOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto moduleEndpoint =
+      loom::fabric::decodeFabricImportedModuleBoundaryEndpointRef(
+          unsignedBytes(getModuleEndpointAttr()));
+  if (!moduleEndpoint)
+    return emitOpError("has invalid module_endpoint reference: ")
+           << llvm::toString(moduleEndpoint.takeError());
+  auto spatialEndpoint = loom::fabric::decodeFabricSpatialAttachmentEndpointRef(
+      unsignedBytes(getSpatialEndpointAttr()));
+  if (!spatialEndpoint)
+    return emitOpError("has invalid spatial_endpoint reference: ")
+           << llvm::toString(spatialEndpoint.takeError());
   return success();
 }

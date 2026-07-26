@@ -475,6 +475,97 @@ loom::fabric::decodeFabricImportedModuleTargetRef(
   return FabricImportedModuleTargetRef{*dependencyOrdinal, target};
 }
 
+std::vector<std::uint8_t>
+loom::fabric::encodeFabricImportedModuleBoundaryEndpointRef(
+    const FabricImportedModuleBoundaryEndpointRef &reference) {
+  FabricByteWriter writer;
+  writer.field(reference.dependencyOrdinal);
+  encodeFabricRef(writer, reference.target);
+  return writer.take();
+}
+
+llvm::Expected<FabricImportedModuleBoundaryEndpointRef>
+loom::fabric::decodeFabricImportedModuleBoundaryEndpointRef(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  FabricByteReader reader(bytes);
+  llvm::Expected<std::uint64_t> dependencyOrdinal = reader.field();
+  if (!dependencyOrdinal)
+    return dependencyOrdinal.takeError();
+  FabricModuleBoundaryEndpointRef target;
+  if (llvm::Error error = decodeFabricRefInto(reader, target))
+    return std::move(error);
+  if (llvm::Error error =
+          requireFinished(reader, "ImportedModule boundary endpoint"))
+    return std::move(error);
+  return FabricImportedModuleBoundaryEndpointRef{*dependencyOrdinal, target};
+}
+
+llvm::Expected<FabricSpatialAttachmentEndpointRef>
+FabricSpatialAttachmentEndpointRef::create(
+    FabricTransportEndpointRef endpoint) {
+  if (endpoint.owner.kind() !=
+      FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+    return makeFabricRefError(
+        FabricRefErrorKind::WrongOwner,
+        "a Spatial attachment transport endpoint must be owned by the "
+        "AccCore's SpatialCore occurrence");
+  return FabricSpatialAttachmentEndpointRef(Endpoint(std::move(endpoint)));
+}
+
+llvm::Expected<FabricSpatialAttachmentEndpointRef>
+FabricSpatialAttachmentEndpointRef::create(FabricMemoryEndpointRef endpoint) {
+  if (endpoint.owner.kind() !=
+      FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return makeFabricRefError(
+        FabricRefErrorKind::WrongOwner,
+        "a Spatial attachment memory endpoint must be owned by the AccCore's "
+        "SpatialCore occurrence");
+  return FabricSpatialAttachmentEndpointRef(Endpoint(std::move(endpoint)));
+}
+
+std::vector<std::uint8_t>
+loom::fabric::encodeFabricSpatialAttachmentEndpointRef(
+    const FabricSpatialAttachmentEndpointRef &reference) {
+  FabricByteWriter writer;
+  writer.tag(static_cast<std::uint32_t>(reference.plane()));
+  if (const FabricTransportEndpointRef *endpoint = reference.transport())
+    encodeFabricRef(writer, *endpoint);
+  else
+    encodeFabricRef(writer, *reference.memory());
+  return writer.take();
+}
+
+llvm::Expected<FabricSpatialAttachmentEndpointRef>
+loom::fabric::decodeFabricSpatialAttachmentEndpointRef(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  FabricByteReader reader(bytes);
+  llvm::Expected<std::uint32_t> plane =
+      readFabricClosedTag(reader, 2, "spatial attachment endpoint plane");
+  if (!plane)
+    return plane.takeError();
+
+  llvm::Expected<FabricSpatialAttachmentEndpointRef> endpoint =
+      [&]() -> llvm::Expected<FabricSpatialAttachmentEndpointRef> {
+    if (*plane == static_cast<std::uint32_t>(
+                      FabricSpatialAttachmentEndpointRef::Plane::Transport)) {
+      FabricTransportEndpointRef transport;
+      if (llvm::Error error = decodeFabricRefInto(reader, transport))
+        return std::move(error);
+      return FabricSpatialAttachmentEndpointRef::create(std::move(transport));
+    }
+    FabricMemoryEndpointRef memory;
+    if (llvm::Error error = decodeFabricRefInto(reader, memory))
+      return std::move(error);
+    return FabricSpatialAttachmentEndpointRef::create(std::move(memory));
+  }();
+  if (!endpoint)
+    return endpoint.takeError();
+  if (llvm::Error error =
+          requireFinished(reader, "Spatial attachment endpoint"))
+    return std::move(error);
+  return std::move(*endpoint);
+}
+
 llvm::Expected<InstructionCoreArchitecturalContract>
 InstructionCoreArchitecturalContract::create(
     RiscVArchitectureDeclaration declaration) {

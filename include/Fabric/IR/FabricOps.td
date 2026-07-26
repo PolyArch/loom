@@ -642,6 +642,51 @@ def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
   let hasVerifier = 1;
 }
 
+def Fabric_SystemConnectionOp : Fabric_Op<"system.connection", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "fixed directed System transport connection";
+  let description = [{
+    One exact point-to-point connection between existing transport endpoints.
+    It has no identity, capacity, buffering, arbitration, or hidden crossing
+    behavior; independently meaningful behavior is a transport resource.
+  }];
+
+  let arguments = (ins
+      DenseI8ArrayAttr:$source,
+      DenseI8ArrayAttr:$destination
+  );
+
+  let assemblyFormat = [{
+    `source` `=` $source `destination` `=` $destination attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemSpatialAttachmentOp :
+    Fabric_Op<"system.spatial_attachment", [
+      HasParent<"::fabric::SystemOp">
+    ]> {
+  let summary = "module boundary to SpatialCore occurrence attachment";
+  let description = [{
+    One structural, one-to-one correspondence between an ImportedModule
+    boundary endpoint and the matching endpoint of one AccCore's SpatialCore
+    occurrence. Direction, plane, type, and service role remain derived from
+    the referenced endpoints.
+  }];
+
+  let arguments = (ins
+      DenseI8ArrayAttr:$module_endpoint,
+      DenseI8ArrayAttr:$spatial_endpoint
+  );
+
+  let assemblyFormat = [{
+    `module_endpoint` `=` $module_endpoint
+    `spatial_endpoint` `=` $spatial_endpoint attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure

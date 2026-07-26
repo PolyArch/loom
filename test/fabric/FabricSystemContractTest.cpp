@@ -128,6 +128,9 @@ InstructionCoreMicroarchitecturalRealization representativeMicroarchitecture() {
                   std::move(common), pipeline));
 }
 
+std::string denseI8Assembly(mlir::MLIRContext &context,
+                            llvm::ArrayRef<std::uint8_t> bytes);
+
 void checkInstructionArchitectureContract() {
   constexpr llvm::StringLiteral test = "instruction architecture contract";
   InstructionCoreArchitecturalContract architecture =
@@ -172,6 +175,69 @@ void checkImportedModuleTargetReference() {
   trailing.push_back(0);
   expectRejected(test, decodeFabricImportedModuleTargetRef(trailing),
                  "accepted noncanonical trailing bytes");
+}
+
+void checkSystemStructuralRelations() {
+  constexpr llvm::StringLiteral test = "System structural relations";
+  const FabricImportedModuleBoundaryEndpointRef moduleEndpoint{
+      3, FabricModuleBoundaryEndpointRef{FabricModuleTemplateRef(17),
+                                         FabricPortDirection::Input, 0}};
+  const std::vector<std::uint8_t> encodedModuleEndpoint =
+      encodeFabricImportedModuleBoundaryEndpointRef(moduleEndpoint);
+  require(test,
+          take(test, decodeFabricImportedModuleBoundaryEndpointRef(
+                         encodedModuleEndpoint)) == moduleEndpoint,
+          "module boundary endpoint changed during canonical round trip");
+
+  const FabricTransportEndpointRef localTransportEndpoint{
+      FabricTransportEndpointOwnerRef::of(
+          SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(23)}),
+      0};
+  const FabricSpatialAttachmentEndpointRef localEndpoint = take(
+      test, FabricSpatialAttachmentEndpointRef::create(localTransportEndpoint));
+  const std::vector<std::uint8_t> encodedLocalEndpoint =
+      encodeFabricSpatialAttachmentEndpointRef(localEndpoint);
+  require(test,
+          take(test, decodeFabricSpatialAttachmentEndpointRef(
+                         encodedLocalEndpoint)) == localEndpoint,
+          "SpatialCore endpoint changed during canonical round trip");
+
+  expectRejected(
+      test,
+      FabricSpatialAttachmentEndpointRef::create(FabricTransportEndpointRef{
+          FabricTransportEndpointOwnerRef::of(AccCoreOccurrenceRef(23)), 0}),
+      "accepted an AccCore endpoint outside its SpatialCore occurrence");
+
+  const FabricTransportEndpointRef source{
+      FabricTransportEndpointOwnerRef::of(SystemTransportResourceRef(31)), 0};
+  const FabricTransportEndpointRef destination{
+      FabricTransportEndpointOwnerRef::of(
+          SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(23)}),
+      1};
+
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+  const std::string sourceText =
+      "module {\n"
+      "  fabric.system @soc {\n"
+      "    fabric.system.connection source = " +
+      denseI8Assembly(context, canonicalFabricBytes(source)) +
+      " destination = " +
+      denseI8Assembly(context, canonicalFabricBytes(destination)) +
+      "\n"
+      "    fabric.system.spatial_attachment module_endpoint = " +
+      denseI8Assembly(context, encodedModuleEndpoint) +
+      " spatial_endpoint = " + denseI8Assembly(context, encodedLocalEndpoint) +
+      "\n"
+      "  }\n"
+      "}\n";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(sourceText, &context);
+  require(test, static_cast<bool>(module),
+          "typed System relations did not parse:\n" + sourceText);
+  require(test, mlir::succeeded(mlir::verify(*module)),
+          "typed System relations did not verify");
 }
 
 void checkInstructionMicroarchitectureContract() {
@@ -450,6 +516,7 @@ void checkClockCrossingContract() {
 
 int main() {
   checkImportedModuleTargetReference();
+  checkSystemStructuralRelations();
   checkInstructionArchitectureContract();
   checkInstructionMicroarchitectureContract();
   checkTypedSystemRoot();

@@ -36,6 +36,73 @@ std::vector<std::uint8_t> encodeFabricImportedModuleTargetRef(
 llvm::Expected<FabricImportedModuleTargetRef>
 decodeFabricImportedModuleTargetRef(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// One Module boundary endpoint scoped by the System root's canonical
+/// ImportedModule dependency table. This is an attachment field, not a new
+/// artifact-local reference family.
+struct FabricImportedModuleBoundaryEndpointRef {
+  std::uint64_t dependencyOrdinal = 0;
+  FabricModuleBoundaryEndpointRef target;
+
+  friend bool operator==(const FabricImportedModuleBoundaryEndpointRef &lhs,
+                         const FabricImportedModuleBoundaryEndpointRef &rhs) {
+    return lhs.dependencyOrdinal == rhs.dependencyOrdinal &&
+           lhs.target == rhs.target;
+  }
+};
+
+std::vector<std::uint8_t> encodeFabricImportedModuleBoundaryEndpointRef(
+    const FabricImportedModuleBoundaryEndpointRef &reference);
+
+llvm::Expected<FabricImportedModuleBoundaryEndpointRef>
+decodeFabricImportedModuleBoundaryEndpointRef(
+    llvm::ArrayRef<std::uint8_t> bytes);
+
+/// The occurrence-side endpoint of a module-to-SpatialCore attachment. The
+/// selected plane is explicit while owner and ordinal remain the existing
+/// transport or memory endpoint reference. Only a SpatialCore occurrence may
+/// own this field.
+class FabricSpatialAttachmentEndpointRef {
+public:
+  enum class Plane : std::uint32_t { Transport, Memory };
+
+  static llvm::Expected<FabricSpatialAttachmentEndpointRef>
+  create(FabricTransportEndpointRef endpoint);
+  static llvm::Expected<FabricSpatialAttachmentEndpointRef>
+  create(FabricMemoryEndpointRef endpoint);
+
+  Plane plane() const {
+    return std::holds_alternative<FabricTransportEndpointRef>(endpoint_)
+               ? Plane::Transport
+               : Plane::Memory;
+  }
+  const FabricTransportEndpointRef *transport() const {
+    return std::get_if<FabricTransportEndpointRef>(&endpoint_);
+  }
+  const FabricMemoryEndpointRef *memory() const {
+    return std::get_if<FabricMemoryEndpointRef>(&endpoint_);
+  }
+
+  friend bool operator==(const FabricSpatialAttachmentEndpointRef &lhs,
+                         const FabricSpatialAttachmentEndpointRef &rhs) {
+    return lhs.endpoint_ == rhs.endpoint_;
+  }
+
+private:
+  using Endpoint =
+      std::variant<FabricTransportEndpointRef, FabricMemoryEndpointRef>;
+
+  explicit FabricSpatialAttachmentEndpointRef(Endpoint endpoint)
+      : endpoint_(std::move(endpoint)) {}
+
+  Endpoint endpoint_;
+};
+
+std::vector<std::uint8_t> encodeFabricSpatialAttachmentEndpointRef(
+    const FabricSpatialAttachmentEndpointRef &reference);
+
+llvm::Expected<FabricSpatialAttachmentEndpointRef>
+decodeFabricSpatialAttachmentEndpointRef(llvm::ArrayRef<std::uint8_t> bytes);
+
 enum class RiscVXLen : std::uint32_t { X32, X64 };
 enum class RiscVBase : std::uint32_t { I, E };
 enum class RiscVExtension : std::uint32_t {
