@@ -2,6 +2,7 @@ add_mlir_library(LoomADGBuilder
   Builder.cpp
   Export.cpp
   FuLibrary.cpp
+  MemoryLibrary.cpp
   SystemBuilder.cpp
 
   ADDITIONAL_HEADER_DIRS

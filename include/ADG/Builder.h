@@ -398,6 +398,9 @@ public:
          std::optional<LocalMemoryServiceSpec> localService,
          MemoryConnectivitySpec connectivity);
 
+  llvm::ArrayRef<PortType> inputTypes() const { return inputTypes_; }
+  llvm::ArrayRef<PortType> outputTypes() const { return outputTypes_; }
+
 private:
   MemorySpec(std::vector<PortType> inputTypes,
              std::vector<PortType> outputTypes,

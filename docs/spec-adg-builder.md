@@ -412,6 +412,27 @@ implementation family proves otherwise.
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
 
+#### HybridF32LocalMemory Recipe
+
+`makeHybridF32LocalMemory` is the initial public memory recipe. It returns one
+ordinary `MemorySpec`; the helper name and parameter object are authoring
+convenience and do not enter Fabric identity. The recipe has two independent
+physical operation ports, one for plain load and one for plain store, and one
+shared Local Memory Service. Both ports use the maximal 128-bit interface from
+`docs/spec-fabric-mem.md` and admit exactly scalar `f32` and contiguous
+`vector<4xf32>` access, with an absent or dynamic four-lane mask where that
+form permits it. Equal-width `vector<2xf64>` is not admitted.
+
+The spatial form uses untagged operation-channel ports. Supplying the typed
+temporal parameters replaces every operation-channel port with the exact
+tagged form and requires positive tag width and resident-context count. The
+capacity is positive, fits the complete 32-bit byte-address domain, and owns
+one local Storage region. The recipe creates no
+manager or subordinate capability endpoint and advertises no atomic, fence,
+volatile, MMIO, or coherence behavior. Users needing another exact memory
+contract construct the same public `MemorySpec`, operation-port, service, and
+connectivity types directly; there is no parallel recipe schema.
+
 #### CoreAluFu Resource Inventory
 
 `CoreAluFu` constructs one concrete `fabric.op` resource for each of the

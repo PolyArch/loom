@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 #include "ADG/Export.h"
 #include "ADG/FuLibrary.h"
+#include "ADG/MemoryLibrary.h"
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -89,6 +90,7 @@ using loom::adg::FuConfigurationMode;
 using loom::adg::FuRouteSelection;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
+using loom::adg::HybridF32LocalMemoryParameters;
 using loom::adg::LocalMemoryServiceSpec;
 using loom::adg::MemoryConnectivitySpec;
 using loom::adg::MemoryEngineSpec;
@@ -784,6 +786,66 @@ void typedMemoryFormsFinalize() {
           "Fabric lost the orthogonal memory engine and local service forms");
 }
 
+void publicMemoryLibraryBuildsHybridLocalMemories() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+
+  expectError(test,
+              loom::adg::makeHybridF32LocalMemory(
+                  {(std::uint64_t(1) << 32) + 1, std::nullopt}),
+              "32-bit address capacity");
+
+  auto addMemoryRoot = [&](llvm::StringRef name,
+                           HybridF32LocalMemoryParameters parameters) {
+    MemorySpec memory =
+        take(test, loom::adg::makeHybridF32LocalMemory(parameters));
+    require(test,
+            memory.inputTypes().size() == 7 && memory.outputTypes().size() == 3,
+            "hybrid local memory changed its maximal typed interface");
+    auto spatial =
+        take(test, design.createSpatialCore(name, memory.inputTypes(),
+                                            memory.outputTypes()));
+    std::vector<SpatialValue> inputs;
+    inputs.reserve(memory.inputTypes().size());
+    for (std::size_t ordinal = 0; ordinal < memory.inputTypes().size();
+         ++ordinal)
+      inputs.push_back(take(test, spatial.input(ordinal)));
+    auto outputs = take(test, spatial.addMemory(inputs, memory));
+    if (llvm::Error error = spatial.close(outputs))
+      fail(test, llvm::toString(std::move(error)));
+  };
+
+  addMemoryRoot("spatial-hybrid-memory", {4096, std::nullopt});
+  addMemoryRoot("temporal-hybrid-memory",
+                {8192, loom::adg::TemporalMemoryParameters{4, 4}});
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "memory library did not publish both schedule variants");
+  std::size_t spatialCount = 0;
+  std::size_t temporalCount = 0;
+  for (const auto &root : finalized.roots()) {
+    const auto &view = root.view();
+    const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
+        test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
+    require(test,
+            view.declaresLocalMemoryService(memory) &&
+                view.memoryOperationPorts(memory).size() == 2,
+            "memory library lost its local service or load/store ports");
+    if (view.memorySchedule(memory) == ::fabric::Schedule::Spatial) {
+      ++spatialCount;
+    } else {
+      ++temporalCount;
+      require(test, view.memoryResidentContextCount(memory) == 4,
+              "temporal memory lost its resident contexts");
+    }
+  }
+  require(test, spatialCount == 1 && temporalCount == 1,
+          "memory library changed a requested schedule");
+}
+
 void publicFuLibraryBuildsTypedGraphs() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -1205,6 +1267,7 @@ int main() {
   typedPeFuGraphsFinalize();
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
+  publicMemoryLibraryBuildsHybridLocalMemories();
   publicFuLibraryBuildsTypedGraphs();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
