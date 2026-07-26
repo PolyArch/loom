@@ -1,5 +1,6 @@
 add_mlir_library(LoomADGBuilder
   Builder.cpp
+  Export.cpp
   SystemBuilder.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -12,6 +13,7 @@ add_mlir_library(LoomADGBuilder
   LINK_LIBS PUBLIC
   LoomCommon
   LoomFabricArtifact
+  LoomFabricVisualization
   LLVMSupport
   MLIRFabricEnums
   MLIRFabric

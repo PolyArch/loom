@@ -445,11 +445,12 @@ completeness nor authorizes a caller to supplement, omit, or replace root
 facts. Whole-root validators consume the appropriate root view directly and
 must not accept shadow topology, domain, membership, or crossing catalogs.
 
-Malformed hardware is `Invalid`. A well-formed custom Fabric whose selected
-backend lacks a provider remains a valid Fabric artifact; the backend reports
-typed `Unsupported`. A published builtin target must have provider closure for
-every capability it advertises and therefore fails publication when such a
-provider is absent.
+Malformed hardware is `Invalid`. Any semantically complete Fabric, whether
+custom or expanded from a builtin template, remains a valid Fabric artifact
+when an RTL or EDA provider is absent. The consumer requesting that backend
+reports typed `Unsupported`. Official backend-ready qualification of a builtin
+requires complete provider closure, but qualification is not Fabric
+publication and cannot become a second Fabric identity.
 
 ## Ownership Boundaries
 

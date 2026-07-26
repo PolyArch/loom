@@ -385,10 +385,11 @@ Corpus contracts are specified by
 The first hardware gate requires the public ADG Builder to finalize both
 user-authored regular or irregular heterogeneous multi-AccCore designs and all
 initial builtin presets through the same Fabric path. The exact API,
-Small/Default/Large catalog, provider-closure rule, and Artifact publication
-contract remain owned by [ADG Builder](spec-adg-builder.md) and
+Small/Default/Large catalog, backend-qualification rule, and Artifact
+publication contract remain owned by [ADG Builder](spec-adg-builder.md) and
 [Fabric Artifact](spec-fabric-artifact.md). Passing this gate produces exact
-Fabric Artifacts without requiring a software input.
+Fabric Artifacts plus their human-readable MLIR and HTML projections without
+requiring a software input or an RTL provider.
 
 The next product gate is pre-Mapping compilation over every selected member of
 the complete repository corpus. Each input uses the same `loom-cc` or

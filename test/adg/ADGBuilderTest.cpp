@@ -1,4 +1,5 @@
 #include "ADG/Builder.h"
+#include "ADG/Export.h"
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -13,6 +14,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -593,6 +596,22 @@ void typedPeFuGraphsFinalize() {
           operandBuffer && operandBuffer->stateCount() != 0 &&
               operandBuffer->usePatternCount() != 0,
           "temporal PE lost its operand-buffer resource contract");
+
+  llvm::SmallString<128> outputBase(directory.path());
+  llvm::sys::path::append(outputBase, "spatial-pe");
+  if (llvm::Error error = loom::adg::exportFabricDesign(
+          finalized.roots().front(), store, outputBase))
+    fail(test, llvm::toString(std::move(error)));
+  llvm::SmallString<128> htmlPath(outputBase);
+  htmlPath.append(".html");
+  auto exportedHtml = llvm::MemoryBuffer::getFile(htmlPath);
+  if (!exportedHtml)
+    fail(test, exportedHtml.getError().message());
+  require(test,
+          exportedHtml.get()->getBuffer().contains("data-view-kind=\"fu\"") &&
+              exportedHtml.get()->getBuffer().contains("ScalarIntegerAddSub") &&
+              exportedHtml.get()->getBuffer().contains("ScalarIntegerMultiply"),
+          "Fabric HTML did not expose the configured FU graph details");
 }
 
 void typedMemoryFormsFinalize() {
@@ -808,6 +827,39 @@ void heterogeneousSystemFinalizes() {
   stream.flush();
   require(test, llvm::StringRef(mlirText).contains("fabric.system"),
           "finalized System did not export Fabric MLIR");
+
+  llvm::SmallString<128> outputBase(directory.path());
+  llvm::sys::path::append(outputBase, "heterogeneous-system");
+  if (llvm::Error error =
+          loom::adg::exportFabricDesign(root, store, outputBase))
+    fail(test, llvm::toString(std::move(error)));
+
+  llvm::SmallString<128> mlirPath(outputBase);
+  mlirPath.append(".mlir");
+  llvm::SmallString<128> htmlPath(outputBase);
+  htmlPath.append(".html");
+  auto exportedMlir = llvm::MemoryBuffer::getFile(mlirPath);
+  if (!exportedMlir)
+    fail(test, exportedMlir.getError().message());
+  auto exportedHtml = llvm::MemoryBuffer::getFile(htmlPath);
+  if (!exportedHtml)
+    fail(test, exportedHtml.getError().message());
+  require(test, exportedMlir.get()->getBuffer().contains("fabric.system"),
+          "paired export did not write the canonical Fabric MLIR projection");
+  const llvm::StringRef html = exportedHtml.get()->getBuffer();
+  require(
+      test,
+      html.contains("data-layout-engine=\"loom-layered-v1\"") &&
+          html.contains("data-view-kind=\"system\"") &&
+          html.contains("data-view-kind=\"spatial-core\"") &&
+          html.contains("data-entity-kind=\"fabric.acc_core_occurrence\"") &&
+          html.contains("data-entity-kind=\"fabric.fifo_occurrence\"") &&
+          html.contains("data-x=\"") && html.contains("data-y=\""),
+      "Fabric HTML did not contain the precomputed two-level topology");
+  require(test,
+          !html.contains("forceSimulation") && !html.contains("dagre.layout") &&
+              !html.contains("elk.layout"),
+          "Fabric HTML contains a browser-side graph layout engine");
 }
 
 } // namespace

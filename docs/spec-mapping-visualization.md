@@ -20,6 +20,42 @@ nor the semantics of the artifacts being projected.
 A viewer is a consumer of the export. It is not a separate compiler, simulator,
 evaluator, or Mapping authority.
 
+## Fabric Authoring Projection
+
+ADG Builder and builtin-target export use the same visualization owner even
+when no software, Mapping, simulation, or Evaluation artifact exists. Given
+one exact finalized Fabric root and an ArtifactStore, the exporter resolves
+the root's exact Fabric dependency closure and emits one self-contained HTML
+file beside the root's textual MLIR projection.
+
+For a Module root, the HTML contains its complete SpatialCore resource and
+directed-connectivity graph. For a System root, it contains:
+
+* one architecture view with every HostCore, heterogeneous AccCore,
+  InstructionCore context, SpatialCore attachment, memory/service endpoint,
+  external boundary, transport resource, and explicit directed connection;
+* one detail view for every distinct imported Module artifact, showing its
+  module boundary, PEs, FUs, memories, switches, FIFOs, boundaries, typed
+  ports, explicit point connections, and FU-internal configured graph; and
+* exact artifact identities and typed resource summaries sufficient to
+  distinguish repeated occurrences from reusable module definitions.
+
+Repeated AccCores may reference one imported Module detail view, but every
+physical AccCore occurrence remains a distinct node in the System view. The
+HTML embeds no mutable hardware model and performs no ArtifactStore access.
+
+The exporter computes every graph coordinate and edge route before writing
+the HTML. Its deterministic layout handles arbitrary directed cyclic topology,
+uses nested frames only for real ownership, reduces crossings, reserves routing
+channels, and keeps nodes, labels, ports, edges, and ownership frames from
+overlapping whenever a finite separated drawing exists. Regular construction
+hints may seed this computation but never replace explicit connectivity.
+
+Browser code may pan, zoom, fit, search, filter, inspect, and switch between
+precomputed views. It must not run a force solver, graph layout engine, or
+semantic topology reconstruction. The HTML is offline and self-contained: it
+does not load JavaScript, CSS, fonts, icons, or data from a network location.
+
 ## Canonical Sources
 
 Every displayed semantic fact resolves to one exact canonical owner. The
@@ -225,3 +261,7 @@ Only this stable semantic anchor belongs at this boundary:
   or Evaluation fact from report or UI state. Persistent per-cycle replay is a
   future conformance anchor gated by the Simulation Artifacts schema minor and
   exact raw detailed-bundle owner.
+- Given an exact System Fabric root and its published imported Modules, a
+  self-contained export displays every AccCore occurrence and every distinct
+  SpatialCore topology using statically computed geometry, without browser-side
+  graph layout or a second hardware fact owner.

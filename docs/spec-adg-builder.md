@@ -249,11 +249,14 @@ The expansion function uses only the public typed ADG Builder API. Compiler
 selection has no private emitter, prebuilt opaque Fabric body, textual shortcut,
 or privileged validation path.
 
-A published builtin also requires complete provider closure for every
-ImplementationFamilyId, memory form, transport resource, and external binding
-it advertises. Missing closure fails builtin publication. A valid user-authored
-custom Fabric may still finalize without a selected backend provider; a later
-backend request reports typed `Unsupported` without changing that Fabric.
+Builtin expansion and Fabric publication require complete semantic capability
+closure, but do not require an RTL or EDA provider. The builtin and a
+user-authored custom design therefore obey the same Fabric finalization rule.
+When a consumer requests RTL, FPGA implementation, or EDA realization, that
+consumer separately requires provider closure for every selected
+ImplementationFamilyId, memory form, transport resource, and external binding.
+A missing provider is typed `Unsupported`; it neither invalidates nor changes
+the already finalized Fabric.
 
 The initial general-purpose family has three closed authoring presets:
 
@@ -728,6 +731,36 @@ compiler builtin target
 public ADG Builder reference example
 starting point for a user-authored custom target
 ```
+
+## Human-Readable Export
+
+The production export boundary for one finalized root is:
+
+```text
+exportFabricDesign(
+    root : FinalizedFabricRoot,
+    store : ArtifactStore,
+    output_base : path)
+  -> Error
+```
+
+Success creates exactly `<output_base>.mlir` and `<output_base>.html`. The MLIR
+file is the textual projection of the exact root's canonical MLIR bytecode.
+The self-contained HTML file is the Fabric visualization projection specified
+by `docs/spec-mapping-visualization.md`; for a System root it resolves the
+exact imported Module dependency closure through `store` and includes both the
+multi-AccCore topology and every distinct imported SpatialCore topology.
+
+The two files are output bindings, not Artifacts. The implementation writes
+private temporary files, closes them successfully, and renames them only after
+both projections have been generated. An ordinary failed invocation does not
+publish either destination. Filesystem failure between the two final renames
+does not create a semantic transaction or another manifest; a retry
+deterministically replaces both projections from the same exact root.
+
+Builtin examples, compiler builtin selection, and user-authored designs call
+this same export function. There is no builtin-only printer, visualization IR,
+or Builder-draft rendering path.
 
 ## Determinism
 

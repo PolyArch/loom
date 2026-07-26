@@ -96,6 +96,20 @@ from becoming a hidden pipeline authority. Raw reports and trace payloads have
 the same rule until an exact owner, schema, importer, and lineage contract is
 defined.
 
+Fabric authoring uses the same boundary. Hardware architects need to inspect
+both a heterogeneous AccCore system and each reusable SpatialCore definition
+before software Mapping exists. Rendering from the finalized root and its exact
+dependency closure prevents a Builder draft or UI payload from becoming a
+second hardware authority.
+
+Layout is computed offline because topology is immutable and authoring review
+does not require interactive node movement. Shipping precomputed coordinates
+and routes makes the standalone HTML deterministic, removes a large browser
+layout dependency, and avoids different machines presenting different graph
+geometry. Pan, zoom, search, filtering, and detail navigation remain ordinary
+viewer state and do not justify moving semantic or layout derivation into the
+browser.
+
 ## Why Human-Readable Target Names Are Projections
 
 During early design, a SpatialCore target was described with a readable form
