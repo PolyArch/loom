@@ -114,3 +114,25 @@ ignoring close state would make reentrancy and pipelining unsound.
 
 The closure rule is derived from each resource's explicit contract and exact
 clock/reset domains rather than a global hidden reset policy.
+
+## Why Instruction Architecture And Microarchitecture Are Separate
+
+The InstructionCore is the stored-program fallback inside an AccCore, but it
+is not necessarily scalar or simple. A small in-order RISC-V core, an
+out-of-order core, and an RVV core can all occupy that role. Calling it a
+ScalarCore would therefore encode an accidental implementation choice into the
+system model.
+
+Binary compatibility and execution behavior are different truths. The ISA,
+ABI, privilege, memory-ordering, and relocation envelope decides whether a
+program can execute. Pipeline widths, queues, execution-unit timing, and
+thread capacity decide how it executes. Combining them would force every
+microarchitecture change to create an unrelated compiler target; omitting the
+microarchitecture would force Mapping, Evaluation, and gem5 bindings to invent
+their own hardware description.
+
+The closed `RiscV` architecture variant and the closed `InOrder | OutOfOrder`
+realization keep those truths explicit without introducing a generic CPU
+property bag. Representative profiles are ordinary values of the same schema,
+not new variants. Provider names remain bindings because they identify a tool
+implementation, not the hardware contract itself.

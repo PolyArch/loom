@@ -1,4 +1,5 @@
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -49,6 +50,135 @@ ClockDomainRef clockA() { return ClockDomainRef(HardwareDomainRef(kClockA)); }
 ClockDomainRef clockB() { return ClockDomainRef(HardwareDomainRef(kClockB)); }
 FabricTransferPatternRef patternA() {
   return {SystemTransportResourceRef(kCarrierA), 0};
+}
+
+::fabric::ResourceContract instructionContextContract() {
+  ::fabric::ResourceContractDeclaration declaration;
+  declaration.states = {::fabric::ResourceStateDeclaration{
+      ::fabric::StateKey(0),
+      {::fabric::CapacityDimensionDeclaration{::fabric::CapacityDimensionKey(0),
+                                              ::fabric::CapacityUnits(1),
+                                              ::fabric::CapacityUnits(0)}}}};
+  declaration.timingContracts = {::fabric::TimingContractDeclaration{
+      ::fabric::TimingContractKey(0), {0, 1}}};
+  declaration.requesters = {::fabric::RequesterKey(0)};
+  declaration.eligibilityCount = 1;
+  declaration.eventCount = 2;
+  declaration.usePatterns = {::fabric::UsePatternDeclaration{
+      ::fabric::UsePatternKey(0),
+      ::fabric::RequesterKey(0),
+      ::fabric::EligibilityKey(0),
+      ::fabric::EventKey(0),
+      ::fabric::EventKey(1),
+      std::nullopt,
+      ::fabric::TimingContractKey(0),
+      {::fabric::ClaimDeclaration{::fabric::ClaimKey(0), ::fabric::StateKey(0),
+                                  ::fabric::CapacityDimensionKey(0),
+                                  ::fabric::CapacityUnits(1)}},
+      {::fabric::InternalTransactionDeclaration{{::fabric::ClaimKey(0)}}}}};
+  return take("instruction context resource contract",
+              ::fabric::ResourceContract::create(declaration));
+}
+
+InstructionCoreArchitecturalContract representativeArchitecture() {
+  RiscVArchitectureDeclaration declaration;
+  declaration.xlen = RiscVXLen::X64;
+  declaration.base = RiscVBase::I;
+  declaration.extensions = {RiscVExtension::M, RiscVExtension::F,
+                            RiscVExtension::D, RiscVExtension::V,
+                            RiscVExtension::Zicsr};
+  declaration.endianness = InstructionEndianness::Little;
+  declaration.physicalAddressWidthBits = 48;
+  declaration.privilegeModes = {PrivilegeMode::User, PrivilegeMode::Machine};
+  declaration.abiCapabilities = {RiscVAbi::Lp64d};
+  declaration.memoryOrdering = RiscVMemoryOrdering::Rvwmo;
+  declaration.syncScopes = {InstructionSyncScope::SingleThread,
+                            InstructionSyncScope::Hart,
+                            InstructionSyncScope::System};
+  declaration.codeModels = {RiscVCodeModel::MediumLow,
+                            RiscVCodeModel::MediumAny};
+  declaration.relocationModels = {RelocationModel::Static,
+                                  RelocationModel::PositionIndependent};
+  declaration.runtimeServices = {InstructionRuntimeService::ThreadDispatch,
+                                 InstructionRuntimeService::SpatialLaunch};
+  return take("representative architecture",
+              InstructionCoreArchitecturalContract::create(declaration));
+}
+
+void checkInstructionArchitectureContract() {
+  constexpr llvm::StringLiteral test = "instruction architecture contract";
+  InstructionCoreArchitecturalContract architecture =
+      representativeArchitecture();
+  std::vector<std::uint8_t> encoded =
+      take(test, encodeInstructionCoreArchitecturalContract(architecture));
+  InstructionCoreArchitecturalContract decoded =
+      take(test, decodeInstructionCoreArchitecturalContract(encoded));
+  require(test,
+          take(test, encodeInstructionCoreArchitecturalContract(decoded)) ==
+              encoded,
+          "architecture bytes changed after strict import");
+
+  RiscVArchitectureDeclaration invalid;
+  invalid.xlen = RiscVXLen::X64;
+  invalid.base = RiscVBase::I;
+  invalid.extensions = {RiscVExtension::D};
+  invalid.endianness = InstructionEndianness::Little;
+  invalid.physicalAddressWidthBits = 48;
+  invalid.privilegeModes = {PrivilegeMode::Machine};
+  invalid.abiCapabilities = {RiscVAbi::Lp64d};
+  invalid.memoryOrdering = RiscVMemoryOrdering::Rvwmo;
+  invalid.syncScopes = {InstructionSyncScope::System};
+  invalid.codeModels = {RiscVCodeModel::MediumAny};
+  invalid.relocationModels = {RelocationModel::Static};
+  expectRejected(test, InstructionCoreArchitecturalContract::create(invalid),
+                 "accepted D without F");
+}
+
+void checkInstructionMicroarchitectureContract() {
+  constexpr llvm::StringLiteral test = "instruction microarchitecture contract";
+  InstructionCoreCommonDeclaration common{
+      2,
+      {{InstructionOperationClass::LoadStore, 1, 3, 1},
+       {InstructionOperationClass::IntegerAlu, 1, 1, 1},
+       {InstructionOperationClass::IntegerAlu, 2, 1, 1}},
+      instructionContextContract()};
+  InOrderMicroarchitectureDeclaration pipeline{2, 2, 2, 2, 1, 1, 8, 4};
+  InstructionCoreMicroarchitecturalRealization inOrder =
+      take(test, InstructionCoreMicroarchitecturalRealization::createInOrder(
+                     std::move(common), pipeline));
+  require(test, inOrder.kind() == InstructionCoreRealizationKind::InOrder,
+          "lost in-order realization variant");
+  require(test,
+          inOrder.executionUnits().size() == 2 &&
+              inOrder.executionUnits().front().operationClass ==
+                  InstructionOperationClass::IntegerAlu &&
+              inOrder.executionUnits().front().count == 3,
+          "execution-unit normalization is not canonical");
+
+  std::vector<std::uint8_t> encoded =
+      take(test, encodeInstructionCoreMicroarchitecturalRealization(inOrder));
+  InstructionCoreMicroarchitecturalRealization decoded =
+      take(test, decodeInstructionCoreMicroarchitecturalRealization(encoded));
+  require(test,
+          take(test, encodeInstructionCoreMicroarchitecturalRealization(
+                         decoded)) == encoded,
+          "microarchitecture bytes changed after strict import");
+
+  OutOfOrderMicroarchitectureDeclaration outOfOrderPipeline{
+      4, 4, 4, 4, 4, 4, 4, 64, 24, 16, 16, 96, 64, 64};
+  InstructionCoreCommonDeclaration outOfOrderCommon{
+      1,
+      {{InstructionOperationClass::IntegerAlu, 4, 1, 1},
+       {InstructionOperationClass::LoadStore, 2, 3, 1}},
+      instructionContextContract()};
+  InstructionCoreMicroarchitecturalRealization outOfOrder =
+      take(test, InstructionCoreMicroarchitecturalRealization::createOutOfOrder(
+                     std::move(outOfOrderCommon), outOfOrderPipeline));
+  require(test,
+          outOfOrder.kind() == InstructionCoreRealizationKind::OutOfOrder &&
+              take(test, encodeInstructionCoreMicroarchitecturalRealization(
+                             outOfOrder)) != encoded,
+          "out-of-order realization did not retain distinct identity bytes");
 }
 
 void checkClockContract() {
@@ -186,6 +316,8 @@ void checkClockCrossingContract() {
 } // namespace
 
 int main() {
+  checkInstructionArchitectureContract();
+  checkInstructionMicroarchitectureContract();
   checkClockContract();
   checkResetContract();
   checkClockCrossingContract();

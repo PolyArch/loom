@@ -148,32 +148,54 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract:
+Contract. `loom.fabric 1.0` has one ISA variant, `RiscV`; adding another ISA is
+a schema change rather than an open string or opaque payload:
 
 ```text
-InstructionCoreArchitecturalContract {
-  isa_family
-  isa_extensions[]
-  endianness
-  register_width_bits
-  address_width_bits
-  pointer_model
-  privilege_contract
-  abi_capabilities[]
-  memory_ordering_contract
-  sync_scope_contracts[]
-  supported_code_models[]
-  supported_relocation_models[]
-  runtime_service_requirements[]
+InstructionCoreArchitecturalContract = RiscV {
+  xlen                        : X32 | X64
+  base                        : I | E
+  extensions                  : canonical set<RiscVExtension>
+  endianness                  : Little | Big
+  physical_address_width_bits : positive uint32, <= xlen
+  privilege_modes             : canonical non-empty set<User | Supervisor | Machine>
+  abi_capabilities            : canonical non-empty set<RiscVAbi>
+  memory_ordering              : Rvwmo | Ztso
+  sync_scopes                 : canonical non-empty set<SingleThread | Hart | System>
+  code_models                 : canonical non-empty set<MediumLow | MediumAny>
+  relocation_models           : canonical non-empty set<Static | PositionIndependent>
+  runtime_services            : canonical set<RuntimeService>
 }
+
+RiscVExtension =
+    M | A | F | D | C | V | Zicsr | Zifencei | Zba | Zbb | Zbs | Ztso
+
+RiscVAbi =
+    Ilp32 | Ilp32e | Ilp32f | Ilp32d | Lp64 | Lp64f | Lp64d
+
+RuntimeService =
+    ThreadDispatch | SpatialLaunch | MemoryAllocation | AtomicRuntime
 ```
+
+The canonical set order is the closed wire-enum order shown above. Duplicate,
+unknown, or noncanonical set entries are invalid. `E` requires `X32`; `D`
+requires `F`; an `*f` or `*d` ABI requires the corresponding extension; an
+`lp64*` ABI requires `X64`; an `ilp32*` ABI requires `X32`; and `Ilp32e`
+requires base `E`. Every other ABI requires base `I`. The selected ABI fixes
+the pointer and C data model, while `xlen` fixes the integer register width, so
+neither fact is serialized a second time. The supported privilege set must
+include `Machine`. The runtime-service set may be empty for a HostCore that is
+not an accelerator dispatcher; every AccCore requires `ThreadDispatch` and
+`SpatialLaunch`. `Ztso` memory ordering requires the `Ztso` extension.
 
 These are hardware architecture facts. Compiler triple, CPU spelling,
 DataLayout, runtime library selection, gem5 model names, cache sizes,
 speculation policy, and pipeline organization are not fields of this contract.
 The exact contract has one domain-separated architecture fingerprint used by
 `CompilerTargetBinding`, but the digest is an index and never replaces the
-typed contract.
+typed contract. The fingerprint is the Common digest of the canonical
+Architectural Contract record bytes under the domain
+`loom.fabric.instruction_core_architecture.1.0`.
 
 An AccCore is one physical occurrence and contains exactly one InstructionCore
 plus exactly one SpatialCore attachment. The InstructionCore description has an
@@ -181,6 +203,70 @@ Architectural Contract for binary compatibility and a Microarchitectural
 Realization for execution structure, timing, and capacity. Simulator model
 names and compiler target spellings are bindings over that description, not
 Fabric hardware facts.
+
+The Microarchitectural Realization is one closed sum:
+
+```text
+InstructionCoreMicroarchitecturalRealization =
+    InOrder {
+      common
+      fetch_width, decode_width, issue_width, commit_width
+      memory_issue_width, memory_commit_width
+      max_outstanding_memory_operations
+      store_buffer_entries
+    }
+  | OutOfOrder {
+      common
+      fetch_width, decode_width, rename_width, dispatch_width
+      issue_width, writeback_width, commit_width
+      reorder_buffer_entries, issue_queue_entries
+      load_queue_entries, store_queue_entries
+      physical_integer_registers
+      physical_float_registers
+      physical_vector_registers
+    }
+
+common = {
+  hardware_thread_count : positive uint32
+  execution_units       : canonical non-empty sequence<ExecutionUnitRecord>
+  resource_contract     : ResourceContract
+}
+
+ExecutionUnitRecord = {
+  operation_class       : InstructionOperationClass
+  count                 : positive uint32
+  latency_cycles        : positive uint32
+  initiation_interval   : positive uint32
+}
+
+InstructionOperationClass =
+    IntegerAlu | IntegerMultiply | IntegerDivide | Branch
+  | LoadStore | FloatingPointAlu | FloatingPointMultiply
+  | FloatingPointDivide | VectorAlu | VectorMultiply | System
+```
+
+Every width and capacity field is positive. Execution-unit records are sorted
+lexicographically by `(operation_class, latency_cycles,
+initiation_interval)`; two records with the same tuple are merged by checked
+addition of `count`, and an unrepresentable sum is invalid. The exact variant
+and all fields enter Fabric identity. Cache hierarchy, branch-predictor shape,
+pipeline stage names, rename maps, dynamic queues, speculative state, and
+provider-private scheduling remain implementation or simulation state unless
+an observable shared capacity is deliberately exposed through the one
+`resource_contract`.
+
+The architecture and microarchitecture codecs are separate. Changing only the
+Microarchitectural Realization preserves binary compatibility but changes the
+Fabric artifact identity and performance model. Changing the Architectural
+Contract changes both compatibility and Fabric identity.
+
+Both record codecs use unsigned big-endian fields. Closed variants, enum
+values, sequence counts, widths, capacities, and execution-unit fields are
+`u32be`. The embedded canonical `ResourceContract` is framed by a `u64be` byte
+count followed by its exact production record bytes. Sequence elements appear
+in their canonical order and no padding, unknown field, or trailing byte is
+admitted. Strict import reconstructs the typed record, re-encodes it through
+the same production codec, and requires byte equality.
 
 For a selected AccCore, its exact InstructionCore Architectural Contract
 mechanically selects and validates the Compiler Target Binding owned by

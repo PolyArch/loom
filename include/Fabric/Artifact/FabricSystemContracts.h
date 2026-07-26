@@ -1,6 +1,7 @@
 #ifndef LOOM_FABRIC_ARTIFACT_FABRICSYSTEMCONTRACTS_H
 #define LOOM_FABRIC_ARTIFACT_FABRICSYSTEMCONTRACTS_H
 
+#include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -9,10 +10,238 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom {
 namespace fabric {
+
+enum class RiscVXLen : std::uint32_t { X32, X64 };
+enum class RiscVBase : std::uint32_t { I, E };
+enum class RiscVExtension : std::uint32_t {
+  M,
+  A,
+  F,
+  D,
+  C,
+  V,
+  Zicsr,
+  Zifencei,
+  Zba,
+  Zbb,
+  Zbs,
+  Ztso,
+};
+enum class InstructionEndianness : std::uint32_t { Little, Big };
+enum class PrivilegeMode : std::uint32_t { User, Supervisor, Machine };
+enum class RiscVAbi : std::uint32_t {
+  Ilp32,
+  Ilp32e,
+  Ilp32f,
+  Ilp32d,
+  Lp64,
+  Lp64f,
+  Lp64d,
+};
+enum class RiscVMemoryOrdering : std::uint32_t { Rvwmo, Ztso };
+enum class InstructionSyncScope : std::uint32_t {
+  SingleThread,
+  Hart,
+  System,
+};
+enum class RiscVCodeModel : std::uint32_t { MediumLow, MediumAny };
+enum class RelocationModel : std::uint32_t {
+  Static,
+  PositionIndependent,
+};
+enum class InstructionRuntimeService : std::uint32_t {
+  ThreadDispatch,
+  SpatialLaunch,
+  MemoryAllocation,
+  AtomicRuntime,
+};
+
+struct RiscVArchitectureDeclaration {
+  RiscVXLen xlen = RiscVXLen::X32;
+  RiscVBase base = RiscVBase::I;
+  std::vector<RiscVExtension> extensions;
+  InstructionEndianness endianness = InstructionEndianness::Little;
+  std::uint32_t physicalAddressWidthBits = 0;
+  std::vector<PrivilegeMode> privilegeModes;
+  std::vector<RiscVAbi> abiCapabilities;
+  RiscVMemoryOrdering memoryOrdering = RiscVMemoryOrdering::Rvwmo;
+  std::vector<InstructionSyncScope> syncScopes;
+  std::vector<RiscVCodeModel> codeModels;
+  std::vector<RelocationModel> relocationModels;
+  std::vector<InstructionRuntimeService> runtimeServices;
+};
+
+/// The closed binary-compatibility contract of one InstructionCore. The
+/// constructor normalizes authoring set order and rejects duplicate or
+/// inconsistent entries. Strict persistent import additionally requires the
+/// input bytes to equal the canonical re-encoding.
+class InstructionCoreArchitecturalContract {
+public:
+  static llvm::Expected<InstructionCoreArchitecturalContract>
+  create(RiscVArchitectureDeclaration declaration);
+
+  RiscVXLen xlen() const { return declaration_.xlen; }
+  RiscVBase base() const { return declaration_.base; }
+  llvm::ArrayRef<RiscVExtension> extensions() const {
+    return declaration_.extensions;
+  }
+  InstructionEndianness endianness() const { return declaration_.endianness; }
+  std::uint32_t physicalAddressWidthBits() const {
+    return declaration_.physicalAddressWidthBits;
+  }
+  llvm::ArrayRef<PrivilegeMode> privilegeModes() const {
+    return declaration_.privilegeModes;
+  }
+  llvm::ArrayRef<RiscVAbi> abiCapabilities() const {
+    return declaration_.abiCapabilities;
+  }
+  RiscVMemoryOrdering memoryOrdering() const {
+    return declaration_.memoryOrdering;
+  }
+  llvm::ArrayRef<InstructionSyncScope> syncScopes() const {
+    return declaration_.syncScopes;
+  }
+  llvm::ArrayRef<RiscVCodeModel> codeModels() const {
+    return declaration_.codeModels;
+  }
+  llvm::ArrayRef<RelocationModel> relocationModels() const {
+    return declaration_.relocationModels;
+  }
+  llvm::ArrayRef<InstructionRuntimeService> runtimeServices() const {
+    return declaration_.runtimeServices;
+  }
+
+private:
+  explicit InstructionCoreArchitecturalContract(
+      RiscVArchitectureDeclaration declaration)
+      : declaration_(std::move(declaration)) {}
+
+  RiscVArchitectureDeclaration declaration_;
+};
+
+enum class InstructionOperationClass : std::uint32_t {
+  IntegerAlu,
+  IntegerMultiply,
+  IntegerDivide,
+  Branch,
+  LoadStore,
+  FloatingPointAlu,
+  FloatingPointMultiply,
+  FloatingPointDivide,
+  VectorAlu,
+  VectorMultiply,
+  System,
+};
+
+struct ExecutionUnitRecord {
+  InstructionOperationClass operationClass;
+  std::uint32_t count;
+  std::uint32_t latencyCycles;
+  std::uint32_t initiationInterval;
+};
+
+struct InstructionCoreCommonDeclaration {
+  std::uint32_t hardwareThreadCount;
+  std::vector<ExecutionUnitRecord> executionUnits;
+  ::fabric::ResourceContract resourceContract;
+};
+
+struct InOrderMicroarchitectureDeclaration {
+  std::uint32_t fetchWidth;
+  std::uint32_t decodeWidth;
+  std::uint32_t issueWidth;
+  std::uint32_t commitWidth;
+  std::uint32_t memoryIssueWidth;
+  std::uint32_t memoryCommitWidth;
+  std::uint32_t maxOutstandingMemoryOperations;
+  std::uint32_t storeBufferEntries;
+};
+
+struct OutOfOrderMicroarchitectureDeclaration {
+  std::uint32_t fetchWidth;
+  std::uint32_t decodeWidth;
+  std::uint32_t renameWidth;
+  std::uint32_t dispatchWidth;
+  std::uint32_t issueWidth;
+  std::uint32_t writebackWidth;
+  std::uint32_t commitWidth;
+  std::uint32_t reorderBufferEntries;
+  std::uint32_t issueQueueEntries;
+  std::uint32_t loadQueueEntries;
+  std::uint32_t storeQueueEntries;
+  std::uint32_t physicalIntegerRegisters;
+  std::uint32_t physicalFloatRegisters;
+  std::uint32_t physicalVectorRegisters;
+};
+
+enum class InstructionCoreRealizationKind : std::uint32_t {
+  InOrder,
+  OutOfOrder,
+};
+
+/// The closed timing and capacity realization of one InstructionCore. Its
+/// embedded ResourceContract is the only Mapping-visible resource authority.
+class InstructionCoreMicroarchitecturalRealization {
+public:
+  static llvm::Expected<InstructionCoreMicroarchitecturalRealization>
+  createInOrder(InstructionCoreCommonDeclaration common,
+                InOrderMicroarchitectureDeclaration pipeline);
+  static llvm::Expected<InstructionCoreMicroarchitecturalRealization>
+  createOutOfOrder(InstructionCoreCommonDeclaration common,
+                   OutOfOrderMicroarchitectureDeclaration pipeline);
+
+  InstructionCoreRealizationKind kind() const { return kind_; }
+  std::uint32_t hardwareThreadCount() const { return hardwareThreadCount_; }
+  llvm::ArrayRef<ExecutionUnitRecord> executionUnits() const {
+    return executionUnits_;
+  }
+  const ::fabric::ResourceContract &resourceContract() const {
+    return resourceContract_;
+  }
+  const InOrderMicroarchitectureDeclaration *inOrder() const {
+    return std::get_if<InOrderMicroarchitectureDeclaration>(&pipeline_);
+  }
+  const OutOfOrderMicroarchitectureDeclaration *outOfOrder() const {
+    return std::get_if<OutOfOrderMicroarchitectureDeclaration>(&pipeline_);
+  }
+
+private:
+  using Pipeline = std::variant<InOrderMicroarchitectureDeclaration,
+                                OutOfOrderMicroarchitectureDeclaration>;
+
+  InstructionCoreMicroarchitecturalRealization(
+      InstructionCoreRealizationKind kind, std::uint32_t hardwareThreadCount,
+      std::vector<ExecutionUnitRecord> executionUnits,
+      ::fabric::ResourceContract resourceContract, Pipeline pipeline)
+      : kind_(kind), hardwareThreadCount_(hardwareThreadCount),
+        executionUnits_(std::move(executionUnits)),
+        resourceContract_(std::move(resourceContract)),
+        pipeline_(std::move(pipeline)) {}
+
+  InstructionCoreRealizationKind kind_;
+  std::uint32_t hardwareThreadCount_;
+  std::vector<ExecutionUnitRecord> executionUnits_;
+  ::fabric::ResourceContract resourceContract_;
+  Pipeline pipeline_;
+};
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeInstructionCoreArchitecturalContract(
+    const InstructionCoreArchitecturalContract &contract);
+llvm::Expected<InstructionCoreArchitecturalContract>
+decodeInstructionCoreArchitecturalContract(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeInstructionCoreMicroarchitecturalRealization(
+    const InstructionCoreMicroarchitecturalRealization &realization);
+llvm::Expected<InstructionCoreMicroarchitecturalRealization>
+decodeInstructionCoreMicroarchitecturalRealization(
+    llvm::ArrayRef<std::uint8_t> bytes);
 
 enum class ResetPolarity : std::uint32_t {
   ActiveHigh,
