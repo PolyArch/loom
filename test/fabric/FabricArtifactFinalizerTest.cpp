@@ -254,10 +254,55 @@ void malformedStoredPayloadIsRejected() {
                  "fabric_artifact_invalid");
 }
 
+void spatialSwitchConnectivityBecomesTraversals() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  mlir::OwningOpRef<mlir::ModuleOp> source = parse(test, R"mlir(
+    module {
+      fabric.module @switch_root(
+          %a: !fabric.bits<32>, %b: !fabric.bits<32>)
+          -> (!fabric.bits<32>, !fabric.bits<32>) {
+        %x:2 = fabric.switch [spatial] %a, %b
+          [{connectivity_table = ["11", "10"]}]
+          : (!fabric.bits<32>, !fabric.bits<32>)
+         -> (!fabric.bits<32>, !fabric.bits<32>)
+        fabric.yield %x#0, %x#1
+          : !fabric.bits<32>, !fabric.bits<32>
+      }
+    }
+  )mlir");
+
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  std::vector<loom::fabric::FabricSwitchTraversalPayload> traversals;
+  for (const loom::fabric::FabricPhysicalTraversalRef &traversal :
+       finalized.view().admittedTraversals()) {
+    if (traversal.kind() !=
+        loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal)
+      continue;
+    traversals.push_back(std::get<loom::fabric::FabricSwitchTraversalPayload>(
+        traversal.payload));
+  }
+  require(test, traversals.size() == 3,
+          "switch connectivity did not produce three physical traversals");
+  bool input0Output0 = false;
+  bool input1Output0 = false;
+  bool input1Output1 = false;
+  for (const auto &traversal : traversals) {
+    input0Output0 |= traversal.input == 0 && traversal.output == 0;
+    input1Output0 |= traversal.input == 1 && traversal.output == 0;
+    input1Output1 |= traversal.input == 1 && traversal.output == 1;
+  }
+  require(test, input0Output0 && input1Output0 && input1Output1,
+          "switch traversal ordinals do not follow the MSB-left convention");
+}
+
 } // namespace
 
 int main() {
   canonicalPublicationAndStrictImport();
   malformedStoredPayloadIsRejected();
+  spatialSwitchConnectivityBecomesTraversals();
   return EXIT_SUCCESS;
 }

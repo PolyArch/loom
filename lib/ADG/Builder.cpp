@@ -125,6 +125,23 @@ BoundarySpec BoundarySpec::t2s(const PortType &taggedInput,
           std::vector<PortType>(outputs.begin(), outputs.end())};
 }
 
+SwitchSpec
+SwitchSpec::spatial(std::vector<PortType> inputTypes,
+                    std::vector<PortType> outputTypes,
+                    std::vector<std::vector<std::uint32_t>> sourcesByOutput) {
+  return {::fabric::Schedule::Spatial, std::move(inputTypes),
+          std::move(outputTypes), std::move(sourcesByOutput), std::nullopt};
+}
+
+SwitchSpec
+SwitchSpec::temporal(std::vector<PortType> inputTypes,
+                     std::vector<PortType> outputTypes,
+                     std::vector<std::vector<std::uint32_t>> sourcesByOutput,
+                     std::uint32_t routeTableSize) {
+  return {::fabric::Schedule::Temporal, std::move(inputTypes),
+          std::move(outputTypes), std::move(sourcesByOutput), routeTableSize};
+}
+
 namespace {
 
 llvm::Expected<std::shared_ptr<detail::DesignState>>
@@ -254,6 +271,99 @@ SpatialCoreBuilder::addBoundary(llvm::ArrayRef<SpatialValue> inputs,
   std::vector<SpatialValue> results;
   results.reserve(boundary.getNumResults());
   for (mlir::Value result : boundary.getResults())
+    results.push_back(SpatialValue(*state, rootOrdinal_, result));
+  return results;
+}
+
+llvm::Expected<std::vector<SpatialValue>>
+SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
+                              const SwitchSpec &spec) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  if (rootOrdinal_ >= (*state)->roots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  if (root.closed)
+    return invalid("SpatialCore is already closed");
+  if (inputs.empty() || spec.outputTypes.empty())
+    return invalid("Switch requires non-empty input and output sets");
+  if (inputs.size() != spec.inputTypes.size())
+    return invalid("Switch input count does not match its typed contract");
+  if (spec.sourcesByOutput.size() != spec.outputTypes.size())
+    return invalid("Switch connectivity row count does not match its outputs");
+  if (spec.schedule == ::fabric::Schedule::Spatial && spec.routeTableSize)
+    return invalid("Spatial switch cannot declare a route-table capacity");
+  if (spec.schedule == ::fabric::Schedule::Temporal &&
+      (!spec.routeTableSize || *spec.routeTableSize == 0))
+    return invalid("Temporal switch requires a positive route-table capacity");
+
+  llvm::SmallVector<mlir::Value, 8> values;
+  llvm::SmallVector<mlir::Type, 8> inputTypes;
+  llvm::SmallVector<mlir::Type, 8> outputTypes;
+  bool hasNormalizedInput = false;
+  for (auto [value, type] : llvm::zip(inputs, spec.inputTypes)) {
+    auto resolved = resolveValue(*state, value);
+    if (!resolved)
+      return resolved.takeError();
+    if (!resolved->use_empty())
+      return invalid("SpatialCore transport source already has a consumer");
+    mlir::Type inputType = materializePortType((*state)->context, type);
+    if (!sameFabricKind(resolved->getType(), inputType))
+      return invalid("Switch source and input port have different kinds");
+    hasNormalizedInput |= resolved->getType() != inputType;
+    values.push_back(*resolved);
+    inputTypes.push_back(inputType);
+  }
+  for (const PortType &type : spec.outputTypes)
+    outputTypes.push_back(materializePortType((*state)->context, type));
+
+  std::vector<bool> inputCovered(inputs.size(), false);
+  llvm::SmallVector<mlir::Attribute, 8> rows;
+  for (llvm::ArrayRef<std::uint32_t> sources : spec.sourcesByOutput) {
+    if (sources.empty())
+      return invalid("Switch output has no physical input source");
+    std::string row(inputs.size(), '0');
+    for (std::uint32_t inputOrdinal : sources) {
+      if (inputOrdinal >= inputs.size())
+        return invalid("Switch connectivity input ordinal is out of range");
+      const std::size_t position = inputs.size() - 1 - inputOrdinal;
+      if (row[position] == '1')
+        return invalid("Switch connectivity row contains a duplicate input");
+      row[position] = '1';
+      inputCovered[inputOrdinal] = true;
+    }
+    rows.push_back(mlir::StringAttr::get(&(*state)->context, row));
+  }
+  for (bool covered : inputCovered)
+    if (!covered)
+      return invalid("Switch input has no physical destination");
+
+  mlir::NamedAttrList hardware;
+  hardware.set("connectivity_table",
+               mlir::ArrayAttr::get(&(*state)->context, rows));
+  if (spec.routeTableSize)
+    hardware.set(
+        "route_table_size",
+        mlir::IntegerAttr::get(mlir::IntegerType::get(&(*state)->context, 32),
+                               *spec.routeTableSize));
+  mlir::ArrayAttr hardwareParameters = mlir::ArrayAttr::get(
+      &(*state)->context, {hardware.getDictionary(&(*state)->context)});
+
+  mlir::OpBuilder builder(&(*state)->context);
+  builder.setInsertionPointToEnd(&root.operation.getBody().front());
+  auto sw = ::fabric::SwitchOp::create(
+      builder, root.operation.getLoc(), outputTypes, values, mlir::StringAttr(),
+      mlir::TypeAttr(), spec.schedule,
+      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(inputTypes)
+                         : llvm::ArrayRef<mlir::Type>(),
+      hardwareParameters, mlir::DictionaryAttr());
+  if (llvm::Error error = verifyNewOperation(sw, "Switch"))
+    return std::move(error);
+
+  std::vector<SpatialValue> results;
+  results.reserve(sw.getNumResults());
+  for (mlir::Value result : sw.getResults())
     results.push_back(SpatialValue(*state, rootOrdinal_, result));
   return results;
 }

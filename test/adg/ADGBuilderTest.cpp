@@ -76,6 +76,7 @@ using loom::adg::DesignBuilder;
 using loom::adg::FifoSpec;
 using loom::adg::PortType;
 using loom::adg::SpatialValue;
+using loom::adg::SwitchSpec;
 
 void regularAndIrregularSpatialCoresFinalize() {
   const llvm::StringRef test = __func__;
@@ -101,17 +102,31 @@ void regularAndIrregularSpatialCoresFinalize() {
   if (llvm::Error error = regular.close({regularQueued}))
     fail(test, llvm::toString(std::move(error)));
 
-  auto irregular = take(test, design.createSpatialCore(
-                                  "irregular", {bits64, bits4}, {tagged32x4}));
+  auto irregular =
+      take(test,
+           design.createSpatialCore("irregular", {bits64, bits32, bits4, bits4},
+                                    {tagged32x4, tagged32x4}));
   SpatialValue irregularData = take(test, irregular.input(0));
-  SpatialValue irregularTag = take(test, irregular.input(1));
+  SpatialValue alternateData = take(test, irregular.input(1));
+  SpatialValue irregularTag0 = take(test, irregular.input(2));
+  SpatialValue irregularTag1 = take(test, irregular.input(3));
   SpatialValue narrowed =
       take(test, irregular.addFifo(irregularData, FifoSpec{bits32, 3, false}));
-  auto irregularBoundary =
+  auto switched =
+      take(test, irregular.addSwitch({narrowed, alternateData},
+                                     SwitchSpec::spatial({bits32, bits32},
+                                                         {bits32, bits32},
+                                                         {{0, 1}, {1}})));
+  auto irregularBoundary0 =
       take(test,
-           irregular.addBoundary({narrowed, irregularTag},
+           irregular.addBoundary({switched[0], irregularTag0},
                                  BoundarySpec::s2t(bits32, bits4, tagged32x4)));
-  if (llvm::Error error = irregular.close({irregularBoundary.front()}))
+  auto irregularBoundary1 =
+      take(test,
+           irregular.addBoundary({switched[1], irregularTag1},
+                                 BoundarySpec::s2t(bits32, bits4, tagged32x4)));
+  if (llvm::Error error = irregular.close(
+          {irregularBoundary0.front(), irregularBoundary1.front()}))
     fail(test, llvm::toString(std::move(error)));
 
   loom::adg::FinalizedFabricDesign finalized =

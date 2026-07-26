@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace loom::adg {
@@ -88,6 +89,23 @@ struct BoundarySpec final {
                           llvm::ArrayRef<PortType> outputs);
 };
 
+struct SwitchSpec final {
+  ::fabric::Schedule schedule;
+  std::vector<PortType> inputTypes;
+  std::vector<PortType> outputTypes;
+  std::vector<std::vector<std::uint32_t>> sourcesByOutput;
+  std::optional<std::uint32_t> routeTableSize;
+
+  static SwitchSpec
+  spatial(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+          std::vector<std::vector<std::uint32_t>> sourcesByOutput);
+
+  static SwitchSpec
+  temporal(std::vector<PortType> inputTypes, std::vector<PortType> outputTypes,
+           std::vector<std::vector<std::uint32_t>> sourcesByOutput,
+           std::uint32_t routeTableSize);
+};
+
 class SpatialCoreBuilder final {
 public:
   llvm::Expected<SpatialValue> input(std::size_t ordinal) const;
@@ -97,6 +115,9 @@ public:
 
   llvm::Expected<std::vector<SpatialValue>>
   addBoundary(llvm::ArrayRef<SpatialValue> inputs, const BoundarySpec &spec);
+
+  llvm::Expected<std::vector<SpatialValue>>
+  addSwitch(llvm::ArrayRef<SpatialValue> inputs, const SwitchSpec &spec);
 
   /// Closes this root with the exact declared result sequence.
   llvm::Error close(llvm::ArrayRef<SpatialValue> outputs);

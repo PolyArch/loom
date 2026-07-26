@@ -532,6 +532,31 @@ buildModuleView(::fabric::ModuleOp root,
         data.admittedTraversals.push_back(
             FabricPhysicalTraversalRef::boundaryTraversal(
                 FabricBoundaryOccurrenceRef(carrier.id), output));
+    } else if (carrier.kind == FabricEntityKind::FabricSwitchOccurrence) {
+      auto sw = cast<::fabric::SwitchOp>(carrier.op);
+      ArrayAttr hardwareParameters = sw.getHwParamsAttr();
+      if (!hardwareParameters || hardwareParameters.size() != 1)
+        return invalid("a finalized switch has malformed hardware parameters");
+      auto hardware = dyn_cast<DictionaryAttr>(hardwareParameters[0]);
+      auto connectivity =
+          hardware
+              ? dyn_cast_or_null<ArrayAttr>(hardware.get("connectivity_table"))
+              : ArrayAttr();
+      if (!connectivity || connectivity.size() != sw.getNumResults())
+        return invalid("a finalized switch has malformed connectivity");
+      for (auto [output, rowAttribute] : llvm::enumerate(connectivity)) {
+        auto row = dyn_cast<StringAttr>(rowAttribute);
+        if (!row || row.getValue().size() != sw.getNumOperands())
+          return invalid("a finalized switch has a malformed connectivity row");
+        for (auto [position, enabled] : llvm::enumerate(row.getValue())) {
+          if (enabled != '1')
+            continue;
+          const std::uint64_t input = sw.getNumOperands() - 1 - position;
+          data.admittedTraversals.push_back(
+              FabricPhysicalTraversalRef::switchTraversal(
+                  FabricSwitchOccurrenceRef(carrier.id), input, output));
+        }
+      }
     }
   }
   return detail::buildFabricArtifactView(std::move(data));
