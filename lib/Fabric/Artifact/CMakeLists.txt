@@ -5,6 +5,8 @@ add_mlir_library(LoomFabricArtifact
   FabricArtifact.cpp
   FabricArtifactCodec.cpp
   FabricCanonicalLabeling.cpp
+  FabricSystemCanonicalLabeling.cpp
+  FabricSystemCanonicalMaterialization.cpp
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp
   FabricFuCapabilityDerivation.cpp

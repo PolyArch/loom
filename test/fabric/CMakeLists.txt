@@ -209,6 +209,10 @@ add_executable(loom-fabric-canonical-labeling-test
   FabricCanonicalLabelingTest.cpp
 )
 
+add_executable(loom-fabric-system-canonical-labeling-test
+  FabricSystemCanonicalLabelingTest.cpp
+)
+
 add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
 )
@@ -255,6 +259,10 @@ target_include_directories(loom-fabric-canonical-labeling-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Fabric/Artifact
 )
 
+target_include_directories(loom-fabric-system-canonical-labeling-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Artifact
+)
+
 target_link_libraries(loom-fabric-artifact-gate-test PRIVATE
   LoomCommon
   LoomFabricArtifact
@@ -262,6 +270,15 @@ target_link_libraries(loom-fabric-artifact-gate-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-canonical-labeling-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-system-canonical-labeling-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRFabric
