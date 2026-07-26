@@ -1,6 +1,7 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 
 add_subdirectory(common)
+add_subdirectory(adg)
 add_subdirectory(dataflow)
 add_subdirectory(evaluation)
 add_subdirectory(frontend)
@@ -25,7 +26,7 @@ set(LOOM_TEST_DEPENDS
   loom-raise
   loom-raise-opt
   loom-accelerator-final-link-test
-  loom-adg-builder-test
+  loom-adg-builder-api-test
   loom-config-test
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
