@@ -1,5 +1,6 @@
 #include "Fabric/IR/FabricOps.h"
 
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
@@ -86,8 +87,9 @@ LogicalResult SystemOp::verify() {
   for (Operation &operation : block) {
     if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
              SystemServiceEndpointOp, SystemServiceTransformOp,
-             SystemTransportResourceOp, SystemTransferPatternOp,
-             SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
+             SystemHardwareDomainOp, SystemTransportResourceOp,
+             SystemTransferPatternOp, SystemConnectionOp,
+             SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
           "is not in the closed fabric.system child catalog");
     if (std::optional<std::uint64_t> id = entityId(operation))
@@ -156,6 +158,17 @@ LogicalResult SystemServiceTransformOp::verify() {
       unsignedBytes(getContractAttr()));
   if (!contract)
     return emitOpError("has invalid service transform contract: ")
+           << llvm::toString(contract.takeError());
+  return success();
+}
+
+LogicalResult SystemHardwareDomainOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto contract = loom::fabric::decodeHardwareDomainContractRecord(
+      unsignedBytes(getContractAttr()));
+  if (!contract)
+    return emitOpError("has invalid hardware-domain contract: ")
            << llvm::toString(contract.takeError());
   return success();
 }

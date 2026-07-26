@@ -683,6 +683,25 @@ def Fabric_SystemServiceTransformOp : Fabric_Op<"system.service_transform", [
   let hasVerifier = 1;
 }
 
+def Fabric_SystemHardwareDomainOp : Fabric_Op<"system.hardware_domain", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "closed typed System hardware domain";
+  let description = [{
+    One Clock, Reset, Power, Address, or MemoryConsistency domain. The closed
+    contract variant owns the kind and the canonical member sequence retains
+    exact Fabric inventory-owner references.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      DenseI8ArrayAttr:$contract
+  );
+
+  let assemblyFormat = "`contract` `=` $contract attr-dict";
+  let hasVerifier = 1;
+}
+
 def Fabric_SystemTransportResourceOp :
     Fabric_Op<"system.transport_resource", [
       HasParent<"::fabric::SystemOp">

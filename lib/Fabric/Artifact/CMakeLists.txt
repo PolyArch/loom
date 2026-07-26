@@ -1,4 +1,5 @@
 add_subdirectory(SystemContracts)
+add_subdirectory(SystemHardwareDomains)
 
 add_mlir_library(LoomFabricArtifact
   FabricArtifact.cpp
@@ -15,6 +16,7 @@ add_mlir_library(LoomFabricArtifact
   LoomCommon
   LoomFabricBoundaryTransfer
   LoomFabricFifoResourceContract
+  LoomFabricHardwareDomainContracts
   LoomFabricIdentity
   LoomFabricResourceContract
   LoomFabricSystemContracts

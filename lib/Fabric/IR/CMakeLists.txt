@@ -84,6 +84,7 @@ add_mlir_dialect_library(MLIRFabric
   LINK_LIBS PUBLIC
   LoomCommon
   LoomFabricBoundaryDataPath
+  LoomFabricHardwareDomainContracts
   LoomFabricImplementationFamily
   LoomFabricMemoryOperationPort
   LoomFabricMemoryServiceContract

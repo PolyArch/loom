@@ -1,3 +1,4 @@
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -570,6 +571,98 @@ void checkClockCrossingContract() {
                  "accepted trailing crossing bytes");
 }
 
+void checkHardwareDomainContract() {
+  constexpr llvm::StringLiteral test = "hardware domain contract";
+  const FabricInventoryOwnerRef host =
+      FabricInventoryOwnerRef::of(HostCoreOccurrenceRef(8));
+  const FabricInventoryOwnerRef accelerator =
+      FabricInventoryOwnerRef::of(AccCoreOccurrenceRef(3));
+  const std::vector<FabricInventoryOwnerRef> members = {host, accelerator};
+
+  const ClockDomainContractRecord clock =
+      take(test, ClockDomainContractRecord::create(1'000, 0));
+  const ResetDomainContractRecord reset =
+      take(test, ResetDomainContractRecord::create(
+                     ResetPolarity::ActiveLow, ResetTiming::Asynchronous,
+                     ResetTiming::Synchronous, ResetInitialState::Asserted,
+                     ClockDomainRef(HardwareDomainRef(20)), 2));
+  const PowerDomainContractRecord power =
+      take(test, PowerDomainContractRecord::create(900'000));
+
+  llvm::APInt fullAddressLimit(65, 1);
+  fullAddressLimit <<= 64;
+  const AddressDomainContractRecord address =
+      take(test, AddressDomainContractRecord::create(
+                     64, {{llvm::APInt(65, 0), fullAddressLimit}}));
+
+  ::fabric::MemoryConsistencyContractDeclaration consistencyDeclaration{
+      {::fabric::MemoryConsistencyParticipant::service(
+          FabricMemoryServiceRef::system(SystemMemoryServiceRef(30)))},
+      ::fabric::ReleaseVisibilityPoint::AtLinearization,
+      ::fabric::BoundedCompletion{ClockDomainRef(HardwareDomainRef(20)), 16},
+      instructionContextContract()};
+  const ::fabric::MemoryConsistencyContract consistency =
+      take(test, ::fabric::MemoryConsistencyContract::create(
+                     std::move(consistencyDeclaration)));
+
+  std::vector<std::pair<FabricHardwareDomainKind, HardwareDomainContract>>
+      contracts;
+  contracts.emplace_back(FabricHardwareDomainKind::Clock, clock);
+  contracts.emplace_back(FabricHardwareDomainKind::Reset, reset);
+  contracts.emplace_back(FabricHardwareDomainKind::Power, power);
+  contracts.emplace_back(FabricHardwareDomainKind::Address, address);
+  contracts.emplace_back(FabricHardwareDomainKind::MemoryConsistency,
+                         consistency);
+
+  std::vector<std::uint8_t> clockBytes;
+  for (auto &[expectedKind, contract] : contracts) {
+    HardwareDomainContractRecord record =
+        take(test, HardwareDomainContractRecord::create(members,
+                                                        std::move(contract)));
+    require(test, record.kind() == expectedKind,
+            "closed contract variant lost its domain kind");
+    std::vector<std::uint8_t> encoded =
+        take(test, encodeHardwareDomainContractRecord(record));
+    HardwareDomainContractRecord decoded =
+        take(test, decodeHardwareDomainContractRecord(encoded));
+    require(test,
+            decoded.kind() == expectedKind &&
+                take(test, encodeHardwareDomainContractRecord(decoded)) ==
+                    encoded,
+            "hardware domain changed during strict roundtrip");
+    if (expectedKind == FabricHardwareDomainKind::Clock)
+      clockBytes = std::move(encoded);
+  }
+
+  expectRejected(test,
+                 HardwareDomainContractRecord::create(
+                     {host, host}, HardwareDomainContract(clock)),
+                 "accepted duplicate domain membership");
+
+  const AddressDomainContractRecord merged =
+      take(test, AddressDomainContractRecord::create(
+                     32, {{llvm::APInt(33, 16), llvm::APInt(33, 32)},
+                          {llvm::APInt(33, 0), llvm::APInt(33, 16)}}));
+  require(
+      test,
+      merged.ranges().size() == 1 && merged.ranges().front().lower.isZero() &&
+          merged.ranges().front().upperExclusive == llvm::APInt(33, 32),
+      "adjacent address ranges did not canonicalize to one half-open range");
+
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+  const std::string source = "module { fabric.system @soc { "
+                             "fabric.system.hardware_domain contract = " +
+                             denseI8Assembly(context, clockBytes) +
+                             " {entity_id = #fabric.entity_id<20>} } }";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  require(test,
+          static_cast<bool>(module) && mlir::succeeded(mlir::verify(*module)),
+          "typed hardware-domain operation did not parse and verify");
+}
+
 } // namespace
 
 int main() {
@@ -583,5 +676,6 @@ int main() {
   checkClockContract();
   checkResetContract();
   checkClockCrossingContract();
+  checkHardwareDomainContract();
   return EXIT_SUCCESS;
 }
