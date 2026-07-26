@@ -1,5 +1,6 @@
 add_library(LoomFabricMemoryCapabilityDomains
   MemoryCapabilityDomains.cpp
+  ReducedProductRelation.cpp
 )
 
 target_include_directories(LoomFabricMemoryCapabilityDomains PUBLIC

@@ -1,4 +1,5 @@
 #include "Fabric/IR/MemoryCapabilityDomains.h"
+#include "Fabric/IR/ReducedProductRelation.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
@@ -10,10 +11,7 @@
 #include <cstddef>
 #include <iterator>
 #include <limits>
-#include <map>
-#include <set>
 #include <system_error>
-#include <variant>
 
 using namespace dataflow::semantics;
 
@@ -49,44 +47,14 @@ llvm::Error validateMaskForm(MemoryMaskForm form) {
   return invalid("unknown memory mask form");
 }
 
-bool domainsIntersect(const UnsignedDomain &lhs, const UnsignedDomain &rhs) {
-  std::size_t left = 0;
-  std::size_t right = 0;
-  while (left < lhs.intervals().size() && right < rhs.intervals().size()) {
-    const UnsignedInterval a = lhs.intervals()[left];
-    const UnsignedInterval b = rhs.intervals()[right];
-    if (a.upper < b.lower) {
-      ++left;
-      continue;
-    }
-    if (b.upper < a.lower) {
-      ++right;
-      continue;
-    }
-    return true;
-  }
-  return false;
-}
-
 llvm::Expected<std::uint8_t> checkedTag(ReadSubwordSemantics semantics);
 llvm::Expected<std::uint8_t> checkedTag(WriteSubwordSemantics semantics);
 llvm::Expected<std::uint8_t> checkedTag(InactiveLaneSemantics semantics);
 
-using AccessAtomValue =
-    std::variant<MemoryAccessForm, MaskInactivePair, ReadSubwordSemantics,
-                 WriteSubwordSemantics>;
-
-struct FiniteAtom {
-  std::vector<std::uint8_t> bytes;
-  AccessAtomValue value;
-};
-
-struct FiniteDomain {
-  std::vector<FiniteAtom> atoms;
-};
-
-using RelationDomain = std::variant<FiniteDomain, UnsignedDomain>;
-using RelationRow = std::vector<RelationDomain>;
+using FiniteAtom = detail::ReducedFiniteAtom;
+using FiniteDomain = detail::ReducedFiniteDomain;
+using RelationDomain = detail::ReducedProductDomain;
+using RelationRow = detail::ReducedProductRow;
 
 void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
   for (int shift = 24; shift >= 0; shift -= 8)
@@ -109,8 +77,7 @@ llvm::Expected<FiniteAtom> canonicalAtom(MemoryAccessForm value) {
   if (!encoded)
     return encoded.takeError();
   return FiniteAtom{std::vector<std::uint8_t>(encoded->bytes().begin(),
-                                              encoded->bytes().end()),
-                    value};
+                                              encoded->bytes().end())};
 }
 
 llvm::Expected<FiniteAtom> canonicalAtom(MaskInactivePair value) {
@@ -123,7 +90,7 @@ llvm::Expected<FiniteAtom> canonicalAtom(MaskInactivePair value) {
   std::vector<std::uint8_t> bytes;
   appendFramed(bytes, mask->bytes());
   appendU32(bytes, *inactive);
-  return FiniteAtom{std::move(bytes), value};
+  return FiniteAtom{std::move(bytes)};
 }
 
 llvm::Expected<FiniteAtom> canonicalAtom(ReadSubwordSemantics value) {
@@ -132,7 +99,7 @@ llvm::Expected<FiniteAtom> canonicalAtom(ReadSubwordSemantics value) {
     return tag.takeError();
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, *tag);
-  return FiniteAtom{std::move(bytes), value};
+  return FiniteAtom{std::move(bytes)};
 }
 
 llvm::Expected<FiniteAtom> canonicalAtom(WriteSubwordSemantics value) {
@@ -141,7 +108,7 @@ llvm::Expected<FiniteAtom> canonicalAtom(WriteSubwordSemantics value) {
     return tag.takeError();
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, *tag);
-  return FiniteAtom{std::move(bytes), value};
+  return FiniteAtom{std::move(bytes)};
 }
 
 template <typename Value>
@@ -164,209 +131,6 @@ canonicalFiniteDomain(llvm::ArrayRef<Value> values) {
     if (atoms[index - 1].bytes == atoms[index].bytes)
       return invalid("finite relation domain contains a duplicate");
   return FiniteDomain{std::move(atoms)};
-}
-
-bool finiteDomainsIntersect(const FiniteDomain &lhs, const FiniteDomain &rhs) {
-  std::size_t left = 0;
-  std::size_t right = 0;
-  while (left < lhs.atoms.size() && right < rhs.atoms.size()) {
-    if (lhs.atoms[left].bytes < rhs.atoms[right].bytes) {
-      ++left;
-      continue;
-    }
-    if (rhs.atoms[right].bytes < lhs.atoms[left].bytes) {
-      ++right;
-      continue;
-    }
-    return true;
-  }
-  return false;
-}
-
-bool relationDomainsIntersect(const RelationDomain &lhs,
-                              const RelationDomain &rhs) {
-  if (lhs.index() != rhs.index())
-    return false;
-  if (auto *left = std::get_if<FiniteDomain>(&lhs))
-    return finiteDomainsIntersect(*left, std::get<FiniteDomain>(rhs));
-  return domainsIntersect(std::get<UnsignedDomain>(lhs),
-                          std::get<UnsignedDomain>(rhs));
-}
-
-bool relationRowsOverlap(const RelationRow &lhs, const RelationRow &rhs) {
-  if (lhs.size() != rhs.size())
-    return false;
-  for (auto [left, right] : llvm::zip(lhs, rhs))
-    if (!relationDomainsIntersect(left, right))
-      return false;
-  return true;
-}
-
-std::vector<std::uint8_t> encodeRelationDomain(const RelationDomain &domain) {
-  std::vector<std::uint8_t> bytes;
-  if (auto *finite = std::get_if<FiniteDomain>(&domain)) {
-    appendU32(bytes, 0);
-    appendU64(bytes, finite->atoms.size());
-    for (const FiniteAtom &atom : finite->atoms)
-      appendFramed(bytes, atom.bytes);
-    return bytes;
-  }
-  appendU32(bytes, 1);
-  const UnsignedDomain &unsignedDomain = std::get<UnsignedDomain>(domain);
-  appendU64(bytes, unsignedDomain.intervals().size());
-  for (UnsignedInterval interval : unsignedDomain.intervals()) {
-    appendU64(bytes, interval.lower);
-    appendU64(bytes, interval.upper);
-  }
-  return bytes;
-}
-
-std::vector<std::uint8_t> encodeRelationRow(const RelationRow &row) {
-  std::vector<std::uint8_t> bytes;
-  appendU64(bytes, row.size());
-  for (const RelationDomain &domain : row) {
-    std::vector<std::uint8_t> encoded = encodeRelationDomain(domain);
-    appendFramed(bytes, encoded);
-  }
-  return bytes;
-}
-
-void sortRelationRows(std::vector<RelationRow> &rows) {
-  llvm::sort(rows, [](const RelationRow &lhs, const RelationRow &rhs) {
-    return encodeRelationRow(lhs) < encodeRelationRow(rhs);
-  });
-}
-
-std::vector<std::uint8_t> encodeRelation(llvm::ArrayRef<RelationRow> rows) {
-  std::vector<std::uint8_t> bytes;
-  appendU64(bytes, rows.size());
-  for (const RelationRow &row : rows) {
-    std::vector<std::uint8_t> encoded = encodeRelationRow(row);
-    appendFramed(bytes, encoded);
-  }
-  return bytes;
-}
-
-llvm::Expected<std::vector<RelationRow>>
-normalizeRelation(llvm::ArrayRef<RelationRow> rows, std::size_t field,
-                  llvm::ArrayRef<bool> groupFiniteFields) {
-  if (rows.empty())
-    return invalid("relation partition must not be empty");
-  const std::size_t fieldCount = rows.front().size();
-  if (groupFiniteFields.size() != fieldCount)
-    return invalid("relation field policy has the wrong size");
-  for (const RelationRow &row : rows)
-    if (row.size() != fieldCount)
-      return invalid("relation rows have inconsistent field counts");
-  if (field == fieldCount)
-    return std::vector<RelationRow>{RelationRow{}};
-
-  const std::size_t domainKind = rows.front()[field].index();
-  for (const RelationRow &row : rows)
-    if (row[field].index() != domainKind)
-      return invalid("relation field mixes incompatible domain kinds");
-
-  std::vector<RelationRow> normalized;
-  if (domainKind == 0) {
-    struct Cell {
-      FiniteAtom atom;
-      std::vector<RelationRow> rows;
-    };
-    std::map<std::vector<std::uint8_t>, Cell> cells;
-    for (const RelationRow &row : rows) {
-      for (const FiniteAtom &atom : std::get<FiniteDomain>(row[field]).atoms) {
-        auto found = cells.find(atom.bytes);
-        if (found == cells.end())
-          found = cells.emplace(atom.bytes, Cell{atom, {}}).first;
-        found->second.rows.push_back(row);
-      }
-    }
-
-    struct Group {
-      std::vector<FiniteAtom> atoms;
-      std::vector<RelationRow> suffix;
-    };
-    std::map<std::vector<std::uint8_t>, Group> groups;
-    for (auto &[atomBytes, cell] : cells) {
-      auto suffix = normalizeRelation(cell.rows, field + 1, groupFiniteFields);
-      if (!suffix)
-        return suffix.takeError();
-      std::vector<std::uint8_t> key = encodeRelation(*suffix);
-      if (!groupFiniteFields[field])
-        appendFramed(key, atomBytes);
-      auto [group, inserted] = groups.try_emplace(key);
-      if (inserted)
-        group->second.suffix = *suffix;
-      group->second.atoms.push_back(std::move(cell.atom));
-    }
-
-    for (auto &[key, group] : groups) {
-      llvm::sort(group.atoms, [](const FiniteAtom &lhs, const FiniteAtom &rhs) {
-        return lhs.bytes < rhs.bytes;
-      });
-      for (const RelationRow &suffix : group.suffix) {
-        RelationRow row;
-        row.reserve(1 + suffix.size());
-        row.push_back(FiniteDomain{group.atoms});
-        row.insert(row.end(), suffix.begin(), suffix.end());
-        normalized.push_back(std::move(row));
-      }
-    }
-  } else {
-    std::set<std::uint64_t> boundarySet;
-    for (const RelationRow &row : rows)
-      for (UnsignedInterval interval :
-           std::get<UnsignedDomain>(row[field]).intervals()) {
-        boundarySet.insert(interval.lower);
-        if (interval.upper != std::numeric_limits<std::uint64_t>::max())
-          boundarySet.insert(interval.upper + 1);
-      }
-    std::vector<std::uint64_t> boundaries(boundarySet.begin(),
-                                          boundarySet.end());
-
-    struct Group {
-      std::vector<UnsignedInterval> intervals;
-      std::vector<RelationRow> suffix;
-    };
-    std::map<std::vector<std::uint8_t>, Group> groups;
-    for (std::size_t index = 0; index < boundaries.size(); ++index) {
-      const std::uint64_t lower = boundaries[index];
-      const std::uint64_t upper =
-          index + 1 < boundaries.size()
-              ? boundaries[index + 1] - 1
-              : std::numeric_limits<std::uint64_t>::max();
-      std::vector<RelationRow> selected;
-      for (const RelationRow &row : rows)
-        if (std::get<UnsignedDomain>(row[field]).contains(lower))
-          selected.push_back(row);
-      if (selected.empty())
-        continue;
-      auto suffix = normalizeRelation(selected, field + 1, groupFiniteFields);
-      if (!suffix)
-        return suffix.takeError();
-      std::vector<std::uint8_t> key = encodeRelation(*suffix);
-      auto [group, inserted] = groups.try_emplace(key);
-      if (inserted)
-        group->second.suffix = *suffix;
-      group->second.intervals.push_back({lower, upper});
-    }
-
-    for (auto &[key, group] : groups) {
-      auto domain = UnsignedDomain::normalize(group.intervals);
-      if (!domain)
-        return domain.takeError();
-      for (const RelationRow &suffix : group.suffix) {
-        RelationRow row;
-        row.reserve(1 + suffix.size());
-        row.push_back(*domain);
-        row.insert(row.end(), suffix.begin(), suffix.end());
-        normalized.push_back(std::move(row));
-      }
-    }
-  }
-
-  sortRelationRows(normalized);
-  return normalized;
 }
 
 llvm::Expected<RelationRow>
@@ -398,6 +162,79 @@ accessClassRelationRow(const MemoryAccessClass &accessClass) {
   return row;
 }
 
+llvm::Expected<std::uint32_t> readU32(llvm::ArrayRef<std::uint8_t> bytes,
+                                      std::size_t &offset) {
+  if (bytes.size() - std::min(offset, bytes.size()) < 4)
+    return invalid("finite relation atom is truncated");
+  std::uint32_t value = 0;
+  for (unsigned index = 0; index < 4; ++index)
+    value = (value << 8) | bytes[offset++];
+  return value;
+}
+
+llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
+                                      std::size_t &offset) {
+  if (bytes.size() - std::min(offset, bytes.size()) < 8)
+    return invalid("finite relation atom is truncated");
+  std::uint64_t value = 0;
+  for (unsigned index = 0; index < 8; ++index)
+    value = (value << 8) | bytes[offset++];
+  return value;
+}
+
+llvm::Expected<MemoryAccessForm>
+decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, MemoryAccessForm *) {
+  return dataflow::decodeMemoryAccessForm(bytes);
+}
+
+llvm::Expected<MaskInactivePair>
+decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, MaskInactivePair *) {
+  std::size_t offset = 0;
+  auto maskLength = readU64(bytes, offset);
+  if (!maskLength)
+    return maskLength.takeError();
+  if (*maskLength > bytes.size() - std::min(offset, bytes.size()))
+    return invalid("mask/inactive relation atom is truncated");
+  llvm::ArrayRef<std::uint8_t> maskBytes = bytes.slice(offset, *maskLength);
+  offset += *maskLength;
+  auto mask = dataflow::decodeMemoryMaskForm(maskBytes);
+  if (!mask)
+    return mask.takeError();
+  auto inactiveTag = readU32(bytes, offset);
+  if (!inactiveTag)
+    return inactiveTag.takeError();
+  if (offset != bytes.size() ||
+      *inactiveTag > std::numeric_limits<std::uint8_t>::max())
+    return invalid("mask/inactive relation atom is not canonical");
+  auto inactive =
+      decodeInactiveLaneSemantics(static_cast<std::uint8_t>(*inactiveTag));
+  if (!inactive)
+    return inactive.takeError();
+  return MaskInactivePair{*mask, *inactive};
+}
+
+llvm::Expected<ReadSubwordSemantics>
+decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, ReadSubwordSemantics *) {
+  std::size_t offset = 0;
+  auto tag = readU32(bytes, offset);
+  if (!tag)
+    return tag.takeError();
+  if (offset != bytes.size() || *tag > std::numeric_limits<std::uint8_t>::max())
+    return invalid("read-subword relation atom is not canonical");
+  return decodeReadSubwordSemantics(static_cast<std::uint8_t>(*tag));
+}
+
+llvm::Expected<WriteSubwordSemantics>
+decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, WriteSubwordSemantics *) {
+  std::size_t offset = 0;
+  auto tag = readU32(bytes, offset);
+  if (!tag)
+    return tag.takeError();
+  if (offset != bytes.size() || *tag > std::numeric_limits<std::uint8_t>::max())
+    return invalid("write-subword relation atom is not canonical");
+  return decodeWriteSubwordSemantics(static_cast<std::uint8_t>(*tag));
+}
+
 template <typename Value>
 llvm::Expected<std::vector<Value>> valuesOf(const RelationDomain &domain) {
   const auto *finite = std::get_if<FiniteDomain>(&domain);
@@ -406,9 +243,9 @@ llvm::Expected<std::vector<Value>> valuesOf(const RelationDomain &domain) {
   std::vector<Value> values;
   values.reserve(finite->atoms.size());
   for (const FiniteAtom &atom : finite->atoms) {
-    const Value *value = std::get_if<Value>(&atom.value);
+    auto value = decodeFiniteAtom(atom.bytes, static_cast<Value *>(nullptr));
     if (!value)
-      return invalid("canonical relation atom has the wrong value kind");
+      return value.takeError();
     values.push_back(*value);
   }
   return values;
@@ -427,13 +264,8 @@ normalizeAccessClasses(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
       return row.takeError();
     rows.push_back(std::move(*row));
   }
-  for (std::size_t left = 0; left < rows.size(); ++left)
-    for (std::size_t right = left + 1; right < rows.size(); ++right)
-      if (relationRowsOverlap(rows[left], rows[right]))
-        return invalid("parameterized memory access classes overlap");
-
   const bool groupFiniteFields[] = {false, true, true, true, true, true, true};
-  auto normalized = normalizeRelation(rows, 0, groupFiniteFields);
+  auto normalized = detail::reduceProductRelation(rows, groupFiniteFields);
   if (!normalized)
     return normalized.takeError();
 
@@ -493,7 +325,7 @@ encodeAccessRelation(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
       return row.takeError();
     rows.push_back(std::move(*row));
   }
-  return encodeRelation(rows);
+  return detail::encodeReducedProductRelation(rows);
 }
 
 llvm::Expected<std::uint8_t> checkedTag(ReadSubwordSemantics semantics) {
@@ -748,8 +580,13 @@ llvm::Expected<MemoryAccessClass> MemoryAccessClass::create(
     return canonicalMasks.takeError();
   std::vector<MaskInactivePair> sortedMasks;
   sortedMasks.reserve(canonicalMasks->atoms.size());
-  for (const FiniteAtom &atom : canonicalMasks->atoms)
-    sortedMasks.push_back(std::get<MaskInactivePair>(atom.value));
+  for (const FiniteAtom &atom : canonicalMasks->atoms) {
+    auto pair =
+        decodeFiniteAtom(atom.bytes, static_cast<MaskInactivePair *>(nullptr));
+    if (!pair)
+      return pair.takeError();
+    sortedMasks.push_back(*pair);
+  }
 
   return MemoryAccessClass(accessForm, std::move(elementWidths),
                            std::move(flattenedLaneCounts),

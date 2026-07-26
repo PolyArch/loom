@@ -1,0 +1,40 @@
+#ifndef LOOM_FABRIC_IR_REDUCED_PRODUCT_RELATION_H
+#define LOOM_FABRIC_IR_REDUCED_PRODUCT_RELATION_H
+
+#include "Fabric/IR/MemoryCapabilityDomains.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <variant>
+#include <vector>
+
+namespace fabric::detail {
+
+struct ReducedFiniteAtom {
+  std::vector<std::uint8_t> bytes;
+};
+
+struct ReducedFiniteDomain {
+  std::vector<ReducedFiniteAtom> atoms;
+};
+
+using ReducedProductDomain = std::variant<ReducedFiniteDomain, UnsignedDomain>;
+using ReducedProductRow = std::vector<ReducedProductDomain>;
+
+/// Reduces a disjoint union of product rows using maximal domains whose
+/// recursively reduced suffix relations are byte-identical. Finite fields
+/// marked false remain singleton structural partitions.
+llvm::Expected<std::vector<ReducedProductRow>>
+reduceProductRelation(llvm::ArrayRef<ReducedProductRow> rows,
+                      llvm::ArrayRef<bool> groupFiniteFields);
+
+/// Encodes rows in their current order. Callers use this both for persistent
+/// framing and to distinguish strict canonical import from authoring input.
+std::vector<std::uint8_t>
+encodeReducedProductRelation(llvm::ArrayRef<ReducedProductRow> rows);
+
+} // namespace fabric::detail
+
+#endif // LOOM_FABRIC_IR_REDUCED_PRODUCT_RELATION_H
