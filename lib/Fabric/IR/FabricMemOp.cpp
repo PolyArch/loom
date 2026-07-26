@@ -11,6 +11,7 @@
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -19,11 +20,49 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <limits>
+#include <system_error>
 
 using namespace mlir;
 using namespace fabric;
+
+llvm::Expected<std::vector<MemoryTransportEndpointDescriptor>>
+fabric::deriveMemoryTransportEndpointInventory(
+    mlir::FunctionType functionType) {
+  if (!functionType)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory endpoint inventory requires a "
+                                   "function type");
+  std::vector<MemoryTransportEndpointDescriptor> endpoints;
+  auto append =
+      [&](mlir::Type type,
+          loom::fabric::FabricPortDirection direction) -> llvm::Error {
+    if (mlir::isa<mlir::MemRefType>(type))
+      return llvm::Error::success();
+    if (auto bits = mlir::dyn_cast<BitsType>(type)) {
+      endpoints.push_back({direction, bits.getWidth(), std::nullopt});
+      return llvm::Error::success();
+    }
+    if (auto tagged = mlir::dyn_cast<BitsTagType>(type)) {
+      endpoints.push_back({direction, tagged.getWidth(), tagged.getTagWidth()});
+      return llvm::Error::success();
+    }
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fabric.mem function type contains a non-endpoint type");
+  };
+  for (mlir::Type type : functionType.getInputs())
+    if (llvm::Error error =
+            append(type, loom::fabric::FabricPortDirection::Input))
+      return std::move(error);
+  for (mlir::Type type : functionType.getResults())
+    if (llvm::Error error =
+            append(type, loom::fabric::FabricPortDirection::Output))
+      return std::move(error);
+  return endpoints;
+}
 
 namespace mlir {
 
@@ -125,6 +164,17 @@ static ParseResult parseHardwareParameters(OpAsmParser &parser,
 
   result.addAttribute("hw_params",
                       ArrayAttr::get(parser.getContext(), elements));
+  return success();
+}
+
+static ParseResult parseMemoryOperationPorts(OpAsmParser &parser,
+                                             OperationState &result) {
+  if (failed(parser.parseOptionalKeyword("capabilities")))
+    return success();
+  ArrayAttr records;
+  if (parser.parseAttribute(records))
+    return failure();
+  result.addAttribute(kMemoryOperationPortsAttrName, records);
   return success();
 }
 
@@ -667,6 +717,7 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   if (named) {
     if (parseFunctionType(parser, result) ||
         parseHardwareParameters(parser, result) ||
+        parseMemoryOperationPorts(parser, result) ||
         parseDiscardableAttributes(parser, result))
       return failure();
     if (legacySchedule) {
@@ -685,28 +736,34 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand> operands;
   SMLoc operandsLocation = parser.getCurrentLocation();
-  if (parser.parseKeyword("mgr"))
-    return failure();
-  SmallVector<OpAsmParser::UnresolvedOperand> managers;
-  if (parser.parseOperandList(managers, OpAsmParser::Delimiter::Paren))
-    return failure();
-  operands.append(managers);
-
-  if (succeeded(parser.parseOptionalKeyword("load"))) {
-    SmallVector<OpAsmParser::UnresolvedOperand> loadOperands;
-    if (parser.parseOperandList(loadOperands, OpAsmParser::Delimiter::Paren))
+  if (succeeded(parser.parseOptionalKeyword("inputs"))) {
+    if (parser.parseOperandList(operands, OpAsmParser::Delimiter::Paren))
       return failure();
-    operands.append(loadOperands);
-  }
-
-  if (succeeded(parser.parseOptionalKeyword("store"))) {
-    SmallVector<OpAsmParser::UnresolvedOperand> storeOperands;
-    if (parser.parseOperandList(storeOperands, OpAsmParser::Delimiter::Paren))
+  } else {
+    if (parser.parseKeyword("mgr"))
       return failure();
-    operands.append(storeOperands);
+    SmallVector<OpAsmParser::UnresolvedOperand> managers;
+    if (parser.parseOperandList(managers, OpAsmParser::Delimiter::Paren))
+      return failure();
+    operands.append(managers);
+
+    if (succeeded(parser.parseOptionalKeyword("load"))) {
+      SmallVector<OpAsmParser::UnresolvedOperand> loadOperands;
+      if (parser.parseOperandList(loadOperands, OpAsmParser::Delimiter::Paren))
+        return failure();
+      operands.append(loadOperands);
+    }
+
+    if (succeeded(parser.parseOptionalKeyword("store"))) {
+      SmallVector<OpAsmParser::UnresolvedOperand> storeOperands;
+      if (parser.parseOperandList(storeOperands, OpAsmParser::Delimiter::Paren))
+        return failure();
+      operands.append(storeOperands);
+    }
   }
 
   if (parseHardwareParameters(parser, result) ||
+      parseMemoryOperationPorts(parser, result) ||
       parseDiscardableAttributes(parser, result) || parser.parseColon())
     return failure();
 
@@ -786,11 +843,16 @@ void MemOp::print(OpAsmPrinter &printer) {
     printer.printAttribute(getMemoryContract());
   }
 
+  const bool hasExactPorts = static_cast<bool>(getMemoryOperationPortsAttr());
   if (named) {
     FunctionType type;
     if (auto attr = getFunctionTypeAttr())
       type = dyn_cast<FunctionType>(attr.getValue());
     printFunctionType(printer, type);
+  } else if (hasExactPorts) {
+    printer << " inputs(";
+    llvm::interleaveComma(getInputs(), printer);
+    printer << ')';
   } else {
     uint64_t operationInputs = 2ull * loadCount + 3ull * storeCount;
     unsigned managerCount =
@@ -822,6 +884,11 @@ void MemOp::print(OpAsmPrinter &printer) {
       printer.printAttribute(attr);
     });
     printer << ']';
+  }
+
+  if (ArrayAttr records = getMemoryOperationPortsAttr()) {
+    printer << " capabilities ";
+    printer.printAttribute(records);
   }
 
   SmallVector<NamedAttribute> discardableAttributes =
@@ -924,6 +991,10 @@ LogicalResult MemOp::verify() {
   if (!engineContract && !localService)
     return emitOpError("requires an Operation Engine or Local Memory Service");
   if (!engineContract) {
+    if (getMemoryOperationPortsAttr())
+      return emitOpError(
+          "an occurrence without an Operation Engine must not carry a "
+          "memory operation-port inventory");
     if (subordinateEndpoints.empty())
       return emitOpError(
           "storage-only occurrence requires at least one subordinate "
@@ -946,6 +1017,22 @@ LogicalResult MemOp::verify() {
         "endpoint");
 
   Schedule schedule = engineContract.getSchedule();
+  if (ArrayAttr records = getMemoryOperationPortsAttr()) {
+    if (getHwParamsAttr())
+      return emitOpError(
+          "exact memory operation ports cannot coexist with legacy "
+          "operation-engine hw_params");
+    auto endpoints = deriveMemoryTransportEndpointInventory(
+        FunctionType::get(getContext(), inputs, results));
+    if (!endpoints)
+      return emitOpError() << llvm::toString(endpoints.takeError());
+    auto decoded = decodeMemoryOperationPortInventory(records, getContext(),
+                                                      schedule, *endpoints);
+    if (!decoded)
+      return emitOpError() << llvm::toString(decoded.takeError());
+    return success();
+  }
+
   DictionaryAttr hardware;
   if (failed(readHardwareParameters(*this, hardware)))
     return failure();

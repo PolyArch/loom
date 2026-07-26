@@ -136,6 +136,7 @@ target_link_libraries(loom-fabric-memory-port-transaction-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-memory-operation-port-test PRIVATE
+  LoomFabricArtifact
   LoomFabricMemoryOperationPort
   MLIRDLTIDialect
   MLIRDataflow

@@ -529,10 +529,12 @@ def Fabric_MemOp : Fabric_Op<"mem", [
 
     Named template form has zero SSA operands and zero SSA results in
     the host scope; the port signature is captured in `function_type`.
-    `hw_params` remains legacy engine-port authoring syntax for the deferred
-    typed port-inventory increment. It owns no occurrence, schedule, endpoint
-    classification, or Local Memory Service fact. The registered schema is
-    closed; the operation accepts no discardable attributes.
+    `memory_operation_ports` contains the strict canonical byte encoding of
+    every physical operation port. `hw_params` remains legacy authoring
+    shorthand and cannot coexist with that exact inventory. It owns no
+    occurrence, schedule, endpoint classification, or Local Memory Service
+    fact. The registered schema is closed; the operation accepts no
+    discardable attributes.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];
@@ -543,7 +545,8 @@ def Fabric_MemOp : Fabric_Op<"mem", [
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_MemoryContractAttr:$memory_contract,
       Fabric_InnerInputTypesProp:$inner_input_types,
-      OptionalAttr<ArrayAttr>:$hw_params
+      OptionalAttr<ArrayAttr>:$hw_params,
+      OptionalAttr<ArrayAttr>:$memory_operation_ports
   );
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 

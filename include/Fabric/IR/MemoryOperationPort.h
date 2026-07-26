@@ -21,7 +21,7 @@
 namespace fabric {
 
 inline constexpr char kMemoryOperationPortsAttrName[] =
-    "fabric.memory_operation_ports";
+    "memory_operation_ports";
 
 /// One transient token endpoint descriptor derived from a fabric.mem function
 /// type. Ordinals are assigned to token inputs first and token outputs second;
@@ -123,6 +123,14 @@ encodeMemoryOperationPortRecord(const MemoryOperationPortRecord &record);
 llvm::Expected<MemoryOperationPortRecord> decodeMemoryOperationPortRecord(
     llvm::ArrayRef<std::uint8_t> bytes, mlir::MLIRContext *context,
     Schedule schedule,
+    llvm::ArrayRef<MemoryTransportEndpointDescriptor> endpoints);
+
+/// Strictly imports one complete canonical operation-port inventory from its
+/// Fabric IR carrier. Every array element is one DenseI8ArrayAttr containing
+/// the exact owner wire record; MLIR attribute structure is only framing.
+llvm::Expected<std::vector<MemoryOperationPortRecord>>
+decodeMemoryOperationPortInventory(
+    mlir::ArrayAttr records, mlir::MLIRContext *context, Schedule schedule,
     llvm::ArrayRef<MemoryTransportEndpointDescriptor> endpoints);
 
 } // namespace fabric

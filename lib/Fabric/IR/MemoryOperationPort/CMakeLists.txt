@@ -8,7 +8,7 @@ add_mlir_library(LoomFabricMemoryOperationPort
   LoomFabricMemoryPortTransaction
   LoomFabricResourceContract
   MLIRDataflow
-  MLIRFabric
+  MLIRFabricEnums
   MLIRIR
   MLIRSupport
   LLVMSupport

@@ -20,6 +20,7 @@ using namespace loom::fabric;
 
 struct FabricArtifactView::Storage {
   detail::FabricArtifactViewData data;
+  std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
   std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
   std::vector<std::vector<std::uint8_t>> traversalKeys;
 
@@ -98,12 +99,19 @@ struct FabricArtifactView::Storage {
     return &(*nodes)[ref.ordinal].owner;
   }
 
-  const detail::FabricNestedOwnerViewData *
-  memoryPort(FabricMemoryOperationPortRef ref) const {
+  const detail::FabricMemoryOperationPortViewData *
+  memoryPortRecord(FabricMemoryOperationPortRef ref) const {
     const detail::FabricEntityViewData *record = entity(ref.memory);
     if (!record || ref.ordinal >= record->memoryOperationPorts.size())
       return nullptr;
     return &record->memoryOperationPorts[ref.ordinal];
+  }
+
+  const detail::FabricNestedOwnerViewData *
+  memoryPort(FabricMemoryOperationPortRef ref) const {
+    const detail::FabricMemoryOperationPortViewData *record =
+        memoryPortRecord(ref);
+    return record ? &record->owner : nullptr;
   }
 
   const detail::FabricNestedOwnerViewData *
@@ -474,6 +482,30 @@ FabricArtifactView::fuCapabilityTemplates(
                  : llvm::ArrayRef<FabricFuCapabilityTemplateRecord>();
 }
 
+llvm::ArrayRef<FabricMemoryOperationPortRef>
+FabricArtifactView::memoryOperationPorts(
+    FabricMemoryOccurrenceRef memory) const {
+  if (memory.id() >= storage_->memoryPortRefs.size())
+    return {};
+  return storage_->memoryPortRefs[memory.id()];
+}
+
+const MemoryOperationPortView *FabricArtifactView::memoryOperationPort(
+    FabricMemoryOperationPortRef port) const {
+  const detail::FabricMemoryOperationPortViewData *record =
+      storage_->memoryPortRecord(port);
+  return record ? &record->record : nullptr;
+}
+
+const MemoryCapabilityAlternativeView *
+FabricArtifactView::memoryCapabilityAlternative(
+    FabricMemoryCapabilityAlternativeRef alternative) const {
+  const MemoryOperationPortView *port = memoryOperationPort(alternative.port);
+  if (!port || alternative.ordinal >= port->capabilityAlternatives().size())
+    return nullptr;
+  return &port->capabilityAlternatives()[alternative.ordinal];
+}
+
 bool FabricArtifactView::hasPointConnection(
     const FabricTransportEndpointRef &source,
     const FabricTransportEndpointRef &destination) const {
@@ -530,9 +562,9 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       return invalidView(
           "only an FU template may own capability-template records");
     }
-    for (FabricNestedOwnerViewData &port : entity.memoryOperationPorts)
+    for (FabricMemoryOperationPortViewData &port : entity.memoryOperationPorts)
       if (llvm::Error error =
-              validateNestedOwner(port, "memory operation port"))
+              validateNestedOwner(port.owner, "memory operation port"))
         return std::move(error);
     for (FabricNestedOwnerViewData &context : entity.instructionContexts)
       if (llvm::Error error =
@@ -644,10 +676,23 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
     data.admittedTraversals.push_back(std::move(row.second));
   }
 
+  std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs(
+      data.entities.size());
+  for (auto [entityId, entity] : llvm::enumerate(data.entities)) {
+    if (entity.kind != FabricEntityKind::FabricMemoryOccurrence)
+      continue;
+    auto &refs = memoryPortRefs[entityId];
+    refs.reserve(entity.memoryOperationPorts.size());
+    for (std::uint64_t ordinal = 0;
+         ordinal < entity.memoryOperationPorts.size(); ++ordinal)
+      refs.push_back(FabricMemoryOperationPortRef{
+          FabricMemoryOccurrenceRef(entityId), ordinal});
+  }
+
   auto storage =
       std::make_shared<FabricArtifactView::Storage>(FabricArtifactView::Storage{
-          std::move(data), std::move(pointConnectionKeys),
-          std::move(traversalKeys)});
+          std::move(data), std::move(memoryPortRefs),
+          std::move(pointConnectionKeys), std::move(traversalKeys)});
   FabricArtifactView view(std::move(storage));
   for (const FabricPointConnectionPayload &connection :
        view.pointConnections()) {
@@ -660,33 +705,55 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
     if (llvm::Error error = validateFabricRef(view, traversal))
       return std::move(error);
   for (std::size_t id = 0; id < view.storage_->data.entities.size(); ++id) {
-    if (view.entityKind(id) != FabricEntityKind::FabricFuTemplate)
+    if (view.entityKind(id) == FabricEntityKind::FabricFuTemplate) {
+      const FabricFuTemplateRef owner(id);
+      for (auto [ordinal, record] :
+           llvm::enumerate(view.fuCapabilityTemplates(owner))) {
+        FabricFuCapabilityTemplateRef ref{owner,
+                                          static_cast<FabricOrdinal>(ordinal)};
+        if (llvm::Error error = validateFabricRef(view, ref))
+          return std::move(error);
+        for (const FabricFuTemplateNodeRef &node : record.activeNodes)
+          if (llvm::Error error = validateFabricRef(view, node))
+            return std::move(error);
+        for (const FabricFuCapabilityTemplateEdge &edge : record.activeEdges) {
+          llvm::Error error = std::visit(
+              [&](const auto &endpoint) {
+                return validateFabricRef(view, endpoint);
+              },
+              edge.source.payload);
+          if (error)
+            return std::move(error);
+          error = std::visit(
+              [&](const auto &endpoint) {
+                return validateFabricRef(view, endpoint);
+              },
+              edge.destination.payload);
+          if (error)
+            return std::move(error);
+        }
+      }
       continue;
-    const FabricFuTemplateRef owner(id);
-    for (auto [ordinal, record] :
-         llvm::enumerate(view.fuCapabilityTemplates(owner))) {
-      FabricFuCapabilityTemplateRef ref{owner,
-                                        static_cast<FabricOrdinal>(ordinal)};
-      if (llvm::Error error = validateFabricRef(view, ref))
+    }
+
+    if (view.entityKind(id) != FabricEntityKind::FabricMemoryOccurrence)
+      continue;
+    const FabricMemoryOccurrenceRef memory(id);
+    for (FabricMemoryOperationPortRef port :
+         view.memoryOperationPorts(memory)) {
+      if (llvm::Error error = validateFabricRef(view, port))
         return std::move(error);
-      for (const FabricFuTemplateNodeRef &node : record.activeNodes)
-        if (llvm::Error error = validateFabricRef(view, node))
+      const MemoryOperationPortView *record = view.memoryOperationPort(port);
+      if (!record)
+        return invalidView("memory operation-port record cannot be resolved");
+      for (std::uint64_t ordinal = 0;
+           ordinal < record->capabilityAlternatives().size(); ++ordinal) {
+        FabricMemoryCapabilityAlternativeRef alternative{port, ordinal};
+        if (llvm::Error error = validateFabricRef(view, alternative))
           return std::move(error);
-      for (const FabricFuCapabilityTemplateEdge &edge : record.activeEdges) {
-        llvm::Error error = std::visit(
-            [&](const auto &endpoint) {
-              return validateFabricRef(view, endpoint);
-            },
-            edge.source.payload);
-        if (error)
-          return std::move(error);
-        error = std::visit(
-            [&](const auto &endpoint) {
-              return validateFabricRef(view, endpoint);
-            },
-            edge.destination.payload);
-        if (error)
-          return std::move(error);
+        if (!view.memoryCapabilityAlternative(alternative))
+          return invalidView(
+              "memory capability-alternative record cannot be resolved");
       }
     }
   }

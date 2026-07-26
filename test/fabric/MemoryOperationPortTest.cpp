@@ -2,16 +2,23 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -303,6 +310,111 @@ void checkCompleteRelationNormalization(mlir::MLIRContext &context) {
                                    hybridEndpoints(context), std::move(split)));
 }
 
+void checkExactFabricCarrier(mlir::MLIRContext &context) {
+  const llvm::StringRef test = "exact fabric.mem carrier";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+        module {
+          fabric.module @memory_engine(
+              %manager: memref<?x!fabric.bits<128>>,
+              %address: !fabric.bits<32>,
+              %mask: !fabric.bits<4>,
+              %ctrl: !fabric.bits<0>) {
+            %filtered = fabric.fifo %address
+                [max_depth = 1, bypassable = false] : !fabric.bits<32>
+            fabric.yield
+          }
+        }
+      )mlir",
+                                              &context);
+  require(test, static_cast<bool>(module), "failed to parse carrier fixture");
+
+  fabric::ModuleOp root = *module->getOps<fabric::ModuleOp>().begin();
+  mlir::Block &body = root.getBody().front();
+  auto fifo = *body.getOps<fabric::FifoOp>().begin();
+  mlir::OpBuilder builder(body.getTerminator());
+
+  auto bytes = take(test, encodeMemoryOperationPortRecord(hybridPort(context)));
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  auto records = builder.getArrayAttr(
+      {mlir::DenseI8ArrayAttr::get(&context, signedBytes)});
+  auto noEndpoints = mlir::DenseI32ArrayAttr::get(&context, {});
+  auto managers = mlir::DenseI32ArrayAttr::get(&context, {0});
+  auto contract = fabric::MemoryContractAttr::get(
+      &context,
+      fabric::MemoryEngineAttr::get(&context, fabric::Schedule::Spatial),
+      fabric::LocalMemoryServiceAttr(), managers, noEndpoints);
+  llvm::SmallVector<mlir::Value> inputs = {
+      body.getArgument(0), fifo.getResult(), body.getArgument(2),
+      body.getArgument(3)};
+  fabric::MemOp::create(builder, root.getLoc(),
+                        mlir::TypeRange{fabric::BitsType::get(&context, 128),
+                                        fabric::BitsType::get(&context, 0)},
+                        inputs, mlir::StringAttr(), mlir::TypeAttr(), contract,
+                        llvm::ArrayRef<mlir::Type>{}, mlir::ArrayAttr(),
+                        records);
+
+  require(test, succeeded(mlir::verify(*module)),
+          "exact memory-operation inventory did not verify");
+  std::string printed;
+  llvm::raw_string_ostream stream(printed);
+  module->print(stream);
+  stream.flush();
+  require(test, llvm::StringRef(printed).contains("capabilities [array<i8:"),
+          "custom printer omitted the exact capability inventory");
+  mlir::OwningOpRef<mlir::ModuleOp> roundTrip =
+      mlir::parseSourceString<mlir::ModuleOp>(printed, &context);
+  require(test, static_cast<bool>(roundTrip),
+          "printed exact memory operation did not parse");
+
+  llvm::SmallString<128> storePath;
+  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+          "loom-memory-operation-port", storePath))
+    fail(test, error.message());
+  llvm::scope_exit cleanup(
+      [&] { llvm::sys::fs::remove_directories(storePath); });
+  loom::ArtifactStore store(storePath);
+  auto finalized = take(test, loom::fabric::finalizeFabricRoot(root, store));
+
+  std::optional<loom::fabric::FabricMemoryOccurrenceRef> memory;
+  for (std::uint64_t id = 0;; ++id) {
+    auto kind = finalized.view().entityKind(id);
+    if (!kind)
+      break;
+    if (*kind == loom::fabric::FabricEntityKind::FabricMemoryOccurrence)
+      memory = loom::fabric::FabricMemoryOccurrenceRef(id);
+  }
+  require(test, memory.has_value(),
+          "finalized Fabric omitted its memory occurrence");
+  auto portRefs = finalized.view().memoryOperationPorts(*memory);
+  require(test, portRefs.size() == 1,
+          "finalized Fabric changed the operation-port inventory");
+  const loom::fabric::MemoryOperationPortView *port =
+      finalized.view().memoryOperationPort(portRefs.front());
+  require(
+      test,
+      port && port->capabilityAlternatives().size() == 1 &&
+          finalized.view().memoryCapabilityAlternative({portRefs.front(), 0}),
+      "finalized Fabric omitted the exact operation-port relation");
+  auto transportOwner =
+      loom::fabric::FabricTransportEndpointOwnerRef::of(*memory);
+  auto memoryOwner = loom::fabric::FabricMemoryEndpointOwnerRef::of(*memory);
+  require(test,
+          finalized.view().transportEndpointCount(transportOwner) == 5 &&
+              finalized.view().memoryEndpointCount(memoryOwner) == 1,
+          "token and memory endpoint inventories were not separated");
+  bool fifoFeedsAddress = false;
+  for (const loom::fabric::FabricPointConnectionPayload &connection :
+       finalized.view().pointConnections())
+    fifoFeedsAddress |= connection.destination.owner == transportOwner &&
+                        connection.destination.ordinal == 0;
+  require(test, fifoFeedsAddress,
+          "memory token endpoint ordinal retained the manager memref offset");
+}
+
 } // namespace
 
 int main() {
@@ -319,5 +431,6 @@ int main() {
   checkHybridGeometry(*module, context);
   checkRoleDirection(context);
   checkCompleteRelationNormalization(context);
+  checkExactFabricCarrier(context);
   return EXIT_SUCCESS;
 }

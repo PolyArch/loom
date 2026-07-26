@@ -58,13 +58,13 @@ int main() {
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  if (llvm::Error error = validateMemoryCapabilityFinalization({}))
+  if (llvm::Error error = validateMemoryCapabilityFinalization({}, {}))
     fail("empty occurrence", llvm::toString(std::move(error)));
 
   MemoryEngineAttr engine = MemoryEngineAttr::get(&context, Schedule::Spatial);
   expectInvalid(
       "incomplete engine",
-      validateMemoryCapabilityFinalization(contract(context, engine, {})),
+      validateMemoryCapabilityFinalization(contract(context, engine, {}), {}),
       MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract,
       "Invalid(missing-memory-capability-contract)");
 
@@ -74,12 +74,13 @@ int main() {
       LocalMemoryServiceAttr::get(&context, 4096, serviceContract);
   expectInvalid(
       "local service",
-      validateMemoryCapabilityFinalization(contract(context, {}, local)),
+      validateMemoryCapabilityFinalization(contract(context, {}, local), {}),
       MemoryCapabilityFinalizationReason::MissingMemoryServiceContract,
       "Invalid(missing-memory-service-contract)");
   expectInvalid(
       "engine with local service",
-      validateMemoryCapabilityFinalization(contract(context, engine, local)),
+      validateMemoryCapabilityFinalization(contract(context, engine, local),
+                                           {}),
       MemoryCapabilityFinalizationReason::MissingMemoryServiceContract,
       "Invalid(missing-memory-service-contract)");
   return EXIT_SUCCESS;

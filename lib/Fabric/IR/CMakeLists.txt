@@ -82,6 +82,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomCommon
   LoomFabricBoundaryDataPath
   LoomFabricImplementationFamily
+  LoomFabricMemoryOperationPort
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums

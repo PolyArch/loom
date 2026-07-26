@@ -9,6 +9,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -84,10 +85,22 @@ deriveResourceContract(
       return contract.takeError();
     return std::optional<::fabric::ResourceContract>(std::move(*contract));
   }
-  if (isa<::fabric::MemOp>(operation))
-    return ownerUnavailable(
-        "fabric.mem finalization requires its complete memory capability "
-        "and service contracts");
+  if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
+    if (llvm::Error error = ::fabric::validateMemoryCapabilityFinalization(
+            memory.getMemoryContract(), memory.getMemoryOperationPortsAttr()))
+      return std::move(error);
+    ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
+    if (contract.getEngine().getSchedule() == ::fabric::Schedule::Temporal)
+      return ownerUnavailable(
+          "temporal fabric.mem finalization requires its exact resident "
+          "operation-context contract");
+    if (contract.getManagerEndpoints().size() != 1 ||
+        !contract.getSubordinateEndpoints().empty())
+      return ownerUnavailable(
+          "fabric.mem finalization requires its exact nontrivial service "
+          "dispatch contract");
+    return std::optional<::fabric::ResourceContract>();
+  }
   if (auto pe = dyn_cast<::fabric::PeOp>(operation);
       pe && pe.getSchedule() == ::fabric::Schedule::Temporal) {
     std::optional<std::uint64_t> peId;
@@ -454,6 +467,113 @@ void setPortInventories(detail::FabricNestedOwnerViewData &owner,
   owner.transportEndpointCount = transport ? inputs + outputs : 0;
 }
 
+llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory) {
+  if (auto typeAttribute = memory.getFunctionTypeAttr()) {
+    auto type = dyn_cast<FunctionType>(typeAttribute.getValue());
+    if (!type)
+      return invalid("fabric.mem function_type is not a FunctionType");
+    return type;
+  }
+
+  llvm::SmallVector<Type> inputs;
+  ArrayRef<Type> innerTypes = memory.getInnerInputTypes();
+  if (!innerTypes.empty())
+    inputs.append(innerTypes.begin(), innerTypes.end());
+  else
+    for (Value input : memory.getInputs())
+      inputs.push_back(input.getType());
+  return FunctionType::get(memory.getContext(), inputs,
+                           memory.getResultTypes());
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+tokenInputOrdinal(Operation *operation, std::uint64_t signatureOrdinal) {
+  auto memory = dyn_cast<::fabric::MemOp>(operation);
+  if (!memory)
+    return std::optional<std::uint64_t>(signatureOrdinal);
+  auto type = memoryFunctionType(memory);
+  if (!type)
+    return type.takeError();
+  if (signatureOrdinal >= type->getNumInputs())
+    return invalid("fabric.mem input ordinal is outside its signature");
+  if (isa<MemRefType>(type->getInput(signatureOrdinal)))
+    return std::optional<std::uint64_t>();
+  std::uint64_t tokenOrdinal = 0;
+  for (std::uint64_t index = 0; index < signatureOrdinal; ++index)
+    tokenOrdinal += !isa<MemRefType>(type->getInput(index));
+  return std::optional<std::uint64_t>(tokenOrdinal);
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+tokenOutputOrdinal(Operation *operation, std::uint64_t signatureOrdinal) {
+  auto memory = dyn_cast<::fabric::MemOp>(operation);
+  if (!memory)
+    return std::optional<std::uint64_t>(operation->getNumOperands() +
+                                        signatureOrdinal);
+  auto type = memoryFunctionType(memory);
+  if (!type)
+    return type.takeError();
+  if (signatureOrdinal >= type->getNumResults())
+    return invalid("fabric.mem result ordinal is outside its signature");
+  if (isa<MemRefType>(type->getResult(signatureOrdinal)))
+    return std::optional<std::uint64_t>();
+  std::uint64_t tokenOrdinal = 0;
+  for (Type input : type->getInputs())
+    tokenOrdinal += !isa<MemRefType>(input);
+  for (std::uint64_t index = 0; index < signatureOrdinal; ++index)
+    tokenOrdinal += !isa<MemRefType>(type->getResult(index));
+  return std::optional<std::uint64_t>(tokenOrdinal);
+}
+
+llvm::Error populateMemoryView(::fabric::MemOp memory,
+                               detail::FabricEntityViewData &entity) {
+  auto type = memoryFunctionType(memory);
+  if (!type)
+    return type.takeError();
+  auto endpoints = ::fabric::deriveMemoryTransportEndpointInventory(*type);
+  if (!endpoints)
+    return endpoints.takeError();
+
+  std::uint64_t tokenInputs = 0;
+  std::uint64_t tokenOutputs = 0;
+  for (const ::fabric::MemoryTransportEndpointDescriptor &endpoint :
+       *endpoints) {
+    if (endpoint.direction == FabricPortDirection::Input)
+      ++tokenInputs;
+    else
+      ++tokenOutputs;
+  }
+  setPortInventories(entity.owner, tokenInputs, tokenOutputs, true);
+
+  ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
+  entity.owner.memoryEndpointRoles.assign(contract.getManagerEndpoints().size(),
+                                          FabricMemoryEndpointRole::Manager);
+  entity.owner.memoryEndpointRoles.insert(
+      entity.owner.memoryEndpointRoles.end(),
+      contract.getSubordinateEndpoints().size(),
+      FabricMemoryEndpointRole::Subordinate);
+
+  auto records = ::fabric::decodeMemoryOperationPortInventory(
+      memory.getMemoryOperationPortsAttr(), memory.getContext(),
+      contract.getEngine().getSchedule(), *endpoints);
+  if (!records)
+    return records.takeError();
+  entity.owner.inventoryCounts[static_cast<std::size_t>(
+      FabricInventoryKind::MemoryOperationPort)] = records->size();
+  entity.memoryOperationPorts.reserve(records->size());
+  for (::fabric::MemoryOperationPortRecord &record : *records) {
+    detail::FabricNestedOwnerViewData owner;
+    owner.inventoryCounts = emptyInventories();
+    owner.inventoryCounts[static_cast<std::size_t>(
+        FabricInventoryKind::MemoryCapabilityAlternative)] =
+        record.capabilityAlternatives().size();
+    owner.resourceContract = record.resourceContract();
+    entity.memoryOperationPorts.push_back(
+        {std::move(owner), std::move(record)});
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<FabricArtifactView>
 buildModuleView(::fabric::ModuleOp root,
                 const detail::FabricCanonicalLabeling &labeling,
@@ -478,6 +598,9 @@ buildModuleView(::fabric::ModuleOp root,
     const std::uint64_t outputs = carrier.op->getNumResults();
     setPortInventories(entity.owner, inputs, outputs,
                        transportOwner(carrier.kind, carrier.id).has_value());
+    if (auto memory = dyn_cast<::fabric::MemOp>(carrier.op))
+      if (llvm::Error error = populateMemoryView(memory, entity))
+        return std::move(error);
     if (carrier.kind == FabricEntityKind::FabricModuleTemplate) {
       FunctionType type = root.getFunctionType();
       setPortInventories(entity.owner, type.getNumInputs(),
@@ -550,12 +673,18 @@ buildModuleView(::fabric::ModuleOp root,
       auto result = dyn_cast<OpResult>(operand.get());
       if (!result)
         return invalid("a physical point connection has no source result");
+      auto sourceOrdinal = tokenOutputOrdinal(source, result.getResultNumber());
+      if (!sourceOrdinal)
+        return sourceOrdinal.takeError();
+      auto destinationOrdinal =
+          tokenInputOrdinal(destination, operand.getOperandNumber());
+      if (!destinationOrdinal)
+        return destinationOrdinal.takeError();
+      if (!*sourceOrdinal || !*destinationOrdinal)
+        continue;
       data.pointConnections.push_back(FabricPointConnectionPayload{
-          FabricTransportEndpointRef{*sourceOwner,
-                                     source->getNumOperands() +
-                                         result.getResultNumber()},
-          FabricTransportEndpointRef{*destinationOwner,
-                                     operand.getOperandNumber()}});
+          FabricTransportEndpointRef{*sourceOwner, **sourceOrdinal},
+          FabricTransportEndpointRef{*destinationOwner, **destinationOrdinal}});
     }
   }
 

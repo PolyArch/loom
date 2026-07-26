@@ -2,6 +2,7 @@
 #define LOOM_FABRIC_IDENTITY_FABRICREFIMPORT_H
 
 #include "Common/Artifact.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
@@ -16,6 +17,10 @@
 
 namespace loom {
 namespace fabric {
+
+using MemoryOperationPortView = ::fabric::MemoryOperationPortRecord;
+using MemoryCapabilityAlternativeView =
+    ::fabric::MemoryCapabilityAlternativeRecord;
 
 class FabricArtifactView;
 
@@ -92,6 +97,15 @@ public:
   /// definition. An invalid owner has an empty range.
   llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
   fuCapabilityTemplates(FabricFuTemplateRef definition) const;
+
+  /// The complete canonical physical operation-port inventory of one memory
+  /// occurrence, and the exact immutable records selected by those refs.
+  llvm::ArrayRef<FabricMemoryOperationPortRef>
+  memoryOperationPorts(FabricMemoryOccurrenceRef memory) const;
+  const MemoryOperationPortView *
+  memoryOperationPort(FabricMemoryOperationPortRef port) const;
+  const MemoryCapabilityAlternativeView *memoryCapabilityAlternative(
+      FabricMemoryCapabilityAlternativeRef alternative) const;
 
   /// Whether the fully elaborated Fabric contains the one unique directed
   /// fixed connection between exactly these endpoints.

@@ -1,7 +1,6 @@
 #include "Fabric/IR/MemoryOperationPort.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
-#include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/MemoryCapabilityRelation.h"
 #include "MemoryOperationPortInternal.h"
 
@@ -1016,34 +1015,6 @@ PatternRequirement exactRequirement(const CanonicalActorSchemaProjection &actor,
 }
 
 } // namespace
-
-llvm::Expected<std::vector<MemoryTransportEndpointDescriptor>>
-deriveMemoryTransportEndpointInventory(mlir::FunctionType functionType) {
-  if (!functionType)
-    return invalid("memory endpoint inventory requires a function type");
-  std::vector<MemoryTransportEndpointDescriptor> endpoints;
-  auto append = [&](mlir::Type type,
-                    FabricPortDirection direction) -> llvm::Error {
-    if (mlir::isa<mlir::MemRefType>(type))
-      return llvm::Error::success();
-    if (auto bits = mlir::dyn_cast<BitsType>(type)) {
-      endpoints.push_back({direction, bits.getWidth(), std::nullopt});
-      return llvm::Error::success();
-    }
-    if (auto tagged = mlir::dyn_cast<BitsTagType>(type)) {
-      endpoints.push_back({direction, tagged.getWidth(), tagged.getTagWidth()});
-      return llvm::Error::success();
-    }
-    return invalid("fabric.mem function type contains a non-endpoint type");
-  };
-  for (mlir::Type type : functionType.getInputs())
-    if (llvm::Error error = append(type, FabricPortDirection::Input))
-      return std::move(error);
-  for (mlir::Type type : functionType.getResults())
-    if (llvm::Error error = append(type, FabricPortDirection::Output))
-      return std::move(error);
-  return endpoints;
-}
 
 llvm::Expected<MemoryOperationPortRecord> MemoryOperationPortRecord::create(
     mlir::MLIRContext *context, Schedule schedule,

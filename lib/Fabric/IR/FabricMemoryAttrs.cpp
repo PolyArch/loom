@@ -26,13 +26,14 @@ std::error_code MemoryCapabilityFinalizationError::convertToErrorCode() const {
 }
 
 llvm::Error
-fabric::validateMemoryCapabilityFinalization(MemoryContractAttr contract) {
+fabric::validateMemoryCapabilityFinalization(MemoryContractAttr contract,
+                                             ArrayAttr operationPorts) {
   if (!contract)
     return llvm::Error::success();
   if (contract.getLocalService())
     return llvm::make_error<MemoryCapabilityFinalizationError>(
         MemoryCapabilityFinalizationReason::MissingMemoryServiceContract);
-  if (contract.getEngine())
+  if (contract.getEngine() && (!operationPorts || operationPorts.empty()))
     return llvm::make_error<MemoryCapabilityFinalizationError>(
         MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
   return llvm::Error::success();

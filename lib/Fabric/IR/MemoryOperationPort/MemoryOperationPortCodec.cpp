@@ -4,6 +4,9 @@
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "MemoryOperationPortInternal.h"
 
+#include "mlir/IR/BuiltinAttributes.h"
+#include "llvm/ADT/STLExtras.h"
+
 #include <limits>
 #include <system_error>
 
@@ -339,6 +342,34 @@ llvm::Expected<MemoryOperationPortRecord> decodeMemoryOperationPortRecord(
   if (llvm::ArrayRef<std::uint8_t>(*canonical) != bytes)
     return invalid("memory operation port bytes are not canonical");
   return record;
+}
+
+llvm::Expected<std::vector<MemoryOperationPortRecord>>
+decodeMemoryOperationPortInventory(
+    mlir::ArrayAttr records, mlir::MLIRContext *context, Schedule schedule,
+    llvm::ArrayRef<MemoryTransportEndpointDescriptor> endpoints) {
+  if (!records || records.empty())
+    return invalid("memory operation-port inventory must be non-empty");
+
+  std::vector<MemoryOperationPortRecord> decoded;
+  decoded.reserve(records.size());
+  for (auto [ordinal, attribute] : llvm::enumerate(records)) {
+    auto bytes = mlir::dyn_cast<mlir::DenseI8ArrayAttr>(attribute);
+    if (!bytes)
+      return invalid(llvm::Twine("memory operation-port #") +
+                     llvm::Twine(ordinal) +
+                     " must be a canonical byte-array record");
+    std::vector<std::uint8_t> unsignedBytes;
+    unsignedBytes.reserve(bytes.size());
+    for (std::int8_t byte : bytes.asArrayRef())
+      unsignedBytes.push_back(static_cast<std::uint8_t>(byte));
+    auto record = decodeMemoryOperationPortRecord(unsignedBytes, context,
+                                                  schedule, endpoints);
+    if (!record)
+      return record.takeError();
+    decoded.push_back(std::move(*record));
+  }
+  return decoded;
 }
 
 } // namespace fabric

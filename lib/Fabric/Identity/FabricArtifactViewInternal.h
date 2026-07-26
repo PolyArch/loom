@@ -2,6 +2,7 @@
 #define LOOM_LIB_FABRIC_IDENTITY_FABRICARTIFACTVIEWINTERNAL_H
 
 #include "Common/Artifact.h"
+#include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -25,12 +26,17 @@ struct FabricFuNodeViewData {
   FabricNestedOwnerViewData owner;
 };
 
+struct FabricMemoryOperationPortViewData {
+  FabricNestedOwnerViewData owner;
+  ::fabric::MemoryOperationPortRecord record;
+};
+
 struct FabricEntityViewData {
   FabricEntityKind kind = FabricEntityKind::FabricModuleTemplate;
   FabricNestedOwnerViewData owner;
   std::vector<FabricFuNodeViewData> fuNodes;
   std::vector<FabricFuCapabilityTemplateRecord> fuCapabilityTemplates;
-  std::vector<FabricNestedOwnerViewData> memoryOperationPorts;
+  std::vector<FabricMemoryOperationPortViewData> memoryOperationPorts;
   std::vector<FabricNestedOwnerViewData> instructionContexts;
   std::vector<FabricNestedOwnerViewData> transferPatterns;
   std::optional<FabricNestedOwnerViewData> spatialCore;

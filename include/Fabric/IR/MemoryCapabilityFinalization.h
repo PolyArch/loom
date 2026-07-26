@@ -32,7 +32,8 @@ private:
   MemoryCapabilityFinalizationReason reason_;
 };
 
-llvm::Error validateMemoryCapabilityFinalization(MemoryContractAttr contract);
+llvm::Error validateMemoryCapabilityFinalization(
+    MemoryContractAttr contract, mlir::ArrayAttr operationPorts);
 
 } // namespace fabric
 
