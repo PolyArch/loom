@@ -566,6 +566,116 @@ loom::fabric::decodeFabricSpatialAttachmentEndpointRef(
   return std::move(*endpoint);
 }
 
+llvm::Expected<SystemTransferPatternRecord> SystemTransferPatternRecord::create(
+    FabricTransferPatternRef pattern, FabricTransportEndpointRef ingress,
+    std::vector<FabricTransportEndpointRef> egresses,
+    FabricUsePatternRef usePattern) {
+  const SystemTransportResourceRef resource = pattern.resource;
+  const auto *ingressOwner =
+      std::get_if<SystemTransportResourceRef>(&ingress.owner.payload);
+  if (!ingressOwner || *ingressOwner != resource)
+    return invalidContract(
+        "system transfer pattern",
+        "ingress is not owned by the pattern's transport resource");
+  if (egresses.empty())
+    return invalidContract("system transfer pattern",
+                           "egress set must not be empty");
+
+  using EncodedEndpoint =
+      std::pair<std::vector<std::uint8_t>, FabricTransportEndpointRef>;
+  std::vector<EncodedEndpoint> canonicalEgresses;
+  canonicalEgresses.reserve(egresses.size());
+  for (FabricTransportEndpointRef &egress : egresses) {
+    const auto *egressOwner =
+        std::get_if<SystemTransportResourceRef>(&egress.owner.payload);
+    if (!egressOwner || *egressOwner != resource)
+      return invalidContract(
+          "system transfer pattern",
+          "egress is not owned by the pattern's transport resource");
+    canonicalEgresses.emplace_back(canonicalFabricBytes(egress),
+                                   std::move(egress));
+  }
+  llvm::sort(canonicalEgresses,
+             [](const EncodedEndpoint &lhs, const EncodedEndpoint &rhs) {
+               return lhs.first < rhs.first;
+             });
+  for (std::size_t index = 1; index < canonicalEgresses.size(); ++index)
+    if (canonicalEgresses[index - 1].first == canonicalEgresses[index].first)
+      return invalidContract("system transfer pattern",
+                             "egress set contains a duplicate endpoint");
+
+  const FabricInventoryOwnerRef &useOwner = usePattern.owner.catalog();
+  const auto *useResource =
+      std::get_if<SystemTransportResourceRef>(&useOwner.payload);
+  if (!useResource || *useResource != resource)
+    return invalidContract(
+        "system transfer pattern",
+        "UsePattern is not owned by the pattern's transport resource");
+
+  egresses.clear();
+  egresses.reserve(canonicalEgresses.size());
+  for (EncodedEndpoint &entry : canonicalEgresses)
+    egresses.push_back(std::move(entry.second));
+  return SystemTransferPatternRecord(std::move(pattern), std::move(ingress),
+                                     std::move(egresses),
+                                     std::move(usePattern));
+}
+
+std::vector<std::uint8_t> loom::fabric::encodeSystemTransferPatternRecord(
+    const SystemTransferPatternRecord &record) {
+  FabricByteWriter writer;
+  encodeFabricRef(writer, record.pattern());
+  encodeFabricRef(writer, record.ingress());
+  writer.field(record.egresses().size());
+  for (const FabricTransportEndpointRef &egress : record.egresses())
+    encodeFabricRef(writer, egress);
+  encodeFabricRef(writer, record.usePattern());
+  return writer.take();
+}
+
+llvm::Expected<SystemTransferPatternRecord>
+loom::fabric::decodeSystemTransferPatternRecord(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  FabricByteReader reader(bytes);
+  FabricTransferPatternRef pattern;
+  if (llvm::Error error = decodeFabricRefInto(reader, pattern))
+    return std::move(error);
+  FabricTransportEndpointRef ingress;
+  if (llvm::Error error = decodeFabricRefInto(reader, ingress))
+    return std::move(error);
+  llvm::Expected<std::uint64_t> count = reader.field();
+  if (!count)
+    return count.takeError();
+  if (*count > bytes.size() / 8)
+    return malformedRecord("system transfer pattern",
+                           "egress count exceeds remaining framing");
+  std::vector<FabricTransportEndpointRef> egresses;
+  egresses.reserve(static_cast<std::size_t>(*count));
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    FabricTransportEndpointRef egress;
+    if (llvm::Error error = decodeFabricRefInto(reader, egress))
+      return std::move(error);
+    egresses.push_back(std::move(egress));
+  }
+  FabricUsePatternRef usePattern;
+  if (llvm::Error error = decodeFabricRefInto(reader, usePattern))
+    return std::move(error);
+  if (llvm::Error error = requireFinished(reader, "system transfer pattern"))
+    return std::move(error);
+
+  auto record = SystemTransferPatternRecord::create(
+      std::move(pattern), std::move(ingress), std::move(egresses),
+      std::move(usePattern));
+  if (!record)
+    return record.takeError();
+  const std::vector<std::uint8_t> canonical =
+      encodeSystemTransferPatternRecord(*record);
+  if (llvm::ArrayRef<std::uint8_t>(canonical) != bytes)
+    return malformedRecord("system transfer pattern",
+                           "record is not in canonical order");
+  return std::move(*record);
+}
+
 llvm::Expected<InstructionCoreArchitecturalContract>
 InstructionCoreArchitecturalContract::create(
     RiscVArchitectureDeclaration declaration) {

@@ -642,6 +642,48 @@ def Fabric_SystemMemoryServiceOp : Fabric_Op<"system.memory_service", [
   let hasVerifier = 1;
 }
 
+def Fabric_SystemTransportResourceOp :
+    Fabric_Op<"system.transport_resource", [
+      HasParent<"::fabric::SystemOp">
+    ]> {
+  let summary = "typed System transport capacity and state owner";
+  let description = [{
+    One independently meaningful transport resource with exact token port
+    types and one complete ResourceContractRecord. An optional crossing record
+    is the only legal clock-domain crossing carried by this resource.
+  }];
+
+  let arguments = (ins
+      OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
+      TypeAttrOf<FunctionType>:$function_type,
+      DenseI8ArrayAttr:$resource_contract,
+      OptionalAttr<DenseI8ArrayAttr>:$clock_crossing
+  );
+
+  let assemblyFormat = [{
+    `ports` `=` $function_type
+    `contract` `=` $resource_contract
+    (`crossing` `=` $clock_crossing^)? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_SystemTransferPatternOp :
+    Fabric_Op<"system.transfer_pattern", [
+      HasParent<"::fabric::SystemOp">
+    ]> {
+  let summary = "one atomic System transport traversal pattern";
+  let description = [{
+    One ingress, a canonical non-empty egress set, and the exact owner-local
+    UsePattern whose ResourceContract owns atomic claims, eligibility, timing,
+    progress, and grant behavior.
+  }];
+
+  let arguments = (ins DenseI8ArrayAttr:$contract);
+  let assemblyFormat = "`contract` `=` $contract attr-dict";
+  let hasVerifier = 1;
+}
+
 def Fabric_SystemConnectionOp : Fabric_Op<"system.connection", [
     HasParent<"::fabric::SystemOp">
 ]> {

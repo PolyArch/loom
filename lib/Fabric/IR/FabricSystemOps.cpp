@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -83,6 +84,7 @@ LogicalResult SystemOp::verify() {
   llvm::DenseSet<std::uint64_t> entityIds;
   for (Operation &operation : block) {
     if (!isa<SystemHostCoreOp, SystemAccCoreOp, SystemMemoryServiceOp,
+             SystemTransportResourceOp, SystemTransferPatternOp,
              SystemConnectionOp, SystemSpatialAttachmentOp>(operation))
       return operation.emitOpError(
           "is not in the closed fabric.system child catalog");
@@ -125,6 +127,46 @@ LogicalResult SystemMemoryServiceOp::verify() {
       MemoryServiceOwnerKind::System);
   if (!decoded)
     return emitOpError("has invalid System memory service contract: ")
+           << llvm::toString(decoded.takeError());
+  return success();
+}
+
+LogicalResult SystemTransportResourceOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  FunctionType ports = cast<FunctionType>(getFunctionTypeAttr().getValue());
+  if (ports.getNumInputs() == 0 || ports.getNumResults() == 0)
+    return emitOpError("requires at least one input and one output port");
+  for (ArrayRef<Type> types : {ports.getInputs(), ports.getResults()})
+    for (Type type : types)
+      if (!isa<BitsType, BitsTagType>(type))
+        return emitOpError("has non-transport port type ") << type;
+
+  auto resourceContract =
+      decodeResourceContractRecord(unsignedBytes(getResourceContractAttr()));
+  if (!resourceContract)
+    return emitOpError("has invalid resource contract: ")
+           << llvm::toString(resourceContract.takeError());
+  if (resourceContract->usePatternCount() == 0)
+    return emitOpError("resource contract has no transfer UsePattern");
+
+  if (DenseI8ArrayAttr crossing = getClockCrossingAttr()) {
+    auto decoded = loom::fabric::decodeClockCrossingContractRecord(
+        unsignedBytes(crossing));
+    if (!decoded)
+      return emitOpError("has invalid clock crossing contract: ")
+             << llvm::toString(decoded.takeError());
+  }
+  return success();
+}
+
+LogicalResult SystemTransferPatternOp::verify() {
+  if (failed(verifyClosedAttributes(getOperation())))
+    return failure();
+  auto decoded = loom::fabric::decodeSystemTransferPatternRecord(
+      unsignedBytes(getContractAttr()));
+  if (!decoded)
+    return emitOpError("has invalid transfer pattern contract: ")
            << llvm::toString(decoded.takeError());
   return success();
 }

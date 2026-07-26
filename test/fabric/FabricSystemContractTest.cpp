@@ -2,6 +2,7 @@
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -238,6 +239,63 @@ void checkSystemStructuralRelations() {
           "typed System relations did not parse:\n" + sourceText);
   require(test, mlir::succeeded(mlir::verify(*module)),
           "typed System relations did not verify");
+}
+
+void checkSystemTransportResource() {
+  constexpr llvm::StringLiteral test = "System transport resource";
+  const SystemTransportResourceRef resource(31);
+  const FabricTransportEndpointOwnerRef owner =
+      FabricTransportEndpointOwnerRef::of(resource);
+  const FabricUsePatternOwnerRef useOwner(
+      FabricInventoryOwnerRef::of(resource));
+  const SystemTransferPatternRecord pattern =
+      take(test, SystemTransferPatternRecord::create(
+                     FabricTransferPatternRef{resource, 0},
+                     FabricTransportEndpointRef{owner, 0},
+                     {FabricTransportEndpointRef{owner, 1},
+                      FabricTransportEndpointRef{owner, 2}},
+                     FabricUsePatternRef{useOwner, 0}));
+  const std::vector<std::uint8_t> encodedPattern =
+      encodeSystemTransferPatternRecord(pattern);
+  require(test,
+          take(test, decodeSystemTransferPatternRecord(encodedPattern)) ==
+              pattern,
+          "transfer pattern changed during canonical round trip");
+
+  expectRejected(test,
+                 SystemTransferPatternRecord::create(
+                     FabricTransferPatternRef{resource, 0},
+                     FabricTransportEndpointRef{owner, 0},
+                     {FabricTransportEndpointRef{owner, 1},
+                      FabricTransportEndpointRef{owner, 1}},
+                     FabricUsePatternRef{useOwner, 0}),
+                 "accepted duplicate multicast egresses");
+
+  const std::vector<std::uint8_t> resourceContract = take(
+      test,
+      ::fabric::encodeResourceContractRecord(instructionContextContract()));
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+  const std::string sourceText =
+      "module {\n"
+      "  fabric.system @soc {\n"
+      "    fabric.system.transport_resource ports = "
+      "(!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>) "
+      "contract = " +
+      denseI8Assembly(context, resourceContract) +
+      " {entity_id = #fabric.entity_id<31>}\n"
+      "    fabric.system.transfer_pattern contract = " +
+      denseI8Assembly(context, encodedPattern) +
+      "\n"
+      "  }\n"
+      "}\n";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(sourceText, &context);
+  require(test, static_cast<bool>(module),
+          "typed transport resource did not parse:\n" + sourceText);
+  require(test, mlir::succeeded(mlir::verify(*module)),
+          "typed transport resource did not verify");
 }
 
 void checkInstructionMicroarchitectureContract() {
@@ -517,6 +575,7 @@ void checkClockCrossingContract() {
 int main() {
   checkImportedModuleTargetReference();
   checkSystemStructuralRelations();
+  checkSystemTransportResource();
   checkInstructionArchitectureContract();
   checkInstructionMicroarchitectureContract();
   checkTypedSystemRoot();

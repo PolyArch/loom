@@ -103,6 +103,50 @@ std::vector<std::uint8_t> encodeFabricSpatialAttachmentEndpointRef(
 llvm::Expected<FabricSpatialAttachmentEndpointRef>
 decodeFabricSpatialAttachmentEndpointRef(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// One architecture-visible traversal mode of a System transport resource.
+/// The selected UsePattern owns the atomic claims, eligibility, timing,
+/// progress, and arbitration semantics. This record owns only topology and
+/// the exact relation to that existing atomic use.
+class SystemTransferPatternRecord {
+public:
+  static llvm::Expected<SystemTransferPatternRecord>
+  create(FabricTransferPatternRef pattern, FabricTransportEndpointRef ingress,
+         std::vector<FabricTransportEndpointRef> egresses,
+         FabricUsePatternRef usePattern);
+
+  const FabricTransferPatternRef &pattern() const { return pattern_; }
+  const FabricTransportEndpointRef &ingress() const { return ingress_; }
+  llvm::ArrayRef<FabricTransportEndpointRef> egresses() const {
+    return egresses_;
+  }
+  const FabricUsePatternRef &usePattern() const { return usePattern_; }
+
+  friend bool operator==(const SystemTransferPatternRecord &lhs,
+                         const SystemTransferPatternRecord &rhs) {
+    return lhs.pattern_ == rhs.pattern_ && lhs.ingress_ == rhs.ingress_ &&
+           lhs.egresses_ == rhs.egresses_ && lhs.usePattern_ == rhs.usePattern_;
+  }
+
+private:
+  SystemTransferPatternRecord(FabricTransferPatternRef pattern,
+                              FabricTransportEndpointRef ingress,
+                              std::vector<FabricTransportEndpointRef> egresses,
+                              FabricUsePatternRef usePattern)
+      : pattern_(std::move(pattern)), ingress_(std::move(ingress)),
+        egresses_(std::move(egresses)), usePattern_(std::move(usePattern)) {}
+
+  FabricTransferPatternRef pattern_;
+  FabricTransportEndpointRef ingress_;
+  std::vector<FabricTransportEndpointRef> egresses_;
+  FabricUsePatternRef usePattern_;
+};
+
+std::vector<std::uint8_t>
+encodeSystemTransferPatternRecord(const SystemTransferPatternRecord &record);
+
+llvm::Expected<SystemTransferPatternRecord>
+decodeSystemTransferPatternRecord(llvm::ArrayRef<std::uint8_t> bytes);
+
 enum class RiscVXLen : std::uint32_t { X32, X64 };
 enum class RiscVBase : std::uint32_t { I, E };
 enum class RiscVExtension : std::uint32_t {
