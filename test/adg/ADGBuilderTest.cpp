@@ -1,9 +1,12 @@
 #include "ADG/Builder.h"
 
 #include "Common/ArtifactStore.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
+
+#include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
@@ -106,6 +109,17 @@ std::uint64_t uniqueEntity(llvm::StringRef test,
   return *result;
 }
 
+std::uint64_t entityCount(const loom::fabric::FabricArtifactView &view,
+                          loom::fabric::FabricEntityKind expectedKind) {
+  std::uint64_t count = 0;
+  for (std::uint64_t id = 0;; ++id) {
+    std::optional<loom::fabric::FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      return count;
+    count += *kind == expectedKind;
+  }
+}
+
 loom::fabric::FabricFuTemplateRef
 uniqueFuTemplate(llvm::StringRef test,
                  const loom::fabric::FabricArtifactView &view) {
@@ -128,6 +142,148 @@ integerCapability(::fabric::ImplementationFamilyId family,
 ::fabric::UnsignedDomain singleton(std::uint64_t value) {
   return take("memory singleton",
               ::fabric::UnsignedDomain::fromCanonical({{value, value}}));
+}
+
+::fabric::ResourceContract singleUseResourceContract(llvm::StringRef test) {
+  ::fabric::ResourceContractDeclaration declaration;
+  declaration.states = {::fabric::ResourceStateDeclaration{
+      ::fabric::StateKey(0),
+      {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
+        ::fabric::CapacityUnits(0)}}}};
+  declaration.requesters = {::fabric::RequesterKey(0)};
+  declaration.eligibilityCount = 1;
+  declaration.eventCount = 2;
+  declaration.timingContracts = {{::fabric::TimingContractKey(0), {0, 1}}};
+  declaration.usePatterns = {
+      {::fabric::UsePatternKey(0),
+       ::fabric::RequesterKey(0),
+       ::fabric::EligibilityKey(0),
+       ::fabric::EventKey(0),
+       ::fabric::EventKey(1),
+       std::nullopt,
+       ::fabric::TimingContractKey(0),
+       {{::fabric::ClaimKey(0), ::fabric::StateKey(0),
+         ::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1)}},
+       {{{::fabric::ClaimKey(0)}}}}};
+  return take(test, ::fabric::ResourceContract::create(std::move(declaration)));
+}
+
+loom::fabric::InstructionCoreArchitecturalContract
+instructionArchitecture(llvm::StringRef test) {
+  loom::fabric::RiscVArchitectureDeclaration declaration;
+  declaration.xlen = loom::fabric::RiscVXLen::X64;
+  declaration.base = loom::fabric::RiscVBase::I;
+  declaration.extensions = {loom::fabric::RiscVExtension::M,
+                            loom::fabric::RiscVExtension::Zicsr};
+  declaration.endianness = loom::fabric::InstructionEndianness::Little;
+  declaration.physicalAddressWidthBits = 48;
+  declaration.privilegeModes = {loom::fabric::PrivilegeMode::Machine};
+  declaration.abiCapabilities = {loom::fabric::RiscVAbi::Lp64};
+  declaration.memoryOrdering = loom::fabric::RiscVMemoryOrdering::Rvwmo;
+  declaration.syncScopes = {loom::fabric::InstructionSyncScope::Hart};
+  declaration.codeModels = {loom::fabric::RiscVCodeModel::MediumAny};
+  declaration.relocationModels = {loom::fabric::RelocationModel::Static};
+  declaration.runtimeServices = {
+      loom::fabric::InstructionRuntimeService::ThreadDispatch,
+      loom::fabric::InstructionRuntimeService::SpatialLaunch};
+  return take(test, loom::fabric::InstructionCoreArchitecturalContract::create(
+                        std::move(declaration)));
+}
+
+loom::fabric::InstructionCoreMicroarchitecturalRealization
+inOrderMicroarchitecture(llvm::StringRef test) {
+  loom::fabric::InstructionCoreCommonDeclaration common{
+      1,
+      {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
+       {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1}},
+      singleUseResourceContract(test)};
+  loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
+                                                             1, 1, 4, 2};
+  return take(
+      test,
+      loom::fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
+          std::move(common), pipeline));
+}
+
+loom::fabric::InstructionCoreMicroarchitecturalRealization
+outOfOrderMicroarchitecture(llvm::StringRef test) {
+  loom::fabric::InstructionCoreCommonDeclaration common{
+      2,
+      {{loom::fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
+       {loom::fabric::InstructionOperationClass::LoadStore, 2, 2, 1}},
+      singleUseResourceContract(test)};
+  loom::fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
+      2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 32, 32};
+  return take(test, loom::fabric::InstructionCoreMicroarchitecturalRealization::
+                        createOutOfOrder(std::move(common), pipeline));
+}
+
+::fabric::MemoryAccessClass systemElementAccess(llvm::StringRef test) {
+  auto alignment =
+      take(test,
+           ::fabric::AlignmentDomain::create(
+               take(test, ::fabric::UnsignedDomain::fromCanonical({{0, 63}}))));
+  auto read = take(
+      test,
+      ::fabric::ClosedEnumDomain<::fabric::ReadSubwordSemantics>::fromCanonical(
+          {::fabric::ReadSubwordSemantics::Exact}));
+  auto write =
+      take(test,
+           ::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
+               fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
+  return take(
+      test, ::fabric::MemoryAccessClass::create(
+                ::dataflow::semantics::MemoryAccessForm::Element,
+                take(test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}})),
+                singleton(1),
+                {{::dataflow::semantics::MemoryMaskForm::Absent,
+                  ::fabric::InactiveLaneSemantics::NotApplicable}},
+                std::move(alignment), std::move(read), std::move(write)));
+}
+
+::fabric::MemoryActorContractDomain plainLoadActorDomain(llvm::StringRef test) {
+  ::fabric::MemoryActorContractClause plain =
+      ::fabric::LoadStorePlainContractClause{{false}};
+  return take(test, ::fabric::MemoryActorContractDomain::create(
+                        ::dataflow::OperationSchemaId::DataflowLoad, {plain}));
+}
+
+::fabric::MemoryServiceContractRecord
+systemMemoryContract(llvm::StringRef test, mlir::MLIRContext &context) {
+  auto accesses = take(test, ::fabric::ParameterizedMemoryAccessDomain::create(
+                                 {systemElementAccess(test)}));
+  ::fabric::MemoryServiceContractDeclaration declaration{
+      {{0, 4096, ::fabric::MemoryServiceRegionBehavior::Storage, std::nullopt}},
+      singleUseResourceContract(test),
+      {{plainLoadActorDomain(test),
+        std::move(accesses),
+        {0},
+        128,
+        {::fabric::UsePatternKey(0)},
+        ::fabric::NoMemoryServiceConsistency{}}}};
+  return take(test, ::fabric::MemoryServiceContractRecord::create(
+                        &context, ::fabric::MemoryServiceOwnerKind::System,
+                        std::move(declaration)));
+}
+
+loom::fabric::CanonicalServiceCapabilitySet
+systemMemoryCapabilities(llvm::StringRef test,
+                         loom::fabric::ServiceRateContractRecord serviceRate) {
+  auto accesses = take(test, ::fabric::ParameterizedMemoryAccessDomain::create(
+                                 {systemElementAccess(test)}));
+  auto addressDomain =
+      take(test, ::fabric::UnsignedDomain::fromCanonical({{0, 4095}}));
+  auto domain =
+      take(test, loom::fabric::AddressedMemoryCapabilityDomain::create(
+                     plainLoadActorDomain(test), std::move(accesses),
+                     std::move(addressDomain), 128, std::nullopt));
+  auto capability =
+      take(test, loom::fabric::CanonicalServiceCapabilityRecord::create(
+                     ::dataflow::semantics::ServiceKind::MemoryRead,
+                     loom::fabric::CanonicalServiceEndpointRole::Serve,
+                     std::move(domain), std::move(serviceRate)));
+  return take(test, loom::fabric::CanonicalServiceCapabilitySet::create(
+                        {std::move(capability)}));
 }
 
 ::fabric::MemoryOperationPortDeclaration loadPortDeclaration() {
@@ -417,6 +573,113 @@ void typedMemoryEngineFinalizes() {
           "typed memory capability was not preserved by Fabric finalization");
 }
 
+void heterogeneousSystemFinalizes() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  DesignBuilder moduleDesign(store);
+  auto spatial = take(test, moduleDesign.createSpatialCore("system-spatial",
+                                                           {bits32}, {bits32}));
+  SpatialValue buffered =
+      take(test, spatial.addFifo(take(test, spatial.input(0)),
+                                 FifoSpec{bits32, 2, true}));
+  if (llvm::Error error = spatial.close({buffered}))
+    fail(test, llvm::toString(std::move(error)));
+  loom::adg::FinalizedFabricDesign moduleClosure =
+      take(test, std::move(moduleDesign).finalize());
+
+  DesignBuilder systemDesign(store);
+  auto system = take(test, systemDesign.createSystem("heterogeneous-system"));
+  auto imported =
+      take(test, system.importSpatialCore(moduleClosure.roots().front()));
+  auto architecture = instructionArchitecture(test);
+  auto firstCore =
+      take(test, system.addAccCore(architecture, inOrderMicroarchitecture(test),
+                                   imported));
+  auto secondCore = take(
+      test, system.addAccCore(architecture, outOfOrderMicroarchitecture(test),
+                              imported));
+
+  auto transport =
+      take(test, system.addTransportResource(
+                     {{bits32}, {bits32}, singleUseResourceContract(test)}));
+  auto pattern = take(test, system.addTransferPattern(transport, 0, {0}, 0));
+  if (llvm::Error error =
+          system.connect(take(test, firstCore.spatialTransportOutput(0)),
+                         take(test, transport.input(0))))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          system.connect(take(test, transport.output(0)),
+                         take(test, secondCore.spatialTransportInput(0))))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto clock = take(test, system.createHardwareDomain());
+  auto serviceRate =
+      take(test, system.createServiceRate(
+                     clock, 1, 1, 4,
+                     loom::fabric::ServiceProgress(
+                         std::in_place_type<::fabric::FairEventual>)));
+  mlir::MLIRContext contractContext;
+  auto memoryService = take(test, system.addMemoryService(systemMemoryContract(
+                                      test, contractContext)));
+  auto memoryEndpoint =
+      take(test, system.addServiceEndpoint(
+                     memoryService,
+                     systemMemoryCapabilities(test, std::move(serviceRate))));
+  auto clockContract =
+      take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
+  if (llvm::Error error = clock.close(
+          {firstCore.instructionCoreDomainMember(),
+           firstCore.spatialCoreDomainMember(),
+           secondCore.instructionCoreDomainMember(),
+           secondCore.spatialCoreDomainMember(), transport.domainMember(),
+           pattern.domainMember(), memoryService.domainMember(),
+           memoryEndpoint.domainMember()},
+          std::move(clockContract)))
+    fail(test, llvm::toString(std::move(error)));
+
+  if (llvm::Error error = system.close())
+    fail(test, llvm::toString(std::move(error)));
+  loom::adg::FinalizedFabricDesign finalized =
+      take(test, std::move(systemDesign).finalize());
+  require(test, finalized.roots().size() == 1,
+          "System design did not publish one root");
+  const auto &root = finalized.roots().front();
+  require(test, root.view().rootKind() == loom::fabric::FabricRootKind::System,
+          "System Builder published the wrong root kind");
+  require(test,
+          root.directDependencies().size() == 1 &&
+              root.directDependencies().front().root ==
+                  moduleClosure.roots().front().reference(),
+          "System Builder changed its exact SpatialCore dependency");
+  require(test,
+          entityCount(root.view(),
+                      loom::fabric::FabricEntityKind::AccCoreOccurrence) == 2,
+          "heterogeneous System lost an AccCore occurrence");
+  require(test,
+          entityCount(root.view(),
+                      loom::fabric::FabricEntityKind::SystemMemoryService) == 1,
+          "heterogeneous System lost its memory service");
+  require(test,
+          entityCount(root.view(),
+                      loom::fabric::FabricEntityKind::SystemServiceEndpoint) ==
+              1,
+          "heterogeneous System lost its service endpoint");
+  auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
+  require(test, systemView.spatialAttachments().size() == 4,
+          "System Builder did not attach every SpatialCore boundary");
+  require(
+      test,
+      systemView.transportResources().size() == 1 &&
+          systemView.transferPatterns(systemView.transportResources().front())
+                  .size() == 1,
+      "System Builder lost its explicit transport resource or pattern");
+  require(test, root.view().pointConnections().size() == 2,
+          "System Builder lost its arbitrary directed transport path");
+}
+
 } // namespace
 
 int main() {
@@ -424,5 +687,6 @@ int main() {
   foreignHandlesAndIncompleteRootsFailClosed();
   typedPeFuGraphsFinalize();
   typedMemoryEngineFinalizes();
+  heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;
 }

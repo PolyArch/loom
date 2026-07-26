@@ -1,5 +1,6 @@
 add_mlir_library(LoomADGBuilder
   Builder.cpp
+  SystemBuilder.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/ADG

@@ -1,5 +1,7 @@
 #include "ADG/Builder.h"
 
+#include "BuilderInternal.h"
+
 #include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -13,7 +15,6 @@
 #include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FormatVariadic.h"
 
 #include <limits>
@@ -22,20 +23,19 @@
 #include <utility>
 
 namespace loom::adg {
-namespace {
+namespace detail {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "adg_builder_invalid: " + message);
 }
 
-bool sameFabricKind(mlir::Type left, mlir::Type right) {
-  return (mlir::isa<::fabric::BitsType>(left) &&
-          mlir::isa<::fabric::BitsType>(right)) ||
-         (mlir::isa<::fabric::BitsTagType>(left) &&
-          mlir::isa<::fabric::BitsTagType>(right)) ||
-         (mlir::isa<mlir::MemRefType>(left) &&
-          mlir::isa<mlir::MemRefType>(right));
+llvm::Expected<std::shared_ptr<DesignState>>
+activeState(const std::weak_ptr<DesignState> &weak) {
+  std::shared_ptr<DesignState> state = weak.lock();
+  if (!state || state->consumed)
+    return invalid("ADG Builder view is stale");
+  return state;
 }
 
 mlir::Type materializePortType(mlir::MLIRContext &context,
@@ -57,51 +57,33 @@ mlir::Type materializePortType(mlir::MLIRContext &context,
   llvm_unreachable("all PortType kinds are handled");
 }
 
+} // namespace detail
+
+namespace {
+
+using detail::activeState;
+using detail::invalid;
+using detail::materializePortType;
+
+bool sameFabricKind(mlir::Type left, mlir::Type right) {
+  return (mlir::isa<::fabric::BitsType>(left) &&
+          mlir::isa<::fabric::BitsType>(right)) ||
+         (mlir::isa<::fabric::BitsTagType>(left) &&
+          mlir::isa<::fabric::BitsTagType>(right)) ||
+         (mlir::isa<mlir::MemRefType>(left) &&
+          mlir::isa<mlir::MemRefType>(right));
+}
+
 } // namespace
 
-namespace detail {
-
-struct SpatialRootState final {
-  ::fabric::ModuleOp operation;
-  std::string label;
-  std::vector<mlir::Type> resultTypes;
-  bool closed = false;
-};
-
-struct PeState final {
-  ::fabric::PeOp operation;
-  std::size_t rootOrdinal;
-  bool closed = false;
-};
-
-struct FuState final {
-  ::fabric::FuOp operation;
-  std::size_t rootOrdinal;
-  std::size_t peOrdinal;
-  bool closed = false;
-};
-
-class DesignState final {
-public:
-  explicit DesignState(const loom::ArtifactStore &store) : store(store) {
-    mlir::DialectRegistry registry;
-    registry.insert<::fabric::FabricDialect>();
-    context.appendDialectRegistry(registry);
-    context.loadAllAvailableDialects();
-    draft = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
-  }
-
-  mlir::MLIRContext context;
-  mlir::OwningOpRef<mlir::ModuleOp> draft;
-  const loom::ArtifactStore &store;
-  std::vector<SpatialRootState> roots;
-  std::vector<PeState> pes;
-  std::vector<FuState> fus;
-  llvm::StringSet<> labels;
-  bool consumed = false;
-};
-
-} // namespace detail
+detail::DesignState::DesignState(const loom::ArtifactStore &store)
+    : store(store) {
+  mlir::DialectRegistry registry;
+  registry.insert<::fabric::FabricDialect>();
+  context.appendDialectRegistry(registry);
+  context.loadAllAvailableDialects();
+  draft = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+}
 
 llvm::Expected<PortType> PortType::bits(std::uint32_t width) {
   return PortType(Kind::Bits, width, 0, {});
@@ -185,14 +167,6 @@ MemorySpec MemorySpec::spatial(
 }
 
 namespace {
-
-llvm::Expected<std::shared_ptr<detail::DesignState>>
-activeState(const std::weak_ptr<detail::DesignState> &weak) {
-  std::shared_ptr<detail::DesignState> state = weak.lock();
-  if (!state || state->consumed)
-    return invalid("ADG Builder view is stale");
-  return state;
-}
 
 llvm::Error verifyNewOperation(mlir::Operation *operation,
                                llvm::StringRef description) {
@@ -602,9 +576,9 @@ SpatialCoreBuilder::input(std::size_t ordinal) const {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   mlir::Block &body = root.operation.getBody().front();
@@ -618,9 +592,9 @@ llvm::Expected<SpatialValue> SpatialCoreBuilder::addFifo(SpatialValue input,
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   auto source = resolveValue(*state, input);
@@ -654,9 +628,9 @@ SpatialCoreBuilder::addBoundary(llvm::ArrayRef<SpatialValue> inputs,
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   if (inputs.size() != spec.inputTypes.size())
@@ -705,9 +679,9 @@ SpatialCoreBuilder::addSwitch(llvm::ArrayRef<SpatialValue> inputs,
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   if (inputs.empty() || spec.outputTypes.empty())
@@ -798,9 +772,9 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   if (inputs.size() != spec.inputTypes_.size())
@@ -917,9 +891,9 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   if (inputs.empty() || spec.outputTypes_.empty())
@@ -1059,9 +1033,9 @@ llvm::Error SpatialCoreBuilder::close(llvm::ArrayRef<SpatialValue> outputs) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
-  if (rootOrdinal_ >= (*state)->roots.size())
+  if (rootOrdinal_ >= (*state)->spatialRoots.size())
     return invalid("SpatialCore handle has an invalid owner ordinal");
-  detail::SpatialRootState &root = (*state)->roots[rootOrdinal_];
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
   if (root.closed)
     return invalid("SpatialCore is already closed");
   for (const detail::PeState &pe : (*state)->pes)
@@ -1139,8 +1113,8 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
   for (mlir::Type type : inputTypes)
     body->addArgument(type, root.getLoc());
 
-  const std::size_t ordinal = state_->roots.size();
-  state_->roots.push_back(detail::SpatialRootState{
+  const std::size_t ordinal = state_->spatialRoots.size();
+  state_->spatialRoots.push_back(detail::SpatialRootState{
       root, label.str(),
       std::vector<mlir::Type>(resultTypes.begin(), resultTypes.end()), false});
   return SpatialCoreBuilder(state_, ordinal);
@@ -1149,16 +1123,30 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
 llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   if (!state_ || state_->consumed)
     return invalid("DesignBuilder is already consumed");
-  for (const detail::SpatialRootState &root : state_->roots)
+  for (const detail::SpatialRootState &root : state_->spatialRoots)
     if (!root.closed)
       return invalid("SpatialCore '" + root.label + "' is not closed");
+  for (const detail::SystemRootState &root : state_->systemRoots)
+    if (!root.closed)
+      return invalid("System '" + root.label + "' is not closed");
 
   state_->consumed = true;
   std::vector<loom::fabric::FinalizedFabricRoot> finalized;
-  finalized.reserve(state_->roots.size());
-  for (const detail::SpatialRootState &root : state_->roots) {
+  finalized.reserve(state_->spatialRoots.size() + state_->systemRoots.size());
+  for (const detail::SpatialRootState &root : state_->spatialRoots) {
     auto result =
         loom::fabric::finalizeFabricRoot(root.operation, state_->store);
+    if (!result)
+      return result.takeError();
+    finalized.push_back(std::move(*result));
+  }
+  for (const detail::SystemRootState &root : state_->systemRoots) {
+    llvm::SmallVector<ArtifactRootReference, 4> importedModules;
+    importedModules.reserve(root.importedModules.size());
+    for (const detail::ImportedModuleState &module : root.importedModules)
+      importedModules.push_back(module.reference);
+    auto result = loom::fabric::finalizeFabricRoot(
+        root.operation, importedModules, state_->store);
     if (!result)
       return result.takeError();
     finalized.push_back(std::move(*result));

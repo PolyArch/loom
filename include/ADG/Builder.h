@@ -4,9 +4,14 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
+#include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/FabricEnums.h"
 #include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/MemoryOperationPort.h"
+#include "Fabric/IR/MemoryServiceContract.h"
+#include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/SystemServiceContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -19,15 +24,20 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::adg {
 namespace detail {
 class DesignState;
-}
+struct SystemHandleAccess;
+} // namespace detail
 
 class FuBuilder;
 class PeBuilder;
+class HardwareDomainBuilder;
+class ServiceTransformBuilder;
+class SystemBuilder;
 
 /// A typed authoring description of one legal fabric.module port type.
 class PortType final {
@@ -337,6 +347,371 @@ private:
   friend class DesignBuilder;
 };
 
+/// One exact published Module dependency selected for a System root.
+class ImportedSpatialCore final {
+public:
+  ImportedSpatialCore() = default;
+
+private:
+  ImportedSpatialCore(const std::shared_ptr<detail::DesignState> &state,
+                      std::size_t rootOrdinal, std::size_t importOrdinal)
+      : state_(state), rootOrdinal_(rootOrdinal),
+        importOrdinal_(importOrdinal) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t importOrdinal_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+/// One role-specific projection admitted as a hardware-domain member.
+class HardwareDomainMember final {
+public:
+  HardwareDomainMember() = default;
+
+private:
+  HardwareDomainMember(const std::shared_ptr<detail::DesignState> &state,
+                       std::size_t rootOrdinal,
+                       loom::fabric::FabricInventoryOwnerRef owner)
+      : state_(state), rootOrdinal_(rootOrdinal), owner_(std::move(owner)) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricInventoryOwnerRef owner_;
+
+  friend class HostCore;
+  friend class AccCore;
+  friend class SystemMemoryService;
+  friend class ExternalBoundary;
+  friend class SystemServiceEndpoint;
+  friend class SystemTransportResource;
+  friend class SystemTransferPattern;
+  friend class HardwareDomainBuilder;
+  friend class ServiceTransformBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class SystemTransportEndpoint final {
+public:
+  SystemTransportEndpoint() = default;
+
+private:
+  SystemTransportEndpoint(const std::shared_ptr<detail::DesignState> &state,
+                          std::size_t rootOrdinal,
+                          loom::fabric::FabricTransportEndpointRef reference,
+                          loom::fabric::FabricPortDirection direction)
+      : state_(state), rootOrdinal_(rootOrdinal),
+        reference_(std::move(reference)), direction_(direction) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricTransportEndpointRef reference_;
+  loom::fabric::FabricPortDirection direction_ =
+      loom::fabric::FabricPortDirection::Input;
+
+  friend class SystemBuilder;
+  friend class SystemTransportResource;
+  friend class SystemServiceEndpoint;
+  friend class AccCore;
+  friend struct detail::SystemHandleAccess;
+};
+
+class SystemMemoryEndpoint final {
+public:
+  SystemMemoryEndpoint() = default;
+
+private:
+  SystemMemoryEndpoint(const std::shared_ptr<detail::DesignState> &state,
+                       std::size_t rootOrdinal,
+                       loom::fabric::FabricMemoryEndpointRef reference,
+                       loom::fabric::FabricMemoryEndpointRole role)
+      : state_(state), rootOrdinal_(rootOrdinal),
+        reference_(std::move(reference)), role_(role) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricMemoryEndpointRef reference_;
+  loom::fabric::FabricMemoryEndpointRole role_ =
+      loom::fabric::FabricMemoryEndpointRole::Manager;
+
+  friend class ServiceTransformBuilder;
+  friend class SystemServiceEndpoint;
+  friend class AccCore;
+  friend struct detail::SystemHandleAccess;
+};
+
+class HostCore final {
+public:
+  HardwareDomainMember domainMember() const;
+
+private:
+  HostCore(const std::shared_ptr<detail::DesignState> &state,
+           std::size_t rootOrdinal, loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class AccCore final {
+public:
+  HardwareDomainMember domainMember() const;
+  HardwareDomainMember instructionCoreDomainMember() const;
+  HardwareDomainMember spatialCoreDomainMember() const;
+
+  llvm::Expected<SystemTransportEndpoint>
+  spatialTransportInput(std::size_t ordinal) const;
+  llvm::Expected<SystemTransportEndpoint>
+  spatialTransportOutput(std::size_t ordinal) const;
+  llvm::Expected<SystemMemoryEndpoint>
+  spatialMemoryManager(std::size_t ordinal) const;
+  llvm::Expected<SystemMemoryEndpoint>
+  spatialMemorySubordinate(std::size_t ordinal) const;
+
+private:
+  AccCore(const std::shared_ptr<detail::DesignState> &state,
+          std::size_t rootOrdinal, loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class SystemMemoryService final {
+public:
+  HardwareDomainMember domainMember() const;
+
+private:
+  SystemMemoryService(const std::shared_ptr<detail::DesignState> &state,
+                      std::size_t rootOrdinal,
+                      loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class ExternalBoundary final {
+public:
+  HardwareDomainMember domainMember() const;
+
+private:
+  ExternalBoundary(const std::shared_ptr<detail::DesignState> &state,
+                   std::size_t rootOrdinal, loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class SystemServiceEndpoint final {
+public:
+  HardwareDomainMember domainMember() const;
+  llvm::Expected<SystemTransportEndpoint> transport() const;
+  llvm::Expected<SystemMemoryEndpoint> memory() const;
+
+private:
+  SystemServiceEndpoint(const std::shared_ptr<detail::DesignState> &state,
+                        std::size_t rootOrdinal,
+                        loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+struct SystemTransportResourceSpec final {
+  std::vector<PortType> inputTypes;
+  std::vector<PortType> outputTypes;
+  ::fabric::ResourceContract resourceContract;
+};
+
+class SystemTransportResource final {
+public:
+  HardwareDomainMember domainMember() const;
+  llvm::Expected<SystemTransportEndpoint> input(std::size_t ordinal) const;
+  llvm::Expected<SystemTransportEndpoint> output(std::size_t ordinal) const;
+
+private:
+  SystemTransportResource(const std::shared_ptr<detail::DesignState> &state,
+                          std::size_t rootOrdinal,
+                          loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+class SystemTransferPattern final {
+public:
+  HardwareDomainMember domainMember() const;
+
+private:
+  SystemTransferPattern(const std::shared_ptr<detail::DesignState> &state,
+                        std::size_t rootOrdinal,
+                        loom::fabric::FabricTransferPatternRef reference)
+      : state_(state), rootOrdinal_(rootOrdinal),
+        reference_(std::move(reference)) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricTransferPatternRef reference_;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+/// Scoped definition used where a domain's members may refer back to it.
+class HardwareDomainBuilder final {
+public:
+  HardwareDomainMember domainMember() const;
+  llvm::Error close(llvm::ArrayRef<HardwareDomainMember> members,
+                    loom::fabric::HardwareDomainContract contract);
+
+private:
+  HardwareDomainBuilder(const std::shared_ptr<detail::DesignState> &state,
+                        std::size_t rootOrdinal,
+                        loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+/// Scoped definition used where owned endpoints name their transform.
+class ServiceTransformBuilder final {
+public:
+  HardwareDomainMember domainMember() const;
+  llvm::Error close(llvm::ArrayRef<SystemMemoryEndpoint> inputs,
+                    llvm::ArrayRef<SystemMemoryEndpoint> outputs,
+                    loom::fabric::ServiceTransformContract contract);
+
+private:
+  ServiceTransformBuilder(const std::shared_ptr<detail::DesignState> &state,
+                          std::size_t rootOrdinal,
+                          loom::fabric::FabricEntityId entity)
+      : state_(state), rootOrdinal_(rootOrdinal), entity_(entity) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  loom::fabric::FabricEntityId entity_ = 0;
+
+  friend class SystemBuilder;
+  friend struct detail::SystemHandleAccess;
+};
+
+/// Typed authoring view over one fabric.system root.
+class SystemBuilder final {
+public:
+  llvm::Expected<ImportedSpatialCore>
+  importSpatialCore(const loom::fabric::FinalizedFabricRoot &module);
+
+  llvm::Expected<HostCore> addHostCore(
+      const loom::fabric::InstructionCoreArchitecturalContract &architecture,
+      const loom::fabric::InstructionCoreMicroarchitecturalRealization
+          &microarchitecture);
+  llvm::Expected<AccCore> addAccCore(
+      const loom::fabric::InstructionCoreArchitecturalContract &architecture,
+      const loom::fabric::InstructionCoreMicroarchitecturalRealization
+          &microarchitecture,
+      const ImportedSpatialCore &spatialCore);
+  llvm::Expected<SystemMemoryService>
+  addMemoryService(const ::fabric::MemoryServiceContractRecord &contract);
+  llvm::Expected<ExternalBoundary> addExternalBoundary();
+  llvm::Expected<HardwareDomainBuilder> createHardwareDomain();
+  llvm::Expected<ServiceTransformBuilder> createServiceTransform();
+
+  llvm::Expected<loom::fabric::ServiceRateContractRecord>
+  createServiceRate(const HardwareDomainBuilder &clock,
+                    std::uint64_t operationsPerWindow,
+                    std::uint64_t windowTicks, std::uint64_t maxOutstanding,
+                    loom::fabric::ServiceProgress progress) const;
+
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      const HostCore &owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier = std::nullopt);
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      const AccCore &owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier = std::nullopt);
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      const SystemMemoryService &owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier = std::nullopt);
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      const ServiceTransformBuilder &owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier = std::nullopt);
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      const ExternalBoundary &owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier = std::nullopt);
+
+  llvm::Expected<SystemTransportResource>
+  addTransportResource(const SystemTransportResourceSpec &spec);
+  llvm::Expected<SystemTransferPattern>
+  addTransferPattern(const SystemTransportResource &resource,
+                     std::size_t inputOrdinal,
+                     llvm::ArrayRef<std::uint32_t> outputOrdinals,
+                     std::uint32_t usePatternOrdinal);
+  llvm::Error addClockCrossing(const SystemTransportResource &resource,
+                               const SystemTransferPattern &pattern,
+                               const HardwareDomainBuilder &sourceClock,
+                               const HardwareDomainBuilder &destinationClock,
+                               std::uint32_t depth,
+                               std::uint32_t synchronizerStages);
+  llvm::Error connect(const SystemTransportEndpoint &source,
+                      const SystemTransportEndpoint &destination);
+
+  llvm::Error close();
+
+private:
+  SystemBuilder(const std::shared_ptr<detail::DesignState> &state,
+                std::size_t rootOrdinal)
+      : state_(state), rootOrdinal_(rootOrdinal) {}
+
+  llvm::Expected<SystemServiceEndpoint> addServiceEndpoint(
+      loom::fabric::FabricInventoryOwnerRef owner,
+      const loom::fabric::CanonicalServiceCapabilitySet &capabilities,
+      std::optional<PortType> carrier);
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+
+  friend class DesignBuilder;
+};
+
 /// Immutable transient closure over finalized Fabric roots.
 class FinalizedFabricDesign final {
 public:
@@ -368,6 +743,8 @@ public:
   llvm::Expected<SpatialCoreBuilder>
   createSpatialCore(llvm::StringRef label, llvm::ArrayRef<PortType> inputs,
                     llvm::ArrayRef<PortType> outputs);
+
+  llvm::Expected<SystemBuilder> createSystem(llvm::StringRef label);
 
   llvm::Expected<FinalizedFabricDesign> finalize() &&;
 

@@ -2,6 +2,7 @@
 #define LOOM_FABRIC_IDENTITY_FABRICREFIMPORT_H
 
 #include "Common/Artifact.h"
+#include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
@@ -94,6 +95,21 @@ public:
   memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const;
   llvm::ArrayRef<std::uint8_t>
   memoryEndpointType(const FabricMemoryEndpointRef &endpoint) const;
+
+  /// Exact projection of one reusable Module boundary. The signature ordinal
+  /// selects the original input or result position; plane and occurrence
+  /// ordinal are derived from that signature and are the sole attachment
+  /// correspondence consumed by a System root.
+  std::uint64_t
+  moduleBoundaryEndpointCount(FabricModuleTemplateRef module,
+                              FabricPortDirection direction) const;
+  std::optional<FabricSpatialAttachmentEndpointRef::Plane>
+  moduleBoundaryEndpointPlane(
+      const FabricModuleBoundaryEndpointRef &endpoint) const;
+  std::optional<FabricOrdinal> moduleBoundaryEndpointOccurrenceOrdinal(
+      const FabricModuleBoundaryEndpointRef &endpoint) const;
+  llvm::ArrayRef<std::uint8_t> moduleBoundaryEndpointType(
+      const FabricModuleBoundaryEndpointRef &endpoint) const;
 
   /// The declared kind of one hardware domain entity.
   std::optional<FabricHardwareDomainKind>

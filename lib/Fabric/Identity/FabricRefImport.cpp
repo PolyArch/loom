@@ -218,6 +218,19 @@ struct FabricArtifactView::Storage {
     return &owner->memoryEndpoints[endpoint.ordinal];
   }
 
+  const detail::FabricModuleBoundaryEndpointViewData *moduleBoundaryEndpoint(
+      const FabricModuleBoundaryEndpointRef &endpoint) const {
+    const detail::FabricEntityViewData *module = entity(endpoint.module);
+    if (!module)
+      return nullptr;
+    const auto &endpoints = endpoint.direction == FabricPortDirection::Input
+                                ? module->moduleBoundaryInputs
+                                : module->moduleBoundaryOutputs;
+    if (endpoint.ordinal >= endpoints.size())
+      return nullptr;
+    return &endpoints[endpoint.ordinal];
+  }
+
   const detail::FabricNestedOwnerViewData *
   inventoryOwner(const FabricInventoryOwnerRef &owner) const {
     const detail::FabricEntityViewData *record = nullptr;
@@ -534,6 +547,43 @@ llvm::ArrayRef<std::uint8_t> FabricArtifactView::memoryEndpointType(
     const FabricMemoryEndpointRef &endpoint) const {
   const detail::FabricMemoryEndpointViewData *record =
       storage_->memoryEndpoint(endpoint);
+  return record ? llvm::ArrayRef<std::uint8_t>(record->canonicalType)
+                : llvm::ArrayRef<std::uint8_t>();
+}
+
+std::uint64_t FabricArtifactView::moduleBoundaryEndpointCount(
+    FabricModuleTemplateRef module, FabricPortDirection direction) const {
+  const detail::FabricEntityViewData *record = storage_->entity(module);
+  if (!record)
+    return 0;
+  return direction == FabricPortDirection::Input
+             ? record->moduleBoundaryInputs.size()
+             : record->moduleBoundaryOutputs.size();
+}
+
+std::optional<FabricSpatialAttachmentEndpointRef::Plane>
+FabricArtifactView::moduleBoundaryEndpointPlane(
+    const FabricModuleBoundaryEndpointRef &endpoint) const {
+  const detail::FabricModuleBoundaryEndpointViewData *record =
+      storage_->moduleBoundaryEndpoint(endpoint);
+  return record ? std::optional<FabricSpatialAttachmentEndpointRef::Plane>(
+                      record->plane)
+                : std::nullopt;
+}
+
+std::optional<FabricOrdinal>
+FabricArtifactView::moduleBoundaryEndpointOccurrenceOrdinal(
+    const FabricModuleBoundaryEndpointRef &endpoint) const {
+  const detail::FabricModuleBoundaryEndpointViewData *record =
+      storage_->moduleBoundaryEndpoint(endpoint);
+  return record ? std::optional<FabricOrdinal>(record->occurrenceOrdinal)
+                : std::nullopt;
+}
+
+llvm::ArrayRef<std::uint8_t> FabricArtifactView::moduleBoundaryEndpointType(
+    const FabricModuleBoundaryEndpointRef &endpoint) const {
+  const detail::FabricModuleBoundaryEndpointViewData *record =
+      storage_->moduleBoundaryEndpoint(endpoint);
   return record ? llvm::ArrayRef<std::uint8_t>(record->canonicalType)
                 : llvm::ArrayRef<std::uint8_t>();
 }
