@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <utility>
 #include <vector>
@@ -75,6 +76,12 @@ finalizeFabricRoot(::fabric::SystemOp source,
 llvm::Expected<FinalizedFabricRoot>
 importEntireFabricRoot(const ArtifactRootReference &reference,
                        const ArtifactStore &store);
+
+/// Writes the canonical MLIR payload of one finalized Fabric root as a
+/// human-readable textual projection. Artifact identity remains owned by the
+/// canonical bytecode and envelope stored in `root`.
+llvm::Error writeFabricMlir(const FinalizedFabricRoot &root,
+                            llvm::raw_ostream &output);
 
 } // namespace loom::fabric
 

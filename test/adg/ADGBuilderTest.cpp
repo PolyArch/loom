@@ -461,6 +461,14 @@ void regularAndIrregularSpatialCoresFinalize() {
             "SpatialCore finalized with a non-Module root kind");
     require(test, !root.view().admittedTraversals().empty(),
             "SpatialCore lost its physical traversal inventory");
+
+    std::string mlirText;
+    llvm::raw_string_ostream stream(mlirText);
+    if (llvm::Error error = loom::fabric::writeFabricMlir(root, stream))
+      fail(test, llvm::toString(std::move(error)));
+    stream.flush();
+    require(test, llvm::StringRef(mlirText).contains("fabric.module"),
+            "finalized SpatialCore did not export Fabric MLIR");
   }
 }
 
@@ -792,6 +800,14 @@ void heterogeneousSystemFinalizes() {
       "System Builder lost its explicit transport resource or pattern");
   require(test, root.view().pointConnections().size() == 2,
           "System Builder lost its arbitrary directed transport path");
+
+  std::string mlirText;
+  llvm::raw_string_ostream stream(mlirText);
+  if (llvm::Error error = loom::fabric::writeFabricMlir(root, stream))
+    fail(test, llvm::toString(std::move(error)));
+  stream.flush();
+  require(test, llvm::StringRef(mlirText).contains("fabric.system"),
+          "finalized System did not export Fabric MLIR");
 }
 
 } // namespace

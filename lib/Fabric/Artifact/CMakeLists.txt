@@ -5,6 +5,7 @@ add_mlir_library(LoomFabricArtifact
   FabricArtifact.cpp
   FabricArtifactBytecode.cpp
   FabricArtifactCodec.cpp
+  FabricArtifactText.cpp
   FabricCanonicalLabeling.cpp
   FabricSystemCanonicalLabeling.cpp
   FabricSystemCanonicalMaterialization.cpp

@@ -199,6 +199,19 @@ The Builder cannot call a public freeze hook, construct or subclass
 `FabricArtifactView`, assign persistent local IDs, or assert that a partial
 relation set is root-complete.
 
+The public human-readable projection is:
+
+```text
+writeFabricMlir(const FinalizedFabricRoot &, llvm::raw_ostream &)
+  -> llvm::Error
+```
+
+It decodes and prints the canonical MLIR bytecode already owned by the
+finalized artifact. It never prints the Builder draft, reparses a Builder-only
+text form, or creates another semantic identity. A design with several roots
+exports each exact root independently; its dependency references retain the
+artifact graph defined by `docs/spec-fabric-artifact.md`.
+
 Artifact-store publication is topologically ordered and single-object. Direct
 dependencies and opaque content blobs may be published before a Fabric root;
 the root is published only after its complete closure is available. If a
