@@ -2,6 +2,7 @@
 
 #include "../Identity/FabricArtifactViewInternal.h"
 #include "Common/ArtifactFinalizer.h"
+#include "Fabric/Artifact/FabricClockResetValidation.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/BoundaryTransfer.h"
@@ -1014,9 +1015,6 @@ llvm::Error validateSystemRelations(
     llvm::ArrayRef<FabricImportedModuleTargetRef> coreTargets) {
   const FabricArtifactView &view = systemView.artifact();
   const FabricImportBinding binding{view.identity(), FabricRootKind::System};
-  std::map<std::pair<std::uint32_t, std::vector<std::uint8_t>>,
-           HardwareDomainRef>
-      domainMembership;
   std::set<FabricEntityId> externalBoundariesWithEndpoints;
   std::map<FabricEntityId,
            std::set<std::pair<FabricPortDirection, FabricOrdinal>>>
@@ -1098,12 +1096,6 @@ llvm::Error validateSystemRelations(
       for (const FabricInventoryOwnerRef &member : record->members()) {
         if (llvm::Error error = validateFabricRef(view, member))
           return error;
-        auto key = std::make_pair(static_cast<std::uint32_t>(record->kind()),
-                                  canonicalFabricBytes(member));
-        if (!domainMembership.emplace(std::move(key), HardwareDomainRef(*id))
-                 .second)
-          return invalid(
-              "a Fabric owner belongs to multiple domains of one kind");
       }
       if (const auto *reset =
               std::get_if<ResetDomainContractRecord>(&record->contract())) {
@@ -1473,6 +1465,9 @@ buildSystemView(::fabric::SystemOp root,
   if (llvm::Error error = validateSystemRelations(root, *systemView,
                                                   importedModules, coreTargets))
     return std::move(error);
+  auto clockReset = validateClockReset(*systemView);
+  if (!clockReset)
+    return clockReset.takeError();
   return std::move(*view);
 }
 

@@ -10,6 +10,7 @@ add_mlir_library(LoomFabricArtifact
   FabricSystemCanonicalMaterialization.cpp
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp
+  FabricClockResetValidation.cpp
   FabricFuCapabilityDerivation.cpp
 
   ADDITIONAL_HEADER_DIRS

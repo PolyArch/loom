@@ -1,4 +1,5 @@
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContractRecord.h"
@@ -286,7 +287,8 @@ std::string attachedAccCoreSystemSource(
 }
 
 std::string transportResource(llvm::StringRef test, std::uint64_t id,
-                              std::uint32_t width) {
+                              std::uint32_t width,
+                              llvm::ArrayRef<std::uint8_t> crossing = {}) {
   const std::vector<std::uint8_t> contract = take(
       test,
       ::fabric::encodeResourceContractRecord(instructionContextContract(test)));
@@ -294,8 +296,49 @@ std::string transportResource(llvm::StringRef test, std::uint64_t id,
   llvm::raw_string_ostream stream(text);
   stream << "fabric.system.transport_resource ports = (!fabric.bits<" << width
          << ">) -> (!fabric.bits<" << width
-         << ">) contract = " << denseI8Assembly(contract)
-         << " {entity_id = #fabric.entity_id<" << id << ">}\n";
+         << ">) contract = " << denseI8Assembly(contract);
+  if (!crossing.empty())
+    stream << " crossing = " << denseI8Assembly(crossing);
+  stream << " {entity_id = #fabric.entity_id<" << id << ">}\n";
+  return text;
+}
+
+std::string clockDomain(llvm::StringRef test, std::uint64_t id,
+                        std::uint64_t memberId) {
+  auto clock =
+      take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
+  auto record =
+      take(test, loom::fabric::HardwareDomainContractRecord::create(
+                     {loom::fabric::FabricInventoryOwnerRef::of(
+                         loom::fabric::SystemTransportResourceRef(memberId))},
+                     std::move(clock)));
+  auto bytes =
+      take(test, loom::fabric::encodeHardwareDomainContractRecord(record));
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.hardware_domain contract = "
+         << denseI8Assembly(bytes) << " {entity_id = #fabric.entity_id<" << id
+         << ">}\n";
+  return text;
+}
+
+std::string transferPattern(llvm::StringRef test, std::uint64_t resourceId) {
+  const loom::fabric::SystemTransportResourceRef resource(resourceId);
+  const loom::fabric::FabricTransportEndpointOwnerRef owner =
+      loom::fabric::FabricTransportEndpointOwnerRef::of(resource);
+  const loom::fabric::FabricUsePatternRef usePattern{
+      loom::fabric::FabricUsePatternOwnerRef(
+          loom::fabric::FabricInventoryOwnerRef::of(resource)),
+      0};
+  auto record =
+      take(test, loom::fabric::SystemTransferPatternRecord::create(
+                     {resource, 0}, {owner, 0}, {{owner, 1}}, usePattern));
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.transfer_pattern contract = "
+         << denseI8Assembly(
+                loom::fabric::encodeSystemTransferPatternRecord(record))
+         << "\n";
   return text;
 }
 
@@ -842,6 +885,58 @@ void systemPublicationIgnoresAuthoringIdentityAndOrder() {
           "System authoring names, IDs, or order changed artifact identity");
 }
 
+void systemRequiresExplicitClockCrossing() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+
+  std::string hidden;
+  llvm::raw_string_ostream hiddenStream(hidden);
+  hiddenStream << "module { fabric.system @hidden {\n"
+               << transportResource(test, 10, 8)
+               << transportResource(test, 30, 32) << clockDomain(test, 40, 10)
+               << clockDomain(test, 50, 30) << systemConnection(10, 30)
+               << "} }\n";
+  auto hiddenSource = parse(test, hidden);
+  expectRejected(test,
+                 loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *hiddenSource), {}, store),
+                 "crosses Clock domains without an explicit crossing resource");
+
+  const loom::fabric::SystemTransportResourceRef crossingResource(20);
+  auto crossing = take(
+      test,
+      loom::fabric::ClockCrossingContractRecord::createAsyncFifo(
+          {crossingResource, 0},
+          loom::fabric::ClockDomainRef(loom::fabric::HardwareDomainRef(40)),
+          loom::fabric::ClockDomainRef(loom::fabric::HardwareDomainRef(50)), 4,
+          2));
+  const std::vector<std::uint8_t> crossingBytes =
+      take(test, loom::fabric::encodeClockCrossingContractRecord(crossing));
+  std::string explicitCrossing;
+  llvm::raw_string_ostream explicitStream(explicitCrossing);
+  explicitStream << "module { fabric.system @explicit {\n"
+                 << transportResource(test, 10, 8)
+                 << transportResource(test, 20, 16, crossingBytes)
+                 << transportResource(test, 30, 32) << transferPattern(test, 20)
+                 << clockDomain(test, 40, 10) << clockDomain(test, 50, 30)
+                 << systemConnection(10, 20) << systemConnection(20, 30)
+                 << "} }\n";
+  auto explicitSource = parse(test, explicitCrossing);
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *explicitSource), {}, store));
+  auto view = take(test, loom::fabric::requireSystemRoot(finalized.view()));
+  require(test, view.transportResources().size() == 3,
+          "explicit crossing System lost a transport resource");
+  unsigned crossingCount = 0;
+  for (loom::fabric::SystemTransportResourceRef resource :
+       view.transportResources())
+    crossingCount += view.clockCrossing(resource) != nullptr;
+  require(test, crossingCount == 1,
+          "explicit crossing System changed its crossing contract");
+}
+
 } // namespace
 
 int main() {
@@ -855,5 +950,6 @@ int main() {
   systemRejectsWrongImportedModuleTarget();
   systemRejectsImplicitConnectionFanout();
   systemPublicationIgnoresAuthoringIdentityAndOrder();
+  systemRequiresExplicitClockCrossing();
   return EXIT_SUCCESS;
 }
