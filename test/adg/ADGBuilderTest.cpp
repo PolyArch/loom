@@ -766,6 +766,51 @@ void publicFuLibraryBuildsTypedGraphs() {
           "public FU helpers lost generated implementation-family bindings");
 }
 
+void fuBackedgesAreExplicitAndResolved() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  {
+    DesignBuilder incomplete(store);
+    auto spatial = take(test, incomplete.createSpatialCore(
+                                  "unresolved-feedback", {bits32}, {bits32}));
+    auto pe = take(test, spatial.addPe({take(test, spatial.input(0))},
+                                       PeSpec::spatial({bits32}, {bits32})));
+    auto fu = take(
+        test, pe.addFu({take(test, pe.input(0))}, FuSpec{{bits32}, {bits32}}));
+    auto backedge = take(test, fu.createBackedge(bits32));
+    expectError(test, fu.close({backedge.value()}), "unresolved backedge");
+  }
+
+  DesignBuilder design(store);
+  auto spatial = take(
+      test, design.createSpatialCore("resolved-feedback", {bits32}, {bits32}));
+  auto pe = take(test, spatial.addPe({take(test, spatial.input(0))},
+                                     PeSpec::spatial({bits32}, {bits32})));
+  auto fu = take(
+      test, pe.addFu({take(test, pe.input(0))}, FuSpec{{bits32}, {bits32}}));
+  auto backedge = take(test, fu.createBackedge(bits32));
+  auto sum = take(
+      test,
+      fu.addOperation({take(test, fu.input(0)), backedge.value()},
+                      integerCapability(
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  if (llvm::Error error = fu.resolveBackedge(std::move(backedge), sum.front()))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({sum.front()}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "resolved FU backedge did not finalize");
+}
+
 void heterogeneousSystemFinalizes() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -922,6 +967,7 @@ int main() {
   typedPeFuGraphsFinalize();
   typedMemoryFormsFinalize();
   publicFuLibraryBuildsTypedGraphs();
+  fuBackedgesAreExplicitAndResolved();
   heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;
 }

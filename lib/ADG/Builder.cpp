@@ -319,6 +319,66 @@ llvm::Expected<FuValue> FuBuilder::input(std::size_t ordinal) const {
                  body.getArgument(ordinal));
 }
 
+llvm::Expected<FuBackedge> FuBuilder::createBackedge(const PortType &type) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto fu = activeFu(*state, rootOrdinal_, peOrdinal_, fuOrdinal_);
+  if (!fu)
+    return fu.takeError();
+  if ((*fu)->closed)
+    return invalid("FU is already closed");
+  if (type.kind() != PortType::Kind::Bits)
+    return invalid("FU backedge must carry untagged Fabric bits");
+
+  mlir::Type resultType = materializePortType((*state)->context, type);
+  mlir::OpBuilder builder(&(*state)->context);
+  builder.setInsertionPointToEnd(&(*fu)->operation.getBody().front());
+  auto placeholder = mlir::UnrealizedConversionCastOp::create(
+      builder, (*fu)->operation.getLoc(), mlir::TypeRange{resultType},
+      mlir::ValueRange{});
+  (*fu)->unresolvedBackedges.push_back(placeholder.getOperation());
+  FuValue value(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
+                placeholder.getResult(0));
+  return FuBackedge(value, placeholder.getOperation());
+}
+
+llvm::Error FuBuilder::resolveBackedge(FuBackedge &&backedge, FuValue source) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto fu = activeFu(*state, rootOrdinal_, peOrdinal_, fuOrdinal_);
+  if (!fu)
+    return fu.takeError();
+  if ((*fu)->closed)
+    return invalid("FU is already closed");
+  if (!backedge.placeholder_)
+    return invalid("FU backedge is already resolved or moved");
+
+  auto placeholder = resolveValue(*state, backedge.value_);
+  if (!placeholder)
+    return placeholder.takeError();
+  auto resolvedSource = resolveValue(*state, source);
+  if (!resolvedSource)
+    return resolvedSource.takeError();
+  auto found = llvm::find((*fu)->unresolvedBackedges, backedge.placeholder_);
+  if (found == (*fu)->unresolvedBackedges.end() ||
+      placeholder->getDefiningOp() != backedge.placeholder_)
+    return invalid("FU backedge does not belong to this unresolved graph");
+  if (*placeholder == *resolvedSource)
+    return invalid("FU backedge cannot resolve to its own placeholder");
+  if (placeholder->getType() != resolvedSource->getType())
+    return invalid("FU backedge source type does not match its declaration");
+
+  mlir::Operation *placeholderOperation = backedge.placeholder_;
+  placeholder->replaceAllUsesWith(*resolvedSource);
+  backedge.value_ = FuValue();
+  backedge.placeholder_ = nullptr;
+  (*fu)->unresolvedBackedges.erase(found);
+  placeholderOperation->erase();
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<FuValue>>
 FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
                         const OperationCapabilitySpec &spec) {
@@ -469,6 +529,8 @@ llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  if (!(*fu)->unresolvedBackedges.empty())
+    return invalid("FU contains an unresolved backedge");
   if (outputs.size() != (*fu)->operation.getNumResults())
     return invalid("FU output count does not match its declaration");
 
@@ -591,7 +653,7 @@ llvm::Expected<FuBuilder> PeBuilder::addFu(llvm::ArrayRef<PeValue> inputs,
 
   const std::size_t ordinal = (*state)->fus.size();
   (*state)->fus.push_back(
-      detail::FuState{operation, rootOrdinal_, peOrdinal_, false});
+      detail::FuState{operation, rootOrdinal_, peOrdinal_, false, {}});
   return FuBuilder(*state, rootOrdinal_, peOrdinal_, ordinal);
 }
 

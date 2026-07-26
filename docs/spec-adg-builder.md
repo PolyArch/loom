@@ -154,6 +154,28 @@ Convenience topology and resource helpers use only this exact public surface.
 They may return typed groups of created handles, but cannot create hidden
 hardware facts or use a private emitter.
 
+### FU Feedback Edges
+
+An FU graph may contain a real directed cycle. The typed construction surface
+represents an edge whose source is not yet available with one move-only
+`FuBackedge` placeholder:
+
+```text
+FuBuilder::createBackedge(type) -> Expected<FuBackedge>
+FuBuilder::resolveBackedge(FuBackedge &&, source) -> Error
+```
+
+The placeholder is owner-checked and accepts only untagged Fabric bits. Its
+source must belong to the same FU and have the exact declared physical type.
+Every backedge must be resolved exactly once before `FuBuilder::close`; an
+unresolved, moved, foreign, or type-mismatched backedge fails closed. The
+placeholder is removed during resolution and never enters Fabric IR,
+canonical bytes, visualization, or persistent identity.
+
+Resolved cycles are ordinary explicit FU SSA edges in the Graph region. The
+Fabric finalizer canonicalizes that cyclic relation directly; it must not
+impose CFG-style SSA topological order on Module, PE, or FU Graph regions.
+
 ## Failure-Atomic Finalization
 
 Finalization consumes the draft design. Its conceptual public boundary is:

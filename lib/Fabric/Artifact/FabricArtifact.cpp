@@ -36,7 +36,6 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
@@ -309,44 +308,20 @@ llvm::Error reorderCanonicalGraphRegions(
   });
 
   for (Block *block : blocks) {
-    llvm::SmallVector<Operation *> remaining;
+    llvm::SmallVector<Operation *> ordered;
     Operation *terminator = nullptr;
     for (Operation &operation : *block) {
       if (operation.hasTrait<OpTrait::IsTerminator>()) {
         terminator = &operation;
         continue;
       }
-      remaining.push_back(&operation);
+      if (!rank.count(&operation))
+        return invalid("canonical operation order omits a graph operation");
+      ordered.push_back(&operation);
     }
-    llvm::SmallVector<Operation *> ordered;
-    llvm::DenseSet<Operation *> placed;
-    while (!remaining.empty()) {
-      auto selected = remaining.end();
-      std::uint64_t selectedRank = std::numeric_limits<std::uint64_t>::max();
-      for (auto candidate = remaining.begin(); candidate != remaining.end();
-           ++candidate) {
-        bool ready = true;
-        for (Value operand : (*candidate)->getOperands()) {
-          Operation *definition = operand.getDefiningOp();
-          if (definition && definition->getBlock() == block &&
-              !placed.contains(definition)) {
-            ready = false;
-            break;
-          }
-        }
-        auto found = rank.find(*candidate);
-        if (ready && found != rank.end() && found->second < selectedRank) {
-          selected = candidate;
-          selectedRank = found->second;
-        }
-      }
-      if (selected == remaining.end())
-        return invalid("canonical operation order is not SSA-topological");
-      Operation *operation = *selected;
-      ordered.push_back(operation);
-      placed.insert(operation);
-      remaining.erase(selected);
-    }
+    llvm::sort(ordered, [&](Operation *left, Operation *right) {
+      return rank.lookup(left) < rank.lookup(right);
+    });
     for (Operation *operation : ordered) {
       if (terminator)
         operation->moveBefore(terminator);

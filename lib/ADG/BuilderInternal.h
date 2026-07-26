@@ -38,6 +38,7 @@ struct FuState final {
   std::size_t rootOrdinal = 0;
   std::size_t peOrdinal = 0;
   bool closed = false;
+  std::vector<mlir::Operation *> unresolvedBackedges;
 };
 
 struct ImportedModuleBoundary final {

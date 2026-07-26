@@ -19,6 +19,13 @@ It would require a parallel type system, capability registry, connection
 validator, and identity model. A thin typed C++ facade gives users convenience
 while preserving Fabric as the only semantic owner.
 
+FU feedback is exposed as one generic typed backedge because cyclic dataflow is
+an essential graph distinction used by recurrence hardware. A MAC-specific
+feedback API would duplicate that topology rule in every helper, while an
+implicit cycle would hide a real Fabric edge. Requiring explicit resolution
+before FU closure keeps the public surface small and prevents authoring
+placeholders from leaking into persistent hardware.
+
 Builtin Small, Default, and Large targets are complete hardware examples, not
 size knobs or capability summaries. Their FU distribution, memory, transport,
 InstructionCore, clocks, resets, and semantic capabilities must be

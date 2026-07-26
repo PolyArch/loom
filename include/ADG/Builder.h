@@ -134,6 +134,37 @@ private:
   friend class FuBuilder;
 };
 
+/// A move-only placeholder for one FU-local feedback edge. The placeholder
+/// must be resolved to an exact FuValue before the FU is closed and never
+/// becomes part of finalized Fabric IR.
+class FuBackedge final {
+public:
+  FuBackedge(const FuBackedge &) = delete;
+  FuBackedge &operator=(const FuBackedge &) = delete;
+
+  FuBackedge(FuBackedge &&other) noexcept
+      : value_(std::move(other.value_)),
+        placeholder_(std::exchange(other.placeholder_, nullptr)) {}
+  FuBackedge &operator=(FuBackedge &&other) noexcept {
+    if (this == &other)
+      return *this;
+    value_ = std::move(other.value_);
+    placeholder_ = std::exchange(other.placeholder_, nullptr);
+    return *this;
+  }
+
+  FuValue value() const { return value_; }
+
+private:
+  FuBackedge(FuValue value, mlir::Operation *placeholder)
+      : value_(std::move(value)), placeholder_(placeholder) {}
+
+  FuValue value_;
+  mlir::Operation *placeholder_ = nullptr;
+
+  friend class FuBuilder;
+};
+
 enum class FuConfigurationMode : std::uint8_t { PerInstruction, PerFu };
 
 struct TemporalRegisterFifoParameters final {
@@ -323,6 +354,10 @@ private:
 class FuBuilder final {
 public:
   llvm::Expected<FuValue> input(std::size_t ordinal) const;
+
+  llvm::Expected<FuBackedge> createBackedge(const PortType &type);
+
+  llvm::Error resolveBackedge(FuBackedge &&backedge, FuValue source);
 
   llvm::Expected<std::vector<FuValue>>
   addOperation(llvm::ArrayRef<FuValue> inputs,
