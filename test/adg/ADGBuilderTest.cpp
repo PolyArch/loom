@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "ADG/Export.h"
+#include "ADG/FuLibrary.h"
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -714,6 +716,56 @@ void typedMemoryFormsFinalize() {
           "Fabric lost the orthogonal memory engine and local service forms");
 }
 
+void publicFuLibraryBuildsTypedGraphs() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits128 = take(test, PortType::bits(128));
+
+  auto spatial = take(
+      test, design.createSpatialCore(
+                "fu-library", {bits128, bits128, bits128, bits128}, {bits128}));
+  auto pe = take(
+      test,
+      spatial.addPe(
+          {take(test, spatial.input(0)), take(test, spatial.input(1)),
+           take(test, spatial.input(2)), take(test, spatial.input(3))},
+          PeSpec::spatial({bits128, bits128, bits128, bits128}, {bits128})));
+  std::vector<loom::adg::PeValue> inputs;
+  for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
+    inputs.push_back(take(test, pe.input(ordinal)));
+  if (llvm::Error error = loom::adg::addCoreAluFu(
+          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3)))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = loom::adg::addSpecialMathFu(
+          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(2)))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test,
+          entityCount(finalized.roots().front().view(),
+                      loom::fabric::FabricEntityKind::FabricFuOccurrence) == 3,
+          "public FU helpers did not create three ordinary FU occurrences");
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  if (llvm::Error error =
+          loom::fabric::writeFabricMlir(finalized.roots().front(), stream))
+    fail(test, llvm::toString(std::move(error)));
+  stream.flush();
+  require(test,
+          llvm::StringRef(text).contains("ScalarIntegerAddSub") &&
+              llvm::StringRef(text).contains("FixedVectorFloatFma") &&
+              llvm::StringRef(text).contains("ScalarMathSqrt"),
+          "public FU helpers lost generated implementation-family bindings");
+}
+
 void heterogeneousSystemFinalizes() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -869,6 +921,7 @@ int main() {
   foreignHandlesAndIncompleteRootsFailClosed();
   typedPeFuGraphsFinalize();
   typedMemoryFormsFinalize();
+  publicFuLibraryBuildsTypedGraphs();
   heterogeneousSystemFinalizes();
   return EXIT_SUCCESS;
 }

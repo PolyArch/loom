@@ -607,6 +607,48 @@ role supplies `carry.cond`, and the exact template supplies the initial value.
 The template reuses the normative family, resource, transition, and timing
 contracts without copying their configuration or state machine.
 
+#### VectorComputeFu Resource Inventory
+
+`VectorComputeFu` constructs one concrete `fabric.op` resource for each fixed
+vector integer add/subtract, logic, shift, compare/min/max, select, multiply,
+floating sign, floating add/subtract, floating compare/min/max, floating
+multiply, and floating FMA implementation family registered by the normative
+HSG registry. It obtains every operation-member list from that registry and
+does not maintain a Builder-local operation table.
+
+Its stable helper boundary is:
+
+```text
+VectorComputeFu outer: bits<128>, bits<128>, bits<128>, bits<128>
+                    -> bits<128>
+VectorComputeFu inner: bits<128>, bits<128>, bits<128>, bits<128>
+                    -> bits<128>
+```
+
+The input roles are data0, data1, data2, and condition. Exact software types,
+including element type and fixed lane geometry, remain part of the typed
+capability match; equal 128-bit physical width does not make two vector types
+interchangeable. Explicit coherent demux and mux topology selects the active
+physical resource.
+
+#### SpecialMathFu Resource Inventory
+
+`SpecialMathFu` constructs distinct scalar signed and unsigned integer
+divide/remainder resources, floating divide and remainder resources, and the
+registered unary root, exponential, logarithmic, trigonometric, hyperbolic,
+rounding, reciprocal-root, and error-function resources. Its boundary is:
+
+```text
+SpecialMathFu outer: bits<128>, bits<128> -> bits<128>
+SpecialMathFu inner: bits<64>,  bits<64>  -> bits<64>
+```
+
+Binary resources consume both stable input roles; unary resources consume the
+first. Explicit demux and mux topology makes every legal configuration select
+a distinct software graph. The helper does not imply one shared special-math
+circuit: each genuine sharing relation remains owned by its registered
+implementation family.
+
 ### Payload And Type Floor
 
 Every preset in the initial family uses a 128-bit ordinary PE and
