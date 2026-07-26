@@ -21,6 +21,7 @@ set(LOOM_TEST_DEPENDS
   FileCheck count not
   llvm-objdump
   loom
+  loom-adg
   loom-cc
   loom-lower
   loom-raise

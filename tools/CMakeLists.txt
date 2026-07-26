@@ -1,4 +1,5 @@
 add_subdirectory(loom)
+add_subdirectory(loom-adg)
 add_subdirectory(loom-cc)
 add_subdirectory(loom-lower)
 add_subdirectory(loom-raise)

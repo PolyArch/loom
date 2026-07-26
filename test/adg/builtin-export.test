@@ -1,0 +1,20 @@
+# RUN: rm -rf %t && mkdir -p %t/store
+# RUN: loom-adg --builtin=small --artifact-store=%t/store --output=%t/small > %t/identity
+# RUN: test -s %t/small.mlir
+# RUN: test -s %t/small.html
+# RUN: FileCheck %s --check-prefix=IDENTITY < %t/identity
+# RUN: FileCheck %s --check-prefix=MLIR < %t/small.mlir
+# RUN: FileCheck %s --check-prefix=HTML < %t/small.html
+# RUN: not grep -E 'forceSimulation|dagre\.layout|elk\.layout' %t/small.html
+# RUN: loom-adg --builtin=large --artifact-store=%t/store --output=%t/large > /dev/null
+# RUN: %python -c 'import re; h=open(r"%t/large.html").read(); m=re.search(r"data-view-kind=\"system\"[^>]*viewBox=\"0 0 ([0-9.]+) ([0-9.]+)\"", h); assert m and 0.25 <= float(m[1]) / float(m[2]) <= 4.0'
+
+# IDENTITY: {{^[0-9a-f]{64}$}}
+
+# MLIR: fabric.system
+# MLIR: fabric.system.acc_core
+
+# HTML-DAG: data-layout-engine="loom-layered-v1"
+# HTML-DAG: data-view-kind="system"
+# HTML-DAG: data-view-kind="spatial-core"
+# HTML-DAG: data-entity-kind="fabric.acc_core_occurrence"

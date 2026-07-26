@@ -894,6 +894,19 @@ unfinalized Builder and extend the result through the same typed API, in which
 case the modified output is a custom Fabric target rather than the named
 preset.
 
+The focused `loom-adg` executable exposes this production path during hardware
+development:
+
+```text
+loom-adg --builtin=<small|default|large> \
+  --artifact-store=<existing-directory> --output=<output-base>
+```
+
+It publishes the exact builtin Fabric closure to the supplied ArtifactStore,
+prints the root ArtifactIdentity, and calls the common paired export boundary.
+It is a developer surface over the same library used in-process by the product
+drivers, not a second Fabric generator or an additional product compiler.
+
 Therefore one implementation serves three uses without duplication:
 
 ```text

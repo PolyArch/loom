@@ -30,6 +30,7 @@ config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
+    os.path.join(config.loom_obj_root, "tools", "loom-adg"),
     os.path.join(config.loom_obj_root, "tools", "loom-cc"),
     os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
     os.path.join(config.loom_obj_root, "tools", "loom-tblgen"),
@@ -44,6 +45,7 @@ tool_dirs = [
 ]
 tools = [
     "loom",
+    "loom-adg",
     "loom-tblgen",
     "loom-config-test",
     "loom-adg-builder-api-test",

@@ -124,6 +124,25 @@ Layering computeLayers(const Graph &graph) {
   return result;
 }
 
+void expandCrowdedLayers(Layering &layering, std::size_t nodeCount) {
+  const std::size_t rowLimit = std::max<std::size_t>(
+      4, static_cast<std::size_t>(
+             std::ceil(std::sqrt(static_cast<double>(nodeCount)) * 1.5)));
+
+  std::vector<std::vector<std::size_t>> expanded;
+  expanded.reserve(layering.nodesByLayer.size());
+  for (const auto &layer : layering.nodesByLayer) {
+    for (std::size_t offset = 0; offset < layer.size(); offset += rowLimit) {
+      const std::size_t end = std::min(layer.size(), offset + rowLimit);
+      const std::size_t newLayer = expanded.size();
+      expanded.emplace_back(layer.begin() + offset, layer.begin() + end);
+      for (std::size_t node : expanded.back())
+        layering.layerByNode[node] = newLayer;
+    }
+  }
+  layering.nodesByLayer = std::move(expanded);
+}
+
 void reduceCrossings(const Graph &graph, Layering &layering) {
   const std::size_t count = graph.nodes.size();
   std::vector<std::vector<std::size_t>> incoming(count), outgoing(count);
@@ -211,6 +230,7 @@ void computeLayeredLayout(Graph &graph) {
   }
 
   Layering layering = computeLayers(graph);
+  expandCrowdedLayers(layering, graph.nodes.size());
   reduceCrossings(graph, layering);
 
   std::map<std::pair<std::size_t, std::size_t>, std::size_t> adjacentCounts;
