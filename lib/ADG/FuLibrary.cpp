@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -155,7 +156,11 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     }
   }
 
-  std::vector<std::vector<FuValue>> routed(inputs.size());
+  struct RoutedInput {
+    std::optional<FuNode> selector;
+    std::vector<FuValue> values;
+  };
+  std::vector<RoutedInput> routed(inputs.size());
   for (std::size_t role = 0; role != inputs.size(); ++role) {
     auto input = fu->input(role);
     if (!input)
@@ -163,33 +168,56 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     if (useCounts[role] == 0)
       return invalid("FU boundary contains an unused input role");
     if (useCounts[role] == 1) {
-      routed[role].push_back(*input);
+      routed[role].values.push_back(*input);
       continue;
     }
     auto demux = fu->addDemux(*input, useCounts[role]);
     if (!demux)
       return demux.takeError();
-    routed[role] = std::move(*demux);
+    routed[role].selector = *demux;
+    for (std::uint32_t output = 0; output < useCounts[role]; ++output) {
+      auto value = demux->output(output);
+      if (!value)
+        return value.takeError();
+      routed[role].values.push_back(*value);
+    }
   }
 
+  struct BuiltResource {
+    FuNode operation;
+    std::vector<FuRouteSelection> routes;
+  };
+  struct OutputSource {
+    FuValue value;
+    std::size_t resourceOrdinal = 0;
+  };
   std::vector<std::uint32_t> nextRoute(inputs.size(), 0);
-  std::vector<std::vector<FuValue>> outputSources(outerOutputTypes.size());
-  for (const RoutedResource &resource : resources) {
+  std::vector<std::vector<OutputSource>> outputSources(outerOutputTypes.size());
+  std::vector<BuiltResource> builtResources;
+  builtResources.reserve(resources.size());
+  for (auto [resourceOrdinal, resource] : llvm::enumerate(resources)) {
     llvm::SmallVector<FuValue, 8> operationInputs;
-    for (std::uint32_t role : resource.inputRoles)
-      operationInputs.push_back(routed[role][nextRoute[role]++]);
-    auto operationResults = fu->addOperation(
+    std::vector<FuRouteSelection> routes;
+    for (std::uint32_t role : resource.inputRoles) {
+      const std::uint32_t route = nextRoute[role]++;
+      operationInputs.push_back(routed[role].values[route]);
+      if (routed[role].selector)
+        routes.push_back({*routed[role].selector, route});
+    }
+    auto operation = fu->addOperation(
         operationInputs,
         OperationCapabilitySpec{resource.family, resource.parameters,
                                 familyMembers(resource.family),
                                 resource.resultTypes});
-    if (!operationResults)
-      return operationResults.takeError();
-    if (operationResults->size() != resource.outputRoles.size())
-      return invalid("routed resource produced an unexpected result count");
-    for (auto [result, role] :
-         llvm::zip(*operationResults, resource.outputRoles))
-      outputSources[role].push_back(result);
+    if (!operation)
+      return operation.takeError();
+    for (auto [resultOrdinal, role] : llvm::enumerate(resource.outputRoles)) {
+      auto result = operation->output(resultOrdinal);
+      if (!result)
+        return result.takeError();
+      outputSources[role].push_back({*result, resourceOrdinal});
+    }
+    builtResources.push_back({*operation, std::move(routes)});
   }
 
   std::vector<FuValue> outputs;
@@ -198,14 +226,28 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     if (sources.empty() || producerCounts[role] != sources.size())
       return invalid("FU output role has no complete physical producer set");
     if (sources.size() == 1) {
-      outputs.push_back(sources.front());
+      outputs.push_back(sources.front().value);
       continue;
     }
-    auto selected = fu->addMux(sources);
+    llvm::SmallVector<FuValue, 8> values;
+    for (const OutputSource &source : sources)
+      values.push_back(source.value);
+    auto mux = fu->addMux(values);
+    if (!mux)
+      return mux.takeError();
+    auto selected = mux->output(0);
     if (!selected)
       return selected.takeError();
     outputs.push_back(*selected);
+    for (auto [route, source] : llvm::enumerate(sources))
+      builtResources[source.resourceOrdinal].routes.push_back(
+          {*mux, static_cast<std::uint32_t>(route)});
   }
+
+  for (BuiltResource &resource : builtResources)
+    if (llvm::Error error = fu->addCapabilityTemplate(
+            FuCapabilityTemplateSpec{{resource.operation}, resource.routes}))
+      return error;
   return fu->close(outputs);
 }
 

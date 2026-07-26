@@ -1670,6 +1670,9 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
   if (llvm::Error error = reorderCanonicalGraphRegions(
           clonedRoot, labeling->canonicalOperationOrder))
     return std::move(error);
+  if (llvm::Error error =
+          detail::materializeFabricCanonicalFuCapabilityDomains(*labeling))
+    return std::move(error);
   auto reordered = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
   if (!reordered)
     return reordered.takeError();

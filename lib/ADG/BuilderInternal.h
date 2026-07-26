@@ -33,12 +33,18 @@ struct PeState final {
   bool closed = false;
 };
 
+struct FuCapabilityTemplateDraft final {
+  std::vector<mlir::Operation *> activeOperations;
+  std::vector<std::pair<mlir::Operation *, std::uint32_t>> routes;
+};
+
 struct FuState final {
   ::fabric::FuOp operation;
   std::size_t rootOrdinal = 0;
   std::size_t peOrdinal = 0;
   bool closed = false;
   std::vector<mlir::Operation *> unresolvedBackedges;
+  std::vector<FuCapabilityTemplateDraft> capabilityTemplates;
 };
 
 struct ImportedModuleBoundary final {

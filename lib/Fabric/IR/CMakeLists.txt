@@ -1,4 +1,5 @@
 add_subdirectory(BoundaryDataPath)
+add_subdirectory(FuCapabilityDomain)
 add_subdirectory(MemoryCapabilityDomains)
 add_subdirectory(MemoryPortTransaction)
 add_subdirectory(MemoryOperationPort)
@@ -60,6 +61,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricElaboration.cpp
+  FabricFuCapabilityAttrs.cpp
   FabricInstantiateOp.cpp
   FabricMemoryAttrs.cpp
   FabricMemOp.cpp
@@ -85,6 +87,7 @@ add_mlir_dialect_library(MLIRFabric
   LINK_LIBS PUBLIC
   LoomCommon
   LoomFabricBoundaryDataPath
+  LoomFabricFuCapabilityDomain
   LoomFabricHardwareDomainContracts
   LoomFabricImplementationFamily
   LoomFabricMemoryOperationPort

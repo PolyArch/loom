@@ -52,7 +52,7 @@ class Deriver {
 public:
   Deriver(::fabric::FuOp fu, FabricFuTemplateRef owner,
           llvm::ArrayRef<Operation *> canonicalNodeOrder)
-      : fu_(fu), owner_(owner) {
+      : fu_(fu), owner_(owner), canonicalNodeOrder_(canonicalNodeOrder) {
     for (auto [ordinal, operation] : llvm::enumerate(canonicalNodeOrder)) {
       nodeRefs_.try_emplace(
           operation,
@@ -110,6 +110,76 @@ public:
       records.push_back(std::move(keyed[index].second));
     }
     return normalizeFabricFuCapabilityTemplateInventory(records);
+  }
+
+  llvm::Expected<FabricFuCapabilityTemplateRecord>
+  run(const ::fabric::FuCapabilityTemplateSelection &selection) {
+    constrained_ = true;
+    DerivationState initial;
+
+    for (std::uint64_t ordinal : selection.activeOperationNodeOrdinals) {
+      if (ordinal >= canonicalNodeOrder_.size())
+        return invalid("names an active operation outside the FU node domain");
+      Operation *operation = canonicalNodeOrder_[ordinal];
+      if (!isa<::fabric::OpOp>(operation))
+        return invalid("names a non-operation as an active operation");
+      declaredOperations_.insert(operation);
+    }
+
+    for (const ::fabric::FuCapabilityRouteSelection &route : selection.routes) {
+      if (route.selectorNodeOrdinal >= canonicalNodeOrder_.size())
+        return invalid("names a selector outside the FU node domain");
+      Operation *selector = canonicalNodeOrder_[route.selectorNodeOrdinal];
+      if (auto mux = dyn_cast<::fabric::MuxOp>(selector)) {
+        if (route.selectedPort >= mux.getInputs().size())
+          return invalid("selects a mux input outside its port domain");
+        initial.muxSelections[selector] = route.selectedPort;
+      } else if (auto demux = dyn_cast<::fabric::DemuxOp>(selector)) {
+        if (route.selectedPort >= demux.getOutputs().size())
+          return invalid("selects a demux output outside its port domain");
+        initial.demuxSelections[selector] = route.selectedPort;
+      } else {
+        return invalid("names a non-selector as a route selection");
+      }
+      declaredSelectors_.insert(selector);
+    }
+
+    StateList states{std::move(initial)};
+    for (std::uint64_t ordinal : selection.activeOperationNodeOrdinals) {
+      Operation *operation = canonicalNodeOrder_[ordinal];
+      states = expand(std::move(states), [&](DerivationState state) {
+        return activateNode(std::move(state), operation);
+      });
+    }
+    if (failed_)
+      return invalid(failure_);
+    if (states.size() != 1)
+      return invalid(states.empty()
+                         ? "row does not materialize a complete physical graph"
+                         : "row materializes more than one physical graph");
+
+    DerivationState &state = states.front();
+    for (Operation *operation : state.activeNodes) {
+      if (isa<::fabric::OpOp>(operation) &&
+          !declaredOperations_.contains(operation))
+        return invalid("activates an operation absent from its row");
+      if (isa<::fabric::MuxOp, ::fabric::DemuxOp>(operation) &&
+          !declaredSelectors_.contains(operation))
+        return invalid("activates a selector absent from its row");
+    }
+    for (Operation *operation : declaredOperations_)
+      if (!state.activeNodes.contains(operation))
+        return invalid("declares an operation absent from its physical graph");
+    for (Operation *selector : declaredSelectors_)
+      if (!state.activeNodes.contains(selector))
+        return invalid("declares an unused selector route");
+
+    FabricFuCapabilityTemplateRecord record;
+    record.activeNodes.reserve(state.activeNodes.size());
+    for (Operation *active : state.activeNodes)
+      record.activeNodes.push_back(nodeRefs_.lookup(active));
+    record.activeEdges = std::move(state.edges);
+    return normalizeFabricFuCapabilityTemplateRecord(std::move(record));
   }
 
 private:
@@ -170,6 +240,10 @@ private:
         const unsigned input = selected->second;
         return selectMuxInput(std::move(state), mux, input);
       }
+      if (constrained_) {
+        fail("reaches a mux without a selected input");
+        return {};
+      }
       StateList result;
       for (unsigned input = 0; input < mux.getInputs().size(); ++input)
         append(result, selectMuxInput(state, mux, input));
@@ -180,6 +254,10 @@ private:
       if (selected != state.demuxSelections.end()) {
         const unsigned output = selected->second;
         return selectDemuxOutput(std::move(state), demux, output);
+      }
+      if (constrained_) {
+        fail("reaches a demux without a selected output");
+        return {};
       }
       StateList result;
       for (unsigned output = 0; output < demux.getOutputs().size(); ++output) {
@@ -304,6 +382,9 @@ private:
             return edge.source == *source;
           });
 
+      if (constrained_)
+        return hasConsumer ? StateList{std::move(current)} : StateList{};
+
       llvm::SmallVector<std::pair<::fabric::MuxOp, unsigned>, 4> optional;
       for (OpOperand &use : value.getUses()) {
         auto mux = dyn_cast<::fabric::MuxOp>(use.getOwner());
@@ -357,18 +438,151 @@ private:
 
   ::fabric::FuOp fu_;
   FabricFuTemplateRef owner_;
+  llvm::ArrayRef<Operation *> canonicalNodeOrder_;
   llvm::DenseMap<Operation *, FabricFuTemplateNodeRef> nodeRefs_;
+  llvm::DenseSet<Operation *> declaredOperations_;
+  llvm::DenseSet<Operation *> declaredSelectors_;
+  bool constrained_ = false;
   bool failed_ = false;
   std::string failure_;
 };
 
+std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr attribute) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(attribute.size());
+  for (std::int8_t byte : attribute.asArrayRef())
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  return bytes;
+}
+
+llvm::Expected<::fabric::FuCapabilityTemplateSelection>
+projectSingletonDomain(const FabricFuCapabilityTemplateRecord &record) {
+  ::fabric::FuCapabilityTemplateSelection selection;
+  for (const FabricFuTemplateNodeRef &node : record.activeNodes) {
+    if (node.node == FabricFuNodeKind::Op) {
+      selection.activeOperationNodeOrdinals.push_back(node.ordinal);
+      continue;
+    }
+
+    std::optional<FabricOrdinal> selectedPort;
+    for (const FabricFuCapabilityTemplateEdge &edge : record.activeEdges) {
+      const FabricFuCapabilityTemplateEndpointRef &endpoint =
+          node.node == FabricFuNodeKind::Mux ? edge.destination : edge.source;
+      auto *port = std::get_if<FabricFuNodePortRef>(&endpoint.payload);
+      if (!port || port->node != node)
+        continue;
+      const FabricPortDirection expected = node.node == FabricFuNodeKind::Mux
+                                               ? FabricPortDirection::Input
+                                               : FabricPortDirection::Output;
+      if (port->direction != expected)
+        continue;
+      if (selectedPort)
+        return invalid("singleton projection found multiple selector choices");
+      selectedPort = port->ordinal;
+    }
+    if (!selectedPort)
+      return invalid("singleton projection found no selector choice");
+    selection.routes.push_back({node.ordinal, *selectedPort});
+  }
+  return selection;
+}
+
 } // namespace
+
+llvm::Expected<::fabric::FuCapabilityDomainRecord>
+canonicalizeFabricFuCapabilityDomain(
+    ::fabric::FuOp fu, llvm::ArrayRef<Operation *> canonicalNodeOrder) {
+  llvm::SmallVector<Operation *, 16> authoringNodeOrder;
+  for (Operation &operation : fu.getBody().front().without_terminator())
+    if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+      authoringNodeOrder.push_back(&operation);
+
+  if (authoringNodeOrder.size() != canonicalNodeOrder.size())
+    return invalid("canonical FU node domain has the wrong size");
+  llvm::DenseMap<Operation *, std::uint64_t> canonicalOrdinal;
+  for (auto [ordinal, operation] : llvm::enumerate(canonicalNodeOrder)) {
+    if (!operation || !llvm::is_contained(authoringNodeOrder, operation))
+      return invalid("canonical FU node domain contains a foreign node");
+    if (!canonicalOrdinal.try_emplace(operation, ordinal).second)
+      return invalid("canonical FU node domain repeats a node");
+  }
+
+  ::fabric::FuCapabilityDomainAttr attribute = fu.getCapabilityTemplatesAttr();
+  if (!attribute) {
+    auto inferred =
+        Deriver(fu, FabricFuTemplateRef(0), canonicalNodeOrder).run();
+    if (!inferred)
+      return inferred.takeError();
+    if (inferred->size() != 1)
+      return invalid(
+          "a multi-template FU requires an explicit capability domain");
+    auto selection = projectSingletonDomain(inferred->front());
+    if (!selection)
+      return selection.takeError();
+    return ::fabric::FuCapabilityDomainRecord::create({std::move(*selection)});
+  }
+
+  auto decoded = ::fabric::decodeFuCapabilityDomainRecord(
+      unsignedBytes(attribute.getRecord()));
+  if (!decoded)
+    return decoded.takeError();
+
+  std::vector<::fabric::FuCapabilityTemplateSelection> remapped;
+  remapped.reserve(decoded->templates().size());
+  for (const ::fabric::FuCapabilityTemplateSelection &source :
+       decoded->templates()) {
+    ::fabric::FuCapabilityTemplateSelection destination;
+    destination.activeOperationNodeOrdinals.reserve(
+        source.activeOperationNodeOrdinals.size());
+    for (std::uint64_t ordinal : source.activeOperationNodeOrdinals) {
+      if (ordinal >= authoringNodeOrder.size())
+        return invalid("capability domain names an unknown operation node");
+      Operation *operation = authoringNodeOrder[ordinal];
+      if (!isa<::fabric::OpOp>(operation))
+        return invalid("capability domain activates a non-operation node");
+      destination.activeOperationNodeOrdinals.push_back(
+          canonicalOrdinal.lookup(operation));
+    }
+    destination.routes.reserve(source.routes.size());
+    for (const ::fabric::FuCapabilityRouteSelection &route : source.routes) {
+      if (route.selectorNodeOrdinal >= authoringNodeOrder.size())
+        return invalid("capability domain names an unknown selector node");
+      Operation *selector = authoringNodeOrder[route.selectorNodeOrdinal];
+      if (auto mux = dyn_cast<::fabric::MuxOp>(selector)) {
+        if (route.selectedPort >= mux.getInputs().size())
+          return invalid("capability domain selects an unknown mux input");
+      } else if (auto demux = dyn_cast<::fabric::DemuxOp>(selector)) {
+        if (route.selectedPort >= demux.getOutputs().size())
+          return invalid("capability domain selects an unknown demux output");
+      } else {
+        return invalid("capability domain route names a non-selector node");
+      }
+      destination.routes.push_back(
+          {canonicalOrdinal.lookup(selector), route.selectedPort});
+    }
+    remapped.push_back(std::move(destination));
+  }
+  return ::fabric::FuCapabilityDomainRecord::create(std::move(remapped));
+}
 
 llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
 deriveFabricFuCapabilityTemplates(
     ::fabric::FuOp fu, FabricFuTemplateRef owner,
     llvm::ArrayRef<Operation *> canonicalNodeOrder) {
-  return Deriver(fu, owner, canonicalNodeOrder).run();
+  auto domain = canonicalizeFabricFuCapabilityDomain(fu, canonicalNodeOrder);
+  if (!domain)
+    return domain.takeError();
+
+  std::vector<FabricFuCapabilityTemplateRecord> records;
+  records.reserve(domain->templates().size());
+  for (const ::fabric::FuCapabilityTemplateSelection &selection :
+       domain->templates()) {
+    auto record = Deriver(fu, owner, canonicalNodeOrder).run(selection);
+    if (!record)
+      return record.takeError();
+    records.push_back(std::move(*record));
+  }
+  return normalizeFabricFuCapabilityTemplateInventory(records);
 }
 
 } // namespace loom::fabric::detail

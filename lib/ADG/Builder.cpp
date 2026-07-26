@@ -6,6 +6,7 @@
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/FuCapabilityDomain.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -14,6 +15,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Verifier.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
 
@@ -303,6 +305,33 @@ FuBuilder::resolveValue(const std::shared_ptr<detail::DesignState> &state,
   return value.value_;
 }
 
+llvm::Expected<mlir::Operation *>
+FuBuilder::resolveNode(const std::shared_ptr<detail::DesignState> &state,
+                       const FuNode &node) const {
+  std::shared_ptr<detail::DesignState> nodeState = node.state_.lock();
+  if (!nodeState || nodeState.get() != state.get() ||
+      node.rootOrdinal_ != rootOrdinal_ || node.peOrdinal_ != peOrdinal_ ||
+      node.fuOrdinal_ != fuOrdinal_ || !node.operation_)
+    return invalid("foreign FuNode cannot cross FU owners");
+  return node.operation_;
+}
+
+llvm::Expected<FuValue> FuNode::output(std::size_t ordinal) const {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto fu = activeFu(*state, rootOrdinal_, peOrdinal_, fuOrdinal_);
+  if (!fu)
+    return fu.takeError();
+  if ((*fu)->closed)
+    return invalid("FU is already closed");
+  if (!operation_ || operation_->getParentOp() != (*fu)->operation ||
+      ordinal >= operation_->getNumResults())
+    return invalid("FU node output ordinal is out of range");
+  return FuValue(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
+                 operation_->getResult(ordinal));
+}
+
 llvm::Expected<FuValue> FuBuilder::input(std::size_t ordinal) const {
   auto state = activeState(state_);
   if (!state)
@@ -379,7 +408,7 @@ llvm::Error FuBuilder::resolveBackedge(FuBackedge &&backedge, FuValue source) {
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<FuValue>>
+llvm::Expected<FuNode>
 FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
                         const OperationCapabilitySpec &spec) {
   auto state = activeState(state_);
@@ -441,15 +470,11 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
   if (llvm::Error error = verifyNewOperation(operation, "operation capability"))
     return std::move(error);
 
-  std::vector<FuValue> results;
-  results.reserve(operation.getNumResults());
-  for (mlir::Value result : operation.getResults())
-    results.push_back(
-        FuValue(*state, rootOrdinal_, peOrdinal_, fuOrdinal_, result));
-  return results;
+  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
+                operation.getOperation());
 }
 
-llvm::Expected<FuValue> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
+llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -481,11 +506,12 @@ llvm::Expected<FuValue> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
                                      mlir::BoolAttr(), mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(mux, "FU mux"))
     return std::move(error);
-  return FuValue(*state, rootOrdinal_, peOrdinal_, fuOrdinal_, mux.getOutput());
+  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
+                mux.getOperation());
 }
 
-llvm::Expected<std::vector<FuValue>>
-FuBuilder::addDemux(FuValue input, std::uint32_t outputCount) {
+llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
+                                           std::uint32_t outputCount) {
   auto state = activeState(state_);
   if (!state)
     return state.takeError();
@@ -512,12 +538,53 @@ FuBuilder::addDemux(FuValue input, std::uint32_t outputCount) {
   if (llvm::Error error = verifyNewOperation(demux, "FU demux"))
     return std::move(error);
 
-  std::vector<FuValue> results;
-  results.reserve(demux.getNumResults());
-  for (mlir::Value result : demux.getResults())
-    results.push_back(
-        FuValue(*state, rootOrdinal_, peOrdinal_, fuOrdinal_, result));
-  return results;
+  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
+                demux.getOperation());
+}
+
+llvm::Error
+FuBuilder::addCapabilityTemplate(const FuCapabilityTemplateSpec &spec) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto fu = activeFu(*state, rootOrdinal_, peOrdinal_, fuOrdinal_);
+  if (!fu)
+    return fu.takeError();
+  if ((*fu)->closed)
+    return invalid("FU is already closed");
+  if (spec.activeOperations.empty())
+    return invalid("FU capability template requires an active operation");
+
+  detail::FuCapabilityTemplateDraft draft;
+  draft.activeOperations.reserve(spec.activeOperations.size());
+  for (const FuNode &node : spec.activeOperations) {
+    auto operation = resolveNode(*state, node);
+    if (!operation)
+      return operation.takeError();
+    if (!mlir::isa<::fabric::OpOp>(*operation))
+      return invalid("FU capability activation must name fabric.op");
+    draft.activeOperations.push_back(*operation);
+  }
+
+  draft.routes.reserve(spec.routes.size());
+  for (const FuRouteSelection &selection : spec.routes) {
+    auto operation = resolveNode(*state, selection.selector);
+    if (!operation)
+      return operation.takeError();
+    if (auto mux = mlir::dyn_cast<::fabric::MuxOp>(*operation)) {
+      if (selection.selectedPort >= mux.getInputs().size())
+        return invalid("FU capability mux input ordinal is out of range");
+    } else if (auto demux = mlir::dyn_cast<::fabric::DemuxOp>(*operation)) {
+      if (selection.selectedPort >= demux.getOutputs().size())
+        return invalid("FU capability demux output ordinal is out of range");
+    } else {
+      return invalid(
+          "FU capability route must name fabric.mux or fabric.demux");
+    }
+    draft.routes.emplace_back(*operation, selection.selectedPort);
+  }
+  (*fu)->capabilityTemplates.push_back(std::move(draft));
+  return llvm::Error::success();
 }
 
 llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
@@ -533,6 +600,50 @@ llvm::Error FuBuilder::close(llvm::ArrayRef<FuValue> outputs) {
     return invalid("FU contains an unresolved backedge");
   if (outputs.size() != (*fu)->operation.getNumResults())
     return invalid("FU output count does not match its declaration");
+
+  if (!(*fu)->capabilityTemplates.empty()) {
+    llvm::DenseMap<mlir::Operation *, std::uint64_t> nodeOrdinals;
+    std::uint64_t nextNode = 0;
+    for (mlir::Operation &operation : (*fu)->operation.getBody().front())
+      if (mlir::isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+              operation))
+        nodeOrdinals[&operation] = nextNode++;
+
+    std::vector<::fabric::FuCapabilityTemplateSelection> selections;
+    selections.reserve((*fu)->capabilityTemplates.size());
+    for (const detail::FuCapabilityTemplateDraft &draft :
+         (*fu)->capabilityTemplates) {
+      ::fabric::FuCapabilityTemplateSelection selection;
+      for (mlir::Operation *operation : draft.activeOperations) {
+        auto found = nodeOrdinals.find(operation);
+        if (found == nodeOrdinals.end())
+          return invalid("FU capability operation is absent from its body");
+        selection.activeOperationNodeOrdinals.push_back(found->second);
+      }
+      for (const auto &[operation, selectedPort] : draft.routes) {
+        auto found = nodeOrdinals.find(operation);
+        if (found == nodeOrdinals.end())
+          return invalid("FU capability selector is absent from its body");
+        selection.routes.push_back({found->second, selectedPort});
+      }
+      selections.push_back(std::move(selection));
+    }
+    auto domain =
+        ::fabric::FuCapabilityDomainRecord::create(std::move(selections));
+    if (!domain)
+      return domain.takeError();
+    auto bytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
+    if (!bytes)
+      return bytes.takeError();
+    std::vector<std::int8_t> signedBytes;
+    signedBytes.reserve(bytes->size());
+    for (std::uint8_t byte : *bytes)
+      signedBytes.push_back(static_cast<std::int8_t>(byte));
+    (*fu)->operation.setCapabilityTemplatesAttr(
+        ::fabric::FuCapabilityDomainAttr::get(
+            &(*state)->context,
+            mlir::DenseI8ArrayAttr::get(&(*state)->context, signedBytes)));
+  }
 
   llvm::SmallVector<mlir::Value, 4> values;
   llvm::SmallVector<mlir::Attribute, 4> declaredTypes;
@@ -643,9 +754,9 @@ llvm::Expected<FuBuilder> PeBuilder::addFu(llvm::ArrayRef<PeValue> inputs,
 
   mlir::OpBuilder builder(&(*state)->context);
   builder.setInsertionPointToEnd(&(*pe)->operation.getBody().front());
-  auto operation =
-      ::fabric::FuOp::create(builder, (*pe)->operation.getLoc(), outputTypes,
-                             mlir::StringAttr(), mlir::TypeAttr(), values);
+  auto operation = ::fabric::FuOp::create(
+      builder, (*pe)->operation.getLoc(), outputTypes, mlir::StringAttr(),
+      mlir::TypeAttr(), ::fabric::FuCapabilityDomainAttr(), values);
   mlir::Block *body = new mlir::Block();
   operation.getBody().push_back(body);
   for (mlir::Type type : innerInputTypes)
@@ -653,7 +764,7 @@ llvm::Expected<FuBuilder> PeBuilder::addFu(llvm::ArrayRef<PeValue> inputs,
 
   const std::size_t ordinal = (*state)->fus.size();
   (*state)->fus.push_back(
-      detail::FuState{operation, rootOrdinal_, peOrdinal_, false, {}});
+      detail::FuState{operation, rootOrdinal_, peOrdinal_, false, {}, {}});
   return FuBuilder(*state, rootOrdinal_, peOrdinal_, ordinal);
 }
 

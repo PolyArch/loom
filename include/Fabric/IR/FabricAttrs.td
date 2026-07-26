@@ -23,6 +23,14 @@ def Fabric_EntityIdAttr : Fabric_Attr<"EntityId", "entity_id"> {
   let assemblyFormat = "`<` $id `>`";
 }
 
+def Fabric_FuCapabilityDomainAttr
+    : Fabric_Attr<"FuCapabilityDomain", "fu_capability_domain"> {
+  let summary = "canonical correlated fabric.fu capability-template domain";
+  let parameters = (ins "::mlir::DenseI8ArrayAttr":$record);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def Fabric_MemoryServiceContractAttr
     : Fabric_Attr<"MemoryServiceContract", "memory_service_contract"> {
   let summary = "canonical typed memory service contract record";

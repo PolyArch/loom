@@ -9,6 +9,7 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/FuCapabilityDomain.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -145,6 +146,21 @@ std::string denseI8Assembly(llvm::ArrayRef<std::uint8_t> bytes) {
   llvm::raw_string_ostream stream(text);
   mlir::DenseI8ArrayAttr::get(&context(), signedBytes).print(stream);
   return text;
+}
+
+void setFuCapabilityDomain(
+    llvm::StringRef test, ::fabric::FuOp fu,
+    std::vector<::fabric::FuCapabilityTemplateSelection> selections) {
+  auto domain = take(
+      test, ::fabric::FuCapabilityDomainRecord::create(std::move(selections)));
+  std::vector<std::uint8_t> bytes =
+      take(test, ::fabric::encodeFuCapabilityDomainRecord(domain));
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
+      &context(), mlir::DenseI8ArrayAttr::get(&context(), signedBytes)));
 }
 
 ::fabric::ResourceContract instructionContextContract(llvm::StringRef test) {
@@ -670,6 +686,16 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
       }
     }
   )mlir");
+  expectRejected(
+      test, loom::fabric::finalizeFabricRoot(root(test, *branchSource), store),
+      "multi-template FU requires an explicit capability domain");
+  ::fabric::FuOp branchFuOp;
+  branchSource->walk([&](::fabric::FuOp fu) { branchFuOp = fu; });
+  require(test, static_cast<bool>(branchFuOp),
+          "branch fixture has no fabric.fu");
+  setFuCapabilityDomain(
+      test, branchFuOp,
+      {{{2}, {{0, 0}, {1, 0}, {4, 0}}}, {{3}, {{0, 1}, {1, 1}, {4, 1}}}});
   FinalizedFabricRoot branch = take(
       test, loom::fabric::finalizeFabricRoot(root(test, *branchSource), store));
   const loom::fabric::FabricFuTemplateRef branchFu =
@@ -699,6 +725,12 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
   require(test,
           imported.view().fuCapabilityTemplates(branchFu) == branchTemplates,
           "strict import changed the FU capability-template inventory");
+
+  setFuCapabilityDomain(test, branchFuOp, {{{2}, {{0, 0}, {1, 0}, {4, 0}}}});
+  FinalizedFabricRoot narrowed = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *branchSource), store));
+  require(test, narrowed.reference().artifact != branch.reference().artifact,
+          "FU capability-domain change did not change Fabric identity");
 }
 
 void systemPublicationUsesExactImportedModule() {

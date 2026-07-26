@@ -84,7 +84,9 @@ private:
 using loom::adg::BoundarySpec;
 using loom::adg::DesignBuilder;
 using loom::adg::FifoSpec;
+using loom::adg::FuCapabilityTemplateSpec;
 using loom::adg::FuConfigurationMode;
+using loom::adg::FuRouteSelection;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
 using loom::adg::LocalMemoryServiceSpec;
@@ -521,23 +523,32 @@ void typedPeFuGraphsFinalize() {
                                  FuSpec{{bits32, bits32}, {bits32}}));
   FuValue fuA = take(test, spatialFu.input(0));
   FuValue fuB = take(test, spatialFu.input(1));
-  auto aLanes = take(test, spatialFu.addDemux(fuA, 2));
-  auto bLanes = take(test, spatialFu.addDemux(fuB, 2));
-  auto sum =
-      take(test, spatialFu.addOperation(
-                     {aLanes[0], bLanes[0]},
-                     integerCapability(
-                         ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
-                         ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  auto aRoutes = take(test, spatialFu.addDemux(fuA, 2));
+  auto bRoutes = take(test, spatialFu.addDemux(fuB, 2));
+  auto sum = take(
+      test, spatialFu.addOperation(
+                {take(test, aRoutes.output(0)), take(test, bRoutes.output(0))},
+                integerCapability(
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::dataflow::OperationSchemaId::ArithAddI, bits32)));
   auto product = take(
       test, spatialFu.addOperation(
-                {aLanes[1], bLanes[1]},
+                {take(test, aRoutes.output(1)), take(test, bRoutes.output(1))},
                 integerCapability(
                     ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
                     ::dataflow::OperationSchemaId::ArithMulI, bits32)));
-  FuValue selected =
-      take(test, spatialFu.addMux({sum.front(), product.front()}));
-  if (llvm::Error error = spatialFu.close({selected}))
+  auto resultMux =
+      take(test, spatialFu.addMux({take(test, sum.output(0)),
+                                   take(test, product.output(0))}));
+  if (llvm::Error error =
+          spatialFu.addCapabilityTemplate(FuCapabilityTemplateSpec{
+              {sum}, {{aRoutes, 0}, {bRoutes, 0}, {resultMux, 0}}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          spatialFu.addCapabilityTemplate(FuCapabilityTemplateSpec{
+              {product}, {{aRoutes, 1}, {bRoutes, 1}, {resultMux, 1}}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatialFu.close({take(test, resultMux.output(0))}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = spatialPe.close())
     fail(test, llvm::toString(std::move(error)));
@@ -566,7 +577,10 @@ void typedPeFuGraphsFinalize() {
           integerCapability(
               ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
               ::dataflow::OperationSchemaId::ArithAddI, bits32)));
-  if (llvm::Error error = temporalFu.close({temporalSum.front()}))
+  if (llvm::Error error = temporalFu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{temporalSum}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = temporalFu.close({take(test, temporalSum.output(0))}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = temporalPe.close())
     fail(test, llvm::toString(std::move(error)));
@@ -614,6 +628,60 @@ void typedPeFuGraphsFinalize() {
               exportedHtml.get()->getBuffer().contains("ScalarIntegerAddSub") &&
               exportedHtml.get()->getBuffer().contains("ScalarIntegerMultiply"),
           "Fabric HTML did not expose the configured FU graph details");
+}
+
+void fuCapabilityRowsCorrelateRoutes() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  auto spatial =
+      take(test, design.createSpatialCore("correlated-fu", {bits32, bits32},
+                                          {bits32, bits32}));
+  auto pe = take(
+      test, spatial.addPe(
+                {take(test, spatial.input(0)), take(test, spatial.input(1))},
+                PeSpec::spatial({bits32, bits32}, {bits32, bits32})));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          FuSpec{{bits32, bits32}, {bits32, bits32}}));
+
+  auto inputMux =
+      take(test, fu.addMux({take(test, fu.input(0)), take(test, fu.input(1))}));
+  auto add =
+      take(test,
+           fu.addOperation(
+               {take(test, inputMux.output(0)), take(test, inputMux.output(0))},
+               integerCapability(
+                   ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                   ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  auto outputDemux = take(test, fu.addDemux(take(test, add.output(0)), 2));
+
+  if (llvm::Error error = fu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{add}, {{inputMux, 0}, {outputDemux, 0}}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{add}, {{inputMux, 1}, {outputDemux, 1}}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({take(test, outputDemux.output(0)),
+                                    take(test, outputDemux.output(1))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          spatial.close({take(test, pe.output(0)), take(test, pe.output(1))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  auto templates = finalized.roots().front().view().fuCapabilityTemplates(
+      uniqueFuTemplate(test, finalized.roots().front().view()));
+  require(test, templates.size() == 2,
+          "correlated FU routes admitted a selector Cartesian product");
+  for (const auto &record : templates)
+    require(test, record.activeNodes.size() == 3,
+            "correlated FU template omitted a selected physical node");
 }
 
 void typedMemoryFormsFinalize() {
@@ -798,9 +866,13 @@ void fuBackedgesAreExplicitAndResolved() {
                       integerCapability(
                           ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                           ::dataflow::OperationSchemaId::ArithAddI, bits32)));
-  if (llvm::Error error = fu.resolveBackedge(std::move(backedge), sum.front()))
+  FuValue sumValue = take(test, sum.output(0));
+  if (llvm::Error error = fu.resolveBackedge(std::move(backedge), sumValue))
     fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error = fu.close({sum.front()}))
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{sum}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({sumValue}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = pe.close())
     fail(test, llvm::toString(std::move(error)));
@@ -1040,6 +1112,7 @@ int main() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
   typedPeFuGraphsFinalize();
+  fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
   publicFuLibraryBuildsTypedGraphs();
   fuBackedgesAreExplicitAndResolved();

@@ -35,6 +35,7 @@ struct SystemHandleAccess;
 } // namespace detail
 
 class FuBuilder;
+class FuNode;
 class PeBuilder;
 class HardwareDomainBuilder;
 class ServiceTransformBuilder;
@@ -132,6 +133,32 @@ private:
   mlir::Value value_;
 
   friend class FuBuilder;
+  friend class FuNode;
+};
+
+/// An owner-checked physical node in one FU graph. Values are addressed by
+/// ordered output port; the handle also names operation activation or one
+/// static mux/demux route in an FU capability-template row.
+class FuNode final {
+public:
+  FuNode() = default;
+
+  llvm::Expected<FuValue> output(std::size_t ordinal) const;
+
+private:
+  FuNode(const std::shared_ptr<detail::DesignState> &state,
+         std::size_t rootOrdinal, std::size_t peOrdinal, std::size_t fuOrdinal,
+         mlir::Operation *operation)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        fuOrdinal_(fuOrdinal), operation_(operation) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t peOrdinal_ = 0;
+  std::size_t fuOrdinal_ = 0;
+  mlir::Operation *operation_ = nullptr;
+
+  friend class FuBuilder;
 };
 
 /// A move-only placeholder for one FU-local feedback edge. The placeholder
@@ -216,6 +243,21 @@ struct OperationCapabilitySpec final {
   ::fabric::FamilyCapabilityParams hardwareParameters;
   std::vector<::dataflow::OperationSchemaId> enabledOperations;
   std::vector<PortType> outputTypes;
+};
+
+/// One static route selected in a coherent FU capability-template row.
+/// selectedPort is a mux input ordinal or demux output ordinal.
+struct FuRouteSelection final {
+  FuNode selector;
+  std::uint32_t selectedPort;
+};
+
+/// One normalized semantic row in an FU's finite topology domain. Exact
+/// software parameters are bound later by TechMapping and are not enumerated
+/// here.
+struct FuCapabilityTemplateSpec final {
+  std::vector<FuNode> activeOperations;
+  std::vector<FuRouteSelection> routes;
 };
 
 struct FifoSpec final {
@@ -359,14 +401,14 @@ public:
 
   llvm::Error resolveBackedge(FuBackedge &&backedge, FuValue source);
 
-  llvm::Expected<std::vector<FuValue>>
-  addOperation(llvm::ArrayRef<FuValue> inputs,
-               const OperationCapabilitySpec &spec);
+  llvm::Expected<FuNode> addOperation(llvm::ArrayRef<FuValue> inputs,
+                                      const OperationCapabilitySpec &spec);
 
-  llvm::Expected<FuValue> addMux(llvm::ArrayRef<FuValue> inputs);
+  llvm::Expected<FuNode> addMux(llvm::ArrayRef<FuValue> inputs);
 
-  llvm::Expected<std::vector<FuValue>> addDemux(FuValue input,
-                                                std::uint32_t outputCount);
+  llvm::Expected<FuNode> addDemux(FuValue input, std::uint32_t outputCount);
+
+  llvm::Error addCapabilityTemplate(const FuCapabilityTemplateSpec &spec);
 
   llvm::Error close(llvm::ArrayRef<FuValue> outputs);
 
@@ -374,6 +416,10 @@ private:
   llvm::Expected<mlir::Value>
   resolveValue(const std::shared_ptr<detail::DesignState> &state,
                const FuValue &value) const;
+
+  llvm::Expected<mlir::Operation *>
+  resolveNode(const std::shared_ptr<detail::DesignState> &state,
+              const FuNode &node) const;
 
   FuBuilder(const std::shared_ptr<detail::DesignState> &state,
             std::size_t rootOrdinal, std::size_t peOrdinal,

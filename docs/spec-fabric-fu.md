@@ -181,6 +181,37 @@ Inactive ports may be omitted from token and routing obligations only when the
 registered operation schema and concrete capability relation explicitly
 guarantee no consumption, no production, and no backpressure.
 
+## Capability Domain Carrier
+
+`fabric.fu` carries at most one typed `capability_templates` attribute. Its
+record is the FU-owned finite relation of coherent topology rows. Each row
+contains only:
+
+* a nonempty set of active FU-local `fabric.op` node ordinals; and
+* one selected input ordinal for every active `fabric.mux` and one selected
+  output ordinal for every active `fabric.demux` needed by that row.
+
+The row does not contain operation-schema parameters, HSG members, TechMapping
+actor correspondence, software configuration, physical encoding bits, or
+performance refinements. Those facts retain their existing owners.
+
+ADG Builder exposes owner-checked `FuNode` handles while authoring and converts
+them to this relation when the FU is closed. Handles are not serialized.
+Authoring ordinals refer to the FU body's physical-node order. Fabric
+finalization validates every row against the physical SSA graph, remaps it to
+canonical FU-node order, normalizes row and domain order, and writes the typed
+attribute into canonical Fabric MLIR. The normalized domain contributes to the
+FU template's Fabric identity.
+
+An omitted attribute is authoring shorthand only when the physical graph has
+exactly one unambiguous template. The finalizer materializes that singleton
+row. A physical graph with more than one possible template and no explicit
+domain is invalid; the finalizer must not infer an independent selector
+Cartesian product. A declared row is invalid when it names a foreign or
+wrong-kind node, omits a selector reached by its active graph, includes an
+unused selector, activates an undeclared operation, selects an out-of-range
+port, fails to form one complete graph, or duplicates another normalized row.
+
 ## Edge Realization Boundary
 
 A Canonical Dataflow edge is internal to an FU only when the exact configured

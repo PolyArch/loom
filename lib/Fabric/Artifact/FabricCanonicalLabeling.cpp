@@ -4,6 +4,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricOps.h"
+#include "FabricFuCapabilityDerivation.h"
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -64,6 +65,11 @@ void appendU32(std::string &bytes, std::uint32_t value) {
 void appendU64(std::string &bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
     bytes.push_back(static_cast<char>(value >> shift));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
 std::string relationLabel(const Edge &edge) {
@@ -175,6 +181,7 @@ operationIntrinsic(Operation *op,
       llvm::StringRef name = field.getName().getValue();
       if (name == ::fabric::kEntityIdAttrName ||
           name == ::fabric::kFuTemplateIdAttrName || name == "sym_name" ||
+          name == "capability_templates" ||
           (registeredOnly && !registered.contains(name)))
         continue;
       stream << '\x1f' << name << '=';
@@ -261,6 +268,8 @@ public:
     };
     std::map<std::vector<std::uint8_t>, FuTemplateDraft> templates;
     llvm::DenseMap<Operation *, std::uint32_t> templateVertexByOccurrence;
+    llvm::DenseMap<Operation *, std::vector<std::uint8_t>>
+        capabilityDomainByOccurrence;
     for (const auto &entry : operationVertices_) {
       auto fu = dyn_cast<::fabric::FuOp>(entry.first);
       if (!fu || fu.getSymNameAttr())
@@ -274,8 +283,33 @@ public:
       if (!canonical)
         return canonical.takeError();
       llvm::ArrayRef<std::uint8_t> definitionBytes = canonical->bytes.bytes();
-      std::vector<std::uint8_t> key(definitionBytes.begin(),
-                                    definitionBytes.end());
+      llvm::DenseMap<std::uint32_t, Operation *> definitionOperationByVertex;
+      for (const auto &definitionEntry : definition->operationVertices_)
+        definitionOperationByVertex[definitionEntry.second] =
+            definitionEntry.first;
+      std::vector<Operation *> canonicalNodeOrder;
+      for (std::uint32_t vertex : canonical->canonicalOrder) {
+        Operation *node = definitionOperationByVertex.lookup(vertex);
+        if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+                node))
+          canonicalNodeOrder.push_back(node);
+      }
+
+      auto domain =
+          canonicalizeFabricFuCapabilityDomain(fu, canonicalNodeOrder);
+      if (!domain)
+        return domain.takeError();
+      auto domainBytes = ::fabric::encodeFuCapabilityDomainRecord(*domain);
+      if (!domainBytes)
+        return domainBytes.takeError();
+      capabilityDomainByOccurrence[fu.getOperation()] = *domainBytes;
+
+      std::vector<std::uint8_t> key;
+      key.reserve(16 + definitionBytes.size() + domainBytes->size());
+      appendU64(key, definitionBytes.size());
+      key.insert(key.end(), definitionBytes.begin(), definitionBytes.end());
+      appendU64(key, domainBytes->size());
+      key.insert(key.end(), domainBytes->begin(), domainBytes->end());
       auto [position, inserted] = templates.emplace(key, FuTemplateDraft{});
       if (inserted) {
         std::string intrinsic = "FU_TEMPLATE\x1f";
@@ -283,16 +317,7 @@ public:
                          key.size());
         position->second.vertex = addVertex(std::move(intrinsic));
         position->second.representative = fu.getOperation();
-        llvm::DenseMap<std::uint32_t, Operation *> definitionOperationByVertex;
-        for (const auto &definitionEntry : definition->operationVertices_)
-          definitionOperationByVertex[definitionEntry.second] =
-              definitionEntry.first;
-        for (std::uint32_t vertex : canonical->canonicalOrder) {
-          Operation *node = definitionOperationByVertex.lookup(vertex);
-          if (isa_and_nonnull<::fabric::OpOp, ::fabric::MuxOp,
-                              ::fabric::DemuxOp>(node))
-            position->second.canonicalNodeOrder.push_back(node);
-        }
+        position->second.canonicalNodeOrder = canonicalNodeOrder;
         carriers_[position->second.vertex] = {
             FabricEntityKind::FabricFuTemplate, 0, nullptr};
       }
@@ -346,10 +371,10 @@ public:
       return lhs.id < rhs.id;
     });
 
-    return FabricCanonicalLabeling{std::move(canonical->bytes),
-                                   std::move(carriers), std::move(fuTemplates),
-                                   std::move(operationOrder),
-                                   std::move(fuTemplateIds)};
+    return FabricCanonicalLabeling{
+        std::move(canonical->bytes), std::move(carriers),
+        std::move(fuTemplates),      std::move(operationOrder),
+        std::move(fuTemplateIds),    std::move(capabilityDomainByOccurrence)};
   }
 
 private:
@@ -509,6 +534,22 @@ materializeFabricCanonicalIds(const FabricCanonicalLabeling &labeling) {
       return invalid("an FU occurrence has no canonical template relation");
     carrier.op->setAttr(::fabric::kFuTemplateIdAttrName,
                         ::fabric::EntityIdAttr::get(context, found->second));
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error materializeFabricCanonicalFuCapabilityDomains(
+    const FabricCanonicalLabeling &labeling) {
+  for (const auto &entry : labeling.canonicalFuCapabilityDomainByOccurrence) {
+    auto fu = dyn_cast_or_null<::fabric::FuOp>(entry.first);
+    if (!fu)
+      return invalid("a canonical FU capability domain has no FU carrier");
+    std::vector<std::int8_t> signedBytes;
+    signedBytes.reserve(entry.second.size());
+    for (std::uint8_t byte : entry.second)
+      signedBytes.push_back(static_cast<std::int8_t>(byte));
+    fu.setCapabilityTemplatesAttr(::fabric::FuCapabilityDomainAttr::get(
+        fu.getContext(), DenseI8ArrayAttr::get(fu.getContext(), signedBytes)));
   }
   return llvm::Error::success();
 }

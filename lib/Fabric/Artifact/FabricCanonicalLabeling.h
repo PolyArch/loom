@@ -39,6 +39,8 @@ struct FabricCanonicalLabeling {
   std::vector<FabricFuTemplateCarrier> fuTemplates;
   std::vector<mlir::Operation *> canonicalOperationOrder;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> fuTemplateIdByOccurrence;
+  llvm::DenseMap<mlir::Operation *, std::vector<std::uint8_t>>
+      canonicalFuCapabilityDomainByOccurrence;
 };
 
 /// Computes the exact semantic labeling of one already elaborated, declaration-
@@ -52,6 +54,11 @@ computeFabricModuleCanonicalLabeling(::fabric::ModuleOp root);
 /// author-supplied values are never preserved.
 llvm::Error
 materializeFabricCanonicalIds(const FabricCanonicalLabeling &labeling);
+
+/// Rewrites every FU occurrence's owner-local capability domain into the
+/// exact canonical FU-node order captured by `labeling`.
+llvm::Error materializeFabricCanonicalFuCapabilityDomains(
+    const FabricCanonicalLabeling &labeling);
 
 } // namespace loom::fabric::detail
 

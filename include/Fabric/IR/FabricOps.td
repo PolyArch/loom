@@ -375,6 +375,7 @@ def Fabric_FuOp : Fabric_Op<"fu", [
   let arguments = (ins
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
+      OptionalAttr<Fabric_FuCapabilityDomainAttr>:$capability_templates,
       Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
