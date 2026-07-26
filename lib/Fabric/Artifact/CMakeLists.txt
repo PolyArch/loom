@@ -16,6 +16,7 @@ add_mlir_library(LoomFabricArtifact
   LoomFabricFifoResourceContract
   LoomFabricIdentity
   LoomFabricResourceContract
+  LoomFabricTemporalOperandBuffer
   MLIRFabric
   MLIRBytecodeReader
   MLIRBytecodeWriter

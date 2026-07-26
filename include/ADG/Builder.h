@@ -2,8 +2,10 @@
 #define LOOM_ADG_BUILDER_H
 
 #include "Common/ArtifactStore.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricEnums.h"
+#include "Fabric/IR/ImplementationFamily.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -21,6 +23,9 @@ namespace loom::adg {
 namespace detail {
 class DesignState;
 }
+
+class FuBuilder;
+class PeBuilder;
 
 /// A typed authoring description of one legal fabric.module port type.
 class PortType final {
@@ -70,6 +75,100 @@ private:
   mlir::Value value_;
 
   friend class SpatialCoreBuilder;
+  friend class PeBuilder;
+};
+
+/// An owner-checked value on one PE's internal untagged boundary.
+class PeValue final {
+public:
+  PeValue() = default;
+
+private:
+  PeValue(const std::shared_ptr<detail::DesignState> &state,
+          std::size_t rootOrdinal, std::size_t peOrdinal, mlir::Value value)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        value_(value) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t peOrdinal_ = 0;
+  mlir::Value value_;
+
+  friend class PeBuilder;
+};
+
+/// An owner-checked value in one FU graph region.
+class FuValue final {
+public:
+  FuValue() = default;
+
+private:
+  FuValue(const std::shared_ptr<detail::DesignState> &state,
+          std::size_t rootOrdinal, std::size_t peOrdinal, std::size_t fuOrdinal,
+          mlir::Value value)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        fuOrdinal_(fuOrdinal), value_(value) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_ = 0;
+  std::size_t peOrdinal_ = 0;
+  std::size_t fuOrdinal_ = 0;
+  mlir::Value value_;
+
+  friend class FuBuilder;
+};
+
+enum class FuConfigurationMode : std::uint8_t { PerInstruction, PerFu };
+
+struct TemporalRegisterFifoParameters final {
+  std::uint32_t count;
+  std::uint32_t depth;
+  std::uint32_t ports;
+};
+
+struct TemporalPeParameters final {
+  std::uint32_t instructionCapacity;
+  FuConfigurationMode fuConfigurationMode;
+  ::fabric::OperandBufferMode operandBufferMode;
+  std::uint32_t operandBufferSize;
+  std::optional<TemporalRegisterFifoParameters> registerFifos;
+};
+
+/// A closed typed description of one anonymous PE boundary and schedule.
+class PeSpec final {
+public:
+  static PeSpec spatial(std::vector<PortType> inputTypes,
+                        std::vector<PortType> outputTypes);
+  static PeSpec temporal(std::vector<PortType> inputTypes,
+                         std::vector<PortType> outputTypes,
+                         TemporalPeParameters parameters);
+
+private:
+  PeSpec(::fabric::Schedule schedule, std::vector<PortType> inputTypes,
+         std::vector<PortType> outputTypes,
+         std::optional<TemporalPeParameters> temporal)
+      : schedule_(schedule), inputTypes_(std::move(inputTypes)),
+        outputTypes_(std::move(outputTypes)), temporal_(std::move(temporal)) {}
+
+  ::fabric::Schedule schedule_;
+  std::vector<PortType> inputTypes_;
+  std::vector<PortType> outputTypes_;
+  std::optional<TemporalPeParameters> temporal_;
+
+  friend class SpatialCoreBuilder;
+};
+
+struct FuSpec final {
+  std::vector<PortType> inputTypes;
+  std::vector<PortType> outputTypes;
+};
+
+/// One concrete fabric.op capability using the generated semantic owners.
+struct OperationCapabilitySpec final {
+  ::fabric::ImplementationFamilyId implementationFamily;
+  ::fabric::FamilyCapabilityParams hardwareParameters;
+  std::vector<::dataflow::OperationSchemaId> enabledOperations;
+  std::vector<PortType> outputTypes;
 };
 
 struct FifoSpec final {
@@ -106,6 +205,66 @@ struct SwitchSpec final {
            std::uint32_t routeTableSize);
 };
 
+class FuBuilder final {
+public:
+  llvm::Expected<FuValue> input(std::size_t ordinal) const;
+
+  llvm::Expected<std::vector<FuValue>>
+  addOperation(llvm::ArrayRef<FuValue> inputs,
+               const OperationCapabilitySpec &spec);
+
+  llvm::Expected<FuValue> addMux(llvm::ArrayRef<FuValue> inputs);
+
+  llvm::Expected<std::vector<FuValue>> addDemux(FuValue input,
+                                                std::uint32_t outputCount);
+
+  llvm::Error close(llvm::ArrayRef<FuValue> outputs);
+
+private:
+  llvm::Expected<mlir::Value>
+  resolveValue(const std::shared_ptr<detail::DesignState> &state,
+               const FuValue &value) const;
+
+  FuBuilder(const std::shared_ptr<detail::DesignState> &state,
+            std::size_t rootOrdinal, std::size_t peOrdinal,
+            std::size_t fuOrdinal)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
+        fuOrdinal_(fuOrdinal) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_;
+  std::size_t peOrdinal_;
+  std::size_t fuOrdinal_;
+
+  friend class PeBuilder;
+};
+
+class PeBuilder final {
+public:
+  llvm::Expected<PeValue> input(std::size_t ordinal) const;
+  llvm::Expected<SpatialValue> output(std::size_t ordinal) const;
+
+  llvm::Expected<FuBuilder> addFu(llvm::ArrayRef<PeValue> inputs,
+                                  const FuSpec &spec);
+
+  llvm::Error close();
+
+private:
+  llvm::Expected<mlir::Value>
+  resolveValue(const std::shared_ptr<detail::DesignState> &state,
+               const PeValue &value) const;
+
+  PeBuilder(const std::shared_ptr<detail::DesignState> &state,
+            std::size_t rootOrdinal, std::size_t peOrdinal)
+      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal) {}
+
+  std::weak_ptr<detail::DesignState> state_;
+  std::size_t rootOrdinal_;
+  std::size_t peOrdinal_;
+
+  friend class SpatialCoreBuilder;
+};
+
 class SpatialCoreBuilder final {
 public:
   llvm::Expected<SpatialValue> input(std::size_t ordinal) const;
@@ -118,6 +277,9 @@ public:
 
   llvm::Expected<std::vector<SpatialValue>>
   addSwitch(llvm::ArrayRef<SpatialValue> inputs, const SwitchSpec &spec);
+
+  llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
+                                  const PeSpec &spec);
 
   /// Closes this root with the exact declared result sequence.
   llvm::Error close(llvm::ArrayRef<SpatialValue> outputs);

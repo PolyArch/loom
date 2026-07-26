@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 
 #include "Common/ArtifactStore.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -74,9 +75,53 @@ private:
 using loom::adg::BoundarySpec;
 using loom::adg::DesignBuilder;
 using loom::adg::FifoSpec;
+using loom::adg::FuConfigurationMode;
+using loom::adg::FuSpec;
+using loom::adg::FuValue;
+using loom::adg::OperationCapabilitySpec;
+using loom::adg::PeSpec;
 using loom::adg::PortType;
 using loom::adg::SpatialValue;
 using loom::adg::SwitchSpec;
+using loom::adg::TemporalPeParameters;
+
+std::uint64_t uniqueEntity(llvm::StringRef test,
+                           const loom::fabric::FabricArtifactView &view,
+                           loom::fabric::FabricEntityKind expectedKind) {
+  std::optional<std::uint64_t> result;
+  for (std::uint64_t id = 0;; ++id) {
+    std::optional<loom::fabric::FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != expectedKind)
+      continue;
+    if (result)
+      fail(test, "finalized root contains duplicate expected entities");
+    result = id;
+  }
+  if (!result)
+    fail(test, "finalized root contains no expected entity");
+  return *result;
+}
+
+loom::fabric::FabricFuTemplateRef
+uniqueFuTemplate(llvm::StringRef test,
+                 const loom::fabric::FabricArtifactView &view) {
+  return loom::fabric::FabricFuTemplateRef(uniqueEntity(
+      test, view, loom::fabric::FabricEntityKind::FabricFuTemplate));
+}
+
+OperationCapabilitySpec
+integerCapability(::fabric::ImplementationFamilyId family,
+                  ::dataflow::OperationSchemaId operation,
+                  const PortType &outputType) {
+  return OperationCapabilitySpec{
+      family,
+      ::fabric::ScalarIntegerParams{
+          ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I32})},
+      {operation},
+      {outputType}};
+}
 
 void regularAndIrregularSpatialCoresFinalize() {
   const llvm::StringRef test = __func__;
@@ -163,10 +208,112 @@ void foreignHandlesAndIncompleteRootsFailClosed() {
               "SpatialCore 'second' is not closed");
 }
 
+void typedPeFuGraphsFinalize() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+
+  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType tagged32x4 = take(test, PortType::taggedBits(32, 4));
+
+  auto spatial = take(
+      test, design.createSpatialCore("spatial-pe", {bits32, bits32}, {bits32}));
+  SpatialValue spatialA = take(test, spatial.input(0));
+  SpatialValue spatialB = take(test, spatial.input(1));
+  auto spatialPe =
+      take(test, spatial.addPe({spatialA, spatialB},
+                               PeSpec::spatial({bits32, bits32}, {bits32})));
+  auto spatialFu =
+      take(test, spatialPe.addFu({take(test, spatialPe.input(0)),
+                                  take(test, spatialPe.input(1))},
+                                 FuSpec{{bits32, bits32}, {bits32}}));
+  FuValue fuA = take(test, spatialFu.input(0));
+  FuValue fuB = take(test, spatialFu.input(1));
+  auto aLanes = take(test, spatialFu.addDemux(fuA, 2));
+  auto bLanes = take(test, spatialFu.addDemux(fuB, 2));
+  auto sum =
+      take(test, spatialFu.addOperation(
+                     {aLanes[0], bLanes[0]},
+                     integerCapability(
+                         ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                         ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  auto product = take(
+      test, spatialFu.addOperation(
+                {aLanes[1], bLanes[1]},
+                integerCapability(
+                    ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+                    ::dataflow::OperationSchemaId::ArithMulI, bits32)));
+  FuValue selected =
+      take(test, spatialFu.addMux({sum.front(), product.front()}));
+  if (llvm::Error error = spatialFu.close({selected}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatialPe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, spatialPe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto temporal =
+      take(test, design.createSpatialCore(
+                     "temporal-pe", {tagged32x4, tagged32x4}, {tagged32x4}));
+  auto temporalPe = take(
+      test, temporal.addPe(
+                {take(test, temporal.input(0)), take(test, temporal.input(1))},
+                PeSpec::temporal({bits32, bits32}, {tagged32x4},
+                                 TemporalPeParameters{
+                                     2, FuConfigurationMode::PerFu,
+                                     ::fabric::OperandBufferMode::PerInputPort,
+                                     2, std::nullopt})));
+  auto temporalFu =
+      take(test, temporalPe.addFu({take(test, temporalPe.input(0)),
+                                   take(test, temporalPe.input(1))},
+                                  FuSpec{{bits32, bits32}, {bits32}}));
+  auto temporalSum = take(
+      test,
+      temporalFu.addOperation(
+          {take(test, temporalFu.input(0)), take(test, temporalFu.input(1))},
+          integerCapability(
+              ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+              ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  if (llvm::Error error = temporalFu.close({temporalSum.front()}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = temporalPe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = temporal.close({take(test, temporalPe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  loom::adg::FinalizedFabricDesign finalized =
+      take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "typed PE/FU authoring did not publish both roots");
+
+  const auto spatialTemplates =
+      finalized.roots()[0].view().fuCapabilityTemplates(
+          uniqueFuTemplate(test, finalized.roots()[0].view()));
+  require(test, spatialTemplates.size() == 2,
+          "explicit add-or-multiply routing did not form two FU templates");
+  const auto temporalTemplates =
+      finalized.roots()[1].view().fuCapabilityTemplates(
+          uniqueFuTemplate(test, finalized.roots()[1].view()));
+  require(test, temporalTemplates.size() == 1,
+          "temporal PE operation did not form one FU template");
+  const loom::fabric::FabricPeOccurrenceRef temporalPeRef(
+      uniqueEntity(test, finalized.roots()[1].view(),
+                   loom::fabric::FabricEntityKind::FabricPeOccurrence));
+  const ::fabric::ResourceContract *operandBuffer =
+      finalized.roots()[1].view().resourceContract(
+          loom::fabric::FabricInventoryOwnerRef::of(temporalPeRef));
+  require(test,
+          operandBuffer && operandBuffer->stateCount() != 0 &&
+              operandBuffer->usePatternCount() != 0,
+          "temporal PE lost its operand-buffer resource contract");
+}
+
 } // namespace
 
 int main() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
+  typedPeFuGraphsFinalize();
   return EXIT_SUCCESS;
 }

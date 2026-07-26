@@ -10,6 +10,7 @@
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "FabricArtifactDependencyClosureInternal.h"
 #include "FabricCanonicalLabeling.h"
@@ -66,7 +67,9 @@ llvm::Error ownerUnavailable(const llvm::Twine &message) {
 }
 
 llvm::Expected<std::optional<::fabric::ResourceContract>>
-deriveResourceContract(Operation *operation) {
+deriveResourceContract(
+    Operation *operation,
+    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
   if (auto fifo = dyn_cast<::fabric::FifoOp>(operation)) {
     auto contract = ::fabric::createFifoResourceContract(
         static_cast<std::uint32_t>(fifo.getMaxDepth()), fifo.getBypassable());
@@ -86,10 +89,44 @@ deriveResourceContract(Operation *operation) {
         "fabric.mem finalization requires its complete memory capability "
         "and service contracts");
   if (auto pe = dyn_cast<::fabric::PeOp>(operation);
-      pe && pe.getSchedule() == ::fabric::Schedule::Temporal)
-    return ownerUnavailable(
-        "temporal fabric.pe finalization requires its complete PE resource "
-        "projection");
+      pe && pe.getSchedule() == ::fabric::Schedule::Temporal) {
+    std::optional<std::uint64_t> peId;
+    for (const detail::FabricEntityCarrier &carrier : labeling.carriers)
+      if (carrier.op == operation) {
+        if (carrier.kind != FabricEntityKind::FabricPeOccurrence)
+          return invalid(
+              "temporal fabric.pe has the wrong canonical entity kind");
+        peId = carrier.id;
+        break;
+      }
+    if (!peId)
+      return invalid("temporal fabric.pe has no canonical occurrence");
+
+    llvm::SmallVector<std::uint32_t, 8> fuInputCounts;
+    for (Operation *candidate : labeling.canonicalOperationOrder) {
+      auto fu = dyn_cast_or_null<::fabric::FuOp>(candidate);
+      if (!fu || fu->getParentOp() != operation)
+        continue;
+      if (fu.getInputs().size() > std::numeric_limits<std::uint32_t>::max())
+        return invalid("temporal fabric.pe FU input domain exceeds u32");
+      fuInputCounts.push_back(
+          static_cast<std::uint32_t>(fu.getInputs().size()));
+    }
+
+    auto contextCount = pe.getNumInstruction();
+    auto mode = pe.getOperandBufferMode();
+    auto entries = pe.getOperandBufferSize();
+    if (!contextCount || !mode || !entries)
+      return invalid("temporal fabric.pe lacks its verified buffer parameters");
+    auto derived = ::fabric::TemporalOperandBufferContract::create(
+        ::fabric::TemporalOperandBufferDeclaration{FabricPeOccurrenceRef(*peId),
+                                                   *contextCount, fuInputCounts,
+                                                   *mode, *entries});
+    if (!derived)
+      return derived.takeError();
+    return std::optional<::fabric::ResourceContract>(
+        derived->resourceContract());
+  }
   if (auto sw = dyn_cast<::fabric::SwitchOp>(operation);
       sw && sw.getSchedule() == ::fabric::Schedule::Temporal)
     return ownerUnavailable(
@@ -115,8 +152,10 @@ std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> bytes) {
 }
 
 llvm::Expected<std::optional<::fabric::ResourceContract>>
-validateResourceContractRecord(Operation *operation) {
-  auto expected = deriveResourceContract(operation);
+validateResourceContractRecord(
+    Operation *operation,
+    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
+  auto expected = deriveResourceContract(operation, labeling);
   if (!expected)
     return expected.takeError();
 
@@ -147,13 +186,15 @@ validateResourceContractRecord(Operation *operation) {
   return std::optional<::fabric::ResourceContract>(std::move(*decoded));
 }
 
-llvm::Error materializeResourceContractRecords(::fabric::ModuleOp root) {
+llvm::Error materializeResourceContractRecords(
+    ::fabric::ModuleOp root,
+    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
   llvm::Error result = llvm::Error::success();
   root->walk([&](Operation *operation) {
     if (result)
       return WalkResult::interrupt();
     operation->removeAttr(::fabric::kResourceContractRecordAttrName);
-    auto contract = deriveResourceContract(operation);
+    auto contract = deriveResourceContract(operation, labeling);
     if (!contract) {
       result = contract.takeError();
       return WalkResult::interrupt();
@@ -173,12 +214,14 @@ llvm::Error materializeResourceContractRecords(::fabric::ModuleOp root) {
   return result;
 }
 
-llvm::Error validateResourceContractRecords(::fabric::ModuleOp root) {
+llvm::Error validateResourceContractRecords(
+    ::fabric::ModuleOp root,
+    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
   llvm::Error result = llvm::Error::success();
   root->walk([&](Operation *operation) {
     if (result)
       return WalkResult::interrupt();
-    auto contract = validateResourceContractRecord(operation);
+    auto contract = validateResourceContractRecord(operation, labeling);
     if (!contract) {
       result = contract.takeError();
       return WalkResult::interrupt();
@@ -447,7 +490,7 @@ buildModuleView(::fabric::ModuleOp root,
       entity.fuTemplate = FabricFuTemplateRef(found->second);
     }
 
-    auto contract = validateResourceContractRecord(carrier.op);
+    auto contract = validateResourceContractRecord(carrier.op, labeling);
     if (!contract)
       return contract.takeError();
     entity.owner.resourceContract = std::move(*contract);
@@ -609,12 +652,11 @@ strictImport(const ArtifactRootReference &reference,
   root->walk([&](::fabric::InstantiateOp) { residualInstance = true; });
   if (residualInstance)
     return invalid("canonical payload contains fabric.instantiate");
-  if (llvm::Error error = validateResourceContractRecords(root))
-    return std::move(error);
-
   auto labeling = detail::computeFabricModuleCanonicalLabeling(root);
   if (!labeling)
     return labeling.takeError();
+  if (llvm::Error error = validateResourceContractRecords(root, *labeling))
+    return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling->carriers) {
     if (!carrier.op)
       continue;
@@ -670,10 +712,17 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
     if (&operation != clonedRoot.getOperation())
       operation.erase();
   clonedRoot.setSymName(canonicalRootName);
-  if (llvm::Error error = materializeResourceContractRecords(clonedRoot))
-    return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("the root-complete Fabric candidate does not verify");
+
+  auto preliminary = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
+  if (!preliminary)
+    return preliminary.takeError();
+  if (llvm::Error error =
+          materializeResourceContractRecords(clonedRoot, *preliminary))
+    return std::move(error);
+  if (failed(verify(*scratch)))
+    return invalid("the complete Fabric resource contracts do not verify");
 
   auto labeling = detail::computeFabricModuleCanonicalLabeling(clonedRoot);
   if (!labeling)
