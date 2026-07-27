@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_DATAFLOW_IR_DATAFLOW_CANONICAL_BYTECODE_INTERNAL_H
 #define LOOM_LIB_DATAFLOW_IR_DATAFLOW_CANONICAL_BYTECODE_INTERNAL_H
 
+#include "DataflowCanonicalLabeling.h"
 #include "Common/Artifact.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -24,13 +25,14 @@ struct ParsedCanonicalDataflowModule {
   mlir::OwningOpRef<mlir::ModuleOp> module;
 };
 
-llvm::Error canonicalizeDataflowPresentation(mlir::ModuleOp module);
+llvm::Expected<CanonicalLabeling>
+canonicalizeDataflowPresentation(mlir::ModuleOp module);
 
 llvm::Expected<ParsedCanonicalDataflowModule>
 parseCanonicalDataflowBytecode(llvm::ArrayRef<std::uint8_t> bytes);
 
 llvm::Expected<std::vector<std::uint8_t>>
-writeCanonicalDataflowBytecode(mlir::ModuleOp module);
+writeCanonicalizedDataflowBytecode(mlir::ModuleOp module);
 
 ::loom::CanonicalSemanticBytes
 frameCanonicalDataflowBytes(llvm::ArrayRef<std::uint8_t> bytecode);

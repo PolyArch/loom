@@ -156,7 +156,7 @@ llvm::Error canonicalizeUnorderedGraphBodies(
   return llvm::Error::success();
 }
 
-llvm::Error canonicalizePresentation(ModuleOp module) {
+llvm::Expected<CanonicalLabeling> canonicalizePresentation(ModuleOp module) {
   auto labeling = computeCanonicalLabeling(module);
   if (!labeling)
     return labeling.takeError();
@@ -182,7 +182,7 @@ llvm::Error canonicalizePresentation(ModuleOp module) {
   });
   if (failed(verify(module)))
     return invalid("presentation canonicalization produced invalid MLIR");
-  return llvm::Error::success();
+  return std::move(*labeling);
 }
 
 llvm::Expected<std::vector<std::uint8_t>> writeBytecodeOnce(Operation *root) {
@@ -194,7 +194,8 @@ llvm::Expected<std::vector<std::uint8_t>> writeBytecodeOnce(Operation *root) {
 
 } // namespace
 
-llvm::Error canonicalizeDataflowPresentation(ModuleOp module) {
+llvm::Expected<CanonicalLabeling>
+canonicalizeDataflowPresentation(ModuleOp module) {
   return canonicalizePresentation(module);
 }
 
@@ -215,31 +216,10 @@ parseCanonicalDataflowBytecode(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
-writeCanonicalDataflowBytecode(ModuleOp module) {
-  if (llvm::Error error = canonicalizeDataflowPresentation(module))
-    return std::move(error);
-  auto first = writeBytecodeOnce(module.getOperation());
-  if (!first)
-    return first.takeError();
-  auto parsed = parseCanonicalDataflowBytecode(*first);
-  if (!parsed)
-    return parsed.takeError();
-  if (llvm::Error error = canonicalizeDataflowPresentation(parsed->module.get()))
-    return std::move(error);
-  auto second = writeBytecodeOnce(parsed->module->getOperation());
-  if (!second)
-    return second.takeError();
-  auto verified = parseCanonicalDataflowBytecode(*second);
-  if (!verified)
-    return verified.takeError();
-  if (llvm::Error error = canonicalizeDataflowPresentation(verified->module.get()))
-    return std::move(error);
-  auto third = writeBytecodeOnce(verified->module->getOperation());
-  if (!third)
-    return third.takeError();
-  if (*second != *third)
-    return invalid("Dataflow canonical writer is not byte stable");
-  return second;
+writeCanonicalizedDataflowBytecode(ModuleOp module) {
+  if (failed(verify(module)))
+    return invalid("canonical Dataflow presentation is not valid MLIR");
+  return writeBytecodeOnce(module.getOperation());
 }
 
 ::loom::CanonicalSemanticBytes

@@ -147,18 +147,15 @@ finalizeCanonicalDataflow(ModuleOp source) {
   pruneUnreachablePrivateSymbols(clone.get());
   if (llvm::Error error = validateProgram(clone.get()))
     return std::move(error);
-  if (llvm::Error error = detail::canonicalizeDataflowPresentation(clone.get()))
-    return std::move(error);
-
   llvm::Expected<detail::CanonicalLabeling> labeling =
-      detail::computeCanonicalLabeling(clone.get());
+      detail::canonicalizeDataflowPresentation(clone.get());
   if (!labeling)
     return labeling.takeError();
 
   for (const detail::EntityCarrier &carrier : labeling->carriers)
     materialize(carrier, clone.get().getContext());
 
-  auto bytecode = detail::writeCanonicalDataflowBytecode(clone.get());
+  auto bytecode = detail::writeCanonicalizedDataflowBytecode(clone.get());
   if (!bytecode)
     return bytecode.takeError();
   ::loom::CanonicalSemanticBytes bytes =
@@ -338,7 +335,7 @@ CanonicalDataflowProgramView::import(
     return std::move(error);
 
   llvm::Expected<detail::CanonicalLabeling> labeling =
-      detail::computeCanonicalLabeling(finalizedModule);
+      detail::canonicalizeDataflowPresentation(finalizedModule);
   if (!labeling)
     return labeling.takeError();
 
@@ -420,7 +417,8 @@ importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
                                                     canonicalBytes);
   if (!view)
     return view.takeError();
-  auto rewritten = detail::writeCanonicalDataflowBytecode(parsed->module.get());
+  auto rewritten =
+      detail::writeCanonicalizedDataflowBytecode(parsed->module.get());
   if (!rewritten)
     return rewritten.takeError();
   ::loom::CanonicalSemanticBytes reencoded =
