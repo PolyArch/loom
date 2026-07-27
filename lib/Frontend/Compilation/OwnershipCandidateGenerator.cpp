@@ -406,6 +406,29 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
 } // namespace
 
 llvm::Expected<std::vector<StructuredEntityRef>>
+enumerateWholeCallableSpatialOwnershipScopes(
+    const StructuredProgramCandidate &parent) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+
+  std::vector<StructuredEntityRef> scopes;
+  for (const StructuredEntity &entity :
+       view->entities(StructuredEntityKind::Operation)) {
+    auto callable =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (!callable)
+      continue;
+    if (llvm::Error rejection = verifyEligibleCallable(callable)) {
+      llvm::consumeError(std::move(rejection));
+      continue;
+    }
+    scopes.push_back(entity.reference);
+  }
+  return scopes;
+}
+
+llvm::Expected<std::vector<StructuredEntityRef>>
 enumerateOperationSpatialOwnershipScopes(
     const StructuredProgramCandidate &parent) {
   auto view = parent.view();

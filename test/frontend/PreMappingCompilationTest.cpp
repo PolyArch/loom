@@ -768,6 +768,39 @@ void operationOwnershipScopesFollowCanonicalOrder() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void wholeCallableScopesFollowCanonicalOrder() {
+  const char *test = "wholeCallableScopesFollowCanonicalOrder";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-whole-callable-scopes", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseSpatialModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto scopes =
+      take(test, loom::frontend::enumerateWholeCallableSpatialOwnershipScopes(
+                     compiled.structuredProgram));
+  if (scopes.size() != 1 ||
+      scopes.front() !=
+          findCallable(test, compiled.structuredProgram, "kernel"))
+    fail(test, "whole-callable domain admitted a declaration, non-void "
+               "wrapper, or omitted the eligible kernel");
+  if (scopes.front().parent != compiled.structuredProgram.identity() ||
+      scopes.front().kind !=
+          loom::frontend::StructuredEntityKind::Operation)
+    fail(test, "whole-callable scope is not parent-local operation identity");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationFmulAddDecisionIsCandidateLocal() {
   const char *test = "operationFmulAddDecisionIsCandidateLocal";
   llvm::SmallString<128> directory;
@@ -857,6 +890,7 @@ int main() {
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   explicitOperationSpatialOwnership();
+  wholeCallableScopesFollowCanonicalOrder();
   operationOwnershipScopesFollowCanonicalOrder();
   operationFmulAddDecisionIsCandidateLocal();
   operationSpatialOwnershipRejectsEscapedResult();

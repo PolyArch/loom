@@ -44,6 +44,14 @@ struct OperationSpatialOwnershipOptions final {
   std::optional<unsigned> canonicalIndexWidth;
 };
 
+/// Enumerates whole-callable ownership scopes in the exact parent candidate's
+/// canonical operation order. Only callables satisfying the complete
+/// whole-callable structural contract are returned; this is a generator
+/// domain, not a QoR choice or an implicit ownership decision.
+llvm::Expected<std::vector<StructuredEntityRef>>
+enumerateWholeCallableSpatialOwnershipScopes(
+    const StructuredProgramCandidate &parent);
+
 /// Enumerates ownership-free structured scopes in the exact parent
 /// candidate's canonical operation order. These are search coordinates, not
 /// accepted or ranked candidates: applying a concrete typed decision may
