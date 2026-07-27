@@ -279,6 +279,11 @@ struct FloatBehaviorProfile {
 enum class ResolvedIndexWidth : std::uint8_t { I32, I64 };
 static_assert(static_cast<std::uint8_t>(ResolvedIndexWidth::I32) == 0);
 static_assert(static_cast<std::uint8_t>(ResolvedIndexWidth::I64) == 1);
+using ResolvedIndexWidthSet = detail::ClosedEnumSet<ResolvedIndexWidth, 2>;
+
+std::optional<ResolvedIndexWidth>
+symbolizeResolvedIndexWidth(unsigned bitWidth);
+unsigned getResolvedIndexBitWidth(ResolvedIndexWidth width);
 
 using IntegerWidthRelation =
     detail::ClosedPairRelation<IntegerWidth, 5, IntegerWidth, 5>;
@@ -290,7 +295,7 @@ using IntegerFloatFormatRelation =
 /// Typed finite-domain relation for integer and resolved-index casts.
 struct IntegerCastRelation {
   IntegerWidthRelation widthPairs;
-  std::optional<ResolvedIndexWidth> resolvedIndexWidth;
+  ResolvedIndexWidthSet resolvedIndexWidths;
 };
 
 struct ScalarIntegerParams {
@@ -500,6 +505,19 @@ getFamilyCapabilityParamsAttr(::mlir::MLIRContext *context,
 llvm::Error verifyImplementationFamilyAdmission(
     ImplementationFamilyId family, const FamilyCapabilityParams *params,
     const ::dataflow::CanonicalActorSchemaProjection &actor);
+
+/// Verifies one actor under an exact Structured/Dataflow index-width choice.
+/// Index types are represented by that explicit width for ordinary families;
+/// index casts additionally require the concrete cast relation to admit it.
+llvm::Error verifyImplementationFamilyAdmission(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth);
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+projectResolvedIndexTypes(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth);
 
 /// Whether one concrete operation relation needs a semantic configuration
 /// field to distinguish admitted hardware behaviors. The field is one

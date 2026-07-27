@@ -90,6 +90,35 @@ bool expectAdmission(ImplementationFamilyId family,
   return false;
 }
 
+bool expectAdmissionAtIndexWidth(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth, bool admitted, llvm::StringRef semanticReason) {
+  llvm::Error error =
+      verifyImplementationFamilyAdmission(family, params, actor, indexBitWidth);
+  if (admitted) {
+    if (!error)
+      return true;
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " rejected an admitted resolved-index actor: "
+                 << llvm::toString(std::move(error)) << '\n';
+    return false;
+  }
+  if (!error) {
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " admitted a resolved-index actor that must fail "
+                 << semanticReason << '\n';
+    return false;
+  }
+  std::string message = llvm::toString(std::move(error));
+  if (llvm::StringRef(message).contains(semanticReason))
+    return true;
+  llvm::errs() << implementationFamilyKeyword(family)
+               << " reported an unspecific resolved-index rejection: "
+               << message << '\n';
+  return false;
+}
+
 bool checkDescriptorRelations() {
   bool ok = true;
   llvm::StringSet<> keywords;
@@ -215,9 +244,11 @@ bool checkCapabilityCodec(MLIRContext &context) {
 
   ArrayAttr pair = builder.getArrayAttr(
       {builder.getI32IntegerAttr(8), builder.getI32IntegerAttr(32)});
-  DictionaryAttr duplicateRelation =
-      builder.getDictionaryAttr({builder.getNamedAttr(
-          "width_pairs", builder.getArrayAttr({pair, pair}))});
+  DictionaryAttr duplicateRelation = builder.getDictionaryAttr(
+      {builder.getNamedAttr("width_pairs", builder.getArrayAttr({pair, pair})),
+       builder.getNamedAttr(
+           "resolved_index_widths",
+           builder.getArrayAttr({builder.getI32IntegerAttr(64)}))});
   llvm::Expected<FamilyCapabilityParams> duplicateRelationResult =
       parseFamilyCapabilityParams(ImplementationFamilyId::ScalarIntegerCast,
                                   duplicateRelation);
@@ -411,12 +442,17 @@ bool checkCastRelations(MLIRContext &context) {
                                                 f32, fixture.poison(i32));
   Operation *wideBitcast = arith::BitcastOp::create(
       fixture.builder, fixture.loc, f64, fixture.poison(i32));
+  Operation *i16ToIndex = arith::IndexCastOp::create(
+      fixture.builder, fixture.loc, fixture.builder.getIndexType(),
+      fixture.poison(i16));
 
   FamilyCapabilityParams integerCasts =
       ScalarIntegerCastParams{IntegerCastRelation{
           IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32},
-                                     {IntegerWidth::I16, IntegerWidth::I64}}),
-          ResolvedIndexWidth::I64}};
+                                     {IntegerWidth::I16, IntegerWidth::I64},
+                                     {IntegerWidth::I32, IntegerWidth::I16}}),
+          ResolvedIndexWidthSet::get(
+              {ResolvedIndexWidth::I32, ResolvedIndexWidth::I64})}};
   FamilyCapabilityParams floatCasts = ScalarFloatWidthCastParams{
       FloatFormatRelation::get({{FloatFormat::F16, FloatFormat::F32},
                                 {FloatFormat::F32, FloatFormat::F64}}),
@@ -464,6 +500,15 @@ bool checkCastRelations(MLIRContext &context) {
         true, {});
   check(wideBitcast, ImplementationFamilyId::ScalarBitReinterpret,
         reinterpretation, false, "equal semantic width");
+
+  if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+          projectActor(i16ToIndex, ok)) {
+    ok &= expectAdmissionAtIndexWidth(ImplementationFamilyId::ScalarIntegerCast,
+                                      &integerCasts, *projection, 64, true, {});
+    ok &= expectAdmissionAtIndexWidth(ImplementationFamilyId::ScalarIntegerCast,
+                                      &integerCasts, *projection, 32, false,
+                                      "exact resolved index endpoint pair");
+  }
   return ok;
 }
 

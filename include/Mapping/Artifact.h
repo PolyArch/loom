@@ -244,6 +244,7 @@ struct DataflowEdgeRef {
 
 struct DataflowProgramView {
   ArtifactIdentity identity;
+  unsigned indexBitWidth;
   std::vector<GraphDescriptor> graphs;
   std::vector<ActorDescriptor> actors;
   std::vector<DataflowEdge> edges;

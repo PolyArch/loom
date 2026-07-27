@@ -144,9 +144,8 @@ ScalarIntegerCompareMinMaxParams {
 }
 
 ScalarIntegerCastParams {
-  source_widths
-  destination_widths
-  registered_schema_valid_pair_relation
+  width_pairs
+  resolved_index_widths
 }
 ```
 
@@ -154,6 +153,15 @@ The cast relation is a typed rule over the two finite domains rather than a
 Cartesian enumeration. `op_list` remains the only concrete enabled-member
 projection: these parameter records do not repeat add/sub, compare/min/max, or
 cast operation membership.
+
+`resolved_index_widths` is the normalized finite subset of `{32, 64}` that the
+concrete cast resource admits when exactly one actor endpoint has MLIR `index`
+type. `width_pairs` remains the directed integer representation relation. An
+exact Structured/Dataflow candidate owns one selected canonical index width;
+admission requires that width to occur in `resolved_index_widths` and requires
+the corresponding directed pair in `width_pairs`. The Fabric relation does not
+select a candidate's index width, and physical payload width remains transport
+capacity rather than an implicit index-width choice.
 
 For the initial scalar compute families, the family-level rule admits scalar
 shapes while the concrete relation owns supported integer widths, floating

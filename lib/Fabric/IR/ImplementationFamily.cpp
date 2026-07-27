@@ -773,6 +773,28 @@ admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
 
 } // namespace
 
+std::optional<fabric::ResolvedIndexWidth>
+fabric::symbolizeResolvedIndexWidth(unsigned bitWidth) {
+  switch (bitWidth) {
+  case 32:
+    return ResolvedIndexWidth::I32;
+  case 64:
+    return ResolvedIndexWidth::I64;
+  default:
+    return std::nullopt;
+  }
+}
+
+unsigned fabric::getResolvedIndexBitWidth(ResolvedIndexWidth width) {
+  switch (width) {
+  case ResolvedIndexWidth::I32:
+    return 32;
+  case ResolvedIndexWidth::I64:
+    return 64;
+  }
+  llvm_unreachable("unknown resolved index width");
+}
+
 fabric::CapabilityParamsSchemaId
 fabric::capabilityParamsSchema(const FamilyCapabilityParams &params) {
   return std::visit(
@@ -807,6 +829,79 @@ llvm::Error fabric::verifyImplementationFamilyAdmission(
 #include "Fabric/IR/ImplementationFamilies.inc"
   }
   return reject("typed admission provider is not registered");
+}
+
+llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
+fabric::projectResolvedIndexTypes(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth) {
+  if (!symbolizeResolvedIndexWidth(indexBitWidth))
+    return reject("resolved index width must be 32 or 64");
+  const auto representType = [&](::mlir::Type type) -> ::mlir::Type {
+    if (::llvm::isa<::mlir::IndexType>(type))
+      return ::mlir::IntegerType::get(type.getContext(), indexBitWidth);
+    if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(type);
+        vector && ::llvm::isa<::mlir::IndexType>(vector.getElementType()))
+      return ::mlir::VectorType::get(
+          vector.getShape(),
+          ::mlir::IntegerType::get(type.getContext(), indexBitWidth),
+          vector.getScalableDims());
+    return type;
+  };
+  llvm::SmallVector<::mlir::Type, 4> inputs;
+  llvm::SmallVector<::mlir::Type, 4> results;
+  llvm::transform(actor.type.getInputs(), std::back_inserter(inputs),
+                  representType);
+  llvm::transform(actor.type.getResults(), std::back_inserter(results),
+                  representType);
+  ::dataflow::CanonicalActorSchemaProjection represented = actor;
+  represented.type =
+      ::mlir::FunctionType::get(actor.type.getContext(), inputs, results);
+  return represented;
+}
+
+llvm::Error fabric::verifyImplementationFamilyAdmission(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth) {
+  const std::optional<ResolvedIndexWidth> resolved =
+      symbolizeResolvedIndexWidth(indexBitWidth);
+  if (!resolved)
+    return reject("resolved index width must be 32 or 64");
+  const bool isIndexCast =
+      actor.schema == ::dataflow::OperationSchemaId::ArithIndexCast ||
+      actor.schema == ::dataflow::OperationSchemaId::ArithIndexCastUI;
+  if (isIndexCast) {
+    if (llvm::Error error =
+            verifyImplementationFamilyAdmission(family, params, actor))
+      return error;
+    const auto *cast =
+        params ? std::get_if<ScalarIntegerCastParams>(params) : nullptr;
+    if (!cast || !cast->relation.resolvedIndexWidths.contains(*resolved))
+      return reject("concrete cast relation does not admit the resolved index "
+                    "width");
+    const bool sourceIsIndex =
+        ::llvm::isa<::mlir::IndexType>(actor.type.getInput(0));
+    ::mlir::Type integerType =
+        sourceIsIndex ? actor.type.getResult(0) : actor.type.getInput(0);
+    llvm::Expected<IntegerWidth> integer =
+        integerWidth(integerType, "integer cast relation");
+    if (!integer)
+      return integer.takeError();
+    const IntegerWidth index = *resolved == ResolvedIndexWidth::I32
+                                   ? IntegerWidth::I32
+                                   : IntegerWidth::I64;
+    const IntegerWidth source = sourceIsIndex ? index : *integer;
+    const IntegerWidth destination = sourceIsIndex ? *integer : index;
+    if (!cast->relation.widthPairs.contains(source, destination))
+      return reject("integer cast relation does not admit the exact resolved "
+                    "index endpoint pair");
+    return llvm::Error::success();
+  }
+  auto represented = projectResolvedIndexTypes(actor, indexBitWidth);
+  if (!represented)
+    return represented.takeError();
+  return verifyImplementationFamilyAdmission(family, params, *represented);
 }
 
 llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
@@ -1725,24 +1820,12 @@ admitScalarValueSelectAdmission(const FamilyCapabilityParams &capability,
   return llvm::Error::success();
 }
 
-llvm::Expected<IntegerWidth>
-resolvedIndexWidth(const fabric::IntegerCastRelation &relation) {
-  if (!relation.resolvedIndexWidth)
-    return reject("resolved index width is required");
-  switch (*relation.resolvedIndexWidth) {
-  case fabric::ResolvedIndexWidth::I32:
-    return IntegerWidth::I32;
-  case fabric::ResolvedIndexWidth::I64:
-    return IntegerWidth::I64;
-  }
-  return reject("resolved index width is invalid");
-}
-
 llvm::Error
 admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarIntegerCastParams>(capability);
-  if (!params.relation.widthPairs.valid())
+  if (!params.relation.widthPairs.valid() ||
+      !params.relation.resolvedIndexWidths.valid())
     return reject("invalid integer cast relation");
   if (params.relation.widthPairs.empty())
     return reject("non-empty integer cast relation required");
@@ -1751,40 +1834,45 @@ admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
 
   ::mlir::Type sourceType = actor.type.getInput(0);
   ::mlir::Type destinationType = actor.type.getResult(0);
-  IntegerWidth source;
-  IntegerWidth destination;
   if (actor.schema == OperationSchemaId::ArithIndexCast ||
       actor.schema == OperationSchemaId::ArithIndexCastUI) {
     bool sourceIsIndex = ::llvm::isa<::mlir::IndexType>(sourceType);
     bool destinationIsIndex = ::llvm::isa<::mlir::IndexType>(destinationType);
     if (sourceIsIndex == destinationIsIndex)
       return reject("index cast requires exactly one index endpoint");
-    llvm::Expected<IntegerWidth> index = resolvedIndexWidth(params.relation);
-    if (!index)
-      return index.takeError();
     llvm::Expected<IntegerWidth> integer = integerWidth(
         sourceIsIndex ? destinationType : sourceType, "integer cast relation");
     if (!integer)
       return integer.takeError();
-    source = sourceIsIndex ? *index : *integer;
-    destination = sourceIsIndex ? *integer : *index;
-  } else {
-    llvm::Expected<IntegerWidth> sourceWidth =
-        integerWidth(sourceType, "integer cast relation");
-    if (!sourceWidth)
-      return sourceWidth.takeError();
-    llvm::Expected<IntegerWidth> destinationWidth =
-        integerWidth(destinationType, "integer cast relation");
-    if (!destinationWidth)
-      return destinationWidth.takeError();
-    source = *sourceWidth;
-    destination = *destinationWidth;
+    constexpr fabric::ResolvedIndexWidth indexWidths[] = {
+        fabric::ResolvedIndexWidth::I32, fabric::ResolvedIndexWidth::I64};
+    for (fabric::ResolvedIndexWidth resolved : indexWidths) {
+      if (!params.relation.resolvedIndexWidths.contains(resolved))
+        continue;
+      const IntegerWidth index = resolved == fabric::ResolvedIndexWidth::I32
+                                     ? IntegerWidth::I32
+                                     : IntegerWidth::I64;
+      const IntegerWidth source = sourceIsIndex ? index : *integer;
+      const IntegerWidth destination = sourceIsIndex ? *integer : index;
+      if (params.relation.widthPairs.contains(source, destination))
+        return llvm::Error::success();
+    }
+    return reject("integer cast relation does not admit the resolved index "
+                  "endpoint pair");
   }
 
-  if (!params.relation.widthPairs.contains(source, destination))
+  llvm::Expected<IntegerWidth> source =
+      integerWidth(sourceType, "integer cast relation");
+  if (!source)
+    return source.takeError();
+  llvm::Expected<IntegerWidth> destination =
+      integerWidth(destinationType, "integer cast relation");
+  if (!destination)
+    return destination.takeError();
+  if (!params.relation.widthPairs.contains(*source, *destination))
     return reject("integer cast relation does not admit the endpoint pair");
-  unsigned sourceBits = integerBitWidth(source);
-  unsigned destinationBits = integerBitWidth(destination);
+  unsigned sourceBits = integerBitWidth(*source);
+  unsigned destinationBits = integerBitWidth(*destination);
   switch (actor.schema) {
   case OperationSchemaId::ArithExtSI:
   case OperationSchemaId::ArithExtUI:

@@ -1024,7 +1024,8 @@ void publicFuLibraryBuildsTypedGraphs() {
     inputs.push_back(take(test, pe.input(ordinal)));
   if (llvm::Error error = loom::adg::addCoreAluFu(
           pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3),
-          ::fabric::ResolvedIndexWidth::I64))
+          ::fabric::ResolvedIndexWidthSet::get(
+              {::fabric::ResolvedIndexWidth::I64})))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addMacFu(pe, inputs))
     fail(test, llvm::toString(std::move(error)));
@@ -1234,7 +1235,7 @@ void resolvedCapabilityPreservesTypedVectorGeometry() {
           "Fabric capability index treated equal payload width as semantics");
 }
 
-void resolvedIndexCastUsesExactTargetWidth() {
+void builtinResolvedIndexCastCoversTypedWidthDomain() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -1253,9 +1254,9 @@ void resolvedIndexCastUsesExactTargetWidth() {
       ::dataflow::NoPayload{}};
   loom::frontend::FabricCapabilityIndex index(module.view());
   require(test, !index.admittingOperationResources(actor, 32).empty(),
-          "builtin Fabric rejected its exact 32-bit resolved index cast");
-  require(test, index.admittingOperationResources(actor, 64).empty(),
-          "builtin Fabric ignored the exact target index width");
+          "builtin Fabric rejected its 32-bit resolved index cast");
+  require(test, !index.admittingOperationResources(actor, 64).empty(),
+          "builtin Fabric rejected its 64-bit resolved index cast");
 }
 
 void fuBackedgesAreExplicitAndResolved() {
@@ -1643,7 +1644,7 @@ int main() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
   resolvedCapabilityPreservesTypedVectorGeometry();
-  resolvedIndexCastUsesExactTargetWidth();
+  builtinResolvedIndexCastCoversTypedWidthDomain();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
   routedFuLibraryBuildsHeterogeneousBoundaries();

@@ -99,7 +99,7 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 ::fabric::IntegerCastRelation
-integerCastRelation(::fabric::ResolvedIndexWidth resolvedIndexWidth) {
+integerCastRelation(::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
   ::fabric::IntegerWidthRelation relation;
   constexpr std::array<::fabric::IntegerWidth, 5> widths = {
       ::fabric::IntegerWidth::I1, ::fabric::IntegerWidth::I8,
@@ -108,7 +108,7 @@ integerCastRelation(::fabric::ResolvedIndexWidth resolvedIndexWidth) {
   for (::fabric::IntegerWidth source : widths)
     for (::fabric::IntegerWidth destination : widths)
       relation.insert(source, destination);
-  return {relation, resolvedIndexWidth};
+  return {relation, resolvedIndexWidths};
 }
 
 ::fabric::FloatFormatRelation floatCastRelation() {
@@ -329,7 +329,7 @@ SelectableResource scalarFloat(ImplementationFamilyId family,
 } // namespace
 
 llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
-                         ::fabric::ResolvedIndexWidth resolvedIndexWidth) {
+                         ::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
   if (inputs.size() != 3)
     return invalid("CoreAluFu requires data0, data1, and condition inputs");
   auto bits64 = PortType::bits(64);
@@ -359,7 +359,7 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
        {2, 0, 1}});
   resources.push_back({ImplementationFamilyId::ScalarIntegerCast,
                        ::fabric::ScalarIntegerCastParams{
-                           integerCastRelation(resolvedIndexWidth)},
+                           integerCastRelation(resolvedIndexWidths)},
                        {0}});
   resources.push_back({ImplementationFamilyId::ScalarBitReinterpret,
                        ::fabric::ScalarBitReinterpretParams{

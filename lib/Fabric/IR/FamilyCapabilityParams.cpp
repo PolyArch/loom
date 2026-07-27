@@ -330,19 +330,35 @@ parseIntegerFloatRelation(DictionaryAttr params, llvm::StringRef field) {
   return relation;
 }
 
-llvm::Expected<ResolvedIndexWidth> parseResolvedIndexWidth(Attribute attr) {
+llvm::Expected<ResolvedIndexWidth>
+parseResolvedIndexWidth(Attribute attr, llvm::StringRef field) {
   auto integer = dyn_cast<IntegerAttr>(attr);
   if (!integer || integer.getValue().isNegative() ||
       integer.getValue().getActiveBits() > 32)
-    return reject("hw_params field 'resolved_index_width' must be 32 or 64");
-  switch (integer.getValue().getZExtValue()) {
-  case 32:
-    return ResolvedIndexWidth::I32;
-  case 64:
-    return ResolvedIndexWidth::I64;
-  default:
-    return reject("hw_params field 'resolved_index_width' must be 32 or 64");
+    return reject("hw_params field '" + field + "' must contain 32 or 64");
+  std::optional<ResolvedIndexWidth> width = symbolizeResolvedIndexWidth(
+      static_cast<unsigned>(integer.getValue().getZExtValue()));
+  if (!width)
+    return reject("hw_params field '" + field + "' must contain 32 or 64");
+  return *width;
+}
+
+llvm::Expected<ResolvedIndexWidthSet>
+parseResolvedIndexWidths(DictionaryAttr params, llvm::StringRef field) {
+  auto values = requireArray(params, field);
+  if (!values)
+    return values.takeError();
+  ResolvedIndexWidthSet widths;
+  for (Attribute value : *values) {
+    auto width = parseResolvedIndexWidth(value, field);
+    if (!width)
+      return width.takeError();
+    if (widths.contains(*width))
+      return reject("hw_params field '" + field +
+                    "' contains a duplicate index width");
+    widths.insert(*width);
   }
+  return widths;
 }
 
 llvm::Expected<FamilyCapabilityParams>
@@ -391,20 +407,17 @@ parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
   }
   case Schema::ScalarIntegerCastParams: {
     if (llvm::Error error =
-            checkFields(params, {"width_pairs"}, {"resolved_index_width"}))
+            checkFields(params, {"width_pairs", "resolved_index_widths"}))
       return std::move(error);
     auto pairs = parseIntegerWidthRelation(params, "width_pairs");
     if (!pairs)
       return pairs.takeError();
-    std::optional<ResolvedIndexWidth> indexWidth;
-    if (Attribute encoded = params.get("resolved_index_width")) {
-      auto parsed = parseResolvedIndexWidth(encoded);
-      if (!parsed)
-        return parsed.takeError();
-      indexWidth = *parsed;
-    }
+    auto indexWidths =
+        parseResolvedIndexWidths(params, "resolved_index_widths");
+    if (!indexWidths)
+      return indexWidths.takeError();
     return FamilyCapabilityParams(
-        ScalarIntegerCastParams{IntegerCastRelation{*pairs, indexWidth}});
+        ScalarIntegerCastParams{IntegerCastRelation{*pairs, *indexWidths}});
   }
   case Schema::ScalarBitReinterpretParams: {
     if (llvm::Error error =
@@ -853,14 +866,16 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
           fields.push_back(builder.getNamedAttr(
               "width_pairs",
               integerPairsAttr(builder, typed.relation.widthPairs)));
-          if (typed.relation.resolvedIndexWidth) {
-            unsigned width =
-                *typed.relation.resolvedIndexWidth == ResolvedIndexWidth::I32
-                    ? 32
-                    : 64;
-            fields.push_back(builder.getNamedAttr("resolved_index_width",
-                                                  integerAttr(builder, width)));
+          llvm::SmallVector<Attribute, 2> indexWidths;
+          constexpr ResolvedIndexWidth orderedWidths[] = {
+              ResolvedIndexWidth::I32, ResolvedIndexWidth::I64};
+          for (ResolvedIndexWidth width : orderedWidths) {
+            if (typed.relation.resolvedIndexWidths.contains(width))
+              indexWidths.push_back(
+                  integerAttr(builder, getResolvedIndexBitWidth(width)));
           }
+          fields.push_back(builder.getNamedAttr(
+              "resolved_index_widths", builder.getArrayAttr(indexWidths)));
           return builder.getDictionaryAttr(fields);
         } else if constexpr (std::is_same_v<T, ScalarBitReinterpretParams>) {
           return builder.getDictionaryAttr({

@@ -13,7 +13,7 @@ namespace loom::adg {
 /// condition, in that order. The helper constructs only ordinary Fabric
 /// resources and closes the FU before returning.
 llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
-                         ::fabric::ResolvedIndexWidth resolvedIndexWidth);
+                         ::fabric::ResolvedIndexWidthSet resolvedIndexWidths);
 
 /// Adds scalar multiply, fused and non-fused multiply-add, and local carry
 /// recurrence graphs. Inputs are data0, data1, data2, and phase.

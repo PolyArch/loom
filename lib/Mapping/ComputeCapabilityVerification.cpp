@@ -141,7 +141,7 @@ llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
                           "operation");
     if (llvm::Error error = ::fabric::verifyImplementationFamilyAdmission(
             operation->second->family, &operation->second->capability,
-            (*actor)->semantics))
+            (*actor)->semantics, dataflow.indexBitWidth))
       return mappingError(
           MappingErrorCode::CapabilityTemplateMismatch,
           llvm::Twine("actor is not admitted by the selected Fabric "

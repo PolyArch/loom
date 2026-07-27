@@ -203,6 +203,7 @@ TestCase makeValidCase() {
   const ActorId addActor(3);
   DataflowProgramView dataflow{
       dataflowId,
+      32,
       {GraphDescriptor{graph, {value, stream, auxiliary}, {value}}},
       {ActorDescriptor{multiplyActor,
                        graph,
@@ -324,6 +325,7 @@ TestCase makeMemoryAnchorCase() {
   };
   DataflowProgramView dataflow{
       dataflowId,
+      32,
       {GraphDescriptor{graph,
                        {memory, value, control, value, value, value, value},
                        {memory, control}}},
