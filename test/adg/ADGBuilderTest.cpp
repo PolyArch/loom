@@ -1229,27 +1229,40 @@ void heterogeneousSystemFinalizes() {
   const PortType bits32 = take(test, PortType::bits(32));
 
   DesignBuilder moduleDesign(store);
-  auto spatial = take(test, moduleDesign.createSpatialCore("system-spatial",
-                                                           {bits32}, {bits32}));
-  SpatialValue buffered =
-      take(test, spatial.addFifo(take(test, spatial.input(0)),
-                                 FifoSpec{bits32, 2, true}));
-  if (llvm::Error error = spatial.close({buffered}))
+  auto firstSpatial =
+      take(test, moduleDesign.createSpatialCore("system-spatial-buffered",
+                                                {bits32}, {bits32}));
+  SpatialValue firstBuffered =
+      take(test, firstSpatial.addFifo(take(test, firstSpatial.input(0)),
+                                      FifoSpec{bits32, 2, true}));
+  if (llvm::Error error = firstSpatial.close({firstBuffered}))
+    fail(test, llvm::toString(std::move(error)));
+  auto secondSpatial =
+      take(test, moduleDesign.createSpatialCore("system-spatial-deep-buffered",
+                                                {bits32}, {bits32}));
+  SpatialValue secondBuffered =
+      take(test, secondSpatial.addFifo(take(test, secondSpatial.input(0)),
+                                       FifoSpec{bits32, 3, false}));
+  if (llvm::Error error = secondSpatial.close({secondBuffered}))
     fail(test, llvm::toString(std::move(error)));
   loom::adg::FinalizedFabricDesign moduleClosure =
       take(test, std::move(moduleDesign).finalize());
+  require(test, moduleClosure.roots().size() == 2,
+          "heterogeneous System fixture did not publish both SpatialCores");
 
   DesignBuilder systemDesign(store);
   auto system = take(test, systemDesign.createSystem("heterogeneous-system"));
-  auto imported =
-      take(test, system.importSpatialCore(moduleClosure.roots().front()));
+  auto firstImported =
+      take(test, system.importSpatialCore(moduleClosure.roots()[0]));
+  auto secondImported =
+      take(test, system.importSpatialCore(moduleClosure.roots()[1]));
   auto architecture = instructionArchitecture(test);
   auto firstCore =
       take(test, system.addAccCore(architecture, inOrderMicroarchitecture(test),
-                                   imported));
+                                   firstImported));
   auto secondCore = take(
       test, system.addAccCore(architecture, outOfOrderMicroarchitecture(test),
-                              imported));
+                              secondImported));
 
   auto transport =
       take(test, system.addTransportResource(
@@ -1298,11 +1311,15 @@ void heterogeneousSystemFinalizes() {
   const auto &root = finalized.roots().front();
   require(test, root.view().rootKind() == loom::fabric::FabricRootKind::System,
           "System Builder published the wrong root kind");
-  require(test,
-          root.directDependencies().size() == 1 &&
-              root.directDependencies().front().root ==
-                  moduleClosure.roots().front().reference(),
-          "System Builder changed its exact SpatialCore dependency");
+  require(test, root.directDependencies().size() == 2,
+          "heterogeneous System did not retain both SpatialCore types");
+  for (const auto &module : moduleClosure.roots()) {
+    bool found = false;
+    for (const auto &dependency : root.directDependencies())
+      found |= dependency.root == module.reference();
+    require(test, found,
+            "heterogeneous System changed an exact SpatialCore dependency");
+  }
   require(test,
           entityCount(root.view(),
                       loom::fabric::FabricEntityKind::AccCoreOccurrence) == 2,
@@ -1355,6 +1372,10 @@ void heterogeneousSystemFinalizes() {
   require(test, exportedMlir.get()->getBuffer().contains("fabric.system"),
           "paired export did not write the canonical Fabric MLIR projection");
   const llvm::StringRef html = exportedHtml.get()->getBuffer();
+  const std::size_t firstSpatialView =
+      html.find("data-view-kind=\"spatial-core\"");
+  const std::size_t secondSpatialView =
+      html.find("data-view-kind=\"spatial-core\"", firstSpatialView + 1);
   require(
       test,
       html.contains("data-layout-engine=\"loom-layered-v1\"") &&
@@ -1366,6 +1387,10 @@ void heterogeneousSystemFinalizes() {
           html.contains("data-entity-kind=\"fabric.fifo_occurrence\"") &&
           html.contains("data-x=\"") && html.contains("data-y=\""),
       "Fabric HTML did not contain the precomputed two-level topology");
+  require(test,
+          firstSpatialView != llvm::StringRef::npos &&
+              secondSpatialView != llvm::StringRef::npos,
+          "Fabric HTML did not preserve both heterogeneous SpatialCore views");
   const std::size_t overviewBegin =
       html.find("data-view-kind=\"system-overview\"");
   const std::size_t overviewEnd = html.find("</svg>", overviewBegin);
