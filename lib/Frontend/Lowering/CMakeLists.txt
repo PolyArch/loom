@@ -17,15 +17,18 @@ add_mlir_library(LoomFrontendLowering
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
-  MLIRDataflow
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
-  MLIRLoom
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
   MLIRSupport
   MLIRTransforms
   MLIRUBDialect
+)
+
+target_link_libraries(LoomFrontendLowering PUBLIC
+  MLIRDataflow
+  MLIRLoom
 )

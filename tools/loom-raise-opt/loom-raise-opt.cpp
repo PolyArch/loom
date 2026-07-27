@@ -5,13 +5,11 @@
 // loom-scf-while-to-for, loom-materialize-fmuladd,
 // loom-scf-for-to-forall, loom-lower-forall-to-thread,
 // loom-lower-for-to-graph, loom-lower-scf-to-dfg) and the optional
-// typed Dataflow rewrite pass (dataflow-rewrite). The Loom dataflow
-// and fabric dialects are also registered so hand-written .mlir lit
-// tests can exercise dataflow.thread / dataflow.graph op shapes.
+// typed Dataflow rewrite pass (dataflow-rewrite). The Loom and Dataflow
+// dialects are registered for structured-program and graph tests.
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/Transforms/DataflowRewrite.h"
-#include "Fabric/IR/FabricDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/Passes.h"
 #include "Frontend/Raising/Passes.h"
@@ -27,8 +25,7 @@ int main(int argc, char **argv) {
   ::mlir::registerAllDialects(registry);
   ::mlir::registerAllExtensions(registry);
   ::mlir::registerAllPasses();
-  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect,
-                  ::loom::LoomDialect>();
+  registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
   loom::raising::registerRaisingPasses();
   loom::lowering::registerLoweringPasses();
   dataflow::registerDataflowTransformsPasses();

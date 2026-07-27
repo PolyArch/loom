@@ -13,7 +13,6 @@
 // the lowering passes run inside this binary's PassManager.
 
 #include "Dataflow/IR/DataflowDialect.h"
-#include "Fabric/IR/FabricDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
@@ -85,8 +84,7 @@ int main(int argc, char **argv) {
   // Set up MLIR.
   ::mlir::DialectRegistry registry;
   ::mlir::registerAllDialects(registry);
-  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect,
-                  ::loom::LoomDialect>();
+  registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
 
   ::mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects(allowUnregisteredDialects);
@@ -96,7 +94,7 @@ int main(int argc, char **argv) {
                    ::mlir::func::FuncDialect, ::mlir::LLVM::LLVMDialect,
                    ::mlir::math::MathDialect, ::mlir::memref::MemRefDialect,
                    ::mlir::scf::SCFDialect, ::mlir::ub::UBDialect,
-                   ::dataflow::DataflowDialect, ::fabric::FabricDialect>();
+                   ::dataflow::DataflowDialect>();
 
   // Parse input.
   std::string errMsg;

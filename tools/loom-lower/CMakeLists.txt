@@ -15,10 +15,13 @@ set_target_properties(loom-lower PROPERTIES
 
 target_link_libraries(loom-lower PRIVATE
   LoomFrontendLowering
+  MLIRDataflow
+  MLIRLoom
+)
+
+mlir_target_link_libraries(loom-lower PRIVATE
   MLIRArithDialect
   MLIRControlFlowDialect
-  MLIRDataflow
-  MLIRFabric
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
