@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <vector>
 
 namespace loom::frontend {
 
@@ -38,6 +39,14 @@ struct OperationSpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::optional<unsigned> canonicalIndexWidth;
 };
+
+/// Enumerates ownership-free structured scopes in the exact parent
+/// candidate's canonical operation order. These are search coordinates, not
+/// accepted or ranked candidates: applying a concrete typed decision may
+/// still fail legality, materialization, or exact-Fabric admission.
+llvm::Expected<std::vector<StructuredEntityRef>>
+enumerateOperationSpatialOwnershipScopes(
+    const StructuredProgramCandidate &parent);
 
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
 /// one exact void, single-block LLVM callable. Its original body moves into an

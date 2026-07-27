@@ -550,6 +550,44 @@ void explicitOperationSpatialOwnership() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void operationOwnershipScopesFollowCanonicalOrder() {
+  const char *test = "operationOwnershipScopesFollowCanonicalOrder";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-operation-scopes", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseLoopOwnershipModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto scopes =
+      take(test, loom::frontend::enumerateOperationSpatialOwnershipScopes(
+                     compiled.structuredProgram));
+  auto view = take(test, compiled.structuredProgram.view());
+
+  std::vector<loom::frontend::StructuredEntityRef> expected;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation))
+      expected.push_back(entity.reference);
+  }
+  if (expected.size() != 2 || scopes != expected)
+    fail(test, "ownership scopes do not follow canonical operation order");
+  for (const auto &scope : scopes)
+    if (scope.parent != compiled.structuredProgram.identity() ||
+        scope.kind != loom::frontend::StructuredEntityKind::Operation)
+      fail(test, "ownership scope is not parent-local operation identity");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationSpatialOwnershipRejectsEscapedResult() {
   const char *test = "operationSpatialOwnershipRejectsEscapedResult";
   llvm::SmallString<128> directory;
@@ -587,6 +625,7 @@ int main() {
   explicitWholeCallableSpatialOwnership();
   explicitFmulAddExecutionShape();
   explicitOperationSpatialOwnership();
+  operationOwnershipScopesFollowCanonicalOrder();
   operationSpatialOwnershipRejectsEscapedResult();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;

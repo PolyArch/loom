@@ -23,6 +23,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace loom::frontend {
 namespace {
@@ -198,35 +199,60 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   return llvm::Error::success();
 }
 
-/// Returns the ordinary LLVM callable that owns the selected operation, after
-/// proving the operation is an ownership-free structured entity: inside an
-/// LLVM callable, outside every dataflow.thread, dataflow.graph, and
-/// loom.spatial_region, with at least one region and no SSA result used
-/// outside itself.
-llvm::Expected<mlir::LLVM::LLVMFuncOp>
-eligibleOwningCallable(mlir::Operation *operation) {
+enum class OwnershipScopeRejection {
+  None,
+  AlreadyOwned,
+  NoOrdinaryCallable,
+  NoRegion,
+};
+
+struct OwnershipScopeAnalysis {
+  mlir::LLVM::LLVMFuncOp callable;
+  OwnershipScopeRejection rejection = OwnershipScopeRejection::None;
+};
+
+OwnershipScopeAnalysis analyzeOwnershipScope(mlir::Operation *operation) {
   mlir::LLVM::LLVMFuncOp callable;
   for (mlir::Operation *ancestor = operation->getParentOp(); ancestor;
        ancestor = ancestor->getParentOp()) {
     if (llvm::isa<dataflow::ThreadOp, dataflow::GraphOp, loom::SpatialRegionOp>(
             ancestor))
-      return invalid("selected operation already has an execution owner");
+      return {nullptr, OwnershipScopeRejection::AlreadyOwned};
     if (auto candidate = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(ancestor)) {
       callable = candidate;
       break;
     }
   }
   if (!callable)
+    return {nullptr, OwnershipScopeRejection::NoOrdinaryCallable};
+  if (operation->getNumRegions() == 0)
+    return {nullptr, OwnershipScopeRejection::NoRegion};
+  return {callable, OwnershipScopeRejection::None};
+}
+
+/// Returns the ordinary LLVM callable that owns the selected operation, after
+/// proving the operation is an ownership-free structured entity with no SSA
+/// result used outside itself.
+llvm::Expected<mlir::LLVM::LLVMFuncOp>
+eligibleOwningCallable(mlir::Operation *operation) {
+  OwnershipScopeAnalysis analysis = analyzeOwnershipScope(operation);
+  switch (analysis.rejection) {
+  case OwnershipScopeRejection::None:
+    break;
+  case OwnershipScopeRejection::AlreadyOwned:
+    return invalid("selected operation already has an execution owner");
+  case OwnershipScopeRejection::NoOrdinaryCallable:
     return invalid(
         "selected operation is not inside an ordinary LLVM callable");
-  if (operation->getNumRegions() == 0)
+  case OwnershipScopeRejection::NoRegion:
     return invalid("selected operation owns no region");
+  }
   for (mlir::OpResult result : operation->getResults())
     for (mlir::Operation *user : result.getUsers())
       if (!operation->isProperAncestor(user))
         return invalid(
             "selected operation has an SSA result used outside itself");
-  return callable;
+  return analysis.callable;
 }
 
 /// Derives every external SSA live-in used by the selected operation itself or
@@ -375,6 +401,26 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
 }
 
 } // namespace
+
+llvm::Expected<std::vector<StructuredEntityRef>>
+enumerateOperationSpatialOwnershipScopes(
+    const StructuredProgramCandidate &parent) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+
+  std::vector<StructuredEntityRef> scopes;
+  for (const StructuredEntity &entity :
+       view->entities(StructuredEntityKind::Operation)) {
+    if (!entity.operation)
+      continue;
+    if (analyzeOwnershipScope(entity.operation).rejection !=
+        OwnershipScopeRejection::None)
+      continue;
+    scopes.push_back(entity.reference);
+  }
+  return scopes;
+}
 
 llvm::Expected<MaterializedOwnershipCandidate>
 materializeWholeCallableSpatialOwnership(
