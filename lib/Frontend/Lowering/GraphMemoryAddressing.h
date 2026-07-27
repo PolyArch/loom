@@ -29,7 +29,8 @@ struct ResolvedLinearGepAddress {
 
 std::optional<ResolvedLinearGepAddress>
 resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
-                        mlir::Type elementType);
+                        mlir::Type elementType,
+                        unsigned canonicalIndexBits);
 
 } // namespace loom::lowering
 

@@ -135,7 +135,11 @@ bool isLegacyFlaggedPair(llvm::ArrayRef<mlir::LLVM::GEPOp> leafToRoot) {
 
 std::optional<ResolvedLinearGepAddress>
 resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
-                        mlir::Type elementType) {
+                        mlir::Type elementType,
+                        unsigned canonicalIndexBits) {
+  if (canonicalIndexBits == 0 ||
+      canonicalIndexBits > mlir::IntegerType::kMaxWidth)
+    return std::nullopt;
   llvm::SmallVector<mlir::LLVM::GEPOp, 4> leafToRoot;
   mlir::Value root;
   for (mlir::LLVM::GEPOp current = leafGep; current;) {
@@ -203,6 +207,8 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
     std::optional<std::uint64_t> strideBytes = getAllocBytes(gep.getElemType());
     if (!strideBytes || *strideBytes > maxSigned ||
         !llvm::isIntN(*pointerIndexBits,
+                      static_cast<std::int64_t>(*strideBytes)) ||
+        !llvm::isIntN(canonicalIndexBits,
                       static_cast<std::int64_t>(*strideBytes)))
       return std::nullopt;
 
@@ -219,10 +225,10 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       } else {
         indexBits = getIntegralIndexBitWidth(dataLayout, index.getType());
       }
-      if (!indexBits || *indexBits != *pointerIndexBits ||
-          (result.indexType && result.indexType != index.getType()))
+      if (!indexBits || *indexBits > canonicalIndexBits)
         return std::nullopt;
-      result.indexType = index.getType();
+      result.indexType = mlir::IntegerType::get(leafGep.getContext(),
+                                                canonicalIndexBits);
       if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
         return std::nullopt;
       unsigned strideShift =
@@ -243,7 +249,8 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
   }
 
   if (constantByteOffset % static_cast<std::int64_t>(*elementBytes) != 0 ||
-      !llvm::isIntN(*pointerIndexBits, constantByteOffset))
+      !llvm::isIntN(*pointerIndexBits, constantByteOffset) ||
+      !llvm::isIntN(canonicalIndexBits, constantByteOffset))
     return std::nullopt;
 
   bool preserveElementIndex =
@@ -259,8 +266,8 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
   }
 
   if (!result.indexType)
-    result.indexType = mlir::IntegerType::get(
-        leafGep.getContext(), static_cast<unsigned>(*pointerIndexBits));
+    result.indexType =
+        mlir::IntegerType::get(leafGep.getContext(), canonicalIndexBits);
   result.byteBias = constantByteOffset;
   for (mlir::LLVM::GEPOp gep : leafToRoot)
     result.gepsLeafToRoot.push_back(gep.getOperation());

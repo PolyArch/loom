@@ -63,6 +63,35 @@ module attributes {
 
 // -----
 
+// The Structured candidate owns its canonical address-index width. LLVM's
+// pointer index size still determines source GEP semantics, but it cannot
+// override an already materialized, narrower GEP operand and fixed index
+// declaration during mechanical graph-memory lowering.
+
+// CHECK-LABEL: dataflow.graph private @canonical_i32_on_pointer64
+// CHECK: %[[I32:.*]] = arith.extsi %{{.*}} : i16 to i32
+// CHECK: %[[ADDR:.*]] = arith.index_cast %[[I32]] : i32 to index
+// CHECK: %[[DATA:.*]], %[[DONE:.*]] = dataflow.load %{{.*}}[%[[ADDR]]]
+// CHECK: dataflow.store %{{.*}}[%[[ADDR]]] %[[DATA]] %[[DONE]]
+// CHECK-NOT: llvm.getelementptr
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+  dataflow.graph private @canonical_i32_on_pointer64(
+      %ctrl: none, %address: i16, %base: !llvm.ptr)
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %ptr = llvm.getelementptr inbounds %base[%address]
+        : (!llvm.ptr, i16) -> !llvm.ptr, !llvm.array<4 x i8>
+    %value = llvm.load %ptr : !llvm.ptr -> f32
+    llvm.store %value, %ptr : f32, !llvm.ptr
+    dataflow.graph.return %ctrl : none
+  }
+}
+
+// -----
+
 // Region lowering consumes the width the pass boundary resolved, so an
 // index-typed loop becomes a 64-bit ordinal stream even though the configured
 // width is 32.

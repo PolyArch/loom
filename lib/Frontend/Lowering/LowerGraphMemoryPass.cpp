@@ -354,7 +354,8 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
                                              unsigned indexBits) {
   if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
     if (auto linear =
-            ::loom::lowering::resolveLinearGepAddress(gep, graph, elemTy)) {
+            ::loom::lowering::resolveLinearGepAddress(gep, graph, elemTy,
+                                                      indexBits)) {
       AddrResolution resolution;
       resolution.ptr = linear->root;
       resolution.linearByteTerms = std::move(linear->terms);
@@ -537,9 +538,26 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
   builder.setInsertionPoint(insertBefore);
   ::mlir::Value result;
   for (const LinearByteTerm &term : terms) {
-    if (term.index.getType() != indexType)
-      return {};
     ::mlir::Value contribution = term.index;
+    if (contribution.getType() != indexType) {
+      auto destination = ::llvm::dyn_cast<::mlir::IntegerType>(indexType);
+      if (!destination || !destination.isSignless())
+        return {};
+      if (::llvm::isa<::mlir::IndexType>(contribution.getType())) {
+        contribution = ::mlir::arith::IndexCastOp::create(
+                           builder, loc, destination, contribution)
+                           .getResult();
+      } else {
+        auto source = ::llvm::dyn_cast<::mlir::IntegerType>(
+            contribution.getType());
+        if (!source || !source.isSignless() ||
+            source.getWidth() >= destination.getWidth())
+          return {};
+        contribution = ::mlir::arith::ExtSIOp::create(
+                           builder, loc, destination, contribution)
+                           .getResult();
+      }
+    }
     if (term.byteStride != 1) {
       ::mlir::TypedAttr strideAttr =
           getIntegerLikeAttr(builder, indexType, term.byteStride);
