@@ -1,3 +1,0 @@
-# CMSIS-NN source-to-SCF smoke subset. This file does not define suite membership.
-# source|triple|cpu|source_symbol|extra_cflags
-ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|arm_relu6_s8|

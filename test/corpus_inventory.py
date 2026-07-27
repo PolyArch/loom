@@ -309,39 +309,6 @@ def render_json(cases: Sequence[CorpusCase]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def load_smoke_sources(
-    path: Path, suite_cases: Sequence[CorpusCase]
-) -> tuple[str, ...]:
-    if not path.is_file():
-        raise InventoryError(f"missing smoke target table: {path}")
-    suites = {case.suite for case in suite_cases}
-    if len(suites) != 1:
-        raise InventoryError("smoke validation requires one non-empty suite inventory")
-    suite = next(iter(suites))
-    members = {case.case for case in suite_cases}
-
-    sources: list[str] = []
-    for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
-        line = raw_line.removesuffix("\r")
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split("|")
-        if len(fields) != 5 or not all(fields[:4]):
-            raise InventoryError(f"{path}:{line_number}: malformed smoke target row")
-        source = fields[0]
-        if source in sources:
-            raise InventoryError(f"duplicate smoke source: {source}")
-        if source not in members:
-            raise InventoryError(f"{source} is not in the {suite} inventory")
-        sources.append(source)
-
-    if not sources:
-        raise InventoryError(f"smoke target table contains no sources: {path}")
-    if set(sources) == members:
-        raise InventoryError(f"{suite} smoke targets must be a strict subset")
-    return tuple(sources)
-
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -361,14 +328,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         dest="cases",
         metavar="SUITE:CASE",
     )
-
-    validate_smoke = commands.add_parser(
-        "validate-smoke", help="verify a CMSIS smoke table is an inventory subset"
-    )
-    validate_smoke.add_argument(
-        "--suite", required=True, choices=tuple(CMSIS_SUBMODULES)
-    )
-    validate_smoke.add_argument("--targets", required=True, type=Path)
     return parser.parse_args(argv)
 
 
@@ -383,10 +342,6 @@ def main(argv: Sequence[str]) -> int:
                 case_ids=args.cases,
             )
             sys.stdout.write(render_json(selected))
-            return 0
-        if args.command == "validate-smoke":
-            suite_cases = [case for case in inventory if case.suite == args.suite]
-            load_smoke_sources(args.targets, suite_cases)
             return 0
     except InventoryError as exc:
         print(f"corpus inventory: {exc}", file=sys.stderr)

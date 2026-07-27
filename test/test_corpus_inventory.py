@@ -25,10 +25,6 @@ CMSIS_SUITES = {
     "cmsis-dsp": EXTERNALS_ROOT / "cmsis-dsp",
     "cmsis-nn": EXTERNALS_ROOT / "cmsis-nn",
 }
-SMOKE_TABLES = {
-    "cmsis-dsp": TEST_ROOT / "cmsis-dsp" / "cmsis_dsp_raise_smoke_targets.txt",
-    "cmsis-nn": TEST_ROOT / "cmsis-nn" / "cmsis_nn_raise_smoke_targets.txt",
-}
 
 
 def git_output(repository: Path, *arguments: str) -> str:
@@ -367,44 +363,6 @@ class CorpusInventoryTest(unittest.TestCase):
                 suite_names=[],
                 case_ids=["cmsis-dsp:not/a/source.c"],
             )
-
-    def test_smoke_tables_are_strict_inventory_subsets(self) -> None:
-        cases_by_suite = {
-            suite: [case for case in self.cases if case.suite == suite]
-            for suite in CMSIS_SUITES
-        }
-        for suite, table in SMOKE_TABLES.items():
-            smoke_sources = corpus_inventory.load_smoke_sources(
-                table, cases_by_suite[suite]
-            )
-            full_sources = {case.case for case in cases_by_suite[suite]}
-            self.assertTrue(set(smoke_sources) < full_sources)
-
-    def test_smoke_validation_rejects_duplicates_and_non_members(self) -> None:
-        suite = "cmsis-dsp"
-        suite_cases = [case for case in self.cases if case.suite == suite]
-        source = suite_cases[0].case
-        row = f"{source}|thumbv7em-none-eabi|cortex-m4|symbol|\n"
-
-        with tempfile.TemporaryDirectory() as directory:
-            table = Path(directory) / "smoke.txt"
-            table.write_text(row + row)
-            with self.assertRaisesRegex(
-                corpus_inventory.InventoryError, "duplicate smoke source"
-            ):
-                corpus_inventory.load_smoke_sources(table, suite_cases)
-
-            table.write_text("not/a/member.c|thumbv7em-none-eabi|cortex-m4|symbol|\n")
-            with self.assertRaisesRegex(
-                corpus_inventory.InventoryError, "not in the cmsis-dsp inventory"
-            ):
-                corpus_inventory.load_smoke_sources(table, suite_cases)
-
-            table.write_text(row)
-            with self.assertRaisesRegex(
-                corpus_inventory.InventoryError, "must be a strict subset"
-            ):
-                corpus_inventory.load_smoke_sources(table, suite_cases[:1])
 
 
 if __name__ == "__main__":
