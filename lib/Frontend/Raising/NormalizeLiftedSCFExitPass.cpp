@@ -10,10 +10,10 @@
 //
 // Generic SCF canonicalization is not safe here: it can combine nested lazy
 // scf.if conditions into an eager arith.andi. This pass instead recognizes the
-// complete lift-owned scaffold and rewrites it directly. If any while result is
-// live, the scaffold is left intact so its exit-edge value remains observable.
-// Only that unobservable placeholder is removed, so a source poison, undef or
-// freeze keeps its own meaning.
+// complete lift-owned scaffold and rewrites it directly. A live result may be
+// redirected only when its exit value is exactly one of the continuation
+// values and its separate poison-initialized publication latch is otherwise
+// unused. A source poison, undef, or freeze therefore keeps its own meaning.
 
 #include "Frontend/Raising/Passes.h"
 
@@ -75,12 +75,6 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
                      loop.getAfter().front().getArguments()))
     return false;
 
-  // Replacing an exit-edge placeholder is exact only when the corresponding
-  // loop result is unobservable. Keep the whole scaffold if any result is live.
-  if (::llvm::any_of(loop.getResults(),
-                     [](::mlir::Value result) { return !result.use_empty(); }))
-    return false;
-
   auto trunc =
       condition.getCondition().getDefiningOp<::mlir::arith::TruncIOp>();
   if (!trunc || !trunc.getType().isInteger(1) ||
@@ -98,12 +92,14 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
   auto branch = ::mlir::dyn_cast<::mlir::scf::IfOp>(flagResult.getOwner());
   if (!branch || branch->getBlock() != condition->getBlock() ||
       branch->getNextNode() != trunc.getOperation() ||
-      branch->getNumResults() != condition.getArgs().size() + 2)
+      branch->getNumResults() < 2 ||
+      branch->getNumResults() > condition.getArgs().size() + 2)
     return false;
 
   unsigned loopValueCount = condition.getArgs().size();
-  unsigned discriminatorIndex = loopValueCount;
-  unsigned shouldRepeatIndex = loopValueCount + 1;
+  unsigned controlledValueCount = branch->getNumResults() - 2;
+  unsigned discriminatorIndex = controlledValueCount;
+  unsigned shouldRepeatIndex = controlledValueCount + 1;
   if (flagResult.getResultNumber() != shouldRepeatIndex)
     return false;
 
@@ -135,50 +131,137 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
       discriminatorElse == shouldRepeatElse)
     return false;
 
-  // The loop values occupy the fixed prefix and feed the condition in the
-  // same order. No arbitrary permutation is part of the pinned lift shape.
+  // Branch-controlled values occupy a prefix of the if results and appear in
+  // the condition arguments in the same relative order. A condition argument
+  // may instead be the same direct value on both edges. This is how the pinned
+  // lift publishes a live accumulator without routing it through the branch.
+  ::llvm::SmallVector<int, 4> controlledResultByLane(loopValueCount, -1);
+  unsigned nextControlledResult = 0;
   for (unsigned index = 0; index < loopValueCount; ++index) {
-    ::mlir::OpResult result = branch->getResult(index);
-    if (condition.getArgs()[index] != result || !result.hasOneUse() ||
+    auto result =
+        ::llvm::dyn_cast<::mlir::OpResult>(condition.getArgs()[index]);
+    if (!result || result.getOwner() != branch.getOperation())
+      continue;
+    if (result.getResultNumber() != nextControlledResult ||
+        result.getResultNumber() >= controlledValueCount ||
+        !result.hasOneUse() ||
         result.use_begin()->getOwner() != condition.getOperation())
       return false;
+    controlledResultByLane[index] = static_cast<int>(nextControlledResult++);
   }
-
-  auto comparison =
-      branch.getCondition().getDefiningOp<::mlir::arith::CmpIOp>();
-  if (!comparison || comparison->getBlock() != condition->getBlock() ||
-      comparison->getNextNode() != branch.getOperation() ||
-      !comparison->hasOneUse())
+  if (nextControlledResult != controlledValueCount)
     return false;
 
   ::llvm::SmallVector<::mlir::Value, 4> continuationArgs;
+  ::llvm::SmallVector<::mlir::Value, 4> exitArgs;
   continuationArgs.reserve(loopValueCount);
+  exitArgs.reserve(loopValueCount);
   for (unsigned index = 0; index < loopValueCount; ++index) {
-    ::mlir::Value continuation = shouldRepeatThen
-                                     ? thenYield.getResults()[index]
-                                     : elseYield.getResults()[index];
-    ::mlir::Value exit = shouldRepeatThen ? elseYield.getResults()[index]
-                                          : thenYield.getResults()[index];
-    if (!::mlir::isa_and_present<::mlir::ub::PoisonOp, ::mlir::LLVM::UndefOp>(
-            exit.getDefiningOp()))
+    int controlled = controlledResultByLane[index];
+    if (controlled < 0) {
+      continuationArgs.push_back(condition.getArgs()[index]);
+      exitArgs.push_back(condition.getArgs()[index]);
+      continue;
+    }
+    unsigned resultIndex = static_cast<unsigned>(controlled);
+    continuationArgs.push_back(shouldRepeatThen
+                                   ? thenYield.getResults()[resultIndex]
+                                   : elseYield.getResults()[resultIndex]);
+    exitArgs.push_back(shouldRepeatThen ? elseYield.getResults()[resultIndex]
+                                        : thenYield.getResults()[resultIndex]);
+  }
+
+  const auto exceptionalPlaceholder = [](::mlir::Value value) {
+    return ::mlir::isa_and_present<::mlir::ub::PoisonOp, ::mlir::LLVM::UndefOp>(
+        value.getDefiningOp());
+  };
+
+  struct ResultProjection {
+    unsigned source;
+    unsigned target;
+    ::llvm::SmallVector<::mlir::OpOperand *, 2> uses;
+  };
+  ::llvm::SmallVector<ResultProjection, 2> projections;
+  ::llvm::SmallVector<::mlir::Operation *, 8> placeholders;
+  const auto rememberPlaceholder = [&](::mlir::Value value) {
+    ::mlir::Operation *operation = value.getDefiningOp();
+    if (operation && !::llvm::is_contained(placeholders, operation))
+      placeholders.push_back(operation);
+  };
+
+  for (unsigned index = 0; index < loopValueCount; ++index) {
+    ::mlir::Value result = loop.getResult(index);
+    if (result.use_empty()) {
+      if (controlledResultByLane[index] >= 0 &&
+          !exceptionalPlaceholder(exitArgs[index]))
+        return false;
+      if (controlledResultByLane[index] >= 0)
+        rememberPlaceholder(exitArgs[index]);
+      continue;
+    }
+
+    if (exceptionalPlaceholder(exitArgs[index]))
       return false;
-    continuationArgs.push_back(continuation);
+    auto target = ::llvm::find(continuationArgs, exitArgs[index]);
+    if (target == continuationArgs.end())
+      return false;
+    unsigned targetIndex =
+        static_cast<unsigned>(target - continuationArgs.begin());
+
+    ResultProjection projection{index, targetIndex, {}};
+    for (::mlir::OpOperand &use : result.getUses())
+      projection.uses.push_back(&use);
+
+    if (targetIndex != index) {
+      if (!loop.getBeforeArguments()[index].use_empty() ||
+          !exceptionalPlaceholder(loop.getInits()[index]))
+        return false;
+      rememberPlaceholder(loop.getInits()[index]);
+      if (exceptionalPlaceholder(continuationArgs[index]))
+        rememberPlaceholder(continuationArgs[index]);
+    }
+    projections.push_back(std::move(projection));
+  }
+
+  for (const ResultProjection &projection : projections) {
+    if (projection.source == projection.target)
+      continue;
+    loop->setOperand(projection.source, loop.getInits()[projection.target]);
+    continuationArgs[projection.source] = continuationArgs[projection.target];
   }
 
   rewriter.setInsertionPoint(condition);
   ::mlir::Value selector = branch.getCondition();
-  if (!shouldRepeatThen)
-    selector = ::mlir::arith::CmpIOp::create(
-        rewriter, comparison.getLoc(),
-        ::mlir::arith::invertPredicate(comparison.getPredicate()),
-        comparison.getLhs(), comparison.getRhs());
+  ::mlir::Operation *obsoleteComparison = nullptr;
+  if (!shouldRepeatThen) {
+    if (auto comparison =
+            branch.getCondition().getDefiningOp<::mlir::arith::CmpIOp>()) {
+      selector = ::mlir::arith::CmpIOp::create(
+          rewriter, comparison.getLoc(),
+          ::mlir::arith::invertPredicate(comparison.getPredicate()),
+          comparison.getLhs(), comparison.getRhs());
+      if (comparison->hasOneUse())
+        obsoleteComparison = comparison;
+    } else {
+      ::mlir::Value one = ::mlir::arith::ConstantOp::create(
+          rewriter, branch.getLoc(), rewriter.getBoolAttr(true));
+      selector = ::mlir::arith::XOrIOp::create(rewriter, branch.getLoc(),
+                                               branch.getCondition(), one);
+    }
+  }
 
   rewriter.replaceOpWithNewOp<::mlir::scf::ConditionOp>(condition, selector,
                                                         continuationArgs);
   rewriter.eraseOp(trunc);
   rewriter.eraseOp(branch);
-  if (!shouldRepeatThen)
-    rewriter.eraseOp(comparison);
+  if (obsoleteComparison)
+    rewriter.eraseOp(obsoleteComparison);
+  for (const ResultProjection &projection : projections)
+    for (::mlir::OpOperand *use : projection.uses)
+      use->set(loop.getResult(projection.target));
+  for (::mlir::Operation *placeholder : placeholders)
+    if (placeholder->use_empty())
+      rewriter.eraseOp(placeholder);
   return true;
 }
 

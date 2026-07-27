@@ -124,6 +124,55 @@ func.func @preserve_live_exit_value(%bound: i64) -> i64 {
   return %result : i64
 }
 
+// A lifted loop may use a separate poison-initialized latch to publish one
+// continuation value on exit. The latch is not semantic state: its live result
+// is an exact projection of the accumulator lane, while its before argument is
+// otherwise unused. Normalize the scaffold, redirect the result to that lane,
+// and retire every compiler-owned undef placeholder. The source exit can be
+// any exact i1 value; the flags scaffold does not own its computation.
+// CHECK-LABEL: func.func @normalize_live_projected_exit
+// CHECK-NOT: llvm.mlir.undef
+// CHECK: %[[PROJECTED_LOOP:.*]]:3 = scf.while
+// CHECK: %[[PROJECTED_NEXT:.*]] = arith.addi
+// CHECK-NEXT: %[[PROJECTED_SUM:.*]] = arith.addi
+// CHECK-NEXT: %[[PROJECTED_AT_BOUND:.*]] = arith.cmpi eq, %[[PROJECTED_NEXT]], %arg0
+// CHECK-NEXT: %[[PROJECTED_EXIT:.*]] = arith.andi %[[PROJECTED_AT_BOUND]], %arg1
+// CHECK: %[[PROJECTED_CONTINUE:.*]] = arith.xori %[[PROJECTED_EXIT]], %{{.*}}
+// CHECK-NEXT: scf.condition(%[[PROJECTED_CONTINUE]]) %[[PROJECTED_NEXT]], %[[PROJECTED_SUM]], %[[PROJECTED_SUM]]
+// CHECK: return %[[PROJECTED_LOOP]]#1
+// UPLIFT-LABEL: func.func @normalize_live_projected_exit
+// UPLIFT-NOT: llvm.mlir.undef
+// UPLIFT-NOT: scf.if
+// UPLIFT: return %{{.*}}#1
+func.func @normalize_live_projected_exit(%bound: i32, %enabled: i1) -> i32 {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %flag0 = arith.constant 0 : i32
+  %flag1 = arith.constant 1 : i32
+  %undefined = llvm.mlir.undef : i32
+  %result:3 = scf.while (%iv = %zero, %sum = %zero,
+                         %published = %undefined)
+      : (i32, i32, i32) -> (i32, i32, i32) {
+    %next = arith.addi %iv, %one : i32
+    %next_sum = arith.addi %sum, %next : i32
+    %at_bound = arith.cmpi eq, %next, %bound : i32
+    %exit = arith.andi %at_bound, %enabled : i1
+    %lifted:4 = scf.if %exit -> (i32, i32, i32, i32) {
+      scf.yield %undefined, %undefined, %flag1, %flag0
+          : i32, i32, i32, i32
+    } else {
+      scf.yield %next, %next_sum, %flag0, %flag1 : i32, i32, i32, i32
+    }
+    %selector = arith.trunci %lifted#3 : i32 to i1
+    scf.condition(%selector) %lifted#0, %lifted#1, %next_sum
+        : i32, i32, i32
+  } do {
+  ^bb0(%iv: i32, %sum: i32, %published: i32):
+    scf.yield %iv, %sum, %published : i32, i32, i32
+  }
+  return %result#2 : i32
+}
+
 // The exit edge must carry poison even when the loop result is dead. This
 // near-match uses an ordinary computed value while preserving every other
 // lift-owned scaffold invariant.
