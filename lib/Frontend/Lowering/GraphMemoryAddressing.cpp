@@ -117,20 +117,6 @@ std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
       std::min<std::uint64_t>(bits.getFixedValue(), 64));
 }
 
-bool isLegacyFlaggedPair(llvm::ArrayRef<mlir::LLVM::GEPOp> leafToRoot) {
-  if (leafToRoot.size() != 2)
-    return false;
-  mlir::LLVM::GEPOp leaf = leafToRoot.front();
-  mlir::LLVM::GEPOp root = leafToRoot.back();
-  auto leafRaw = leaf.getRawConstantIndices();
-  auto rootRaw = root.getRawConstantIndices();
-  return leafRaw.size() == 1 &&
-         leafRaw.front() != mlir::LLVM::GEPOp::kDynamicIndex &&
-         leaf.getDynamicIndices().empty() && rootRaw.size() == 1 &&
-         rootRaw.front() == mlir::LLVM::GEPOp::kDynamicIndex &&
-         root.getDynamicIndices().size() == 1;
-}
-
 } // namespace
 
 std::optional<ResolvedLinearGepAddress>
@@ -154,11 +140,11 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
   if (!root)
     return std::nullopt;
 
-  bool hasNoWrap = llvm::any_of(leafToRoot, [](mlir::LLVM::GEPOp gep) {
-    return gep.getNoWrapFlags() != mlir::LLVM::GEPNoWrapFlags::none;
-  });
-  if (leafToRoot.size() > 1 && hasNoWrap && !isLegacyFlaggedPair(leafToRoot))
-    return std::nullopt;
+  // The chain is discharged only when all pointer uses lower to logical
+  // memory accesses. On an LLVM-defined execution every no-wrap condition
+  // already holds; violating one poisons the source address and its consuming
+  // load or store has undefined behavior. The linear address is therefore the
+  // exact defined-domain projection regardless of the chain's flag spelling.
 
   mlir::DataLayout dataLayout =
       mlir::DataLayout::closest(leafGep.getOperation());

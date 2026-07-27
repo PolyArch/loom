@@ -234,11 +234,11 @@ dataflow.graph private @g_chained_dynamic_gep(
     %arg4: !llvm.ptr) -> (f32)
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
-  %outer = llvm.getelementptr %arg4[%arg1]
+  %outer = llvm.getelementptr inbounds %arg4[%arg1]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
-  %middle = llvm.getelementptr %outer[%arg2]
+  %middle = llvm.getelementptr inbounds %outer[%arg2]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
-  %inner = llvm.getelementptr %middle[%arg3]
+  %inner = llvm.getelementptr inbounds %middle[%arg3]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %value = llvm.load %inner : !llvm.ptr -> f32
   dataflow.graph.return %arg0, %value : none, f32
