@@ -968,6 +968,9 @@ struct LowerForToGraphPass
           // A body-less callable is a declaration, which cannot be public.
           ::mlir::SymbolTable::setSymbolVisibility(
               declaration, ::mlir::SymbolTable::Visibility::Private);
+          if (auto llvmFunction =
+                  ::llvm::dyn_cast<::mlir::LLVM::LLVMFuncOp>(declaration))
+            llvmFunction.setLinkage(::mlir::LLVM::Linkage::External);
         }
       }
       ::llvm::SmallVector<::dataflow::GraphOp, 4> staged;

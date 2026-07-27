@@ -12,7 +12,8 @@ namespace loom::adg {
 /// Adds the catalog's scalar ALU FU to one PE. Inputs are data0, data1, and
 /// condition, in that order. The helper constructs only ordinary Fabric
 /// resources and closes the FU before returning.
-llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                         ::fabric::ResolvedIndexWidth resolvedIndexWidth);
 
 /// Adds scalar multiply, fused and non-fused multiply-add, and local carry
 /// recurrence graphs. Inputs are data0, data1, data2, and phase.

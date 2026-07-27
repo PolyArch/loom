@@ -1023,7 +1023,8 @@ void publicFuLibraryBuildsTypedGraphs() {
   for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
     inputs.push_back(take(test, pe.input(ordinal)));
   if (llvm::Error error = loom::adg::addCoreAluFu(
-          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3)))
+          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3),
+          ::fabric::ResolvedIndexWidth::I64))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addMacFu(pe, inputs))
     fail(test, llvm::toString(std::move(error)));
@@ -1220,17 +1221,41 @@ void resolvedCapabilityPreservesTypedVectorGeometry() {
               .getElementType()
               .isF32(),
           "f32 vector actor changed its semantic element type");
-  if (llvm::Error error = capability->admit(f32Actor))
+  if (llvm::Error error = capability->admit(f32Actor, 32))
     fail(test, llvm::toString(std::move(error)));
   auto f64Actor = vectorActor(mlir::Float64Type::get(&actorContext), 2);
-  expectError(test, capability->admit(f64Actor),
+  expectError(test, capability->admit(f64Actor, 32),
               "element type is not admitted");
 
   loom::frontend::FabricCapabilityIndex index(finalized.roots().front().view());
-  require(test, index.admittingOperationResources(f32Actor).size() == 1,
+  require(test, index.admittingOperationResources(f32Actor, 32).size() == 1,
           "Fabric capability index lost the admitted vector resource");
-  require(test, index.admittingOperationResources(f64Actor).empty(),
+  require(test, index.admittingOperationResources(f64Actor, 32).empty(),
           "Fabric capability index treated equal payload width as semantics");
+}
+
+void resolvedIndexCastUsesExactTargetWidth() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto system = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  auto module =
+      take(test, loom::fabric::importEntireFabricRoot(
+                     system.roots().front().directDependencies().front().root,
+                     store));
+
+  mlir::MLIRContext context;
+  const auto actor = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::ArithIndexCast,
+      mlir::FunctionType::get(&context, {mlir::IntegerType::get(&context, 32)},
+                              {mlir::IndexType::get(&context)}),
+      ::dataflow::NoPayload{}};
+  loom::frontend::FabricCapabilityIndex index(module.view());
+  require(test, !index.admittingOperationResources(actor, 32).empty(),
+          "builtin Fabric rejected its exact 32-bit resolved index cast");
+  require(test, index.admittingOperationResources(actor, 64).empty(),
+          "builtin Fabric ignored the exact target index width");
 }
 
 void fuBackedgesAreExplicitAndResolved() {
@@ -1618,6 +1643,7 @@ int main() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
   resolvedCapabilityPreservesTypedVectorGeometry();
+  resolvedIndexCastUsesExactTargetWidth();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
   routedFuLibraryBuildsHeterogeneousBoundaries();

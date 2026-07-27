@@ -189,7 +189,8 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
       return input.takeError();
     inputs.push_back(*input);
   }
-  if (llvm::Error error = addCoreAluFu(pe, {inputs[0], inputs[1], inputs[2]}))
+  if (llvm::Error error = addCoreAluFu(pe, {inputs[0], inputs[1], inputs[2]},
+                                       ::fabric::ResolvedIndexWidth::I32))
     return error;
   if (distribution.mac[site])
     if (llvm::Error error =

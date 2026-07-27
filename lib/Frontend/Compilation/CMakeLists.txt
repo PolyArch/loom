@@ -1,5 +1,6 @@
 add_library(LoomFrontendCompilation
   FabricCapabilityIndex.cpp
+  OwnershipCandidateGenerator.cpp
   PreMappingCompilation.cpp
 )
 
@@ -10,6 +11,7 @@ target_include_directories(LoomFrontendCompilation PUBLIC
 target_link_libraries(LoomFrontendCompilation PUBLIC
   LLVM
   LoomFabricIdentity
+  LoomFabricMemoryOperationPort
   LoomFrontendLowering
   LoomFrontendRaising
   MLIRDataflow

@@ -4,6 +4,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <vector>
@@ -26,7 +27,22 @@ public:
   llvm::SmallVector<
       ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>
   admittingOperationResources(
-      const ::dataflow::CanonicalActorSchemaProjection &actor) const;
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      unsigned indexBitWidth) const;
+
+  llvm::Expected<llvm::SmallVector<
+      ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>>
+  admittingOperationResources(::mlir::Operation *actor) const;
+
+  /// Returns every concrete memory capability alternative whose Fabric-owned
+  /// actor, service, access, and resource relations admit `actor`. Malformed
+  /// actor semantics are errors; an empty result is ordinary resource-level
+  /// unavailability and does not prove Mapping infeasibility.
+  llvm::Expected<llvm::SmallVector<
+      ::loom::ArtifactReference<
+          ::loom::fabric::FabricMemoryCapabilityAlternativeRef>,
+      4>>
+  admittingMemoryResources(::mlir::Operation *actor) const;
 
 private:
   struct OperationResource final {
@@ -34,11 +50,17 @@ private:
     ::loom::fabric::FabricFuTemplateNodeRef reference;
   };
 
+  struct MemoryResource final {
+    std::size_t ownerOrdinal = 0;
+    ::loom::fabric::FabricMemoryOperationPortRef reference;
+  };
+
   void index(const ::loom::fabric::FabricArtifactView &fabric);
 
   ::loom::fabric::FabricArtifactView fabric_;
   std::vector<::loom::fabric::FabricArtifactView> owners_;
   std::vector<std::vector<OperationResource>> operationsBySchema_;
+  std::vector<std::vector<MemoryResource>> memoryPortsBySchema_;
 };
 
 } // namespace loom::frontend

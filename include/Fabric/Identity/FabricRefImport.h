@@ -51,9 +51,12 @@ struct ResolvedFabricOpCapabilityView {
 
   /// Checks only the concrete operation-resource capability. Port
   /// correspondence, FU topology, placement, and routing remain Mapping
-  /// obligations and are deliberately outside this query.
-  llvm::Error
-  admit(const ::dataflow::CanonicalActorSchemaProjection &actor) const;
+  /// obligations and are deliberately outside this query. `indexBitWidth` is
+  /// the canonical DataLayout resolution owned by the actor's exact program;
+  /// it is required even when this actor contains no index type so callers
+  /// cannot silently fall back to process configuration.
+  llvm::Error admit(const ::dataflow::CanonicalActorSchemaProjection &actor,
+                    unsigned indexBitWidth) const;
 };
 
 class FabricArtifactView;

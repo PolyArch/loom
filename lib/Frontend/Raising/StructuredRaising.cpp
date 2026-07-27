@@ -60,8 +60,12 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
   if (!raised)
     return invalid("LLVM IR import failed");
 
-  mlir::registerAllPasses();
-  registerRaisingPasses();
+  static const bool passesRegistered = [] {
+    mlir::registerAllPasses();
+    registerRaisingPasses();
+    return true;
+  }();
+  (void)passesRegistered;
   mlir::PassManager pipeline(&context);
   pipeline.enableVerifier(options.verifyEach);
   if (options.applyPassManagerCommandLineOptions &&

@@ -331,17 +331,61 @@ struct FabricArtifactView::Storage {
 FabricArtifactView::~FabricArtifactView() = default;
 
 llvm::Error ResolvedFabricOpCapabilityView::admit(
-    const ::dataflow::CanonicalActorSchemaProjection &actor) const {
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth) const {
   const auto rejected = [](const llvm::Twine &message) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "fabric_operation_capability_rejected: " +
                                        message);
   };
+  if (indexBitWidth == 0 || indexBitWidth > mlir::IntegerType::kMaxWidth)
+    return rejected("canonical index width has no fixed representation");
   if (!llvm::is_contained(enabledOperationSchemas, actor.schema))
     return rejected(
         "operation schema is not enabled by the concrete fabric.op");
+
+  const bool isIndexCast =
+      actor.schema == ::dataflow::OperationSchemaId::ArithIndexCast ||
+      actor.schema == ::dataflow::OperationSchemaId::ArithIndexCastUI;
+  if (isIndexCast) {
+    const auto *params = std::get_if<::fabric::ScalarIntegerCastParams>(
+        &parameterizedCapability);
+    if (!params || !params->relation.resolvedIndexWidth)
+      return rejected("index cast capability has no resolved index width");
+    const unsigned capabilityIndexBitWidth =
+        *params->relation.resolvedIndexWidth ==
+                ::fabric::ResolvedIndexWidth::I32
+            ? 32
+            : 64;
+    if (indexBitWidth != capabilityIndexBitWidth)
+      return rejected("program and Fabric resolved index widths do not agree");
+  }
+
+  const auto representType = [&](mlir::Type type) -> mlir::Type {
+    if (llvm::isa<mlir::IndexType>(type))
+      return mlir::IntegerType::get(type.getContext(), indexBitWidth);
+    if (auto vector = llvm::dyn_cast<mlir::VectorType>(type);
+        vector && llvm::isa<mlir::IndexType>(vector.getElementType()))
+      return mlir::VectorType::get(
+          vector.getShape(),
+          mlir::IntegerType::get(type.getContext(), indexBitWidth),
+          vector.getScalableDims());
+    return type;
+  };
+  llvm::SmallVector<mlir::Type, 4> representedInputs;
+  llvm::SmallVector<mlir::Type, 4> representedResults;
+  representedInputs.reserve(actor.type.getNumInputs());
+  representedResults.reserve(actor.type.getNumResults());
+  llvm::transform(actor.type.getInputs(), std::back_inserter(representedInputs),
+                  representType);
+  llvm::transform(actor.type.getResults(),
+                  std::back_inserter(representedResults), representType);
+  ::dataflow::CanonicalActorSchemaProjection represented = actor;
+  represented.type = mlir::FunctionType::get(
+      actor.type.getContext(), representedInputs, representedResults);
   if (llvm::Error error = ::fabric::verifyImplementationFamilyAdmission(
-          implementationFamily, &parameterizedCapability, actor))
+          implementationFamily, &parameterizedCapability,
+          isIndexCast ? actor : represented))
     return error;
 
   llvm::SmallVector<unsigned, 4> physicalInputs;
@@ -350,8 +394,8 @@ llvm::Error ResolvedFabricOpCapabilityView::admit(
     (port.reference.direction == FabricPortDirection::Input ? physicalInputs
                                                             : physicalResults)
         .push_back(port.payloadWidthBits);
-  if (physicalInputs.size() < actor.type.getNumInputs() ||
-      physicalResults.size() < actor.type.getNumResults())
+  if (physicalInputs.size() < represented.type.getNumInputs() ||
+      physicalResults.size() < represented.type.getNumResults())
     return rejected("physical port capacity cannot cover the actor arity");
 
   const auto semanticWidths = [&](mlir::TypeRange types)
@@ -369,10 +413,10 @@ llvm::Error ResolvedFabricOpCapabilityView::admit(
     llvm::sort(widths);
     return widths;
   };
-  auto semanticInputs = semanticWidths(actor.type.getInputs());
+  auto semanticInputs = semanticWidths(represented.type.getInputs());
   if (!semanticInputs)
     return semanticInputs.takeError();
-  auto semanticResults = semanticWidths(actor.type.getResults());
+  auto semanticResults = semanticWidths(represented.type.getResults());
   if (!semanticResults)
     return semanticResults.takeError();
   llvm::sort(physicalInputs);

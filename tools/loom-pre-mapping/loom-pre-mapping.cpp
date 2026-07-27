@@ -9,7 +9,9 @@
 // CLI shape mirrors loom-raise / loom-adg:
 //
 //     loom-pre-mapping --builtin=small|default|large --artifact-store=<dir>
-//                      --counts=<counts.json> [-o output.mlir] input.ll
+//                      --counts=<counts.json>
+//                      [--whole-callable-spatial=<symbol>]
+//                      [-o output.mlir] input.ll
 //
 // stdin is read when input is "-" or the positional arg is missing.
 // The finalized Canonical Dataflow module is printed to -o (stdout by
@@ -19,8 +21,10 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/FileUtilities.h"
 
 #include "llvm/IR/LLVMContext.h"
@@ -34,6 +38,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace {
@@ -64,10 +69,41 @@ namespace {
                                     "counts as one JSON object"),
                    ::llvm::cl::value_desc("filename"), ::llvm::cl::Required);
 
+::llvm::cl::opt<std::string> wholeCallableSpatial(
+    "whole-callable-spatial",
+    ::llvm::cl::desc("materialize one exact internal LLVM callable as an "
+                     "explicit whole-callable Spatial ownership candidate"),
+    ::llvm::cl::value_desc("symbol"), ::llvm::cl::init(""));
+
 int reportError(::llvm::Error error) {
   ::llvm::errs() << "loom-pre-mapping: " << ::llvm::toString(std::move(error))
                  << "\n";
   return 1;
+}
+
+::llvm::Expected<loom::frontend::StructuredEntityRef>
+resolveCallable(const loom::frontend::StructuredProgramCandidate &candidate,
+                ::llvm::StringRef symbol) {
+  auto view = candidate.view();
+  if (!view)
+    return view.takeError();
+  std::optional<loom::frontend::StructuredEntityRef> resolved;
+  for (const loom::frontend::StructuredEntity &entity :
+       view->entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        ::llvm::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (!function || function.getSymName() != symbol)
+      continue;
+    if (resolved)
+      return ::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "callable symbol is not unique in the Structured Program");
+    resolved = entity.reference;
+  }
+  if (!resolved)
+    return ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
+                                     "callable symbol does not resolve");
+  return *resolved;
 }
 
 std::unique_ptr<::llvm::Module> readLLVMModule(::llvm::LLVMContext &llvmContext,
@@ -136,9 +172,26 @@ int main(int argc, char **argv) {
   if (!compiled)
     return reportError(compiled.takeError());
 
+  std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
+  if (!wholeCallableSpatial.empty()) {
+    auto callable =
+        resolveCallable(compiled->structuredProgram, wholeCallableSpatial);
+    if (!callable)
+      return reportError(callable.takeError());
+    auto materialized =
+        loom::frontend::materializeWholeCallableSpatialOwnership(
+            compiled->structuredProgram, *callable, design->roots().front());
+    if (!materialized)
+      return reportError(materialized.takeError());
+    selected.emplace(std::move(*materialized));
+  }
+
+  const dataflow::CanonicalDataflowArtifact &canonical =
+      selected ? selected->canonicalDataflow : compiled->canonicalDataflow;
+
   // The canonical view is imported, not cached: entity counts come from the
   // same validated projection every consumer sees.
-  auto view = compiled->canonicalDataflow.view();
+  auto view = canonical.view();
   if (!view)
     return reportError(view.takeError());
 
@@ -150,7 +203,7 @@ int main(int argc, char **argv) {
                    << "\n";
     return 1;
   }
-  compiled->canonicalDataflow.module()->print(outputFile->os());
+  canonical.module()->print(outputFile->os());
   outputFile->os() << "\n";
   outputFile->keep();
 
