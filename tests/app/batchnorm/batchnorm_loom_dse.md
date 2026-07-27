@@ -4,8 +4,8 @@ Shared definitions, table columns, and simulator-comparison caveats live in
 [`../DSE_rules.md`](../DSE_rules.md). This note records only the Batchnorm setup,
 reproducible helper output, and recommendation.
 
-Kernel: `tests/app/batchnorm/batchnorm.cpp`. The helper fixture uses
-`C=4`, `H=W=8` and the named `shared-spad-4k-r1w1-v4` analytical target.
+Kernel: `tests/app/batchnorm/batchnorm.cpp`. The `main.cpp` smoke-test fixture
+uses `C=4`, `H=W=8` and the named `shared-spad-4k-r1w1-v4` analytical target.
 
 Regenerate:
 

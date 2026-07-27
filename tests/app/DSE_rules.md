@@ -33,6 +33,16 @@ transformations and target features that this branch's compiler, mapper, and
 hardware do not materialize. Every such assumption is named in the report. All
 other kernels keep the legacy source-order, direct-memory columns and behavior.
 
+Maintained extended-profile recommendations model the concrete parameters in
+each kernel's `main.cpp` smoke test. Reports name those parameters and their
+source; the extended helper does not replace them with synthetic square or
+power-of-two sizes. A separate sensitivity run may use different dimensions
+only when it is labeled as a non-smoke-test study and kept out of the maintained
+recommendation and summary row. Fixture changes require fresh capacity,
+traffic, cycle, and recommendation results rather than scaled values. Legacy
+direct-memory reports keep their documented fixture policy until they migrate
+to an extended profile.
+
 The canonical study profile is `shared-spad-4k-r1w1-v4` with one 4096-byte
 scratchpad shared by the workers of one mapped kernel, one logical load port, one
 logical store port, one-cycle modeled access, and fixed vector width `V = 4`

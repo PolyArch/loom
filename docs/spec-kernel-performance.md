@@ -401,6 +401,20 @@ assumption **MUST** belong to a named analytical target profile and **MUST** be
 printed in the report; an analytical profile is not evidence that the named
 hardware exists.
 
+**Workload fixture fidelity.** A checked-in extended-profile DSE report whose
+purpose is to recommend pragmas for a smoke-test kernel **MUST** model the
+concrete problem parameters declared by that kernel's
+`tests/app/<kernel>/main.cpp`. The report **MUST** identify those parameters and
+their `main.cpp` provenance. An extended-profile helper **MUST NOT** silently
+substitute a rounder, square, power-of-two, or otherwise synthetic workload. A
+separately requested sensitivity study **MAY** use other parameters, but it
+**MUST** label them as non-smoke-test inputs and **MUST NOT** replace the
+smoke-test recommendation in maintained reports or summary tables. Changing a
+smoke-test fixture requires regenerating every affected capacity, traffic,
+cycle, and recommendation result rather than scaling an existing row. Legacy
+direct-memory reports retain their documented fixture policy until they migrate
+to an extended profile.
+
 The canonical extended-study profile is `shared-spad-4k-r1w1-v4`. It fixes one
 4096-byte scratchpad shared by all workers executing one mapped kernel, one
 logical scratchpad load port, one logical scratchpad store port, one-cycle

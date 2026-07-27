@@ -55,6 +55,7 @@ import argparse
 import itertools
 import math
 import os
+import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -1587,11 +1588,13 @@ def _batchnorm_extended_plan_builder(
 
 
 def _gemv_memory_planner(
-        _spec: KernelSpec, _cand: Candidate,
+        spec: KernelSpec, _cand: Candidate,
         _target: AnalyticTargetSpec) -> tuple[BufferSpec, ...]:
-    x_set = tuple(range(64))
-    row_set = tuple(range(64))
-    matrix_set = tuple(range(64 * 64))
+    row_count = spec.level("i").trip
+    column_count = spec.level("j").trip
+    x_set = tuple(range(column_count))
+    row_set = tuple(range(row_count))
+    matrix_set = tuple(range(row_count * column_count))
     return (
         BufferSpec("x", 4, x_set, True, True),
         BufferSpec("A", 4, matrix_set, False, True),
@@ -1601,7 +1604,8 @@ def _gemv_memory_planner(
 
 
 def _gemv_wave_phase(
-        cand: Candidate, origins_tuple: tuple[tuple[str, int], ...],
+        spec: KernelSpec, cand: Candidate,
+        origins_tuple: tuple[tuple[str, int], ...],
         shapes_tuple: tuple[tuple[str, int], ...], cfg: Config,
         target: AnalyticTargetSpec, schedule: bool,
         memory: MemoryPlan | None = None,
@@ -1615,7 +1619,10 @@ def _gemv_wave_phase(
         shapes["i"], parallel, unroll, target.vector_width)
     worker_count = len(row_groups)
     row_count = shapes["i"]
-    x_groups_per_worker = _ceil_div(64, target.vector_width)
+    column_count = spec.level("j").trip
+    x_groups_per_worker = _ceil_div(column_count, target.vector_width)
+    reduction_depth = math.ceil(math.log2(column_count)) \
+        if column_count > 1 else 0
     resident = memory is not None
     x_reader_count = worker_count if share_x else row_count
     x_load_ops = x_reader_count * x_groups_per_worker
@@ -1633,17 +1640,18 @@ def _gemv_wave_phase(
                     (("reader", reader_index), ("group", group_index)),
                     0, "x"))
     phase = PhaseSummary(
-        A=130 * row_count + 2 * worker_count,
+        A=(2 * column_count + 2) * row_count + 2 * worker_count,
         recurring_loads=(
-            16 * row_count + len(row_vector_groups) + worker_count
+            x_groups_per_worker * row_count
+            + len(row_vector_groups) + worker_count
             + (x_load_ops if resident else 0)),
         invariant_loads=4 + (0 if resident else x_load_ops),
         stores=len(row_vector_groups) + worker_count,
-        CP=11, spad_read_accesses=tuple(spad_accesses),
+        CP=5 + reduction_depth, spad_read_accesses=tuple(spad_accesses),
         control_A=2 * worker_count, control_loads=worker_count,
         control_stores=worker_count)
     if not schedule:
-        return phase, x_reader_count * 64
+        return phase, x_reader_count * column_count
 
     dag = Dag()
     region = dag.region("gemv")
@@ -1661,7 +1669,8 @@ def _gemv_wave_phase(
         for _group_index in range(x_groups_per_worker):
             kind = "spad_x" if resident else "x" + INV
             handle = region.load(kind=kind)
-            group_size = min(target.vector_width, 64 - len(handles))
+            group_size = min(
+                target.vector_width, column_count - len(handles))
             handles.extend(handle for _ in range(group_size))
         return handles
 
@@ -1678,11 +1687,12 @@ def _gemv_wave_phase(
                 a_handles = []
                 for group_index in range(x_groups_per_worker):
                     handle = region.load(kind="A_vec")
-                    size = min(target.vector_width, 64 - len(a_handles))
+                    size = min(
+                        target.vector_width, column_count - len(a_handles))
                     a_handles.extend(handle for _ in range(size))
                 products = [
                     region.arith(a_handles[j], x_handles[j], kind="mul")
-                    for j in range(64)]
+                    for j in range(column_count)]
                 row_sum = region.balanced_reduction(products, kind="reduce")
                 scaled = region.arith(row_sum, alpha, kind="mul_alpha")
                 prior = region.arith(y_value, beta, kind="mul_beta")
@@ -1690,7 +1700,7 @@ def _gemv_wave_phase(
             region.store(*outputs, output=True, kind="output_y_vec")
     return (_phase_with_optional_schedule(
         phase, dag, cfg, "gemv_resident" if resident else "gemv_direct", True),
-        x_reader_count * 64)
+        x_reader_count * column_count)
 
 
 def _gemv_extended_plan_builder(
@@ -1712,7 +1722,7 @@ def _gemv_extended_plan_builder(
     structure = []
     for origins, shapes in boxes:
         phase, scalar_reads = _gemv_wave_phase(
-            cand, origins, shapes, cfg, target, schedule,
+            spec, cand, origins, shapes, cfg, target, schedule,
             memory=(memory if resident else None), share_x=share_x)
         waves.append(phase)
         if resident:
@@ -2069,16 +2079,20 @@ def _batchnorm_extended_chunk(cand: Candidate) -> Dag:
 
 
 def _gemv_extended_chunk(cand: Candidate) -> Dag:
-    extent = min(64, math.prod(cand.factors("i")))
-    jam = derive_jam_plan(KERNELS["gemv"], cand)
+    spec = KERNELS["gemv"]
+    extent = min(spec.level("i").trip, math.prod(cand.factors("i")))
+    column_count = spec.level("j").trip
+    reduction_depth = math.ceil(math.log2(column_count)) \
+        if column_count > 1 else 0
+    jam = derive_jam_plan(spec, cand)
     share_x = any("x" in edge.shared_operands for edge in jam.edges)
     phase, _scalar_reads = _gemv_wave_phase(
-        cand, (("i", 0),), (("i", extent),), parse_config("6x6"),
+        spec, cand, (("i", 0),), (("i", extent),), parse_config("6x6"),
         AnalyticTargetSpec(), False, share_x=share_x)
     return _emit_counted_region(
         "gemv", phase.A, phase.recurring_loads,
         phase.invariant_loads, phase.stores,
-        ("L",) + ("P",) * 9 + ("S",))
+        ("L",) + ("P",) * (reduction_depth + 3) + ("S",))
 
 
 def _conv2d_extended_chunk(cand: Candidate) -> Dag:
@@ -2131,7 +2145,7 @@ def _register():
             "split. Both the control and coalescing axes are inert -> vecsum is "
             "P/U-symmetric, and CP-bound on the log-depth merge tree."),
     )
-    M, N = 64, 64
+    M, N = 32, 48
     KERNELS["gemv"] = KernelSpec(
         name="gemv",
         levels=(Level("i", M, "parallel"), Level("j", N, "reduction")),
@@ -4419,6 +4433,102 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
             "fallback")
 
 
+def _read_smoke_uint_constants(
+        kernel: str, names: tuple[str, ...]) -> dict[str, int]:
+    repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", ".."))
+    main_path = os.path.join(
+        repo_root, "tests", "app", kernel, "main.cpp")
+    with open(main_path, encoding="utf-8") as stream:
+        source = stream.read()
+    declarations = dict(re.findall(
+        r"^\s*const\s+uint32_t\s+([A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*=\s*([0-9]+)\s*;",
+        source, flags=re.MULTILINE))
+    missing = [name for name in names if name not in declarations]
+    if missing:
+        raise ValueError(
+            f"{main_path} lacks literal uint32_t fixture constants: "
+            f"{', '.join(missing)}")
+    return {name: int(declarations[name]) for name in names}
+
+
+def _run_smoke_fixture_tests(errors: list[str]) -> None:
+    try:
+        batch = _read_smoke_uint_constants(
+            "batchnorm", ("C", "H", "W"))
+        gemv_dims = _read_smoke_uint_constants("gemv", ("M", "N"))
+        conv = _read_smoke_uint_constants(
+            "conv2d", ("C_in", "C_out", "H", "W", "KH", "KW",
+                       "stride_h", "stride_w"))
+    except (OSError, ValueError) as error:
+        errors.append(f"smoke-fixture source audit failed: {error}")
+        return
+
+    batchnorm = KERNELS["batchnorm"]
+    batch_trips = tuple(
+        batchnorm.level(name).trip for name in ("c", "h", "w"))
+    batch_expected = (batch["C"], batch["H"], batch["W"])
+    if batch_trips != batch_expected:
+        errors.append(
+            "Batchnorm DSE trips do not match main.cpp C/H/W: "
+            f"{batch_trips} != {batch_expected}")
+    batch_candidate = Candidate((
+        ("c", 1, 1), ("h", 1, 1), ("w", 1, 1)))
+    batch_buffers = {
+        buffer.name: len(buffer.elements)
+        for buffer in derive_memory_plan(
+            batchnorm, batch_candidate, AnalyticTargetSpec()).buffers}
+    batch_elements = math.prod(batch_expected)
+    if batch_buffers != {"input": batch_elements, "output": batch_elements}:
+        errors.append(
+            "Batchnorm DSE buffers do not match the main.cpp element count: "
+            f"{batch_buffers}")
+
+    gemv = KERNELS["gemv"]
+    gemv_trips = (gemv.level("i").trip, gemv.level("j").trip)
+    gemv_expected = (gemv_dims["M"], gemv_dims["N"])
+    if gemv_trips != gemv_expected:
+        errors.append(
+            "GEMV DSE trips do not match main.cpp M/N: "
+            f"{gemv_trips} != {gemv_expected}")
+    gemv_candidate = Candidate((("i", 1, 1), ("j", 1, 1)))
+    gemv_buffers = {
+        buffer.name: len(buffer.elements)
+        for buffer in derive_memory_plan(
+            gemv, gemv_candidate, AnalyticTargetSpec()).buffers}
+    m, n = gemv_expected
+    expected_gemv_buffers = {
+        "x": n, "A": m * n, "input_y": m, "output_y": m}
+    if gemv_buffers != expected_gemv_buffers:
+        errors.append(
+            "GEMV DSE buffers do not match main.cpp M/N: "
+            f"{gemv_buffers} != {expected_gemv_buffers}")
+
+    oh = (conv["H"] - conv["KH"]) // conv["stride_h"] + 1
+    ow = (conv["W"] - conv["KW"]) // conv["stride_w"] + 1
+    tap = conv["C_in"] * conv["KH"] * conv["KW"]
+    conv2d = KERNELS["conv2d"]
+    conv_trips = tuple(
+        conv2d.level(name).trip for name in ("co", "oh", "ow", "tap"))
+    conv_expected = (conv["C_out"], oh, ow, tap)
+    if conv_trips != conv_expected:
+        errors.append(
+            "Conv2d DSE trips do not match main.cpp dimensions: "
+            f"{conv_trips} != {conv_expected}")
+    input_set, weight_set, output_set = _conv2d_whole_address_sets()
+    conv_buffer_sizes = (
+        len(input_set), len(weight_set), len(output_set))
+    expected_conv_buffer_sizes = (
+        conv["C_in"] * conv["H"] * conv["W"],
+        conv["C_out"] * tap,
+        conv["C_out"] * oh * ow)
+    if conv_buffer_sizes != expected_conv_buffer_sizes:
+        errors.append(
+            "Conv2d DSE address sets do not match main.cpp dimensions: "
+            f"{conv_buffer_sizes} != {expected_conv_buffer_sizes}")
+
+
 def _run_extended_pilot_tests(errors: list[str]) -> None:
     cfg = parse_config("6x6")
     target = AnalyticTargetSpec()
@@ -4469,12 +4579,18 @@ def _run_extended_pilot_tests(errors: list[str]) -> None:
         gemv, gemv_none, cfg, schedule=False, target=target)
     gemv_jam_result = evaluate_candidate(
         gemv, gemv_jam, cfg, schedule=False, target=target)
+    gemv_rows = gemv.level("i").trip
+    gemv_columns = gemv.level("j").trip
+    gemv_jam_waves = _ceil_div(gemv_rows, 2)
+    expected_unjammed_reads = gemv_rows * gemv_columns
+    expected_jammed_reads = gemv_jam_waves * gemv_columns
     x_buffer = next(buffer for buffer in gemv_jam_result.memory_plan.buffers
                     if buffer.name == "x")
     if (x_buffer.placement, gemv_jam_result.preload_scalar_elements,
             gemv_none_result.scratchpad_reads,
             gemv_jam_result.scratchpad_reads) != \
-            ("resident_shared", 64, 4096, 2048):
+            ("resident_shared", gemv_columns,
+             expected_unjammed_reads, expected_jammed_reads):
         errors.append(
             "GEMV explicit jam resident traffic mismatch: "
             f"{x_buffer.placement}, {gemv_jam_result.preload_scalar_elements}, "
@@ -4484,26 +4600,29 @@ def _run_extended_pilot_tests(errors: list[str]) -> None:
             (gemv_jam_result.A, gemv_jam_result.ST, gemv_jam_result.CP):
         errors.append("GEMV jam changed arithmetic, stores, or critical path")
     if gemv_none_result.scratchpad_reads - \
-            gemv_jam_result.scratchpad_reads != 2048:
+            gemv_jam_result.scratchpad_reads != \
+            expected_unjammed_reads - expected_jammed_reads:
         errors.append("GEMV i->j jam did not remove the expected x readers")
     gemv_outcome = search(gemv, cfg, jobs=1, target=target)
     if (gemv_outcome.recommendation.cand.jam_plan != "i-j-share-x"
             or gemv_outcome.recommendation.cand.factors("i") != (1, 8)
-            or gemv_outcome.recommendation.pragma_exposure_aggregate != 248):
+            or gemv_outcome.recommendation.pragma_exposure_aggregate != 100):
         errors.append(
             "GEMV family-knee selection must prefer i:P1U8 explicit jam at "
-            "p_agg=248")
+            "p_agg=100 for the M=32, N=48 smoke fixture")
 
+    gemv_capacity = gemv_columns * 4
     gemv_exact = derive_memory_plan(
-        gemv, gemv_none, make_target(capacity_bytes=256))
-    gemv_under_target = make_target(capacity_bytes=255)
+        gemv, gemv_none, make_target(capacity_bytes=gemv_capacity))
+    gemv_under_target = make_target(capacity_bytes=gemv_capacity - 1)
     gemv_under = evaluate_candidate(
         gemv, gemv_jam, cfg, schedule=False, target=gemv_under_target)
     if (gemv_exact.fallback, gemv_exact.capacity_bytes_used,
-            gemv_exact.proposed_capacity_bytes) != (False, 256, 256):
+            gemv_exact.proposed_capacity_bytes) != \
+            (False, gemv_capacity, gemv_capacity):
         errors.append(f"GEMV exact-capacity placement mismatch: {gemv_exact}")
     if (not gemv_under.memory_plan.fallback
-            or gemv_under.memory_plan.proposed_capacity_bytes != 256
+            or gemv_under.memory_plan.proposed_capacity_bytes != gemv_capacity
             or gemv_under.preload_scalar_elements != 0
             or gemv_under.scratchpad_reads != 0
             or gemv_under.spad_port_lb != 0):
@@ -4617,6 +4736,7 @@ def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
 
+    _run_smoke_fixture_tests(errors)
     _run_extended_infrastructure_tests(errors)
     _run_extended_pilot_tests(errors)
 

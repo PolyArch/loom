@@ -15,17 +15,18 @@ python3 tests/scripts/loom_dse.py conv2d --config 6x6 --brief-config 4x4 --brief
 
 ## Conv2d-specific setup
 
-The helper fixture uses `C_in=3`, `C_out=4`, `H=W=8`, `KH=KW=3`, stride one,
-so the independent output levels are `co=4`, `oh=ow=6` and the fully consumed
-reduction is `tap=27`. All six `co/oh/ow` permutations are legal with `tap`
-pinned innermost. There is no tile-size search. The whole-kernel address sets are
-192 input, 108 weight, and 144 output elements. Input and weight form one
-1,200-byte proposed `resident_shared` set; output stays direct. If capacity is
-below 1,200 bytes, both reuse-bearing buffers become `direct-fallback`. The
-explicit complete jam choices range from `none` through input-only or
-weight-only sharing to `share-all`; each nonempty plan requires the corresponding
-outer `U>1`. Jam may share input across unrolled `co` copies and weights across
-unrolled spatial copies, while every output retains its own reduction.
+The `main.cpp` smoke-test fixture uses `C_in=3`, `C_out=4`, `H=W=8`,
+`KH=KW=3`, and unit height/width strides, so the independent output levels are
+`co=4`, `oh=ow=6` and the fully consumed reduction is `tap=27`. All six
+`co/oh/ow` permutations are legal with `tap` pinned innermost. There is no
+tile-size search. The whole-kernel address sets are 192 input, 108 weight, and
+144 output elements. Input and weight form one 1,200-byte proposed
+`resident_shared` set; output stays direct. If capacity is below 1,200 bytes,
+both reuse-bearing buffers become `direct-fallback`. The explicit complete jam
+choices range from `none` through input-only or weight-only sharing to
+`share-all`; each nonempty plan requires the corresponding outer `U>1`. Jam may
+share input across unrolled `co` copies and weights across unrolled spatial
+copies, while every output retains its own reduction.
 
 ## Results
 
