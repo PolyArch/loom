@@ -72,9 +72,12 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
   // `lowerOperations` retargets a dataflow.constant's control token and then
   // falls through to hoist it. The move is sound only with no region to
   // flatten, no effect to order, and eligibility under the graph contract as a
-  // registered canonical actor or a pure address leaf the memory root
-  // resolution walks.
-  if (op->getNumRegions() == 0 && ::mlir::isPure(op) &&
+  // registered canonical actor or an address leaf the memory root resolution
+  // walks. This deliberately asks only about effects, not unconditional
+  // speculatability: selection lowering projects every captured operand and
+  // branch-local constant through the selected lane, so a conditionally
+  // defined actor still fires only when that lane receives its operand tokens.
+  if (op->getNumRegions() == 0 && ::mlir::isMemoryEffectFree(op) &&
       (::dataflow::isCanonicalDataflowActor(op) ||
        isGraphMemoryAddressLeaf(op)))
     return GraphLeafLowering::Movable;

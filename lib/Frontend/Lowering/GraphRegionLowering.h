@@ -15,11 +15,13 @@ namespace lowering {
 // escaped an exclusion list. This is the one authority that preflight, the
 // lowering fallback, and the parallel completion check all consult.
 enum class GraphLeafLowering {
-  // Regionless and pure, and eligible under the graph contract as a registered
-  // canonical Dataflow actor or as one of the pure address leaves the memory
-  // root resolution walks. Hoisting it into the graph frontier is a sound
-  // action, so this also covers a leaf whose in-place rewrite still leaves the
-  // move to the frontier fallback.
+  // Regionless and effect-free, and eligible under the graph contract as a
+  // registered canonical Dataflow actor or as one of the address leaves the
+  // memory root resolution walks. Structured lowering preserves conditional
+  // execution with lane-specific operand tokens, so movability does not
+  // require unconditional speculatability. Hoisting it into the graph
+  // frontier is a sound action, so this also covers a leaf whose in-place
+  // rewrite still leaves the move to the frontier fallback.
   Movable,
   // An effectful leaf whose action is dedicated to the position it already
   // occupies, so it never reaches the frontier fallback: the memref and
