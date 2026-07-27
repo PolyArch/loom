@@ -1,0 +1,270 @@
+#include "GraphMemoryAddressing.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Target/LLVMIR/TypeToLLVM.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/Support/MathExtras.h"
+
+#include <limits>
+
+namespace loom::lowering {
+namespace {
+
+bool isGraphPointerArgument(mlir::Value value, dataflow::GraphOp graph) {
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  return argument && argument.getOwner() == &graph.getBody().front() &&
+         llvm::isa<mlir::LLVM::LLVMPointerType>(argument.getType());
+}
+
+std::optional<llvm::DataLayout>
+getModuleLLVMDataLayout(mlir::Operation *scope) {
+  auto module = scope->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return std::nullopt;
+  auto layout = module->getAttrOfType<mlir::StringAttr>(
+      mlir::LLVM::LLVMDialect::getDataLayoutAttrName());
+  if (!layout)
+    return std::nullopt;
+  return llvm::DataLayout(layout.getValue());
+}
+
+std::optional<llvm::APInt> integerConstantValue(mlir::Value value) {
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    if (auto integer = llvm::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
+      return integer.getValue();
+  }
+  if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
+    if (auto integer =
+            llvm::dyn_cast<mlir::IntegerAttr>(constant.getConstValue()))
+      return integer.getValue();
+  }
+  return std::nullopt;
+}
+
+bool isKnownMultipleOfPowerOfTwo(mlir::Value value, unsigned shift) {
+  if (shift == 0)
+    return true;
+  if (std::optional<llvm::APInt> constant = integerConstantValue(value))
+    return constant->countTrailingZeros() >= shift;
+  auto leftShift = value.getDefiningOp<mlir::arith::ShLIOp>();
+  if (!leftShift)
+    return false;
+  std::optional<llvm::APInt> amount = integerConstantValue(leftShift.getRhs());
+  auto integerType = llvm::dyn_cast<mlir::IntegerType>(value.getType());
+  return amount && integerType && amount->ult(integerType.getWidth()) &&
+         amount->getZExtValue() >= shift;
+}
+
+bool isSupportedElementType(mlir::Type type) {
+  if (llvm::isa<mlir::IntegerType, mlir::Float16Type, mlir::BFloat16Type,
+                mlir::Float32Type, mlir::Float64Type, mlir::Float80Type,
+                mlir::Float128Type>(type))
+    return true;
+  auto array = llvm::dyn_cast<mlir::LLVM::LLVMArrayType>(type);
+  return array && array.getNumElements() != 0 &&
+         isSupportedElementType(array.getElementType());
+}
+
+std::optional<std::uint64_t>
+getMLIRAllocByteSize(const mlir::DataLayout &layout, mlir::Type type) {
+  if (!isSupportedElementType(type))
+    return std::nullopt;
+  llvm::TypeSize bits = layout.getTypeSizeInBits(type);
+  if (bits.isScalable() || bits.getFixedValue() == 0 ||
+      bits.getFixedValue() % 8 != 0)
+    return std::nullopt;
+  llvm::TypeSize bytes = layout.getTypeSize(type);
+  if (bytes.isScalable() || bytes.getFixedValue() == 0)
+    return std::nullopt;
+  std::uint64_t alignment = layout.getTypeABIAlignment(type);
+  if (alignment == 0 ||
+      bytes.getFixedValue() >
+          std::numeric_limits<std::uint64_t>::max() - (alignment - 1))
+    return std::nullopt;
+  return llvm::alignTo(bytes.getFixedValue(), alignment);
+}
+
+std::optional<std::uint64_t>
+getLLVMAllocByteSize(const llvm::DataLayout &layout,
+                     mlir::LLVM::TypeToLLVMIRTranslator &translator,
+                     mlir::Type type) {
+  if (!isSupportedElementType(type))
+    return std::nullopt;
+  llvm::TypeSize bytes =
+      layout.getTypeAllocSize(translator.translateType(type));
+  if (bytes.isScalable() || bytes.getFixedValue() == 0)
+    return std::nullopt;
+  return bytes.getFixedValue();
+}
+
+std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
+                                                 mlir::Type type) {
+  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type)) {
+    if (!integer.isSignless())
+      return std::nullopt;
+    return integer.getWidth();
+  }
+  if (!llvm::isa<mlir::IndexType>(type))
+    return std::nullopt;
+  llvm::TypeSize bits = layout.getTypeSizeInBits(type);
+  if (bits.isScalable() || bits.getFixedValue() == 0)
+    return std::nullopt;
+  return static_cast<unsigned>(
+      std::min<std::uint64_t>(bits.getFixedValue(), 64));
+}
+
+bool isLegacyFlaggedPair(llvm::ArrayRef<mlir::LLVM::GEPOp> leafToRoot) {
+  if (leafToRoot.size() != 2)
+    return false;
+  mlir::LLVM::GEPOp leaf = leafToRoot.front();
+  mlir::LLVM::GEPOp root = leafToRoot.back();
+  auto leafRaw = leaf.getRawConstantIndices();
+  auto rootRaw = root.getRawConstantIndices();
+  return leafRaw.size() == 1 &&
+         leafRaw.front() != mlir::LLVM::GEPOp::kDynamicIndex &&
+         leaf.getDynamicIndices().empty() && rootRaw.size() == 1 &&
+         rootRaw.front() == mlir::LLVM::GEPOp::kDynamicIndex &&
+         root.getDynamicIndices().size() == 1;
+}
+
+} // namespace
+
+std::optional<ResolvedLinearGepAddress>
+resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
+                        mlir::Type elementType) {
+  llvm::SmallVector<mlir::LLVM::GEPOp, 4> leafToRoot;
+  mlir::Value root;
+  for (mlir::LLVM::GEPOp current = leafGep; current;) {
+    leafToRoot.push_back(current);
+    mlir::Value base = current.getBase();
+    if (isGraphPointerArgument(base, graph)) {
+      root = base;
+      break;
+    }
+    current = base.getDefiningOp<mlir::LLVM::GEPOp>();
+  }
+  if (!root)
+    return std::nullopt;
+
+  bool hasNoWrap = llvm::any_of(leafToRoot, [](mlir::LLVM::GEPOp gep) {
+    return gep.getNoWrapFlags() != mlir::LLVM::GEPNoWrapFlags::none;
+  });
+  if (leafToRoot.size() > 1 && hasNoWrap && !isLegacyFlaggedPair(leafToRoot))
+    return std::nullopt;
+
+  mlir::DataLayout dataLayout =
+      mlir::DataLayout::closest(leafGep.getOperation());
+  std::optional<llvm::DataLayout> llvmDataLayout =
+      getModuleLLVMDataLayout(leafGep.getOperation());
+  llvm::LLVMContext llvmContext;
+  mlir::LLVM::TypeToLLVMIRTranslator translator(llvmContext);
+  auto rootType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(root.getType());
+  if (!rootType)
+    return std::nullopt;
+
+  std::optional<std::uint64_t> pointerIndexBits;
+  if (llvmDataLayout)
+    pointerIndexBits =
+        llvmDataLayout->getIndexSizeInBits(rootType.getAddressSpace());
+  else
+    pointerIndexBits = dataLayout.getTypeIndexBitwidth(root.getType());
+  if (!pointerIndexBits || *pointerIndexBits == 0 || *pointerIndexBits > 64)
+    return std::nullopt;
+
+  auto getAllocBytes = [&](mlir::Type type) {
+    if (llvmDataLayout)
+      return getLLVMAllocByteSize(*llvmDataLayout, translator, type);
+    return getMLIRAllocByteSize(dataLayout, type);
+  };
+  std::optional<std::uint64_t> elementBytes = getAllocBytes(elementType);
+  constexpr std::uint64_t maxSigned =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  if (!elementBytes || *elementBytes > maxSigned ||
+      !llvm::isPowerOf2_64(*elementBytes))
+    return std::nullopt;
+  unsigned elementShift = llvm::Log2_64(*elementBytes);
+  if (elementShift >= *pointerIndexBits)
+    return std::nullopt;
+
+  ResolvedLinearGepAddress result;
+  result.root = root;
+  result.byteToElementShift = elementShift;
+  std::int64_t constantByteOffset = 0;
+
+  for (mlir::LLVM::GEPOp gep : llvm::reverse(leafToRoot)) {
+    auto rawIndices = gep.getRawConstantIndices();
+    auto dynamicIndices = gep.getDynamicIndices();
+    if (rawIndices.size() != 1)
+      return std::nullopt;
+    std::optional<std::uint64_t> strideBytes = getAllocBytes(gep.getElemType());
+    if (!strideBytes || *strideBytes > maxSigned ||
+        !llvm::isIntN(*pointerIndexBits,
+                      static_cast<std::int64_t>(*strideBytes)))
+      return std::nullopt;
+
+    if (rawIndices.front() == mlir::LLVM::GEPOp::kDynamicIndex) {
+      if (dynamicIndices.size() != 1)
+        return std::nullopt;
+      mlir::Value index = dynamicIndices.front();
+      std::optional<unsigned> indexBits;
+      if (llvmDataLayout) {
+        auto integer = llvm::dyn_cast<mlir::IntegerType>(index.getType());
+        if (!integer || !integer.isSignless())
+          return std::nullopt;
+        indexBits = integer.getWidth();
+      } else {
+        indexBits = getIntegralIndexBitWidth(dataLayout, index.getType());
+      }
+      if (!indexBits || *indexBits != *pointerIndexBits ||
+          (result.indexType && result.indexType != index.getType()))
+        return std::nullopt;
+      result.indexType = index.getType();
+      if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
+        return std::nullopt;
+      unsigned strideShift =
+          std::min<unsigned>(elementShift, llvm::countr_zero(*strideBytes));
+      if (!isKnownMultipleOfPowerOfTwo(index, elementShift - strideShift))
+        return std::nullopt;
+      result.terms.push_back({index, static_cast<std::int64_t>(*strideBytes)});
+      continue;
+    }
+
+    if (!dynamicIndices.empty())
+      return std::nullopt;
+    std::int64_t term = 0;
+    if (llvm::MulOverflow(static_cast<std::int64_t>(rawIndices.front()),
+                          static_cast<std::int64_t>(*strideBytes), term) ||
+        llvm::AddOverflow(constantByteOffset, term, constantByteOffset))
+      return std::nullopt;
+  }
+
+  if (constantByteOffset % static_cast<std::int64_t>(*elementBytes) != 0 ||
+      !llvm::isIntN(*pointerIndexBits, constantByteOffset))
+    return std::nullopt;
+
+  bool preserveElementIndex =
+      leafToRoot.size() == 1 && result.terms.size() == 1 &&
+      constantByteOffset == 0 &&
+      result.terms.front().byteStride ==
+          static_cast<std::int64_t>(*elementBytes) &&
+      mlir::LLVM::bitEnumContainsAny(leafGep.getNoWrapFlags(),
+                                     mlir::LLVM::GEPNoWrapFlags::nusw);
+  if (preserveElementIndex) {
+    result.terms.front().byteStride = 1;
+    result.byteToElementShift = 0;
+  }
+
+  if (!result.indexType)
+    result.indexType = mlir::IntegerType::get(
+        leafGep.getContext(), static_cast<unsigned>(*pointerIndexBits));
+  result.byteBias = constantByteOffset;
+  for (mlir::LLVM::GEPOp gep : leafToRoot)
+    result.gepsLeafToRoot.push_back(gep.getOperation());
+  return result;
+}
+
+} // namespace loom::lowering

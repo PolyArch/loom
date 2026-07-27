@@ -215,6 +215,35 @@ dataflow.graph private @g_chained_gep_negative_bias(
   dataflow.graph.return %arg0, %value : none, i16
 }
 
+// A chain of dynamic GEPs is one linear address over the graph-owned memory
+// root. Every dynamic term must contribute to the canonical load address;
+// intermediate pointer values are not independent memory capabilities.
+
+// CHECK-LABEL: dataflow.graph private @g_chained_dynamic_gep
+// CHECK: %[[OUTER_BYTES:.*]] = arith.muli %arg1, %{{.*}} : i64
+// CHECK: %[[MIDDLE_BYTES:.*]] = arith.muli %arg2, %{{.*}} : i64
+// CHECK: %[[FIRST_SUM:.*]] = arith.addi %[[OUTER_BYTES]], %[[MIDDLE_BYTES]] : i64
+// CHECK: %[[INNER_BYTES:.*]] = arith.muli %arg3, %{{.*}} : i64
+// CHECK: %[[BYTE_ADDRESS:.*]] = arith.addi %[[FIRST_SUM]], %[[INNER_BYTES]] : i64
+// CHECK: %[[ELEMENT_ADDRESS:.*]] = arith.shrsi %[[BYTE_ADDRESS]], %{{.*}} : i64
+// CHECK: %[[INDEX:.*]] = arith.index_cast %[[ELEMENT_ADDRESS]] : i64 to index
+// CHECK: dataflow.load %{{.*}}[%[[INDEX]]] %arg0 : memref<?xf32>
+// CHECK-NOT: llvm.getelementptr
+dataflow.graph private @g_chained_dynamic_gep(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: !llvm.ptr) -> (f32)
+    attributes {input_segments = array<i32: 3, 0, 1>,
+                result_segments = array<i32: 1, 0, 0>} {
+  %outer = llvm.getelementptr %arg4[%arg1]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %middle = llvm.getelementptr %outer[%arg2]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %inner = llvm.getelementptr %middle[%arg3]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %value = llvm.load %inner : !llvm.ptr -> f32
+  dataflow.graph.return %arg0, %value : none, f32
+}
+
 // -----
 
 // Rank-zero access uses linear address zero.
