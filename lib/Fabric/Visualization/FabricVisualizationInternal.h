@@ -58,6 +58,7 @@ llvm::Expected<Document> buildDocument(const FinalizedFabricRoot &root,
                                        const ArtifactStore &store);
 
 void computeLayeredLayout(Graph &graph);
+void computeSystemOverviewLayout(Graph &graph);
 
 llvm::Error writeHtml(const Document &document, llvm::raw_ostream &output);
 

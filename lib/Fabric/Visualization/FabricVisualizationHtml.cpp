@@ -54,6 +54,8 @@ std::string edgePath(const Edge &edge) {
 llvm::StringRef edgeClass(llvm::StringRef kind) {
   if (kind == "domain")
     return "edge-domain";
+  if (kind == "summary")
+    return "edge-summary";
   if (kind == "attachment")
     return "edge-attachment";
   if (kind == "fu-route")
@@ -101,8 +103,10 @@ void writeGraph(const Graph &graph, bool active, llvm::raw_ostream &output) {
     if (edge.route.empty())
       continue;
     output << "<path class=\"edge " << edgeClass(edge.kind) << "\" d=\""
-           << edgePath(edge) << "\" marker-end=\"url(#arrow-"
-           << escapeHtml(graph.id) << ")\"/>";
+           << edgePath(edge) << '"';
+    if (edge.kind != "summary")
+      output << " marker-end=\"url(#arrow-" << escapeHtml(graph.id) << ")\"";
+    output << "/>";
   }
   output << "</g><g class=\"nodes\">";
   for (const Node &node : graph.nodes) {
@@ -196,6 +200,7 @@ llvm::Error writeHtml(const Document &document, llvm::raw_ostream &output) {
          "dasharray:5 5}"
          ".edge-attachment{stroke:var(--violet);stroke-dasharray:8 "
          "4}.edge-fu{stroke:var(--teal)}"
+         ".edge-summary{stroke:var(--violet);stroke-width:1.5;opacity:.55}"
          ".edge-transport{stroke:#526b78}.edge+*{pointer-events:none}marker "
          "path{fill:#526b78}"
          ".node{cursor:pointer;outline:none}.node "
@@ -212,6 +217,10 @@ llvm::Error writeHtml(const Document &document, llvm::raw_ostream &output) {
          ".node[data-entity-kind*=\"boundary\"] .node-accent{fill:var(--red)}"
          ".node[data-entity-kind*=\"acc_core\"] "
          ".node-accent{fill:var(--violet)}"
+         ".node[data-entity-kind=\"visual.noc_summary\"] "
+         ".node-accent{fill:var(--violet)}"
+         ".node[data-entity-kind=\"visual.noc_summary\"] "
+         "rect:first-child{fill:#f6f1fb;stroke:var(--violet)}"
          ".node-title{font-size:13px;font-weight:700;fill:var(--ink);pointer-"
          "events:none}"
          ".node-detail{font-size:10.5px;fill:var(--muted);pointer-events:none}"

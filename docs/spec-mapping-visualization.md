@@ -31,6 +31,11 @@ file beside the root's textual MLIR projection.
 For a Module root, the HTML contains its complete SpatialCore resource and
 directed-connectivity graph. For a System root, it contains:
 
+* a default architecture overview that represents the NoC once, keeps every
+  HostCore, AccCore, System memory service, and external boundary distinct,
+  and does not promote every transport resource to an equally weighted node;
+* a NoC topology view that contracts each explicit transport-resource path
+  into its derived directed endpoint connectivity;
 * one architecture view with every HostCore, heterogeneous AccCore,
   InstructionCore context, SpatialCore attachment, memory/service endpoint,
   external boundary, transport resource, and explicit directed connection;

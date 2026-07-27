@@ -348,4 +348,72 @@ void computeLayeredLayout(Graph &graph) {
   }
 }
 
+void computeSystemOverviewLayout(Graph &graph) {
+  auto noc = llvm::find_if(graph.nodes, [](const Node &node) {
+    return node.kind == "visual.noc_summary";
+  });
+  if (noc == graph.nodes.end()) {
+    computeLayeredLayout(graph);
+    return;
+  }
+
+  constexpr double margin = 56.0;
+  constexpr double horizontalGap = 104.0;
+  constexpr double verticalGap = 28.0;
+  constexpr double architectureNodeWidth = 216.0;
+  constexpr double architectureNodeHeight = 88.0;
+  constexpr double nocWidth = 196.0;
+
+  const std::size_t nocIndex =
+      static_cast<std::size_t>(std::distance(graph.nodes.begin(), noc));
+  std::vector<std::size_t> architectureNodes;
+  architectureNodes.reserve(graph.nodes.size() - 1);
+  for (std::size_t index = 0; index != graph.nodes.size(); ++index)
+    if (index != nocIndex)
+      architectureNodes.push_back(index);
+
+  const std::size_t leftCount = (architectureNodes.size() + 1) / 2;
+  const std::size_t rightCount = architectureNodes.size() - leftCount;
+  const std::size_t rowCount = std::max(leftCount, rightCount);
+  const double contentHeight =
+      rowCount == 0
+          ? architectureNodeHeight
+          : rowCount * architectureNodeHeight + (rowCount - 1) * verticalGap;
+  const double nocX = margin + architectureNodeWidth + horizontalGap;
+  const double rightX = nocX + nocWidth + horizontalGap;
+
+  for (auto [ordinal, nodeIndex] : llvm::enumerate(architectureNodes)) {
+    Node &node = graph.nodes[nodeIndex];
+    node.width = architectureNodeWidth;
+    node.height = architectureNodeHeight;
+    const bool left = ordinal < leftCount;
+    const std::size_t row = left ? ordinal : ordinal - leftCount;
+    const std::size_t sideCount = left ? leftCount : rightCount;
+    const double sideHeight =
+        sideCount * architectureNodeHeight +
+        (sideCount == 0 ? 0.0 : (sideCount - 1) * verticalGap);
+    node.x = left ? margin : rightX;
+    node.y = margin + (contentHeight - sideHeight) / 2.0 +
+             row * (architectureNodeHeight + verticalGap);
+  }
+
+  noc->x = nocX;
+  noc->y = margin;
+  noc->width = nocWidth;
+  noc->height = contentHeight;
+  graph.width = rightX + architectureNodeWidth + margin;
+  graph.height = contentHeight + 2.0 * margin;
+
+  for (Edge &edge : graph.edges) {
+    if (edge.destination != nocIndex || edge.source >= graph.nodes.size())
+      continue;
+    const Node &source = graph.nodes[edge.source];
+    const double sourceY = source.y + source.height / 2.0;
+    if (source.x < noc->x)
+      edge.route = {{source.x + source.width, sourceY}, {noc->x, sourceY}};
+    else
+      edge.route = {{source.x, sourceY}, {noc->x + noc->width, sourceY}};
+  }
+}
+
 } // namespace loom::fabric::visualization

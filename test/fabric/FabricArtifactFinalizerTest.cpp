@@ -554,6 +554,48 @@ void canonicalPublicationAndStrictImport() {
           "strict import changed canonical bytes");
 }
 
+void visualizationCoordinatesHaveNoFabricSemantics() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto firstSource = parse(test, R"mlir(
+    module {
+      fabric.module @first() attributes {
+        coordinates_semantic = false,
+        visual_layout = [{node = "resource", x = 0 : i32, y = 0 : i32}]
+      } { }
+    }
+  )mlir");
+  auto secondSource = parse(test, R"mlir(
+    module {
+      fabric.module @second() attributes {
+        coordinates_semantic = false,
+        visual_layout = [{node = "resource", x = 91 : i32, y = -37 : i32}]
+      } { }
+    }
+  )mlir");
+
+  FinalizedFabricRoot first = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *firstSource), store));
+  FinalizedFabricRoot second = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *secondSource), store));
+  require(test, first.reference().artifact == second.reference().artifact,
+          "visualization coordinates changed Fabric identity");
+
+  auto semanticSource = parse(test, R"mlir(
+    module {
+      fabric.module @semantic() attributes {
+        coordinates_semantic = true,
+        visual_layout = [{node = "resource", x = 0 : i32, y = 0 : i32}]
+      } { }
+    }
+  )mlir");
+  expectRejected(
+      test,
+      loom::fabric::finalizeFabricRoot(root(test, *semanticSource), store),
+      "authoring coordinates claim semantic authority");
+}
+
 void malformedStoredPayloadIsRejected() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -973,6 +1015,7 @@ void systemRequiresExplicitClockCrossing() {
 
 int main() {
   canonicalPublicationAndStrictImport();
+  visualizationCoordinatesHaveNoFabricSemantics();
   malformedStoredPayloadIsRejected();
   spatialSwitchConnectivityBecomesTraversals();
   fuCapabilityTemplatesComeFromThePhysicalGraph();

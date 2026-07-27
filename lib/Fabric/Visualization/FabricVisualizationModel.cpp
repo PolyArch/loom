@@ -494,6 +494,128 @@ llvm::Expected<Graph> buildSystemGraph(const FinalizedFabricRoot &root) {
   return graph;
 }
 
+bool isHiddenNocDetailNode(const Node &node) {
+  return node.kind == "fabric.system_transport_resource" ||
+         node.kind == "fabric.hardware_domain";
+}
+
+bool isSystemOverviewNode(const Node &node) {
+  return node.kind == "fabric.host_core_occurrence" ||
+         node.kind == "fabric.acc_core_occurrence" ||
+         node.kind == "fabric.system_memory_service" ||
+         node.kind == "fabric.external_boundary";
+}
+
+Graph buildSystemNocGraph(const Graph &detail) {
+  Graph graph{"system-noc-" + detail.artifactIdentity.substr(0, 16),
+              "NoC Topology",
+              "Directed System connectivity | " + detail.artifactIdentity,
+              "system-noc",
+              detail.artifactIdentity,
+              {},
+              {},
+              0.0,
+              0.0};
+  std::vector<std::optional<std::size_t>> projected(detail.nodes.size());
+  for (auto [index, node] : llvm::enumerate(detail.nodes)) {
+    if (isHiddenNocDetailNode(node))
+      continue;
+    projected[index] = graph.nodes.size();
+    graph.nodes.push_back(node);
+  }
+
+  std::vector<std::vector<std::size_t>> transportAdjacency(detail.nodes.size());
+  std::set<std::tuple<std::size_t, std::size_t, std::string>> seen;
+  for (const Edge &edge : detail.edges) {
+    if (edge.kind == "transport") {
+      transportAdjacency[edge.source].push_back(edge.destination);
+      continue;
+    }
+    if (projected[edge.source] && projected[edge.destination])
+      addEdge(graph, seen, *projected[edge.source],
+              *projected[edge.destination], edge.kind, edge.label);
+  }
+
+  for (std::size_t source = 0; source != detail.nodes.size(); ++source) {
+    if (!projected[source])
+      continue;
+    llvm::SmallVector<std::size_t, 8> pending(
+        transportAdjacency[source].begin(), transportAdjacency[source].end());
+    std::set<std::size_t> visited;
+    while (!pending.empty()) {
+      const std::size_t destination = pending.pop_back_val();
+      if (projected[destination]) {
+        addEdge(graph, seen, *projected[source], *projected[destination],
+                "transport", "NoC");
+        continue;
+      }
+      if (!isHiddenNocDetailNode(detail.nodes[destination]) ||
+          !visited.insert(destination).second)
+        continue;
+      pending.append(transportAdjacency[destination].begin(),
+                     transportAdjacency[destination].end());
+    }
+  }
+  return graph;
+}
+
+Graph buildSystemOverviewGraph(const Graph &detail, const Graph &noc) {
+  const std::size_t transportCount =
+      llvm::count_if(detail.nodes, [](const Node &node) {
+        return node.kind == "fabric.system_transport_resource";
+      });
+  const std::size_t accCoreCount =
+      llvm::count_if(detail.nodes, [](const Node &node) {
+        return node.kind == "fabric.acc_core_occurrence";
+      });
+  Graph graph{"system-overview-" + detail.artifactIdentity.substr(0, 16),
+              "System Architecture",
+              std::to_string(accCoreCount) + " AccCores | " +
+                  std::to_string(transportCount) +
+                  " directed NoC resources | " + detail.artifactIdentity,
+              "system-overview",
+              detail.artifactIdentity,
+              {},
+              {},
+              0.0,
+              0.0};
+  std::vector<std::optional<std::size_t>> projected(noc.nodes.size());
+  for (auto [index, node] : llvm::enumerate(noc.nodes)) {
+    if (!isSystemOverviewNode(node))
+      continue;
+    projected[index] = graph.nodes.size();
+    graph.nodes.push_back(node);
+  }
+
+  std::optional<std::size_t> nocNode;
+  if (transportCount != 0) {
+    nocNode = graph.nodes.size();
+    graph.nodes.push_back(
+        {"noc", "NoC",
+         std::to_string(transportCount) + " directed transport resources",
+         "visual.noc_summary"});
+  }
+
+  std::set<std::tuple<std::size_t, std::size_t, std::string>> seen;
+  std::set<std::size_t> nocParticipants;
+  for (const Edge &edge : noc.edges) {
+    if (edge.kind == "transport" && nocNode) {
+      if (projected[edge.source])
+        nocParticipants.insert(*projected[edge.source]);
+      if (projected[edge.destination])
+        nocParticipants.insert(*projected[edge.destination]);
+      continue;
+    }
+    if (projected[edge.source] && projected[edge.destination])
+      addEdge(graph, seen, *projected[edge.source],
+              *projected[edge.destination], edge.kind, edge.label);
+  }
+  if (nocNode)
+    for (std::size_t participant : nocParticipants)
+      addEdge(graph, seen, participant, *nocNode, "summary");
+  return graph;
+}
+
 } // namespace
 
 llvm::Expected<Document> buildDocument(const FinalizedFabricRoot &root,
@@ -510,10 +632,18 @@ llvm::Expected<Document> buildDocument(const FinalizedFabricRoot &root,
       return graphs.takeError();
     document.graphs = std::move(*graphs);
   } else if (root.view().rootKind() == FabricRootKind::System) {
-    auto systemGraph = buildSystemGraph(root);
-    if (!systemGraph)
-      return systemGraph.takeError();
-    document.graphs.push_back(std::move(*systemGraph));
+    auto systemDetail = buildSystemGraph(root);
+    if (!systemDetail)
+      return systemDetail.takeError();
+    systemDetail->id =
+        "system-detail-" + systemDetail->artifactIdentity.substr(0, 16);
+    systemDetail->title = "Fabric Detail";
+    systemDetail->subtitle = "Exact resources, endpoints, and domains | " +
+                             systemDetail->artifactIdentity;
+    Graph noc = buildSystemNocGraph(*systemDetail);
+    document.graphs.push_back(buildSystemOverviewGraph(*systemDetail, noc));
+    document.graphs.push_back(std::move(noc));
+    document.graphs.push_back(std::move(*systemDetail));
     std::set<std::string> imported;
     for (const FabricDirectDependency &dependency : root.directDependencies()) {
       if (dependency.role != FabricDependencyRole::ImportedModule)
@@ -536,8 +666,12 @@ llvm::Expected<Document> buildDocument(const FinalizedFabricRoot &root,
     return invalid("InterconnectImplementation visualization is unavailable");
   }
 
-  for (Graph &graph : document.graphs)
-    computeLayeredLayout(graph);
+  for (Graph &graph : document.graphs) {
+    if (graph.kind == "system-overview")
+      computeSystemOverviewLayout(graph);
+    else
+      computeLayeredLayout(graph);
+  }
   return document;
 }
 

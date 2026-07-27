@@ -1352,12 +1352,32 @@ void heterogeneousSystemFinalizes() {
   require(
       test,
       html.contains("data-layout-engine=\"loom-layered-v1\"") &&
+          html.contains("data-view-kind=\"system-overview\"") &&
+          html.contains("data-view-kind=\"system-noc\"") &&
           html.contains("data-view-kind=\"system\"") &&
           html.contains("data-view-kind=\"spatial-core\"") &&
           html.contains("data-entity-kind=\"fabric.acc_core_occurrence\"") &&
           html.contains("data-entity-kind=\"fabric.fifo_occurrence\"") &&
           html.contains("data-x=\"") && html.contains("data-y=\""),
       "Fabric HTML did not contain the precomputed two-level topology");
+  const std::size_t overviewBegin =
+      html.find("data-view-kind=\"system-overview\"");
+  const std::size_t overviewEnd = html.find("</svg>", overviewBegin);
+  require(test,
+          overviewBegin != llvm::StringRef::npos &&
+              overviewEnd != llvm::StringRef::npos,
+          "Fabric HTML has no bounded System overview");
+  const llvm::StringRef overview =
+      html.slice(overviewBegin, overviewEnd + llvm::StringRef("</svg>").size());
+  require(
+      test,
+      overview.contains("data-entity-kind=\"visual.noc_summary\"") &&
+          overview.contains("data-entity-kind=\"fabric.acc_core_occurrence\""),
+      "System overview lost its AccCore or NoC architecture summary");
+  require(test,
+          !overview.contains(
+              "data-entity-kind=\"fabric.system_transport_resource\""),
+          "System overview exposed individual NoC transport resources");
   require(test,
           !html.contains("forceSimulation") && !html.contains("dagre.layout") &&
               !html.contains("elk.layout"),
