@@ -1,5 +1,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
+#include "StructuredAddressIndexNarrowing.h"
+
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -248,11 +250,15 @@ llvm::SmallVector<mlir::Value> externalLiveIns(mlir::Operation *operation) {
   return liveIns;
 }
 
-llvm::Error materializeSelectedOperation(mlir::ModuleOp module,
-                                         mlir::Operation *operation) {
+llvm::Error
+materializeSelectedOperation(mlir::ModuleOp module, mlir::Operation *operation,
+                             std::optional<unsigned> canonicalIndexWidth) {
   auto callable = eligibleOwningCallable(operation);
   if (!callable)
     return callable.takeError();
+  if (llvm::Error error = detail::materializeAddressIndexContract(
+          module, operation, canonicalIndexWidth))
+    return error;
   const llvm::SmallVector<mlir::Value> liveIns = externalLiveIns(operation);
   mlir::Location location = operation->getLoc();
   auto boundary =
@@ -405,15 +411,16 @@ materializeOperationSpatialOwnership(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &operation,
     const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+    const OperationSpatialOwnershipOptions &options) {
   auto selection = cloneSelectedOperation(parent, operation);
   if (!selection)
     return selection.takeError();
-  if (llvm::Error error = materializeSelectedOperation(selection->clone.get(),
-                                                       selection->operation))
+  if (llvm::Error error = materializeSelectedOperation(
+          selection->clone.get(), selection->operation,
+          options.canonicalIndexWidth))
     return std::move(error);
   return finalizeOwnershipCandidate(selection->clone.get(), fabric,
-                                    loweringOptions);
+                                    options.lowering);
 }
 
 } // namespace loom::frontend

@@ -29,6 +29,16 @@ struct WholeCallableSpatialOwnershipOptions final {
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
 };
 
+/// Typed decisions selected for one operation-owned Spatial candidate. An
+/// explicit canonical index width is materialized into the child Structured
+/// Program. Wider LLVM GEP indices are narrowed only when their complete
+/// value domain is proven to fit that signed width; absence never selects an
+/// ambient or Fabric-derived default.
+struct OperationSpatialOwnershipOptions final {
+  lowering::CanonicalDataflowLoweringOptions lowering;
+  std::optional<unsigned> canonicalIndexWidth;
+};
+
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
 /// one exact void, single-block LLVM callable. Its original body moves into an
 /// ordered thread while the same LLVM callable remains the ABI authority and
@@ -55,7 +65,7 @@ materializeOperationSpatialOwnership(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &operation,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &lowering = {});
+    const OperationSpatialOwnershipOptions &options = {});
 
 } // namespace loom::frontend
 

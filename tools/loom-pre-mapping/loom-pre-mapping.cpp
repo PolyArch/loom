@@ -11,6 +11,8 @@
 //     loom-pre-mapping --builtin=small|default|large --artifact-store=<dir>
 //                      --counts=<counts.json>
 //                      [--whole-callable-spatial=<symbol>]
+//                      [--operation-spatial=<symbol>
+//                       --canonical-index-width=<bits>]
 //                      [--fmuladd-shape=fused|split]
 //                      [-o output.mlir] input.ll
 //
@@ -78,16 +80,28 @@ namespace {
                      "explicit whole-callable Spatial ownership candidate"),
     ::llvm::cl::value_desc("symbol"), ::llvm::cl::init(""));
 
+::llvm::cl::opt<std::string> operationSpatial(
+    "operation-spatial",
+    ::llvm::cl::desc("materialize the unique structured operation in one "
+                     "LLVM callable as an explicit Spatial candidate"),
+    ::llvm::cl::value_desc("callable-symbol"), ::llvm::cl::init(""));
+
+::llvm::cl::opt<unsigned> canonicalIndexWidth(
+    "canonical-index-width",
+    ::llvm::cl::desc("explicit canonical index width materialized for an "
+                     "operation-owned Spatial candidate"),
+    ::llvm::cl::value_desc("bits"), ::llvm::cl::init(0));
+
 enum class FMulAddShapeOption { Unspecified, Fused, Split };
 
 ::llvm::cl::opt<FMulAddShapeOption> fmuladdShape(
     "fmuladd-shape",
     ::llvm::cl::desc("typed execution-shape decision for selected "
                      "llvm.intr.fmuladd operations"),
-    ::llvm::cl::values(
-        clEnumValN(FMulAddShapeOption::Fused, "fused", "one fused math.fma"),
-        clEnumValN(FMulAddShapeOption::Split, "split",
-                   "separate arith.mulf and arith.addf")),
+    ::llvm::cl::values(clEnumValN(FMulAddShapeOption::Fused, "fused",
+                                  "one fused math.fma"),
+                       clEnumValN(FMulAddShapeOption::Split, "split",
+                                  "separate arith.mulf and arith.addf")),
     ::llvm::cl::init(FMulAddShapeOption::Unspecified));
 
 int reportError(::llvm::Error error) {
@@ -118,6 +132,36 @@ resolveCallable(const loom::frontend::StructuredProgramCandidate &candidate,
   if (!resolved)
     return ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
                                      "callable symbol does not resolve");
+  return *resolved;
+}
+
+::llvm::Expected<loom::frontend::StructuredEntityRef>
+resolveUniqueStructuredOperation(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    ::llvm::StringRef callableSymbol) {
+  auto view = candidate.view();
+  if (!view)
+    return view.takeError();
+  std::optional<loom::frontend::StructuredEntityRef> resolved;
+  for (const loom::frontend::StructuredEntity &entity :
+       view->entities(loom::frontend::StructuredEntityKind::Operation)) {
+    ::mlir::Operation *operation = entity.operation;
+    if (!operation || operation->getNumRegions() == 0 ||
+        ::llvm::isa<::mlir::LLVM::LLVMFuncOp>(operation))
+      continue;
+    auto callable = operation->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
+    if (!callable || callable.getSymName() != callableSymbol)
+      continue;
+    if (resolved)
+      return ::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "callable contains more than one structured operation");
+    resolved = entity.reference;
+  }
+  if (!resolved)
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "callable contains no structured operation");
   return *resolved;
 }
 
@@ -194,6 +238,20 @@ int main(int argc, char **argv) {
   if (!compiled)
     return reportError(compiled.takeError());
 
+  if (!wholeCallableSpatial.empty() && !operationSpatial.empty())
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "whole-callable and operation Spatial selections are exclusive"));
+  if (canonicalIndexWidth != 0 && operationSpatial.empty())
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "canonical index width requires an operation Spatial selection"));
+  if (fmuladdShape != FMulAddShapeOption::Unspecified &&
+      wholeCallableSpatial.empty())
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "fmuladd shape requires a whole-callable Spatial selection"));
+
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!wholeCallableSpatial.empty()) {
     auto callable =
@@ -208,8 +266,24 @@ int main(int argc, char **argv) {
     else if (fmuladdShape == FMulAddShapeOption::Split)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Split;
-    auto materialized = loom::frontend::materializeWholeCallableSpatialOwnership(
-        compiled->structuredProgram, *callable, design->roots().front(),
+    auto materialized =
+        loom::frontend::materializeWholeCallableSpatialOwnership(
+            compiled->structuredProgram, *callable, design->roots().front(),
+            ownershipOptions);
+    if (!materialized)
+      return reportError(materialized.takeError());
+    selected.emplace(std::move(*materialized));
+  } else if (!operationSpatial.empty()) {
+    auto operation = resolveUniqueStructuredOperation(
+        compiled->structuredProgram, operationSpatial);
+    if (!operation)
+      return reportError(operation.takeError());
+    loom::frontend::OperationSpatialOwnershipOptions ownershipOptions;
+    ownershipOptions.lowering = compilationOptions.lowering;
+    if (canonicalIndexWidth != 0)
+      ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
+    auto materialized = loom::frontend::materializeOperationSpatialOwnership(
+        compiled->structuredProgram, *operation, design->roots().front(),
         ownershipOptions);
     if (!materialized)
       return reportError(materialized.takeError());

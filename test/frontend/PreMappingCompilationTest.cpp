@@ -1,6 +1,7 @@
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/IndexWidth.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
@@ -135,15 +136,32 @@ entry:
   br label %loop
 
 loop:
-  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
-  %p = getelementptr float, ptr %a, i32 %i
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %p = getelementptr float, ptr %a, i64 %i
   store float %init, ptr %p, align 4
-  %next = add nuw i32 %i, 1
-  %done = icmp ult i32 %next, %n
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp ne i64 %next, 64
   br i1 %done, label %loop, label %exit
 
 exit:
   ret i32 %n
+}
+
+define i32 @dynamic(ptr %a, ptr %b, i64 %n, i32 %result) {
+entry:
+  %init = load float, ptr %b, align 4
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %p = getelementptr float, ptr %a, i64 %i
+  store float %init, ptr %p, align 4
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp ne i64 %next, %n
+  br i1 %done, label %loop, label %exit
+
+exit:
+  ret i32 %result
 }
 )llvm";
   llvm::SMDiagnostic diagnostic;
@@ -404,14 +422,31 @@ void explicitOperationSpatialOwnership() {
                                  design.roots().front().reference(), store));
   const loom::ArtifactIdentity parentIdentity =
       compiled.structuredProgram.identity();
-  auto selected = take(
-      test, loom::frontend::materializeOperationSpatialOwnership(
-                compiled.structuredProgram,
-                findStructuredLoop(test, compiled.structuredProgram, "kernel"),
-                design.roots().front()));
+  loom::frontend::StructuredEntityRef loop =
+      findStructuredLoop(test, compiled.structuredProgram, "kernel");
+  auto implicit = loom::frontend::materializeOperationSpatialOwnership(
+      compiled.structuredProgram, loop, design.roots().front());
+  if (implicit)
+    fail(test, "operation ownership silently selected an index width");
+  std::string implicitMessage = llvm::toString(implicit.takeError());
+  if (implicitMessage.find("explicit canonical index width") ==
+      std::string::npos)
+    fail(test, "missing index decision was not diagnosed: " + implicitMessage);
+
+  loom::frontend::OperationSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  auto selected =
+      take(test, loom::frontend::materializeOperationSpatialOwnership(
+                     compiled.structuredProgram, loop, design.roots().front(),
+                     options));
 
   if (selected.structuredProgram.identity() == parentIdentity)
     fail(test, "operation ownership did not create a child candidate");
+  unsigned indexWidth =
+      take(test, loom::getIndexBitWidth(
+                     selected.structuredProgram.module().getOperation()));
+  if (indexWidth != 32)
+    fail(test, "selected index width was not materialized in Structured IR");
 
   auto wrapper =
       selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
@@ -498,6 +533,17 @@ void explicitOperationSpatialOwnership() {
   }
   if (!sawStore)
     fail(test, "canonical graph dropped the loop's side-effecting store");
+
+  auto unproven = loom::frontend::materializeOperationSpatialOwnership(
+      compiled.structuredProgram,
+      findStructuredLoop(test, compiled.structuredProgram, "dynamic"),
+      design.roots().front(), options);
+  if (unproven)
+    fail(test, "runtime-bounded wide GEP index was narrowed without proof");
+  std::string unprovenMessage = llvm::toString(unproven.takeError());
+  if (unprovenMessage.find("cannot prove") == std::string::npos)
+    fail(test, "unproven narrowing did not report its proof boundary: " +
+                   unprovenMessage);
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

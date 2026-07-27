@@ -2,6 +2,7 @@ add_library(LoomFrontendCompilation
   FabricCapabilityIndex.cpp
   OwnershipCandidateGenerator.cpp
   PreMappingCompilation.cpp
+  StructuredAddressIndexNarrowing.cpp
 )
 
 target_include_directories(LoomFrontendCompilation PUBLIC
@@ -18,5 +19,9 @@ target_link_libraries(LoomFrontendCompilation PUBLIC
 )
 
 mlir_target_link_libraries(LoomFrontendCompilation PUBLIC
+  MLIRArithDialect
+  MLIRDLTIDialect
   MLIRIR
+  MLIRLLVMDialect
+  MLIRSCFDialect
 )
