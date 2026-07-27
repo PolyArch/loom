@@ -25,6 +25,8 @@
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/AsmState.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 
 #include "llvm/IR/LLVMContext.h"
@@ -136,6 +138,9 @@ std::unique_ptr<::llvm::Module> readLLVMModule(::llvm::LLVMContext &llvmContext,
 
 int main(int argc, char **argv) {
   ::llvm::InitLLVM y(argc, argv);
+  ::mlir::registerAsmPrinterCLOptions();
+  ::mlir::registerMLIRContextCLOptions();
+  ::mlir::registerPassManagerCLOptions();
   ::llvm::cl::ParseCommandLineOptions(
       argc, argv,
       "Loom LLVM IR -> pre-Mapping compilation driver\n"
@@ -167,8 +172,12 @@ int main(int argc, char **argv) {
         ::llvm::inconvertibleErrorCode(),
         "builtin target did not produce exactly one Fabric root"));
 
+  loom::frontend::PreMappingCompilationOptions compilationOptions;
+  compilationOptions.raising.applyPassManagerCommandLineOptions = true;
+  compilationOptions.lowering.applyPassManagerCommandLineOptions = true;
   auto compiled = loom::frontend::compileLlvmModuleToPreMapping(
-      std::move(llvmModule), design->roots().front().reference(), store);
+      std::move(llvmModule), design->roots().front().reference(), store,
+      compilationOptions);
   if (!compiled)
     return reportError(compiled.takeError());
 
@@ -180,7 +189,8 @@ int main(int argc, char **argv) {
       return reportError(callable.takeError());
     auto materialized =
         loom::frontend::materializeWholeCallableSpatialOwnership(
-            compiled->structuredProgram, *callable, design->roots().front());
+            compiled->structuredProgram, *callable, design->roots().front(),
+            compilationOptions.lowering);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));
