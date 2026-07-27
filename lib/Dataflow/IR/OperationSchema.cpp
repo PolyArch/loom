@@ -301,6 +301,13 @@ readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
     return dataflow::SemanticPayload{
         dataflow::IntegerMinPoisonPayload{actor.getIsIntMinPoison()}};
   }
+  case Case::LLVMDisjoint: {
+    auto actor = llvm::dyn_cast<LLVM::OrOp>(op);
+    if (!actor)
+      return mismatch(op, kind);
+    return dataflow::SemanticPayload{
+        dataflow::DisjointPayload{actor.getIsDisjoint()}};
+  }
   case Case::LLVMAggregatePosition:
     return llvm::TypeSwitch<Operation *,
                             llvm::Expected<dataflow::SemanticPayload>>(op)
@@ -424,6 +431,12 @@ dataflow::operationSchemaOf(Operation *op) {
   case OperationSchemaId::LLVMAbs: {
     auto actor = llvm::dyn_cast<LLVM::AbsOp>(op);
     if (!actor || !actor.getIsIntMinPoison())
+      return std::nullopt;
+    break;
+  }
+  case OperationSchemaId::LLVMOrDisjoint: {
+    auto actor = llvm::dyn_cast<LLVM::OrOp>(op);
+    if (!actor || !actor.getIsDisjoint())
       return std::nullopt;
     break;
   }

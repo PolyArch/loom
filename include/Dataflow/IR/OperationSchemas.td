@@ -60,6 +60,7 @@ def ArithExact : SemanticsCase<11, 0x4c53010c>;
 def ArithNonNegative : SemanticsCase<12, 0x4c53010d>;
 def VectorStaticPosition : SemanticsCase<13, 0x4c53010e>;
 def VectorShuffleMask : SemanticsCase<14, 0x4c53010f>;
+def LLVMDisjoint : SemanticsCase<15, 0x4c530110>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -321,6 +322,8 @@ def LLVMExtractValue : ActorSchema<74, 0x4c53024b, "::mlir::LLVM::ExtractValueOp
     "Compute", LLVMAggregatePosition>;
 def LLVMInsertValue : ActorSchema<75, 0x4c53024c, "::mlir::LLVM::InsertValueOp",
     "Compute", LLVMAggregatePosition>;
+def LLVMOrDisjoint : ActorSchema<97, 0x4c530262, "::mlir::LLVM::OrOp", "Compute",
+    LLVMDisjoint>;
 
 //===----------------------------------------------------------------------===//
 // Canonical Dataflow control and memory actor schemas
@@ -371,7 +374,7 @@ def DataflowFence : ActorSchema<92, 0x4c53025d, "::dataflow::FenceOp", "Memory",
 def ScalarIntegerAddSub : ImplementationFamily<0, [ArithAddI, ArithSubI],
     ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
 def ScalarIntegerLogic : ImplementationFamily<1,
-    [ArithAndI, ArithOrI, ArithXOrI],
+    [ArithAndI, ArithOrI, ArithXOrI, LLVMOrDisjoint],
     ScalarIntegerParams, ScalarLogicIntegerAdmission>;
 def ScalarIntegerShift : ImplementationFamily<2,
     [ArithShLI, ArithShRSI, ArithShRUI],
@@ -430,7 +433,7 @@ def FixedVectorIntegerAddSub : ImplementationFamily<20,
     [ArithAddI, ArithSubI], FixedVectorIntegerParams,
     FixedVectorOrdinaryIntegerAdmission>;
 def FixedVectorIntegerLogic : ImplementationFamily<21,
-    [ArithAndI, ArithOrI, ArithXOrI], FixedVectorIntegerParams,
+    [ArithAndI, ArithOrI, ArithXOrI, LLVMOrDisjoint], FixedVectorIntegerParams,
     FixedVectorLogicIntegerAdmission>;
 def FixedVectorIntegerShift : ImplementationFamily<22,
     [ArithShLI, ArithShRSI, ArithShRUI], FixedVectorIntegerParams,

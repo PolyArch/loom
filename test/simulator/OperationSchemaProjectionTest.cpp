@@ -178,6 +178,28 @@ void checkTypedLLVMExceptionalPolicies() {
                                                                 signedMinimum));
   require(__func__, poisonResult.state == PrimitiveValueState::Poison,
           "LLVM abs minimum policy did not produce poison");
+
+  mlir::FunctionType binaryI8 =
+      mlir::FunctionType::get(&context, {i8, i8}, {i8});
+  PrimitiveOperationDescriptor disjointOr =
+      descriptor(OperationSchemaId::LLVMOrDisjoint, binaryI8,
+                 dataflow::DisjointPayload{true}, 8, 8);
+  const PrimitiveValue disjointOperands[] = {integer(8, 0x30),
+                                             integer(8, 0x0c)};
+  PrimitiveValue disjointResult = takeValue(
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(disjointOr, disjointOperands));
+  require(__func__,
+          definedBits(__func__, disjointResult) == llvm::APInt(8, 0x3c),
+          "disjoint LLVM or did not combine non-overlapping operands");
+
+  const PrimitiveValue overlappingOperands[] = {integer(8, 0x30),
+                                                integer(8, 0x10)};
+  PrimitiveValue overlappingResult = takeValue(
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(disjointOr, overlappingOperands));
+  require(__func__, overlappingResult.state == PrimitiveValueState::Poison,
+          "disjoint LLVM or did not poison overlapping operands");
 }
 
 void checkTypedIntegerPolicies() {

@@ -377,22 +377,32 @@ bool checkPoisonAndAggregateState(MLIRContext &context) {
       LLVM::AbsOp::create(fixture.builder, fixture.loc, i32, input, true);
   Operation *definedOnMin =
       LLVM::AbsOp::create(fixture.builder, fixture.loc, i32, input, false);
+  Operation *disjointOr =
+      LLVM::OrOp::create(fixture.builder, fixture.loc, i32, input, input, true);
+  Operation *ordinaryOr = LLVM::OrOp::create(fixture.builder, fixture.loc, i32,
+                                             input, input, false);
 
   bool ok = true;
   std::optional<CanonicalActorSchemaProjection> ctlz =
       projectActor(poisonOnZero, ok);
   std::optional<CanonicalActorSchemaProjection> abs =
       projectActor(poisonOnMin, ok);
+  std::optional<CanonicalActorSchemaProjection> disjoint =
+      projectActor(disjointOr, ok);
   const auto *zeroPoison =
       ctlz ? std::get_if<ZeroPoisonPayload>(&ctlz->payload) : nullptr;
   const auto *minPoison =
       abs ? std::get_if<IntegerMinPoisonPayload>(&abs->payload) : nullptr;
+  const auto *disjointPolicy =
+      disjoint ? std::get_if<DisjointPayload>(&disjoint->payload) : nullptr;
   if (!zeroPoison || !zeroPoison->isZeroPoison || !minPoison ||
-      !minPoison->isIntMinPoison) {
+      !minPoison->isIntMinPoison || !disjointPolicy ||
+      !disjointPolicy->isDisjoint) {
     llvm::errs() << "LLVM poison controls were not projected exactly\n";
     ok = false;
   }
-  if (operationSchemaOf(definedOnZero) || operationSchemaOf(definedOnMin)) {
+  if (operationSchemaOf(definedOnZero) || operationSchemaOf(definedOnMin) ||
+      operationSchemaOf(ordinaryOr)) {
     llvm::errs() << "a poison-free LLVM alias was admitted\n";
     ok = false;
   }

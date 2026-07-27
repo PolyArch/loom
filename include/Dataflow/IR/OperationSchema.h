@@ -174,6 +174,17 @@ struct IntegerMinPoisonPayload {
   }
 };
 
+/// The no-common-set-bits poison contract of an LLVM integer OR actor. The
+/// flag-free form is mechanically raised to arith.ori and never reaches this
+/// projection.
+struct DisjointPayload {
+  bool isDisjoint = false;
+
+  friend bool operator==(DisjointPayload lhs, DisjointPayload rhs) {
+    return lhs.isDisjoint == rhs.isDisjoint;
+  }
+};
+
 /// The statically selected element of an LLVM aggregate actor.
 struct AggregatePositionPayload {
   std::vector<std::int64_t> position;
@@ -326,7 +337,7 @@ using SemanticPayload = std::variant<
     IntegerOverflowPayload, IntegerComparePayload, FloatComparePayload,
     ConstantValuePayload, StreamRecurrencePayload, MemoryContractPayload,
     ZeroPoisonPayload, IntegerMinPoisonPayload, AggregatePositionPayload,
-    VectorStaticPositionPayload, VectorShuffleMaskPayload>;
+    VectorStaticPositionPayload, VectorShuffleMaskPayload, DisjointPayload>;
 
 /// The complete identity-critical projection of one canonical actor instance.
 struct CanonicalActorSchemaProjection {

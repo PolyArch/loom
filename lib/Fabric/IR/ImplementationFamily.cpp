@@ -393,6 +393,7 @@ llvm::Error admitFixedVectorLogicIntegerAdmission(
   case OperationSchemaId::ArithAndI:
   case OperationSchemaId::ArithOrI:
   case OperationSchemaId::ArithXOrI:
+  case OperationSchemaId::LLVMOrDisjoint:
     break;
   default:
     return reject("fixed-vector logic provider received an unsupported schema");
@@ -1611,6 +1612,7 @@ admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
   case OperationSchemaId::ArithAndI:
   case OperationSchemaId::ArithOrI:
   case OperationSchemaId::ArithXOrI:
+  case OperationSchemaId::LLVMOrDisjoint:
     return admitUniformInteger(actor, params.integerWidths, 2);
   default:
     return reject("logic admission provider received an unsupported schema");

@@ -81,6 +81,7 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::LLVMUSubSat:
   case Schema::LLVMCountLeadingZeros:
   case Schema::LLVMAbs:
+  case Schema::LLVMOrDisjoint:
     return &evaluateRegisteredPrimitiveOperation;
   default:
     return nullptr;
@@ -468,6 +469,26 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (schema == Schema::ArithOrI)
       return PrimitiveValue::integer(*pair->first | *pair->second);
     return PrimitiveValue::integer(*pair->first ^ *pair->second);
+  }
+
+  case Schema::LLVMOrDisjoint: {
+    if (llvm::Error arity = requireArity(schema, operands, 2))
+      return std::move(arity);
+    auto payload = requirePayload<dataflow::DisjointPayload>(descriptor);
+    if (!payload)
+      return payload.takeError();
+    if (!(*payload)->isDisjoint)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "llvm.or canonical actor is missing its disjoint contract");
+    if (auto exceptional = strictExceptionalResult(operands))
+      return *exceptional;
+    auto pair = requireIntegerPair(schema, operands);
+    if (!pair)
+      return pair.takeError();
+    if (!(*pair->first & *pair->second).isZero())
+      return PrimitiveValue::poison();
+    return PrimitiveValue::integer(*pair->first | *pair->second);
   }
 
   case Schema::ArithShLI: {

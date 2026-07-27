@@ -1397,6 +1397,13 @@ llvm::Error encodePayload(Writer &writer,
     writer.boolean(poison->isIntMinPoison);
     return llvm::Error::success();
   }
+  case Case::LLVMDisjoint: {
+    const auto *disjoint = std::get_if<dataflow::DisjointPayload>(&payload);
+    if (!disjoint)
+      break;
+    writer.boolean(disjoint->isDisjoint);
+    return llvm::Error::success();
+  }
   case Case::LLVMAggregatePosition: {
     const auto *position =
         std::get_if<dataflow::AggregatePositionPayload>(&payload);
@@ -1509,6 +1516,12 @@ llvm::Error validatePayload(Reader &reader,
     auto poison = reader.boolean("integer-minimum poison flag");
     if (!poison)
       return poison.takeError();
+    return llvm::Error::success();
+  }
+  case Case::LLVMDisjoint: {
+    auto disjoint = reader.boolean("disjoint flag");
+    if (!disjoint)
+      return disjoint.takeError();
     return llvm::Error::success();
   }
   case Case::LLVMAggregatePosition:
