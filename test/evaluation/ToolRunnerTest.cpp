@@ -1301,17 +1301,14 @@ int runChild(int argc, char **argv) {
   if (mode == "--exit-zero")
     return 0;
   if (mode == "--continuous-output") {
-    for (int index = 0; index < 32; ++index) {
-      const pid_t writer = ::fork();
-      if (writer < 0)
-        return 88;
-      if (writer == 0)
-        writeForever(STDOUT_FILENO);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     const char marker[] = "stderr-marker\n";
     if (::write(STDERR_FILENO, marker, sizeof(marker) - 1) < 0)
       return 89;
+    const pid_t writer = ::fork();
+    if (writer < 0)
+      return 88;
+    if (writer == 0)
+      writeForever(STDOUT_FILENO);
     for (;;)
       ::pause();
   }
