@@ -49,3 +49,50 @@ dataflow.graph private @nested_while_selection(
   }
   dataflow.graph.return %start : none
 }
+
+// An unconditionally nested loop in scf.while.before also retires once for
+// every before-region activation. Selection inside that child loop must not
+// hide its close from the complete parent phase.
+// CHECK-LABEL: dataflow.graph private @nested_while_with_inner_selection
+// CHECK: dataflow.gate
+// CHECK: dataflow.graph.return
+// CHECK-NOT: scf.if
+// CHECK-NOT: scf.while
+dataflow.graph private @nested_while_with_inner_selection(
+    %start: none, %outer_limit: i32,
+    %input: memref<?xi32>, %output: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 1, 0, 2>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %four = arith.constant 4 : i32
+  %outer = scf.while (%i = %zero) : (i32) -> i32 {
+    %inner:2 = scf.while (%j = %zero, %sum = %zero)
+        : (i32, i32) -> (i32, i32) {
+      %index = arith.index_cast %j : i32 to index
+      %selected = arith.cmpi sle, %j, %i : i32
+      %next_sum = scf.if %selected -> (i32) {
+        %value = memref.load %input[%index] : memref<?xi32>
+        %added = arith.addi %sum, %value : i32
+        scf.yield %added : i32
+      } else {
+        scf.yield %sum : i32
+      }
+      %next_j = arith.addi %j, %one : i32
+      %inner_continue = arith.cmpi slt, %next_j, %four : i32
+      scf.condition(%inner_continue) %next_j, %next_sum : i32, i32
+    } do {
+    ^bb0(%j: i32, %sum: i32):
+      scf.yield %j, %sum : i32, i32
+    }
+    %outer_index = arith.index_cast %i : i32 to index
+    memref.store %inner#1, %output[%outer_index] : memref<?xi32>
+    %next_i = arith.addi %i, %one : i32
+    %outer_continue = arith.cmpi slt, %next_i, %outer_limit : i32
+    scf.condition(%outer_continue) %next_i : i32
+  } do {
+  ^bb0(%i: i32):
+    scf.yield %i : i32
+  }
+  dataflow.graph.return %start : none
+}

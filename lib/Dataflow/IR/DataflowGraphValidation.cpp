@@ -523,6 +523,7 @@ bool hasObservableEffect(mlir::Operation *op) {
 
 enum class NestedAlignmentKind : uint8_t {
   Close,
+  TruePhaseClose,
   GateClose,
   SiblingGateClose,
   SelectedClose,
@@ -953,24 +954,33 @@ private:
     });
   }
 
-  bool initializeNestedActivation(dataflow::StreamOp stream,
+  bool initializeNestedActivation(mlir::Value childPhase,
                                   mlir::Value parentPhase,
                                   mlir::Value parentAssumption,
+                                  bool truePhaseOnly,
                                   GraphCardinalityAnalysis &activation) {
     // Parent-aligned inputs are exact-one within each child activation.
     auto assumeExact = [&](mlir::Value value) {
       llvm::DenseSet<mlir::Value> visited;
-      if (!isAligned(value, parentPhase, parentAssumption,
-                     /*truePhaseOnly=*/true, visited))
+      if (!isAligned(value, parentPhase, parentAssumption, truePhaseOnly,
+                     visited))
         return false;
       activation.exactOneAssumptions.insert(value);
       return true;
     };
-    if (!assumeExact(stream.getInit()) || !assumeExact(stream.getLimit()) ||
-        !assumeExact(stream.getStep()))
-      return false;
 
-    auto inputs = graphIndex->activationInputsByPhase.find(stream.getPhase());
+    if (auto stream = childPhase.getDefiningOp<dataflow::StreamOp>()) {
+      if (childPhase != stream.getPhase() || !assumeExact(stream.getInit()) ||
+          !assumeExact(stream.getLimit()) || !assumeExact(stream.getStep()))
+        return false;
+    } else {
+      auto carries = graphIndex->carriesByPhase.find(childPhase);
+      if (carries == graphIndex->carriesByPhase.end() ||
+          carries->second.empty())
+        return false;
+    }
+
+    auto inputs = graphIndex->activationInputsByPhase.find(childPhase);
     if (inputs != graphIndex->activationInputsByPhase.end())
       for (mlir::Value input : inputs->second)
         if (!assumeExact(input))
@@ -980,21 +990,26 @@ private:
 
   bool isNestedCloseAligned(dataflow::DemuxOp close, mlir::OpResult result,
                             mlir::Value parentPhase,
-                            mlir::Value parentAssumption) {
-    if (result.getResultNumber() != 0 || close.getOutputs().size() != 2)
-      return false;
-    auto stream = close.getSel().getDefiningOp<dataflow::StreamOp>();
-    if (!stream || close.getSel() != stream.getPhase())
+                            mlir::Value parentAssumption, bool truePhaseOnly) {
+    if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
+        close.getSel() == parentPhase)
       return false;
 
-    NestedAlignmentQuery query{alignmentRevision,         result, parentPhase,
-                               parentAssumption,          {},     0,
-                               NestedAlignmentKind::Close};
+    NestedAlignmentQuery query{alignmentRevision,
+                               result,
+                               parentPhase,
+                               parentAssumption,
+                               {},
+                               0,
+                               truePhaseOnly
+                                   ? NestedAlignmentKind::TruePhaseClose
+                                   : NestedAlignmentKind::Close};
     return evaluateNestedAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, graphIndex);
-      return initializeNestedActivation(stream, parentPhase, parentAssumption,
+      return initializeNestedActivation(close.getSel(), parentPhase,
+                                        parentAssumption, truePhaseOnly,
                                         activation) &&
-             activation.isPhaseAligned(close.getInput(), stream.getPhase());
+             activation.isExactOne(result);
     });
   }
 
@@ -1021,8 +1036,9 @@ private:
                                NestedAlignmentKind::GateClose};
     return evaluateNestedAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, graphIndex);
-      return initializeNestedActivation(stream, parentPhase, parentAssumption,
-                                        activation) &&
+      return initializeNestedActivation(stream.getPhase(), parentPhase,
+                                        parentAssumption,
+                                        /*truePhaseOnly=*/true, activation) &&
              activation.isOneClosePhase(stream.getPhase()) &&
              activation.isPhaseAligned(gate->getBeforeValue(),
                                        stream.getPhase());
@@ -1137,11 +1153,11 @@ private:
                        /*truePhaseOnly=*/false, branchVisited);
     }
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      if (result.getResultNumber() == 0 &&
+          isNestedCloseAligned(demux, result, phase, assumption, truePhaseOnly))
+        return true;
       if (!truePhaseOnly)
         return false;
-      if (result.getResultNumber() == 0 &&
-          isNestedCloseAligned(demux, result, phase, assumption))
-        return true;
       if (demux.getSel() != phase || result.getResultNumber() != 1)
         return false;
       llvm::DenseSet<mlir::Value> branchVisited = visited;
