@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
 
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "FabricArtifactViewInternal.h"
@@ -100,6 +101,25 @@ struct FabricArtifactView::Storage {
         (*nodes)[ref.ordinal].kind != ref.node)
       return nullptr;
     return &(*nodes)[ref.ordinal].owner;
+  }
+
+  const detail::FabricFuNodeViewData *
+  fuNodeRecord(FabricFuTemplateNodeRef ref) const {
+    const auto *nodes = fuNodes(ref.fu);
+    if (!nodes || ref.ordinal >= nodes->size() ||
+        (*nodes)[ref.ordinal].kind != ref.node)
+      return nullptr;
+    return &(*nodes)[ref.ordinal];
+  }
+
+  const ResolvedFabricOpCapabilityView *
+  operationCapability(FabricFuTemplateNodeRef ref) const {
+    const detail::FabricEntityViewData *record = entity(ref.fu);
+    const detail::FabricFuNodeViewData *node = fuNodeRecord(ref);
+    if (!record || !node || !node->operationCapabilityIndex ||
+        *node->operationCapabilityIndex >= record->operationCapabilities.size())
+      return nullptr;
+    return &record->operationCapabilities[*node->operationCapabilityIndex];
   }
 
   const detail::FabricMemoryOperationPortViewData *
@@ -310,12 +330,94 @@ struct FabricArtifactView::Storage {
 
 FabricArtifactView::~FabricArtifactView() = default;
 
+llvm::Error ResolvedFabricOpCapabilityView::admit(
+    const ::dataflow::CanonicalActorSchemaProjection &actor) const {
+  const auto rejected = [](const llvm::Twine &message) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "fabric_operation_capability_rejected: " +
+                                       message);
+  };
+  if (!llvm::is_contained(enabledOperationSchemas, actor.schema))
+    return rejected(
+        "operation schema is not enabled by the concrete fabric.op");
+  if (llvm::Error error = ::fabric::verifyImplementationFamilyAdmission(
+          implementationFamily, &parameterizedCapability, actor))
+    return error;
+
+  llvm::SmallVector<unsigned, 4> physicalInputs;
+  llvm::SmallVector<unsigned, 4> physicalResults;
+  for (const ResolvedFabricOpPhysicalPortView &port : physicalPorts)
+    (port.reference.direction == FabricPortDirection::Input ? physicalInputs
+                                                            : physicalResults)
+        .push_back(port.payloadWidthBits);
+  if (physicalInputs.size() < actor.type.getNumInputs() ||
+      physicalResults.size() < actor.type.getNumResults())
+    return rejected("physical port capacity cannot cover the actor arity");
+
+  const auto semanticWidths = [&](mlir::TypeRange types)
+      -> llvm::Expected<llvm::SmallVector<unsigned, 4>> {
+    llvm::SmallVector<unsigned, 4> widths;
+    widths.reserve(types.size());
+    for (mlir::Type type : types) {
+      std::string message;
+      mlir::FailureOr<unsigned> width =
+          ::fabric::getSemanticPayloadWidth(type, message);
+      if (mlir::failed(width))
+        return rejected(message);
+      widths.push_back(*width);
+    }
+    llvm::sort(widths);
+    return widths;
+  };
+  auto semanticInputs = semanticWidths(actor.type.getInputs());
+  if (!semanticInputs)
+    return semanticInputs.takeError();
+  auto semanticResults = semanticWidths(actor.type.getResults());
+  if (!semanticResults)
+    return semanticResults.takeError();
+  llvm::sort(physicalInputs);
+  llvm::sort(physicalResults);
+  const auto hasWidthCapacity = [](llvm::ArrayRef<unsigned> semantic,
+                                   llvm::ArrayRef<unsigned> physical) {
+    std::size_t physicalPosition = 0;
+    for (unsigned width : semantic) {
+      while (physicalPosition < physical.size() &&
+             physical[physicalPosition] < width)
+        ++physicalPosition;
+      if (physicalPosition == physical.size())
+        return false;
+      ++physicalPosition;
+    }
+    return true;
+  };
+  if (!hasWidthCapacity(*semanticInputs, physicalInputs))
+    return rejected("no physical input correspondence has enough width");
+  if (!hasWidthCapacity(*semanticResults, physicalResults))
+    return rejected("no physical result correspondence has enough width");
+  return llvm::Error::success();
+}
+
 namespace {
 
 std::uint64_t inventoryCount(llvm::ArrayRef<std::uint64_t> counts,
                              FabricInventoryKind kind) {
   const std::size_t index = static_cast<std::size_t>(kind);
   return index < counts.size() ? counts[index] : 0;
+}
+
+std::optional<std::uint32_t>
+encodedUntaggedPayloadWidth(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes.size() != 2 * sizeof(std::uint32_t))
+    return std::nullopt;
+  const auto readU32 = [](llvm::ArrayRef<std::uint8_t> value) {
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
+           (static_cast<std::uint32_t>(value[2]) << 8) |
+           static_cast<std::uint32_t>(value[3]);
+  };
+  if (readU32(bytes.take_front(sizeof(std::uint32_t))) != 0)
+    return std::nullopt;
+  return readU32(bytes.drop_front(sizeof(std::uint32_t)));
 }
 
 template <typename Row>
@@ -402,6 +504,10 @@ const ArtifactIdentity &FabricArtifactView::identity() const {
 
 FabricRootKind FabricArtifactView::rootKind() const {
   return storage_->data.rootKind;
+}
+
+llvm::ArrayRef<FabricArtifactView> FabricArtifactView::importedModules() const {
+  return storage_->data.importedModules;
 }
 
 std::optional<FabricEntityKind>
@@ -608,6 +714,32 @@ FabricArtifactView::fuCapabilityTemplates(
                  : llvm::ArrayRef<FabricFuCapabilityTemplateRecord>();
 }
 
+const ResolvedFabricOpCapabilityView *
+FabricArtifactView::resolvedFabricOpCapability(
+    const FabricFuTemplateNodeRef &operation) const {
+  return storage_->operationCapability(operation);
+}
+
+const ResolvedFabricOpCapabilityView *
+FabricArtifactView::resolvedFabricOpCapability(
+    const FabricFuOccurrenceNodeRef &operation) const {
+  const detail::FabricEntityViewData *occurrence =
+      storage_->entity(operation.fu);
+  if (!occurrence || !occurrence->fuTemplate)
+    return nullptr;
+  return storage_->operationCapability(FabricFuTemplateNodeRef{
+      operation.node, *occurrence->fuTemplate, operation.ordinal});
+}
+
+llvm::ArrayRef<ResolvedFabricOpCapabilityView>
+FabricArtifactView::resolvedFabricOpCapabilities(
+    FabricFuTemplateRef definition) const {
+  const detail::FabricEntityViewData *record = storage_->entity(definition);
+  return record ? llvm::ArrayRef<ResolvedFabricOpCapabilityView>(
+                      record->operationCapabilities)
+                : llvm::ArrayRef<ResolvedFabricOpCapabilityView>();
+}
+
 llvm::ArrayRef<FabricMemoryOperationPortRef>
 FabricArtifactView::memoryOperationPorts(
     FabricMemoryOccurrenceRef memory) const {
@@ -761,12 +893,103 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       if (!validClosedValue(endpoint.role))
         return invalidView("memory endpoint has an unknown role");
 
-    for (FabricFuNodeViewData &node : entity.fuNodes) {
+    std::vector<bool> referencedOperationCapabilities(
+        entity.operationCapabilities.size(), false);
+    for (auto [nodeOrdinal, node] : llvm::enumerate(entity.fuNodes)) {
       if (!validClosedValue(node.kind))
         return invalidView("FU node has an unknown kind");
       if (llvm::Error error = validateNestedOwner(node.owner, "FU node"))
         return std::move(error);
+      const bool operationNode = node.kind == FabricFuNodeKind::Op;
+      if (operationNode != node.operationCapabilityIndex.has_value())
+        return invalidView(
+            "FU operation node and resolved capability do not correspond");
+      if (!operationNode)
+        continue;
+      if (*node.operationCapabilityIndex >= entity.operationCapabilities.size())
+        return invalidView("FU operation capability index is out of range");
+      if (referencedOperationCapabilities[*node.operationCapabilityIndex])
+        return invalidView("FU operation capability is referenced twice");
+      referencedOperationCapabilities[*node.operationCapabilityIndex] = true;
+
+      const ResolvedFabricOpCapabilityView &capability =
+          entity.operationCapabilities[*node.operationCapabilityIndex];
+      const FabricFuTemplateNodeRef expectedReference{
+          FabricFuNodeKind::Op, FabricFuTemplateRef(index), nodeOrdinal};
+      if (capability.occurrence != expectedReference)
+        return invalidView("FU operation capability has the wrong owner");
+      if (capability.enabledOperationSchemas.empty())
+        return invalidView("FU operation capability has no enabled schema");
+      std::set<::dataflow::OperationSchemaId> enabled;
+      for (::dataflow::OperationSchemaId schema :
+           capability.enabledOperationSchemas) {
+        if (!enabled.insert(schema).second)
+          return invalidView(
+              "FU operation capability has a duplicate enabled schema");
+        if (!::fabric::admitsOperationSchema(capability.implementationFamily,
+                                             schema))
+          return invalidView(
+              "FU operation capability escapes its implementation family");
+      }
+      if (::fabric::capabilityParamsSchema(
+              capability.parameterizedCapability) !=
+          ::fabric::implementationFamily(capability.implementationFamily)
+              .capabilityParamsSchema)
+        return invalidView(
+            "FU operation capability has the wrong parameter schema");
+      if (capability.physicalPorts.size() !=
+          node.owner.transportEndpoints.size())
+        return invalidView(
+            "FU operation capability has an incomplete physical port view");
+      FabricOrdinal expectedInputOrdinal = 0;
+      FabricOrdinal expectedOutputOrdinal = 0;
+      for (auto [portOrdinal, port] :
+           llvm::enumerate(capability.physicalPorts)) {
+        const FabricTransportEndpointViewData &endpoint =
+            node.owner.transportEndpoints[portOrdinal];
+        std::optional<std::uint32_t> encodedWidth =
+            encodedUntaggedPayloadWidth(endpoint.canonicalType);
+        const FabricOrdinal expectedPortOrdinal =
+            endpoint.direction == FabricPortDirection::Input
+                ? expectedInputOrdinal++
+                : expectedOutputOrdinal++;
+        if (port.reference.node != expectedReference ||
+            port.reference.direction != endpoint.direction ||
+            port.reference.ordinal != expectedPortOrdinal ||
+            port.canonicalType != endpoint.canonicalType || !encodedWidth ||
+            port.payloadWidthBits != *encodedWidth)
+          return invalidView(
+              "FU operation capability physical port does not match Fabric");
+      }
+      const FabricInventoryOwnerRef expectedOwner =
+          FabricInventoryOwnerRef::of(expectedReference);
+      for (auto [ordinal, field] :
+           llvm::enumerate(capability.configurationFieldSchema))
+        if (field.owner.catalog() != expectedOwner || field.ordinal != ordinal)
+          return invalidView(
+              "FU operation capability has a noncanonical configuration "
+              "field reference");
+      for (auto [ordinal, refinement] :
+           llvm::enumerate(capability.physicalRefinementDomains))
+        if (refinement.owner.catalog() != expectedOwner ||
+            refinement.ordinal != ordinal)
+          return invalidView(
+              "FU operation capability has a noncanonical refinement "
+              "reference");
+      auto nodeContract =
+          ::fabric::encodeResourceContractRecord(*node.owner.resourceContract);
+      if (!nodeContract)
+        return nodeContract.takeError();
+      auto capabilityContract = ::fabric::encodeResourceContractRecord(
+          capability.resourceStateAndTimingContract);
+      if (!capabilityContract)
+        return capabilityContract.takeError();
+      if (*nodeContract != *capabilityContract)
+        return invalidView(
+            "FU operation capability has a different resource contract");
     }
+    if (llvm::is_contained(referencedOperationCapabilities, false))
+      return invalidView("FU operation capability is unreachable");
     if (entity.kind == FabricEntityKind::FabricFuTemplate) {
       auto normalized = normalizeFabricFuCapabilityTemplateInventory(
           entity.fuCapabilityTemplates);
@@ -774,9 +997,10 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         return normalized.takeError();
       if (*normalized != entity.fuCapabilityTemplates)
         return invalidView("FU capability-template inventory is not canonical");
-    } else if (!entity.fuCapabilityTemplates.empty()) {
+    } else if (!entity.fuCapabilityTemplates.empty() ||
+               !entity.operationCapabilities.empty()) {
       return invalidView(
-          "only an FU template may own capability-template records");
+          "only an FU template may own operation capability records");
     }
     for (FabricMemoryOperationPortViewData &port : entity.memoryOperationPorts)
       if (llvm::Error error =

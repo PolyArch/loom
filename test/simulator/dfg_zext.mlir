@@ -5,7 +5,6 @@
 // CHECK-DAG: "workload": "zext"
 // CHECK-DAG: "graph": "zext"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "operation_cost_score": 6
 // CHECK-DAG: "wavefront_steps": 3
 // CHECK-DAG: "event_count": 3
 // CHECK-DAG: "i64:42"

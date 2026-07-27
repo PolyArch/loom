@@ -43,6 +43,7 @@ struct FabricModuleBoundaryEndpointViewData {
 struct FabricFuNodeViewData {
   FabricFuNodeKind kind = FabricFuNodeKind::Op;
   FabricNestedOwnerViewData owner;
+  std::optional<std::size_t> operationCapabilityIndex;
 };
 
 struct FabricMemoryOperationPortViewData {
@@ -54,6 +55,7 @@ struct FabricEntityViewData {
   FabricEntityKind kind = FabricEntityKind::FabricModuleTemplate;
   FabricNestedOwnerViewData owner;
   std::vector<FabricFuNodeViewData> fuNodes;
+  std::vector<ResolvedFabricOpCapabilityView> operationCapabilities;
   std::vector<FabricFuCapabilityTemplateRecord> fuCapabilityTemplates;
   std::vector<FabricMemoryOperationPortViewData> memoryOperationPorts;
   std::optional<::fabric::Schedule> memorySchedule;

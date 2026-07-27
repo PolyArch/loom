@@ -55,8 +55,6 @@ std::optional<unsigned> getFabricTransportPayloadWidth(::mlir::Type type);
 encodeFabricTransportType(::mlir::Type type);
 ::llvm::Expected<std::vector<std::uint8_t>>
 encodeFabricTransportFunctionType(::mlir::FunctionType type);
-::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
-                                                    std::string &error);
 ::mlir::LogicalResult
 verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
                               ::llvm::ArrayRef<::mlir::Type> innerInputTypes);

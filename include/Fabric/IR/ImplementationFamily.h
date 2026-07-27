@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -73,6 +74,13 @@ public:
            (bits_ & (std::uint64_t{1} << index)) != 0;
   }
   bool empty() const { return bits_ == 0; }
+  std::size_t size() const {
+    std::size_t result = 0;
+    for (std::uint64_t remaining = bits_; remaining != 0;
+         remaining &= remaining - 1)
+      ++result;
+    return result;
+  }
   bool valid() const { return valid_; }
   bool isSubsetOf(ClosedEnumSet other) const {
     return valid_ && other.valid_ && (bits_ & ~other.bits_) == 0;
@@ -122,6 +130,13 @@ public:
     return (bits_ & (std::uint64_t{1} << index)) != 0;
   }
   bool empty() const { return bits_ == 0; }
+  std::size_t size() const {
+    std::size_t result = 0;
+    for (std::uint64_t remaining = bits_; remaining != 0;
+         remaining &= remaining - 1)
+      ++result;
+    return result;
+  }
   bool valid() const { return valid_; }
 
 private:
@@ -485,6 +500,21 @@ getFamilyCapabilityParamsAttr(::mlir::MLIRContext *context,
 llvm::Error verifyImplementationFamilyAdmission(
     ImplementationFamilyId family, const FamilyCapabilityParams *params,
     const ::dataflow::CanonicalActorSchemaProjection &actor);
+
+/// Whether one concrete operation relation needs a semantic configuration
+/// field to distinguish admitted hardware behaviors. The field is one
+/// composite typed value; ConfigurationABI alone later flattens it into
+/// physical leaves. This query interprets the generated family's existing
+/// typed admission provider and does not define another family registry.
+llvm::Expected<bool> requiresSemanticConfigurationField(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount);
+
+/// Exact flattened payload width used by concrete operation-resource
+/// admission. Equal widths do not imply equal actor semantics.
+::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
+                                                    std::string &error);
 
 } // namespace fabric
 

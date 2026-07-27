@@ -1,4 +1,3 @@
-#include "Simulator/OperationCostModel.h"
 #include "Simulator/OperationSemantics.h"
 
 #include "Dataflow/IR/OperationSchema.h"
@@ -19,18 +18,14 @@ namespace {
 
 using dataflow::CanonicalActorSchemaProjection;
 using dataflow::OperationSchemaId;
-using loom::sim::OperationCost;
 using loom::sim::PrimitiveOperationDescriptor;
 using loom::sim::PrimitiveValue;
 using loom::sim::PrimitiveValueState;
 
 using SupportSignature = bool (*)(OperationSchemaId);
-using CostSignature = llvm::Expected<OperationCost> (*)(OperationSchemaId);
 static_assert(
     std::is_same_v<decltype(&loom::sim::isSupportedPrimitiveOperation),
                    SupportSignature>);
-static_assert(
-    std::is_same_v<decltype(&loom::sim::estimateOperationCost), CostSignature>);
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   std::cerr << test.str() << ": " << message << '\n';
@@ -107,9 +102,9 @@ void checkTypedDispatchAndPayload() {
                                     mlir::arith::FastMathFlags::none},
       1, 0);
   const PrimitiveValue floatOperands[] = {
-      PrimitiveValue::floating(llvm::APFloat::getNaN(
-          llvm::APFloat::IEEEdouble(), /*Negative=*/false,
-          /*Payload=*/0)),
+      PrimitiveValue::floating(
+          llvm::APFloat::getNaN(llvm::APFloat::IEEEdouble(), /*Negative=*/false,
+                                /*Payload=*/0)),
       floating64(0x3ff0000000000000ULL)};
   PrimitiveValue floatResult =
       takeValue(__func__, loom::sim::evaluatePrimitiveOperation(floatCompare,
@@ -122,9 +117,9 @@ void checkTypedDispatchAndPayload() {
                  mlir::FunctionType::get(&context, {i8, i8}, {i8}),
                  dataflow::ExactPayload{true}, 8, 8);
   const PrimitiveValue shiftOperands[] = {integer(8, 3), integer(8, 1)};
-  PrimitiveValue shiftResult = takeValue(
-      __func__,
-      loom::sim::evaluatePrimitiveOperation(exactShift, shiftOperands));
+  PrimitiveValue shiftResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(exactShift,
+                                                                shiftOperands));
   require(__func__, shiftResult.state == PrimitiveValueState::Poison,
           "exact shift did not produce poison");
 
@@ -135,8 +130,8 @@ void checkTypedDispatchAndPayload() {
       8, 16);
   const PrimitiveValue truncationOperands[] = {integer(16, 256)};
   PrimitiveValue truncationResult = takeValue(
-      __func__, loom::sim::evaluatePrimitiveOperation(truncation,
-                                                      truncationOperands));
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(truncation, truncationOperands));
   require(__func__, truncationResult.state == PrimitiveValueState::Poison,
           "truncation overflow did not produce poison");
 
@@ -171,15 +166,16 @@ void checkTypedLLVMExceptionalPolicies() {
   PrimitiveValue wrappingResult =
       takeValue(__func__, loom::sim::evaluatePrimitiveOperation(wrappingAbs,
                                                                 signedMinimum));
-  require(__func__, definedBits(__func__, wrappingResult) == llvm::APInt(8, 128),
+  require(__func__,
+          definedBits(__func__, wrappingResult) == llvm::APInt(8, 128),
           "non-poisoning LLVM abs did not preserve signed minimum");
 
   PrimitiveOperationDescriptor poisonAbs =
       descriptor(OperationSchemaId::LLVMAbs, unaryI8,
                  dataflow::IntegerMinPoisonPayload{true}, 8, 8);
-  PrimitiveValue poisonResult = takeValue(
-      __func__,
-      loom::sim::evaluatePrimitiveOperation(poisonAbs, signedMinimum));
+  PrimitiveValue poisonResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(poisonAbs,
+                                                                signedMinimum));
   require(__func__, poisonResult.state == PrimitiveValueState::Poison,
           "LLVM abs minimum policy did not produce poison");
 }
@@ -195,8 +191,9 @@ void checkTypedIntegerPolicies() {
       dataflow::IntegerOverflowPayload{mlir::arith::IntegerOverflowFlags::nuw},
       8, 8);
   const PrimitiveValue addOperands[] = {integer(8, 255), integer(8, 1)};
-  PrimitiveValue addResult = takeValue(
-      __func__, loom::sim::evaluatePrimitiveOperation(wrappingAdd, addOperands));
+  PrimitiveValue addResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(wrappingAdd,
+                                                                addOperands));
   require(__func__, addResult.state == PrimitiveValueState::Poison,
           "integer overflow did not produce poison");
 
@@ -205,16 +202,16 @@ void checkTypedIntegerPolicies() {
                  mlir::FunctionType::get(&context, {i8}, {i16}),
                  dataflow::NonNegativePayload{true}, 16, 8);
   const PrimitiveValue negativeOperand[] = {integer(8, 255)};
-  PrimitiveValue extendResult = takeValue(
-      __func__, loom::sim::evaluatePrimitiveOperation(nonNegativeExtend,
-                                                      negativeOperand));
+  PrimitiveValue extendResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              nonNegativeExtend, negativeOperand));
   require(__func__, extendResult.state == PrimitiveValueState::Poison,
           "non-negative assumption did not produce poison");
 
-  PrimitiveOperationDescriptor add = descriptor(
-      OperationSchemaId::ArithAddI,
-      mlir::FunctionType::get(&context, {i8, i8}, {i8}),
-      dataflow::IntegerOverflowPayload{}, 8, 8);
+  PrimitiveOperationDescriptor add =
+      descriptor(OperationSchemaId::ArithAddI,
+                 mlir::FunctionType::get(&context, {i8, i8}, {i8}),
+                 dataflow::IntegerOverflowPayload{}, 8, 8);
   const PrimitiveValue undefOperands[] = {PrimitiveValue::undef(),
                                           integer(8, 1)};
   PrimitiveValue undefResult = takeValue(
@@ -229,30 +226,29 @@ void checkLazySelectionAndFusedFma() {
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::Type f64 = mlir::Float64Type::get(&context);
 
-  PrimitiveOperationDescriptor select = descriptor(
-      OperationSchemaId::ArithSelect,
-      mlir::FunctionType::get(&context, {i1, i8, i8}, {i8}),
-      dataflow::NoPayload{}, 8, 8);
-  const PrimitiveValue selectOperands[] = {PrimitiveValue::boolean(true),
-                                           integer(8, 7),
-                                           PrimitiveValue::poison()};
+  PrimitiveOperationDescriptor select =
+      descriptor(OperationSchemaId::ArithSelect,
+                 mlir::FunctionType::get(&context, {i1, i8, i8}, {i8}),
+                 dataflow::NoPayload{}, 8, 8);
+  const PrimitiveValue selectOperands[] = {
+      PrimitiveValue::boolean(true), integer(8, 7), PrimitiveValue::poison()};
   PrimitiveValue selected = takeValue(
       __func__, loom::sim::evaluatePrimitiveOperation(select, selectOperands));
   require(__func__, definedBits(__func__, selected) == llvm::APInt(8, 7),
           "select observed its unselected poison operand");
 
-  PrimitiveOperationDescriptor fma = descriptor(
-      OperationSchemaId::MathFma,
-      mlir::FunctionType::get(&context, {f64, f64, f64}, {f64}),
-      dataflow::FloatingPointPayload{}, 0, 0);
-  const PrimitiveValue fmaOperands[] = {
-      floating64(0x3ff0000000000001ULL),
-      floating64(0x3fffffffffffffffULL),
-      floating64(0xbfffffffffffffffULL)};
+  PrimitiveOperationDescriptor fma =
+      descriptor(OperationSchemaId::MathFma,
+                 mlir::FunctionType::get(&context, {f64, f64, f64}, {f64}),
+                 dataflow::FloatingPointPayload{}, 0, 0);
+  const PrimitiveValue fmaOperands[] = {floating64(0x3ff0000000000001ULL),
+                                        floating64(0x3fffffffffffffffULL),
+                                        floating64(0xbfffffffffffffffULL)};
   PrimitiveValue fused = takeValue(
       __func__, loom::sim::evaluatePrimitiveOperation(fma, fmaOperands));
   require(__func__,
-          definedBits(__func__, fused) == llvm::APInt(64, 0x3cbfffffffffffffULL),
+          definedBits(__func__, fused) ==
+              llvm::APInt(64, 0x3cbfffffffffffffULL),
           "math.fma was rounded as separate multiply and add operations");
 }
 
@@ -279,20 +275,12 @@ void checkTypedProviderAvailability() {
   mlir::MLIRContext context;
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   PrimitiveOperationDescriptor poison = descriptor(
-      OperationSchemaId::UBPoison,
-      mlir::FunctionType::get(&context, {}, {i8}), dataflow::NoPayload{}, 8,
-      0);
-  PrimitiveValue poisonValue = takeValue(
-      __func__, loom::sim::evaluatePrimitiveOperation(poison, {}));
+      OperationSchemaId::UBPoison, mlir::FunctionType::get(&context, {}, {i8}),
+      dataflow::NoPayload{}, 8, 0);
+  PrimitiveValue poisonValue =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(poison, {}));
   require(__func__, poisonValue.state == PrimitiveValueState::Poison,
           "ub.poison did not produce a poison value");
-
-  llvm::Expected<OperationCost> cost =
-      loom::sim::estimateOperationCost(OperationSchemaId::ArithMulI);
-  if (!cost)
-    fail(__func__, llvm::toString(cost.takeError()));
-  require(__func__, cost->baseScore == 3 && cost->repeatScore == 3,
-          "integer multiply cost changed");
 }
 
 } // namespace

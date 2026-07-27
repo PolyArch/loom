@@ -2,6 +2,7 @@
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -146,6 +147,21 @@ std::string denseI8Assembly(llvm::ArrayRef<std::uint8_t> bytes) {
   llvm::raw_string_ostream stream(text);
   mlir::DenseI8ArrayAttr::get(&context(), signedBytes).print(stream);
   return text;
+}
+
+void setOperationResourceContracts(llvm::StringRef test, mlir::ModuleOp module,
+                                   const ::fabric::ResourceContract &contract) {
+  std::vector<std::uint8_t> bytes =
+      take(test, ::fabric::encodeResourceContractRecord(contract));
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  module.walk([&](::fabric::OpOp operation) {
+    operation->setAttr(
+        ::fabric::kResourceContractRecordAttrName,
+        mlir::DenseI8ArrayAttr::get(module.getContext(), signedBytes));
+  });
 }
 
 void setFuCapabilityDomain(
@@ -685,6 +701,12 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
       }
     }
   )mlir");
+  expectRejected(
+      test, loom::fabric::finalizeFabricRoot(root(test, *singleSource), store),
+      "fabric.op is missing its complete resource contract");
+  setOperationResourceContracts(
+      test, *singleSource,
+      ::fabric::oneCycleElasticOperationResourceContract());
   FinalizedFabricRoot single = take(
       test, loom::fabric::finalizeFabricRoot(root(test, *singleSource), store));
   const loom::fabric::FabricFuTemplateRef singleFu =
@@ -696,6 +718,29 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           singleTemplates.front().activeNodes.size() == 1 &&
               singleTemplates.front().activeEdges.size() == 3,
           "single operation FU capability template is incomplete");
+  const loom::fabric::ResolvedFabricOpCapabilityView *singleCapability =
+      single.view().resolvedFabricOpCapability(
+          singleTemplates.front().activeNodes.front());
+  require(test, singleCapability != nullptr,
+          "finalized Fabric lost the concrete operation capability");
+  require(test,
+          singleCapability->implementationFamily ==
+              ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+          "concrete operation capability changed implementation family");
+  require(test,
+          singleCapability->enabledOperationSchemas ==
+              std::vector<::dataflow::OperationSchemaId>{
+                  ::dataflow::OperationSchemaId::ArithAddI,
+                  ::dataflow::OperationSchemaId::ArithSubI},
+          "concrete operation capability changed its enabled schema set");
+  require(test, singleCapability->physicalPorts.size() == 3,
+          "concrete operation capability lost physical ports");
+  require(test,
+          singleCapability->resourceStateAndTimingContract.usePatternCount() !=
+              0,
+          "concrete operation capability lost its resource contract");
+  require(test, singleCapability->configurationFieldSchema.size() == 1,
+          "multi-member operation capability lost its semantic field");
 
   mlir::OwningOpRef<mlir::ModuleOp> branchSource = parse(test, R"mlir(
     module {
@@ -728,6 +773,9 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
       }
     }
   )mlir");
+  setOperationResourceContracts(
+      test, *branchSource,
+      ::fabric::oneCycleElasticOperationResourceContract());
   expectRejected(
       test, loom::fabric::finalizeFabricRoot(root(test, *branchSource), store),
       "multi-template FU requires an explicit capability domain");
@@ -745,6 +793,10 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
   auto branchTemplates = branch.view().fuCapabilityTemplates(branchFu);
   require(test, branchTemplates.size() == 2,
           "branch FU did not produce exactly two coherent templates");
+  for (const auto &capability :
+       branch.view().resolvedFabricOpCapabilities(branchFu))
+    require(test, capability.configurationFieldSchema.empty(),
+            "singleton modular operation gained a redundant semantic field");
   for (const loom::fabric::FabricFuCapabilityTemplateRecord &record :
        branchTemplates) {
     unsigned opCount = 0;

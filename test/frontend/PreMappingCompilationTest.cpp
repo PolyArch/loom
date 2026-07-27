@@ -1,7 +1,10 @@
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Frontend/Compilation/FabricCapabilityIndex.h"
 
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -63,6 +66,20 @@ void exactFabricAndWholeProgramDataflow() {
                                store, loom::adg::BuiltinTargetPreset::Small));
   if (design.roots().size() != 1)
     fail(test, "builtin target did not publish one System Fabric root");
+  mlir::MLIRContext actorContext;
+  mlir::Type i32 = mlir::IntegerType::get(&actorContext, 32);
+  dataflow::CanonicalActorSchemaProjection add{
+      dataflow::OperationSchemaId::ArithAddI,
+      mlir::FunctionType::get(&actorContext, {i32, i32}, {i32}),
+      dataflow::IntegerOverflowPayload{}};
+  loom::frontend::FabricCapabilityIndex capabilities(
+      design.roots().front().view());
+  auto resources = capabilities.admittingOperationResources(add);
+  if (resources.empty())
+    fail(test, "System Fabric hid its imported operation resources");
+  for (const auto &resource : resources)
+    if (resource.artifact == design.roots().front().view().identity())
+      fail(test, "module-local operation resource was rebound to the System");
   llvm::LLVMContext context;
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseModule(test, context),

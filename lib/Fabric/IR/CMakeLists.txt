@@ -49,6 +49,7 @@ add_mlir_library(LoomFabricImplementationFamily
   MLIRFabricEnumsIncGen
 
   LINK_LIBS PUBLIC
+  LoomCommon
   MLIRArithDialect
   MLIRDataflow
   MLIRDataflowEnums
@@ -94,6 +95,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricMemoryOperationPort
   LoomFabricMemoryConnectivityContract
   LoomFabricMemoryServiceContract
+  LoomFabricResourceContract
   LoomFabricSystemContracts
   LoomFabricSystemServiceContract
   LoomFabricTemporalSwitchResourceContract

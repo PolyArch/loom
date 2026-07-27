@@ -5,8 +5,6 @@
 // CHECK-DAG: "workload": "subf"
 // CHECK-DAG: "graph": "subf"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
-// CHECK-DAG: "operation_cost_score": 8
 // CHECK-DAG: "wavefront_steps": 3
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "f32:3.250000"

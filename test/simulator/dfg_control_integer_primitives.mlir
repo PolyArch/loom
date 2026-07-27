@@ -20,36 +20,29 @@
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
 // COMPARE-DAG: "status": "pass"
-// COMPARE-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// COMPARE-DAG: "operation_cost_score": 10
 // COMPARE-DAG: "event_count": 5
 // COMPARE-DAG: "f32:3"
 
 // INTEGER-DAG: "workload": "integer_mix"
 // INTEGER-DAG: "graph": "integer_mix"
 // INTEGER-DAG: "status": "pass"
-// INTEGER-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// INTEGER-DAG: "operation_cost_score": 31
 // INTEGER-DAG: "event_count": 15
 // INTEGER-DAG: "i32:3"
 
 // BSWAP-DAG: "workload": "byte_swap"
 // BSWAP-DAG: "graph": "byte_swap"
 // BSWAP-DAG: "status": "pass"
-// BSWAP-DAG: "operation_cost_score": 6
 // BSWAP-DAG: "event_count": 3
 // BSWAP-DAG: "i32:2018915346"
 
 // ZEXT-DAG: "workload": "zext_bits"
 // ZEXT-DAG: "graph": "zext_bits"
 // ZEXT-DAG: "status": "pass"
-// ZEXT-DAG: "operation_cost_score": 6
 // ZEXT-DAG: "i64:4294967295"
 
 // UITOFP-DAG: "workload": "uint_to_float"
 // UITOFP-DAG: "graph": "uint_to_float"
 // UITOFP-DAG: "status": "pass"
-// UITOFP-DAG: "operation_cost_score": 8
 // UITOFP-DAG: "event_count": 3
 // UITOFP-DAG: "f32:7"
 

@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/SystemServiceContract.h"

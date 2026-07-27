@@ -10,6 +10,7 @@ add_mlir_library(LoomFabricIdentity
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomFabricImplementationFamily
   LoomFabricResourceContract
   LLVMSupport
 )

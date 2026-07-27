@@ -34,9 +34,6 @@
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
-inline constexpr std::uint64_t kLoadAddressScore = 1;
-inline constexpr std::uint64_t kStoreAddressScore = 2;
-
 struct MemoryValue;
 
 struct MemoryView {
@@ -485,9 +482,7 @@ struct SimulatorState {
   std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
   std::map<std::string, std::uint64_t> modeledLibraryCalls;
   std::uint64_t nextMemoryRootId = 0;
-  std::uint64_t modeledLibraryScore = 0;
   std::uint64_t eventCount = 0;
-  std::uint64_t memoryAddressScore = 0;
   std::uint64_t actorMutationEpoch = 0;
   // The one graph this run simulates. Every `index` token in it resolves its
   // width against this scope, including the elements of a memory fixture.
@@ -592,7 +587,6 @@ bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
 bool recordActorEvent(SimulatorState &state, mlir::Operation *op);
 const dataflow::CanonicalActorSchemaProjection &
 actorProjection(const SimulatorState &state, mlir::Operation *op);
-bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
@@ -657,16 +651,9 @@ bool hasPendingVectorGroups(SimulatorState &state);
 llvm::Expected<std::string>
 memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values);
 
-/// The registered cost model's score for one inventory of fired operations.
-/// An operation the model does not know contributes a diagnostic instead of a
-/// guessed score.
-std::uint64_t estimateWeightedOperationScore(
-    const std::map<dataflow::OperationSchemaId, std::uint64_t>
-        &operationFireCounts,
-    llvm::SmallVectorImpl<std::string> &diagnostics);
-
-/// Copies the run's counters, derived cost scores, and distinct execution
-/// diagnostics into the report.
+/// Copies the run's observations and distinct execution diagnostics into the
+/// report. Performance estimates are Evaluation results, not simulator-local
+/// report fields.
 void projectRunObservations(SimulatorState &state, DFGSimulationReport &report);
 
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
@@ -683,16 +670,15 @@ primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
                     mlir::Type operandType);
 llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
                                         mlir::Value result);
-llvm::Expected<Token> evaluatePrimitiveToken(mlir::Operation *op,
-                                             const dataflow::CanonicalActorSchemaProjection &projection,
-                                             mlir::Value result,
-                                             llvm::ArrayRef<Token> inputTokens);
+llvm::Expected<Token> evaluatePrimitiveToken(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    mlir::Value result, llvm::ArrayRef<Token> inputTokens);
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);
 bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
-std::optional<UnsupportedOperation>
-unsupportedActorProvider(
+std::optional<UnsupportedOperation> unsupportedActorProvider(
     mlir::Operation *op,
     const dataflow::CanonicalActorSchemaProjection &projection);
 

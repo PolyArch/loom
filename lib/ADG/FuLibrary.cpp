@@ -1,10 +1,12 @@
 #include "ADG/FuLibrary.h"
 
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/OperationResourceContract.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <array>
 #include <cstdint>
@@ -18,6 +20,22 @@ namespace {
 using ::dataflow::OperationSchemaId;
 using ::fabric::FamilyCapabilityParams;
 using ::fabric::ImplementationFamilyId;
+
+const ::fabric::ResourceContract &
+loopControlResourceContract(ImplementationFamilyId family) {
+  switch (family) {
+  case ImplementationFamilyId::LoopStream:
+    return ::fabric::loopStreamOperationResourceContract();
+  case ImplementationFamilyId::LoopCarry:
+    return ::fabric::loopCarryOperationResourceContract();
+  case ImplementationFamilyId::LoopInvariant:
+    return ::fabric::loopInvariantOperationResourceContract();
+  case ImplementationFamilyId::LoopGate:
+    return ::fabric::loopGateOperationResourceContract();
+  default:
+    llvm_unreachable("non-loop family requested a loop-control contract");
+  }
+}
 
 struct SelectableResource {
   ImplementationFamilyId family;
@@ -219,9 +237,10 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     }
     auto operation = fu->addOperation(
         operationInputs,
-        OperationCapabilitySpec{resource.family, resource.parameters,
-                                familyMembers(resource.family),
-                                resource.resultTypes});
+        OperationCapabilitySpec{
+            resource.family, resource.parameters,
+            familyMembers(resource.family), resource.resultTypes,
+            ::fabric::oneCycleElasticOperationResourceContract()});
     if (!operation)
       return operation.takeError();
     for (auto [resultOrdinal, role] : llvm::enumerate(resource.outputRoles)) {
@@ -448,7 +467,11 @@ llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   const auto operationSpec = [&](ImplementationFamilyId family,
                                  const FamilyCapabilityParams &parameters) {
     return OperationCapabilitySpec{
-        family, parameters, familyMembers(family), {*bits64}};
+        family,
+        parameters,
+        familyMembers(family),
+        {*bits64},
+        ::fabric::oneCycleElasticOperationResourceContract()};
   };
 
   auto integerMultiply = fu->addOperation(
@@ -535,9 +558,13 @@ llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   auto carryNextValue = carryNext->output(0);
   if (!carryNextValue)
     return carryNextValue.takeError();
-  auto carry = fu->addOperation({boundary[3], (*d2Values)[3], *carryNextValue},
-                                operationSpec(ImplementationFamilyId::LoopCarry,
-                                              ::fabric::TokenPlaneParams{}));
+  auto carry = fu->addOperation(
+      {boundary[3], (*d2Values)[3], *carryNextValue},
+      OperationCapabilitySpec{ImplementationFamilyId::LoopCarry,
+                              ::fabric::TokenPlaneParams{},
+                              familyMembers(ImplementationFamilyId::LoopCarry),
+                              {*bits64},
+                              ::fabric::loopCarryOperationResourceContract()});
   if (!carry)
     return carry.takeError();
   auto carryOutput = carry->output(0);
@@ -707,7 +734,8 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                                  const FamilyCapabilityParams &parameters,
                                  std::vector<PortType> results) {
     return OperationCapabilitySpec{family, parameters, familyMembers(family),
-                                   std::move(results)};
+                                   std::move(results),
+                                   loopControlResourceContract(family)};
   };
   const auto streamSpec = [&](::dataflow::StreamStepKind step) {
     return operationSpec(ImplementationFamilyId::LoopStream,

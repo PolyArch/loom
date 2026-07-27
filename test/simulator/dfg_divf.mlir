@@ -5,7 +5,6 @@
 // CHECK-DAG: "workload": "divf"
 // CHECK-DAG: "graph": "divf"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "operation_cost_score": 18
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "arith.divf": 1
 // CHECK-DAG: "f32:3"

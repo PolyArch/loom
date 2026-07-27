@@ -1,7 +1,6 @@
 #ifndef LOOM_SIMULATOR_DFG_SIMULATOR_H
 #define LOOM_SIMULATOR_DFG_SIMULATOR_H
 
-#include "Simulator/OperationCostModel.h"
 #include "Simulator/OperationSemantics.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -38,20 +37,12 @@ struct DFGSimulationOptions {
 };
 
 struct DFGSimulationReport {
-  std::string schemaVersion = "2.2";
+  std::string schemaVersion = "3.0";
   std::string kind = "dfg_sim_report";
   std::string workload;
   std::string graph;
   std::string status;
-  std::string metricDefinition =
-      "weighted_operations_plus_library_work_diversity_and_address.v1";
   std::string operationSemanticsSource = kOperationSemanticsSource;
-  std::string operationCostModelSource = kOperationCostModelSource;
-  std::uint64_t operationCostScore = 0;
-  std::uint64_t weightedOperationScore = 0;
-  std::uint64_t modeledLibraryScore = 0;
-  std::uint64_t operationDiversityScore = 0;
-  std::uint64_t memoryAddressScore = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t dynamicWorkItems = 0;

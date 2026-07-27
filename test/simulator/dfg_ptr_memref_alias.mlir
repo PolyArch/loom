@@ -5,7 +5,6 @@
 // CHECK-DAG: "workload": "sum_ptr_load"
 // CHECK-DAG: "graph": "sum_ptr_load"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
 // CHECK-DAG: "dataflow.load": 3
 // CHECK-DAG: "f32:14"
 

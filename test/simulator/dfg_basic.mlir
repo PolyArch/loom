@@ -1,14 +1,13 @@
 // RUN: loom-dfg-sim %s --graph sum4 --arg 0=0.000000e+00 --arg 1=1.000000e+00 --output %t.json
 // RUN: FileCheck %s < %t.json
+// RUN: not grep -Eq '"(metric_definition|operation_cost_model_source|operation_cost_score)"' %t.json
 
-// CHECK-DAG: "schema_version": "2.2"
+// CHECK-DAG: "schema_version": "3.0"
 // CHECK-DAG: "kind": "dfg_sim_report"
 // CHECK-DAG: "workload": "sum4"
 // CHECK-DAG: "graph": "sum4"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
 // CHECK-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
-// CHECK-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
 // CHECK-DAG: "final_outputs":
 // CHECK-DAG: "none",
 // CHECK-DAG: "f32:4"

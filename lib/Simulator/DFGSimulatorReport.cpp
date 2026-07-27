@@ -2,8 +2,7 @@
 //
 // One owner for what a finished run projects outward: the report status a
 // retained RunFailure projects to, the observations such a run may still
-// export, the derived cost counters, and the legacy JSON encoding of all of
-// them.
+// export, and the legacy JSON encoding of those observations.
 //
 // The run driver keeps its own lifecycle classification, so a run that
 // retained no failure is named there rather than here. This module only
@@ -13,8 +12,6 @@
 
 #include "DFGSimulatorInternal.h"
 #include "Simulator/DFGSimulator.h"
-
-#include "Simulator/OperationCostModel.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -185,26 +182,6 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
   return llvm::Error::success();
 }
 
-std::uint64_t estimateWeightedOperationScore(
-    const std::map<dataflow::OperationSchemaId, std::uint64_t>
-        &operationFireCounts,
-    llvm::SmallVectorImpl<std::string> &diagnostics) {
-  std::uint64_t score = 0;
-  for (const auto &[schema, fireCount] : operationFireCounts) {
-    if (fireCount == 0)
-      continue;
-    auto costOrErr = estimateOperationCost(schema);
-    if (!costOrErr) {
-      diagnostics.push_back(llvm::toString(costOrErr.takeError()));
-      continue;
-    }
-    score += costOrErr->baseScore;
-    if (fireCount > 1)
-      score += (fireCount - 1) * costOrErr->repeatScore;
-  }
-  return score;
-}
-
 static std::uint64_t dynamicWorkItems(const SimulatorState &state) {
   std::uint64_t maxStreamItems = 0;
   for (const auto &entry : state.streamTrueEmissionCounts)
@@ -227,15 +204,6 @@ void projectRunObservations(SimulatorState &state,
   report.eventCount = state.eventCount;
   report.operationFireCounts = state.operationFireCounts;
   report.modeledLibraryCalls = state.modeledLibraryCalls;
-  report.weightedOperationScore = estimateWeightedOperationScore(
-      state.operationFireCounts, state.diagnostics);
-  report.operationCostScore = report.weightedOperationScore;
-  report.modeledLibraryScore = state.modeledLibraryScore;
-  report.operationCostScore += report.modeledLibraryScore;
-  report.operationDiversityScore = report.operationFireCounts.size();
-  report.operationCostScore += report.operationDiversityScore;
-  report.memoryAddressScore = state.memoryAddressScore;
-  report.operationCostScore += report.memoryAddressScore;
   // Execution records every rejected attempt, which is what classifies an
   // actor transition as failed. The report projects each distinct reason once;
   // re-polling an actor whose inputs did not change repeats no new reason.
@@ -263,43 +231,7 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["workload"] = report.workload;
   root["graph"] = report.graph;
   root["status"] = report.status;
-  root["metric_definition"] = report.metricDefinition;
   root["operation_semantics_source"] = report.operationSemanticsSource;
-  root["operation_cost_model_source"] = report.operationCostModelSource;
-  if (report.status == "pass") {
-    root["operation_cost_score"] = report.operationCostScore;
-    root["weighted_operation_score"] =
-        static_cast<int64_t>(report.weightedOperationScore);
-    root["modeled_library_score"] = report.modeledLibraryScore;
-    root["operation_diversity_score"] = report.operationDiversityScore;
-    root["memory_address_score"] = report.memoryAddressScore;
-    llvm::json::Array scoreBreakdown;
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "weighted_operations"},
-        {"score", static_cast<int64_t>(report.weightedOperationScore)},
-        {"evidence", "operation_fire_counts"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "modeled_library_work"},
-        {"score", static_cast<int64_t>(report.modeledLibraryScore)},
-        {"evidence", "modeled_library_calls and modeled workload dimensions"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "operation_diversity"},
-        {"score", static_cast<int64_t>(report.operationDiversityScore)},
-        {"evidence", "distinct operation_fire_counts keys"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "computed_memory_address"},
-        {"score", static_cast<int64_t>(report.memoryAddressScore)},
-        {"evidence", "computed dataflow.load/store address operands"},
-        {"heuristic", true},
-    });
-    root["score_breakdown"] = std::move(scoreBreakdown);
-  }
   root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;
   root["dynamic_work_items"] = report.dynamicWorkItems;

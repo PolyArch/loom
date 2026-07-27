@@ -23,6 +23,7 @@
 #include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactDependencyClosureInternal.h"
 #include "FabricCanonicalLabeling.h"
+#include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricSystemCanonicalLabeling.h"
 
@@ -91,6 +92,22 @@ deriveResourceContract(
         ::fabric::declareBoundaryTransferContract());
     if (!contract)
       return contract.takeError();
+    return std::optional<::fabric::ResourceContract>(std::move(*contract));
+  }
+  if (isa<::fabric::OpOp>(operation)) {
+    auto record = operation->getAttrOfType<DenseI8ArrayAttr>(
+        ::fabric::kResourceContractRecordAttrName);
+    if (!record)
+      return invalid("fabric.op is missing its complete resource contract");
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(record.size());
+    for (std::int8_t byte : record.asArrayRef())
+      bytes.push_back(static_cast<std::uint8_t>(byte));
+    auto contract = ::fabric::decodeResourceContractRecord(bytes);
+    if (!contract)
+      return contract.takeError();
+    if (contract->usePatternCount() == 0)
+      return invalid("fabric.op resource contract has no use pattern");
     return std::optional<::fabric::ResourceContract>(std::move(*contract));
   }
   if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
@@ -207,12 +224,12 @@ llvm::Error materializeResourceContractRecords(
   root->walk([&](Operation *operation) {
     if (result)
       return WalkResult::interrupt();
-    operation->removeAttr(::fabric::kResourceContractRecordAttrName);
     auto contract = deriveResourceContract(operation, labeling);
     if (!contract) {
       result = contract.takeError();
       return WalkResult::interrupt();
     }
+    operation->removeAttr(::fabric::kResourceContractRecordAttrName);
     if (!*contract)
       return WalkResult::advance();
     auto bytes = ::fabric::encodeResourceContractRecord(**contract);
@@ -256,7 +273,8 @@ llvm::Error stripAuthoringState(::fabric::ModuleOp root) {
       return WalkResult::interrupt();
     operation->removeAttr(::fabric::kEntityIdAttrName);
     operation->removeAttr(::fabric::kFuTemplateIdAttrName);
-    operation->removeAttr(::fabric::kResourceContractRecordAttrName);
+    if (!isa<::fabric::OpOp>(operation))
+      operation->removeAttr(::fabric::kResourceContractRecordAttrName);
     for (llvm::StringLiteral name : softwareConfigurationAttrs)
       operation->removeAttr(name);
 
@@ -400,15 +418,6 @@ llvm::Error setTransportEndpoints(detail::FabricNestedOwnerViewData &owner,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<std::uint8_t>> projectMemoryEndpointType(Type type) {
-  if (!isa<MemRefType>(type))
-    return invalid("memory endpoint has a non-memref physical type");
-  std::string spelling;
-  llvm::raw_string_ostream stream(spelling);
-  type.print(stream);
-  return std::vector<std::uint8_t>(spelling.begin(), spelling.end());
-}
-
 llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory);
 
 llvm::Error
@@ -446,63 +455,6 @@ setOperationTransportEndpoints(Operation *operation,
     if (!isa<MemRefType>(output))
       outputs.push_back(output);
   return setTransportEndpoints(owner, inputs, outputs);
-}
-
-llvm::Error setModuleBoundaryInventory(::fabric::ModuleOp root,
-                                       detail::FabricEntityViewData &entity) {
-  FunctionType type = root.getFunctionType();
-  setPortInventories(entity.owner, type.getNumInputs(), type.getNumResults());
-
-  std::uint64_t tokenInput = 0;
-  std::uint64_t memoryInput = 0;
-  std::uint64_t tokenOutput = 0;
-  std::uint64_t memoryOutput = 0;
-  for (Type input : type.getInputs()) {
-    const bool memory = isa<MemRefType>(input);
-    std::vector<std::uint8_t> typeBytes;
-    if (memory) {
-      auto encoded = projectMemoryEndpointType(input);
-      if (!encoded)
-        return encoded.takeError();
-      typeBytes = std::move(*encoded);
-    } else {
-      auto encoded = ::fabric::encodeFabricTransportType(input);
-      if (!encoded)
-        return encoded.takeError();
-      typeBytes = std::move(*encoded);
-    }
-    entity.moduleBoundaryInputs.push_back(
-        {memory ? FabricSpatialAttachmentEndpointRef::Plane::Memory
-                : FabricSpatialAttachmentEndpointRef::Plane::Transport,
-         memory ? memoryInput++ : tokenInput++, std::move(typeBytes)});
-  }
-  for (Type output : type.getResults()) {
-    const bool memory = isa<MemRefType>(output);
-    std::vector<std::uint8_t> typeBytes;
-    if (memory) {
-      auto encoded = projectMemoryEndpointType(output);
-      if (!encoded)
-        return encoded.takeError();
-      typeBytes = std::move(*encoded);
-    } else {
-      auto encoded = ::fabric::encodeFabricTransportType(output);
-      if (!encoded)
-        return encoded.takeError();
-      typeBytes = std::move(*encoded);
-    }
-    entity.moduleBoundaryOutputs.push_back(
-        {memory ? FabricSpatialAttachmentEndpointRef::Plane::Memory
-                : FabricSpatialAttachmentEndpointRef::Plane::Transport,
-         memory ? memoryOutput++ : tokenOutput++, std::move(typeBytes)});
-  }
-
-  for (detail::FabricModuleBoundaryEndpointViewData &endpoint :
-       entity.moduleBoundaryOutputs)
-    endpoint.occurrenceOrdinal +=
-        endpoint.plane == FabricSpatialAttachmentEndpointRef::Plane::Memory
-            ? memoryInput
-            : tokenInput;
-  return llvm::Error::success();
 }
 
 llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory) {
@@ -589,7 +541,7 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
   for (Type input : type->getInputs()) {
     if (!isa<MemRefType>(input))
       continue;
-    auto encoded = projectMemoryEndpointType(input);
+    auto encoded = detail::projectMemoryEndpointType(input);
     if (!encoded)
       return encoded.takeError();
     entity.owner.memoryEndpoints.push_back(
@@ -598,7 +550,7 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
   for (Type output : type->getResults()) {
     if (!isa<MemRefType>(output))
       continue;
-    auto encoded = projectMemoryEndpointType(output);
+    auto encoded = detail::projectMemoryEndpointType(output);
     if (!encoded)
       return encoded.takeError();
     entity.owner.memoryEndpoints.push_back(
@@ -689,7 +641,7 @@ buildModuleView(::fabric::ModuleOp root,
       if (llvm::Error error = populateMemoryView(memory, entity))
         return std::move(error);
     if (carrier.kind == FabricEntityKind::FabricModuleTemplate) {
-      if (llvm::Error error = setModuleBoundaryInventory(root, entity))
+      if (llvm::Error error = detail::setModuleBoundaryInventory(root, entity))
         return std::move(error);
     }
     if (carrier.kind == FabricEntityKind::FabricFuOccurrence) {
@@ -726,11 +678,28 @@ buildModuleView(::fabric::ModuleOp root,
                        fu.getOutputs().size());
     entity.owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::FuNode)] = carrier.canonicalNodeOrder.size();
-    for (Operation *operation : carrier.canonicalNodeOrder) {
+    for (auto [ordinal, operation] :
+         llvm::enumerate(carrier.canonicalNodeOrder)) {
       detail::FabricFuNodeViewData node;
       node.kind = fuNodeKind(operation);
-      setPortInventories(node.owner, operation->getNumOperands(),
-                         operation->getNumResults());
+      node.owner.inventoryCounts = emptyInventories();
+      if (llvm::Error error =
+              setOperationTransportEndpoints(operation, node.owner))
+        return std::move(error);
+      auto contract = validateResourceContractRecord(operation, labeling);
+      if (!contract)
+        return contract.takeError();
+      node.owner.resourceContract = std::move(*contract);
+      if (auto concrete = dyn_cast<::fabric::OpOp>(operation)) {
+        FabricFuTemplateNodeRef reference{
+            FabricFuNodeKind::Op, FabricFuTemplateRef(carrier.id), ordinal};
+        auto capability =
+            detail::resolveFabricOpCapability(concrete, reference, node);
+        if (!capability)
+          return capability.takeError();
+        node.operationCapabilityIndex = entity.operationCapabilities.size();
+        entity.operationCapabilities.push_back(std::move(*capability));
+      }
       entity.fuNodes.push_back(std::move(node));
     }
     auto templates = detail::deriveFabricFuCapabilityTemplates(
@@ -888,7 +857,8 @@ strictImportModule(const ArtifactRootReference &reference,
     return invalid("canonical MLIR bytecode is not byte stable");
   detail::FabricEntityViewData boundaryProjection;
   boundaryProjection.owner.inventoryCounts = emptyInventories();
-  if (llvm::Error error = setModuleBoundaryInventory(root, boundaryProjection))
+  if (llvm::Error error =
+          detail::setModuleBoundaryInventory(root, boundaryProjection))
     return std::move(error);
   auto view = buildModuleView(root, *labeling, reference.artifact);
   if (!view)

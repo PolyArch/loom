@@ -275,6 +275,7 @@ struct OperationCapabilitySpec final {
   ::fabric::FamilyCapabilityParams hardwareParameters;
   std::vector<::dataflow::OperationSchemaId> enabledOperations;
   std::vector<PortType> outputTypes;
+  ::fabric::ResourceContract resourceContract;
 };
 
 /// One static route selected in a coherent FU capability-template row.

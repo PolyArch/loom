@@ -9,7 +9,6 @@
 // FMA-DAG: "workload": "fmuladd"
 // FMA-DAG: "graph": "fmuladd"
 // FMA-DAG: "status": "pass"
-// FMA-DAG: "operation_cost_score": 15
 // FMA-DAG: "wavefront_steps": 3
 // FMA-DAG: "event_count": 5
 // FMA-DAG: "math.fma": 1
@@ -19,8 +18,6 @@
 // SPLIT-DAG: "workload": "split_mulf_addf"
 // SPLIT-DAG: "graph": "split_mulf_addf"
 // SPLIT-DAG: "status": "pass"
-// SPLIT-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
-// SPLIT-DAG: "operation_cost_score": 13
 // SPLIT-DAG: "wavefront_steps": 4
 // SPLIT-DAG: "event_count": 6
 // SPLIT-DAG: "f32:10"

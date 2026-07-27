@@ -595,8 +595,6 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   emitTokenWithMemoryOrder(state, op.getData(), prepared->read.data,
                            MemoryOrderFrontierId());
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
-  if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
-    state.memoryAddressScore += kLoadAddressScore;
   return recordActorEvent(state, op.getOperation());
 }
 
@@ -621,8 +619,6 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
     popToken(state, *prepared->maskOperand);
   commitDataflowMemoryWrite(prepared->view, prepared->write);
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
-  if (prepared->write.accessedMemory && hasComputedAddress(op.getAddr()))
-    state.memoryAddressScore += kStoreAddressScore;
   return recordActorEvent(state, op.getOperation());
 }
 

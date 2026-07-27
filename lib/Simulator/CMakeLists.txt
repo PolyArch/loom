@@ -9,7 +9,6 @@ add_mlir_library(LoomSimulator
   DynamicWorkDomain.cpp
   MemoryAtomicOrder.cpp
   MemorySynchronization.cpp
-  OperationCostModel.cpp
   OperationSemantics.cpp
   SimulationAdmission.cpp
   SimulationRuntimeInput.cpp

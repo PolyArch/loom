@@ -3,13 +3,16 @@
 #include "ADG/Export.h"
 #include "ADG/FuLibrary.h"
 #include "ADG/MemoryLibrary.h"
+#include "Fabric/IR/OperationResourceContract.h"
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Frontend/Compilation/FabricCapabilityIndex.h"
 
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -150,7 +153,8 @@ integerCapability(::fabric::ImplementationFamilyId family,
       ::fabric::ScalarIntegerParams{
           ::fabric::IntegerWidthSet::get({::fabric::IntegerWidth::I32})},
       {operation},
-      {outputType}};
+      {outputType},
+      ::fabric::oneCycleElasticOperationResourceContract()};
 }
 
 ::fabric::UnsignedDomain singleton(std::uint64_t value) {
@@ -1051,14 +1055,17 @@ void publicFuLibraryBuildsTypedGraphs() {
           "public FU helpers did not create five ordinary FU occurrences");
   bool sawMacDomain = false;
   bool sawLoopControlDomain = false;
+  bool sawExactLoopControlContracts = false;
+  bool sawStreamSemanticConfiguration = false;
+  bool sawVectorSelectSemanticConfiguration = false;
   for (std::uint64_t id = 0;; ++id) {
     auto kind = finalized.roots().front().view().entityKind(id);
     if (!kind)
       break;
     if (*kind != loom::fabric::FabricEntityKind::FabricFuTemplate)
       continue;
-    auto templates = finalized.roots().front().view().fuCapabilityTemplates(
-        loom::fabric::FabricFuTemplateRef(id));
+    const loom::fabric::FabricFuTemplateRef fu(id);
+    auto templates = finalized.roots().front().view().fuCapabilityTemplates(fu);
     if (templates.size() == 8) {
       bool hasRecurrence = false;
       for (const auto &record : templates) {
@@ -1079,11 +1086,45 @@ void publicFuLibraryBuildsTypedGraphs() {
       }
       sawLoopControlDomain |= fusedTemplates == 2;
     }
+    unsigned exactLoopContracts = 0;
+    for (const auto &capability :
+         finalized.roots().front().view().resolvedFabricOpCapabilities(fu)) {
+      std::uint32_t expectedPatterns = 0;
+      switch (capability.implementationFamily) {
+      case ::fabric::ImplementationFamilyId::LoopStream:
+        sawStreamSemanticConfiguration |=
+            capability.configurationFieldSchema.size() == 1;
+        [[fallthrough]];
+      case ::fabric::ImplementationFamilyId::LoopGate:
+        expectedPatterns = 4;
+        break;
+      case ::fabric::ImplementationFamilyId::LoopCarry:
+      case ::fabric::ImplementationFamilyId::LoopInvariant:
+        expectedPatterns = 3;
+        break;
+      default:
+        if (capability.implementationFamily ==
+            ::fabric::ImplementationFamilyId::FixedVectorValueSelect)
+          sawVectorSelectSemanticConfiguration |=
+              capability.configurationFieldSchema.size() == 1;
+        continue;
+      }
+      exactLoopContracts +=
+          capability.resourceStateAndTimingContract.usePatternCount() ==
+          expectedPatterns;
+    }
+    sawExactLoopControlContracts |= exactLoopContracts == 5;
   }
   require(test, sawMacDomain,
           "MacFu did not expose its complete carry-recurrence domain");
   require(test, sawLoopControlDomain,
           "LoopControlFu did not expose its seven coherent templates");
+  require(test, sawExactLoopControlContracts,
+          "loop-control resources lost their schema-case use patterns");
+  require(test, sawStreamSemanticConfiguration,
+          "stream capability lost its typed semantic configuration field");
+  require(test, sawVectorSelectSemanticConfiguration,
+          "vector select lost its lane-width configuration field");
   std::string text;
   llvm::raw_string_ostream stream(text);
   if (llvm::Error error =
@@ -1099,6 +1140,97 @@ void publicFuLibraryBuildsTypedGraphs() {
               llvm::StringRef(text).contains("FixedVectorFloatFma") &&
               llvm::StringRef(text).contains("ScalarMathSqrt"),
           "public FU helpers lost generated implementation-family bindings");
+}
+
+void resolvedCapabilityPreservesTypedVectorGeometry() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits128 = take(test, PortType::bits(128));
+
+  auto spatial = take(test, design.createSpatialCore(
+                                "f32-vector", {bits128, bits128}, {bits128}));
+  auto pe =
+      take(test, spatial.addPe({take(test, spatial.input(0)),
+                                take(test, spatial.input(1))},
+                               PeSpec::spatial({bits128, bits128}, {bits128})));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          FuSpec{{bits128, bits128}, {bits128}}));
+  auto operation = take(
+      test,
+      fu.addOperation(
+          {take(test, fu.input(0)), take(test, fu.input(1))},
+          OperationCapabilitySpec{
+              ::fabric::ImplementationFamilyId::FixedVectorFloatAddSub,
+              ::fabric::FixedVectorFloatParams{
+                  ::fabric::FloatFormatSet::get({::fabric::FloatFormat::F32}),
+                  ::fabric::FloatBehaviorProfile::strictIEEE(), 128},
+              {::dataflow::OperationSchemaId::ArithAddF,
+               ::dataflow::OperationSchemaId::ArithSubF},
+              {bits128},
+              ::fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({take(test, operation.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  const loom::fabric::FabricFuTemplateRef fuRef =
+      uniqueFuTemplate(test, finalized.roots().front().view());
+  auto templates =
+      finalized.roots().front().view().fuCapabilityTemplates(fuRef);
+  require(test,
+          templates.size() == 1 && templates.front().activeNodes.size() == 1,
+          "custom vector FU changed its capability template");
+  const auto *capability =
+      finalized.roots().front().view().resolvedFabricOpCapability(
+          templates.front().activeNodes.front());
+  require(test, capability != nullptr,
+          "custom vector FU lost its concrete capability");
+  const auto &typedCapability = std::get<::fabric::FixedVectorFloatParams>(
+      capability->parameterizedCapability);
+  require(
+      test,
+      typedCapability.elementFormats.contains(::fabric::FloatFormat::F32) &&
+          !typedCapability.elementFormats.contains(::fabric::FloatFormat::F64),
+      "custom vector FU changed its typed floating format domain");
+
+  mlir::MLIRContext actorContext;
+  auto vectorActor = [&](mlir::Type elementType, std::int64_t lanes) {
+    mlir::Type vector = mlir::VectorType::get({lanes}, elementType);
+    require(test,
+            mlir::cast<mlir::VectorType>(vector).getElementType() ==
+                elementType,
+            "vector actor changed its element type");
+    return ::dataflow::CanonicalActorSchemaProjection{
+        ::dataflow::OperationSchemaId::ArithAddF,
+        mlir::FunctionType::get(&actorContext, {vector, vector}, {vector}),
+        ::dataflow::FloatingPointPayload{}};
+  };
+  auto f32Actor = vectorActor(mlir::Float32Type::get(&actorContext), 4);
+  require(test,
+          mlir::cast<mlir::VectorType>(f32Actor.type.getInput(0))
+              .getElementType()
+              .isF32(),
+          "f32 vector actor changed its semantic element type");
+  if (llvm::Error error = capability->admit(f32Actor))
+    fail(test, llvm::toString(std::move(error)));
+  auto f64Actor = vectorActor(mlir::Float64Type::get(&actorContext), 2);
+  expectError(test, capability->admit(f64Actor),
+              "element type is not admitted");
+
+  loom::frontend::FabricCapabilityIndex index(finalized.roots().front().view());
+  require(test, index.admittingOperationResources(f32Actor).size() == 1,
+          "Fabric capability index lost the admitted vector resource");
+  require(test, index.admittingOperationResources(f64Actor).empty(),
+          "Fabric capability index treated equal payload width as semantics");
 }
 
 void fuBackedgesAreExplicitAndResolved() {
@@ -1485,6 +1617,7 @@ int main() {
   publicMemoryLibraryBuildsHybridLocalMemories();
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
+  resolvedCapabilityPreservesTypedVectorGeometry();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
   routedFuLibraryBuildsHeterogeneousBoundaries();

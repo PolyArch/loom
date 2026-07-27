@@ -3,6 +3,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
@@ -402,5 +403,22 @@ LogicalResult OpOp::verify() {
   auto params = parseFamilyCapabilityParams(*family, getHwParams());
   if (!params)
     return emitOpError(llvm::toString(params.takeError()));
+  if (auto record = (*this)->getAttrOfType<DenseI8ArrayAttr>(
+          kResourceContractRecordAttrName)) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(record.size());
+    for (std::int8_t byte : record.asArrayRef())
+      bytes.push_back(static_cast<std::uint8_t>(byte));
+    auto contract = decodeResourceContractRecord(bytes);
+    if (!contract)
+      return emitOpError(llvm::toString(contract.takeError()));
+    auto canonical = encodeResourceContractRecord(*contract);
+    if (!canonical)
+      return emitOpError(llvm::toString(canonical.takeError()));
+    if (*canonical != bytes)
+      return emitOpError("resource contract is not canonical");
+    if (contract->usePatternCount() == 0)
+      return emitOpError("resource contract has no use pattern");
+  }
   return success();
 }

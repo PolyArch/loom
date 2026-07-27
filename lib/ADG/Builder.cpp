@@ -1,5 +1,7 @@
 #include "ADG/Builder.h"
 
+#include "Fabric/IR/ResourceContractRecord.h"
+
 #include "BuilderInternal.h"
 
 #include "Fabric/IR/FabricAttrs.h"
@@ -477,6 +479,19 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
       mlir::ArrayAttr::get(&(*state)->context, operationAttrs),
       ::fabric::getFamilyCapabilityParamsAttr(&(*state)->context,
                                               spec.hardwareParameters));
+  auto contractBytes =
+      ::fabric::encodeResourceContractRecord(spec.resourceContract);
+  if (!contractBytes) {
+    operation.erase();
+    return contractBytes.takeError();
+  }
+  llvm::SmallVector<std::int8_t, 64> signedContractBytes;
+  signedContractBytes.reserve(contractBytes->size());
+  for (std::uint8_t byte : *contractBytes)
+    signedContractBytes.push_back(static_cast<std::int8_t>(byte));
+  operation->setAttr(
+      ::fabric::kResourceContractRecordAttrName,
+      mlir::DenseI8ArrayAttr::get(&(*state)->context, signedContractBytes));
   if (llvm::Error error = verifyNewOperation(operation, "operation capability"))
     return std::move(error);
 

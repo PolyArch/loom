@@ -1,4 +1,5 @@
 add_library(LoomFabricResourceContract
+  OperationResourceContract.cpp
   ResourceContract.cpp
   ResourceContractRecord.cpp
 )

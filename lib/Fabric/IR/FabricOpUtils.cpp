@@ -1,9 +1,6 @@
 #include "Fabric/IR/FabricOps.h"
 
-#include "Common/IndexWidth.h"
-#include "Common/VectorWidth.h"
 #include "Fabric/IR/FabricTypes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/raw_ostream.h"
@@ -107,41 +104,6 @@ encodeFabricTransportFunctionType(FunctionType type) {
     bytes.insert(bytes.end(), encoded->begin(), encoded->end());
   }
   return bytes;
-}
-
-FailureOr<unsigned> getSemanticPayloadWidth(Type type, std::string &error) {
-  if (auto integer = dyn_cast<IntegerType>(type))
-    return integer.getWidth();
-  if (auto floating = dyn_cast<FloatType>(type))
-    return floating.getWidth();
-  if (isa<IndexType, LLVM::LLVMPointerType>(type))
-    return ::loom::getIndexWidth();
-  if (isa<NoneType>(type))
-    return 0u;
-  if (auto vector = dyn_cast<VectorType>(type)) {
-    auto elementWidth = getSemanticPayloadWidth(vector.getElementType(), error);
-    if (failed(elementWidth))
-      return failure();
-    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
-    if (!width) {
-      error = llvm::toString(width.takeError());
-      return failure();
-    }
-    // A physical payload width is an unsigned port fact, so an exact semantic
-    // width wider than that is reported here rather than narrowed into one.
-    if (static_cast<unsigned>(*width) != *width) {
-      error = "semantic payload width " + std::to_string(*width) +
-              " exceeds the physical payload width";
-      return failure();
-    }
-    return static_cast<unsigned>(*width);
-  }
-
-  std::string text;
-  llvm::raw_string_ostream os(text);
-  type.print(os);
-  error = "unsupported semantic payload type " + text;
-  return failure();
 }
 
 LogicalResult verifyInnerInputTypesProperty(Operation *op, ValueRange inputs,

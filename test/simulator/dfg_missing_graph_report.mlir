@@ -1,6 +1,5 @@
 // RUN: loom-dfg-sim %s --graph missing_graph --workload missing_workload --output %t.json
 // RUN: FileCheck %s < %t.json
-// RUN: not grep -q '"operation_cost_score"' %t.json
 
 // CHECK-DAG: "kind": "dfg_sim_report"
 // CHECK-DAG: "workload": "missing_workload"

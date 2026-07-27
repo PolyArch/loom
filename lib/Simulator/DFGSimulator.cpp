@@ -89,10 +89,9 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
       return width.takeError();
     return byteSizeForBitWidth(*width);
   }
-  return llvm::createStringError(
-      std::errc::invalid_argument,
-      "unsupported memory element type: %s",
-      typeToString(type).c_str());
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported memory element type: %s",
+                                 typeToString(type).c_str());
 }
 
 static llvm::Expected<std::shared_ptr<MemoryValue>>
@@ -192,11 +191,6 @@ void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
 }
 
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema) {
-  auto costOrErr = estimateOperationCost(schema);
-  if (!costOrErr) {
-    state.diagnostics.push_back(llvm::toString(costOrErr.takeError()));
-    return false;
-  }
   ++state.eventCount;
   ++state.operationFireCounts[schema];
   return true;
@@ -212,14 +206,6 @@ actorProjection(const SimulatorState &state, mlir::Operation *op) {
 
 bool recordActorEvent(SimulatorState &state, mlir::Operation *op) {
   return recordEvent(state, actorProjection(state, op).schema);
-}
-
-bool hasComputedAddress(mlir::Value value) {
-  mlir::Operation *def = value.getDefiningOp();
-  if (!def)
-    return false;
-  auto schema = dataflow::operationSchemaOf(def);
-  return !schema || *schema != dataflow::OperationSchemaId::DataflowStream;
 }
 
 static void flushPendingTokens(SimulatorState &state) {
@@ -360,8 +346,7 @@ primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
 
 static bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp, mlir::memref::AllocOp,
-                   mlir::memref::CastOp,
-                   mlir::UnrealizedConversionCastOp>(op);
+                   mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(op);
 }
 
 enum class FireOutcome {
@@ -532,11 +517,10 @@ static llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
         alloc.getResult(), state.nextMemoryRootId);
     if (inserted)
       ++state.nextMemoryRootId;
-    auto memory = std::make_shared<MemoryValue>(
-        MemoryValue{rootIt->second, alloc.getType().getElementType(),
-                    std::move(elements),
-                    llvm::SmallBitVector(static_cast<unsigned>(*countOrErr),
-                                         /*t=*/false)});
+    auto memory = std::make_shared<MemoryValue>(MemoryValue{
+        rootIt->second, alloc.getType().getElementType(), std::move(elements),
+        llvm::SmallBitVector(static_cast<unsigned>(*countOrErr),
+                             /*t=*/false)});
     state.memories[alloc.getResult()] = memory;
     state.memoryViews[alloc.getResult()] =
         MemoryView{memory, alloc.getResult(), 0};
@@ -737,8 +721,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       aggregate.wavefrontSteps += singleReport.wavefrontSteps;
       aggregate.eventCount += singleReport.eventCount;
       aggregate.dynamicWorkItems += singleReport.dynamicWorkItems;
-      aggregate.modeledLibraryScore += singleReport.modeledLibraryScore;
-      aggregate.memoryAddressScore += singleReport.memoryAddressScore;
       for (const auto &[name, count] : singleReport.operationFireCounts)
         aggregate.operationFireCounts[name] += count;
       for (const auto &[name, count] : singleReport.modeledLibraryCalls)
@@ -770,12 +752,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       }
     }
 
-    aggregate.weightedOperationScore = estimateWeightedOperationScore(
-        aggregate.operationFireCounts, aggregate.diagnostics);
-    aggregate.operationDiversityScore = aggregate.operationFireCounts.size();
-    aggregate.operationCostScore =
-        aggregate.weightedOperationScore + aggregate.modeledLibraryScore +
-        aggregate.operationDiversityScore + aggregate.memoryAddressScore;
     return aggregate;
   }
 

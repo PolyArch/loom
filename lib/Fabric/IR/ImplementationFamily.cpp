@@ -9,15 +9,20 @@
 
 #include "Fabric/IR/ImplementationFamily.h"
 
+#include "Common/IndexWidth.h"
+#include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstddef>
+#include <string>
 #include <type_traits>
 
 namespace {
@@ -801,6 +806,189 @@ llvm::Error fabric::verifyImplementationFamilyAdmission(
 #include "Fabric/IR/ImplementationFamilies.inc"
   }
   return reject("typed admission provider is not registered");
+}
+
+llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
+    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount) {
+  const std::uint32_t familyIndex = static_cast<std::uint32_t>(family);
+  if (familyIndex >= implementationFamilyCount())
+    return reject("implementation family is not registered");
+  const ImplementationFamilyDescriptor &descriptor =
+      implementationFamily(family);
+  if (capabilityParamsSchema(params) != descriptor.capabilityParamsSchema)
+    return reject("capability parameter schema does not match the generated "
+                  "family descriptor");
+  if (enabledSchemas.empty())
+    return reject("concrete operation capability has no enabled schema");
+  for (OperationSchemaId schema : enabledSchemas)
+    if (!llvm::is_contained(descriptor.admittedSchemas, schema))
+      return reject("concrete operation capability escapes its generated "
+                    "implementation family");
+
+  // Selecting among enabled members always changes the configured function.
+  // All remaining cases below identify a parameterized singleton relation
+  // whose exact actor point changes real hardware behavior. Width-only
+  // admission for a bitwise or modular datapath deliberately creates no field.
+  if (enabledSchemas.size() > 1)
+    return true;
+
+  const auto floatBehaviorVaries = [](const FloatBehaviorProfile &behavior) {
+    return behavior.roundingModes.size() > 1 ||
+           behavior.nanBehaviors.size() > 1 ||
+           behavior.subnormalBehaviors.size() > 1 ||
+           behavior.signedZeroBehaviors.size() > 1;
+  };
+  const auto hasSchema = [&](OperationSchemaId schema) {
+    return llvm::is_contained(enabledSchemas, schema);
+  };
+  const auto hasSignedIntegerBehavior = [&] {
+    if (hasSchema(OperationSchemaId::ArithShRSI) ||
+        hasSchema(OperationSchemaId::ArithDivSI) ||
+        hasSchema(OperationSchemaId::ArithRemSI) ||
+        hasSchema(OperationSchemaId::ArithMinSI) ||
+        hasSchema(OperationSchemaId::ArithMaxSI))
+      return true;
+    if (!hasSchema(OperationSchemaId::ArithCmpI))
+      return false;
+    const auto &compare = std::get<ScalarIntegerCompareMinMaxParams>(params);
+    using Predicate = ::mlir::arith::CmpIPredicate;
+    return compare.predicates.contains(Predicate::slt) ||
+           compare.predicates.contains(Predicate::sle) ||
+           compare.predicates.contains(Predicate::sgt) ||
+           compare.predicates.contains(Predicate::sge);
+  };
+
+  switch (descriptor.typedAdmissionProvider) {
+  case TypedAdmissionProviderId::ScalarOrdinaryIntegerAdmission:
+    return std::get<ScalarIntegerParams>(params).integerWidths.size() > 1 &&
+           hasSignedIntegerBehavior();
+  case TypedAdmissionProviderId::ScalarLogicIntegerAdmission:
+  case TypedAdmissionProviderId::ScalarBitReinterpretAdmission:
+  case TypedAdmissionProviderId::ScalarValueSelectAdmission:
+  case TypedAdmissionProviderId::TokenPlaneAdmission:
+  case TypedAdmissionProviderId::FixedVectorLogicIntegerAdmission:
+    return false;
+  case TypedAdmissionProviderId::ScalarIntegerCompareAdmission: {
+    const auto &typed = std::get<ScalarIntegerCompareMinMaxParams>(params);
+    return typed.predicates.size() > 1 ||
+           (typed.operandWidths.size() > 1 && hasSignedIntegerBehavior());
+  }
+  case TypedAdmissionProviderId::ScalarIntegerCastAdmission:
+    return std::get<ScalarIntegerCastParams>(params)
+               .relation.widthPairs.size() > 1;
+  case TypedAdmissionProviderId::ScalarUniformFloatAdmission: {
+    const auto &typed = std::get<ScalarFloatParams>(params);
+    return typed.formats.size() > 1 || floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::ScalarFloatCompareAdmission: {
+    const auto &typed = std::get<ScalarFloatCompareMinMaxParams>(params);
+    return typed.formats.size() > 1 || typed.predicates.size() > 1 ||
+           floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::ScalarFloatCastAdmission: {
+    const auto &typed = std::get<ScalarFloatWidthCastParams>(params);
+    return typed.formatPairs.size() > 1 || floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::ScalarIntegerFloatConversionAdmission: {
+    const auto &typed = std::get<ScalarIntegerFloatConversionParams>(params);
+    return typed.formatPairs.size() > 1 || floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::StreamAdmission: {
+    const auto &typed = std::get<LoopStreamParams>(params);
+    return typed.integerWidths.size() > 1 ||
+           typed.continuationPredicates.size() > 1;
+  }
+  case TypedAdmissionProviderId::FixedVectorOrdinaryIntegerAdmission:
+    return std::get<FixedVectorIntegerParams>(params).elementWidths.size() > 1;
+  case TypedAdmissionProviderId::FixedVectorIntegerCompareAdmission: {
+    const auto &typed = std::get<FixedVectorIntegerCompareMinMaxParams>(params);
+    return typed.elementWidths.size() > 1 || typed.predicates.size() > 1;
+  }
+  case TypedAdmissionProviderId::FixedVectorValueSelectAdmission: {
+    const auto &typed = std::get<FixedVectorValueSelectParams>(params);
+    llvm::SmallVector<unsigned, 8> elementWidths;
+    const auto addWidth = [&](unsigned width) {
+      if (!llvm::is_contained(elementWidths, width))
+        elementWidths.push_back(width);
+    };
+    constexpr IntegerWidth integerWidths[] = {
+        IntegerWidth::I1, IntegerWidth::I8, IntegerWidth::I16,
+        IntegerWidth::I32, IntegerWidth::I64};
+    for (IntegerWidth width : integerWidths)
+      if (typed.integerElementWidths.contains(width))
+        addWidth(integerBitWidth(width));
+    constexpr FloatFormat floatFormats[] = {FloatFormat::F16, FloatFormat::BF16,
+                                            FloatFormat::F32, FloatFormat::F64};
+    for (FloatFormat format : floatFormats)
+      if (typed.floatElementFormats.contains(format))
+        addWidth(floatBitWidth(format));
+    return elementWidths.size() > 1;
+  }
+  case TypedAdmissionProviderId::FixedVectorUniformFloatAdmission: {
+    const auto &typed = std::get<FixedVectorFloatParams>(params);
+    return typed.elementFormats.size() > 1 ||
+           floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::FixedVectorFloatCompareAdmission: {
+    const auto &typed = std::get<FixedVectorFloatCompareMinMaxParams>(params);
+    return typed.elementFormats.size() > 1 || typed.predicates.size() > 1 ||
+           floatBehaviorVaries(typed.behavior);
+  }
+  case TypedAdmissionProviderId::FixedVectorAdapterAdmission: {
+    if (!hasSchema(OperationSchemaId::DataflowParallelize) &&
+        !hasSchema(OperationSchemaId::DataflowSerialize))
+      return false;
+    const auto &typed = std::get<FixedVectorAdapterParams>(params);
+    return typed.integerElementWidths.size() +
+               typed.floatElementFormats.size() >
+           1;
+  }
+  case TypedAdmissionProviderId::ConstantTokenAdmission:
+    return true;
+  case TypedAdmissionProviderId::SyncTokenAdmission:
+    return physicalInputCount > 1 || physicalResultCount > 1;
+  case TypedAdmissionProviderId::MuxTokenAdmission:
+    return physicalInputCount > 3;
+  case TypedAdmissionProviderId::DemuxTokenAdmission:
+    return physicalResultCount > 2;
+  }
+  return reject("typed admission provider is not registered");
+}
+
+mlir::FailureOr<unsigned> fabric::getSemanticPayloadWidth(mlir::Type type,
+                                                          std::string &error) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth();
+  if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
+    return floating.getWidth();
+  if (mlir::isa<mlir::IndexType, mlir::LLVM::LLVMPointerType>(type))
+    return ::loom::getIndexWidth();
+  if (mlir::isa<mlir::NoneType>(type))
+    return 0u;
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    auto elementWidth = getSemanticPayloadWidth(vector.getElementType(), error);
+    if (mlir::failed(elementWidth))
+      return mlir::failure();
+    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
+    if (!width) {
+      error = llvm::toString(width.takeError());
+      return mlir::failure();
+    }
+    if (static_cast<unsigned>(*width) != *width) {
+      error = "semantic payload width " + std::to_string(*width) +
+              " exceeds the physical payload width";
+      return mlir::failure();
+    }
+    return static_cast<unsigned>(*width);
+  }
+
+  std::string spelling;
+  llvm::raw_string_ostream stream(spelling);
+  type.print(stream);
+  error = "unsupported semantic payload type " + stream.str();
+  return mlir::failure();
 }
 
 namespace {

@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
@@ -16,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace loom {
 namespace fabric {
@@ -23,6 +25,36 @@ namespace fabric {
 using MemoryOperationPortView = ::fabric::MemoryOperationPortRecord;
 using MemoryCapabilityAlternativeView =
     ::fabric::MemoryCapabilityAlternativeRecord;
+
+/// One exact physical port of a concrete operation resource. The canonical
+/// transport type is the Fabric-owned encoding used by every consumer; it is
+/// not reconstructed from a software type or an implementation family.
+struct ResolvedFabricOpPhysicalPortView {
+  FabricFuNodePortRef reference;
+  std::vector<std::uint8_t> canonicalType;
+  std::uint32_t payloadWidthBits = 0;
+};
+
+/// The immutable cold projection of one concrete `fabric.op`. Every field is
+/// derived from the exact finalized Fabric and the generated operation/HSG
+/// registry. It is not persistent state and never becomes another capability
+/// authority.
+struct ResolvedFabricOpCapabilityView {
+  FabricFuTemplateNodeRef occurrence;
+  ::fabric::ImplementationFamilyId implementationFamily;
+  std::vector<::dataflow::OperationSchemaId> enabledOperationSchemas;
+  ::fabric::FamilyCapabilityParams parameterizedCapability;
+  std::vector<ResolvedFabricOpPhysicalPortView> physicalPorts;
+  std::vector<FabricSemanticConfigFieldRef> configurationFieldSchema;
+  ::fabric::ResourceContract resourceStateAndTimingContract;
+  std::vector<FabricPhysicalRefinementDomainRef> physicalRefinementDomains;
+
+  /// Checks only the concrete operation-resource capability. Port
+  /// correspondence, FU topology, placement, and routing remain Mapping
+  /// obligations and are deliberately outside this query.
+  llvm::Error
+  admit(const ::dataflow::CanonicalActorSchemaProjection &actor) const;
+};
 
 class FabricArtifactView;
 class FabricSystemRootView;
@@ -50,6 +82,11 @@ public:
 
   const ArtifactIdentity &identity() const;
   FabricRootKind rootKind() const;
+
+  /// Strictly imported direct Module dependencies of a System root. Module
+  /// roots have an empty range. These views retain their own Artifact identity;
+  /// owner-local references are never rebound into the System root.
+  llvm::ArrayRef<FabricArtifactView> importedModules() const;
 
   /// Kind of the entity holding `id`, or absent when the artifact declares no
   /// such entity.
@@ -124,6 +161,16 @@ public:
   /// definition. An invalid owner has an empty range.
   llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
   fuCapabilityTemplates(FabricFuTemplateRef definition) const;
+
+  /// The exact concrete operation capability owned by one FU template node.
+  /// An occurrence-node query resolves through its immutable template
+  /// relation and therefore returns the same Fabric-owned record.
+  const ResolvedFabricOpCapabilityView *
+  resolvedFabricOpCapability(const FabricFuTemplateNodeRef &operation) const;
+  const ResolvedFabricOpCapabilityView *
+  resolvedFabricOpCapability(const FabricFuOccurrenceNodeRef &operation) const;
+  llvm::ArrayRef<ResolvedFabricOpCapabilityView>
+  resolvedFabricOpCapabilities(FabricFuTemplateRef definition) const;
 
   /// The complete canonical physical operation-port inventory of one memory
   /// occurrence, and the exact immutable records selected by those refs.
