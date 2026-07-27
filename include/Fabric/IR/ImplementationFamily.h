@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -279,6 +280,8 @@ struct FloatBehaviorProfile {
 enum class ResolvedIndexWidth : std::uint8_t { I32, I64 };
 static_assert(static_cast<std::uint8_t>(ResolvedIndexWidth::I32) == 0);
 static_assert(static_cast<std::uint8_t>(ResolvedIndexWidth::I64) == 1);
+inline constexpr std::array<ResolvedIndexWidth, 2> resolvedIndexWidthDomain = {
+    ResolvedIndexWidth::I32, ResolvedIndexWidth::I64};
 using ResolvedIndexWidthSet = detail::ClosedEnumSet<ResolvedIndexWidth, 2>;
 
 std::optional<ResolvedIndexWidth>

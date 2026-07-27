@@ -1844,9 +1844,8 @@ admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
         sourceIsIndex ? destinationType : sourceType, "integer cast relation");
     if (!integer)
       return integer.takeError();
-    constexpr fabric::ResolvedIndexWidth indexWidths[] = {
-        fabric::ResolvedIndexWidth::I32, fabric::ResolvedIndexWidth::I64};
-    for (fabric::ResolvedIndexWidth resolved : indexWidths) {
+    for (fabric::ResolvedIndexWidth resolved :
+         fabric::resolvedIndexWidthDomain) {
       if (!params.relation.resolvedIndexWidths.contains(resolved))
         continue;
       const IntegerWidth index = resolved == fabric::ResolvedIndexWidth::I32

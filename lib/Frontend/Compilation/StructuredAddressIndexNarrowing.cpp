@@ -171,9 +171,14 @@ llvm::Error materializeIndexLayout(mlir::ModuleOp module, unsigned width) {
 
 bool containsDynamicAddressIndex(mlir::Operation *operation) {
   bool found = false;
-  operation->walk([&](mlir::LLVM::GEPOp) {
-    found = true;
-    return mlir::WalkResult::interrupt();
+  operation->walk([&](mlir::LLVM::GEPOp gep) {
+    for (mlir::Value index : gep.getDynamicIndices()) {
+      if (integerConstant(index))
+        continue;
+      found = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
   });
   return found;
 }
@@ -199,6 +204,12 @@ struct GepIndexUse final {
 
 } // namespace
 
+bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
+                                           mlir::Operation *selectedOperation) {
+  return selectedOperation && containsDynamicAddressIndex(selectedOperation) &&
+         !hasExplicitFixedIndexLayout(module);
+}
+
 llvm::Error
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,
@@ -206,8 +217,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
   if (!selectedOperation)
     return invalid("requires a selected structured operation");
   if (!canonicalIndexWidth) {
-    if (containsDynamicAddressIndex(selectedOperation) &&
-        !hasExplicitFixedIndexLayout(module))
+    if (requiresCanonicalAddressIndexDecision(module, selectedOperation))
       return invalid("requires an explicit canonical index width for LLVM "
                      "GEP operands");
     return llvm::Error::success();

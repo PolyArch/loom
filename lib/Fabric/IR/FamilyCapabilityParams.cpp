@@ -867,9 +867,7 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
               "width_pairs",
               integerPairsAttr(builder, typed.relation.widthPairs)));
           llvm::SmallVector<Attribute, 2> indexWidths;
-          constexpr ResolvedIndexWidth orderedWidths[] = {
-              ResolvedIndexWidth::I32, ResolvedIndexWidth::I64};
-          for (ResolvedIndexWidth width : orderedWidths) {
+          for (ResolvedIndexWidth width : resolvedIndexWidthDomain) {
             if (typed.relation.resolvedIndexWidths.contains(width))
               indexWidths.push_back(
                   integerAttr(builder, getResolvedIndexBitWidth(width)));

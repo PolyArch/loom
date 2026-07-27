@@ -44,6 +44,21 @@ struct OperationSpatialOwnershipOptions final {
   std::optional<unsigned> canonicalIndexWidth;
 };
 
+/// One finite, scope-local ownership decision point. This is an ephemeral
+/// generator value rather than a selected candidate or persistent program
+/// record. Applying it may still fail semantic materialization or exact-Fabric
+/// admission.
+struct SpatialOwnershipDecisionPoint final {
+  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
+  std::optional<unsigned> canonicalIndexWidth;
+
+  friend bool operator==(const SpatialOwnershipDecisionPoint &lhs,
+                         const SpatialOwnershipDecisionPoint &rhs) {
+    return lhs.fmuladdExecutionShape == rhs.fmuladdExecutionShape &&
+           lhs.canonicalIndexWidth == rhs.canonicalIndexWidth;
+  }
+};
+
 /// Enumerates whole-callable ownership scopes in the exact parent candidate's
 /// canonical operation order. Only callables satisfying the complete
 /// whole-callable structural contract are returned; this is a generator
@@ -59,6 +74,16 @@ enumerateWholeCallableSpatialOwnershipScopes(
 llvm::Expected<std::vector<StructuredEntityRef>>
 enumerateOperationSpatialOwnershipScopes(
     const StructuredProgramCandidate &parent);
+
+/// Derives the finite typed decision domain for one exact ownership scope.
+/// Canonical address widths come from the closed Fabric index-width schema;
+/// exact concrete target admission remains part of candidate materialization.
+/// Fmuladd alternatives are exposed only when the selected scope contains the
+/// corresponding unresolved LLVM operation. The result is deterministic and
+/// performs no ranking or implicit default selection.
+llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
+enumerateSpatialOwnershipDecisionDomain(
+    const StructuredProgramCandidate &parent, const StructuredEntityRef &scope);
 
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
 /// one exact void, single-block LLVM callable. Its original body moves into an

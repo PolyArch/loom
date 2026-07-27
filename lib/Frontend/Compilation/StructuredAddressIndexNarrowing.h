@@ -8,6 +8,11 @@
 
 namespace loom::frontend::detail {
 
+/// Whether this exact scope still needs a candidate-owned fixed index-width
+/// decision. Constant-only GEPs do not create such a decision.
+bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
+                                           mlir::Operation *selectedOperation);
+
 /// Enforces an explicit canonical index contract for LLVM GEPs. A selected
 /// width is materialized in the Structured Program and wider operands are
 /// narrowed only when their complete signed value domain is proven to fit.

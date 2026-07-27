@@ -69,7 +69,8 @@ target triple = "riscv32-unknown-unknown"
 
 define void @kernel(ptr %a, ptr %b, ptr %c) {
 entry:
-  %lhs = load float, ptr %a, align 4
+  %pa = getelementptr float, ptr %a, i32 0
+  %lhs = load float, ptr %pa, align 4
   %rhs = load float, ptr %b, align 4
   %sum = fadd float %lhs, %rhs
   store float %sum, ptr %c, align 4
@@ -427,11 +428,18 @@ void explicitWholeCallableSpatialOwnership() {
                                  design.roots().front().reference(), store));
   const loom::ArtifactIdentity parentIdentity =
       compiled.structuredProgram.identity();
-  auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram, "kernel"),
-                     design.roots().front()));
+  const loom::frontend::StructuredEntityRef callable =
+      findCallable(test, compiled.structuredProgram, "kernel");
+  auto decisionDomain =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, callable));
+  if (decisionDomain.size() != 1 ||
+      decisionDomain.front().canonicalIndexWidth ||
+      decisionDomain.front().fmuladdExecutionShape)
+    fail(test, "constant GEP invented a dynamic ownership decision");
+  auto selected = take(
+      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                compiled.structuredProgram, callable, design.roots().front()));
 
   if (selected.structuredProgram.identity() == parentIdentity)
     fail(test, "ownership materialization did not create a child candidate");
@@ -792,8 +800,7 @@ void wholeCallableScopesFollowCanonicalOrder() {
     fail(test, "whole-callable domain admitted a declaration, non-void "
                "wrapper, or omitted the eligible kernel");
   if (scopes.front().parent != compiled.structuredProgram.identity() ||
-      scopes.front().kind !=
-          loom::frontend::StructuredEntityKind::Operation)
+      scopes.front().kind != loom::frontend::StructuredEntityKind::Operation)
     fail(test, "whole-callable scope is not parent-local operation identity");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
@@ -852,6 +859,42 @@ void operationFmulAddDecisionIsCandidateLocal() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void ownershipDecisionDomainIsScopeLocalAndTyped() {
+  const char *test = "ownershipDecisionDomainIsScopeLocalAndTyped";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-ownership-domain", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseOperationFmulAddModule(test, context),
+                                 design.roots().front().reference(), store));
+  const loom::frontend::StructuredEntityRef scope =
+      findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop");
+  auto domain =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, scope));
+
+  using Shape = loom::raising::FMulAddExecutionShape;
+  const std::vector<loom::frontend::SpatialOwnershipDecisionPoint> expected = {
+      {Shape::Fused, 32},
+      {Shape::Split, 32},
+      {Shape::Fused, 64},
+      {Shape::Split, 64},
+  };
+  if (domain != expected)
+    fail(test, "scope-local decision domain is incomplete or noncanonical");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationSpatialOwnershipRejectsEscapedResult() {
   const char *test = "operationSpatialOwnershipRejectsEscapedResult";
   llvm::SmallString<128> directory;
@@ -893,6 +936,7 @@ int main() {
   wholeCallableScopesFollowCanonicalOrder();
   operationOwnershipScopesFollowCanonicalOrder();
   operationFmulAddDecisionIsCandidateLocal();
+  ownershipDecisionDomainIsScopeLocalAndTyped();
   operationSpatialOwnershipRejectsEscapedResult();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;

@@ -448,6 +448,65 @@ enumerateOperationSpatialOwnershipScopes(
   return scopes;
 }
 
+llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
+enumerateSpatialOwnershipDecisionDomain(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &scope) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+  auto entity = view->resolve(scope);
+  if (!entity)
+    return entity.takeError();
+  if (!entity->operation)
+    return invalid("selected StructuredEntityRef is not an operation");
+
+  mlir::Operation *operation = entity->operation;
+  if (auto callable = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
+    if (llvm::Error error = verifyEligibleCallable(callable))
+      return std::move(error);
+  } else if (auto callable = eligibleOwningCallable(operation); !callable) {
+    return callable.takeError();
+  }
+
+  bool containsFmuladd = false;
+  operation->walk([&](mlir::Operation *nested) {
+    if (nested != operation && llvm::isa<mlir::FunctionOpInterface>(nested))
+      return mlir::WalkResult::skip();
+    if (llvm::isa<mlir::LLVM::FMulAddOp>(nested)) {
+      containsFmuladd = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+
+  llvm::SmallVector<std::optional<unsigned>, 2> indexWidths;
+  if (detail::requiresCanonicalAddressIndexDecision(parent.module(),
+                                                    operation)) {
+    for (::fabric::ResolvedIndexWidth width :
+         ::fabric::resolvedIndexWidthDomain)
+      indexWidths.push_back(::fabric::getResolvedIndexBitWidth(width));
+  } else {
+    indexWidths.push_back(std::nullopt);
+  }
+
+  llvm::SmallVector<std::optional<raising::FMulAddExecutionShape>, 2>
+      executionShapes;
+  if (containsFmuladd) {
+    executionShapes.push_back(raising::FMulAddExecutionShape::Fused);
+    executionShapes.push_back(raising::FMulAddExecutionShape::Split);
+  } else {
+    executionShapes.push_back(std::nullopt);
+  }
+
+  std::vector<SpatialOwnershipDecisionPoint> result;
+  result.reserve(indexWidths.size() * executionShapes.size());
+  for (std::optional<unsigned> indexWidth : indexWidths)
+    for (std::optional<raising::FMulAddExecutionShape> shape : executionShapes)
+      result.push_back(SpatialOwnershipDecisionPoint{shape, indexWidth});
+  return result;
+}
+
 llvm::Expected<MaterializedOwnershipCandidate>
 materializeWholeCallableSpatialOwnership(
     const StructuredProgramCandidate &parent,
