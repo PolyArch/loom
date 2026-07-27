@@ -46,6 +46,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -1250,6 +1251,96 @@ std::optional<unsigned> getGraphIndexBits(::dataflow::GraphOp graph) {
   return std::nullopt;
 }
 
+unsigned sinkBranchSelectedLoads(::dataflow::GraphOp graph,
+                                 ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::mlir::LLVM::LoadOp, 4> loads;
+  graph.getBody().walk([&](::mlir::LLVM::LoadOp load) {
+    if (!load.getVolatile_() &&
+        load.getOrdering() == ::mlir::LLVM::AtomicOrdering::not_atomic)
+      loads.push_back(load);
+  });
+
+  unsigned rewritten = 0;
+  for (::mlir::LLVM::LoadOp load : loads) {
+    auto selected = ::llvm::dyn_cast<::mlir::OpResult>(load.getAddr());
+    if (!selected || !selected.hasOneUse())
+      continue;
+    if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(selected.getType()))
+      continue;
+
+    if (auto select =
+            ::llvm::dyn_cast<::mlir::arith::SelectOp>(selected.getOwner())) {
+      ::mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(load);
+      auto cloneLoadAndYield = [&](::mlir::OpBuilder &bodyBuilder,
+                                   ::mlir::Location loc,
+                                   ::mlir::Value address) {
+        ::mlir::IRMapping mapping;
+        mapping.map(load.getAddr(), address);
+        auto cloned = ::llvm::cast<::mlir::LLVM::LoadOp>(
+            bodyBuilder.clone(*load.getOperation(), mapping));
+        ::mlir::scf::YieldOp::create(bodyBuilder, loc, cloned.getResult());
+      };
+      auto thenBuilder = [&](::mlir::OpBuilder &bodyBuilder,
+                             ::mlir::Location loc) {
+        cloneLoadAndYield(bodyBuilder, loc, select.getTrueValue());
+      };
+      auto elseBuilder = [&](::mlir::OpBuilder &bodyBuilder,
+                             ::mlir::Location loc) {
+        cloneLoadAndYield(bodyBuilder, loc, select.getFalseValue());
+      };
+      auto branch = ::mlir::scf::IfOp::create(builder, load.getLoc(),
+                                              select.getCondition(),
+                                              thenBuilder, elseBuilder);
+      load.getResult().replaceAllUsesWith(branch.getResult(0));
+      load.erase();
+      if (select->use_empty())
+        select.erase();
+      ++rewritten;
+      continue;
+    }
+
+    auto branch = ::llvm::dyn_cast<::mlir::scf::IfOp>(selected.getOwner());
+    if (!branch || branch.getElseRegion().empty())
+      continue;
+
+    unsigned resultIndex = selected.getResultNumber();
+    ::mlir::scf::YieldOp thenYield = ::llvm::dyn_cast<::mlir::scf::YieldOp>(
+        branch.getThenRegion().front().getTerminator());
+    ::mlir::scf::YieldOp elseYield = ::llvm::dyn_cast<::mlir::scf::YieldOp>(
+        branch.getElseRegion().front().getTerminator());
+    if (!thenYield || !elseYield || resultIndex >= thenYield.getNumOperands() ||
+        resultIndex >= elseYield.getNumOperands())
+      continue;
+    for (::mlir::scf::YieldOp yield : {thenYield, elseYield}) {
+      ::mlir::IRMapping mapping;
+      mapping.map(load.getAddr(), yield.getOperand(resultIndex));
+      ::mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(yield);
+      auto cloned = ::llvm::cast<::mlir::LLVM::LoadOp>(
+          builder.clone(*load.getOperation(), mapping));
+      yield.setOperand(resultIndex, cloned.getResult());
+    }
+    selected.setType(load.getResult().getType());
+    load.getResult().replaceAllUsesWith(selected);
+    load.erase();
+    ++rewritten;
+  }
+  return rewritten;
+}
+
+::mlir::LogicalResult
+checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
+  ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
+      ::mlir::cast<::mlir::ModuleOp>(module->clone()));
+  ::mlir::OpBuilder builder(module.getContext());
+  scratch->walk([&](::dataflow::GraphOp graph) {
+    if (!graph.isExternal())
+      (void)sinkBranchSelectedLoads(graph, builder);
+  });
+  return ::loom::lowering::checkGraphRegionLoweringPreconditions(*scratch);
+}
+
 unsigned rewriteOneGraph(::dataflow::GraphOp graph,
                          ::mlir::OpBuilder &builder) {
   ::mlir::Value ctrl = getThreadCtrl(graph);
@@ -1263,6 +1354,8 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
   ctx.graph = graph;
   ctx.ctrl = ctrl;
   ctx.indexBits = *indexBits;
+
+  unsigned rewrites = sinkBranchSelectedLoads(graph, builder);
 
   // Collect rewrite targets up front so the walk is independent of
   // mutations performed by tryRewriteOne.
@@ -1279,7 +1372,6 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
     return ::mlir::WalkResult::advance();
   });
 
-  unsigned rewrites = 0;
   for (auto &t : targets) {
     if (auto memset = ::llvm::dyn_cast<::mlir::LLVM::MemsetOp>(t.op)) {
       if (tryRewriteMemset(memset, t.topLevel, builder, ctx))
@@ -1294,7 +1386,6 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
     if (tryRewriteOne(t.op, t.topLevel, builder, ctx))
       ++rewrites;
   }
-
   // Erase orphan geps (those whose only uses were the rewritten
   // load/store ops). Some may have other live uses -- skip those
   // silently.
@@ -1397,7 +1488,7 @@ struct LowerGraphMemoryPass
     }
 
     if (::mlir::failed(
-            ::loom::lowering::checkGraphRegionLoweringPreconditions(module))) {
+            checkGraphRegionLoweringPreconditionsAfterLoadSinking(module))) {
       signalPassFailure();
       return;
     }
