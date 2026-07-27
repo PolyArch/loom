@@ -92,6 +92,7 @@ tools = [
     "loom-simulator-synchronization-test",
     "loom-simulator-vector-boundary-test",
     "loom-structured-program-artifact-test",
+    "loom-pre-mapping-compilation-test",
     "mlir-opt",
     "mlir-translate",
 ]

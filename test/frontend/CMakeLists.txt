@@ -17,3 +17,16 @@ target_link_libraries(loom-structured-program-artifact-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-pre-mapping-compilation-test
+  PreMappingCompilationTest.cpp
+)
+
+target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendCompilation
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)
