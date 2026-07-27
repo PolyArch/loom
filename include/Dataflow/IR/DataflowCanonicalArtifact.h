@@ -2,6 +2,7 @@
 #define LOOM_DATAFLOW_IR_DATAFLOW_CANONICAL_ARTIFACT_H
 
 #include "Common/Artifact.h"
+#include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
@@ -18,6 +19,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -26,6 +28,7 @@
 #include <vector>
 
 namespace mlir {
+class MLIRContext;
 class Operation;
 } // namespace mlir
 
@@ -100,11 +103,12 @@ class CanonicalDataflowProgramView {
 public:
   /// Reconstruct and verify a finalized program. Rejects any stale, missing,
   /// duplicate, out-of-range, or noncanonical materialized ID, any unresolved
-  /// symbol or memory-root relation, and any module whose recomputed identity
-  /// does not equal `expectedIdentity`.
+  /// symbol or memory-root relation, and any payload whose Common identity does
+  /// not equal `expectedIdentity`.
   static llvm::Expected<CanonicalDataflowProgramView>
   import(mlir::ModuleOp finalizedModule,
-         const ::loom::ArtifactIdentity &expectedIdentity);
+         const ::loom::ArtifactIdentity &expectedIdentity,
+         const ::loom::CanonicalSemanticBytes &canonicalBytes);
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
   std::uint64_t entityCount() const { return kindOfId_.size(); }
@@ -345,20 +349,29 @@ public:
   /// single source of truth for the projection, so it is imported rather than
   /// cached alongside the artifact.
   llvm::Expected<CanonicalDataflowProgramView> view() const {
-    return CanonicalDataflowProgramView::import(module(), identity_);
+    return CanonicalDataflowProgramView::import(module(), identity_, bytes_);
   }
 
 private:
   friend llvm::Expected<CanonicalDataflowArtifact>
       finalizeCanonicalDataflow(mlir::ModuleOp);
+  friend llvm::Expected<CanonicalDataflowArtifact>
+  importCanonicalDataflow(const ::loom::ArtifactIdentity &,
+                          const ::loom::CanonicalSemanticBytes &);
+  friend llvm::Expected<CanonicalDataflowArtifact>
+  importCanonicalDataflow(const ::loom::ArtifactRootReference &,
+                          const ::loom::ArtifactStore &);
 
   CanonicalDataflowArtifact(::loom::ArtifactIdentity identity,
                             mlir::OwningOpRef<mlir::ModuleOp> module,
-                            ::loom::CanonicalSemanticBytes bytes)
-      : identity_(identity), module_(std::move(module)),
-        bytes_(std::move(bytes)) {}
+                            ::loom::CanonicalSemanticBytes bytes,
+                            std::unique_ptr<mlir::MLIRContext> context = nullptr)
+      : identity_(identity), context_(std::move(context)),
+        module_(std::move(module)), bytes_(std::move(bytes)) {}
 
   ::loom::ArtifactIdentity identity_;
+  // Declaration order makes the module release before its owning context.
+  std::unique_ptr<mlir::MLIRContext> context_;
   mlir::OwningOpRef<mlir::ModuleOp> module_;
   ::loom::CanonicalSemanticBytes bytes_;
 };
@@ -370,6 +383,21 @@ private:
 /// artifact framed by the Common finalizer.
 llvm::Expected<CanonicalDataflowArtifact>
 finalizeCanonicalDataflow(mlir::ModuleOp source);
+
+/// Strictly imports one exact stored canonical Dataflow payload. The family
+/// importer independently rebuilds canonical labels and materialized entity
+/// IDs, then requires an exact byte-for-byte writer round trip.
+llvm::Expected<CanonicalDataflowArtifact>
+importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
+                        const ::loom::CanonicalSemanticBytes &canonicalBytes);
+
+llvm::Expected<::loom::ArtifactRootReference>
+publishCanonicalDataflow(const CanonicalDataflowArtifact &candidate,
+                         const ::loom::ArtifactStore &store);
+
+llvm::Expected<CanonicalDataflowArtifact>
+importCanonicalDataflow(const ::loom::ArtifactRootReference &reference,
+                        const ::loom::ArtifactStore &store);
 
 } // namespace dataflow
 

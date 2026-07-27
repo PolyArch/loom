@@ -390,21 +390,52 @@ module {
 )mlir";
 }
 
+enum class ExposureLaunchKind { FreshAllocation, ImportedMemory, DerivedMemory };
+
 RootedGraphLaunchRef launchOf(const char *test,
                               const CanonicalDataflowProgramView &view,
-                              llvm::StringRef graphSymbol) {
+                              ExposureLaunchKind kind) {
   for (const CanonicalStaticGraphLaunchView &site :
        view.staticGraphLaunches()) {
     auto graph =
         llvm::cast<GraphOp>(llvm::cantFail(view.resolve(site.callee)).op);
-    if (graph.getSymName() == graphSymbol) {
+    auto launch = llvm::cast<GraphLaunchOp>(site.op);
+    bool hasAllocation = false;
+    graph.walk([&](mlir::memref::AllocOp) { hasAllocation = true; });
+    bool importedMemory = !launch.getMemoryInputs().empty() &&
+                          llvm::isa<mlir::BlockArgument>(
+                              launch.getMemoryInputs().front());
+    bool selected =
+        (kind == ExposureLaunchKind::FreshAllocation && hasAllocation) ||
+        (kind == ExposureLaunchKind::ImportedMemory && !hasAllocation &&
+         importedMemory) ||
+        (kind == ExposureLaunchKind::DerivedMemory && !hasAllocation &&
+         !importedMemory);
+    if (selected) {
       require(test, view.rootThreadLaunches().size() == 1,
               "fixture has one root launch");
       return RootedGraphLaunchRef{view.rootThreadLaunches().front().ref,
                                   site.ref};
     }
   }
-  fail(test, ("no static launch of " + graphSymbol).str());
+  fail(test, "no static launch matching semantic selector");
+}
+
+RootedGraphLaunchRef launchAtThreadOrder(
+    const char *test, const CanonicalDataflowProgramView &view,
+    unsigned ordinal) {
+  require(test, view.rootThreadLaunches().size() == 1,
+          "fixture has one root launch");
+  llvm::SmallVector<mlir::Operation *> launches;
+  view.rootThreadLaunches().front().callee->walk(
+      [&](GraphLaunchOp launch) { launches.push_back(launch.getOperation()); });
+  if (ordinal >= launches.size())
+    fail(test, "thread launch ordinal is out of range");
+  for (const CanonicalStaticGraphLaunchView &site : view.staticGraphLaunches())
+    if (site.op == launches[ordinal])
+      return RootedGraphLaunchRef{view.rootThreadLaunches().front().ref,
+                                  site.ref};
+  fail(test, "stored graph launch lacks a canonical static launch reference");
 }
 
 RootedGraphLaunchRef consumerLaunch(const char *test,
@@ -970,8 +1001,10 @@ void exposureTargetsAndDiffBaseline() {
   const char *test = "exposureTargetsAndDiffBaseline";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
-  RootedGraphLaunchRef freshLaunch = launchOf(test, view, "gf");
-  RootedGraphLaunchRef passthroughLaunch = launchOf(test, view, "gi");
+  RootedGraphLaunchRef freshLaunch =
+      launchOf(test, view, ExposureLaunchKind::FreshAllocation);
+  RootedGraphLaunchRef passthroughLaunch =
+      launchOf(test, view, ExposureLaunchKind::ImportedMemory);
   LogicalMemoryRootRef rootM = rootByFormal(test, view, 0);
 
   auto workloadOn = [&](RootedGraphLaunchRef launch,
@@ -1023,7 +1056,7 @@ void admissionAdapters() {
   const char *test = "admissionAdapters";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, twoGraphProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
-  RootedGraphLaunchRef launchA = launchOf(test, view, "ga");
+  RootedGraphLaunchRef launchA = launchAtThreadOrder(test, view, 0);
   GraphRef graphA = llvm::cantFail(view.resolve(launchA));
 
   SpatialSimulationWorkload workload{launchA};
@@ -1221,7 +1254,8 @@ void directMemoryObservables() {
   const char *test = "directMemoryObservables";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
-  RootedGraphLaunchRef freshLaunch = launchOf(test, view, "gf");
+  RootedGraphLaunchRef freshLaunch =
+      launchOf(test, view, ExposureLaunchKind::FreshAllocation);
   LogicalMemoryRootRef rootM = rootByFormal(test, view, 0);
   LogicalMemoryRootRef freshRoot = rootM;
   for (const CanonicalLogicalMemoryRootView &root : view.logicalMemoryRoots())
@@ -1335,7 +1369,8 @@ void freshExposureChain() {
   const char *test = "freshExposureChain";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
-  RootedGraphLaunchRef chainLaunch = launchOf(test, view, "gc");
+  RootedGraphLaunchRef chainLaunch =
+      launchOf(test, view, ExposureLaunchKind::DerivedMemory);
   LogicalMemoryRootRef rootM = rootByFormal(test, view, 0);
   LogicalMemoryRootOrViewRef chainRole =
       llvm::cantFail(view.resolveExposure(MemoryExposureRef{chainLaunch, 0}));

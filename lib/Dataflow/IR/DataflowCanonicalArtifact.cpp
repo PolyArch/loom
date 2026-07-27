@@ -18,6 +18,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "DataflowCanonicalLabeling.h"
+#include "DataflowCanonicalBytecodeInternal.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -146,6 +147,8 @@ finalizeCanonicalDataflow(ModuleOp source) {
   pruneUnreachablePrivateSymbols(clone.get());
   if (llvm::Error error = validateProgram(clone.get()))
     return std::move(error);
+  if (llvm::Error error = detail::canonicalizeDataflowPresentation(clone.get()))
+    return std::move(error);
 
   llvm::Expected<detail::CanonicalLabeling> labeling =
       detail::computeCanonicalLabeling(clone.get());
@@ -155,8 +158,13 @@ finalizeCanonicalDataflow(ModuleOp source) {
   for (const detail::EntityCarrier &carrier : labeling->carriers)
     materialize(carrier, clone.get().getContext());
 
-  ::loom::ArtifactIdentity identity = ::loom::finalizeArtifactIdentity(
-      canonicalDataflowSchema, labeling->bytes);
+  auto bytecode = detail::writeCanonicalDataflowBytecode(clone.get());
+  if (!bytecode)
+    return bytecode.takeError();
+  ::loom::CanonicalSemanticBytes bytes =
+      detail::frameCanonicalDataflowBytes(*bytecode);
+  ::loom::ArtifactIdentity identity =
+      ::loom::finalizeArtifactIdentity(canonicalDataflowSchema, bytes);
 
   // Validate the complete closed structural relation set before publishing,
   // reusing the labeling already computed rather than recomputing it. Any
@@ -167,8 +175,7 @@ finalizeCanonicalDataflow(ModuleOp source) {
                               .takeError())
     return std::move(error);
 
-  return CanonicalDataflowArtifact(identity, std::move(clone),
-                                   std::move(labeling->bytes));
+  return importCanonicalDataflow(identity, bytes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -325,7 +332,8 @@ CanonicalDataflowProgramView::buildView(
 llvm::Expected<CanonicalDataflowProgramView>
 CanonicalDataflowProgramView::import(
     ModuleOp finalizedModule,
-    const ::loom::ArtifactIdentity &expectedIdentity) {
+    const ::loom::ArtifactIdentity &expectedIdentity,
+    const ::loom::CanonicalSemanticBytes &canonicalBytes) {
   if (llvm::Error error = validateProgram(finalizedModule))
     return std::move(error);
 
@@ -334,8 +342,8 @@ CanonicalDataflowProgramView::import(
   if (!labeling)
     return labeling.takeError();
 
-  ::loom::ArtifactIdentity identity = ::loom::finalizeArtifactIdentity(
-      canonicalDataflowSchema, labeling->bytes);
+  ::loom::ArtifactIdentity identity =
+      ::loom::finalizeArtifactIdentity(canonicalDataflowSchema, canonicalBytes);
   if (identity != expectedIdentity)
     return invalid("canonical dataflow: identity does not match the artifact");
 
@@ -394,6 +402,57 @@ CanonicalDataflowProgramView::import(
     return std::move(scanError);
 
   return buildView(finalizedModule, identity, *labeling);
+}
+
+llvm::Expected<CanonicalDataflowArtifact>
+importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
+                        const ::loom::CanonicalSemanticBytes &canonicalBytes) {
+  if (::loom::finalizeArtifactIdentity(canonicalDataflowSchema,
+                                       canonicalBytes) != identity)
+    return invalid("canonical dataflow: identity does not match canonical bytes");
+  auto bytecode = detail::extractCanonicalDataflowBytecode(canonicalBytes);
+  if (!bytecode)
+    return bytecode.takeError();
+  auto parsed = detail::parseCanonicalDataflowBytecode(*bytecode);
+  if (!parsed)
+    return parsed.takeError();
+  auto view = CanonicalDataflowProgramView::import(parsed->module.get(), identity,
+                                                    canonicalBytes);
+  if (!view)
+    return view.takeError();
+  auto rewritten = detail::writeCanonicalDataflowBytecode(parsed->module.get());
+  if (!rewritten)
+    return rewritten.takeError();
+  ::loom::CanonicalSemanticBytes reencoded =
+      detail::frameCanonicalDataflowBytes(*rewritten);
+  if (!reencoded.bytes().equals(canonicalBytes.bytes()))
+    return invalid("canonical dataflow: stored bytes are noncanonical");
+  return CanonicalDataflowArtifact(identity, std::move(parsed->module),
+                                   canonicalBytes, std::move(parsed->context));
+}
+
+llvm::Expected<::loom::ArtifactRootReference>
+publishCanonicalDataflow(const CanonicalDataflowArtifact &candidate,
+                         const ::loom::ArtifactStore &store) {
+  auto stored = store.put(canonicalDataflowSchema, candidate.canonicalBytes());
+  if (!stored)
+    return stored.takeError();
+  if (*stored != candidate.identity())
+    return invalid("ArtifactStore returned a different Canonical Dataflow identity");
+  return ::loom::ArtifactRootReference{canonicalDataflowSchema.identity.str(),
+                                       canonicalDataflowSchema.version, *stored};
+}
+
+llvm::Expected<CanonicalDataflowArtifact>
+importCanonicalDataflow(const ::loom::ArtifactRootReference &reference,
+                        const ::loom::ArtifactStore &store) {
+  if (reference.schemaIdentity != canonicalDataflowSchema.identity ||
+      reference.schemaVersion != canonicalDataflowSchema.version)
+    return invalid("canonical dataflow: foreign artifact schema");
+  auto bytes = store.get(reference);
+  if (!bytes)
+    return bytes.takeError();
+  return importCanonicalDataflow(reference.artifact, *bytes);
 }
 
 } // namespace dataflow

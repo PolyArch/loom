@@ -18,6 +18,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowActorSemantics.cpp
   DataflowArtifactLocalReference.cpp
   DataflowCanonicalArtifact.cpp
+  DataflowCanonicalBytecode.cpp
   DataflowCanonicalLabeling.cpp
   DataflowChannelOps.cpp
   DataflowDialect.cpp
@@ -49,6 +50,7 @@ add_mlir_dialect_library(MLIRDataflow
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRRegisterAllDialects
   MLIRCallInterfaces
   MLIRArithDialect
   MLIRControlFlowInterfaces

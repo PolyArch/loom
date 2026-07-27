@@ -8,6 +8,8 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "Common/ArtifactStore.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -22,7 +24,10 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -233,6 +238,35 @@ module {
     require(test, id < sym.entityCount(), "entity IDs must be in range");
 }
 
+void artifactStoreRoundTrip() {
+  const char *test = "artifactStoreRoundTrip";
+  CanonicalDataflowArtifact artifact =
+      finalize(test, computeGraph("g", 3, 4, "arith.addi", "a", "b"));
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-dataflow-artifact", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  ArtifactStore store(directory);
+  auto reference = publishCanonicalDataflow(artifact, store);
+  if (!reference)
+    fail(test, "publication failed: " + llvm::toString(reference.takeError()));
+  auto imported = importCanonicalDataflow(*reference, store);
+  if (!imported)
+    fail(test, "strict import failed: " + llvm::toString(imported.takeError()));
+  require(test, imported->identity() == artifact.identity() &&
+                    bytesOf(*imported) == bytesOf(artifact),
+          "ArtifactStore import must preserve canonical Dataflow bytes");
+  require(test, isRejected(importCanonicalDataflow(
+                    ArtifactRootReference{"loom.foreign", {1, 0},
+                                          artifact.identity()},
+                    store)),
+          "foreign artifact schema must reject before import");
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 // (b) Semantic differences
 
 void semanticDifferences() {
@@ -434,8 +468,8 @@ module {
     mlir::OwningOpRef<mlir::ModuleOp> clone(
         llvm::cast<mlir::ModuleOp>(artifact.module().getOperation()->clone()));
     mutate(clone.get());
-    return isRejected(
-        CanonicalDataflowProgramView::import(clone.get(), artifact.identity()));
+    return isRejected(CanonicalDataflowProgramView::import(
+        clone.get(), artifact.identity(), artifact.canonicalBytes()));
   };
   require(test, importAfter([](mlir::ModuleOp m) {
             m.walk([&](GraphOp g) {
@@ -760,20 +794,17 @@ void memoryViewExposureService() {
   };
   LogicalMemoryRootRef rootM0 = rootByFormal(0), rootM1 = rootByFormal(1);
 
-  // Identify the two @gv sites by the thread formal they bind, plus @gl and
-  // @gc.
+  // Identify sites by their ABI shape, not private graph spellings. Private
+  // symbols are deliberately normalized by canonical finalization.
   std::optional<StaticGraphLaunchRef> gvOf[2], glSite, gcSite;
   for (const CanonicalStaticGraphLaunchView &sg : view.staticGraphLaunches()) {
-    llvm::StringRef name =
-        llvm::cast<GraphOp>(llvm::cantFail(view.resolve(sg.callee)).op)
-            .getSymName();
     auto launch = llvm::cast<GraphLaunchOp>(sg.op);
-    if (name == "gv")
+    if (launch.getMemoryResults().size() == 2)
       gvOf[llvm::cast<mlir::BlockArgument>(launch.getMemoryInputs()[0])
                .getArgNumber()] = sg.ref;
-    else if (name == "gl")
+    else if (launch.getValueResults().size() == 1)
       glSite = sg.ref;
-    else if (name == "gc")
+    else if (launch.getMemoryResults().size() == 1)
       gcSite = sg.ref;
   }
   require(test, gvOf[0] && gvOf[1] && glSite && gcSite,
@@ -854,6 +885,7 @@ void memoryViewExposureService() {
 
 int main() {
   canonicalInvariance();
+  artifactStoreRoundTrip();
   semanticDifferences();
   finalizeImportRejections();
   rootedLaunchTokenEdge();
