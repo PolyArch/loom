@@ -1,5 +1,6 @@
 // RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
-// RUN: FileCheck %s --check-prefix=STRUCTURED-LOWERED < %t.lowered.mlir
+// RUN: FileCheck %s --check-prefix=STRUCTURED-LOWERED \
+// RUN:   --implicit-check-not=llvm.getelementptr < %t.lowered.mlir
 
 // STRUCTURED-LOWERED-LABEL: dataflow.graph private @pointer_memcpy_structured_if
 // STRUCTURED-LOWERED-NOT: llvm.intr.memcpy
@@ -21,9 +22,13 @@ module {
       attributes {input_segments = array<i32: 4, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     scf.if %do_copy {
-      %src_at = llvm.getelementptr %src[%src_offset]
+      %src_outer = llvm.getelementptr %src[%src_offset]
           : (!llvm.ptr, i32) -> !llvm.ptr, i8
-      %dst_at = llvm.getelementptr %dst[%dst_offset]
+      %src_at = llvm.getelementptr %src_outer[%src_offset]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i8
+      %dst_outer = llvm.getelementptr %dst[%dst_offset]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i8
+      %dst_at = llvm.getelementptr %dst_outer[%dst_offset]
           : (!llvm.ptr, i32) -> !llvm.ptr, i8
       "llvm.intr.memcpy"(%dst_at, %src_at, %copy_bytes)
         <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],

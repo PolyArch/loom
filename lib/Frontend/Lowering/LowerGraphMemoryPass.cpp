@@ -149,7 +149,8 @@ struct DirectMemcpyPtrResolution {
 unsigned getElementByteWidth(::mlir::Type elemTy);
 
 std::optional<AddrResolution>
-resolveNestedMemcpyStaticPointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
+resolveNestedMemcpyStaticPointer(::mlir::Value ptr, ::dataflow::GraphOp graph,
+                                 unsigned indexBits) {
   if (isGraphPtrBlockArg(ptr, graph)) {
     AddrResolution resolution;
     resolution.ptr = ptr;
@@ -157,26 +158,19 @@ resolveNestedMemcpyStaticPointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
   }
 
   auto gep = ptr.getDefiningOp<::mlir::LLVM::GEPOp>();
-  if (!gep || !isGraphPtrBlockArg(gep.getBase(), graph))
+  if (!gep)
     return std::nullopt;
-  auto rawIndices = gep.getRawConstantIndices();
-  auto dynamicIndices = gep.getDynamicIndices();
-  if (rawIndices.size() != 1 || dynamicIndices.size() != 1 ||
-      rawIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex)
-    return std::nullopt;
-  ::mlir::Value dynamicIndex = dynamicIndices.front();
-  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
-          dynamicIndex.getType()))
-    return std::nullopt;
-  unsigned byteStride = getElementByteWidth(gep.getElemType());
-  if (byteStride == 0)
+  auto linear = ::loom::lowering::resolveLinearGepAddress(
+      gep, graph, ::mlir::IntegerType::get(graph.getContext(), 8), indexBits);
+  if (!linear)
     return std::nullopt;
 
   AddrResolution resolution;
-  resolution.ptr = gep.getBase();
-  resolution.linearByteTerms.push_back({dynamicIndex, byteStride});
-  resolution.linearIndexType = dynamicIndex.getType();
-  resolution.gepsToErase.push_back(gep.getOperation());
+  resolution.ptr = linear->root;
+  resolution.linearByteTerms = std::move(linear->terms);
+  resolution.linearIndexType = linear->indexType;
+  resolution.linearByteBias = linear->byteBias;
+  resolution.gepsToErase = std::move(linear->gepsLeafToRoot);
   return resolution;
 }
 
@@ -758,10 +752,10 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(memcpy);
 
-  std::optional<AddrResolution> src =
-      resolveNestedMemcpyStaticPointer(memcpy.getSrc(), ctx.graph);
-  std::optional<AddrResolution> dst =
-      resolveNestedMemcpyStaticPointer(memcpy.getDst(), ctx.graph);
+  std::optional<AddrResolution> src = resolveNestedMemcpyStaticPointer(
+      memcpy.getSrc(), ctx.graph, ctx.indexBits);
+  std::optional<AddrResolution> dst = resolveNestedMemcpyStaticPointer(
+      memcpy.getDst(), ctx.graph, ctx.indexBits);
   bool useStaticBindings =
       src && dst && !src->ordinalStream && !dst->ordinalStream;
 
