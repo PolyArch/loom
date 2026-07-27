@@ -164,6 +164,60 @@ private:
     return {bytes.begin(), bytes.end()};
   }
 
+  bool isTranspositionAutomorphism(std::uint32_t lhs,
+                                   std::uint32_t rhs) const {
+    if (intrinsics_[lhs] != intrinsics_[rhs])
+      return false;
+
+    llvm::SmallVector<std::uint32_t, 16> incident;
+    incident.append(outgoing_[lhs].begin(), outgoing_[lhs].end());
+    incident.append(incoming_[lhs].begin(), incoming_[lhs].end());
+    incident.append(outgoing_[rhs].begin(), outgoing_[rhs].end());
+    incident.append(incoming_[rhs].begin(), incoming_[rhs].end());
+    llvm::sort(incident);
+    incident.erase(std::unique(incident.begin(), incident.end()),
+                   incident.end());
+
+    struct Relation {
+      std::uint32_t source;
+      std::uint32_t target;
+      llvm::StringRef label;
+    };
+    auto less = [](const Relation &a, const Relation &b) {
+      if (a.source != b.source)
+        return a.source < b.source;
+      if (a.target != b.target)
+        return a.target < b.target;
+      return a.label.compare(b.label) < 0;
+    };
+    auto equal = [](const Relation &a, const Relation &b) {
+      return a.source == b.source && a.target == b.target &&
+             a.label == b.label;
+    };
+    auto transpose = [&](std::uint32_t vertex) {
+      if (vertex == lhs)
+        return rhs;
+      if (vertex == rhs)
+        return lhs;
+      return vertex;
+    };
+
+    llvm::SmallVector<Relation, 16> original;
+    llvm::SmallVector<Relation, 16> transposed;
+    original.reserve(incident.size());
+    transposed.reserve(incident.size());
+    for (std::uint32_t ordinal : incident) {
+      const CanonicalRelationEdge &edge = edges_[ordinal];
+      original.push_back({edge.source, edge.target, edge.label});
+      transposed.push_back(
+          {transpose(edge.source), transpose(edge.target), edge.label});
+    }
+    llvm::sort(original, less);
+    llvm::sort(transposed, less);
+    return std::equal(original.begin(), original.end(), transposed.begin(),
+                      equal);
+  }
+
   Leaf search(std::vector<std::uint64_t> colors,
               std::vector<std::uint32_t> &path) const {
     colors = refine(std::move(colors));
@@ -213,6 +267,18 @@ private:
           for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
             unite(vertex, permutation[vertex]);
         };
+    for (std::size_t lhs = 0; lhs < target->size(); ++lhs) {
+      const std::uint32_t representative = (*target)[lhs];
+      if (find(representative) != representative)
+        continue;
+      for (std::size_t rhs = lhs + 1; rhs < target->size(); ++rhs) {
+        const std::uint32_t candidate = (*target)[rhs];
+        if (find(candidate) == find(representative))
+          continue;
+        if (isTranspositionAutomorphism(representative, candidate))
+          unite(candidate, representative);
+      }
+    }
     for (const std::vector<std::uint32_t> &permutation : automorphisms_)
       applyAutomorphism(permutation);
 

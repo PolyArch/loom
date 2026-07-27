@@ -69,7 +69,7 @@ void semanticRelationChangeChangesCanonicalResult() {
 
 void symmetricGraphProducesACompletePermutation() {
   const char *test = __func__;
-  constexpr std::uint32_t leafCount = 10;
+  constexpr std::uint32_t leafCount = 128;
   std::vector<std::string> vertices(leafCount + 1, "leaf");
   vertices[0] = "root";
   std::vector<CanonicalRelationEdge> edges;
