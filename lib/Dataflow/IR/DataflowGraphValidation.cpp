@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
 
+#include <cstdint>
 #include <limits>
 #include <memory>
 
@@ -204,43 +205,75 @@ class CausalDependencyAnalysis {
 public:
   explicit CausalDependencyAnalysis(mlir::Value prerequisite)
       : prerequisite(prerequisite) {
-    constraintStates.push_back({0, {}, 0});
+    constraintStates.emplace_back();
+    constraintStatesByHash[hashConstraintState(constraintStates.front())]
+        .push_back(0);
   }
 
   bool dependsOn(mlir::Value event) { return dependsOn(event, 0); }
 
 private:
-  struct ConstraintState {
-    unsigned parent;
-    mlir::Value selector;
-    unsigned lane;
-  };
-
   enum class MemoState : uint8_t { Visiting, False, True };
 
   mlir::Value prerequisite;
-  llvm::SmallVector<ConstraintState, 8> constraintStates;
+  llvm::DenseMap<mlir::Value, unsigned> selectorIds;
+  llvm::SmallVector<llvm::SmallVector<std::uint64_t, 4>, 8> constraintStates;
+  llvm::DenseMap<std::uint64_t, llvm::SmallVector<unsigned, 1>>
+      constraintStatesByHash;
   llvm::DenseMap<CausalConstraintTransition, unsigned,
                  CausalConstraintTransitionInfo>
       constraintTransitions;
   llvm::DenseMap<CausalMemoKey, MemoState, CausalMemoKeyInfo> memo;
 
+  static std::uint64_t
+  hashConstraintState(llvm::ArrayRef<std::uint64_t> assignments) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (std::uint64_t assignment : assignments) {
+      hash ^= assignment;
+      hash *= 1099511628211ULL;
+    }
+    if (hash >= std::numeric_limits<std::uint64_t>::max() - 1)
+      hash -= 2;
+    return hash;
+  }
+
+  unsigned
+  internConstraintState(llvm::SmallVector<std::uint64_t, 4> assignments) {
+    std::uint64_t hash = hashConstraintState(assignments);
+    auto &bucket = constraintStatesByHash[hash];
+    for (unsigned candidate : bucket) {
+      if (constraintStates[candidate] == assignments)
+        return candidate;
+    }
+    unsigned next = constraintStates.size();
+    constraintStates.push_back(std::move(assignments));
+    bucket.push_back(next);
+    return next;
+  }
+
   std::optional<unsigned> constrain(unsigned state, mlir::Value selector,
                                     unsigned lane) {
-    for (unsigned cursor = state; cursor != 0;
-         cursor = constraintStates[cursor].parent) {
-      const ConstraintState &constraint = constraintStates[cursor];
-      if (constraint.selector == selector)
-        return constraint.lane == lane ? std::optional<unsigned>(state)
-                                       : std::nullopt;
+    auto selectorIt =
+        selectorIds.try_emplace(selector, selectorIds.size()).first;
+    unsigned selectorId = selectorIt->second;
+    std::uint64_t assignment =
+        (static_cast<std::uint64_t>(selectorId) << 32) | lane;
+    const auto &current = constraintStates[state];
+    unsigned position = 0;
+    while (position != current.size() && (current[position] >> 32) < selectorId)
+      ++position;
+    if (position != current.size() && (current[position] >> 32) == selectorId) {
+      return current[position] == assignment ? std::optional<unsigned>(state)
+                                             : std::nullopt;
     }
 
     CausalConstraintTransition transition{state, selector, lane};
     auto known = constraintTransitions.find(transition);
     if (known != constraintTransitions.end())
       return known->second;
-    unsigned next = constraintStates.size();
-    constraintStates.push_back({state, selector, lane});
+    llvm::SmallVector<std::uint64_t, 4> nextState(current);
+    nextState.insert(nextState.begin() + position, assignment);
+    unsigned next = internConstraintState(std::move(nextState));
     constraintTransitions.try_emplace(transition, next);
     return next;
   }
