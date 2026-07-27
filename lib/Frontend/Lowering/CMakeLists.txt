@@ -15,7 +15,13 @@ add_mlir_library(LoomFrontendLowering
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Lowering
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFrontendLowering PUBLIC
+  MLIRDataflow
+  MLIRLoom
+)
+mlir_target_link_libraries(LoomFrontendLowering PUBLIC
   MLIRArithDialect
   MLIRFuncDialect
   MLIRIR
@@ -26,9 +32,4 @@ add_mlir_library(LoomFrontendLowering
   MLIRSupport
   MLIRTransforms
   MLIRUBDialect
-)
-
-target_link_libraries(LoomFrontendLowering PUBLIC
-  MLIRDataflow
-  MLIRLoom
 )

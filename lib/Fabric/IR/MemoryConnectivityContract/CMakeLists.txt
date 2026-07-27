@@ -8,6 +8,6 @@ target_include_directories(LoomFabricMemoryConnectivityContract PUBLIC
 )
 
 target_link_libraries(LoomFabricMemoryConnectivityContract PUBLIC
+  LLVM
   LoomFabricMemoryOperationPort
-  LLVMSupport
 )

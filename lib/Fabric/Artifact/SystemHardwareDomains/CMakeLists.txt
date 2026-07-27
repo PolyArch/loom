@@ -7,8 +7,8 @@ target_include_directories(LoomFabricHardwareDomainContracts PUBLIC
 )
 
 target_link_libraries(LoomFabricHardwareDomainContracts PUBLIC
+  LLVM
   LoomFabricIdentity
   LoomFabricMemoryConsistencyContract
   LoomFabricSystemContracts
-  LLVMSupport
 )

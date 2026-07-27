@@ -8,12 +8,14 @@ target_include_directories(LoomFabricMemoryServiceContract PUBLIC
 )
 
 target_link_libraries(LoomFabricMemoryServiceContract PUBLIC
+  LLVM
   LoomFabricIdentity
   LoomFabricMemoryCapabilityDomains
   LoomFabricMemoryConsistencyContract
   LoomFabricResourceContract
   MLIRDataflow
+)
+mlir_target_link_libraries(LoomFabricMemoryServiceContract PUBLIC
   MLIRIR
   MLIRSupport
-  LLVMSupport
 )

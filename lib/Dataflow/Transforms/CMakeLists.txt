@@ -6,13 +6,14 @@ add_mlir_library(MLIRDataflowTransforms
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Dataflow
 
-  LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRPass
-  MLIRSideEffectInterfaces
-  MLIRSupport
 )
 
 target_link_libraries(MLIRDataflowTransforms PUBLIC
   MLIRDataflow
+)
+mlir_target_link_libraries(MLIRDataflowTransforms PUBLIC
+  MLIRIR
+  MLIRPass
+  MLIRSideEffectInterfaces
+  MLIRSupport
 )

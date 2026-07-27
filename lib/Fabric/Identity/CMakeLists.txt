@@ -8,9 +8,11 @@ add_mlir_library(LoomFabricIdentity
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Identity
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricIdentity PUBLIC
+  LLVM
   LoomCommon
   LoomFabricImplementationFamily
   LoomFabricResourceContract
-  LLVMSupport
 )

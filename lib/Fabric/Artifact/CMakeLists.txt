@@ -18,7 +18,10 @@ add_mlir_library(LoomFabricArtifact
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Artifact
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricArtifact PUBLIC
+  LLVM
   LoomCommon
   LoomFabricBoundaryTransfer
   LoomFabricFifoResourceContract
@@ -29,8 +32,9 @@ add_mlir_library(LoomFabricArtifact
   LoomFabricTemporalOperandBuffer
   LoomFabricTemporalSwitchResourceContract
   MLIRFabric
+)
+mlir_target_link_libraries(LoomFabricArtifact PUBLIC
   MLIRBytecodeReader
   MLIRBytecodeWriter
   MLIRIR
-  LLVMSupport
 )

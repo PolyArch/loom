@@ -6,10 +6,14 @@ add_mlir_library(LoomFabricVisualization
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Visualization
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricVisualization PUBLIC
+  LLVM
   LoomCommon
   LoomFabricArtifact
   MLIRFabric
+)
+mlir_target_link_libraries(LoomFabricVisualization PUBLIC
   MLIRIR
-  LLVMSupport
 )

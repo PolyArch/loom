@@ -4,9 +4,11 @@ add_mlir_library(LoomFabricSystemContracts
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Artifact
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricSystemContracts PUBLIC
+  LLVM
   LoomCommon
   LoomFabricIdentity
   LoomFabricResourceContract
-  LLVMSupport
 )

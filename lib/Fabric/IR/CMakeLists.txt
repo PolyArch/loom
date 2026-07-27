@@ -25,7 +25,9 @@ add_mlir_library(MLIRFabricEnums
   DEPENDS
   MLIRFabricEnumsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+mlir_target_link_libraries(MLIRFabricEnums PUBLIC
   MLIRIR
   MLIRSupport
 )
@@ -48,12 +50,16 @@ add_mlir_library(LoomFabricImplementationFamily
   MLIRDataflowEnumsIncGen
   MLIRFabricEnumsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricImplementationFamily PUBLIC
   LoomCommon
-  MLIRArithDialect
   MLIRDataflow
   MLIRDataflowEnums
   MLIRFabricEnums
+)
+mlir_target_link_libraries(LoomFabricImplementationFamily PUBLIC
+  MLIRArithDialect
   MLIRIR
   MLIRLLVMDialect
   MLIRSupport
@@ -86,7 +92,9 @@ add_mlir_dialect_library(MLIRFabric
   MLIRFabricTypesIncGen
   MLIRFabricOpsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(MLIRFabric PUBLIC
   LoomCommon
   LoomFabricBoundaryDataPath
   LoomFabricFuCapabilityDomain
@@ -99,9 +107,11 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricSystemContracts
   LoomFabricSystemServiceContract
   LoomFabricTemporalSwitchResourceContract
-  MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums
+)
+mlir_target_link_libraries(MLIRFabric PUBLIC
+  MLIRArithDialect
   MLIRIR
   MLIRLLVMDialect
   MLIRPass

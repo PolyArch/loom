@@ -10,6 +10,6 @@ target_include_directories(LoomFabricMemoryCapabilityDomains PUBLIC
 )
 
 target_link_libraries(LoomFabricMemoryCapabilityDomains PUBLIC
+  LLVM
   MLIRDataflow
-  LLVMSupport
 )

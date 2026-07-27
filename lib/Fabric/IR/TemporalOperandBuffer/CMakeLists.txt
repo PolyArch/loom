@@ -11,7 +11,7 @@ add_dependencies(LoomFabricTemporalOperandBuffer
 )
 
 target_link_libraries(LoomFabricTemporalOperandBuffer PUBLIC
+  LLVM
   LoomFabricIdentity
   LoomFabricResourceContract
-  LLVMSupport
 )

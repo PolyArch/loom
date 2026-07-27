@@ -4,8 +4,10 @@ add_mlir_library(LoomFabricMemoryRoleBindings
   DEPENDS
   MLIRFabricEnumsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricMemoryRoleBindings PUBLIC
+  LLVM
   LoomFabricIdentity
   MLIRDataflow
-  LLVMSupport
 )

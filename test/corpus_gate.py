@@ -11,6 +11,13 @@ artifacts:
 - stage ``s0``: additionally loom-raise produces the initial Structured
   Program candidate and loom-raise-opt parses and verifies it; the S0 module
   must carry the exact target triple attribute.
+- stage ``d0``: additionally loom-pre-mapping runs the production
+  pre-Mapping compilation library (Structured and Canonical Dataflow
+  finalizers included) against the exact builtin Fabric target resolved
+  through a per-case ArtifactStore; the finalized Canonical Dataflow module
+  must carry the exact target triple attribute and its structured
+  graph/actor counts must parse, so a graph-free whole-program result is
+  distinguishable from a nonempty Spatial graph.
 
 A source whose feature-guarded body is empty under the exact target still
 produces a valid module: a case passes on real compiler exit status,
@@ -53,8 +60,9 @@ import corpus_inventory  # noqa: E402
 # The exact builtin Fabric InstructionCore target profile. Every corpus
 # source is compiled with exactly these flags and every emitted module is
 # checked for exactly these target facts. The .ll triple and DataLayout are
-# the pinned LLVM forms produced by clang for this target; the S0 attribute
-# is the triple carried through the LLVMIR import.
+# the pinned LLVM forms produced by clang for this target; the MLIR attribute
+# is the triple carried through the LLVMIR import into the Structured and
+# Canonical Dataflow modules.
 TARGET_TRIPLE = "riscv64-unknown-elf"
 TARGET_MARCH = "rv64im"
 TARGET_MABI = "lp64"
@@ -62,21 +70,28 @@ LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
 LLVM_DATALAYOUT_LINE = (
     'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
 )
-S0_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
+MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
 
-STAGES = ("llvm", "s0")
+# The one exact builtin Fabric target preset resolved by the d0 stage through
+# loom-pre-mapping.
+BUILTIN_TARGET_PRESET = "small"
 
-# Honest failure categories. "compile"/"raise"/"verify" are nonzero exits
-# from the production tools; "*-artifact" categories mean the tool exited
-# zero but the emitted module is missing, empty, or does not carry the exact
-# target facts (a fabricated or truncated artifact); "timeout" means the
-# per-case deadline killed the process group; "internal" means the gate
-# itself hit an unexpected error and never counts as a case pass.
+STAGES = ("llvm", "s0", "d0")
+
+# Honest failure categories. "compile"/"raise"/"verify"/"pre-mapping" are
+# nonzero exits from the production tools; "*-artifact" categories mean the
+# tool exited zero but the emitted module is missing, empty, or does not
+# carry the exact target facts (a fabricated or truncated artifact), or its
+# structured counts are missing or malformed; "timeout" means the per-case
+# deadline killed the process group; "internal" means the gate itself hit an
+# unexpected error and never counts as a case pass.
 CATEGORY_COMPILE = "compile"
 CATEGORY_LLVM_ARTIFACT = "llvm-artifact"
 CATEGORY_RAISE = "raise"
 CATEGORY_S0_ARTIFACT = "s0-artifact"
 CATEGORY_VERIFY = "verify"
+CATEGORY_PRE_MAPPING = "pre-mapping"
+CATEGORY_D0_ARTIFACT = "d0-artifact"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
 
@@ -90,12 +105,14 @@ ENV_TOOL_NAMES = {
     "cxx": "LOOM_CXX",
     "raise": "LOOM_RAISE",
     "raise_opt": "LOOM_RAISE_OPT",
+    "pre_mapping": "LOOM_PRE_MAPPING",
 }
 TOOL_FILE_NAMES = {
     "cc": "loom-cc",
     "cxx": "loom-c++",
     "raise": "loom-raise",
     "raise_opt": "loom-raise-opt",
+    "pre_mapping": "loom-pre-mapping",
 }
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
@@ -111,6 +128,7 @@ class Toolchain:
     cxx: str
     raise_tool: str
     raise_opt: str
+    pre_mapping: str
     sysroot: Path
     gcc_toolchain: Path
 
@@ -128,9 +146,11 @@ class CaseResult:
     category: str | None
     detail: str | None
     duration_seconds: float
+    graphs: int | None = None
+    actors: int | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "case": self.case.case,
             "category": self.category,
             "detail": self.detail,
@@ -140,6 +160,14 @@ class CaseResult:
             "status": "pass" if self.passed else "fail",
             "suite": self.case.suite,
         }
+        # Present only for a passed d0 case: the structured counts that
+        # distinguish a graph-free whole-program result from a nonempty
+        # Spatial graph.
+        if self.graphs is not None:
+            payload["graphs"] = self.graphs
+        if self.actors is not None:
+            payload["actors"] = self.actors
+        return payload
 
 
 def run_quiet(command: Sequence[str]) -> str:
@@ -251,6 +279,7 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
         cxx=tools["cxx"],
         raise_tool=tools["raise"],
         raise_opt=tools["raise_opt"],
+        pre_mapping=tools["pre_mapping"],
         sysroot=sysroot,
         gcc_toolchain=gcc_toolchain,
     )
@@ -328,6 +357,24 @@ def verify_command(toolchain: Toolchain, s0_module: Path) -> list[str]:
     return [toolchain.raise_opt, str(s0_module), "-o", os.devnull]
 
 
+def pre_mapping_command(
+    toolchain: Toolchain,
+    llvm_ir: Path,
+    store_dir: Path,
+    d0_module: Path,
+    counts: Path,
+) -> list[str]:
+    return [
+        toolchain.pre_mapping,
+        f"--builtin={BUILTIN_TARGET_PRESET}",
+        f"--artifact-store={store_dir}",
+        f"--counts={counts}",
+        str(llvm_ir),
+        "-o",
+        str(d0_module),
+    ]
+
+
 def llvm_ir_defect(path: Path) -> str | None:
     """Return why a .ll artifact is not a real exact-target module."""
     try:
@@ -352,9 +399,54 @@ def s0_module_defect(path: Path) -> str | None:
         return f"cannot read S0 module {path}: {exc}"
     if not text.strip():
         return f"empty S0 module: {path}"
-    if S0_TRIPLE_ATTRIBUTE not in text:
-        return f"S0 module lacks exact target triple {S0_TRIPLE_ATTRIBUTE!r}: {path}"
+    if MLIR_TRIPLE_ATTRIBUTE not in text:
+        return f"S0 module lacks exact target triple {MLIR_TRIPLE_ATTRIBUTE!r}: {path}"
     return None
+
+
+def d0_module_defect(path: Path) -> str | None:
+    """Return why a D0 artifact is not a real exact-target module."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"cannot read D0 module {path}: {exc}"
+    if not text.strip():
+        return f"empty D0 module: {path}"
+    if MLIR_TRIPLE_ATTRIBUTE not in text:
+        return f"D0 module lacks exact target triple {MLIR_TRIPLE_ATTRIBUTE!r}: {path}"
+    return None
+
+
+def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
+    """Parse the structured graph/actor counts emitted by loom-pre-mapping.
+
+    Returns (counts, None) for a well-formed object, or (None, defect) when
+    the file is missing, unreadable, or not exactly the structured counts
+    the production tool emits.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        return None, f"cannot read pre-Mapping counts {path}: {exc}"
+    except json.JSONDecodeError as exc:
+        return None, f"malformed pre-Mapping counts {path}: {exc}"
+    if not isinstance(payload, dict):
+        return None, f"pre-Mapping counts are not a JSON object: {path}"
+    expected_fields = {"graphs", "actors"}
+    if set(payload) != expected_fields:
+        return None, (
+            "pre-Mapping counts contain missing or unexpected fields "
+            f"(expected {sorted(expected_fields)}): {path}"
+        )
+    counts: dict[str, int] = {}
+    for key in ("graphs", "actors"):
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None, (
+                f"pre-Mapping counts lack a non-negative integer {key!r}: {path}"
+            )
+        counts[key] = value
+    return counts, None
 
 
 def run_step(
@@ -421,19 +513,27 @@ def run_case(
 ) -> CaseResult:
     started = time.monotonic()
     deadline = started + case_timeout
+    graphs = 0
+    actors = 0
 
     def finish(category: str | None, detail: str | None) -> CaseResult:
+        passed = category is None
         return CaseResult(
             case=case,
-            passed=category is None,
+            passed=passed,
             category=category,
             detail=detail,
             duration_seconds=time.monotonic() - started,
+            graphs=graphs if passed and stage == "d0" else None,
+            actors=actors if passed and stage == "d0" else None,
         )
 
     try:
         case_dir = case_out_dir(out_root, case)
         case_dir.mkdir(parents=True, exist_ok=True)
+        store_dir = case_dir / "artifact-store"
+        if stage == "d0":
+            store_dir.mkdir(parents=True, exist_ok=True)
         suite_flags = suite_compile_flags(case.suite, external_root)
         for repo_relative in case.sources:
             source = resolve_source(repo_relative, external_root)
@@ -451,6 +551,31 @@ def run_case(
             if defect is not None:
                 return finish(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
             if stage == "llvm":
+                continue
+            if stage == "d0":
+                d0_module = case_dir / f"{stem}.dfg.mlir"
+                counts_path = case_dir / f"{stem}.counts.json"
+                failure = run_step(
+                    pre_mapping_command(
+                        toolchain, llvm_ir, store_dir, d0_module, counts_path
+                    ),
+                    case_dir / f"{stem}.pre-mapping.log",
+                    deadline,
+                    CATEGORY_PRE_MAPPING,
+                )
+                if failure is not None:
+                    return finish(
+                        failure.category, f"{repo_relative}: {failure.detail}"
+                    )
+                defect = d0_module_defect(d0_module)
+                if defect is not None:
+                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
+                counts, defect = parse_d0_counts(counts_path)
+                if defect is not None:
+                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
+                assert counts is not None
+                graphs += counts["graphs"]
+                actors += counts["actors"]
                 continue
             s0_module = case_dir / f"{stem}.scf.mlir"
             failure = run_step(
@@ -529,8 +654,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--stage",
         choices=STAGES,
-        default="s0",
-        help="gate stage to check (default: s0)",
+        default="d0",
+        help="gate stage to check (default: d0)",
     )
     parser.add_argument(
         "--jobs",
@@ -585,6 +710,7 @@ def render_human(
     lines = [
         f"[corpus-gate] stage={stage} target={TARGET_TRIPLE} "
         f"march={TARGET_MARCH} mabi={TARGET_MABI} "
+        f"builtin={BUILTIN_TARGET_PRESET} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
     ]
     for result in results:
@@ -594,6 +720,8 @@ def render_human(
             f"{label}  {case.identity}  "
             f"({len(case.sources)} source(s), {result.duration_seconds:.2f}s)"
         )
+        if result.passed and result.graphs is not None:
+            line += f"  graphs={result.graphs} actors={result.actors}"
         if not result.passed:
             line += f"  [{result.category}] {result.detail}"
         lines.append(line)
@@ -644,6 +772,7 @@ def render_json(
         "stage": stage,
         "suite_counts": suite_counts,
         "target": {
+            "builtin_preset": BUILTIN_TARGET_PRESET,
             "datalayout": LLVM_DATALAYOUT_LINE,
             "gcc_toolchain": str(toolchain.gcc_toolchain),
             "mabi": TARGET_MABI,
@@ -654,6 +783,7 @@ def render_json(
         "tools": {
             "cc": toolchain.cc,
             "cxx": toolchain.cxx,
+            "pre_mapping": toolchain.pre_mapping,
             "raise": toolchain.raise_tool,
             "raise_opt": toolchain.raise_opt,
         },

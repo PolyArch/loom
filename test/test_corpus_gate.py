@@ -38,8 +38,10 @@ VALID_LL = (
     f"{corpus_gate.LLVM_TRIPLE_LINE}\n"
 )
 VALID_S0 = (
-    f"module attributes {{{corpus_gate.S0_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
+    f"module attributes {{{corpus_gate.MLIR_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
 )
+VALID_D0 = VALID_S0
+VALID_COUNTS = '{"actors": 0, "graphs": 0}\n'
 
 STUB = """#!/usr/bin/env python3
 import os
@@ -54,6 +56,10 @@ if log:
 
 args = sys.argv[1:]
 out = args[args.index("-o") + 1] if "-o" in args else None
+counts = next(
+    (arg.split("=", 1)[1] for arg in args if arg.startswith("--counts=")),
+    None,
+)
 
 fail_suffix = os.environ.get("STUB_FAIL_SUFFIX")
 if fail_suffix and out and out.endswith(fail_suffix):
@@ -73,22 +79,31 @@ if os.environ.get("STUB_BEHAVIOR") == "sleep":
     child.wait()
     sys.exit(0)
 
+corrupt = os.environ.get("STUB_CORRUPT_SUFFIX")
 if out and not out.endswith(os.devnull):
-    corrupt = os.environ.get("STUB_CORRUPT_SUFFIX")
     if corrupt and out.endswith(corrupt):
         content = "garbage\\n"
     elif out.endswith(".ll"):
         content = VALID_LL
     elif out.endswith(".mlir"):
-        content = VALID_S0
+        content = VALID_D0 if out.endswith(".dfg.mlir") else VALID_S0
     else:
         content = "garbage\\n"
     with open(out, "w") as handle:
         handle.write(content)
+if counts:
+    content = (
+        "garbage\\n"
+        if corrupt and counts.endswith(corrupt)
+        else VALID_COUNTS
+    )
+    with open(counts, "w") as handle:
+        handle.write(content)
 sys.exit(0)
 """
 
-TOOL_ENV = ("LOOM_CC", "LOOM_CXX", "LOOM_RAISE", "LOOM_RAISE_OPT")
+TOOL_ENV = ("LOOM_CC", "LOOM_CXX", "LOOM_RAISE", "LOOM_RAISE_OPT",
+            "LOOM_PRE_MAPPING")
 SYSROOT_ENV = (
     corpus_gate.ENV_SYSROOT,
     corpus_gate.ENV_GCC_TOOLCHAIN,
@@ -107,8 +122,11 @@ class CorpusGateTestBase(unittest.TestCase):
         self.work = Path(self.temp.name)
         self.tools = self.work / "tools"
         self.tools.mkdir()
-        stubbed = STUB.replace("VALID_LL", repr(VALID_LL)).replace(
-            "VALID_S0", repr(VALID_S0)
+        stubbed = (
+            STUB.replace("VALID_LL", repr(VALID_LL))
+            .replace("VALID_S0", repr(VALID_S0))
+            .replace("VALID_D0", repr(VALID_D0))
+            .replace("VALID_COUNTS", repr(VALID_COUNTS))
         )
         self.tool_paths: dict[str, str] = {}
         for key, name in (
@@ -116,6 +134,7 @@ class CorpusGateTestBase(unittest.TestCase):
             ("cxx", "stub-cxx"),
             ("raise", "stub-raise"),
             ("opt", "stub-opt"),
+            ("pre_mapping", "stub-pre-mapping"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -135,6 +154,7 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_CXX": self.tool_paths["cxx"],
             "LOOM_RAISE": self.tool_paths["raise"],
             "LOOM_RAISE_OPT": self.tool_paths["opt"],
+            "LOOM_PRE_MAPPING": self.tool_paths["pre_mapping"],
             "STUB_LOG": str(self.log),
         }
         for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
@@ -223,6 +243,36 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(exit_code, 2)
         self.assertIn("unknown case selector", stdout.getvalue())
 
+    def test_d0_stage_runs_pre_mapping_per_source(self) -> None:
+        exit_code, _, summary = self.run_gate(
+            "--case", "loombench:axpy", "--stage", "d0", "--jobs", "1"
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["case_count"], 1)
+        result = summary["cases"][0]
+        self.assertEqual(result["status"], "pass")
+        # The structured counts keep a graph-free whole-program result
+        # distinguishable from a nonempty Spatial graph.
+        self.assertEqual(result["graphs"], 0)
+        self.assertEqual(result["actors"], 0)
+
+        invocations = self.invocation_lines()
+        compiled = [line for line in invocations if "-emit-llvm" in line]
+        pre_mapped = [
+            line for line in invocations if "stub-pre-mapping " in line
+        ]
+        self.assertEqual(len(compiled), 2)
+        self.assertEqual(len(pre_mapped), 2)
+        for line in pre_mapped:
+            self.assertIn("--builtin=small", line)
+            self.assertIn("--artifact-store=", line)
+            self.assertIn("--counts=", line)
+            self.assertRegex(line, r"\S+\.ll ")
+        # The d0 stage replaces the raise/verify chain with the single
+        # production pre-Mapping path.
+        self.assertFalse(any("stub-raise " in line for line in invocations))
+        self.assertFalse(any("stub-opt " in line for line in invocations))
+
 
 class CommandConstructionTest(CorpusGateTestBase):
     def toolchain(self) -> corpus_gate.Toolchain:
@@ -231,6 +281,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             cxx=self.tool_paths["cxx"],
             raise_tool=self.tool_paths["raise"],
             raise_opt=self.tool_paths["opt"],
+            pre_mapping=self.tool_paths["pre_mapping"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -383,6 +434,27 @@ class DeterministicResultsTest(CorpusGateTestBase):
             ],
         )
 
+    def test_d0_repeated_runs_preserve_results_and_counts(self) -> None:
+        selection = ["--case", "loombench:axpy"]
+        runs: list[tuple[str, str, str, int, int]] = []
+        for jobs in ("1", "4", "1"):
+            exit_code, human, summary = self.run_gate(
+                *selection, "--stage", "d0", "--jobs", jobs
+            )
+            self.assertEqual(exit_code, 0)
+            case = summary["cases"][0]
+            runs.append(
+                (
+                    self.normalize_human(human),
+                    case["identity"],
+                    case["status"],
+                    case["graphs"],
+                    case["actors"],
+                )
+            )
+        self.assertEqual(runs[0], runs[1])
+        self.assertEqual(runs[1], runs[2])
+
 
 class TimeoutCleanupTest(CorpusGateTestBase):
     def test_deadline_kills_the_case_process_group(self) -> None:
@@ -471,6 +543,34 @@ class NoFailureAsPassTest(CorpusGateTestBase):
             "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "s0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "verify")
+
+    def test_pre_mapping_failure_fails_the_gate(self) -> None:
+        os.environ["STUB_FAIL_SUFFIX"] = ".dfg.mlir"
+        exit_code, _, summary = self.run_gate(
+            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+        )
+        self.assert_every_requested_case_fails(exit_code, summary, "pre-mapping")
+
+    def test_fabricated_d0_artifact_fails_the_gate(self) -> None:
+        os.environ["STUB_CORRUPT_SUFFIX"] = ".dfg.mlir"
+        exit_code, _, summary = self.run_gate(
+            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+        )
+        self.assert_every_requested_case_fails(exit_code, summary, "d0-artifact")
+
+    def test_malformed_d0_counts_fail_the_gate(self) -> None:
+        os.environ["STUB_CORRUPT_SUFFIX"] = ".counts.json"
+        exit_code, _, summary = self.run_gate(
+            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+        )
+        self.assert_every_requested_case_fails(exit_code, summary, "d0-artifact")
+
+    def test_d0_counts_reject_undeclared_fields(self) -> None:
+        counts = self.work / "counts.json"
+        counts.write_text('{"actors": 0, "graphs": 0, "other": 0}\n')
+        parsed, defect = corpus_gate.parse_d0_counts(counts)
+        self.assertIsNone(parsed)
+        self.assertIn("unexpected fields", defect)
 
 
 if __name__ == "__main__":

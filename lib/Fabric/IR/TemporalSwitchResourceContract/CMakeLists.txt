@@ -7,6 +7,6 @@ target_include_directories(LoomFabricTemporalSwitchResourceContract PUBLIC
 )
 
 target_link_libraries(LoomFabricTemporalSwitchResourceContract PUBLIC
+  LLVM
   LoomFabricResourceContract
-  LLVMSupport
 )

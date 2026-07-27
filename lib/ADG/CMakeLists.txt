@@ -13,13 +13,17 @@ add_mlir_library(LoomADGBuilder
   MLIRDataflowEnumsIncGen
   MLIRFabricEnumsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomADGBuilder PUBLIC
+  LLVM
   LoomCommon
   LoomFabricArtifact
   LoomFabricVisualization
   LoomFabricTemporalSwitchResourceContract
-  LLVMSupport
   MLIRFabricEnums
   MLIRFabric
+)
+mlir_target_link_libraries(LoomADGBuilder PUBLIC
   MLIRIR
 )

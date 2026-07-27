@@ -14,5 +14,5 @@ add_dependencies(LoomFabricBoundaryDataPath
 )
 
 target_link_libraries(LoomFabricBoundaryDataPath PUBLIC
-  LLVMSupport
+  LLVM
 )

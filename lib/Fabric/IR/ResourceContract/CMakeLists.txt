@@ -9,5 +9,5 @@ target_include_directories(LoomFabricResourceContract PUBLIC
 )
 
 target_link_libraries(LoomFabricResourceContract PUBLIC
-  LLVMSupport
+  LLVM
 )

@@ -7,5 +7,5 @@ target_include_directories(LoomFabricFuCapabilityDomain PUBLIC
 )
 
 target_link_libraries(LoomFabricFuCapabilityDomain PUBLIC
-  LLVMSupport
+  LLVM
 )

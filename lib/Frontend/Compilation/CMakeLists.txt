@@ -8,11 +8,13 @@ target_include_directories(LoomFrontendCompilation PUBLIC
 )
 
 target_link_libraries(LoomFrontendCompilation PUBLIC
+  LLVM
   LoomFabricIdentity
   LoomFrontendLowering
   LoomFrontendRaising
   MLIRDataflow
+)
+
+mlir_target_link_libraries(LoomFrontendCompilation PUBLIC
   MLIRIR
-  LLVMCore
-  LLVMSupport
 )

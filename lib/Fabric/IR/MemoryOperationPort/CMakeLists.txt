@@ -2,14 +2,18 @@ add_mlir_library(LoomFabricMemoryOperationPort
   MemoryOperationPort.cpp
   MemoryOperationPortCodec.cpp
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFabricMemoryOperationPort PUBLIC
+  LLVM
   LoomFabricIdentity
   LoomFabricMemoryCapabilityDomains
   LoomFabricMemoryPortTransaction
   LoomFabricResourceContract
   MLIRDataflow
   MLIRFabricEnums
+)
+mlir_target_link_libraries(LoomFabricMemoryOperationPort PUBLIC
   MLIRIR
   MLIRSupport
-  LLVMSupport
 )
