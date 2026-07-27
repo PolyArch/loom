@@ -6,8 +6,10 @@ add_executable(loom-structured-program-artifact-test
 
 target_link_libraries(loom-structured-program-artifact-test PRIVATE
   LoomCommon
+  LoomFrontendLowering
   MLIRLoom
   MLIRArithDialect
+  MLIRDataflow
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect

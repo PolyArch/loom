@@ -1,4 +1,5 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -164,6 +165,26 @@ module { func.func @entry(%arg0: i32) -> i32 { return %arg0 : i32 } }
           "strict import did not preserve canonical bytes");
 }
 
+void graphFreeInstructionCoreProgramPublishesDataflowArtifact() {
+  const char *test = __func__;
+  StructuredProgramCandidate structured = finalize(test, R"mlir(
+module {
+  func.func @main(%arg0: i32) -> i32 {
+    %value = arith.addi %arg0, %arg0 : i32
+    return %value : i32
+  }
+}
+)mlir");
+  auto dataflow = take(
+      test,
+      loom::lowering::lowerStructuredProgramToCanonicalDataflow(structured));
+  require(test, dataflow.module().lookupSymbol<mlir::func::FuncOp>("main"),
+          "graph-free Dataflow artifact lost the InstructionCore program");
+  auto view = take(test, dataflow.view());
+  require(test, view.graphs().empty(),
+          "a graph-free candidate unexpectedly acquired a SpatialCore graph");
+}
+
 } // namespace
 
 int main() {
@@ -171,6 +192,7 @@ int main() {
   semanticOperationChangesIdentity();
   referencesAreParentAndKindChecked();
   importedCandidateReencodesExactly();
+  graphFreeInstructionCoreProgramPublishesDataflowArtifact();
   llvm::outs() << "structured program artifact anchors passed\n";
   return EXIT_SUCCESS;
 }
