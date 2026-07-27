@@ -9,7 +9,9 @@ add_mlir_library(MLIRDataflowEnums
   DEPENDS
   MLIRDataflowEnumsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+mlir_target_link_libraries(MLIRDataflowEnums PUBLIC
   MLIRIR
   MLIRSupport
 )
@@ -48,13 +50,17 @@ add_mlir_dialect_library(MLIRDataflow
   MLIRDataflowOpsIncGen
   LoomOperationSchemasIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(MLIRDataflow PUBLIC
   LoomCommon
+  MLIRDataflowEnums
+)
+mlir_target_link_libraries(MLIRDataflow PUBLIC
   MLIRRegisterAllDialects
   MLIRCallInterfaces
   MLIRArithDialect
   MLIRControlFlowInterfaces
-  MLIRDataflowEnums
   MLIRFunctionInterfaces
   MLIRIR
   MLIRLLVMDialect

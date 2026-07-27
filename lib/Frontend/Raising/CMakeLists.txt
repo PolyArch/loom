@@ -12,9 +12,11 @@ add_mlir_library(LoomFrontendRaising
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Raising
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomFrontendRaising PUBLIC MLIRLoom)
+mlir_target_link_libraries(LoomFrontendRaising PUBLIC
   MLIRArithDialect
-  MLIRLoom
   MLIRControlFlowDialect
   MLIRControlFlowToSCF
   MLIRFuncDialect

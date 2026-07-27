@@ -16,10 +16,12 @@ add_mlir_library(LoomCommon
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Common
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(LoomCommon PUBLIC Threads::Threads)
+mlir_target_link_libraries(LoomCommon PUBLIC
   LLVMSupport
   MLIRDataLayoutInterfaces
   MLIRIR
   MLIRSupport
-  Threads::Threads
 )

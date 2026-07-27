@@ -1,0 +1,3 @@
+# RUN: %loom-raise %S/Inputs/constant-expression-gep.ll -o %t.mlir
+# RUN: %loom-raise-opt %t.mlir -o /dev/null
+

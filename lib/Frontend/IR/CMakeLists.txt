@@ -10,9 +10,13 @@ add_mlir_dialect_library(MLIRLoom
   MLIRLoomDialectIncGen
   MLIRLoomOpsIncGen
 
-  LINK_LIBS PUBLIC
+)
+
+target_link_libraries(MLIRLoom PUBLIC
   LoomCommon
   MLIRDataflow
+)
+mlir_target_link_libraries(MLIRLoom PUBLIC
   MLIRBytecodeReader
   MLIRBytecodeWriter
   MLIRParser

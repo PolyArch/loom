@@ -18,8 +18,8 @@ llvm_update_compile_flags(loom-raise)
 set_target_properties(loom-raise PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-target_link_libraries(loom-raise PRIVATE
-  LoomFrontendRaising
+target_link_libraries(loom-raise PRIVATE LoomFrontendRaising)
+mlir_target_link_libraries(loom-raise PRIVATE
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRControlFlowToSCF

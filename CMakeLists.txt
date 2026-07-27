@@ -24,6 +24,14 @@ find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
+# The pinned provider exports monolithic MLIR and LLVM targets alongside its
+# component archives. Select one form consistently so local dialect libraries
+# cannot pull static definitions into tools that also load the same dylibs.
+if(TARGET MLIR AND TARGET LLVM)
+  set(MLIR_LINK_MLIR_DYLIB ON)
+  set(LLVM_LINK_LLVM_DYLIB ON)
+endif()
+
 find_package(Clang REQUIRED CONFIG)
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
