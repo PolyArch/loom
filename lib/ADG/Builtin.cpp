@@ -238,9 +238,9 @@ fullConnectivity(std::size_t inputCount, std::size_t outputCount) {
   return std::vector<std::vector<std::uint32_t>>(outputCount, sources);
 }
 
-llvm::Expected<FinalizedFabricDesign>
-buildSpatialCore(const loom::ArtifactStore &store,
-                 const BuiltinTargetDescriptor &descriptor) {
+llvm::Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSpatialCoreImpl(DesignBuilder &design,
+                             const BuiltinTargetDescriptor &descriptor) {
   const BuiltinTargetScale &scale = descriptor.scale;
   auto tagBits = PortType::bits(scale.temporalResidentContexts);
   if (!tagBits)
@@ -253,7 +253,6 @@ buildSpatialCore(const loom::ArtifactStore &store,
     return tagged128.takeError();
 
   std::vector<PortType> modulePorts(scale.gatewayCount, *bits128);
-  DesignBuilder design(store);
   auto spatial = design.createSpatialCore(
       (descriptor.name + "-spatial-core").str(), modulePorts, modulePorts);
   if (!spatial)
@@ -575,16 +574,14 @@ buildSpatialCore(const loom::ArtifactStore &store,
   if (spatialCursor != spatialRoutes->size() ||
       temporalCursor != temporalRoutes->size())
     return invalid("builtin switch output partition is incomplete");
-  if (llvm::Error error = spatial->close(moduleOutputs))
-    return std::move(error);
-  return std::move(design).finalize();
+  return BuiltinSpatialCoreExpansion{std::move(*spatial),
+                                     std::move(moduleOutputs)};
 }
 
-llvm::Expected<FinalizedFabricDesign>
-buildSystem(const loom::ArtifactStore &store,
-            const BuiltinTargetDescriptor &descriptor,
-            const loom::fabric::FinalizedFabricRoot &module) {
-  DesignBuilder design(store);
+llvm::Expected<SystemBuilder>
+expandBuiltinSystemImpl(DesignBuilder &design,
+                        const BuiltinTargetDescriptor &descriptor,
+                        const loom::fabric::FinalizedFabricRoot &module) {
   auto system = design.createSystem((descriptor.name + "-system").str());
   if (!system)
     return system.takeError();
@@ -692,9 +689,7 @@ buildSystem(const loom::ArtifactStore &store,
   clockMembers.push_back(memoryEndpoint->domainMember());
   if (llvm::Error error = clock->close(clockMembers, *clockContract))
     return std::move(error);
-  if (llvm::Error error = system->close())
-    return std::move(error);
-  return std::move(design).finalize();
+  return std::move(*system);
 }
 
 } // namespace
@@ -721,17 +716,43 @@ parseBuiltinTargetPreset(llvm::StringRef spelling) {
   return invalid("unknown builtin target preset '" + spelling + "'");
 }
 
+llvm::Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
+  return expandBuiltinSpatialCoreImpl(design,
+                                      getBuiltinTargetDescriptor(preset));
+}
+
+llvm::Expected<SystemBuilder>
+expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
+                    const loom::fabric::FinalizedFabricRoot &spatialCore) {
+  return expandBuiltinSystemImpl(design, getBuiltinTargetDescriptor(preset),
+                                 spatialCore);
+}
+
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset) {
-  const BuiltinTargetDescriptor &descriptor =
-      getBuiltinTargetDescriptor(preset);
-  auto modules = buildSpatialCore(store, descriptor);
+  DesignBuilder moduleDesign(store);
+  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, preset);
+  if (!moduleExpansion)
+    return moduleExpansion.takeError();
+  if (llvm::Error error =
+          moduleExpansion->spatialCore.close(moduleExpansion->outputs))
+    return std::move(error);
+  auto modules = std::move(moduleDesign).finalize();
   if (!modules)
     return modules.takeError();
   if (modules->roots().size() != 1)
     return invalid("builtin expansion did not finalize one SpatialCore");
-  return buildSystem(store, descriptor, modules->roots().front());
+
+  DesignBuilder systemDesign(store);
+  auto system =
+      expandBuiltinSystem(systemDesign, preset, modules->roots().front());
+  if (!system)
+    return system.takeError();
+  if (llvm::Error error = system->close())
+    return std::move(error);
+  return std::move(systemDesign).finalize();
 }
 
 } // namespace loom::adg

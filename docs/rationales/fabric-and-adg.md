@@ -39,6 +39,12 @@ InstructionCore, clocks, resets, and semantic capabilities must be
 deterministic so the same public API can reproduce and teach the exact
 hardware.
 
+Builtin extension is split at the same publication boundary as custom
+hardware. An open SpatialCore recipe is extended and finalized first; only its
+durably published Module can then be imported by an open System recipe. A
+monolithic mutable target object would either hide this exact dependency or
+become a second hardware model beside Fabric.
+
 A temporal switch projects one resource pattern per physical traversal, not
 one pattern per configured broadcast subset. The latter is an exponential
 restatement of the route table. Patterns from one ingress share one requester,

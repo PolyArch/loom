@@ -955,6 +955,47 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
   }
+
+  const auto preset = loom::adg::BuiltinTargetPreset::Small;
+  auto canonical = take(test, loom::adg::buildBuiltinTarget(store, preset));
+
+  DesignBuilder moduleDesign(store);
+  auto moduleExpansion =
+      take(test, loom::adg::expandBuiltinSpatialCore(moduleDesign, preset));
+  if (llvm::Error error =
+          moduleExpansion.spatialCore.close(moduleExpansion.outputs))
+    fail(test, llvm::toString(std::move(error)));
+  auto modules = take(test, std::move(moduleDesign).finalize());
+  require(test, modules.roots().size() == 1,
+          "public builtin expansion did not publish one SpatialCore");
+
+  DesignBuilder systemDesign(store);
+  auto system = take(test, loom::adg::expandBuiltinSystem(
+                               systemDesign, preset, modules.roots().front()));
+  if (llvm::Error error = system.close())
+    fail(test, llvm::toString(std::move(error)));
+  auto direct = take(test, std::move(systemDesign).finalize());
+  require(test,
+          direct.roots().size() == 1 && canonical.roots().size() == 1 &&
+              direct.roots().front().reference() ==
+                  canonical.roots().front().reference(),
+          "public builtin expansion changed the canonical preset identity");
+
+  DesignBuilder customModuleDesign(store);
+  auto customExpansion = take(
+      test, loom::adg::expandBuiltinSpatialCore(customModuleDesign, preset));
+  std::vector<SpatialValue> customOutputs = customExpansion.outputs;
+  customOutputs.front() =
+      take(test, customExpansion.spatialCore.addFifo(
+                     customOutputs.front(),
+                     FifoSpec{take(test, PortType::bits(128)), 3, false}));
+  if (llvm::Error error = customExpansion.spatialCore.close(customOutputs))
+    fail(test, llvm::toString(std::move(error)));
+  auto customModules = take(test, std::move(customModuleDesign).finalize());
+  require(test,
+          customModules.roots().front().reference() !=
+              modules.roots().front().reference(),
+          "typed builtin extension did not change the custom Fabric identity");
 }
 
 void publicFuLibraryBuildsTypedGraphs() {

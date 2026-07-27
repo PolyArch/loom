@@ -315,9 +315,22 @@ getBuiltinTargetDescriptor(BuiltinTargetPreset)
   -> const BuiltinTargetDescriptor &
 parseBuiltinTargetPreset(StringRef)
   -> Expected<BuiltinTargetPreset>
+expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetPreset)
+  -> Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSystem(DesignBuilder, BuiltinTargetPreset, FinalizedFabricRoot)
+  -> Expected<SystemBuilder>
 buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset)
   -> Expected<FinalizedFabricDesign>
 ```
+
+The two expansion calls are the extensible authoring boundary. SpatialCore
+expansion returns its open typed root and default result sequence. The caller
+may add ordinary resources and close it with that or a replacement result
+sequence. After that Module is independently finalized and published, System
+expansion imports its exact root reference, completes the builtin hardware
+domain, and returns an open `SystemBuilder`. Callers may add further typed
+resources and hardware domains before closing it. Neither expansion creates a
+second recipe schema or bypasses Fabric verification.
 
 `buildBuiltinTarget` returns one finalized System root. Its exact SpatialCore
 Module is an independently published direct dependency in the supplied Common
