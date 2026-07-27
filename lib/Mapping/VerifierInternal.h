@@ -42,6 +42,10 @@ llvm::Error mappingError(MappingErrorCode code, const llvm::Twine &message);
 llvm::Error addEntity(EntityKinds &entities, std::uint64_t id, EntityKind kind);
 llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
                              EntityKind expected);
+bool physicalPortAdmitsSemanticPort(const PortDescriptor &semantic,
+                                    const PortDescriptor &physical);
+bool physicalPortsMayConnect(const PortDescriptor &source,
+                             const PortDescriptor &destination);
 struct ValidatedComputeBoundaryPort {
   PortDirection direction;
   std::uint32_t fuPort;

@@ -65,7 +65,8 @@ bool validPortCorrespondence(const std::vector<PortDescriptor> &actorPorts,
        ++softwarePort) {
     const std::uint32_t physicalPort = selected[softwarePort];
     if (physicalPort >= physicalPorts.size() || taken[physicalPort] ||
-        actorPorts[softwarePort] != physicalPorts[physicalPort])
+        !physicalPortAdmitsSemanticPort(actorPorts[softwarePort],
+                                        physicalPorts[physicalPort]))
       return false;
     taken[physicalPort] = true;
   }
@@ -221,7 +222,8 @@ llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
     if (actorPort->key.direction != fuPort->direction)
       return mappingError(MappingErrorCode::InvalidPortConnection,
                           "boundary correspondence reverses port direction");
-    if (*actorPort->descriptor != *fuPort->descriptor)
+    if (!physicalPortAdmitsSemanticPort(*actorPort->descriptor,
+                                        *fuPort->descriptor))
       return mappingError(
           MappingErrorCode::CapabilityTemplateMismatch,
           "software boundary type does not match the Fabric FU port");

@@ -3,6 +3,34 @@
 namespace loom::mapping::test {
 namespace {
 
+void setComputePortWidths(TestCase &testCase, std::uint32_t softwareWidth,
+                          std::uint32_t physicalWidth) {
+  for (GraphDescriptor &graph : testCase.dataflow.graphs) {
+    for (PortDescriptor &port : graph.inputPorts)
+      port.payloadWidthBits = softwareWidth;
+    for (PortDescriptor &port : graph.outputPorts)
+      port.payloadWidthBits = softwareWidth;
+  }
+  for (ActorDescriptor &actor : testCase.dataflow.actors) {
+    for (PortDescriptor &port : actor.inputPorts)
+      port.payloadWidthBits = softwareWidth;
+    for (PortDescriptor &port : actor.outputPorts)
+      port.payloadWidthBits = softwareWidth;
+  }
+  for (FuDescriptor &fu : testCase.fabric.functionalUnits) {
+    for (PortDescriptor &port : fu.inputPorts)
+      port.payloadWidthBits = physicalWidth;
+    for (PortDescriptor &port : fu.outputPorts)
+      port.payloadWidthBits = physicalWidth;
+  }
+  for (FabricOpDescriptor &operation : testCase.fabric.operations) {
+    for (PortDescriptor &port : operation.inputPorts)
+      port.payloadWidthBits = physicalWidth;
+    for (PortDescriptor &port : operation.outputPorts)
+      port.payloadWidthBits = physicalWidth;
+  }
+}
+
 void acceptsExactCapabilityTemplateReference() {
   TestCase testCase = makeValidCase();
   const ComputeRealizationDraft &realization =
@@ -50,6 +78,19 @@ void rejectsIncompleteOrNonInjectivePortMap() {
   }
 }
 
+void acceptsWiderPhysicalComputePorts() {
+  TestCase testCase = makeValidCase();
+  setComputePortWidths(testCase, 32, 64);
+  validateCase(__func__, testCase);
+}
+
+void rejectsUndersizedPhysicalComputePorts() {
+  TestCase testCase = makeValidCase();
+  setComputePortWidths(testCase, 32, 16);
+  expectMapError(__func__, testCase,
+                 MappingErrorCode::CapabilityTemplateMismatch);
+}
+
 } // namespace
 
 void runCapabilityTemplateTests() {
@@ -57,6 +98,8 @@ void runCapabilityTemplateTests() {
   rejectsInvalidCapabilityTemplateReference();
   rejectsInactiveOperationNode();
   rejectsIncompleteOrNonInjectivePortMap();
+  acceptsWiderPhysicalComputePorts();
+  rejectsUndersizedPhysicalComputePorts();
 }
 
 } // namespace loom::mapping::test

@@ -414,6 +414,32 @@ void acceptsExternalAndInternalMemoryAnchor() {
       fail(__func__, "internal memory anchor lost its realization");
   }
 }
+void acceptsWiderPhysicalMemoryOperationPorts() {
+  TestCase testCase = makeMemoryAnchorCase();
+  for (MemoryImplementationDescriptor &implementation :
+       testCase.fabric.memoryImplementations) {
+    for (MemoryImplementationBoundaryPortDescriptor &port :
+         implementation.boundaryPorts) {
+      if (port.port.payloadWidthBits != 0)
+        port.port.payloadWidthBits = 32;
+    }
+  }
+  for (MemoryOperationPortTemplateDescriptor &operation :
+       testCase.fabric.memoryOperationPortTemplates) {
+    for (MemoryOperationPortDescriptor &port : operation.ports) {
+      if (port.port.payloadWidthBits != 0)
+        port.port.payloadWidthBits = 32;
+    }
+  }
+  validateCase(__func__, testCase);
+}
+void acceptsPhysicalMemoryPortWidthNormalization() {
+  TestCase testCase = makeMemoryAnchorCase();
+  for (MemoryImplementationDescriptor &implementation :
+       testCase.fabric.memoryImplementations)
+    implementation.boundaryPorts.front().port.payloadWidthBits = 32;
+  validateCase(__func__, testCase);
+}
 void rejectsInexactMemoryInternalGraph() {
   {
     TestCase testCase = makeMemoryAnchorCase();
@@ -953,6 +979,8 @@ void runMemoryMappingTests() {
   preflightsMemoryProjectionCapacity();
   rejectsInconsistentFrozenMemoryService();
   acceptsExternalAndInternalMemoryAnchor();
+  acceptsWiderPhysicalMemoryOperationPorts();
+  acceptsPhysicalMemoryPortWidthNormalization();
   rejectsInexactMemoryInternalGraph();
   rejectsForeignMemoryInternalEdgeReference();
   rejectsNoncanonicalMemoryInternalEdgeReference();

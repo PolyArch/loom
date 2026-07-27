@@ -43,6 +43,23 @@ llvm::Error loom::mapping::detail::requireLocalKind(const EntityKinds &entities,
                         "semantic view contains an invalid local reference");
   return llvm::Error::success();
 }
+bool loom::mapping::detail::physicalPortAdmitsSemanticPort(
+    const PortDescriptor &semantic, const PortDescriptor &physical) {
+  return semantic.kind == physical.kind && semantic.type == physical.type &&
+         semantic.role == physical.role &&
+         semantic.payloadWidthBits <= physical.payloadWidthBits &&
+         semantic.tagWidthBits <= physical.tagWidthBits;
+}
+bool loom::mapping::detail::physicalPortsMayConnect(
+    const PortDescriptor &source, const PortDescriptor &destination) {
+  if (source.kind != destination.kind || source.type != destination.type ||
+      source.role != destination.role)
+    return false;
+  if (source.kind == PortKind::Memory)
+    return source.payloadWidthBits == destination.payloadWidthBits &&
+           source.tagWidthBits == destination.tagWidthBits;
+  return (source.tagWidthBits == 0) == (destination.tagWidthBits == 0);
+}
 namespace {
 const std::set<MemoryAccessPortRole> &
 requiredMemoryAccessRoles(MemoryOperationKind operation) {
@@ -495,7 +512,8 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
         connection.sink, connection.implementation, index);
     if (!sink)
       return sink.takeError();
-    if (!source->source || sink->source || *source->port != *sink->port ||
+    if (!source->source || sink->source ||
+        !physicalPortsMayConnect(*source->port, *sink->port) ||
         source->maxFanout == 0 || (source->key.boundary && sink->key.boundary))
       return mappingError(
           MappingErrorCode::InvalidPortConnection,
@@ -856,7 +874,9 @@ llvm::Error validateMemoryRealization(
                                       : (*actor)->outputPorts;
       if (hardware == hardwarePorts.end() ||
           hardware->second.second->direction != entry.first.first ||
-          hardware->second.second->port != softwarePorts[entry.first.second])
+          !physicalPortAdmitsSemanticPort(
+              softwarePorts[entry.first.second],
+              hardware->second.second->port))
         return mappingError(MappingErrorCode::MemoryOperationMismatch,
                             "memory operation signature does not match actor");
       actorInternalEndpoints.emplace(
@@ -934,7 +954,8 @@ llvm::Error validateMemoryRealization(
     if (graphPort->graph != realization.graph ||
         implementationPort->implementation->id != implementation.id ||
         graphPort->key.direction != implementationPort->descriptor->direction ||
-        *graphPort->descriptor != implementationPort->descriptor->port ||
+        !physicalPortAdmitsSemanticPort(
+            *graphPort->descriptor, implementationPort->descriptor->port) ||
         !graphInternalEndpoints.emplace(graphPort->key, endpoint).second ||
         !mappedImplementationBoundaries.insert(endpoint).second)
       return mappingError(
@@ -995,8 +1016,10 @@ llvm::Error validateMemoryRealization(
     if (sourceExpected == sourceEnd || sinkExpected == sinkEnd ||
         sourceExpected->second != sourcePort->key ||
         sinkExpected->second != sinkPort->key ||
-        *(*edge)->source.descriptor != *sourcePort->port ||
-        *(*edge)->target.descriptor != *sinkPort->port)
+        !physicalPortAdmitsSemanticPort(*(*edge)->source.descriptor,
+                                        *sourcePort->port) ||
+        !physicalPortAdmitsSemanticPort(*(*edge)->target.descriptor,
+                                        *sinkPort->port))
       return mappingError(MappingErrorCode::InvalidInternalEdgeWitness,
                           "memory internal edge does not match capability");
     if (!(*edge)->source.key.actor)
@@ -1057,7 +1080,8 @@ llvm::Error validateMemoryRealization(
       return mappingError(
           MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
           "memory boundary correspondence uses the wrong role");
-    if (*actorPort->descriptor != operationPort->descriptor->port)
+    if (!physicalPortAdmitsSemanticPort(*actorPort->descriptor,
+                                        operationPort->descriptor->port))
       return mappingError(MappingErrorCode::PortSignatureMismatch,
                           "memory boundary port type does not match");
   }
