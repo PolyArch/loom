@@ -92,6 +92,32 @@ module attributes {
 
 // -----
 
+// A byte-addressed access may prove its element alignment through an exact
+// integer factor. The source offset is always divisible by four because 12
+// carries that complete low-bit fact.
+
+// CHECK-LABEL: dataflow.graph private @factored_byte_alignment
+// CHECK: dataflow.load
+// CHECK-NOT: llvm.getelementptr
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
+  dataflow.graph private @factored_byte_alignment(
+      %ctrl: none, %ordinal: i64, %base: !llvm.ptr) -> f32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %c12 = arith.constant 12 : i64
+    %byte_offset = arith.muli %ordinal, %c12 : i64
+    %ptr = llvm.getelementptr inbounds %base[%byte_offset]
+        : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %value = llvm.load %ptr : !llvm.ptr -> f32
+    dataflow.graph.return %ctrl, %value : none, f32
+  }
+}
+
+// -----
+
 // Region lowering consumes the width the pass boundary resolved, so an
 // index-typed loop becomes a 64-bit ordinal stream even though the configured
 // width is 32.

@@ -50,6 +50,12 @@ bool isKnownMultipleOfPowerOfTwo(mlir::Value value, unsigned shift) {
     return true;
   if (std::optional<llvm::APInt> constant = integerConstantValue(value))
     return constant->countTrailingZeros() >= shift;
+  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    for (mlir::Value factor : {multiply.getLhs(), multiply.getRhs()})
+      if (std::optional<llvm::APInt> constant = integerConstantValue(factor))
+        if (constant->countTrailingZeros() >= shift)
+          return true;
+  }
   auto leftShift = value.getDefiningOp<mlir::arith::ShLIOp>();
   if (!leftShift)
     return false;
@@ -121,8 +127,7 @@ std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
 
 std::optional<ResolvedLinearGepAddress>
 resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
-                        mlir::Type elementType,
-                        unsigned canonicalIndexBits) {
+                        mlir::Type elementType, unsigned canonicalIndexBits) {
   if (canonicalIndexBits == 0 ||
       canonicalIndexBits > mlir::IntegerType::kMaxWidth)
     return std::nullopt;
@@ -213,8 +218,8 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       }
       if (!indexBits || *indexBits > canonicalIndexBits)
         return std::nullopt;
-      result.indexType = mlir::IntegerType::get(leafGep.getContext(),
-                                                canonicalIndexBits);
+      result.indexType =
+          mlir::IntegerType::get(leafGep.getContext(), canonicalIndexBits);
       if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
         return std::nullopt;
       unsigned strideShift =
