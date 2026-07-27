@@ -1,0 +1,4 @@
+# RUN: loom-static-global-memory-test
+
+# This anchor executes the production LLVM-global projection. Assertions live
+# in the focused C++ test so byte order is checked without a printer snapshot.

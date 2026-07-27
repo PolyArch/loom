@@ -22,6 +22,9 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
     return invalid("LLVM module is required");
   if (fabric.reference().schemaIdentity.empty())
     return invalid("finalized Fabric target has no artifact reference");
+  auto staticGlobalMemory = projectStaticGlobalMemory(*module);
+  if (!staticGlobalMemory)
+    return staticGlobalMemory.takeError();
   auto structured = raising::raiseLlvmModuleToStructuredProgram(
       std::move(module), options.raising);
   if (!structured)
@@ -30,8 +33,9 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
       *structured, options.lowering);
   if (!dataflow)
     return dataflow.takeError();
-  return PreMappingCompilation{fabric.reference(), std::move(*structured),
-                               std::move(*dataflow)};
+  return PreMappingCompilation{fabric.reference(),
+                               std::move(*staticGlobalMemory),
+                               std::move(*structured), std::move(*dataflow)};
 }
 
 llvm::Expected<PreMappingCompilation> compileLlvmModuleToPreMapping(

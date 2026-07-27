@@ -4,6 +4,7 @@
 #include "Common/IndexWidth.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Frontend/Compilation/StaticMemoryBinding.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -591,6 +592,26 @@ void wholeCallableExternalizesGlobalMemoryCapability() {
     sawAddress |= llvm::isa<mlir::LLVM::AddressOfOp>(actor.op);
   if (sawAddress)
     fail(test, "global address escaped into the SpatialCore actor graph");
+
+  if (view.rootThreadLaunches().size() != 1 ||
+      view.staticGraphLaunches().size() != 1)
+    fail(test, "global-memory candidate has no unique rooted launch");
+  dataflow::RootedGraphLaunchRef launch{view.rootThreadLaunches().front().ref,
+                                        view.staticGraphLaunches().front().ref};
+  auto sources = take(test, loom::frontend::deriveRootedLogicalMemorySources(
+                                compiled.staticGlobalMemory, view, launch));
+  unsigned staticSources = 0;
+  for (const loom::frontend::RootedLogicalMemorySource &source : sources) {
+    if (!source.globalOrdinal)
+      continue;
+    ++staticSources;
+    if (*source.globalOrdinal >= compiled.staticGlobalMemory.globals.size() ||
+        compiled.staticGlobalMemory.globals[*source.globalOrdinal].symbol !=
+            "lookup")
+      fail(test, "logical memory root resolved the wrong static global");
+  }
+  if (staticSources != 1)
+    fail(test, "static global did not bind exactly one logical memory root");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

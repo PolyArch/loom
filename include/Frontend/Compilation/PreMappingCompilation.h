@@ -2,6 +2,7 @@
 #define LOOM_FRONTEND_COMPILATION_PREMAPPINGCOMPILATION_H
 
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Frontend/Compilation/StaticGlobalMemory.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Frontend/Raising/StructuredRaising.h"
@@ -21,6 +22,7 @@ namespace loom::frontend {
 /// it is intentionally not embedded in either software artifact.
 struct PreMappingCompilation final {
   ArtifactRootReference fabric;
+  StaticGlobalMemoryCatalog staticGlobalMemory;
   StructuredProgramCandidate structuredProgram;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
 };

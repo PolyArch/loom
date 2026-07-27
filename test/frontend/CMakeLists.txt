@@ -44,3 +44,14 @@ target_link_libraries(loom-frontend-dfg-integration-test PRIVATE
   LLVMIRReader
   LLVMSupport
 )
+
+add_executable(loom-static-global-memory-test
+  StaticGlobalMemoryTest.cpp
+)
+
+target_link_libraries(loom-static-global-memory-test PRIVATE
+  LoomFrontendCompilation
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)

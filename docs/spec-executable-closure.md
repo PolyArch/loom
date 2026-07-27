@@ -199,10 +199,10 @@ glue consumes the Runtime ABI without changing the source-facing program model.
 StaticMemoryImageLeaf {
   canonical_dataflow_ref
   logical_memory_root_ref
-  layout_binding
+  layout_binding : CompilerTargetBindingRef
   size_bytes
   alignment_bytes
-  permissions
+  permissions : ReadOnly | ReadWrite
   initialized_chunks[] {
     byte_offset
     byte_count
@@ -217,9 +217,33 @@ duplicate code or data segments already owned by a program binary. Physical
 addresses, runtime allocations, device handles, bank selection, and memory
 service routes are derived from the exact Mapping and runtime admission.
 
+The exact `CompilerTargetBindingRef` identifies the DataLayout under which the
+bytes were formed. Its reconstructed DataLayout must be structurally compatible
+with the final linked LLVM module and the DataLayout projected into the exact
+Canonical Dataflow Program. The leaf never copies a DataLayout spelling or
+invents a layout digest.
+
 Chunks and zero-fill ranges are nonoverlapping, in bounds, canonically ordered,
-and complete under the declared initialization policy. Raw bytes are referenced
-by BlobDigest.
+and together partition `[0, size_bytes)`. `size_bytes` is positive and
+`alignment_bytes` is a positive power of two. Raw bytes are referenced by
+BlobDigest. A chunk's blob has exactly `byte_count` logical bytes. `ReadOnly`
+is a software permission independent of whether Mapping selects local SRAM, a
+manager-backed external service, or a later hardwired ROM implementation.
+
+The final linked LLVM module is the sole initializer authority. Before raising,
+the frontend mechanically projects a compiler-internal, symbol-sorted catalog
+of addressable globals using the module-owned DataLayout. A definition receives
+a local image only when its initializer has a complete relocation-free byte
+representation. Declarations, externally initialized or thread-local storage,
+non-default address spaces, relocation-bearing constants, poison, and undef
+remain explicitly runtime-provided. They are not assigned guessed bytes.
+
+For one selected `RootedGraphLaunchRef`, the exact `thread.launch` body binding
+relates each imported `LogicalMemoryRootRef` to either a dynamic capability or
+an `llvm.mlir.addressof` global. The symbol is an ephemeral lookup key within
+that compiler invocation only. A persistent static image replaces it with the
+Dataflow-owned logical-memory reference; neither the symbol nor a dense catalog
+index enters Deployment identity.
 
 ## Final Link And Finalization
 

@@ -48,6 +48,21 @@ gem5 timing and capacity but does not change a compatible binary's ISA/ABI.
 Fabric stores neither LLVM target spelling nor a gem5 model name; the two
 bindings validate against one hardware owner independently.
 
+## Why Static Memory Starts From LLVM Bytes
+
+A source-level constant table does not imply a dedicated ROM. LLVM owns the
+initializer and DataLayout; Dataflow owns the logical memory root; Mapping owns
+whether that root uses local SRAM or a manager-backed external service. A
+single mechanical projection from the final linked LLVM module therefore feeds
+pre-Mapping simulation and the later Deployment leaf. Re-parsing constants in
+each simulator or backend would create competing byte-layout authorities.
+
+Only complete relocation-free initializers may become local preload images.
+Everything else remains runtime-provided and can still use external memory.
+This fail-closed split keeps pointer relocation and system-memory behavior with
+their existing owners while allowing ordinary read-only tables to exploit
+SpatialCore memory without introducing a separate `fabric.rom` primitive.
+
 ## Why Runtime Cannot Remap
 
 SystemMapping has already selected AccCores, SpatialMappings, routes, tags,

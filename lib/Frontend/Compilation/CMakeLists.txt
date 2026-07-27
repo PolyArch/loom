@@ -2,6 +2,8 @@ add_library(LoomFrontendCompilation
   FabricCapabilityIndex.cpp
   OwnershipCandidateGenerator.cpp
   PreMappingCompilation.cpp
+  StaticGlobalMemory.cpp
+  StaticMemoryBinding.cpp
   StructuredAddressIndexNarrowing.cpp
 )
 
