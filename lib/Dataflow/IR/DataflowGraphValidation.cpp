@@ -521,25 +521,30 @@ bool hasObservableEffect(mlir::Operation *op) {
   return true;
 }
 
-enum class NestedAlignmentKind : uint8_t {
+enum class AlignmentQueryKind : uint8_t {
   Close,
   TruePhaseClose,
   GateClose,
   SiblingGateClose,
   SelectedClose,
   SelectedTruePhaseClose,
+  SelectedAvailability,
+  SelectedAlignedAvailability,
+  SelectedTruePhaseAlignedAvailability,
+  Aligned,
+  TruePhaseAligned,
 };
 
-struct NestedAlignmentQuery {
+struct AlignmentQuery {
   uint64_t alignmentRevision;
   mlir::Value value;
   mlir::Value parentPhase;
   mlir::Value parentAssumption;
   mlir::Value selector;
   unsigned lane;
-  NestedAlignmentKind kind;
+  AlignmentQueryKind kind;
 
-  bool operator==(const NestedAlignmentQuery &other) const {
+  bool operator==(const AlignmentQuery &other) const {
     return alignmentRevision == other.alignmentRevision &&
            value == other.value && parentPhase == other.parentPhase &&
            parentAssumption == other.parentAssumption &&
@@ -548,28 +553,28 @@ struct NestedAlignmentQuery {
   }
 };
 
-struct NestedAlignmentQueryInfo {
-  static NestedAlignmentQuery getEmptyKey() {
+struct AlignmentQueryInfo {
+  static AlignmentQuery getEmptyKey() {
     return {std::numeric_limits<uint64_t>::max(),
             {},
             {},
             {},
             {},
             0,
-            NestedAlignmentKind::Close};
+            AlignmentQueryKind::Close};
   }
 
-  static NestedAlignmentQuery getTombstoneKey() {
+  static AlignmentQuery getTombstoneKey() {
     return {std::numeric_limits<uint64_t>::max() - 1,
             {},
             {},
             {},
             {},
             0,
-            NestedAlignmentKind::Close};
+            AlignmentQueryKind::Close};
   }
 
-  static unsigned getHashValue(const NestedAlignmentQuery &query) {
+  static unsigned getHashValue(const AlignmentQuery &query) {
     auto opaque = [](mlir::Value value) {
       return value ? value.getAsOpaquePointer() : nullptr;
     };
@@ -579,8 +584,7 @@ struct NestedAlignmentQueryInfo {
                               opaque(query.selector), query.lane, query.kind);
   }
 
-  static bool isEqual(const NestedAlignmentQuery &lhs,
-                      const NestedAlignmentQuery &rhs) {
+  static bool isEqual(const AlignmentQuery &lhs, const AlignmentQuery &rhs) {
     return lhs == rhs;
   }
 };
@@ -654,10 +658,8 @@ private:
   dataflow::GraphOp graph;
   std::shared_ptr<CardinalityGraphIndex> graphIndex;
   uint64_t alignmentRevision = 0;
-  llvm::DenseMap<NestedAlignmentQuery, bool, NestedAlignmentQueryInfo>
-      nestedAlignment;
-  llvm::DenseSet<NestedAlignmentQuery, NestedAlignmentQueryInfo>
-      nestedAlignmentActive;
+  llvm::DenseMap<AlignmentQuery, bool, AlignmentQueryInfo> alignment;
+  llvm::DenseSet<AlignmentQuery, AlignmentQueryInfo> alignmentActive;
   llvm::DenseMap<mlir::Value, bool> exactOne;
   llvm::DenseSet<mlir::Value> exactOneActive;
   llvm::DenseMap<mlir::Value, bool> oneClosePhase;
@@ -680,16 +682,15 @@ private:
   }
 
   template <typename Compute>
-  bool evaluateNestedAlignment(const NestedAlignmentQuery &query,
-                               Compute &&compute) {
-    auto known = nestedAlignment.find(query);
-    if (known != nestedAlignment.end())
+  bool evaluateAlignment(const AlignmentQuery &query, Compute &&compute) {
+    auto known = alignment.find(query);
+    if (known != alignment.end())
       return known->second;
-    if (!nestedAlignmentActive.insert(query).second)
+    if (!alignmentActive.insert(query).second)
       return false;
+    auto eraseActive = llvm::scope_exit([&] { alignmentActive.erase(query); });
     bool result = compute();
-    nestedAlignmentActive.erase(query);
-    nestedAlignment.try_emplace(query, result);
+    alignment.try_emplace(query, result);
     return result;
   }
 
@@ -765,13 +766,9 @@ private:
     return branch.isExactOne(value);
   }
 
-  bool availableWhenSelected(mlir::Value value, mlir::Value selector,
-                             unsigned lane,
-                             llvm::DenseSet<mlir::Value> &visited) {
-    if (isExactOne(value))
-      return true;
-    if (!visited.insert(value).second)
-      return false;
+  bool computeAvailableWhenSelected(mlir::Value value, mlir::Value selector,
+                                    unsigned lane,
+                                    llvm::DenseSet<mlir::Value> &visited) {
     auto result = llvm::dyn_cast<mlir::OpResult>(value);
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
@@ -808,8 +805,27 @@ private:
         !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
       return false;
     return llvm::all_of(def->getOperands(), [&](mlir::Value operand) {
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return availableWhenSelected(operand, selector, lane, branchVisited);
+      return availableWhenSelected(operand, selector, lane, visited);
+    });
+  }
+
+  bool availableWhenSelected(mlir::Value value, mlir::Value selector,
+                             unsigned lane,
+                             llvm::DenseSet<mlir::Value> &visited) {
+    if (isExactOne(value))
+      return true;
+    if (!visited.insert(value).second)
+      return false;
+    auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
+    AlignmentQuery query{alignmentRevision,
+                         value,
+                         {},
+                         {},
+                         selector,
+                         lane,
+                         AlignmentQueryKind::SelectedAvailability};
+    return evaluateAlignment(query, [&] {
+      return computeAvailableWhenSelected(value, selector, lane, visited);
     });
   }
 
@@ -819,13 +835,10 @@ private:
     return availableWhenSelected(value, selector, lane, visited);
   }
 
-  bool availableWhenSelectedAndAligned(mlir::Value value, mlir::Value selector,
-                                       unsigned lane, mlir::Value phase,
-                                       mlir::Value assumption,
-                                       bool truePhaseOnly,
-                                       llvm::DenseSet<mlir::Value> &visited) {
-    if (!visited.insert(value).second)
-      return false;
+  bool computeAvailableWhenSelectedAndAligned(
+      mlir::Value value, mlir::Value selector, unsigned lane, mlir::Value phase,
+      mlir::Value assumption, bool truePhaseOnly,
+      llvm::DenseSet<mlir::Value> &visited) {
     auto result = llvm::dyn_cast<mlir::OpResult>(value);
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
@@ -837,18 +850,14 @@ private:
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       if (demux.getSel() == selector && result.getResultNumber() == lane) {
         if (!isGraphStreamInput(demux.getInput())) {
-          llvm::DenseSet<mlir::Value> inputVisited = visited;
           return isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
-                           inputVisited);
+                           visited);
         }
-        llvm::DenseSet<mlir::Value> selectorVisited = visited;
-        return isAligned(selector, phase, assumption, truePhaseOnly,
-                         selectorVisited);
+        return isAligned(selector, phase, assumption, truePhaseOnly, visited);
       }
       if (result.getResultNumber() == 0 &&
-          isNestedCloseAlignedWhenSelected(
-              demux, result, selector, lane, phase, assumption,
-              truePhaseOnly))
+          isNestedCloseAlignedWhenSelected(demux, result, selector, lane, phase,
+                                           assumption, truePhaseOnly))
         return true;
       if (isGraphStreamInput(demux.getInput())) {
         auto activation = dataflow::semantics::getSelectorActivation(
@@ -863,9 +872,7 @@ private:
                     demux.getSel(), demux.getOutputs().size(),
                     result.getResultNumber(), selector, lane))
           alignment = *synchronization;
-        llvm::DenseSet<mlir::Value> activationVisited = visited;
-        return isAligned(alignment, phase, assumption, truePhaseOnly,
-                         activationVisited);
+        return isAligned(alignment, phase, assumption, truePhaseOnly, visited);
       }
       return false;
     }
@@ -881,29 +888,49 @@ private:
     for (mlir::Value operand : def->getOperands()) {
       if (isMemoryCapabilityType(operand.getType()))
         continue;
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
       if (availableWhenSelectedAndAligned(operand, selector, lane, phase,
-                                          assumption, truePhaseOnly,
-                                          branchVisited)) {
+                                          assumption, truePhaseOnly, visited)) {
         hasSelectedOperand = true;
         continue;
       }
-      llvm::DenseSet<mlir::Value> alignedVisited = visited;
-      if (!isAligned(operand, phase, assumption, truePhaseOnly, alignedVisited))
+      if (!isAligned(operand, phase, assumption, truePhaseOnly, visited))
         return false;
     }
     return hasSelectedOperand;
   }
 
+  bool availableWhenSelectedAndAligned(mlir::Value value, mlir::Value selector,
+                                       unsigned lane, mlir::Value phase,
+                                       mlir::Value assumption,
+                                       bool truePhaseOnly,
+                                       llvm::DenseSet<mlir::Value> &visited) {
+    if (!visited.insert(value).second)
+      return false;
+    auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
+    AlignmentQuery query{
+        alignmentRevision,
+        value,
+        phase,
+        assumption,
+        selector,
+        lane,
+        truePhaseOnly ? AlignmentQueryKind::SelectedTruePhaseAlignedAvailability
+                      : AlignmentQueryKind::SelectedAlignedAvailability};
+    return evaluateAlignment(query, [&] {
+      return computeAvailableWhenSelectedAndAligned(
+          value, selector, lane, phase, assumption, truePhaseOnly, visited);
+    });
+  }
+
   bool initializeSelectedNestedActivation(
       mlir::Value childPhase, mlir::Value selector, unsigned lane,
-      mlir::Value parentPhase, mlir::Value parentAssumption,
-      bool truePhaseOnly, GraphCardinalityAnalysis &activation) {
+      mlir::Value parentPhase, mlir::Value parentAssumption, bool truePhaseOnly,
+      GraphCardinalityAnalysis &activation) {
     auto assumeExact = [&](mlir::Value value) {
       llvm::DenseSet<mlir::Value> visited;
-      if (!availableWhenSelectedAndAligned(
-              value, selector, lane, parentPhase, parentAssumption,
-              truePhaseOnly, visited))
+      if (!availableWhenSelectedAndAligned(value, selector, lane, parentPhase,
+                                           parentAssumption, truePhaseOnly,
+                                           visited))
         return false;
       activation.exactOneAssumptions.insert(value);
       return true;
@@ -928,28 +955,30 @@ private:
     return true;
   }
 
-  bool isNestedCloseAlignedWhenSelected(
-      dataflow::DemuxOp close, mlir::OpResult result, mlir::Value selector,
-      unsigned lane, mlir::Value parentPhase, mlir::Value parentAssumption,
-      bool truePhaseOnly) {
+  bool isNestedCloseAlignedWhenSelected(dataflow::DemuxOp close,
+                                        mlir::OpResult result,
+                                        mlir::Value selector, unsigned lane,
+                                        mlir::Value parentPhase,
+                                        mlir::Value parentAssumption,
+                                        bool truePhaseOnly) {
     if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
         close.getSel() == selector || close.getSel() == parentPhase)
       return false;
 
-    NestedAlignmentQuery query{
-        alignmentRevision,
-        result,
-        parentPhase,
-        parentAssumption,
-        selector,
-        lane,
-        truePhaseOnly ? NestedAlignmentKind::SelectedTruePhaseClose
-                      : NestedAlignmentKind::SelectedClose};
-    return evaluateNestedAlignment(query, [&] {
+    AlignmentQuery query{alignmentRevision,
+                         result,
+                         parentPhase,
+                         parentAssumption,
+                         selector,
+                         lane,
+                         truePhaseOnly
+                             ? AlignmentQueryKind::SelectedTruePhaseClose
+                             : AlignmentQueryKind::SelectedClose};
+    return evaluateAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, graphIndex);
-      return initializeSelectedNestedActivation(
-                 close.getSel(), selector, lane, parentPhase,
-                 parentAssumption, truePhaseOnly, activation) &&
+      return initializeSelectedNestedActivation(close.getSel(), selector, lane,
+                                                parentPhase, parentAssumption,
+                                                truePhaseOnly, activation) &&
              activation.isExactOne(result);
     });
   }
@@ -995,16 +1024,15 @@ private:
         close.getSel() == parentPhase)
       return false;
 
-    NestedAlignmentQuery query{alignmentRevision,
-                               result,
-                               parentPhase,
-                               parentAssumption,
-                               {},
-                               0,
-                               truePhaseOnly
-                                   ? NestedAlignmentKind::TruePhaseClose
-                                   : NestedAlignmentKind::Close};
-    return evaluateNestedAlignment(query, [&] {
+    AlignmentQuery query{alignmentRevision,
+                         result,
+                         parentPhase,
+                         parentAssumption,
+                         {},
+                         0,
+                         truePhaseOnly ? AlignmentQueryKind::TruePhaseClose
+                                       : AlignmentQueryKind::Close};
+    return evaluateAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, graphIndex);
       return initializeNestedActivation(close.getSel(), parentPhase,
                                         parentAssumption, truePhaseOnly,
@@ -1027,14 +1055,14 @@ private:
     if (!stream || gate->getBeforeCond() != stream.getPhase())
       return false;
 
-    NestedAlignmentQuery query{alignmentRevision,
-                               value,
-                               parentPhase,
-                               parentAssumption,
-                               selector,
-                               lane,
-                               NestedAlignmentKind::GateClose};
-    return evaluateNestedAlignment(query, [&] {
+    AlignmentQuery query{alignmentRevision,
+                         value,
+                         parentPhase,
+                         parentAssumption,
+                         selector,
+                         lane,
+                         AlignmentQueryKind::GateClose};
+    return evaluateAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, graphIndex);
       return initializeNestedActivation(stream.getPhase(), parentPhase,
                                         parentAssumption,
@@ -1057,14 +1085,14 @@ private:
         selectorGate.getBeforeCond() != parentPhase)
       return false;
 
-    NestedAlignmentQuery query{alignmentRevision,
-                               value,
-                               parentPhase,
-                               parentAssumption,
-                               selector,
-                               lane,
-                               NestedAlignmentKind::SiblingGateClose};
-    return evaluateNestedAlignment(query, [&] {
+    AlignmentQuery query{alignmentRevision,
+                         value,
+                         parentPhase,
+                         parentAssumption,
+                         selector,
+                         lane,
+                         AlignmentQueryKind::SiblingGateClose};
+    return evaluateAlignment(query, [&] {
       llvm::DenseSet<mlir::Value> gateVisited;
       if (!isAligned(gate->getBeforeValue(), parentPhase, parentAssumption,
                      /*truePhaseOnly=*/false, gateVisited))
@@ -1082,138 +1110,149 @@ private:
       return true;
     if (value == phase)
       return !truePhaseOnly;
-    if (!visited.insert(value).second)
+    auto cycleResult = [&] {
       return truePhaseOnly &&
              llvm::any_of(alignedCarryAssumptions,
                           [&](mlir::Value carryOutput) {
                             return causallyDependsOn(value, carryOutput);
                           });
-    auto result = llvm::dyn_cast<mlir::OpResult>(value);
-    mlir::Operation *def = result ? result.getOwner() : nullptr;
-    if (!def)
-      return false;
-    if (truePhaseOnly)
-      if (auto activation = dataflow::semantics::getCloseActivation(value)) {
-        llvm::DenseSet<mlir::Value> activationVisited = visited;
-        return isAligned(*activation, phase, assumption,
-                         /*truePhaseOnly=*/true, activationVisited);
-      }
-    if (truePhaseOnly)
-      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def);
-          demux && isGraphStreamInput(demux.getInput()))
-        if (auto activation = dataflow::semantics::getSelectorActivation(
-                demux.getSel(), demux.getOutputs().size())) {
-          mlir::Value alignment = *activation;
-          if (auto synchronization =
-                  dataflow::semantics::getSelectorLaneSynchronization(
-                      demux.getSel(), demux.getOutputs().size(),
-                      result.getResultNumber()))
-            alignment = *synchronization;
-          llvm::DenseSet<mlir::Value> activationVisited = visited;
-          return isAligned(alignment, phase, assumption,
-                           /*truePhaseOnly=*/true, activationVisited);
+    };
+    if (!visited.insert(value).second)
+      return cycleResult();
+    auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
+    AlignmentQuery query{alignmentRevision,
+                         value,
+                         phase,
+                         assumption,
+                         {},
+                         0,
+                         truePhaseOnly ? AlignmentQueryKind::TruePhaseAligned
+                                       : AlignmentQueryKind::Aligned};
+    auto known = alignment.find(query);
+    if (known != alignment.end())
+      return known->second;
+    if (!alignmentActive.insert(query).second)
+      return cycleResult();
+    auto eraseActive = llvm::scope_exit([&] { alignmentActive.erase(query); });
+    bool result = [&]() -> bool {
+      auto result = llvm::dyn_cast<mlir::OpResult>(value);
+      mlir::Operation *def = result ? result.getOwner() : nullptr;
+      if (!def)
+        return false;
+      if (truePhaseOnly)
+        if (auto activation = dataflow::semantics::getCloseActivation(value))
+          return isAligned(*activation, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
+      if (truePhaseOnly)
+        if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def);
+            demux && isGraphStreamInput(demux.getInput()))
+          if (auto activation = dataflow::semantics::getSelectorActivation(
+                  demux.getSel(), demux.getOutputs().size())) {
+            mlir::Value alignment = *activation;
+            if (auto synchronization =
+                    dataflow::semantics::getSelectorLaneSynchronization(
+                        demux.getSel(), demux.getOutputs().size(),
+                        result.getResultNumber()))
+              alignment = *synchronization;
+            return isAligned(alignment, phase, assumption,
+                             /*truePhaseOnly=*/true, visited);
+          }
+      if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+        bool hasAlignedInput = false;
+        for (mlir::Value input : sync.getInputs()) {
+          if (isAligned(input, phase, assumption, truePhaseOnly, visited)) {
+            hasAlignedInput = true;
+            continue;
+          }
+          return false;
         }
-    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
-      bool hasAlignedInput = false;
-      for (mlir::Value input : sync.getInputs()) {
-        llvm::DenseSet<mlir::Value> inputVisited = visited;
-        if (isAligned(input, phase, assumption, truePhaseOnly, inputVisited)) {
-          hasAlignedInput = true;
+        return hasAlignedInput;
+      }
+      if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
+        return truePhaseOnly && value == stream.getIv() &&
+               phase == stream.getPhase();
+      if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
+        return !truePhaseOnly && value == invariant.getOutput() &&
+               invariant.getCond() == phase && isExactOne(invariant.getInit());
+      if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
+        if (truePhaseOnly || value != carry.getOutput() ||
+            carry.getCond() != phase || !isExactOne(carry.getInit()))
+          return false;
+        bool inserted = insertAlignedCarryAssumption(carry.getOutput());
+        if (!inserted)
+          return true;
+        bool aligned = isAligned(carry.getCarry(), phase, carry.getOutput(),
+                                 /*truePhaseOnly=*/true, visited);
+        eraseAlignedCarryAssumption(carry.getOutput());
+        return aligned;
+      }
+      if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
+        if (!truePhaseOnly || gate.getBeforeCond() != phase ||
+            (value != gate.getAfterCond() && value != gate.getAfterValue()))
+          return false;
+        return isAligned(gate.getBeforeValue(), phase, assumption,
+                         /*truePhaseOnly=*/false, visited);
+      }
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+        if (result.getResultNumber() == 0 &&
+            isNestedCloseAligned(demux, result, phase, assumption,
+                                 truePhaseOnly))
+          return true;
+        if (!truePhaseOnly)
+          return false;
+        if (demux.getSel() != phase || result.getResultNumber() != 1)
+          return false;
+        return isAligned(demux.getInput(), phase, assumption,
+                         /*truePhaseOnly=*/false, visited);
+      }
+      if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
+        if (!isAligned(mux.getSel(), phase, assumption, truePhaseOnly, visited))
+          return false;
+        for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
+          if (!availableWhenSelectedAndAligned(input, mux.getSel(), lane, phase,
+                                               assumption, truePhaseOnly,
+                                               visited))
+            return false;
+        }
+        return true;
+      }
+      if (dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(value,
+                                                                      phase))
+        return truePhaseOnly;
+      if (dataflow::semantics::isStatelessOneTokenVectorBoundary(def)) {
+        if (result.getResultNumber() != 0 || def->getNumOperands() != 1)
+          return false;
+        return isAligned(def->getOperand(0), phase, assumption, truePhaseOnly,
+                         visited);
+      }
+      if (llvm::isa<dataflow::StreamOp, dataflow::GateOp,
+                    dataflow::ParallelizeOp, dataflow::PackOp,
+                    dataflow::UnpackOp, dataflow::SerializeOp,
+                    dataflow::DemuxOp>(def))
+        return false;
+      if (!dataflow::isCanonicalDataflowActor(def) &&
+          !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(
+              def))
+        return false;
+
+      bool hasRequiredOperand = false;
+      for (mlir::Value operand : def->getOperands()) {
+        if (isMemoryCapabilityType(operand.getType()))
+          continue;
+        if (isAligned(operand, phase, assumption, truePhaseOnly, visited)) {
+          hasRequiredOperand = true;
           continue;
         }
-        return false;
-      }
-      return hasAlignedInput;
-    }
-    if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
-      return truePhaseOnly && value == stream.getIv() &&
-             phase == stream.getPhase();
-    if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
-      return !truePhaseOnly && value == invariant.getOutput() &&
-             invariant.getCond() == phase && isExactOne(invariant.getInit());
-    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
-      if (truePhaseOnly || value != carry.getOutput() ||
-          carry.getCond() != phase || !isExactOne(carry.getInit()))
-        return false;
-      bool inserted = insertAlignedCarryAssumption(carry.getOutput());
-      if (!inserted)
-        return true;
-      llvm::DenseSet<mlir::Value> feedbackVisited = visited;
-      bool aligned = isAligned(carry.getCarry(), phase, carry.getOutput(),
-                               /*truePhaseOnly=*/true, feedbackVisited);
-      eraseAlignedCarryAssumption(carry.getOutput());
-      return aligned;
-    }
-    if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
-      if (!truePhaseOnly || gate.getBeforeCond() != phase ||
-          (value != gate.getAfterCond() && value != gate.getAfterValue()))
-        return false;
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return isAligned(gate.getBeforeValue(), phase, assumption,
-                       /*truePhaseOnly=*/false, branchVisited);
-    }
-    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (result.getResultNumber() == 0 &&
-          isNestedCloseAligned(demux, result, phase, assumption, truePhaseOnly))
-        return true;
-      if (!truePhaseOnly)
-        return false;
-      if (demux.getSel() != phase || result.getResultNumber() != 1)
-        return false;
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return isAligned(demux.getInput(), phase, assumption,
-                       /*truePhaseOnly=*/false, branchVisited);
-    }
-    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
-      llvm::DenseSet<mlir::Value> selectorVisited = visited;
-      if (!isAligned(mux.getSel(), phase, assumption, truePhaseOnly,
-                     selectorVisited))
-        return false;
-      for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
-        llvm::DenseSet<mlir::Value> branchVisited = visited;
-        if (!availableWhenSelectedAndAligned(input, mux.getSel(), lane, phase,
-                                             assumption, truePhaseOnly,
-                                             branchVisited))
+        if (!truePhaseOnly)
+          return false;
+        if (!isAligned(operand, phase, assumption,
+                       /*truePhaseOnly=*/false, visited))
           return false;
       }
-      return true;
-    }
-    if (dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(value,
-                                                                    phase))
-      return truePhaseOnly;
-    if (dataflow::semantics::isStatelessOneTokenVectorBoundary(def)) {
-      if (result.getResultNumber() != 0 || def->getNumOperands() != 1)
-        return false;
-      llvm::DenseSet<mlir::Value> inputVisited = visited;
-      return isAligned(def->getOperand(0), phase, assumption, truePhaseOnly,
-                       inputVisited);
-    }
-    if (llvm::isa<dataflow::StreamOp, dataflow::GateOp, dataflow::ParallelizeOp,
-                  dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
-                  dataflow::DemuxOp>(def))
-      return false;
-    if (!dataflow::isCanonicalDataflowActor(def) &&
-        !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
-      return false;
-
-    bool hasRequiredOperand = false;
-    for (mlir::Value operand : def->getOperands()) {
-      if (isMemoryCapabilityType(operand.getType()))
-        continue;
-      llvm::DenseSet<mlir::Value> requiredVisited = visited;
-      if (isAligned(operand, phase, assumption, truePhaseOnly,
-                    requiredVisited)) {
-        hasRequiredOperand = true;
-        continue;
-      }
-      if (!truePhaseOnly)
-        return false;
-      llvm::DenseSet<mlir::Value> fullVisited = visited;
-      if (!isAligned(operand, phase, assumption,
-                     /*truePhaseOnly=*/false, fullVisited))
-        return false;
-    }
-    return hasRequiredOperand;
+      return hasRequiredOperand;
+    }();
+    alignment.try_emplace(query, result);
+    return result;
   }
 
   void

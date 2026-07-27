@@ -147,6 +147,49 @@ std::string computeGraph(llvm::StringRef sym, int lhs, int rhs,
   return os.str();
 }
 
+std::string reconvergentControlGraph(unsigned depth) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << R"mlir(module {
+  dataflow.graph private @reconvergent(%start: none, %empty: i1) -> ()
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %one = dataflow.constant %start {const_value = 1 : i32} : i32
+    %starts:2 = dataflow.demux %empty, %start
+        : (i1, none) -> (none, none)
+    %lowers:2 = dataflow.demux %empty, %zero
+        : (i1, i32) -> (i32, i32)
+    %limits:2 = dataflow.demux %empty, %one
+        : (i1, i32) -> (i32, i32)
+    %steps:2 = dataflow.demux %empty, %one
+        : (i1, i32) -> (i32, i32)
+    %iv, %phase = dataflow.stream %lowers#0, %limits#0, %steps#0
+        step add while slt : i32
+    %control = dataflow.carry %phase, %starts#0, %body : none
+    %lanes:2 = dataflow.demux %phase, %control
+        : (i1, none) -> (none, none)
+    %v0 = dataflow.invariant %phase, %zero : i32
+    %v1 = dataflow.invariant %phase, %one : i32
+)mlir";
+  for (unsigned i = 2; i < depth; ++i)
+    os << "    %v" << i << " = arith.addi %v" << i - 1 << ", %v"
+       << i - 2 << " : i32\n";
+  os << "    %selected = arith.cmpi sgt, %v" << depth - 1 << ", %v"
+     << depth - 2 << " : i32\n"
+     << R"mlir(    %branches:2 = dataflow.demux %selected, %lanes#1
+        : (i1, none) -> (none, none)
+    %body = dataflow.mux %selected, %branches#0, %branches#1
+        : (i1, none, none) -> none
+    %complete = dataflow.mux %empty, %lanes#0, %starts#1
+        : (i1, none, none) -> none
+    dataflow.graph.return %complete : none
+  }
+}
+)mlir";
+  return os.str();
+}
+
 // (a) Canonical invariance
 
 void canonicalInvariance() {
@@ -237,6 +280,12 @@ module {
           "automorphic entities must receive distinct in-range IDs");
   for (std::uint64_t id : ids)
     require(test, id < sym.entityCount(), "entity IDs must be in range");
+}
+
+void reconvergentCardinalityRejection() {
+  const char *test = "reconvergentCardinalityRejection";
+  require(test, finalizeRejected(test, reconvergentControlGraph(40)),
+          "a non-one-shot reconvergent graph must fail without path explosion");
 }
 
 void artifactStoreRoundTrip() {
@@ -904,6 +953,7 @@ void memoryViewExposureService() {
 
 int main() {
   canonicalInvariance();
+  reconvergentCardinalityRejection();
   artifactStoreRoundTrip();
   semanticDifferences();
   storedProgramOperationsAreNotActors();
