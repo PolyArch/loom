@@ -506,6 +506,13 @@ public:
 
   llvm::Error resolveBackedge(SpatialBackedge &&backedge, SpatialValue source);
 
+  /// Instantiates one closed SpatialCore from this design as a module
+  /// template. Fabric finalization expands the instance into fresh physical
+  /// occurrences.
+  llvm::Expected<std::vector<SpatialValue>>
+  instantiate(const SpatialCoreBuilder &target,
+              llvm::ArrayRef<SpatialValue> inputs);
+
   llvm::Expected<SpatialValue> addFifo(SpatialValue input,
                                        const FifoSpec &spec);
 

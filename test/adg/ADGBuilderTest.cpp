@@ -505,6 +505,50 @@ void foreignHandlesAndIncompleteRootsFailClosed() {
               "SpatialCore 'second' is not closed");
 }
 
+void spatialCoreTemplatesInstantiateAndElaborate() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+
+  const PortType bits16 = take(test, PortType::bits(16));
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  auto pipeline =
+      take(test, design.createSpatialCore("pipeline", {bits16}, {bits16}));
+  SpatialValue pipelineInput = take(test, pipeline.input(0));
+  SpatialValue pipelineOutput =
+      take(test, pipeline.addFifo(pipelineInput, FifoSpec{bits16, 2, true}));
+  if (llvm::Error error = pipeline.close({pipelineOutput}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto top = take(test, design.createSpatialCore("top", {bits32}, {bits16}));
+  SpatialValue topInput = take(test, top.input(0));
+  auto instance = take(test, top.instantiate(pipeline, {topInput}));
+  require(test, instance.size() == 1,
+          "typed SpatialCore instance returned the wrong result count");
+  if (llvm::Error error = top.close(instance))
+    fail(test, llvm::toString(std::move(error)));
+
+  loom::adg::FinalizedFabricDesign finalized =
+      take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 2,
+          "module template design did not publish both requested roots");
+
+  std::string mlirText;
+  llvm::raw_string_ostream stream(mlirText);
+  if (llvm::Error error =
+          loom::fabric::writeFabricMlir(finalized.roots()[1], stream))
+    fail(test, llvm::toString(std::move(error)));
+  stream.flush();
+  require(test, llvm::StringRef(mlirText).contains("fabric.fifo"),
+          "module instantiation did not elaborate its physical body");
+  require(test, !llvm::StringRef(mlirText).contains("fabric.instantiate"),
+          "finalized Fabric retained an authoring-time instantiation");
+  require(test, llvm::StringRef(mlirText).contains("!fabric.bits<16>"),
+          "module instantiation lost its declared inner endpoint type");
+}
+
 void typedPeFuGraphsFinalize() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -1325,6 +1369,7 @@ void heterogeneousSystemFinalizes() {
 int main() {
   regularAndIrregularSpatialCoresFinalize();
   foreignHandlesAndIncompleteRootsFailClosed();
+  spatialCoreTemplatesInstantiateAndElaborate();
   typedPeFuGraphsFinalize();
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();

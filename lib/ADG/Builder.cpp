@@ -892,6 +892,73 @@ llvm::Error SpatialCoreBuilder::resolveBackedge(SpatialBackedge &&backedge,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::vector<SpatialValue>>
+SpatialCoreBuilder::instantiate(const SpatialCoreBuilder &target,
+                                llvm::ArrayRef<SpatialValue> inputs) {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto targetState = activeState(target.state_);
+  if (!targetState)
+    return targetState.takeError();
+  if (state->get() != targetState->get())
+    return invalid("SpatialCore template belongs to a different design");
+  if (rootOrdinal_ >= (*state)->spatialRoots.size() ||
+      target.rootOrdinal_ >= (*state)->spatialRoots.size())
+    return invalid("SpatialCore handle has an invalid owner ordinal");
+  if (rootOrdinal_ == target.rootOrdinal_)
+    return invalid("SpatialCore cannot instantiate itself");
+
+  detail::SpatialRootState &root = (*state)->spatialRoots[rootOrdinal_];
+  detail::SpatialRootState &targetRoot =
+      (*state)->spatialRoots[target.rootOrdinal_];
+  if (root.closed)
+    return invalid("SpatialCore is already closed");
+  if (!targetRoot.closed)
+    return invalid("SpatialCore template must be closed before instantiation");
+
+  mlir::FunctionType signature = targetRoot.operation.getFunctionType();
+  if (inputs.size() != signature.getNumInputs())
+    return invalid("SpatialCore template input count does not match its "
+                   "declared signature");
+
+  llvm::SmallVector<mlir::Value, 8> resolvedInputs;
+  llvm::SmallVector<mlir::Type, 8> innerInputTypes;
+  bool hasNormalizedInput = false;
+  for (auto [input, innerType] : llvm::zip(inputs, signature.getInputs())) {
+    auto resolved = resolveValue(*state, input);
+    if (!resolved)
+      return resolved.takeError();
+    if (!resolved->use_empty())
+      return invalid("SpatialCore transport source already has a consumer");
+    if (!sameFabricKind(resolved->getType(), innerType))
+      return invalid("SpatialCore template source and input port have "
+                     "different kinds");
+    if (mlir::isa<mlir::MemRefType>(innerType) &&
+        resolved->getType() != innerType)
+      return invalid("SpatialCore template memory ports require exact types");
+    hasNormalizedInput |= resolved->getType() != innerType;
+    resolvedInputs.push_back(*resolved);
+    innerInputTypes.push_back(innerType);
+  }
+
+  mlir::OpBuilder builder(&(*state)->context);
+  builder.setInsertionPointToEnd(&root.operation.getBody().front());
+  auto instance = ::fabric::InstantiateOp::create(
+      builder, root.operation.getLoc(), signature.getResults(),
+      targetRoot.operation.getSymName(), resolvedInputs,
+      hasNormalizedInput ? llvm::ArrayRef<mlir::Type>(innerInputTypes)
+                         : llvm::ArrayRef<mlir::Type>{});
+  if (llvm::Error error = verifyNewOperation(instance, "module instance"))
+    return std::move(error);
+
+  std::vector<SpatialValue> outputs;
+  outputs.reserve(instance.getNumResults());
+  for (mlir::Value output : instance.getResults())
+    outputs.push_back(SpatialValue(*state, rootOrdinal_, output));
+  return outputs;
+}
+
 llvm::Expected<SpatialValue> SpatialCoreBuilder::addFifo(SpatialValue input,
                                                          const FifoSpec &spec) {
   auto state = activeState(state_);
