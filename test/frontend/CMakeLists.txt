@@ -30,3 +30,17 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LLVMIRReader
   LLVMSupport
 )
+
+add_executable(loom-frontend-dfg-integration-test
+  FrontendDfgIntegrationTest.cpp
+)
+
+target_link_libraries(loom-frontend-dfg-integration-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendCompilation
+  LoomSimulator
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)
