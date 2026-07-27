@@ -18,11 +18,6 @@ artifacts:
   must carry the exact target triple attribute and its structured
   graph/actor counts must parse, so a graph-free whole-program result is
   distinguishable from a nonempty Spatial graph.
-- stage ``d0-candidates``: additionally enumerates every independent
-  scope-local Spatial ownership decision through the production candidate
-  generator. Accepted children must publish nonempty Canonical Dataflow
-  graphs; typed non-finalizable and exact-Fabric rejections remain visible
-  instead of being counted as success or aborting unrelated scopes.
 
 A source whose feature-guarded body is empty under the exact target still
 produces a valid module: a case passes on real compiler exit status,
@@ -72,14 +67,16 @@ TARGET_TRIPLE = "riscv64-unknown-elf"
 TARGET_MARCH = "rv64im"
 TARGET_MABI = "lp64"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
-LLVM_DATALAYOUT_LINE = 'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
+LLVM_DATALAYOUT_LINE = (
+    'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
+)
 MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
 
 # The one exact builtin Fabric target preset resolved by the d0 stage through
 # loom-pre-mapping.
 BUILTIN_TARGET_PRESET = "small"
 
-STAGES = ("llvm", "s0", "d0", "d0-candidates")
+STAGES = ("llvm", "s0", "d0")
 
 # Honest failure categories. "compile"/"raise"/"verify"/"pre-mapping" are
 # nonzero exits from the production tools; "*-artifact" categories mean the
@@ -95,7 +92,6 @@ CATEGORY_S0_ARTIFACT = "s0-artifact"
 CATEGORY_VERIFY = "verify"
 CATEGORY_PRE_MAPPING = "pre-mapping"
 CATEGORY_D0_ARTIFACT = "d0-artifact"
-CATEGORY_CANDIDATE_ARTIFACT = "candidate-artifact"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
 
@@ -152,9 +148,6 @@ class CaseResult:
     duration_seconds: float
     graphs: int | None = None
     actors: int | None = None
-    candidate_scopes: int | None = None
-    accepted_candidates: int | None = None
-    rejected_candidates: int | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -174,12 +167,6 @@ class CaseResult:
             payload["graphs"] = self.graphs
         if self.actors is not None:
             payload["actors"] = self.actors
-        if self.candidate_scopes is not None:
-            payload["candidate_scopes"] = self.candidate_scopes
-        if self.accepted_candidates is not None:
-            payload["accepted_candidates"] = self.accepted_candidates
-        if self.rejected_candidates is not None:
-            payload["rejected_candidates"] = self.rejected_candidates
         return payload
 
 
@@ -197,7 +184,9 @@ def run_quiet(command: Sequence[str]) -> str:
         raise GateConfigError(f"cannot run {command[0]}: {exc}") from exc
     if completed.returncode != 0:
         diagnostic = completed.stderr.strip() or "unknown error"
-        raise GateConfigError(f"{shlex.join(command)} failed: {diagnostic}")
+        raise GateConfigError(
+            f"{shlex.join(command)} failed: {diagnostic}"
+        )
     return completed.stdout
 
 
@@ -214,7 +203,9 @@ def derive_from_riscv_gcc(gcc: str) -> tuple[Path, Path]:
     install = Path(install_line.removeprefix("install: ").strip()).resolve()
     # install is <root>/lib/gcc/<machine>/<version>.
     if install.parents[1].name != "gcc" or install.parents[2].name != "lib":
-        raise GateConfigError(f"{gcc}: unexpected GCC install layout: {install}")
+        raise GateConfigError(
+            f"{gcc}: unexpected GCC install layout: {install}"
+        )
     toolchain_root = install.parents[3]
     if sysroot_text:
         sysroot = Path(sysroot_text).resolve()
@@ -372,9 +363,8 @@ def pre_mapping_command(
     store_dir: Path,
     d0_module: Path,
     counts: Path,
-    candidate_inventory: Path | None = None,
 ) -> list[str]:
-    command = [
+    return [
         toolchain.pre_mapping,
         f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
@@ -383,9 +373,6 @@ def pre_mapping_command(
         "-o",
         str(d0_module),
     ]
-    if candidate_inventory is not None:
-        command.insert(4, f"--candidate-inventory={candidate_inventory}")
-    return command
 
 
 def llvm_ir_defect(path: Path) -> str | None:
@@ -462,117 +449,6 @@ def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
     return counts, None
 
 
-def parse_candidate_inventory(
-    path: Path,
-) -> tuple[dict[str, int] | None, str | None]:
-    """Validate the diagnostic projection of real candidate artifacts."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError as exc:
-        return None, f"cannot read candidate inventory {path}: {exc}"
-    except json.JSONDecodeError as exc:
-        return None, f"malformed candidate inventory {path}: {exc}"
-    if not isinstance(payload, dict):
-        return None, f"candidate inventory is not a JSON object: {path}"
-    expected_root = {"accepted", "parent_structured_program", "rejected", "scopes"}
-    if set(payload) != expected_root:
-        return None, f"candidate inventory has an invalid root shape: {path}"
-    parent = payload.get("parent_structured_program")
-    if not isinstance(parent, str) or len(parent) != 64:
-        return None, f"candidate inventory has an invalid parent identity: {path}"
-    scopes = payload.get("scopes")
-    if not isinstance(scopes, list):
-        return None, f"candidate inventory scopes are not an array: {path}"
-
-    observed_accepted = 0
-    observed_rejected = 0
-    for scope in scopes:
-        if not isinstance(scope, dict) or set(scope) != {
-            "decisions",
-            "scope_kind",
-            "scope_ordinal",
-        }:
-            return None, f"candidate inventory has an invalid scope record: {path}"
-        if scope.get("scope_kind") not in {"whole_callable", "operation"}:
-            return None, f"candidate inventory has an invalid scope kind: {path}"
-        ordinal = scope.get("scope_ordinal")
-        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
-            return None, f"candidate inventory has an invalid scope ordinal: {path}"
-        decisions = scope.get("decisions")
-        if not isinstance(decisions, list) or not decisions:
-            return None, f"candidate inventory has an empty decision domain: {path}"
-        for decision in decisions:
-            if not isinstance(decision, dict):
-                return None, f"candidate inventory has a non-object decision: {path}"
-            status = decision.get("status")
-            if status == "accepted":
-                expected = {
-                    "actors",
-                    "canonical_dataflow",
-                    "canonical_index_width",
-                    "fmuladd_shape",
-                    "graphs",
-                    "status",
-                    "structured_program",
-                }
-                if set(decision) != expected:
-                    return None, f"accepted candidate has an invalid shape: {path}"
-                graphs = decision.get("graphs")
-                actors = decision.get("actors")
-                if (
-                    isinstance(graphs, bool)
-                    or not isinstance(graphs, int)
-                    or graphs <= 0
-                    or isinstance(actors, bool)
-                    or not isinstance(actors, int)
-                    or actors <= 0
-                ):
-                    return None, f"accepted candidate has no Spatial workload: {path}"
-                for key in ("structured_program", "canonical_dataflow"):
-                    identity = decision.get(key)
-                    if not isinstance(identity, str) or len(identity) != 64:
-                        return None, f"accepted candidate has invalid identity: {path}"
-                observed_accepted += 1
-                continue
-            if status == "rejected":
-                expected = {
-                    "canonical_index_width",
-                    "diagnostic",
-                    "fmuladd_shape",
-                    "rejection_kind",
-                    "status",
-                }
-                if set(decision) != expected:
-                    return None, f"rejected candidate has an invalid shape: {path}"
-                if decision.get("rejection_kind") not in {
-                    "non_finalizable",
-                    "exact_fabric_inadmissible",
-                }:
-                    return None, f"candidate has an invalid rejection kind: {path}"
-                if not isinstance(decision.get("diagnostic"), str):
-                    return None, f"candidate rejection lacks a diagnostic: {path}"
-                observed_rejected += 1
-                continue
-            return None, f"candidate inventory has an invalid decision status: {path}"
-
-    for key, observed in (
-        ("accepted", observed_accepted),
-        ("rejected", observed_rejected),
-    ):
-        declared = payload.get(key)
-        if (
-            isinstance(declared, bool)
-            or not isinstance(declared, int)
-            or declared != observed
-        ):
-            return None, f"candidate inventory {key} total is inconsistent: {path}"
-    return {
-        "scopes": len(scopes),
-        "accepted": observed_accepted,
-        "rejected": observed_rejected,
-    }, None
-
-
 def run_step(
     command: Sequence[str],
     log_path: Path,
@@ -639,9 +515,6 @@ def run_case(
     deadline = started + case_timeout
     graphs = 0
     actors = 0
-    candidate_scopes = 0
-    accepted_candidates = 0
-    rejected_candidates = 0
 
     def finish(category: str | None, detail: str | None) -> CaseResult:
         passed = category is None
@@ -651,24 +524,15 @@ def run_case(
             category=category,
             detail=detail,
             duration_seconds=time.monotonic() - started,
-            graphs=graphs if passed and stage in {"d0", "d0-candidates"} else None,
-            actors=actors if passed and stage in {"d0", "d0-candidates"} else None,
-            candidate_scopes=(
-                candidate_scopes if passed and stage == "d0-candidates" else None
-            ),
-            accepted_candidates=(
-                accepted_candidates if passed and stage == "d0-candidates" else None
-            ),
-            rejected_candidates=(
-                rejected_candidates if passed and stage == "d0-candidates" else None
-            ),
+            graphs=graphs if passed and stage == "d0" else None,
+            actors=actors if passed and stage == "d0" else None,
         )
 
     try:
         case_dir = case_out_dir(out_root, case)
         case_dir.mkdir(parents=True, exist_ok=True)
         store_dir = case_dir / "artifact-store"
-        if stage in {"d0", "d0-candidates"}:
+        if stage == "d0":
             store_dir.mkdir(parents=True, exist_ok=True)
         suite_flags = suite_compile_flags(case.suite, external_root)
         for repo_relative in case.sources:
@@ -688,22 +552,12 @@ def run_case(
                 return finish(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
             if stage == "llvm":
                 continue
-            if stage in {"d0", "d0-candidates"}:
+            if stage == "d0":
                 d0_module = case_dir / f"{stem}.dfg.mlir"
                 counts_path = case_dir / f"{stem}.counts.json"
-                candidate_path = (
-                    case_dir / f"{stem}.candidates.json"
-                    if stage == "d0-candidates"
-                    else None
-                )
                 failure = run_step(
                     pre_mapping_command(
-                        toolchain,
-                        llvm_ir,
-                        store_dir,
-                        d0_module,
-                        counts_path,
-                        candidate_path,
+                        toolchain, llvm_ir, store_dir, d0_module, counts_path
                     ),
                     case_dir / f"{stem}.pre-mapping.log",
                     deadline,
@@ -722,17 +576,6 @@ def run_case(
                 assert counts is not None
                 graphs += counts["graphs"]
                 actors += counts["actors"]
-                if candidate_path is not None:
-                    candidate_counts, defect = parse_candidate_inventory(candidate_path)
-                    if defect is not None:
-                        return finish(
-                            CATEGORY_CANDIDATE_ARTIFACT,
-                            f"{repo_relative}: {defect}",
-                        )
-                    assert candidate_counts is not None
-                    candidate_scopes += candidate_counts["scopes"]
-                    accepted_candidates += candidate_counts["accepted"]
-                    rejected_candidates += candidate_counts["rejected"]
                 continue
             s0_module = case_dir / f"{stem}.scf.mlir"
             failure = run_step(
@@ -787,7 +630,7 @@ def run_cases(
 
 
 def default_jobs() -> int:
-    return max(1, min(20, os.cpu_count() or 1))
+    return max(1, min(8, os.cpu_count() or 1))
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -879,12 +722,6 @@ def render_human(
         )
         if result.passed and result.graphs is not None:
             line += f"  graphs={result.graphs} actors={result.actors}"
-        if result.passed and result.candidate_scopes is not None:
-            line += (
-                f" candidate_scopes={result.candidate_scopes}"
-                f" accepted={result.accepted_candidates}"
-                f" rejected={result.rejected_candidates}"
-            )
         if not result.passed:
             line += f"  [{result.category}] {result.detail}"
         lines.append(line)
@@ -1001,7 +838,9 @@ def main(argv: Sequence[str]) -> int:
     )
     duration = time.monotonic() - started
 
-    sys.stdout.write(render_human(results, args.stage, toolchain, args.jobs, duration))
+    sys.stdout.write(
+        render_human(results, args.stage, toolchain, args.jobs, duration)
+    )
     json_path = args.json_path or (out_root / "summary.json")
     try:
         json_path.expanduser().resolve().write_text(

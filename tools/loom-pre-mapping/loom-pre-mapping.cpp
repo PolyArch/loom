@@ -25,7 +25,6 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
-#include "Common/ArtifactText.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
@@ -38,9 +37,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -78,13 +75,6 @@ namespace {
                    ::llvm::cl::desc("output path for structured graph/actor "
                                     "counts as one JSON object"),
                    ::llvm::cl::value_desc("filename"), ::llvm::cl::Required);
-
-::llvm::cl::opt<std::string> candidateInventoryFilename(
-    "candidate-inventory",
-    ::llvm::cl::desc("write every scope-local Spatial ownership attempt as "
-                     "a diagnostic JSON inventory; accepted candidates are "
-                     "published through their Artifact owners"),
-    ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
 
 ::llvm::cl::opt<std::string> wholeCallableSpatial(
     "whole-callable-spatial",
@@ -224,150 +214,6 @@ std::unique_ptr<::llvm::Module> readLLVMModule(::llvm::LLVMContext &llvmContext,
   return module;
 }
 
-::llvm::StringRef
-scopeKindSpelling(loom::frontend::SpatialOwnershipScopeKind kind) {
-  switch (kind) {
-  case loom::frontend::SpatialOwnershipScopeKind::WholeCallable:
-    return "whole_callable";
-  case loom::frontend::SpatialOwnershipScopeKind::Operation:
-    return "operation";
-  }
-  llvm_unreachable("unknown Spatial ownership scope kind");
-}
-
-::llvm::StringRef rejectionKindSpelling(
-    loom::frontend::SpatialOwnershipCandidateRejectionKind kind) {
-  switch (kind) {
-  case loom::frontend::SpatialOwnershipCandidateRejectionKind::NonFinalizable:
-    return "non_finalizable";
-  case loom::frontend::SpatialOwnershipCandidateRejectionKind::
-      ExactFabricInadmissible:
-    return "exact_fabric_inadmissible";
-  }
-  llvm_unreachable("unknown Spatial ownership rejection kind");
-}
-
-::llvm::json::Value optionalIndexWidth(
-    const loom::frontend::SpatialOwnershipDecisionPoint &decision) {
-  if (!decision.canonicalIndexWidth)
-    return nullptr;
-  return static_cast<std::int64_t>(*decision.canonicalIndexWidth);
-}
-
-::llvm::json::Value optionalFmuladdShape(
-    const loom::frontend::SpatialOwnershipDecisionPoint &decision) {
-  if (!decision.fmuladdExecutionShape)
-    return nullptr;
-  switch (*decision.fmuladdExecutionShape) {
-  case loom::raising::FMulAddExecutionShape::Fused:
-    return "fused";
-  case loom::raising::FMulAddExecutionShape::Split:
-    return "split";
-  }
-  llvm_unreachable("unknown fmuladd execution shape");
-}
-
-::llvm::Error writeCandidateInventory(
-    ::llvm::StringRef outputPath,
-    const loom::frontend::StructuredProgramCandidate &parent,
-    const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const loom::ArtifactStore &store,
-    const loom::lowering::CanonicalDataflowLoweringOptions &lowering) {
-  auto scopes = loom::frontend::enumerateSpatialOwnershipScopes(parent);
-  if (!scopes)
-    return scopes.takeError();
-
-  std::uint64_t acceptedCount = 0;
-  std::uint64_t rejectedCount = 0;
-  ::llvm::json::Array scopeRecords;
-  for (const loom::frontend::SpatialOwnershipScope &scope : *scopes) {
-    auto domain = loom::frontend::enumerateSpatialOwnershipDecisionDomain(
-        parent, scope.selection);
-    if (!domain)
-      return domain.takeError();
-
-    ::llvm::json::Array decisions;
-    for (const loom::frontend::SpatialOwnershipDecisionPoint &decision :
-         *domain) {
-      ::llvm::json::Object record{
-          {"canonical_index_width", optionalIndexWidth(decision)},
-          {"fmuladd_shape", optionalFmuladdShape(decision)},
-      };
-      auto candidate = loom::frontend::materializeSpatialOwnershipDecision(
-          parent, scope, decision, fabric, lowering);
-      if (!candidate) {
-        std::optional<loom::frontend::SpatialOwnershipCandidateRejectionKind>
-            rejectionKind;
-        std::string diagnostic;
-        ::llvm::Error unhandled = ::llvm::handleErrors(
-            candidate.takeError(),
-            [&](const loom::frontend::SpatialOwnershipCandidateRejection
-                    &rejection) {
-              rejectionKind = rejection.kind();
-              diagnostic = rejection.message();
-            });
-        if (unhandled)
-          return unhandled;
-        if (!rejectionKind)
-          return ::llvm::createStringError(
-              ::llvm::inconvertibleErrorCode(),
-              "candidate rejection handler produced no classification");
-        record["diagnostic"] = std::move(diagnostic);
-        record["rejection_kind"] = rejectionKindSpelling(*rejectionKind);
-        record["status"] = "rejected";
-        ++rejectedCount;
-        decisions.push_back(std::move(record));
-        continue;
-      }
-
-      auto structured = loom::frontend::publishStructuredProgram(
-          candidate->structuredProgram, store);
-      if (!structured)
-        return structured.takeError();
-      auto publishedDataflow = dataflow::publishCanonicalDataflow(
-          candidate->canonicalDataflow, store);
-      if (!publishedDataflow)
-        return publishedDataflow.takeError();
-      auto view = candidate->canonicalDataflow.view();
-      if (!view)
-        return view.takeError();
-      record["actors"] = static_cast<std::int64_t>(view->actors().size());
-      record["canonical_dataflow"] =
-          loom::formatArtifactIdentityHex(publishedDataflow->artifact);
-      record["graphs"] = static_cast<std::int64_t>(view->graphs().size());
-      record["status"] = "accepted";
-      record["structured_program"] =
-          loom::formatArtifactIdentityHex(structured->artifact);
-      ++acceptedCount;
-      decisions.push_back(std::move(record));
-    }
-
-    scopeRecords.push_back(::llvm::json::Object{
-        {"decisions", std::move(decisions)},
-        {"scope_kind", scopeKindSpelling(scope.kind)},
-        {"scope_ordinal", static_cast<std::int64_t>(scope.selection.ordinal)},
-    });
-  }
-
-  std::string errorMessage;
-  auto output = ::mlir::openOutputFile(outputPath, &errorMessage);
-  if (!output)
-    return ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
-                                     "cannot open candidate inventory: %s",
-                                     errorMessage.c_str());
-  ::llvm::json::Object root{
-      {"accepted", static_cast<std::int64_t>(acceptedCount)},
-      {"parent_structured_program",
-       loom::formatArtifactIdentityHex(parent.identity())},
-      {"rejected", static_cast<std::int64_t>(rejectedCount)},
-      {"scopes", std::move(scopeRecords)},
-  };
-  output->os() << ::llvm::formatv("{0:2}", ::llvm::json::Value(std::move(root)))
-               << '\n';
-  output->keep();
-  return ::llvm::Error::success();
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -414,12 +260,6 @@ int main(int argc, char **argv) {
       compilationOptions);
   if (!compiled)
     return reportError(compiled.takeError());
-
-  if (!candidateInventoryFilename.empty())
-    if (::llvm::Error error = writeCandidateInventory(
-            candidateInventoryFilename, compiled->structuredProgram,
-            design->roots().front(), store, compilationOptions.lowering))
-      return reportError(std::move(error));
 
   if (!wholeCallableSpatial.empty() && !operationSpatial.empty())
     return reportError(::llvm::createStringError(
