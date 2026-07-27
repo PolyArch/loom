@@ -1213,7 +1213,8 @@ SpatialCoreBuilder::addMemory(llvm::ArrayRef<SpatialValue> inputs,
     auto resolved = resolveValue(*state, value);
     if (!resolved)
       return resolved.takeError();
-    if (!resolved->use_empty())
+    if (!mlir::isa<mlir::MemRefType>(resolved->getType()) &&
+        !resolved->use_empty())
       return invalid("SpatialCore transport source already has a consumer");
     mlir::Type inputType = materializePortType((*state)->context, type);
     if (!sameFabricKind(resolved->getType(), inputType) ||

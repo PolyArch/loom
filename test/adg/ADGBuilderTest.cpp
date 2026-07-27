@@ -95,7 +95,7 @@ using loom::adg::FuConfigurationMode;
 using loom::adg::FuRouteSelection;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
-using loom::adg::HybridF32LocalMemoryParameters;
+using loom::adg::Hybrid32LocalMemoryParameters;
 using loom::adg::LocalMemoryServiceSpec;
 using loom::adg::MemoryConnectivitySpec;
 using loom::adg::MemoryEngineSpec;
@@ -843,14 +843,14 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
   DesignBuilder design(store);
 
   expectError(test,
-              loom::adg::makeHybridF32LocalMemory(
+              loom::adg::makeHybrid32LocalMemory(
                   {(std::uint64_t(1) << 32) + 1, std::nullopt}),
               "32-bit address capacity");
 
   auto addMemoryRoot = [&](llvm::StringRef name,
-                           HybridF32LocalMemoryParameters parameters) {
+                           Hybrid32LocalMemoryParameters parameters) {
     MemorySpec memory =
-        take(test, loom::adg::makeHybridF32LocalMemory(parameters));
+        take(test, loom::adg::makeHybrid32LocalMemory(parameters));
     require(test,
             memory.inputTypes().size() == 7 && memory.outputTypes().size() == 3,
             "hybrid local memory changed its maximal typed interface");
@@ -871,11 +871,29 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
   addMemoryRoot("temporal-hybrid-memory",
                 {8192, loom::adg::TemporalMemoryParameters{4, 4}});
 
+  MemorySpec tiered = take(
+      test, loom::adg::makeHybrid32LocalMemory({4096, std::nullopt, true}));
+  require(test,
+          tiered.inputTypes().size() == 8 &&
+              tiered.inputTypes().front().kind() == PortType::Kind::Memory,
+          "tiered memory did not expose one leading manager capability");
+  auto tieredRoot = take(test, design.createSpatialCore(
+                                  "tiered-hybrid-memory", tiered.inputTypes(),
+                                  tiered.outputTypes()));
+  std::vector<SpatialValue> tieredInputs;
+  for (std::size_t ordinal = 0; ordinal < tiered.inputTypes().size();
+       ++ordinal)
+    tieredInputs.push_back(take(test, tieredRoot.input(ordinal)));
+  auto tieredOutputs = take(test, tieredRoot.addMemory(tieredInputs, tiered));
+  if (llvm::Error error = tieredRoot.close(tieredOutputs))
+    fail(test, llvm::toString(std::move(error)));
+
   auto finalized = take(test, std::move(design).finalize());
-  require(test, finalized.roots().size() == 2,
-          "memory library did not publish both schedule variants");
+  require(test, finalized.roots().size() == 3,
+          "memory library did not publish both schedules and manager form");
   std::size_t spatialCount = 0;
   std::size_t temporalCount = 0;
+  std::size_t managerCount = 0;
   for (const auto &root : finalized.roots()) {
     const auto &view = root.view();
     const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
@@ -884,6 +902,28 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
             view.declaresLocalMemoryService(memory) &&
                 view.memoryOperationPorts(memory).size() == 2,
             "memory library lost its local service or load/store ports");
+    const loom::fabric::FabricMemoryEndpointOwnerRef owner =
+        loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
+    const std::uint64_t endpointCount = view.memoryEndpointCount(owner);
+    if (endpointCount != 0) {
+      require(test, endpointCount == 1,
+              "tiered memory exposed more than one manager endpoint");
+      const loom::fabric::FabricMemoryEndpointRef endpoint{owner, 0};
+      require(test,
+              view.memoryEndpointRole(endpoint) ==
+                  loom::fabric::FabricMemoryEndpointRole::Manager,
+              "tiered memory endpoint is not a manager capability");
+      const ::fabric::MemoryConnectivityContractRecord *connectivity =
+          view.memoryConnectivity(memory);
+      require(test, connectivity != nullptr,
+              "tiered memory lost its dispatch eligibility relation");
+      for (const auto &port : connectivity->operationPorts())
+        require(test,
+                port.capabilityTargetDomains.size() == 1 &&
+                    port.capabilityTargetDomains.front().size() == 2,
+                "tiered memory does not admit both local and manager targets");
+      ++managerCount;
+    }
     if (view.memorySchedule(memory) == ::fabric::Schedule::Spatial) {
       ++spatialCount;
     } else {
@@ -892,8 +932,10 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
               "temporal memory lost its resident contexts");
     }
   }
-  require(test, spatialCount == 1 && temporalCount == 1,
+  require(test, spatialCount == 2 && temporalCount == 1,
           "memory library changed a requested schedule");
+  require(test, managerCount == 1,
+          "memory library did not preserve the requested manager form");
 }
 
 void builtinPresetsExpandThroughPublicBuilder() {
@@ -946,9 +988,22 @@ void builtinPresetsExpandThroughPublicBuilder() {
                 loom::fabric::FabricEntityKind::SystemServiceEndpoint) == 1,
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
+    auto systemView =
+        take(test, loom::fabric::requireSystemRoot(root.view()));
+    std::size_t memoryAttachments = 0;
+    for (const auto &attachment : systemView.spatialAttachments())
+      memoryAttachments +=
+          attachment.spatialEndpoint.plane() ==
+          loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Memory;
+    require(test, memoryAttachments == expected.accCores,
+            "builtin did not attach one manager capability per AccCore");
+
     auto module =
         take(test, loom::fabric::importEntireFabricRoot(
                        root.directDependencies().front().root, store));
+    const loom::fabric::FabricModuleTemplateRef moduleTemplate(
+        uniqueEntity(test, module.view(),
+                     loom::fabric::FabricEntityKind::FabricModuleTemplate));
     require(test,
             entityCount(module.view(),
                         loom::fabric::FabricEntityKind::FabricPeOccurrence) ==
@@ -958,6 +1013,20 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     loom::fabric::FabricEntityKind::FabricMemoryOccurrence) ==
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
+    require(
+        test,
+        module.view().moduleBoundaryEndpointCount(
+            moduleTemplate, loom::fabric::FabricPortDirection::Input) ==
+            descriptor.scale.gatewayCount + 1,
+        "builtin SpatialCore did not expose one shared manager capability");
+    const loom::fabric::FabricModuleBoundaryEndpointRef memoryBoundary{
+        moduleTemplate, loom::fabric::FabricPortDirection::Input,
+        descriptor.scale.gatewayCount};
+    require(test,
+            module.view().moduleBoundaryEndpointPlane(memoryBoundary) ==
+                loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::
+                    Memory,
+            "builtin manager capability is not on the memory plane");
   }
 
   const auto preset = loom::adg::BuiltinTargetPreset::Small;

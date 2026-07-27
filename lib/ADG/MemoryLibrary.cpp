@@ -181,7 +181,7 @@ std::vector<::fabric::MemoryTransportEndpointDescriptor>
 endpointInventory(std::optional<std::uint32_t> tagWidth) {
   using loom::fabric::FabricPortDirection;
   std::vector<::fabric::MemoryTransportEndpointDescriptor> endpoints;
-  for (std::uint32_t width : {32u, 4u, 0u, 32u, 128u, 4u, 0u})
+  for (std::uint32_t width : {64u, 4u, 0u, 64u, 128u, 4u, 0u})
     endpoints.push_back({FabricPortDirection::Input, width, tagWidth});
   for (std::uint32_t width : {128u, 0u, 0u})
     endpoints.push_back({FabricPortDirection::Output, width, tagWidth});
@@ -288,7 +288,7 @@ llvm::Expected<PortType> channelPort(std::uint32_t width,
 } // namespace
 
 llvm::Expected<MemorySpec>
-makeHybridF32LocalMemory(HybridF32LocalMemoryParameters parameters) {
+makeHybrid32LocalMemory(Hybrid32LocalMemoryParameters parameters) {
   if (parameters.capacityBytes == 0)
     return invalid("local memory capacity must be positive");
   if (parameters.capacityBytes > (std::uint64_t(1) << 32))
@@ -308,7 +308,18 @@ makeHybridF32LocalMemory(HybridF32LocalMemoryParameters parameters) {
   }
 
   std::vector<PortType> inputs;
-  for (std::uint32_t width : {32u, 4u, 0u, 32u, 128u, 4u, 0u}) {
+  std::vector<std::uint32_t> managerOrdinals;
+  if (parameters.managerEndpoint) {
+    auto byte = PortType::bits(8);
+    if (!byte)
+      return byte.takeError();
+    auto manager = PortType::memory({PortType::kDynamicExtent}, *byte);
+    if (!manager)
+      return manager.takeError();
+    inputs.push_back(std::move(*manager));
+    managerOrdinals.push_back(0);
+  }
+  for (std::uint32_t width : {64u, 4u, 0u, 64u, 128u, 4u, 0u}) {
     auto type = channelPort(width, tagWidth);
     if (!type)
       return type.takeError();
@@ -345,6 +356,11 @@ makeHybridF32LocalMemory(HybridF32LocalMemoryParameters parameters) {
     ::fabric::MemoryOperationPortDispatchDeclaration dispatch;
     dispatch.capabilityTargetDomains = {{::fabric::MemoryDispatchTarget(
         std::in_place_type<::fabric::LocalMemoryDispatchTarget>)}};
+    if (parameters.managerEndpoint)
+      dispatch.capabilityTargetDomains.front().push_back(
+          ::fabric::MemoryDispatchTarget(
+              std::in_place_type<::fabric::ManagerMemoryDispatchTarget>,
+              ::fabric::ManagerMemoryDispatchTarget{0}));
     connectivityDeclaration.operationPorts.push_back(std::move(dispatch));
   }
   auto connectivity =
@@ -358,14 +374,14 @@ makeHybridF32LocalMemory(HybridF32LocalMemoryParameters parameters) {
                                         std::move(operationPorts));
   else
     engine = MemoryEngineSpec::spatial(std::move(operationPorts));
-  return MemorySpec::create(std::move(inputs), std::move(outputs), {}, {},
-                            std::move(engine), std::move(*service),
-                            std::move(*connectivity));
+  return MemorySpec::create(
+      std::move(inputs), std::move(outputs), std::move(managerOrdinals), {},
+      std::move(engine), std::move(*service), std::move(*connectivity));
 }
 
-llvm::Expected<HybridF32SystemMemorySpec>
-makeHybridF32SystemMemory(HybridF32SystemMemoryParameters parameters,
-                          loom::fabric::ServiceRateContractRecord serviceRate) {
+llvm::Expected<Hybrid32SystemMemorySpec>
+makeHybrid32SystemMemory(Hybrid32SystemMemoryParameters parameters,
+                         loom::fabric::ServiceRateContractRecord serviceRate) {
   if (parameters.capacityBytes == 0)
     return invalid("System memory capacity must be positive");
   auto endAddress = llvm::checkedAddUnsigned(parameters.addressBaseBytes,
@@ -432,8 +448,8 @@ makeHybridF32SystemMemory(HybridF32SystemMemoryParameters parameters,
       std::move(endpointCapabilities));
   if (!capabilities)
     return capabilities.takeError();
-  return HybridF32SystemMemorySpec{std::move(*contract),
-                                   std::move(*capabilities)};
+  return Hybrid32SystemMemorySpec{std::move(*contract),
+                                  std::move(*capabilities)};
 }
 
 } // namespace loom::adg

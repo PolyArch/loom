@@ -28,6 +28,16 @@ width, access, throughput, consistency, lifetime, and routing constraints.
 Equal payload width is not enough: element width, lane geometry, address form,
 mask, atomic granularity, and inactive-lane semantics remain typed facts.
 
+Local placement and manager-backed placement are targets of the same typed
+operation request, not distinct memory actor kinds. A memory occurrence may
+therefore expose both a local service and a manager endpoint while Mapping
+selects exactly one target for each operation entry. A shared module memref can
+feed several occurrences because it denotes access to one service capability,
+not duplicated token data. Keeping the builtin address channel wider than its
+local capacity also avoids conflating address representation with storage
+range: Mapping still proves that a local interval fits, while the same engine
+can issue a wider manager address without a second request protocol.
+
 ## Why Service And Operation Ports Are Separate
 
 An addressed memory actor is a software service request with data, address,

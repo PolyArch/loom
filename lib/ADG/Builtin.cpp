@@ -256,20 +256,31 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!tagged128)
     return tagged128.takeError();
 
-  std::vector<PortType> modulePorts(scale.gatewayCount, *bits128);
+  auto byte = PortType::bits(8);
+  if (!byte)
+    return byte.takeError();
+  auto managerMemory =
+      PortType::memory({PortType::kDynamicExtent}, std::move(*byte));
+  if (!managerMemory)
+    return managerMemory.takeError();
+  std::vector<PortType> moduleInputs(scale.gatewayCount, *bits128);
+  moduleInputs.push_back(*managerMemory);
+  std::vector<PortType> moduleOutputTypes(scale.gatewayCount, *bits128);
   auto spatial = design.createSpatialCore(
-      (descriptor.name + "-spatial-core").str(), modulePorts, modulePorts);
+      (descriptor.name + "-spatial-core").str(), moduleInputs,
+      moduleOutputTypes);
   if (!spatial)
     return spatial.takeError();
 
   auto spatialMemory =
-      makeHybridF32LocalMemory({scale.memoryCapacityBytes, std::nullopt});
+      makeHybrid32LocalMemory({scale.memoryCapacityBytes, std::nullopt, true});
   if (!spatialMemory)
     return spatialMemory.takeError();
-  auto temporalMemory = makeHybridF32LocalMemory(
+  auto temporalMemory = makeHybrid32LocalMemory(
       {scale.memoryCapacityBytes,
        TemporalMemoryParameters{scale.temporalResidentContexts,
-                                scale.temporalResidentContexts}});
+                                scale.temporalResidentContexts},
+       true});
   if (!temporalMemory)
     return temporalMemory.takeError();
 
@@ -343,7 +354,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                                   scale.spatialPeCount * 5, *bits128);
   for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory)
     spatialSwitchOutputTypes.insert(spatialSwitchOutputTypes.end(),
-                                    spatialMemory->inputTypes().size(),
+                                    spatialMemory->inputTypes().size() - 1,
                                     *bits128);
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
     spatialSwitchOutputTypes.push_back(*bits128);
@@ -371,7 +382,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                                    scale.temporalPeCount * 5, *tagged128);
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount; ++memory)
     temporalSwitchOutputTypes.insert(temporalSwitchOutputTypes.end(),
-                                     temporalMemory->inputTypes().size(),
+                                     temporalMemory->inputTypes().size() - 1,
                                      *tagged128);
   temporalSwitchOutputTypes.insert(temporalSwitchOutputTypes.end(),
                                    scale.gatewayCount, *tagged128);
@@ -431,7 +442,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::size_t spatialMemoryFeedbackCursor = 0;
   for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory) {
     std::vector<SpatialValue> inputs;
-    for (std::size_t ordinal = 0; ordinal != spatialMemory->inputTypes().size();
+    auto manager = spatial->input(scale.gatewayCount);
+    if (!manager)
+      return manager.takeError();
+    inputs.push_back(*manager);
+    for (std::size_t ordinal = 1; ordinal != spatialMemory->inputTypes().size();
          ++ordinal) {
       auto value = indexed<SpatialValue>(*spatialRoutes, spatialCursor,
                                          "spatial switch");
@@ -499,7 +514,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
        ++memory) {
     std::vector<SpatialValue> inputs;
-    for (std::size_t ordinal = 0;
+    auto manager = spatial->input(scale.gatewayCount);
+    if (!manager)
+      return manager.takeError();
+    inputs.push_back(*manager);
+    for (std::size_t ordinal = 1;
          ordinal != temporalMemory->inputTypes().size(); ++ordinal) {
       auto value = indexed<SpatialValue>(*temporalRoutes, temporalCursor,
                                          "temporal switch");
@@ -678,8 +697,8 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
   if (!systemMemoryCapacity)
     return invalid("builtin System memory capacity overflows u64");
-  auto systemMemory = makeHybridF32SystemMemory({0, *systemMemoryCapacity},
-                                                std::move(*serviceRate));
+  auto systemMemory = makeHybrid32SystemMemory({0, *systemMemoryCapacity},
+                                               std::move(*serviceRate));
   if (!systemMemory)
     return systemMemory.takeError();
   auto memoryService = system->addMemoryService(systemMemory->contract);

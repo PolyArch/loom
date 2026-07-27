@@ -410,11 +410,19 @@ dispatch keys, or define backend modes.
 
 Each preset also owns one System memory service at base address zero. Its
 capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
-admits the `HybridF32SystemMemorySpec` read/write domain, and it exposes one
+admits the `Hybrid32SystemMemorySpec` read/write domain, and it exposes one
 Serve endpoint in the System clock domain. Its service rate is one operation
 per System clock tick, with `temporalResidentContexts` outstanding operations
 and fair-eventual progress. These are expanded Fabric facts, not additional
 preset fields or backend defaults.
+
+Every builtin SpatialCore has exactly one `memref<?xi8>` manager-capability
+input. All of its Spatial and Temporal memory occurrences consume that same
+capability and declare both their Local Memory Service and manager endpoint as
+eligible dispatch targets. Reusing this capability is legal because a memref
+is a service capability rather than a token transfer. The System expansion
+creates the corresponding attachment for every AccCore; SystemMapping selects
+the exact System memory service and route for manager-targeted operations.
 
 ### General-Purpose FU Library
 
@@ -454,31 +462,36 @@ implementation family proves otherwise.
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
 
-#### HybridF32LocalMemory Recipe
+#### Hybrid32LocalMemory Recipe
 
-`makeHybridF32LocalMemory` is the initial public memory recipe. It returns one
+`makeHybrid32LocalMemory` is the initial public memory recipe. It returns one
 ordinary `MemorySpec`; the helper name and parameter object are authoring
 convenience and do not enter Fabric identity. The recipe has two independent
 physical operation ports, one for plain load and one for plain store, and one
-shared Local Memory Service. Both ports use the maximal 128-bit interface from
-`docs/spec-fabric-mem.md` and admit exactly scalar `f32` and contiguous
-`vector<4xf32>` access, with an absent or dynamic four-lane mask where that
-form permits it. Equal-width `vector<2xf64>` is not admitted.
+shared Local Memory Service. Both ports use 64-bit address channels and the
+maximal 128-bit data interface from `docs/spec-fabric-mem.md`. They admit
+scalar 32-bit elements and contiguous four-lane 32-bit elements, including
+`i32`, `f32`, `vector<4xi32>`, and `vector<4xf32>`, with an absent or dynamic
+four-lane mask where that form permits it. Equal-width `vector<2xf64>` is not
+admitted because its element width is 64 bits.
 
 The spatial form uses untagged operation-channel ports. Supplying the typed
 temporal parameters replaces every operation-channel port with the exact
 tagged form and requires positive tag width and resident-context count. The
 capacity is positive, fits the complete 32-bit byte-address domain, and owns
-one local Storage region. The recipe creates no
-manager or subordinate capability endpoint and advertises no atomic, fence,
-volatile, MMIO, or coherence behavior. Users needing another exact memory
+one local Storage region. The optional manager form prepends exactly one
+`memref<?xi8>` manager capability and admits both Local Memory Service and that
+manager as dispatch targets for every operation row; omitting it creates no
+manager endpoint. The recipe creates no subordinate capability endpoint and
+advertises no atomic, fence, volatile, MMIO, or coherence behavior. Users
+needing another exact memory
 contract construct the same public `MemorySpec`, operation-port, service, and
 connectivity types directly; there is no parallel recipe schema.
 
-`makeHybridF32SystemMemory` is the matching System-level convenience recipe.
-It returns one `HybridF32SystemMemorySpec` containing the exact System
+`makeHybrid32SystemMemory` is the matching System-level convenience recipe.
+It returns one `Hybrid32SystemMemorySpec` containing the exact System
 `MemoryServiceContractRecord` and its matching Serve endpoint capability set.
-It admits the same scalar `f32` and contiguous `vector<4xf32>` plain read/write
+It admits the same scalar and contiguous four-lane 32-bit plain read/write
 domain with a 128-bit service beat. The caller supplies one absolute address
 range and one domain-owned `ServiceRateContractRecord`, then passes the two
 returned records to `SystemBuilder::addMemoryService` and
