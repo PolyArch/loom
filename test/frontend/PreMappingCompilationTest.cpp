@@ -64,9 +64,9 @@ void exactFabricAndWholeProgramDataflow() {
   if (design.roots().size() != 1)
     fail(test, "builtin target did not publish one System Fabric root");
   llvm::LLVMContext context;
-  auto compiled =
-      take(test, loom::frontend::compileLlvmModuleToPreMapping(
-                     parseModule(test, context), design.roots().front()));
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseModule(test, context),
+                                 design.roots().front().reference(), store));
   if (compiled.fabric != design.roots().front().reference())
     fail(test, "pre-Mapping result lost exact Fabric target identity");
   if (!compiled.canonicalDataflow.module().lookupSymbol("main"))

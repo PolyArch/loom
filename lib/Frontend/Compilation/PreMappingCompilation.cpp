@@ -34,6 +34,17 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
                                std::move(*dataflow)};
 }
 
+llvm::Expected<PreMappingCompilation> compileLlvmModuleToPreMapping(
+    std::unique_ptr<llvm::Module> module, const ArtifactRootReference &fabric,
+    const ArtifactStore &store, const PreMappingCompilationOptions &options) {
+  if (fabric.schemaIdentity.empty())
+    return invalid("Fabric artifact reference is required");
+  auto imported = ::loom::fabric::importEntireFabricRoot(fabric, store);
+  if (!imported)
+    return imported.takeError();
+  return compileLlvmModuleToPreMapping(std::move(module), *imported, options);
+}
+
 llvm::Expected<PublishedPreMappingCompilation>
 publishPreMappingCompilation(const PreMappingCompilation &compilation,
                              const ArtifactStore &store) {

@@ -48,6 +48,14 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
                               const ::loom::fabric::FinalizedFabricRoot &fabric,
                               const PreMappingCompilationOptions &options = {});
 
+/// Resolves the invocation's exact published Fabric through the Fabric owner
+/// before running the mechanical frontend boundary.
+llvm::Expected<PreMappingCompilation>
+compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
+                              const ArtifactRootReference &fabric,
+                              const ArtifactStore &store,
+                              const PreMappingCompilationOptions &options = {});
+
 /// Publishes the existing Structured Program and Canonical Dataflow Artifacts
 /// through their family owners. Fabric was already published by its owner and
 /// is returned only as the exact invocation binding.
