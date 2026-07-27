@@ -125,6 +125,42 @@ declare float @llvm.fmuladd.f32(float, float, float)
 }
 
 std::unique_ptr<llvm::Module>
+parseWholeCallableLoopModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define void @kernel(ptr %a) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %p = getelementptr float, ptr %a, i64 %i
+  %value = load float, ptr %p, align 4
+  store float %value, ptr %p, align 4
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp ne i64 %next, 64
+  br i1 %done, label %loop, label %exit
+
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<whole-callable-loop>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseLoopOwnershipModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -405,6 +441,51 @@ void explicitFmulAddExecutionShape() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void wholeCallableRequiresCanonicalAddressIndexDecision() {
+  const char *test = "wholeCallableRequiresCanonicalAddressIndexDecision";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-whole-callable-index", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseWholeCallableLoopModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto candidate = loom::frontend::materializeWholeCallableSpatialOwnership(
+      compiled.structuredProgram,
+      findCallable(test, compiled.structuredProgram, "kernel"),
+      design.roots().front());
+  if (candidate)
+    fail(test, "whole-callable ownership silently selected an index width");
+  std::string message = llvm::toString(candidate.takeError());
+  if (message.find("explicit canonical index width") == std::string::npos)
+    fail(test, "missing index decision was not diagnosed: " + message);
+
+  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  auto selected = take(
+      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                compiled.structuredProgram,
+                findCallable(test, compiled.structuredProgram, "kernel"),
+                design.roots().front(), options));
+  unsigned indexWidth = take(
+      test, loom::getIndexBitWidth(selected.structuredProgram.module()));
+  if (indexWidth != 32)
+    fail(test, "whole-callable index decision was not materialized");
+  auto view = take(test, selected.canonicalDataflow.view());
+  if (view.graphs().size() != 1 || view.actors().empty())
+    fail(test, "whole-callable index decision did not publish its graph");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void explicitOperationSpatialOwnership() {
   const char *test = "explicitOperationSpatialOwnership";
   llvm::SmallString<128> directory;
@@ -624,6 +705,7 @@ int main() {
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
   explicitFmulAddExecutionShape();
+  wholeCallableRequiresCanonicalAddressIndexDecision();
   explicitOperationSpatialOwnership();
   operationOwnershipScopesFollowCanonicalOrder();
   operationSpatialOwnershipRejectsEscapedResult();

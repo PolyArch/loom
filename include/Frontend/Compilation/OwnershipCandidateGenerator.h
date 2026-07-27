@@ -22,12 +22,14 @@ struct MaterializedOwnershipCandidate final {
 };
 
 /// Typed decisions that must be materialized in the selected Structured
-/// Program before the mechanical Dataflow boundary. An absent decision never
-/// selects a default; a selected region that still contains such a choice
-/// fails canonical publication.
+/// Program before the mechanical Dataflow boundary. The canonical index width
+/// applies to every dynamic LLVM GEP in the selected callable. An absent
+/// decision never selects a default; a selected region that still contains
+/// such a choice fails canonical publication.
 struct WholeCallableSpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
+  std::optional<unsigned> canonicalIndexWidth;
 };
 
 /// Typed decisions selected for one operation-owned Spatial candidate. An

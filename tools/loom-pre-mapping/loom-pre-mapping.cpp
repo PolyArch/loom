@@ -88,8 +88,8 @@ namespace {
 
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
-    ::llvm::cl::desc("explicit canonical index width materialized for an "
-                     "operation-owned Spatial candidate"),
+    ::llvm::cl::desc("explicit canonical index width materialized for a "
+                     "selected Spatial candidate"),
     ::llvm::cl::value_desc("bits"), ::llvm::cl::init(0));
 
 enum class FMulAddShapeOption { Unspecified, Fused, Split };
@@ -242,10 +242,11 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "whole-callable and operation Spatial selections are exclusive"));
-  if (canonicalIndexWidth != 0 && operationSpatial.empty())
+  if (canonicalIndexWidth != 0 && operationSpatial.empty() &&
+      wholeCallableSpatial.empty())
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
-        "canonical index width requires an operation Spatial selection"));
+        "canonical index width requires a Spatial selection"));
   if (fmuladdShape != FMulAddShapeOption::Unspecified &&
       wholeCallableSpatial.empty())
     return reportError(::llvm::createStringError(
@@ -260,6 +261,8 @@ int main(int argc, char **argv) {
       return reportError(callable.takeError());
     loom::frontend::WholeCallableSpatialOwnershipOptions ownershipOptions;
     ownershipOptions.lowering = compilationOptions.lowering;
+    if (canonicalIndexWidth != 0)
+      ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
     if (fmuladdShape == FMulAddShapeOption::Fused)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Fused;

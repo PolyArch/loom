@@ -436,6 +436,11 @@ materializeWholeCallableSpatialOwnership(
   if (!function)
     return invalid("selected StructuredEntityRef is not an LLVM callable");
 
+  if (llvm::Error error = detail::materializeAddressIndexContract(
+          selection->clone.get(), function.getOperation(),
+          options.canonicalIndexWidth))
+    return std::move(error);
+
   if (options.fmuladdExecutionShape) {
     mlir::PassManager materialization(
         function.getContext(), mlir::LLVM::LLVMFuncOp::getOperationName());

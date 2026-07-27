@@ -137,6 +137,13 @@ carried by the exact EvaluationRequest, DSE use-def edge, and Mapping. This
 keeps the hardware dependency explicit without creating a second target
 authority inside software IR.
 
+Address-index width illustrates this boundary. Fabric capability may suggest
+which widths are worth exploring, but the selected width changes the typed
+software representation and therefore belongs in the Structured candidate.
+Requiring one explicit decision for every Spatial ownership shape avoids an
+ambient default and lets proof-backed narrowing reject only the infeasible
+candidate rather than silently truncating source addresses.
+
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
 dependence and logical-domain models are derived analyses; physical binding

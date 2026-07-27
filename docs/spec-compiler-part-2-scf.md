@@ -522,6 +522,16 @@ candidate semantics or performance must be materialized in Sn before handoff.
 A residual unsupported or unmaterialized aggregation or reduction form makes
 Sn non-finalizable; Part 3 neither drops it nor selects a fallback.
 
+Every selected Spatial region containing a dynamic LLVM GEP also materializes
+one explicit canonical address-index width in its Structured candidate. This
+rule is identical for whole-callable and operation-owned regions. Candidate
+generation may enumerate widths admitted by the exact Fabric, but neither the
+lowerer nor ambient process configuration selects one. A source integer wider
+than the selected width is narrowed only when its complete signed value domain
+is proven to fit; otherwise that candidate is non-finalizable. The resulting
+fixed index DataLayout entry and explicit casts are ordinary candidate
+semantics and are the sole input consumed by mechanical Dataflow lowering.
+
 Sn uses two ownership carriers:
 
 * `dataflow.thread` is the selected AccCore carrier. Its body remains the
