@@ -6,6 +6,7 @@
 #include <memory>
 
 namespace mlir {
+class Operation;
 class PassManager;
 } // namespace mlir
 
@@ -92,6 +93,14 @@ enum class FMulAddExecutionShape {
   // code generation. Every other source fast-math flag is preserved.
   Split,
 };
+
+// Materialize the selected execution shape only within `root` and the
+// operations it owns. Nested callables are separate ownership domains and are
+// not traversed. This is the production operation-scoped entry point used by
+// candidate materialization; the pass below applies the same implementation
+// independently to each callable region.
+void materializeFMulAddInOperation(::mlir::Operation &root,
+                                   FMulAddExecutionShape shape);
 
 // Materialize the selected execution shape for each exactly representable
 // llvm.intr.fmuladd in callable regions, preserving exact types and locations

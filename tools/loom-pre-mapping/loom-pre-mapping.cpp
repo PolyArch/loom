@@ -248,10 +248,10 @@ int main(int argc, char **argv) {
         ::llvm::inconvertibleErrorCode(),
         "canonical index width requires a Spatial selection"));
   if (fmuladdShape != FMulAddShapeOption::Unspecified &&
-      wholeCallableSpatial.empty())
+      wholeCallableSpatial.empty() && operationSpatial.empty())
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
-        "fmuladd shape requires a whole-callable Spatial selection"));
+        "fmuladd shape requires a Spatial selection"));
 
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!wholeCallableSpatial.empty()) {
@@ -285,6 +285,12 @@ int main(int argc, char **argv) {
     ownershipOptions.lowering = compilationOptions.lowering;
     if (canonicalIndexWidth != 0)
       ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
+    if (fmuladdShape == FMulAddShapeOption::Fused)
+      ownershipOptions.fmuladdExecutionShape =
+          loom::raising::FMulAddExecutionShape::Fused;
+    else if (fmuladdShape == FMulAddShapeOption::Split)
+      ownershipOptions.fmuladdExecutionShape =
+          loom::raising::FMulAddExecutionShape::Split;
     auto materialized = loom::frontend::materializeOperationSpatialOwnership(
         compiled->structuredProgram, *operation, design->roots().front(),
         ownershipOptions);

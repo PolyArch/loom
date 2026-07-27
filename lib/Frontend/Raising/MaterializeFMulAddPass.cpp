@@ -56,8 +56,8 @@ using loom::raising::FMulAddExecutionShape;
 // replacement keeps the source location and the exact operand and result
 // types, and carries the source fast-math flags the selected shape still
 // permits.
-void materialize(::mlir::LLVM::FMulAddOp op, FMulAddExecutionShape shape,
-                 ::mlir::IRRewriter &rewriter) {
+void materializeOne(::mlir::LLVM::FMulAddOp op, FMulAddExecutionShape shape,
+                    ::mlir::IRRewriter &rewriter) {
   rewriter.setInsertionPoint(op);
   ::mlir::Location loc = op.getLoc();
   ::mlir::Type type = op.getRes().getType();
@@ -95,6 +95,23 @@ void materialize(::mlir::LLVM::FMulAddOp op, FMulAddExecutionShape shape,
                                            product.getResult(), op.getC());
   sum.setFastmath(split);
   rewriter.replaceOp(op, sum);
+}
+
+void appendRepresentable(
+    ::mlir::Operation *operation,
+    ::llvm::SmallVectorImpl<::mlir::LLVM::FMulAddOp> &selected) {
+  auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(operation);
+  if (fmuladd && loom::raising::restatesExactly(fmuladd.getOperation(),
+                                                /*floating=*/true))
+    selected.push_back(fmuladd);
+}
+
+void materializeSelected(::mlir::MLIRContext &context,
+                         ::llvm::ArrayRef<::mlir::LLVM::FMulAddOp> selected,
+                         FMulAddExecutionShape shape) {
+  ::mlir::IRRewriter rewriter(&context);
+  for (::mlir::LLVM::FMulAddOp op : selected)
+    materializeOne(op, shape, rewriter);
 }
 
 struct MaterializeFMulAddPass
@@ -151,10 +168,7 @@ struct MaterializeFMulAddPass
         getOperation(), [&](::mlir::Region &region) {
           (void)loom::raising::forEachOwnedOperation(
               region, [&](::mlir::Operation *op) {
-                auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(op);
-                if (fmuladd && loom::raising::restatesExactly(
-                                   fmuladd.getOperation(), /*floating=*/true))
-                  selected.push_back(fmuladd);
+                appendRepresentable(op, selected);
                 return ::mlir::WalkResult::advance();
               });
           return ::mlir::success();
@@ -163,9 +177,7 @@ struct MaterializeFMulAddPass
     if (selected.empty())
       return markAllAnalysesPreserved();
 
-    ::mlir::IRRewriter rewriter(&getContext());
-    for (::mlir::LLVM::FMulAddOp op : selected)
-      materialize(op, shape.getValue(), rewriter);
+    materializeSelected(getContext(), selected, shape.getValue());
   }
 };
 
@@ -173,6 +185,19 @@ struct MaterializeFMulAddPass
 
 namespace loom {
 namespace raising {
+
+void materializeFMulAddInOperation(::mlir::Operation &root,
+                                   FMulAddExecutionShape shape) {
+  ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;
+  root.walk<::mlir::WalkOrder::PreOrder>(
+      [&](::mlir::Operation *operation) -> ::mlir::WalkResult {
+        if (operation != &root && isCallableOp(operation))
+          return ::mlir::WalkResult::skip();
+        appendRepresentable(operation, selected);
+        return ::mlir::WalkResult::advance();
+      });
+  materializeSelected(*root.getContext(), selected, shape);
+}
 
 std::unique_ptr<::mlir::Pass>
 createMaterializeFMulAddPass(FMulAddExecutionShape shape) {

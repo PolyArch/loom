@@ -33,12 +33,14 @@ struct WholeCallableSpatialOwnershipOptions final {
 };
 
 /// Typed decisions selected for one operation-owned Spatial candidate. An
-/// explicit canonical index width is materialized into the child Structured
-/// Program. Wider LLVM GEP indices are narrowed only when their complete
-/// value domain is proven to fit that signed width; absence never selects an
-/// ambient or Fabric-derived default.
+/// explicit FMA execution shape and canonical index width are materialized
+/// only within the selected operation in the child Structured Program. Wider
+/// LLVM GEP indices are narrowed only when their complete value domain is
+/// proven to fit that signed width; absence never selects an ambient or
+/// Fabric-derived default.
 struct OperationSpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
+  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
 };
 

@@ -276,15 +276,18 @@ llvm::SmallVector<mlir::Value> externalLiveIns(mlir::Operation *operation) {
   return liveIns;
 }
 
-llvm::Error
-materializeSelectedOperation(mlir::ModuleOp module, mlir::Operation *operation,
-                             std::optional<unsigned> canonicalIndexWidth) {
+llvm::Error materializeSelectedOperation(
+    mlir::ModuleOp module, mlir::Operation *operation,
+    std::optional<unsigned> canonicalIndexWidth,
+    std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape) {
   auto callable = eligibleOwningCallable(operation);
   if (!callable)
     return callable.takeError();
   if (llvm::Error error = detail::materializeAddressIndexContract(
           module, operation, canonicalIndexWidth))
     return error;
+  if (fmuladdExecutionShape)
+    raising::materializeFMulAddInOperation(*operation, *fmuladdExecutionShape);
   const llvm::SmallVector<mlir::Value> liveIns = externalLiveIns(operation);
   mlir::Location location = operation->getLoc();
   auto boundary =
@@ -468,7 +471,7 @@ materializeOperationSpatialOwnership(
     return selection.takeError();
   if (llvm::Error error = materializeSelectedOperation(
           selection->clone.get(), selection->operation,
-          options.canonicalIndexWidth))
+          options.canonicalIndexWidth, options.fmuladdExecutionShape))
     return std::move(error);
   return finalizeOwnershipCandidate(selection->clone.get(), fabric,
                                     options.lowering);

@@ -125,6 +125,55 @@ declare float @llvm.fmuladd.f32(float, float, float)
 }
 
 std::unique_ptr<llvm::Module>
+parseOperationFmulAddModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
+target triple = "riscv32-unknown-unknown"
+
+define void @fmuladd_loop(ptr %a, ptr %b, ptr %c) {
+entry:
+  %outside_lhs = load float, ptr %a, align 4
+  %outside_rhs = load float, ptr %b, align 4
+  %outside_acc = load float, ptr %c, align 4
+  %outside = call float @llvm.fmuladd.f32(
+      float %outside_lhs, float %outside_rhs, float %outside_acc)
+  store float %outside, ptr %c, align 4
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %pa = getelementptr float, ptr %a, i32 %i
+  %pb = getelementptr float, ptr %b, i32 %i
+  %pc = getelementptr float, ptr %c, i32 %i
+  %lhs = load float, ptr %pa, align 4
+  %rhs = load float, ptr %pb, align 4
+  %acc = load float, ptr %pc, align 4
+  %result = call float @llvm.fmuladd.f32(
+      float %lhs, float %rhs, float %acc)
+  store float %result, ptr %pc, align 4
+  %next = add nuw nsw i32 %i, 1
+  %done = icmp ne i32 %next, 4
+  br i1 %done, label %loop, label %exit
+
+exit:
+  ret void
+}
+
+declare float @llvm.fmuladd.f32(float, float, float)
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<operation-fmuladd>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseWholeCallableLoopModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
@@ -226,6 +275,7 @@ loop:
 exit:
   ret i32 %result
 }
+
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<loop-owner>");
@@ -718,6 +768,57 @@ void operationOwnershipScopesFollowCanonicalOrder() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void operationFmulAddDecisionIsCandidateLocal() {
+  const char *test = "operationFmulAddDecisionIsCandidateLocal";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-operation-fmuladd", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseOperationFmulAddModule(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::OperationSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
+  auto selected = take(
+      test,
+      loom::frontend::materializeOperationSpatialOwnership(
+          compiled.structuredProgram,
+          findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop"),
+          design.roots().front(), options));
+
+  auto graph = take(test, selected.canonicalDataflow.view());
+  bool sawFma = false;
+  for (const dataflow::CanonicalActorView &actor : graph.actors()) {
+    auto projection =
+        take(test, dataflow::projectRegisteredActorSchemaProjection(actor.op));
+    sawFma |= projection.schema == dataflow::OperationSchemaId::MathFma;
+  }
+  if (!sawFma)
+    fail(test, "selected operation did not publish its Fused execution shape");
+
+  auto wrapper =
+      selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "fmuladd_loop");
+  bool retainedUnselectedChoice = false;
+  wrapper.walk([&](mlir::LLVM::FMulAddOp) {
+    retainedUnselectedChoice = true;
+    return mlir::WalkResult::interrupt();
+  });
+  if (!retainedUnselectedChoice)
+    fail(test, "operation decision rewrote an unselected fmuladd");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationSpatialOwnershipRejectsEscapedResult() {
   const char *test = "operationSpatialOwnershipRejectsEscapedResult";
   llvm::SmallString<128> directory;
@@ -757,6 +858,7 @@ int main() {
   wholeCallableRequiresCanonicalAddressIndexDecision();
   explicitOperationSpatialOwnership();
   operationOwnershipScopesFollowCanonicalOrder();
+  operationFmulAddDecisionIsCandidateLocal();
   operationSpatialOwnershipRejectsEscapedResult();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;
