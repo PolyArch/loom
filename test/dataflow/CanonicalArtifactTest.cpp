@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -70,7 +71,7 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
                     mlir::arith::ArithDialect, mlir::DLTIDialect,
-                    mlir::memref::MemRefDialect>();
+                    mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
     auto *c = new mlir::MLIRContext(registry);
     c->loadAllAvailableDialects();
     return c;
@@ -380,6 +381,24 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
           identityOf(test, twoLaunchThread("g0", "g1")) !=
               identityOf(test, twoLaunchThread("g1", "g0")),
           "stored-program order in a thread body must change identity");
+}
+
+void storedProgramOperationsAreNotActors() {
+  const char *test = "storedProgramOperationsAreNotActors";
+  CanonicalDataflowArtifact artifact = finalize(test, R"mlir(
+module {
+  llvm.func @update(%aggregate: !llvm.struct<(i16, !llvm.ptr)>,
+                    %value: !llvm.ptr)
+      -> !llvm.struct<(i16, !llvm.ptr)> {
+    %updated = llvm.insertvalue %value, %aggregate[1]
+      : !llvm.struct<(i16, !llvm.ptr)>
+    llvm.return %updated : !llvm.struct<(i16, !llvm.ptr)>
+  }
+}
+)mlir");
+  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  require(test, view.graphs().empty() && view.actors().empty(),
+          "stored-program LLVM operations must not become Spatial actors");
 }
 
 // (c) Finalize, import, and rejections over all five kinds with no Mapping
@@ -887,6 +906,7 @@ int main() {
   canonicalInvariance();
   artifactStoreRoundTrip();
   semanticDifferences();
+  storedProgramOperationsAreNotActors();
   finalizeImportRejections();
   rootedLaunchTokenEdge();
   channelMulticastTerminals();

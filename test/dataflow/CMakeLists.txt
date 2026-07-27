@@ -49,6 +49,7 @@ target_link_libraries(loom-dataflow-canonical-artifact-test PRIVATE
   MLIRDataflow
   MLIRDLTIDialect
   MLIRFuncDialect
+  MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRIR
   MLIRParser
