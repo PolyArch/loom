@@ -12,6 +12,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -202,7 +203,7 @@ materializeWholeCallableSpatialOwnership(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &callable,
     const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &options) {
+    const WholeCallableSpatialOwnershipOptions &options) {
   auto parentView = parent.view();
   if (!parentView)
     return parentView.takeError();
@@ -226,6 +227,16 @@ materializeWholeCallableSpatialOwnership(
   if (!function)
     return invalid("selected callable changed kind in the private clone");
 
+  if (options.fmuladdExecutionShape) {
+    mlir::PassManager materialization(
+        function.getContext(), mlir::LLVM::LLVMFuncOp::getOperationName());
+    materialization.enableVerifier(options.lowering.verifyEach);
+    materialization.addPass(
+        raising::createMaterializeFMulAddPass(*options.fmuladdExecutionShape));
+    if (mlir::failed(materialization.run(function.getOperation())))
+      return invalid("selected fmuladd execution shape is not materializable");
+  }
+
   if (auto thread = materializeThread(clone.get(), function); !thread)
     return thread.takeError();
   if (mlir::failed(mlir::verify(clone.get())))
@@ -235,7 +246,8 @@ materializeWholeCallableSpatialOwnership(
   if (!structured)
     return structured.takeError();
   auto canonical =
-      lowering::lowerStructuredProgramToCanonicalDataflow(*structured, options);
+      lowering::lowerStructuredProgramToCanonicalDataflow(*structured,
+                                                           options.lowering);
   if (!canonical)
     return canonical.takeError();
   if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))

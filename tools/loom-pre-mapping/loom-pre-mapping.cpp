@@ -11,6 +11,7 @@
 //     loom-pre-mapping --builtin=small|default|large --artifact-store=<dir>
 //                      --counts=<counts.json>
 //                      [--whole-callable-spatial=<symbol>]
+//                      [--fmuladd-shape=fused|split]
 //                      [-o output.mlir] input.ll
 //
 // stdin is read when input is "-" or the positional arg is missing.
@@ -76,6 +77,18 @@ namespace {
     ::llvm::cl::desc("materialize one exact LLVM callable as an "
                      "explicit whole-callable Spatial ownership candidate"),
     ::llvm::cl::value_desc("symbol"), ::llvm::cl::init(""));
+
+enum class FMulAddShapeOption { Unspecified, Fused, Split };
+
+::llvm::cl::opt<FMulAddShapeOption> fmuladdShape(
+    "fmuladd-shape",
+    ::llvm::cl::desc("typed execution-shape decision for selected "
+                     "llvm.intr.fmuladd operations"),
+    ::llvm::cl::values(
+        clEnumValN(FMulAddShapeOption::Fused, "fused", "one fused math.fma"),
+        clEnumValN(FMulAddShapeOption::Split, "split",
+                   "separate arith.mulf and arith.addf")),
+    ::llvm::cl::init(FMulAddShapeOption::Unspecified));
 
 int reportError(::llvm::Error error) {
   ::llvm::errs() << "loom-pre-mapping: " << ::llvm::toString(std::move(error))
@@ -187,10 +200,17 @@ int main(int argc, char **argv) {
         resolveCallable(compiled->structuredProgram, wholeCallableSpatial);
     if (!callable)
       return reportError(callable.takeError());
-    auto materialized =
-        loom::frontend::materializeWholeCallableSpatialOwnership(
-            compiled->structuredProgram, *callable, design->roots().front(),
-            compilationOptions.lowering);
+    loom::frontend::WholeCallableSpatialOwnershipOptions ownershipOptions;
+    ownershipOptions.lowering = compilationOptions.lowering;
+    if (fmuladdShape == FMulAddShapeOption::Fused)
+      ownershipOptions.fmuladdExecutionShape =
+          loom::raising::FMulAddExecutionShape::Fused;
+    else if (fmuladdShape == FMulAddShapeOption::Split)
+      ownershipOptions.fmuladdExecutionShape =
+          loom::raising::FMulAddExecutionShape::Split;
+    auto materialized = loom::frontend::materializeWholeCallableSpatialOwnership(
+        compiled->structuredProgram, *callable, design->roots().front(),
+        ownershipOptions);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));

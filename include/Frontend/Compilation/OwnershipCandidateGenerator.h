@@ -4,8 +4,11 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
+#include "Frontend/Raising/Passes.h"
 
 #include "llvm/Support/Error.h"
+
+#include <optional>
 
 namespace loom::frontend {
 
@@ -15,6 +18,15 @@ namespace loom::frontend {
 struct MaterializedOwnershipCandidate final {
   StructuredProgramCandidate structuredProgram;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
+};
+
+/// Typed decisions that must be materialized in the selected Structured
+/// Program before the mechanical Dataflow boundary. An absent decision never
+/// selects a default; a selected region that still contains such a choice
+/// fails canonical publication.
+struct WholeCallableSpatialOwnershipOptions final {
+  lowering::CanonicalDataflowLoweringOptions lowering;
+  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
 };
 
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
@@ -27,7 +39,7 @@ materializeWholeCallableSpatialOwnership(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &callable,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &options = {});
+    const WholeCallableSpatialOwnershipOptions &options = {});
 
 } // namespace loom::frontend
 
