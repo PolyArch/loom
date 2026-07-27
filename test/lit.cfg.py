@@ -39,6 +39,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "test", "adg"),
     os.path.join(config.loom_obj_root, "test", "dataflow"),
     os.path.join(config.loom_obj_root, "test", "fabric"),
+    os.path.join(config.loom_obj_root, "test", "frontend"),
     os.path.join(config.loom_obj_root, "test", "simulator"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
@@ -90,6 +91,7 @@ tools = [
     "loom-simulator-simulation-wire-test",
     "loom-simulator-synchronization-test",
     "loom-simulator-vector-boundary-test",
+    "loom-structured-program-artifact-test",
     "mlir-opt",
     "mlir-translate",
 ]

@@ -69,6 +69,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-system-service-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-fabric-temporal-switch-resource-contract-test
+  loom-structured-program-artifact-test
   loom-frontend-payload-framing-test
   loom-mapping-core-test
   loom-pnr-index-test
