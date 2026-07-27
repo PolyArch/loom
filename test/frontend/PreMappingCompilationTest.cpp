@@ -74,6 +74,17 @@ void exactFabricAndWholeProgramDataflow() {
   auto view = take(test, compiled.canonicalDataflow.view());
   if (!view.graphs().empty())
     fail(test, "mechanical compilation invented a SpatialCore graph");
+  auto published =
+      take(test, loom::frontend::publishPreMappingCompilation(compiled, store));
+  if (published.fabric != design.roots().front().reference())
+    fail(test, "published compilation changed its exact Fabric binding");
+  auto importedStructured = take(test, loom::frontend::importStructuredProgram(
+                                           published.structuredProgram, store));
+  auto importedDataflow = take(test, dataflow::importCanonicalDataflow(
+                                         published.canonicalDataflow, store));
+  if (importedStructured.identity() != compiled.structuredProgram.identity() ||
+      importedDataflow.identity() != compiled.canonicalDataflow.identity())
+    fail(test, "published artifacts did not round-trip through their owners");
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
     fail(test, "cannot remove artifact store directory: " + cleanup.message());

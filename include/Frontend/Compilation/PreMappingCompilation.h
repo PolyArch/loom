@@ -30,6 +30,14 @@ struct PreMappingCompilationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
 };
 
+/// Persistent projections of a completed pre-Mapping invocation. This is not
+/// an Artifact family; each reference remains owned by its existing family.
+struct PublishedPreMappingCompilation final {
+  ArtifactRootReference fabric;
+  ArtifactRootReference structuredProgram;
+  ArtifactRootReference canonicalDataflow;
+};
+
 /// Runs the mechanical LLVM-to-Structured and Structured-to-Dataflow
 /// boundaries against one already-finalized exact Fabric target. Structured
 /// optimization, candidate generation, Evaluation, and Mapping remain outside
@@ -39,6 +47,13 @@ llvm::Expected<PreMappingCompilation>
 compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
                               const ::loom::fabric::FinalizedFabricRoot &fabric,
                               const PreMappingCompilationOptions &options = {});
+
+/// Publishes the existing Structured Program and Canonical Dataflow Artifacts
+/// through their family owners. Fabric was already published by its owner and
+/// is returned only as the exact invocation binding.
+llvm::Expected<PublishedPreMappingCompilation>
+publishPreMappingCompilation(const PreMappingCompilation &compilation,
+                             const ArtifactStore &store);
 
 } // namespace loom::frontend
 

@@ -34,4 +34,21 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
                                std::move(*dataflow)};
 }
 
+llvm::Expected<PublishedPreMappingCompilation>
+publishPreMappingCompilation(const PreMappingCompilation &compilation,
+                             const ArtifactStore &store) {
+  if (compilation.fabric.schemaIdentity.empty())
+    return invalid("pre-Mapping compilation has no Fabric binding");
+  auto structured =
+      publishStructuredProgram(compilation.structuredProgram, store);
+  if (!structured)
+    return structured.takeError();
+  auto dataflow =
+      publishCanonicalDataflow(compilation.canonicalDataflow, store);
+  if (!dataflow)
+    return dataflow.takeError();
+  return PublishedPreMappingCompilation{
+      compilation.fabric, std::move(*structured), std::move(*dataflow)};
+}
+
 } // namespace loom::frontend
