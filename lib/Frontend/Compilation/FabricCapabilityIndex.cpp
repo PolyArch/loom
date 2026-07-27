@@ -109,7 +109,7 @@ void frontend::FabricCapabilityIndex::index(
             continue;
           indexed.set(schemaOrdinal);
           memoryPortsBySchema_[schemaOrdinal].push_back(
-              MemoryResource{ownerOrdinal, port});
+              MemoryResource{ownerOrdinal, port, rootOccurrenceCount});
         }
       }
       continue;
@@ -212,6 +212,18 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
   return admittingOperationResources(*projection, *indexBitWidth);
 }
 
+llvm::Expected<std::uint64_t>
+frontend::FabricCapabilityIndex::admittingOperationResourceCount(
+    mlir::Operation *actor) const {
+  auto projection = dataflow::projectRegisteredActorSchemaProjection(actor);
+  if (!projection)
+    return projection.takeError();
+  auto indexBitWidth = loom::getIndexBitWidth(actor);
+  if (!indexBitWidth)
+    return indexBitWidth.takeError();
+  return admittingOperationResourceCount(*projection, *indexBitWidth);
+}
+
 llvm::Expected<llvm::SmallVector<
     loom::ArtifactReference<loom::fabric::FabricMemoryCapabilityAlternativeRef>,
     4>>
@@ -260,6 +272,56 @@ frontend::FabricCapabilityIndex::admittingMemoryResources(
               fabric::FabricMemoryCapabilityAlternativeRef{
                   resource.reference, match.alternativeOrdinal}});
     }
+  }
+  return result;
+}
+
+llvm::Expected<std::uint64_t>
+frontend::FabricCapabilityIndex::admittingMemoryResourceCount(
+    mlir::Operation *actor) const {
+  auto projection = dataflow::projectRegisteredActorSchemaProjection(actor);
+  if (!projection)
+    return projection.takeError();
+  if (dataflow::actorKind(projection->schema) !=
+      dataflow::CanonicalDataflowActorKind::Memory)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "fabric_capability_query_invalid: actor is not a memory actor");
+
+  auto service = dataflow::semantics::CanonicalService::forActor(actor);
+  if (!service)
+    return service.takeError();
+  std::optional<dataflow::semantics::CanonicalMemoryAccessView> access;
+  if (service->kind() != dataflow::semantics::ServiceKind::MemoryFence) {
+    auto projected = dataflow::semantics::getCanonicalMemoryAccessView(actor);
+    if (!projected)
+      return projected.takeError();
+    access.emplace(*projected);
+  }
+
+  std::uint64_t result = 0;
+  const std::uint32_t schemaOrdinal =
+      static_cast<std::uint32_t>(projection->schema);
+  if (schemaOrdinal >= memoryPortsBySchema_.size())
+    return result;
+  for (const MemoryResource &resource : memoryPortsBySchema_[schemaOrdinal]) {
+    const fabric::FabricArtifactView &owner = owners_[resource.ownerOrdinal];
+    const fabric::MemoryOperationPortView *port =
+        owner.memoryOperationPort(resource.reference);
+    if (!port)
+      continue;
+    auto matches = port->matchingCapabilities(*projection, *service, access);
+    if (!matches)
+      return matches.takeError();
+    if (matches->empty())
+      continue;
+    const std::optional<std::uint64_t> total =
+        llvm::checkedAddUnsigned(result, resource.rootOccurrenceCount);
+    if (!total)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "fabric_capability_count_overflow: memory occurrence sum");
+    result = *total;
   }
   return result;
 }

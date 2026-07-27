@@ -26,6 +26,7 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LoomADGBuilder
   LoomCommon
   LoomFrontendCompilation
+  LoomStructuredFabricAnalyticModel
   LLVMCore
   LLVMIRReader
   LLVMSupport

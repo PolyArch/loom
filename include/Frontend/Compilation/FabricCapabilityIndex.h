@@ -39,6 +39,9 @@ public:
       const ::dataflow::CanonicalActorSchemaProjection &actor,
       unsigned indexBitWidth) const;
 
+  llvm::Expected<std::uint64_t>
+  admittingOperationResourceCount(::mlir::Operation *actor) const;
+
   llvm::Expected<llvm::SmallVector<
       ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>>
   admittingOperationResources(::mlir::Operation *actor) const;
@@ -53,6 +56,12 @@ public:
       4>>
   admittingMemoryResources(::mlir::Operation *actor) const;
 
+  /// Counts concrete admitted memory operation ports. Multiple matching
+  /// capability alternatives on one physical port still represent one
+  /// concrete service resource.
+  llvm::Expected<std::uint64_t>
+  admittingMemoryResourceCount(::mlir::Operation *actor) const;
+
 private:
   struct OperationResource final {
     std::size_t ownerOrdinal = 0;
@@ -64,6 +73,7 @@ private:
   struct MemoryResource final {
     std::size_t ownerOrdinal = 0;
     ::loom::fabric::FabricMemoryOperationPortRef reference;
+    std::uint64_t rootOccurrenceCount = 0;
   };
 
   void index(const ::loom::fabric::FabricArtifactView &fabric,

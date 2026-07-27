@@ -1,0 +1,16 @@
+add_library(LoomStructuredFabricAnalyticModel
+  StructuredFabricAnalytic.cpp
+)
+
+target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
+  LoomEvaluation
+  LoomFabricArtifact
+  LoomFrontendCompilation
+  MLIRDataflow
+  MLIRLoom
+  MLIRIR
+)

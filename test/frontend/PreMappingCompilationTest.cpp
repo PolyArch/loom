@@ -2,6 +2,9 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
+#include "Common/ResolvedConfig.h"
+#include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
@@ -1214,9 +1217,87 @@ void operationSpatialOwnershipRejectsEscapedResult() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+loom::evaluation::DecimalValue
+evaluateStructuredRuntime(const char *test,
+                          const loom::ArtifactRootReference &structuredProgram,
+                          const loom::ArtifactRootReference &fabric,
+                          const loom::ArtifactStore &store) {
+  auto prepared = take(
+      test,
+      loom::evaluation::models::prepareStructuredFabricRuntimeEvaluation(
+          structuredProgram, fabric, loom::defaultResolvedConfig(), store));
+  auto evidence = take(test, loom::evaluation::evaluateRequest(
+                                 prepared.request, prepared.resolution, store));
+  const auto *completed =
+      std::get_if<loom::evaluation::CompletedEvidence>(&evidence.outcome());
+  if (!completed || completed->metricResults.size() != 1)
+    fail(test, "analytic model did not return one completed Runtime result");
+  const loom::evaluation::MetricResult &result =
+      completed->metricResults.front();
+  if (result.uncertainty != loom::evaluation::UncertaintyKind::Unknown)
+    fail(test, "analytic model presented its estimate as ground truth");
+  const auto *point =
+      std::get_if<loom::evaluation::PointObservation>(&result.observation);
+  if (!point)
+    fail(test, "analytic model did not return a point estimate");
+  const auto *runtime =
+      std::get_if<loom::evaluation::DecimalValue>(&point->value);
+  if (!runtime)
+    fail(test, "analytic Runtime result used the wrong numeric domain");
+  return *runtime;
+}
+
+void structuredFabricEvaluationRanksMaterializedOwnership() {
+  const char *test = "structuredFabricEvaluationRanksMaterializedOwnership";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-structured-fabric-evaluation", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseSpatialModule(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  auto spatial =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram, "kernel"),
+                     design.roots().front(), options));
+
+  const loom::ArtifactRootReference baselineRef =
+      take(test, loom::frontend::publishStructuredProgram(
+                     compiled.structuredProgram, store));
+  const loom::ArtifactRootReference spatialRef =
+      take(test, loom::frontend::publishStructuredProgram(
+                     spatial.structuredProgram, store));
+  const loom::evaluation::DecimalValue baselineRuntime =
+      evaluateStructuredRuntime(test, baselineRef,
+                                design.roots().front().reference(), store);
+  const loom::evaluation::DecimalValue spatialRuntime =
+      evaluateStructuredRuntime(test, spatialRef,
+                                design.roots().front().reference(), store);
+  if (loom::evaluation::compareDecimalValue(spatialRuntime, baselineRuntime) >=
+      0)
+    fail(test, "Fabric-aware Evaluation did not prefer materialized Spatial "
+               "ownership");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 } // namespace
 
 int main() {
+  if (llvm::Error error =
+          loom::evaluation::models::registerStructuredFabricAnalyticModel())
+    fail("registration", llvm::toString(std::move(error)));
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
   wholeCallableExternalizesGlobalMemoryCapability();
@@ -1230,6 +1311,7 @@ int main() {
   ownershipDecisionDomainIsScopeLocalAndTyped();
   unifiedOwnershipDomainMaterializesExplicitDecision();
   operationSpatialOwnershipRejectsEscapedResult();
+  structuredFabricEvaluationRanksMaterializedOwnership();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;
 }
