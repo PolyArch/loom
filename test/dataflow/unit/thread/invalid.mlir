@@ -1,20 +1,42 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
-// RUN: %python -c 'n=50000; p=chr(37); lines=[f"dataflow.thread private @t_deep() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @deep_extent_chain() {", f"  {p}v0 = arith.constant {-n - 1} : index", f"  {p}one = arith.constant 1 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}one : index" for i in range(1, n + 1)]; lines += ["  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}", f"  {p}result = dataflow.thread.launch @t_deep() grid({p}v{n}) : () -> !dataflow.thread_token", "  return", "}"]; print("\n".join(lines))' > %t.deep.mlir
+// RUN: %python -c 'n=50000; p=chr(37); lines=[f"dataflow.thread private @t_deep domain(#dataflow.thread_domain<dense>)() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @deep_extent_chain() {", f"  {p}v0 = arith.constant {-n - 1} : index", f"  {p}one = arith.constant 1 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}one : index" for i in range(1, n + 1)]; lines += ["  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}", f"  {p}result = dataflow.thread.launch @t_deep() grid({p}v{n}) : () -> !dataflow.thread_token", "  return", "}"]; print("\n".join(lines))' > %t.deep.mlir
 // RUN: timeout 5s loom %t.deep.mlir -verify-diagnostics
-// RUN: %python -c 'n=6400; p=chr(37); lines=[f"dataflow.thread private @t_shared() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @shared_extent_dag() {", f"  {p}v0 = arith.constant 0 : index", f"  {p}zero = arith.constant 0 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}zero : index" for i in range(1, n + 1)]; lines += [f"  {p}result{i} = dataflow.thread.launch @t_shared() grid({p}v{n}) : () -> !dataflow.thread_token" for i in range(n)]; lines += ["  return", "}"]; print("\n".join(lines))' > %t.shared.mlir
+// RUN: %python -c 'n=6400; p=chr(37); lines=[f"dataflow.thread private @t_shared domain(#dataflow.thread_domain<dense>)() ctrl ({p}ctrl: none) iv ({p}i: index) {{", "  dataflow.thread.yield", "}", "func.func @shared_extent_dag() {", f"  {p}v0 = arith.constant 0 : index", f"  {p}zero = arith.constant 0 : index"]; lines += [f"  {p}v{i} = arith.addi {p}v{i - 1}, {p}zero : index" for i in range(1, n + 1)]; lines += [f"  {p}result{i} = dataflow.thread.launch @t_shared() grid({p}v{n}) : () -> !dataflow.thread_token" for i in range(n)]; lines += ["  return", "}"]; print("\n".join(lines))' > %t.shared.mlir
 // RUN: timeout 5s loom %t.shared.mlir
+
+// -----
+// The domain is definition-owned and has no implicit default.
+// expected-error @+1 {{expected 'domain'}}
+dataflow.thread private @missing_domain() ctrl (%ctrl: none) {
+  dataflow.thread.yield
+}
+
+// -----
+// The dynamic-work payload ordinal selects one ordinary thread input.
+// expected-error @+1 {{dynamic-work item argument ordinal 1 is out of bounds for 1 thread inputs}}
+dataflow.thread private @dynamic_ordinal_out_of_bounds domain(#dataflow.thread_domain<dynamic_work, work_item_arg = 1>)(%work: i32) ctrl (%ctrl: none) {
+  dataflow.thread.yield
+}
+
+// -----
+// DynamicWork v1 does not admit channels through its callable boundary.
+// expected-error @+1 {{dynamic-work thread input #0 must not contain a channel or thread token}}
+dataflow.thread private @dynamic_channel_input domain(#dataflow.thread_domain<dynamic_work, work_item_arg = 0>)(%channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+  dataflow.thread.yield
+}
 
 // -----
 // Thread definitions require explicit private visibility.
 // expected-error @+1 {{requires explicit 'private' visibility}}
-dataflow.thread @t_missing_visibility() ctrl (%ctrl: none) {
+dataflow.thread @t_missing_visibility domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   dataflow.thread.yield
 }
 
 // -----
 // Generic syntax cannot bypass the result-free thread ABI.
 // expected-error @+1 {{must not declare function results}}
-"dataflow.thread"() <{function_type = () -> i32,
+"dataflow.thread"() <{domain = #dataflow.thread_domain<dense>,
+                     function_type = () -> i32,
                      sym_name = "t_with_result",
                      sym_visibility = "private"}> ({
 ^bb0(%ctrl: none):
@@ -23,7 +45,7 @@ dataflow.thread @t_missing_visibility() ctrl (%ctrl: none) {
 
 // -----
 // Launch rank must match the callee's logical domain rank.
-dataflow.thread private @t_rank_one() ctrl (%ctrl: none) iv (%i: index) {
+dataflow.thread private @t_rank_one domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield
 }
 func.func @launch_rank_mismatch() {
@@ -34,7 +56,7 @@ func.func @launch_rank_mismatch() {
 
 // -----
 // Statically known launch extents must be nonnegative.
-dataflow.thread private @t_nonnegative_extent() ctrl (%ctrl: none) iv (%i: index) {
+dataflow.thread private @t_nonnegative_extent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield
 }
 func.func @launch_negative_extent() {
@@ -46,7 +68,7 @@ func.func @launch_negative_extent() {
 
 // -----
 // Foldable launch extents must satisfy the same nonnegative contract.
-dataflow.thread private @t_foldable_extent() ctrl (%ctrl: none)
+dataflow.thread private @t_foldable_extent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none)
     iv (%i: index) {
   dataflow.thread.yield
 }
@@ -62,7 +84,7 @@ func.func @launch_foldable_negative_extent() {
 
 // -----
 // Malformed extent producers must be diagnosed before constant evaluation.
-dataflow.thread private @t_malformed_extent() ctrl (%ctrl: none)
+dataflow.thread private @t_malformed_extent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none)
     iv (%i: index) {
   dataflow.thread.yield
 }
@@ -77,7 +99,7 @@ func.func @launch_malformed_extent() {
 // -----
 // An overflowing nsw/nuw addition is poison, so it yields no static extent,
 // while a flagged addition that stays in range still folds.
-dataflow.thread private @t_overflow_extent() ctrl (%ctrl: none)
+dataflow.thread private @t_overflow_extent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none)
     iv (%i: index) {
   dataflow.thread.yield
 }
@@ -108,7 +130,7 @@ func.func @launch_flagged_in_range_extent() {
 
 // -----
 // Dynamic launch extents remain statically admissible.
-dataflow.thread private @t_dynamic_extent() ctrl (%ctrl: none) iv (%i: index) {
+dataflow.thread private @t_dynamic_extent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield
 }
 func.func @launch_dynamic_extent(%extent: index) {
@@ -127,7 +149,7 @@ func.func @wait_rejects_forged_token() {
 
 // -----
 // Launch's body operand types must match callee's function inputs.
-dataflow.thread private @t_int(%x: i32) ctrl (%c: none) {
+dataflow.thread private @t_int domain(#dataflow.thread_domain<dense>)(%x: i32) ctrl (%c: none) {
   dataflow.thread.yield
 }
 func.func @launch_type_mismatch(%y: f32) {
@@ -146,7 +168,7 @@ func.func @launch_unknown_callee() {
 
 // -----
 // A launch always returns exactly one completion token.
-dataflow.thread private @t_launch_result() ctrl (%ctrl: none) {
+dataflow.thread private @t_launch_result domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   dataflow.thread.yield
 }
 func.func @launch_requires_completion_token() {
@@ -173,7 +195,7 @@ func.func @wait_rejects_control(%ctrl: none) {
 
 // -----
 // Completion frontier operands are none-typed.
-dataflow.thread private @t_rejects_non_none_frontier(%value: i32) ctrl (%ctrl: none) {
+dataflow.thread private @t_rejects_non_none_frontier domain(#dataflow.thread_domain<dense>)(%value: i32) ctrl (%ctrl: none) {
   // expected-error @+1 {{must be variadic of none type, but got 'i32'}}
   dataflow.thread.yield %value : i32
 }
@@ -184,7 +206,8 @@ dataflow.thread private @t_rejects_non_none_frontier(%value: i32) ctrl (%ctrl: n
 // whose entry block has only the function-input args (no ctrl, no
 // ivs) is rejected.
 // expected-error @+1 {{entry block must have at least 1 arguments (function inputs + 1 thread_ctrl slot)}}
-"dataflow.thread"() <{function_type = () -> (), sym_name = "t_no_ctrl",
+"dataflow.thread"() <{domain = #dataflow.thread_domain<dense>,
+                     function_type = () -> (), sym_name = "t_no_ctrl",
                      sym_visibility = "private"}> ({
 ^bb0:
   dataflow.thread.yield
@@ -195,7 +218,8 @@ dataflow.thread private @t_rejects_non_none_frontier(%value: i32) ctrl (%ctrl: n
 // Putting an `index` iv between them is rejected because slot N
 // (here index 0, since function_type is empty) must be `none`.
 // expected-error @+1 {{entry block argument #0 (thread_ctrl) must have type `none`, got 'index'}}
-"dataflow.thread"() <{function_type = () -> (),
+"dataflow.thread"() <{domain = #dataflow.thread_domain<dense>,
+                     function_type = () -> (),
                      sym_name = "t_ctrl_wrong_position",
                      sym_visibility = "private"}> ({
 ^bb0(%i: index, %c: none, %j: index):
@@ -206,7 +230,8 @@ dataflow.thread private @t_rejects_non_none_frontier(%value: i32) ctrl (%ctrl: n
 // Grid iv slots must be `index`-typed. A non-index trailing slot
 // after the thread_ctrl is rejected.
 // expected-error @+1 {{entry block argument #2 (grid iv) must have type `index`, got 'i32'}}
-"dataflow.thread"() <{function_type = () -> (),
+"dataflow.thread"() <{domain = #dataflow.thread_domain<dense>,
+                     function_type = () -> (),
                      sym_name = "t_iv_wrong_type",
                      sym_visibility = "private"}> ({
 ^bb0(%c: none, %i: index, %bad: i32):
@@ -215,10 +240,10 @@ dataflow.thread private @t_rejects_non_none_frontier(%value: i32) ctrl (%ctrl: n
 
 // -----
 // A thread body cannot launch another thread.
-dataflow.thread private @nested_thread_leaf() ctrl (%ctrl: none) {
+dataflow.thread private @nested_thread_leaf domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   dataflow.thread.yield
 }
-dataflow.thread private @nested_thread_parent() ctrl (%ctrl: none) {
+dataflow.thread private @nested_thread_parent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   scf.execute_region {
     // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
     %token = dataflow.thread.launch @nested_thread_leaf() : () -> !dataflow.thread_token
@@ -229,7 +254,7 @@ dataflow.thread private @nested_thread_parent() ctrl (%ctrl: none) {
 
 // -----
 // A thread body cannot wait on a caller-side completion token.
-dataflow.thread private @thread_wait_in_body(%token: !dataflow.thread_token) ctrl (%ctrl: none) {
+dataflow.thread private @thread_wait_in_body domain(#dataflow.thread_domain<dense>)(%token: !dataflow.thread_token) ctrl (%ctrl: none) {
   scf.execute_region {
     // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
     dataflow.thread.wait %token : !dataflow.thread_token

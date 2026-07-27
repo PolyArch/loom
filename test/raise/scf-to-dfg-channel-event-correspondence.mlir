@@ -7,7 +7,7 @@
 
 //--- repeated-coordinate.mlir
 module {
-  dataflow.thread private @feedback(
+  dataflow.thread private @feedback domain(#dataflow.thread_domain<dense>)(
       %input_channel: !dataflow.channel<i32>,
       %output_channel: !dataflow.channel<i32>, %message: i32, %enabled: i1,
       %choose_received: i1, %choose_mux: i1) ctrl (%ctrl: none) {
@@ -66,7 +66,7 @@ module {
 // occurrences contribute zero or one. Flat ordinals cross launch boundaries,
 // so neither later send can be paired with the same apparent launch
 // occurrence. One mixed SSA path does not prove readiness for the other path.
-// REPEATED-LABEL: dataflow.thread private @feedback
+// REPEATED-LABEL: dataflow.thread private @feedback domain(#dataflow.thread_domain<dense>)
 // REPEATED: dataflow.channel.send
 // REPEATED: %[[BRANCH:.*]]:2 = scf.if
 // REPEATED: %[[RECEIVED:.*]], %[[DONE:.*]] = dataflow.graph.launch @feedback_graph
@@ -87,7 +87,7 @@ module {
 
 //--- rate-conversion.mlir
 module {
-  dataflow.thread private @burst(
+  dataflow.thread private @burst domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>, %message: i32)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%message, %channel)
@@ -105,7 +105,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @single(
+  dataflow.thread private @single domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     %received = dataflow.channel.receive %channel
         : !dataflow.channel<i32>
@@ -129,10 +129,10 @@ module {
 
 // One producer occurrence contributes four events while four ordered consumer
 // occurrences contribute one each; publication must not impose segments.
-// RATE-LABEL: dataflow.thread private @burst
+// RATE-LABEL: dataflow.thread private @burst domain(#dataflow.thread_domain<dense>)
 // RATE: dataflow.graph.launch @burst_graph
 // RATE-NOT: dataflow.graph.wait
-// RATE-LABEL: dataflow.thread private @single
+// RATE-LABEL: dataflow.thread private @single domain(#dataflow.thread_domain<dense>)
 // RATE: dataflow.channel.receive
 // RATE-LABEL: func.func @rate_conversion
 // RATE: dataflow.thread.launch @burst
@@ -148,7 +148,7 @@ module {
 
 //--- coordinate-identity.mlir
 module {
-  dataflow.thread private @identity_feedback(
+  dataflow.thread private @identity_feedback domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %graph_output: !dataflow.channel<i32>, %message: i32, %use_graph: i1)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -182,7 +182,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @identity_sink(
+  dataflow.thread private @identity_sink domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) iv (%iv: index) {
     "loom.spatial_region"(%channel)
         <{operandSegmentSizes = array<i32: 0, 1, 0, 0>,
@@ -217,7 +217,7 @@ module {
 // Identity source_map and equal coordinates do not prove equal event
 // positions or reverse publication causality.
 // IDENTITY: #map = affine_map<(d0) -> (d0)>
-// IDENTITY-LABEL: dataflow.thread private @identity_feedback
+// IDENTITY-LABEL: dataflow.thread private @identity_feedback domain(#dataflow.thread_domain<dense>)
 // IDENTITY: dataflow.channel.send
 // IDENTITY: %[[CONSUMER_DONE:.*]] = dataflow.graph.launch @identity_feedback_graph
 // IDENTITY: %[[BRANCH_DONE:.*]] = scf.if
@@ -236,7 +236,7 @@ module {
 
 //--- multicast.mlir
 module {
-  dataflow.thread private @multicast_source(
+  dataflow.thread private @multicast_source domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>, %first: i32, %second: i32)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%first, %second, %channel)
@@ -255,14 +255,14 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @left(
+  dataflow.thread private @left domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     %first = dataflow.channel.receive %channel : !dataflow.channel<i32>
     %second = dataflow.channel.receive %channel : !dataflow.channel<i32>
     dataflow.thread.yield
   }
 
-  dataflow.thread private @right(
+  dataflow.thread private @right domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     %first = dataflow.channel.receive %channel : !dataflow.channel<i32>
     %second = dataflow.channel.receive %channel : !dataflow.channel<i32>
@@ -284,13 +284,13 @@ module {
 
 // Each consumer binding observes the producer's same flat nth-message
 // sequence independently.
-// MULTICAST-LABEL: dataflow.thread private @multicast_source
+// MULTICAST-LABEL: dataflow.thread private @multicast_source domain(#dataflow.thread_domain<dense>)
 // MULTICAST: dataflow.graph.launch @multicast_graph
 // MULTICAST-NOT: dataflow.graph.wait
-// MULTICAST-LABEL: dataflow.thread private @left
+// MULTICAST-LABEL: dataflow.thread private @left domain(#dataflow.thread_domain<dense>)
 // MULTICAST: dataflow.channel.receive
 // MULTICAST: dataflow.channel.receive
-// MULTICAST-LABEL: dataflow.thread private @right
+// MULTICAST-LABEL: dataflow.thread private @right domain(#dataflow.thread_domain<dense>)
 // MULTICAST: dataflow.channel.receive
 // MULTICAST: dataflow.channel.receive
 // MULTICAST-LABEL: func.func @multicast

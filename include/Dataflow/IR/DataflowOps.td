@@ -600,8 +600,9 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
                          in the body as a dependency event.
       * Args[N+1 .. end] are all `index` -- one per grid dim.
 
-    The custom assembly format prints these trailing extras after the
-    function-style signature using a separate `ctrl ( ... )` clause
+    The custom assembly format prints the required `domain(...)` immediately
+    after the symbol and the trailing extras after the function-style
+    signature using a separate `ctrl ( ... )` clause
     (the `thread_ctrl` slot) and an `iv ( ... )` clause (the
     grid-index slots). Either / both clauses are optional; threads
     written without them are accepted at parse time only when the op
@@ -611,13 +612,16 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
     The op is `IsolatedFromAbove`; values flow in only through the
     matching `dataflow.thread.launch` body operands.
 
-    The `staticGrid*` and `mapping` attributes are accepted as optional
-    dictionary attributes. They do not currently change execution semantics.
+    Every definition carries one closed `domain`: DenseRectangular or
+    DynamicWork. Dense rank is derived solely from the trailing index block
+    arguments. DynamicWork carries one ordinary function-input ordinal and has
+    no coordinate suffix.
   }];
 
   let arguments = (ins
       SymbolNameAttr:$sym_name,
       TypeAttrOf<FunctionType>:$function_type,
+      Dataflow_ThreadDomainAttr:$domain,
       OptionalAttr<StrAttr>:$sym_visibility,
       OptionalAttr<DictArrayAttr>:$arg_attrs,
       OptionalAttr<DictArrayAttr>:$res_attrs);
@@ -631,6 +635,7 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
     OpBuilder<(ins
         "::llvm::StringRef":$name,
         "::mlir::FunctionType":$type,
+        "::dataflow::ThreadDomainAttr":$domain,
         CArg<"::llvm::ArrayRef<::mlir::NamedAttribute>", "{}">:$attrs)>
   ];
 
@@ -677,7 +682,13 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
         return emitOpError("entry block argument #")
                << N << " (thread_ctrl) must have type `none`, got "
                << entry.getArgument(N).getType();
-      // All remaining slots are grid induction variables of `index`.
+      if (getDomain().getKind() ==
+              ::dataflow::ThreadDomainKind::DynamicWork &&
+          entry.getNumArguments() != N + 1)
+        return emitOpError("dynamic-work thread body must not have coordinate "
+                           "arguments");
+      // All remaining dense-domain slots are grid induction variables of
+      // `index`.
       for (size_t i = N + 1, e = entry.getNumArguments(); i < e; ++i) {
         if (!::llvm::isa<::mlir::IndexType>(entry.getArgument(i).getType()))
           return emitOpError("entry block argument #")

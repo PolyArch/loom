@@ -12,6 +12,40 @@ class Dataflow_Attr<string name, string attrMnemonic,
 }
 
 //===----------------------------------------------------------------------===//
+// Logical Thread Domain
+//===----------------------------------------------------------------------===//
+
+def Dataflow_ThreadDomainAttr
+    : Dataflow_Attr<"ThreadDomain", "thread_domain"> {
+  let summary = "closed logical domain of one dataflow.thread definition";
+  let description = [{
+    The single definition-owned logical-domain value. DenseRectangular carries
+    no rank because rank is derived exclusively from the thread entry block's
+    coordinate suffix. DynamicWork carries the ordinary function-input ordinal
+    that supplies each work-item payload and has coordinate rank zero.
+  }];
+
+  let parameters = (ins EnumParameter<Dataflow_ThreadDomainKind>:$kind,
+                        OptionalParameter<"std::optional<uint64_t>">:
+                            $work_item_arg_ordinal);
+  let assemblyFormat = [{
+    `<` $kind (`,` `work_item_arg` `=` $work_item_arg_ordinal^)? `>`
+  }];
+  let genVerifyDecl = 1;
+
+  let builders = [
+    AttrBuilder<(ins), [{
+      return $_get($_ctxt, ::dataflow::ThreadDomainKind::DenseRectangular,
+                   std::nullopt);
+    }]>,
+    AttrBuilder<(ins "uint64_t":$workItemArgOrdinal), [{
+      return $_get($_ctxt, ::dataflow::ThreadDomainKind::DynamicWork,
+                   std::optional<uint64_t>(workItemArgOrdinal));
+    }]>
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Canonical Entity Identity
 //
 // The derived carrier the canonical finalizer materializes on each entity

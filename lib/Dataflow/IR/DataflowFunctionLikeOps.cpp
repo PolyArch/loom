@@ -377,13 +377,16 @@ template <typename Op> void printFunctionLike(OpAsmPrinter &p, Op op) {
 //===----------------------------------------------------------------------===//
 
 void ThreadOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     FunctionType type, ArrayRef<NamedAttribute> attrs) {
+                     FunctionType type, ThreadDomainAttr domain,
+                     ArrayRef<NamedAttribute> attrs) {
+  state.addAttribute(getDomainAttrName(state.name), domain);
   buildFunctionLike<ThreadOp>(builder, state, name, type, attrs);
 }
 
 // Custom assembly format for dataflow.thread:
 //
-//   dataflow.thread [visibility] @sym (T0, T1, ...)
+//   dataflow.thread [visibility] @sym domain(#dataflow.thread_domain<...>)
+//                   (T0, T1, ...)
 //                   ( `ctrl` `(` ctrlArg : none `)` )?
 //                   ( `iv`   `(` ivArgs... : index `)` )?
 //                   attributes? body
@@ -408,6 +411,13 @@ ParseResult ThreadOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
                              result.attributes))
     return failure();
+
+  if (parser.parseKeyword("domain") || parser.parseLParen())
+    return failure();
+  ThreadDomainAttr domain;
+  if (parser.parseAttribute(domain) || parser.parseRParen())
+    return failure();
+  result.addAttribute(getDomainAttrName(result.name), domain);
 
   // Function arguments + (empty) results.
   SmallVector<OpAsmParser::Argument> arguments;
@@ -492,6 +502,9 @@ void ThreadOp::print(OpAsmPrinter &p) {
     p << ' ' << *vis;
   p << ' ';
   p.printSymbolName(getSymName());
+  p << " domain(";
+  p.printAttribute(getDomainAttr());
+  p << ')';
   ArrayRef<Type> argTypes = getArgumentTypes();
   Block *entry = getBody().empty() ? nullptr : &getBody().front();
   call_interface_impl::printFunctionSignature(
@@ -525,6 +538,7 @@ void ThreadOp::print(OpAsmPrinter &p) {
   ::llvm::SmallVector<::llvm::StringRef, 4> elidedAttrs = {
       SymbolTable::getSymbolAttrName(),
       getFunctionTypeAttrName(),
+      getDomainAttrName(),
       getSymVisibilityAttrName(),
       getArgAttrsAttrName(),
       getResAttrsAttrName(),
@@ -540,6 +554,19 @@ LogicalResult ThreadOp::verify() {
     return emitOpError("requires explicit 'private' visibility");
   if (getFunctionType().getNumResults() != 0)
     return emitOpError("must not declare function results");
+
+  if (getDomain().getKind() == ThreadDomainKind::DynamicWork) {
+    uint64_t ordinal = *getDomain().getWorkItemArgOrdinal();
+    ArrayRef<Type> inputs = getFunctionType().getInputs();
+    if (ordinal >= inputs.size())
+      return emitOpError("dynamic-work item argument ordinal ")
+             << ordinal << " is out of bounds for " << inputs.size()
+             << " thread inputs";
+    for (auto [index, type] : llvm::enumerate(inputs))
+      if (DataflowDialect::containsChannelOrThreadToken(type))
+        return emitOpError("dynamic-work thread input #")
+               << index << " must not contain a channel or thread token";
+  }
   if (!ownsThreadLaunchExtentAnalysis(*this))
     return success();
   return verifyThreadLaunchExtents(cast<ModuleOp>((*this)->getParentOp()));
@@ -1201,10 +1228,9 @@ void GraphLaunchOp::print(OpAsmPrinter &printer) {
   printGraphLaunchStreamInputs(printer, getStreamInputs(), getSourceMaps());
   printGraphLaunchOperandSegment(printer, "memories", getMemoryInputs());
   printGraphLaunchOperandSegment(printer, "stream_outputs", getStreamOutputs());
-  printer.printOptionalAttrDict(
-      (*this)->getAttrs(),
-      {getCalleeAttrName(), getSourceMapsAttrName(), "operandSegmentSizes",
-       "resultSegmentSizes"});
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {getCalleeAttrName(), getSourceMapsAttrName(),
+                                 "operandSegmentSizes", "resultSegmentSizes"});
   printer << " : ";
   printer.printFunctionalType(getOperandTypes(), getResultTypes());
 }
@@ -1332,6 +1358,11 @@ LogicalResult GraphLaunchOp::verify() {
   FailureOr<ThreadOp> thread = getOwningThread(getOperation());
   if (failed(thread))
     return failure();
+
+  if ((*thread).getDomain().getKind() == ThreadDomainKind::DynamicWork &&
+      (!getStreamInputs().empty() || !getStreamOutputs().empty()))
+    return emitOpError(
+        "dynamic-work thread must not bind graph stream ports to channels");
 
   ArrayAttr sourceMaps = getSourceMaps();
   if (sourceMaps.size() != getStreamInputs().size())

@@ -40,7 +40,7 @@ module {
     dataflow.graph.return %start : none
   }
 
-  dataflow.thread private @producer(
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %init: i32, %limit: i32, %step: i32)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -51,7 +51,7 @@ module {
     dataflow.thread.yield %done : none
   }
 
-  dataflow.thread private @consumer(
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>)
       ctrl (%ctrl: none) iv (%iv: index) {
     %done = dataflow.graph.launch @consume deps(%ctrl) values()
@@ -83,7 +83,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @consumer(
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>)
       ctrl (%ctrl: none) iv (%iv: index) {
     %done = dataflow.graph.launch @consume deps(%ctrl) values()
@@ -114,7 +114,7 @@ module {
     dataflow.graph.return values() streams(%iv : i32) memories()
         complete(%close#0 : none)
   }
-  dataflow.thread private @producer(
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %init: i32, %limit: i32, %step: i32)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -155,7 +155,7 @@ module {
     dataflow.graph.return values() streams(%iv : i32) memories()
         complete(%close#0 : none)
   }
-  dataflow.thread private @producer(
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %init: i32, %limit: i32, %step: i32)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -204,7 +204,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @producer(
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %init: i32, %limit: i32, %step: i32)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -214,7 +214,7 @@ module {
         : (none, i32, i32, i32, !dataflow.channel<i32>) -> none
     dataflow.thread.yield %done : none
   }
-  dataflow.thread private @consumer(
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>)
       ctrl (%ctrl: none) iv (%iv: index) {
     %done = dataflow.graph.launch @consume deps(%ctrl) values()
@@ -257,7 +257,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @producer(
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>,
       %init: i32, %limit: i32, %step: i32)
       ctrl (%ctrl: none) iv (%iv: index) {
@@ -267,7 +267,7 @@ module {
         : (none, i32, i32, i32, !dataflow.channel<i32>) -> none
     dataflow.thread.yield %done : none
   }
-  dataflow.thread private @consumer(
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
       %channel: !dataflow.channel<i32>)
       ctrl (%ctrl: none) iv (%iv: index) {
     %done = dataflow.graph.launch @consume deps(%ctrl) values()

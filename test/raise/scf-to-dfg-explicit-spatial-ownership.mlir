@@ -5,12 +5,12 @@
 // CHECK-NOT: dataflow.graph
 // CHECK: return
 
-// CHECK-LABEL: dataflow.thread private @instruction_only
+// CHECK-LABEL: dataflow.thread private @instruction_only domain(#dataflow.thread_domain<dense>)
 // CHECK-NOT: dataflow.graph.launch
 // CHECK: memref.store
 // CHECK: dataflow.thread.yield
 
-// CHECK-LABEL: dataflow.thread private @selected_spatial
+// CHECK-LABEL: dataflow.thread private @selected_spatial domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @selected_graph
 // CHECK: dataflow.thread.yield
 
@@ -29,14 +29,14 @@ func.func @host_container(%target: memref<4xi32>, %value: i32) {
   return
 }
 
-dataflow.thread private @instruction_only(
+dataflow.thread private @instruction_only domain(#dataflow.thread_domain<dense>)(
     %target: memref<1xi32>, %value: i32) ctrl (%ctrl: none) {
   %zero = arith.constant 0 : index
   memref.store %value, %target[%zero] : memref<1xi32>
   dataflow.thread.yield
 }
 
-dataflow.thread private @selected_spatial(
+dataflow.thread private @selected_spatial domain(#dataflow.thread_domain<dense>)(
     %target: memref<1xi32>, %value: i32) ctrl (%ctrl: none) {
   "loom.spatial_region"(%value, %target)
       <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,

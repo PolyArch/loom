@@ -123,14 +123,14 @@ func.func @launch_outside_thread() {
 // Two enclosing thread definitions leave graph launch ownership
 // ambiguous, so the launch is rejected rather than silently attributed
 // to the outer thread.
-dataflow.thread private @t_launch_nested_outer() ctrl (%ctrl: none) {
+dataflow.thread private @t_launch_nested_outer domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   builtin.module {
     dataflow.graph private @g_nested(%start: none) -> ()
         attributes {input_segments = array<i32: 0, 0, 0>,
                     result_segments = array<i32: 0, 0, 0>} {
       dataflow.graph.return %start : none
     }
-    dataflow.thread private @t_launch_nested_inner() ctrl (%inner_ctrl: none) {
+    dataflow.thread private @t_launch_nested_inner domain(#dataflow.thread_domain<dense>)() ctrl (%inner_ctrl: none) {
       // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
       %done = dataflow.graph.launch @g_nested deps(%inner_ctrl) values()
           stream_inputs() memories() stream_outputs() : (none) -> none
@@ -143,7 +143,7 @@ dataflow.thread private @t_launch_nested_outer() ctrl (%ctrl: none) {
 // -----
 // Thread launches belong in the host-level
 // launch layer, not inside leaf SpatialCore graph bodies.
-dataflow.thread private @t_empty() ctrl (%thread_ctrl: none) {
+dataflow.thread private @t_empty domain(#dataflow.thread_domain<dense>)() ctrl (%thread_ctrl: none) {
   dataflow.thread.yield
 }
 dataflow.graph private @g_rejects_thread_launch(%ctrl: none) -> () {
@@ -169,7 +169,7 @@ dataflow.graph private @g_rejects_thread_wait(%ctrl: none) -> () {
 
 // -----
 // A graph wait consumes at least one completion event.
-dataflow.thread private @t_wait_empty() ctrl (%ctrl: none) {
+dataflow.thread private @t_wait_empty domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   // expected-error @+1 {{expected 1 or more operands, but found 0}}
   "dataflow.graph.wait"() : () -> ()
   dataflow.thread.yield
@@ -199,9 +199,9 @@ dataflow.graph private @g_rejects_graph_wait(%ctrl: none) -> () {
 // Each thread definition here has the module parent its own trait
 // requires, so the wait is reached by the placement check and rejected
 // for being transitively contained by two thread definitions.
-dataflow.thread private @t_wait_nested_outer() ctrl (%ctrl: none) {
+dataflow.thread private @t_wait_nested_outer domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
   builtin.module {
-    dataflow.thread private @t_wait_nested_inner() ctrl (%inner_ctrl: none) {
+    dataflow.thread private @t_wait_nested_inner domain(#dataflow.thread_domain<dense>)() ctrl (%inner_ctrl: none) {
       // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
       dataflow.graph.wait %inner_ctrl : none
       dataflow.thread.yield
@@ -212,7 +212,7 @@ dataflow.thread private @t_wait_nested_outer() ctrl (%ctrl: none) {
 
 // -----
 // A graph wait frontier event is a none-typed completion event.
-dataflow.thread private @t_wait_wrong_operand_type(%x: i32) ctrl (%ctrl: none) {
+dataflow.thread private @t_wait_wrong_operand_type domain(#dataflow.thread_domain<dense>)(%x: i32) ctrl (%ctrl: none) {
   // expected-error @+1 {{operand #0 must be variadic of none type, but got 'i32'}}
   dataflow.graph.wait %x : i32
   dataflow.thread.yield

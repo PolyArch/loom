@@ -1,12 +1,12 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading %s | FileCheck %s --implicit-check-not=loom.spatial_region
 
 // Freeze carries its typed poison policy through the selected graph boundary.
-// CHECK-LABEL: dataflow.thread private @selected_freeze
+// CHECK-LABEL: dataflow.thread private @selected_freeze domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @selected_freeze_graph
 // CHECK-LABEL: dataflow.graph private @selected_freeze_graph
 // CHECK: llvm.freeze
 
-dataflow.thread private @selected_freeze(%input: i32) ctrl (%start: none) {
+dataflow.thread private @selected_freeze domain(#dataflow.thread_domain<dense>)(%input: i32) ctrl (%start: none) {
   %result = "loom.spatial_region"(%input)
       <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
         resultSegmentSizes = array<i32: 1, 0>}> ({

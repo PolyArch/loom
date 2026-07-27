@@ -57,5 +57,5 @@ func.func @nested_forall_reduction(%out: memref<?xi32>, %n: index) -> index {
   return %sum : index
 }
 
-// CHECK-NOT: dataflow.thread private @t_vecadd_like_0
+// CHECK-NOT: dataflow.thread private @t_vecadd_like_0 domain(#dataflow.thread_domain<dense>)
 // CHECK-NOT: _red_

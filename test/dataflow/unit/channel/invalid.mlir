@@ -36,7 +36,7 @@ func.func @reject_nested_pointer_payload(
 }
 
 // -----
-dataflow.thread private @reject_send_mismatch(
+dataflow.thread private @reject_send_mismatch domain(#dataflow.thread_domain<dense>)(
     %channel: !dataflow.channel<i32>, %message: i64) ctrl (%ctrl: none) {
   // expected-error @+1 {{failed to verify that 'message' type matches channel element type}}
   "dataflow.channel.send"(%channel, %message)
@@ -90,7 +90,7 @@ dataflow.graph private @stream_source(%start: none, %input: i32) -> ()
   dataflow.graph.return %start : none
 }
 
-dataflow.thread private @reject_missing_source_map(
+dataflow.thread private @reject_missing_source_map domain(#dataflow.thread_domain<dense>)(
     %input: !dataflow.channel<i32>) ctrl (%ctrl: none) {
   // expected-error @+2 {{expected 'source_map' after stream input binding}}
   %done = dataflow.graph.launch @stream_source deps(%ctrl) values()
@@ -106,7 +106,7 @@ dataflow.graph private @ranked_stream_source(%start: none, %input: i32) -> ()
   dataflow.graph.return %start : none
 }
 
-dataflow.thread private @reject_source_map_consumer_rank(
+dataflow.thread private @reject_source_map_consumer_rank domain(#dataflow.thread_domain<dense>)(
     %input: !dataflow.channel<i32>) ctrl (%ctrl: none) iv (%iv: index) {
   // expected-error @+1 {{stream input source_map #0 has 0 dimensions but consumer thread domain has rank 1}}
   %done = dataflow.graph.launch @ranked_stream_source deps(%ctrl) values()
@@ -123,7 +123,7 @@ dataflow.graph private @symbolic_stream_source(%start: none, %input: i32) -> ()
   dataflow.graph.return %start : none
 }
 
-dataflow.thread private @reject_symbolic_source_map(
+dataflow.thread private @reject_symbolic_source_map domain(#dataflow.thread_domain<dense>)(
     %input: !dataflow.channel<i32>) ctrl (%ctrl: none) {
   // expected-error @+1 {{stream input source_map #0 must not contain symbols}}
   %done = dataflow.graph.launch @symbolic_stream_source deps(%ctrl) values()

@@ -113,17 +113,17 @@
 // leaves its live module exactly as written, with no graph published.
 
 // REJECT: error: 'memref.copy' op loom-expand-graph-memref-copy: cannot expand memref.copy into a structured load/store loop; bound 8 is not representable in the graph's resolved signed index domain 'i4'
-// REJECT: dataflow.thread private @too_wide
+// REJECT: dataflow.thread private @too_wide domain(#dataflow.thread_domain<dense>)
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<8xi32> to memref<8xi32>
 
 // REJECT: error: loom-expand-graph-memref-copy: index bit width must be nonzero
-// REJECT: dataflow.thread private @unusable_width
+// REJECT: dataflow.thread private @unusable_width domain(#dataflow.thread_domain<dense>)
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<4xi32> to memref<4xi32>
 
 // REJECT: error: 'memref.copy' op loom-expand-graph-memref-copy: cannot expand memref.copy into a structured load/store loop; maximum linear address 8 is not representable in the graph's resolved signed index domain 'i4'
-// REJECT: dataflow.thread private @rank2_address_overflow
+// REJECT: dataflow.thread private @rank2_address_overflow domain(#dataflow.thread_domain<dense>)
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<3x3xi32> to memref<3x3xi32>
 
@@ -139,7 +139,7 @@
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
 } {
-  dataflow.thread private @spatial_copy(
+  dataflow.thread private @spatial_copy domain(#dataflow.thread_domain<dense>)(
       %src: memref<7xi32>, %dst: memref<7xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -153,7 +153,7 @@ module attributes {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @spatial_copy_rank2(
+  dataflow.thread private @spatial_copy_rank2 domain(#dataflow.thread_domain<dense>)(
       %src: memref<2x3xi32>, %dst: memref<2x3xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -167,7 +167,7 @@ module attributes {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @shared_constants(
+  dataflow.thread private @shared_constants domain(#dataflow.thread_domain<dense>)(
       %loop_src: memref<7xi32>, %loop_dst: memref<7xi32>,
       %copy_src: memref<7xi32>, %copy_dst: memref<7xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%loop_src, %loop_dst, %copy_src, %copy_dst)
@@ -190,7 +190,7 @@ module attributes {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @unit_copy(
+  dataflow.thread private @unit_copy domain(#dataflow.thread_domain<dense>)(
       %src: memref<1xi32>, %dst: memref<1xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -204,7 +204,7 @@ module attributes {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @empty_copy(
+  dataflow.thread private @empty_copy domain(#dataflow.thread_domain<dense>)(
       %src: memref<0xi32>, %dst: memref<0xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -218,7 +218,7 @@ module attributes {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @scalar_copy(
+  dataflow.thread private @scalar_copy domain(#dataflow.thread_domain<dense>)(
       %src: memref<f32>, %dst: memref<f32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -237,7 +237,7 @@ module attributes {
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
 } {
-  dataflow.thread private @spatial_copy(
+  dataflow.thread private @spatial_copy domain(#dataflow.thread_domain<dense>)(
       %src: memref<8xi32>, %dst: memref<8xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -256,7 +256,7 @@ module attributes {
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
 } {
-  dataflow.thread private @too_wide(
+  dataflow.thread private @too_wide domain(#dataflow.thread_domain<dense>)(
       %src: memref<8xi32>, %dst: memref<8xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -276,7 +276,7 @@ module attributes {
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 0>>
 } {
-  dataflow.thread private @unusable_width(
+  dataflow.thread private @unusable_width domain(#dataflow.thread_domain<dense>)(
       %src: memref<4xi32>, %dst: memref<4xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -296,7 +296,7 @@ module attributes {
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
 } {
-  dataflow.thread private @rank2_address_overflow(
+  dataflow.thread private @rank2_address_overflow domain(#dataflow.thread_domain<dense>)(
       %src: memref<3x3xi32>, %dst: memref<3x3xi32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%src, %dst)
         <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,

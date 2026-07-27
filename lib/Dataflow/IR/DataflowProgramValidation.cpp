@@ -26,7 +26,8 @@ bool containsChannelType(mlir::Type type) {
 }
 
 unsigned getThreadRank(dataflow::ThreadOp thread) {
-  if (!thread || thread.isExternal())
+  if (!thread || thread.isExternal() ||
+      thread.getDomain().getKind() == dataflow::ThreadDomainKind::DynamicWork)
     return 0;
   mlir::Block &entry = thread.getBody().front();
   return entry.getNumArguments() - thread.getFunctionType().getNumInputs() - 1;

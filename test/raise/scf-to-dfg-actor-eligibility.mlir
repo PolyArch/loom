@@ -11,7 +11,7 @@
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-BITCAST-REJECT
 // RUN: not loom-dfg-sim %t.dir/vector-to-integer-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-BITCAST-REJECT
 
-// SPATIAL-REGISTERED-LABEL: dataflow.thread private @registered_spatial
+// SPATIAL-REGISTERED-LABEL: dataflow.thread private @registered_spatial domain(#dataflow.thread_domain<dense>)
 // SPATIAL-REGISTERED: %{{.*}}, %[[DONE:.*]] = dataflow.graph.launch @registered_actor_graph
 // SPATIAL-REGISTERED: dataflow.thread.yield %[[DONE]] : none
 // SPATIAL-REGISTERED-LABEL: dataflow.graph private @registered_actor_graph
@@ -20,12 +20,12 @@
 // SPATIAL-REGISTERED-NOT: loom.spatial_region
 
 // SPATIAL-UNREGISTERED: error: loom-lower-graph-memory: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
-// SPATIAL-UNREGISTERED-LABEL: dataflow.thread private @unregistered_spatial
+// SPATIAL-UNREGISTERED-LABEL: dataflow.thread private @unregistered_spatial domain(#dataflow.thread_domain<dense>)
 // SPATIAL-UNREGISTERED: loom.spatial_region
 // SPATIAL-UNREGISTERED: llvm.mlir.undef
 
 //--- registered-spatial.mlir
-dataflow.thread private @registered_spatial(%input: f32) ctrl (%start: none) {
+dataflow.thread private @registered_spatial domain(#dataflow.thread_domain<dense>)(%input: f32) ctrl (%start: none) {
   %result = "loom.spatial_region"(%input)
       <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
         resultSegmentSizes = array<i32: 1, 0>}> ({
@@ -39,7 +39,7 @@ dataflow.thread private @registered_spatial(%input: f32) ctrl (%start: none) {
 }
 
 //--- unregistered-spatial.mlir
-dataflow.thread private @unregistered_spatial(%input: i32) ctrl (%start: none) {
+dataflow.thread private @unregistered_spatial domain(#dataflow.thread_domain<dense>)(%input: i32) ctrl (%start: none) {
   %result = "loom.spatial_region"(%input)
       <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
         resultSegmentSizes = array<i32: 1, 0>}> ({

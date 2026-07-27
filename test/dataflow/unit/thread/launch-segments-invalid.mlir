@@ -9,7 +9,7 @@
 // CHECK-COUNT-1: error: 'dataflow.thread.launch' op 'operandSegmentSizes' attribute cannot have negative elements
 // CHECK-NOT: cannot have negative elements
 
-dataflow.thread private @t_malformed_segments() ctrl (%ctrl: none)
+dataflow.thread private @t_malformed_segments domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none)
     iv (%i: index) {
   dataflow.thread.yield
 }

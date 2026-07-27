@@ -37,13 +37,13 @@ module {
     dataflow.graph.return %start : none
   }
 
-  dataflow.thread private @direct() ctrl (%ctrl: none) {
+  dataflow.thread private @direct domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     dataflow.thread.yield %done : none
   }
 
-  dataflow.thread private @causal_chain() ctrl (%ctrl: none) {
+  dataflow.thread private @causal_chain domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %first = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %second = dataflow.graph.launch @work deps(%first) values()
@@ -51,14 +51,14 @@ module {
     dataflow.thread.yield %second : none
   }
 
-  dataflow.thread private @ssa_chain() ctrl (%ctrl: none) {
+  dataflow.thread private @ssa_chain domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %terminal = dataflow.sync %done : (none) -> none
     dataflow.thread.yield %terminal : none
   }
 
-  dataflow.thread private @independent() ctrl (%ctrl: none) {
+  dataflow.thread private @independent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %first = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %second = dataflow.graph.launch @work deps(%ctrl) values()
@@ -66,7 +66,7 @@ module {
     dataflow.thread.yield %second, %first : none, none
   }
 
-  dataflow.thread private @forwarded(%condition: i1) ctrl (%ctrl: none) {
+  dataflow.thread private @forwarded domain(#dataflow.thread_domain<dense>)(%condition: i1) ctrl (%ctrl: none) {
     %frontier = scf.if %condition -> (none) {
       %then_done = dataflow.graph.launch @work deps(%ctrl) values()
           stream_inputs() memories() stream_outputs() : (none) -> none
@@ -79,7 +79,7 @@ module {
     dataflow.thread.yield %frontier : none
   }
 
-  dataflow.thread private @one_sided(%condition: i1) ctrl (%ctrl: none) {
+  dataflow.thread private @one_sided domain(#dataflow.thread_domain<dense>)(%condition: i1) ctrl (%ctrl: none) {
     %frontier = scf.if %condition -> (none) {
       %done = dataflow.graph.launch @work deps(%ctrl) values()
           stream_inputs() memories() stream_outputs() : (none) -> none
@@ -90,7 +90,7 @@ module {
     dataflow.thread.yield %frontier : none
   }
 
-  dataflow.thread private @selector_matched(%condition: i1) ctrl (%ctrl: none) {
+  dataflow.thread private @selector_matched domain(#dataflow.thread_domain<dense>)(%condition: i1) ctrl (%ctrl: none) {
     %starts:2 = dataflow.demux %condition, %ctrl
         : (i1, none) -> (none, none)
     %done = dataflow.graph.launch @work deps(%starts#1) values()
@@ -100,7 +100,7 @@ module {
     dataflow.thread.yield %frontier : none
   }
 
-  dataflow.thread private @loop_chained(%limit: index) ctrl (%ctrl: none) {
+  dataflow.thread private @loop_chained domain(#dataflow.thread_domain<dense>)(%limit: index) ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %result:2 = scf.while (%i = %zero, %latest = %ctrl)
@@ -117,7 +117,7 @@ module {
     dataflow.thread.yield %result#1 : none
   }
 
-  dataflow.thread private @loop_zero_trip(%limit: index) ctrl (%ctrl: none) {
+  dataflow.thread private @loop_zero_trip domain(#dataflow.thread_domain<dense>)(%limit: index) ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %done = dataflow.graph.launch @work deps(%ctrl) values()
@@ -134,7 +134,7 @@ module {
     dataflow.thread.yield %result#1 : none
   }
 
-  dataflow.thread private @shared_dag(%selector: index) ctrl (%ctrl: none) {
+  dataflow.thread private @shared_dag domain(#dataflow.thread_domain<dense>)(%selector: index) ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %level0 = dataflow.mux %selector, %done, %done, %done, %done,
@@ -170,7 +170,7 @@ module {
     dataflow.thread.yield %level9 : none
   }
 
-  dataflow.thread private @empty() ctrl (%ctrl: none) {
+  dataflow.thread private @empty domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     dataflow.thread.yield
   }
 }
@@ -182,7 +182,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @while_reordered_chained(%limit: index)
+  dataflow.thread private @while_reordered_chained domain(#dataflow.thread_domain<dense>)(%limit: index)
       ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
@@ -200,7 +200,7 @@ module {
     dataflow.thread.yield %result#1 : none
   }
 
-  dataflow.thread private @while_sync_forwarded(%limit: index)
+  dataflow.thread private @while_sync_forwarded domain(#dataflow.thread_domain<dense>)(%limit: index)
       ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
@@ -219,7 +219,7 @@ module {
     dataflow.thread.yield %result#1 : none
   }
 
-  dataflow.thread private @while_before_launch_forwarded(%limit: index)
+  dataflow.thread private @while_before_launch_forwarded domain(#dataflow.thread_domain<dense>)(%limit: index)
       ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
@@ -245,7 +245,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @while_reordered_latest_only(%limit: index)
+  dataflow.thread private @while_reordered_latest_only domain(#dataflow.thread_domain<dense>)(%limit: index)
       ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
@@ -272,7 +272,7 @@ module {
     dataflow.graph.return %start : none
   }
 
-  dataflow.thread private @for_chained() ctrl (%ctrl: none) {
+  dataflow.thread private @for_chained domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %four = arith.constant 4 : index
@@ -285,7 +285,7 @@ module {
     dataflow.thread.yield %result : none
   }
 
-  dataflow.thread private @for_aggregated() ctrl (%ctrl: none) {
+  dataflow.thread private @for_aggregated domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %four = arith.constant 4 : index
@@ -300,7 +300,7 @@ module {
     dataflow.thread.yield %result : none
   }
 
-  dataflow.thread private @for_zero_trip() ctrl (%ctrl: none) {
+  dataflow.thread private @for_zero_trip domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %done = dataflow.graph.launch @work deps(%ctrl) values()
@@ -320,7 +320,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @for_latest_only() ctrl (%ctrl: none) {
+  dataflow.thread private @for_latest_only domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
     %four = arith.constant 4 : index
@@ -341,7 +341,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @repetitive_latest_only(%limit: index)
+  dataflow.thread private @repetitive_latest_only domain(#dataflow.thread_domain<dense>)(%limit: index)
       ctrl (%ctrl: none) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
@@ -367,7 +367,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @detached() ctrl (%ctrl: none) {
+  dataflow.thread private @detached domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     dataflow.thread.yield
@@ -381,7 +381,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @redundant() ctrl (%ctrl: none) {
+  dataflow.thread private @redundant domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %first = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %second = dataflow.graph.launch @work deps(%first) values()
@@ -397,7 +397,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @missing_independent() ctrl (%ctrl: none) {
+  dataflow.thread private @missing_independent domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %first = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %second = dataflow.graph.launch @work deps(%ctrl) values()
@@ -413,7 +413,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @duplicate() ctrl (%ctrl: none) {
+  dataflow.thread private @duplicate domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     dataflow.thread.yield %done, %done : none, none
@@ -427,7 +427,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @mismatched_scf_forwarding(%condition: i1)
+  dataflow.thread private @mismatched_scf_forwarding domain(#dataflow.thread_domain<dense>)(%condition: i1)
       ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
@@ -447,7 +447,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @selective_mux(%condition: i1) ctrl (%ctrl: none) {
+  dataflow.thread private @selective_mux domain(#dataflow.thread_domain<dense>)(%condition: i1) ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %frontier = dataflow.mux %condition, %ctrl, %done
@@ -463,7 +463,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @superfluous_terminal() ctrl (%ctrl: none) {
+  dataflow.thread private @superfluous_terminal domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %extra = dataflow.sync %ctrl : (none) -> none
@@ -478,7 +478,7 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @incomparable_duplicate_coverage()
+  dataflow.thread private @incomparable_duplicate_coverage domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
@@ -498,7 +498,7 @@ module {
                     result_segments = array<i32: 0, 0, 0>} {
       dataflow.graph.return %start : none
     }
-    dataflow.thread private @nested_module() ctrl (%ctrl: none) {
+    dataflow.thread private @nested_module domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
       %done = dataflow.graph.launch @work deps(%ctrl) values()
           stream_inputs() memories() stream_outputs() : (none) -> none
       dataflow.thread.yield

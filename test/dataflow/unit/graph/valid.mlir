@@ -43,8 +43,8 @@ dataflow.graph private @g_memory(%ctrl: none, %x: i32,
 
 // Asynchronous launch site inside a thread body. Dependencies and payload
 // bindings are distinct, and done follows all SSA payload results.
-// CHECK-LABEL: dataflow.thread private @t_demo(%{{.*}}: i32) ctrl (%{{.*}}: none)
-dataflow.thread private @t_demo(%x: i32) ctrl (%ctrl: none) {
+// CHECK-LABEL: dataflow.thread private @t_demo domain(#dataflow.thread_domain<dense>)(%{{.*}}: i32) ctrl (%{{.*}}: none)
+dataflow.thread private @t_demo domain(#dataflow.thread_domain<dense>)(%x: i32) ctrl (%ctrl: none) {
   // CHECK: %{{.*}}, %{{.*}} = dataflow.graph.launch @g_demo deps(%{{.*}}) values(%{{.*}}) stream_inputs() memories() stream_outputs() : (none, i32) -> (i32, none)
   %r, %done = dataflow.graph.launch @g_demo deps(%ctrl) values(%x)
       stream_inputs() memories() stream_outputs()
@@ -62,8 +62,8 @@ dataflow.graph private @g_stream(%start: none, %input: i32) -> i32
       complete(%start : none)
 }
 
-// CHECK-LABEL: dataflow.thread private @t_stream
-dataflow.thread private @t_stream(
+// CHECK-LABEL: dataflow.thread private @t_stream domain(#dataflow.thread_domain<dense>)
+dataflow.thread private @t_stream domain(#dataflow.thread_domain<dense>)(
     %input: !dataflow.channel<i32>,
     %output: !dataflow.channel<i32>) ctrl (%ctrl: none) {
   // CHECK: %{{.*}} = dataflow.graph.launch @g_stream deps(%{{.*}}) values() stream_inputs(%{{.*}} source_map #map) memories() stream_outputs(%{{.*}}) : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
@@ -76,8 +76,8 @@ dataflow.thread private @t_stream(
 
 // Stored-program graph wait consumes launch done events directly or
 // through a causal chain as one unordered all-of retirement frontier.
-// CHECK-LABEL: dataflow.thread private @t_wait
-dataflow.thread private @t_wait(%x: i32) ctrl (%ctrl: none) {
+// CHECK-LABEL: dataflow.thread private @t_wait domain(#dataflow.thread_domain<dense>)
+dataflow.thread private @t_wait domain(#dataflow.thread_domain<dense>)(%x: i32) ctrl (%ctrl: none) {
   // CHECK: %{{.*}}, %{{.*}} = dataflow.graph.launch @g_demo deps(%{{.*}}) values(%{{.*}}) stream_inputs() memories() stream_outputs() : (none, i32) -> (i32, none)
   %r0, %first = dataflow.graph.launch @g_demo deps(%ctrl) values(%x)
       stream_inputs() memories() stream_outputs()

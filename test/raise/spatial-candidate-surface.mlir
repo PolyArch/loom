@@ -84,7 +84,7 @@ llvm.func @weighted_switch(%v: i32) -> i32 {
 }
 
 //--- weighted-selected.mlir
-dataflow.thread private @selected_weighted(%c: i1, %v: i32) ctrl (%start: none) {
+dataflow.thread private @selected_weighted domain(#dataflow.thread_domain<dense>)(%c: i1, %v: i32) ctrl (%start: none) {
   %result = "loom.spatial_region"(%c, %v)
       <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
         resultSegmentSizes = array<i32: 1, 0>}> ({
@@ -102,7 +102,7 @@ dataflow.thread private @selected_weighted(%c: i1, %v: i32) ctrl (%start: none) 
 }
 
 //--- scalable-selected.mlir
-dataflow.thread private @selected_scalable(%v: vector<[4]xf32>)
+dataflow.thread private @selected_scalable domain(#dataflow.thread_domain<dense>)(%v: vector<[4]xf32>)
     ctrl (%start: none) {
   %result = "loom.spatial_region"(%v)
       <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,

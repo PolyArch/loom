@@ -6,6 +6,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectImplementation.h"
 
+#include <cstdint>
+#include <optional>
+
 #define GET_ATTRDEF_CLASSES
 #include "Dataflow/IR/DataflowAttrs.h.inc"
 

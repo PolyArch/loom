@@ -12,8 +12,11 @@ LogicalResult verifyChannelEndpoint(Operation *op) {
   if (op->getParentOfType<GraphOp>())
     return op->emitOpError(
         "must not appear inside a dataflow.graph definition");
-  if (!op->getParentOfType<ThreadOp>())
+  ThreadOp thread = op->getParentOfType<ThreadOp>();
+  if (!thread)
     return op->emitOpError("must appear inside a dataflow.thread body");
+  if (thread.getDomain().getKind() == ThreadDomainKind::DynamicWork)
+    return op->emitOpError("must not appear inside a dynamic-work thread body");
   return success();
 }
 

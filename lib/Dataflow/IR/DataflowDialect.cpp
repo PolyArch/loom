@@ -18,6 +18,27 @@ using namespace dataflow;
 #define GET_ATTRDEF_CLASSES
 #include "Dataflow/IR/DataflowAttrs.cpp.inc"
 
+LogicalResult
+ThreadDomainAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                         ThreadDomainKind kind,
+                         std::optional<uint64_t> workItemArgOrdinal) {
+  switch (kind) {
+  case ThreadDomainKind::DenseRectangular:
+    if (workItemArgOrdinal)
+      return emitError()
+             << "dense thread domain must not carry a work-item argument "
+                "ordinal";
+    return success();
+  case ThreadDomainKind::DynamicWork:
+    if (!workItemArgOrdinal)
+      return emitError()
+             << "dynamic-work thread domain requires a work-item argument "
+                "ordinal";
+    return success();
+  }
+  return emitError() << "unknown thread domain kind";
+}
+
 void DataflowDialect::initialize() {
   addOperations<
 #define GET_OP_LIST

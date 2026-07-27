@@ -3,7 +3,7 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/supported.mlir | FileCheck %s --check-prefix=SUPPORTED
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/atomic-invalid.mlir 2>&1 | FileCheck %s --check-prefix=ATOMIC --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 
-// SUPPORTED-LABEL: dataflow.thread private @for_completion
+// SUPPORTED-LABEL: dataflow.thread private @for_completion domain(#dataflow.thread_domain<dense>)
 // SUPPORTED-SAME: ctrl (%[[FOR_START:.*]]: none)
 // SUPPORTED: %[[FOR_DONE:.*]] = scf.for
 // SUPPORTED-SAME: iter_args(%[[FOR_CARRY:.*]] = %[[FOR_START]]) -> (none)
@@ -14,7 +14,7 @@
 // SUPPORTED: scf.yield %[[FOR_SELECTED]] : none
 // SUPPORTED: dataflow.thread.yield %[[FOR_DONE]] : none
 
-// SUPPORTED-LABEL: dataflow.thread private @while_completion
+// SUPPORTED-LABEL: dataflow.thread private @while_completion domain(#dataflow.thread_domain<dense>)
 // SUPPORTED-SAME: ctrl (%[[WHILE_START:.*]]: none)
 // SUPPORTED: %[[WHILE_DONE:.*]]:2 = scf.while
 // SUPPORTED-SAME: = %[[WHILE_START]]
@@ -26,7 +26,7 @@
 // SUPPORTED: scf.yield %[[BEFORE_FEEDBACK]], %[[AFTER_LAUNCH]] : none, none
 // SUPPORTED: dataflow.thread.yield %[[WHILE_DONE]]#0, %[[WHILE_DONE]]#1 : none, none
 
-// SUPPORTED-LABEL: dataflow.thread private @switch_completion
+// SUPPORTED-LABEL: dataflow.thread private @switch_completion domain(#dataflow.thread_domain<dense>)
 // SUPPORTED-SAME: ctrl (%[[SWITCH_START:.*]]: none)
 // SUPPORTED: %[[SWITCH_DONE:.*]] = scf.index_switch
 // SUPPORTED: case 7 {
@@ -36,14 +36,14 @@
 // SUPPORTED: scf.yield %[[SWITCH_START]] : none
 // SUPPORTED: dataflow.thread.yield %[[SWITCH_DONE]] : none
 
-// SUPPORTED-LABEL: dataflow.thread private @parallel_completion
+// SUPPORTED-LABEL: dataflow.thread private @parallel_completion domain(#dataflow.thread_domain<dense>)
 // SUPPORTED-SAME: ctrl (%[[PAR_START:.*]]: none)
 // SUPPORTED-DAG: %[[PAR_LAUNCH0:.*]] = dataflow.graph.launch @parallel_graph deps(%[[PAR_START]])
 // SUPPORTED-DAG: %[[PAR_LAUNCH1:.*]] = dataflow.graph.launch @parallel_graph deps(%[[PAR_START]])
 // SUPPORTED: %[[PAR_ALL:.*]]:2 = dataflow.sync %[[PAR_LAUNCH0]], %[[PAR_LAUNCH1]]
 // SUPPORTED: dataflow.thread.yield %[[PAR_ALL]]#0 : none
 
-// SUPPORTED-LABEL: dataflow.thread private @forall_completion
+// SUPPORTED-LABEL: dataflow.thread private @forall_completion domain(#dataflow.thread_domain<dense>)
 // SUPPORTED-SAME: ctrl (%[[FORALL_START:.*]]: none)
 // SUPPORTED-DAG: %[[FORALL_LAUNCH0:.*]] = dataflow.graph.launch @forall_graph deps(%[[FORALL_START]])
 // SUPPORTED-DAG: %[[FORALL_LAUNCH1:.*]] = dataflow.graph.launch @forall_graph deps(%[[FORALL_START]])
@@ -51,15 +51,15 @@
 // SUPPORTED: dataflow.thread.yield %[[FORALL_ALL]]#0 : none
 
 // ATOMIC: error: {{.*}}completion propagation through enclosing 'scf.execute_region'
-// ATOMIC-LABEL: dataflow.thread private @publishable
+// ATOMIC-LABEL: dataflow.thread private @publishable domain(#dataflow.thread_domain<dense>)
 // ATOMIC: loom.spatial_region
-// ATOMIC-LABEL: dataflow.thread private @unsupported
+// ATOMIC-LABEL: dataflow.thread private @unsupported domain(#dataflow.thread_domain<dense>)
 // ATOMIC: scf.execute_region
 // ATOMIC: loom.spatial_region
 
 //--- supported.mlir
 module {
-  dataflow.thread private @for_completion(%limit: index, %enabled: i1)
+  dataflow.thread private @for_completion domain(#dataflow.thread_domain<dense>)(%limit: index, %enabled: i1)
       ctrl (%start: none) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -77,7 +77,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @while_completion(%continue: i1)
+  dataflow.thread private @while_completion domain(#dataflow.thread_domain<dense>)(%continue: i1)
       ctrl (%start: none) {
     scf.while : () -> () {
       "loom.spatial_region"()
@@ -101,7 +101,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @switch_completion(%selector: index)
+  dataflow.thread private @switch_completion domain(#dataflow.thread_domain<dense>)(%selector: index)
       ctrl (%start: none) {
     scf.index_switch %selector
     case 7 {
@@ -120,7 +120,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @parallel_completion() ctrl (%start: none) {
+  dataflow.thread private @parallel_completion domain(#dataflow.thread_domain<dense>)() ctrl (%start: none) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -137,7 +137,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @forall_completion() ctrl (%start: none) {
+  dataflow.thread private @forall_completion domain(#dataflow.thread_domain<dense>)() ctrl (%start: none) {
     scf.forall (%i) in (2) {
       "loom.spatial_region"()
           <{operandSegmentSizes = array<i32: 0, 0, 0, 0>,
@@ -153,7 +153,7 @@ module {
 
 //--- atomic-invalid.mlir
 module {
-  dataflow.thread private @publishable() ctrl (%start: none) {
+  dataflow.thread private @publishable domain(#dataflow.thread_domain<dense>)() ctrl (%start: none) {
     "loom.spatial_region"()
         <{operandSegmentSizes = array<i32: 0, 0, 0, 0>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
@@ -164,7 +164,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @unsupported() ctrl (%start: none) {
+  dataflow.thread private @unsupported domain(#dataflow.thread_domain<dense>)() ctrl (%start: none) {
     scf.execute_region {
       "loom.spatial_region"()
           <{operandSegmentSizes = array<i32: 0, 0, 0, 0>,

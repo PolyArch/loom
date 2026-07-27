@@ -21,7 +21,7 @@ module {
 
   // Direct launch done events and an event whose causal closure covers
   // one form a single unordered all-of retirement frontier.
-  dataflow.thread private @mixed() ctrl (%ctrl: none) {
+  dataflow.thread private @mixed domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %first = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %second = dataflow.graph.launch @work deps(%ctrl) values()
@@ -43,7 +43,7 @@ module {
   // A generic none value whose causal closure never reaches a graph
   // launch done event is not a valid wait frontier, even beside a
   // valid one.
-  dataflow.thread private @uncovered() ctrl (%ctrl: none) {
+  dataflow.thread private @uncovered domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @work deps(%ctrl) values()
         stream_inputs() memories() stream_outputs() : (none) -> none
     %independent = dataflow.sync %ctrl : (none) -> none
@@ -63,7 +63,7 @@ module {
       dataflow.graph.return %start : none
     }
 
-    dataflow.thread private @uncovered() ctrl (%ctrl: none) {
+    dataflow.thread private @uncovered domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
       %done = dataflow.graph.launch @work deps(%ctrl) values()
           stream_inputs() memories() stream_outputs() : (none) -> none
       %independent = dataflow.sync %ctrl : (none) -> none

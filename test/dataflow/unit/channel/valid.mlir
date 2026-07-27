@@ -1,8 +1,8 @@
 // RUN: loom %s | loom | FileCheck %s
 // RUN: loom %s --canonicalize | FileCheck %s --check-prefix=EFFECT
 
-// CHECK-LABEL: dataflow.thread private @relay_channel
-dataflow.thread private @relay_channel(
+// CHECK-LABEL: dataflow.thread private @relay_channel domain(#dataflow.thread_domain<dense>)
+dataflow.thread private @relay_channel domain(#dataflow.thread_domain<dense>)(
     %channel: !dataflow.channel<i32>, %enabled: i1) ctrl (%ctrl: none) {
   scf.if %enabled {
     // CHECK: %{{.*}} = dataflow.channel.receive %{{.*}} : !dataflow.channel<i32>
@@ -13,17 +13,17 @@ dataflow.thread private @relay_channel(
   dataflow.thread.yield
 }
 
-// EFFECT-LABEL: dataflow.thread private @relay_channel
+// EFFECT-LABEL: dataflow.thread private @relay_channel domain(#dataflow.thread_domain<dense>)
 // EFFECT: dataflow.channel.receive
 // EFFECT: dataflow.channel.send
 
-dataflow.thread private @receive_unused(
+dataflow.thread private @receive_unused domain(#dataflow.thread_domain<dense>)(
     %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
   %message = dataflow.channel.receive %channel : !dataflow.channel<i32>
   dataflow.thread.yield
 }
 
-// EFFECT-LABEL: dataflow.thread private @receive_unused
+// EFFECT-LABEL: dataflow.thread private @receive_unused domain(#dataflow.thread_domain<dense>)
 // EFFECT: %{{.*}} = dataflow.channel.receive %{{.*}} : !dataflow.channel<i32>
 
 func.func @launch_relay(%channel: !dataflow.channel<i32>, %enabled: i1) {

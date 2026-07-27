@@ -8,7 +8,7 @@
 
 //--- thread.mlir
 module {
-  dataflow.thread private @source_noalias(
+  dataflow.thread private @source_noalias domain(#dataflow.thread_domain<dense>)(
       %left: memref<?xi32> {llvm.noalias, test.arg = "left"},
       %index: index {test.arg = "index"},
       %right: memref<?xi32> {llvm.noalias, test.arg = "right"},
@@ -29,7 +29,7 @@ module {
   }
 }
 
-// THREAD-LABEL: dataflow.thread private @source_noalias(
+// THREAD-LABEL: dataflow.thread private @source_noalias domain(#dataflow.thread_domain<dense>)(
 // THREAD-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "left"},
 // THREAD-SAME: %{{.*}}: index {test.arg = "index"},
 // THREAD-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "right"},
@@ -44,7 +44,7 @@ module {
 // THREAD: %{{.*}}, %{{.*}} = dataflow.load %[[RIGHT]][%[[INDEX]]] %[[START]] : memref<?xi32>
 // THREAD: %{{.*}} = dataflow.store %[[LEFT]][%[[INDEX]]] %{{.*}} %{{.*}} : memref<?xi32>
 
-// THREAD-ROUNDTRIP-LABEL: dataflow.thread private @source_noalias(
+// THREAD-ROUNDTRIP-LABEL: dataflow.thread private @source_noalias domain(#dataflow.thread_domain<dense>)(
 // THREAD-ROUNDTRIP-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "left"},
 // THREAD-ROUNDTRIP-SAME: %{{.*}}: index {test.arg = "index"},
 // THREAD-ROUNDTRIP-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "right"},
@@ -52,7 +52,7 @@ module {
 
 //--- same-root-cast.mlir
 module {
-  dataflow.thread private @same_root_cast(
+  dataflow.thread private @same_root_cast domain(#dataflow.thread_domain<dense>)(
       %memory: memref<4xi32> {llvm.noalias},
       %limit: index, %seed: i32) ctrl (%ctrl: none) {
     %view = memref.cast %memory : memref<4xi32> to memref<?xi32>
@@ -83,7 +83,7 @@ module {
 
 //--- unknown-root.mlir
 module {
-  dataflow.thread private @unknown_root(
+  dataflow.thread private @unknown_root domain(#dataflow.thread_domain<dense>)(
       %direct: memref<?xi32> {llvm.noalias, test.arg = "direct"},
       %other: memref<?xi32>, %limit: index, %seed: i32)
       ctrl (%ctrl: none) {

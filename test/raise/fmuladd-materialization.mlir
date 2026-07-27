@@ -83,7 +83,7 @@
 // The Fused execution shape materializes as the registered `math.fma` actor.
 // A selected candidate carrying that exact actor must cross atomic graph
 // publication without a frontend name rule or a second actor registry.
-// SELECTED-FUSED-LABEL: dataflow.thread private @selected_fused
+// SELECTED-FUSED-LABEL: dataflow.thread private @selected_fused domain(#dataflow.thread_domain<dense>)
 // SELECTED-FUSED: dataflow.graph.launch @selected_fused_graph
 // SELECTED-FUSED-LABEL: dataflow.graph private @selected_fused_graph
 // SELECTED-FUSED: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nnan,contract> : f32
@@ -126,7 +126,7 @@ func.func @native_owner(%a: f32, %b: f32, %c: f32) -> f32 {
 }
 
 //--- selected-fused.mlir
-dataflow.thread private @selected_fused(
+dataflow.thread private @selected_fused domain(#dataflow.thread_domain<dense>)(
     %lhs: f32, %rhs: f32, %acc: f32) ctrl (%start: none) {
   %result = "loom.spatial_region"(%lhs, %rhs, %acc)
       <{operandSegmentSizes = array<i32: 3, 0, 0, 0>,

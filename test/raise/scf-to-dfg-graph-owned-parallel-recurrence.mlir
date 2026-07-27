@@ -1,9 +1,9 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
 
-// CHECK-LABEL: dataflow.thread private @parallel_recurrence
+// CHECK-LABEL: dataflow.thread private @parallel_recurrence domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @g_parallel_recurrence_0
 // CHECK: dataflow.thread.yield
-// CHECK-LABEL: dataflow.thread private @selected_nested_recurrence
+// CHECK-LABEL: dataflow.thread private @selected_nested_recurrence domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @g_selected_nested_recurrence_0
 // CHECK: dataflow.thread.yield
 
@@ -18,7 +18,7 @@
 // CHECK-NOT: scf.
 // CHECK: dataflow.graph.return
 
-dataflow.thread private @parallel_recurrence(
+dataflow.thread private @parallel_recurrence domain(#dataflow.thread_domain<dense>)(
     %n: index, %memory: memref<?xindex>) ctrl (%ctrl: none) {
   "loom.spatial_region"(%n, %memory)
       <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
@@ -54,7 +54,7 @@ dataflow.thread private @parallel_recurrence(
 // CHECK-NOT: scf.
 // CHECK: dataflow.graph.return
 
-dataflow.thread private @selected_nested_recurrence(
+dataflow.thread private @selected_nested_recurrence domain(#dataflow.thread_domain<dense>)(
     %condition: i1, %n: index, %memory: memref<?xindex>) ctrl (%ctrl: none) {
   "loom.spatial_region"(%condition, %n, %memory)
       <{operandSegmentSizes = array<i32: 2, 0, 1, 0>,

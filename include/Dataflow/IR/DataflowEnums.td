@@ -4,6 +4,22 @@
 include "Dataflow/IR/DataflowDialect.td"
 include "mlir/IR/EnumAttr.td"
 
+// The closed logical-domain discriminator of one dataflow.thread definition.
+// Coordinate rank remains derived from the definition's entry-block suffix;
+// it is deliberately absent from this enum and its enclosing attribute.
+def Dataflow_ThreadDomainDenseRectangular
+    : I32EnumAttrCase<"DenseRectangular", 0, "dense">;
+def Dataflow_ThreadDomainDynamicWork
+    : I32EnumAttrCase<"DynamicWork", 1, "dynamic_work">;
+
+def Dataflow_ThreadDomainKind : I32EnumAttr<
+    "ThreadDomainKind", "logical thread domain discriminator",
+    [Dataflow_ThreadDomainDenseRectangular,
+     Dataflow_ThreadDomainDynamicWork]> {
+  let cppNamespace = "::dataflow";
+  let genSpecializedAttr = 0;
+}
+
 def Dataflow_StreamStepAdd : I32EnumAttrCase<"Add", 0, "add">;
 def Dataflow_StreamStepSub : I32EnumAttrCase<"Sub", 1, "sub">;
 def Dataflow_StreamStepMul : I32EnumAttrCase<"Mul", 2, "mul">;

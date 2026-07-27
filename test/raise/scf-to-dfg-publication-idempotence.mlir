@@ -27,7 +27,7 @@
 // MIXED: dataflow.store %arg2[%{{.*}}] %[[NEW_DATA]] %[[NEW_DONE]] : memref<1xi32>
 
 //--- candidate.mlir
-dataflow.thread private @spatial_copy(
+dataflow.thread private @spatial_copy domain(#dataflow.thread_domain<dense>)(
     %src: memref<8xi32>, %dst: memref<8xi32>) ctrl (%ctrl: none) {
   "loom.spatial_region"(%src, %dst)
       <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
@@ -42,7 +42,7 @@ dataflow.thread private @spatial_copy(
 }
 
 //--- mixed.mlir
-dataflow.thread private @existing_thread(
+dataflow.thread private @existing_thread domain(#dataflow.thread_domain<dense>)(
     %src: memref<8xi32>, %dst: memref<8xi32>) ctrl (%ctrl: none) {
   %done = dataflow.graph.launch @existing_graph deps(%ctrl) values()
       stream_inputs() memories(%src, %dst) stream_outputs()
@@ -75,7 +75,7 @@ dataflow.graph private @existing_graph(
   dataflow.graph.return values() streams() memories() complete(%8#0, %12#0 : none, none)
 }
 
-dataflow.thread private @new_thread(
+dataflow.thread private @new_thread domain(#dataflow.thread_domain<dense>)(
     %src: memref<1xi32>, %dst: memref<1xi32>) ctrl (%ctrl: none) {
   "loom.spatial_region"(%src, %dst)
       <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,

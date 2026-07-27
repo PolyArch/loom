@@ -325,7 +325,7 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
-       << "  dataflow.thread private @t() ctrl (%c: none) { %a, %d = "
+       << "  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) { %a, %d = "
           "dataflow.graph.launch @g deps(%c) values() stream_inputs() "
           "memories() stream_outputs() : (none) -> (i32, none)\n"
           "    dataflow.thread.yield %d : none }\n"
@@ -363,7 +363,7 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
-       << "  dataflow.thread private @t() ctrl (%c: none) {\n"
+       << "  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) {\n"
        << "    %a, %da = dataflow.graph.launch @" << first
        << " deps(%c) values() stream_inputs() memories() stream_outputs() : "
           "(none) -> (i32, none)\n"
@@ -397,7 +397,7 @@ module attributes {
     %d, %done = dataflow.load %a[%idx] %ctrl : memref<4xi32>
     dataflow.graph.return values() streams() memories(%mem : memref<10xi32>) complete(%done : none)
   }
-  dataflow.thread private @t(%mem: memref<10xi32>) ctrl (%ctrl: none) {
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(%mem: memref<10xi32>) ctrl (%ctrl: none) {
     %m, %d = dataflow.graph.launch @g deps(%ctrl) values() stream_inputs() memories(%mem) stream_outputs() : (none, memref<10xi32>) -> (memref<10xi32>, none)
     dataflow.thread.yield %d : none
   }
@@ -509,7 +509,7 @@ module {
   dataflow.graph private @g(%ctrl: none, %mem: memref<10xi32>) -> memref<10xi32> attributes {input_segments = array<i32: 0, 0, 1>, result_segments = array<i32: 0, 0, 1>} {
     dataflow.graph.return values() streams() memories(%mem : memref<10xi32>) complete(%ctrl : none)
   }
-  dataflow.thread private @t() ctrl (%ctrl: none) {
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
     %raw = memref.alloca() : memref<10xi32>
     %m, %d = dataflow.graph.launch @g deps(%ctrl) values() stream_inputs() memories(%raw) stream_outputs() : (none, memref<10xi32>) -> (memref<10xi32>, none)
     dataflow.thread.yield %d : none
@@ -535,7 +535,7 @@ module {
     %r:2 = dataflow.sync %done, %y : (none, i32) -> (none, i32)
     dataflow.graph.return values(%r#1 : i32) streams() memories() complete(%r#0 : none)
   }
-  dataflow.thread private @t(%x: i32, %mem: memref<4xi32>) ctrl (%ctrl: none) {
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(%x: i32, %mem: memref<4xi32>) ctrl (%ctrl: none) {
     %v, %d = dataflow.graph.launch @g deps(%ctrl) values(%x) stream_inputs() memories(%mem) stream_outputs() : (none, i32, memref<4xi32>) -> (i32, none)
     dataflow.thread.yield %d : none
   }
@@ -625,16 +625,16 @@ module {
   dataflow.graph private @gc(%start: none, %input: i32) -> () attributes {input_segments = array<i32: 0, 1, 0>, result_segments = array<i32: 0, 0, 0>} {
     dataflow.graph.return %start : none
   }
-  dataflow.thread private @producer(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
     %v = arith.constant 7 : i32
     dataflow.channel.send %ch, %v : !dataflow.channel<i32>
     dataflow.thread.yield
   }
-  dataflow.thread private @streamconsumer(%ch: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+  dataflow.thread private @streamconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     %done = dataflow.graph.launch @gc deps(%ctrl) values() stream_inputs(%ch source_map affine_map<() -> ()>) memories() stream_outputs() : (none, !dataflow.channel<i32>) -> none
     dataflow.thread.yield %done : none
   }
-  dataflow.thread private @directconsumer(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
+  dataflow.thread private @directconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
     %m = dataflow.channel.receive %ch : !dataflow.channel<i32>
     dataflow.thread.yield
   }
@@ -752,7 +752,7 @@ module attributes {
     %r:2 = dataflow.sync %done, %y : (none, i32) -> (none, i32)
     dataflow.graph.return values(%r#1 : i32) streams() memories() complete(%r#0 : none)
   }
-  dataflow.thread private @t(%m0: memref<10xi32>, %m1: memref<10xi32>) ctrl (%ctrl: none) {
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(%m0: memref<10xi32>, %m1: memref<10xi32>) ctrl (%ctrl: none) {
     %r0a, %r0b, %d0 = dataflow.graph.launch @gv deps(%ctrl) values() stream_inputs() memories(%m0) stream_outputs() : (none, memref<10xi32>) -> (memref<?xi32>, memref<?xi32>, none)
     %r1a, %r1b, %d1 = dataflow.graph.launch @gv deps(%ctrl) values() stream_inputs() memories(%m1) stream_outputs() : (none, memref<10xi32>) -> (memref<?xi32>, memref<?xi32>, none)
     %tc = memref.cast %r0a : memref<?xi32> to memref<*xi32>

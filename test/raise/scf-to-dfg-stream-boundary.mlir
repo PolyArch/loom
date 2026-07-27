@@ -50,35 +50,35 @@
 // DEPENDENT-FALSE: "status": "pass"
 
 // CHECK: #[[SOURCE_MAP:.*]] = affine_map<() -> ()>
-// CHECK-LABEL: dataflow.thread private @stream_producer
+// CHECK-LABEL: dataflow.thread private @stream_producer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @producer_graph
 // CHECK-SAME: stream_inputs()
 // CHECK-SAME: memories(%arg1)
 // CHECK-SAME: stream_outputs(%arg0)
-// CHECK-LABEL: dataflow.thread private @stream_consumer
+// CHECK-LABEL: dataflow.thread private @stream_consumer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-SAME: stream_outputs()
-// CHECK-LABEL: dataflow.thread private @loop_stream_producer
+// CHECK-LABEL: dataflow.thread private @loop_stream_producer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @loop_producer_graph
 // CHECK-SAME: stream_outputs(%arg2)
-// CHECK-LABEL: dataflow.thread private @loop_stream_consumer
+// CHECK-LABEL: dataflow.thread private @loop_stream_consumer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @loop_consumer_graph
 // CHECK-SAME: stream_inputs(%arg2 source_map #[[SOURCE_MAP]])
-// CHECK-LABEL: dataflow.thread private @sequential_stream_producer
+// CHECK-LABEL: dataflow.thread private @sequential_stream_producer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @sequential_producer_graph
 // CHECK-SAME: stream_outputs(%arg0)
-// CHECK-LABEL: dataflow.thread private @sequential_stream_consumer
+// CHECK-LABEL: dataflow.thread private @sequential_stream_consumer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @sequential_consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
-// CHECK-LABEL: dataflow.thread private @branch_stream_relay
+// CHECK-LABEL: dataflow.thread private @branch_stream_relay domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @branch_relay_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-SAME: stream_outputs(%arg1)
-// CHECK-LABEL: dataflow.thread private @optional_stream_producer
+// CHECK-LABEL: dataflow.thread private @optional_stream_producer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @optional_producer_graph
 // CHECK-SAME: stream_outputs(%arg0)
-// CHECK-LABEL: dataflow.thread private @dependent_stream_consumer
+// CHECK-LABEL: dataflow.thread private @dependent_stream_consumer domain(#dataflow.thread_domain<dense>)
 // CHECK: dataflow.graph.launch @dependent_consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-LABEL: dataflow.graph private @producer_graph(
@@ -166,7 +166,7 @@
 // CHECK-NOT: loom.spatial_region
 
 module {
-  dataflow.thread private @stream_producer(
+  dataflow.thread private @stream_producer domain(#dataflow.thread_domain<dense>)(
       %output: !dataflow.channel<i32>, %memory: memref<1xi32>, %message: i32)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%message, %memory, %output)
@@ -186,7 +186,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @stream_consumer(
+  dataflow.thread private @stream_consumer domain(#dataflow.thread_domain<dense>)(
       %input: !dataflow.channel<i32>, %memory: memref<1xi32>)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%input, %memory)
@@ -206,7 +206,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @loop_stream_producer(
+  dataflow.thread private @loop_stream_producer domain(#dataflow.thread_domain<dense>)(
       %count: index, %source: memref<?xi32>,
       %output: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%count, %source, %output)
@@ -230,7 +230,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @loop_stream_consumer(
+  dataflow.thread private @loop_stream_consumer domain(#dataflow.thread_domain<dense>)(
       %count: index, %target: memref<?xi32>,
       %input: !dataflow.channel<i32>) ctrl (%ctrl: none) {
     "loom.spatial_region"(%count, %input, %target)
@@ -257,7 +257,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @sequential_stream_producer(
+  dataflow.thread private @sequential_stream_producer domain(#dataflow.thread_domain<dense>)(
       %output: !dataflow.channel<i32>, %first: i32, %second: i32,
       %third: i32) ctrl (%ctrl: none) {
     "loom.spatial_region"(%first, %second, %third, %output)
@@ -278,7 +278,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @sequential_stream_consumer(
+  dataflow.thread private @sequential_stream_consumer domain(#dataflow.thread_domain<dense>)(
       %input: !dataflow.channel<i32>, %memory: memref<2xi32>)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%input, %memory)
@@ -302,7 +302,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @branch_stream_relay(
+  dataflow.thread private @branch_stream_relay domain(#dataflow.thread_domain<dense>)(
       %input: !dataflow.channel<i32>, %output: !dataflow.channel<i32>,
       %condition: i1, %count: index) ctrl (%ctrl: none) {
     "loom.spatial_region"(%condition, %count, %input, %output)
@@ -348,7 +348,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @optional_stream_producer(
+  dataflow.thread private @optional_stream_producer domain(#dataflow.thread_domain<dense>)(
       %output: !dataflow.channel<i32>, %condition: i1, %message: i32)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%condition, %message, %output)
@@ -366,7 +366,7 @@ module {
     dataflow.thread.yield
   }
 
-  dataflow.thread private @dependent_stream_consumer(
+  dataflow.thread private @dependent_stream_consumer domain(#dataflow.thread_domain<dense>)(
       %input: !dataflow.channel<i32>, %memory: memref<2xi32>)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%input, %memory)
