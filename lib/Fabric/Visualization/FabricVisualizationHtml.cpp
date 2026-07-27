@@ -104,6 +104,12 @@ void writeGraph(const Graph &graph, bool active, llvm::raw_ostream &output) {
       continue;
     output << "<path class=\"edge " << edgeClass(edge.kind) << "\" d=\""
            << edgePath(edge) << '"';
+    if (edge.source < graph.nodes.size() &&
+        edge.destination < graph.nodes.size())
+      output << " data-source-node=\""
+             << escapeHtml(graph.nodes[edge.source].id)
+             << "\" data-destination-node=\""
+             << escapeHtml(graph.nodes[edge.destination].id) << '"';
     if (edge.kind != "summary")
       output << " marker-end=\"url(#arrow-" << escapeHtml(graph.id) << ")\"";
     output << "/>";
@@ -203,6 +209,12 @@ llvm::Error writeHtml(const Document &document, llvm::raw_ostream &output) {
          ".edge-summary{stroke:var(--violet);stroke-width:1.5;opacity:.55}"
          ".edge-transport{stroke:#526b78}.edge+*{pointer-events:none}marker "
          "path{fill:#526b78}"
+         ".graph-view[data-view-kind=\"system-noc\"] .edge-transport{opacity:."
+         "16;stroke-width:1.1}"
+         ".graph-view[data-view-kind=\"system-noc\"] .edge-transport.is-"
+         "related{opacity:.92;stroke-width:2.4}"
+         ".graph-view[data-view-kind=\"system-noc\"].has-route-focus "
+         ".edge-transport:not(.is-related){opacity:.035}"
          ".node{cursor:pointer;outline:none}.node "
          "rect:first-child{fill:#fff;stroke:#aeb9c1;stroke-width:1.3;"
          "filter:drop-shadow(0 3px 5px rgba(23,32,42,.08))}.node:hover "
@@ -351,7 +363,14 @@ llvm::Error writeHtml(const Document &document, llvm::raw_ostream &output) {
          "const "
          "select=node=>{document.querySelectorAll('.node.is-selected').forEach("
          "n=>n.classList.remove('is-selected'));"
-         "node.classList.add('is-selected');document.getElementById('inspect-"
+         "node.classList.add('is-selected');const svg=node.closest('.graph-"
+         "view');for(const view of views){view.classList.remove('has-route-"
+         "focus');view.querySelectorAll('.edge.is-related').forEach(e=>e."
+         "classList.remove('is-related'));}if(svg?.dataset.viewKind==='system-"
+         "noc'){svg.classList.add('has-route-focus');svg.querySelectorAll('."
+         "edge-transport').forEach(e=>e.classList.toggle('is-related',e."
+         "dataset.sourceNode===node.dataset.nodeId||e.dataset.destinationNode"
+         "===node.dataset.nodeId));}document.getElementById('inspect-"
          "title').textContent=node.dataset.label;"
          "document.getElementById('inspect-subtitle').textContent=node.dataset."
          "detail;"

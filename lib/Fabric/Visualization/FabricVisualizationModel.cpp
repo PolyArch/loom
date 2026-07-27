@@ -518,7 +518,7 @@ Graph buildSystemNocGraph(const Graph &detail) {
               0.0};
   std::vector<std::optional<std::size_t>> projected(detail.nodes.size());
   for (auto [index, node] : llvm::enumerate(detail.nodes)) {
-    if (isHiddenNocDetailNode(node))
+    if (!isSystemOverviewNode(node))
       continue;
     projected[index] = graph.nodes.size();
     graph.nodes.push_back(node);

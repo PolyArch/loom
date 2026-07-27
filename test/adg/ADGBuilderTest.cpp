@@ -1450,6 +1450,23 @@ void heterogeneousSystemFinalizes() {
           !overview.contains(
               "data-entity-kind=\"fabric.system_transport_resource\""),
           "System overview exposed individual NoC transport resources");
+  const std::size_t nocBegin = html.find(" data-view-kind=\"system-noc\"");
+  const std::size_t nocEnd = html.find("</svg>", nocBegin);
+  require(test,
+          nocBegin != llvm::StringRef::npos && nocEnd != llvm::StringRef::npos,
+          "Fabric HTML has no bounded NoC topology view");
+  const llvm::StringRef noc =
+      html.slice(nocBegin, nocEnd + llvm::StringRef("</svg>").size());
+  require(test,
+          noc.contains("data-entity-kind=\"fabric.acc_core_occurrence\"") &&
+              noc.contains("data-entity-kind=\"fabric.system_memory_service\""),
+          "NoC topology lost an architecture participant");
+  require(test,
+          !noc.contains("data-entity-kind=\"fabric.module_dependency\"") &&
+              !noc.contains(
+                  "data-entity-kind=\"fabric.system_service_endpoint\"") &&
+              !noc.contains("data-entity-kind=\"fabric.hardware_domain\""),
+          "NoC topology exposed a detail-only node");
   require(test,
           !html.contains("forceSimulation") && !html.contains("dagre.layout") &&
               !html.contains("elk.layout"),

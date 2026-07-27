@@ -35,7 +35,9 @@ directed-connectivity graph. For a System root, it contains:
   HostCore, AccCore, System memory service, and external boundary distinct,
   and does not promote every transport resource to an equally weighted node;
 * a NoC topology view that contracts each explicit transport-resource path
-  into its derived directed endpoint connectivity;
+  into its derived directed connectivity among architecture participants,
+  while leaving service-endpoint, hardware-domain, module-attachment, and
+  individual transport-resource detail to the exact architecture view;
 * one architecture view with every HostCore, heterogeneous AccCore,
   InstructionCore context, SpatialCore attachment, memory/service endpoint,
   external boundary, transport resource, and explicit directed connection;
@@ -60,6 +62,8 @@ Browser code may pan, zoom, fit, search, filter, inspect, and switch between
 precomputed views. It must not run a force solver, graph layout engine, or
 semantic topology reconstruction. The HTML is offline and self-contained: it
 does not load JavaScript, CSS, fonts, icons, or data from a network location.
+Selecting an architecture participant may emphasize its already-precomputed
+incident NoC routes; this changes only presentation state.
 
 ## Canonical Sources
 
