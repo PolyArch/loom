@@ -146,6 +146,33 @@ loop:
 exit:
   ret void
 }
+
+define void @unsigned_index(ptr %a) {
+entry:
+  br label %loop
+
+loop:
+  %index = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %wide = zext nneg i32 %index to i64
+  %p = getelementptr float, ptr %a, i64 %wide
+  %value = load float, ptr %p, align 4
+  store float %value, ptr %p, align 4
+  %next = add nuw nsw i32 %index, 1
+  %done = icmp ne i32 %next, 64
+  br i1 %done, label %loop, label %exit
+
+exit:
+  ret void
+}
+
+define void @unsigned_may_not_fit(ptr %a, i32 %index) {
+entry:
+  %wide = zext i32 %index to i64
+  %p = getelementptr float, ptr %a, i64 %wide
+  %value = load float, ptr %p, align 4
+  store float %value, ptr %p, align 4
+  ret void
+}
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer =
@@ -468,18 +495,40 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
 
   loom::frontend::WholeCallableSpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
-  auto selected = take(
-      test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                compiled.structuredProgram,
-                findCallable(test, compiled.structuredProgram, "kernel"),
-                design.roots().front(), options));
-  unsigned indexWidth = take(
-      test, loom::getIndexBitWidth(selected.structuredProgram.module()));
+  auto selected =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram, "kernel"),
+                     design.roots().front(), options));
+  unsigned indexWidth =
+      take(test, loom::getIndexBitWidth(selected.structuredProgram.module()));
   if (indexWidth != 32)
     fail(test, "whole-callable index decision was not materialized");
   auto view = take(test, selected.canonicalDataflow.view());
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "whole-callable index decision did not publish its graph");
+
+  auto unsignedIndex =
+      take(test,
+           loom::frontend::materializeWholeCallableSpatialOwnership(
+               compiled.structuredProgram,
+               findCallable(test, compiled.structuredProgram, "unsigned_index"),
+               design.roots().front(), options));
+  auto unsignedView = take(test, unsignedIndex.canonicalDataflow.view());
+  if (unsignedView.graphs().size() != 1 || unsignedView.actors().empty())
+    fail(test, "proven nonnegative extended index did not publish its graph");
+
+  auto unprovenUnsigned =
+      loom::frontend::materializeWholeCallableSpatialOwnership(
+          compiled.structuredProgram,
+          findCallable(test, compiled.structuredProgram,
+                       "unsigned_may_not_fit"),
+          design.roots().front(), options);
+  if (unprovenUnsigned)
+    fail(test, "unproven unsigned index narrowing was accepted");
+  message = llvm::toString(unprovenUnsigned.takeError());
+  if (message.find("cannot prove a wide GEP index") == std::string::npos)
+    fail(test, "unproven unsigned index was misdiagnosed: " + message);
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

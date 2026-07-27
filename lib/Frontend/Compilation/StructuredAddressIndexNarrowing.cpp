@@ -117,6 +117,23 @@ bool provesPostTestedInductionDomain(mlir::Value value, unsigned targetWidth) {
 bool provesSignedFit(mlir::Value value, unsigned targetWidth) {
   if (mlir::IntegerAttr constant = integerConstant(value))
     return fitsSignedWidth(constant, targetWidth);
+
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
+    auto sourceType =
+        llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
+    if (sourceType && sourceType.getWidth() <= targetWidth)
+      return true;
+  }
+
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>()) {
+    auto sourceType =
+        llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
+    if (sourceType &&
+        (sourceType.getWidth() < targetWidth ||
+         (sourceType.getWidth() == targetWidth && extension.getNonNeg())))
+      return true;
+  }
+
   return provesPostTestedInductionDomain(value, targetWidth);
 }
 
