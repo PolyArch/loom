@@ -291,6 +291,42 @@ exit:
 }
 
 std::unique_ptr<llvm::Module>
+parseByteOffsetOwnershipModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
+target triple = "riscv32-unknown-unknown"
+
+define void @byte_offset(ptr %a, i32 %n) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %offset = shl nuw nsw i32 %i, 2
+  %p = getelementptr inbounds i8, ptr %a, i32 %offset
+  %value = load float, ptr %p, align 4
+  store float %value, ptr %p, align 4
+  %next = add nuw nsw i32 %i, 1
+  %done = icmp ult i32 %next, %n
+  br i1 %done, label %loop, label %exit
+
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<byte-offset-owner>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseEscapedLoopModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -753,6 +789,73 @@ void explicitOperationSpatialOwnership() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void operationOwnershipInternalizesConstants() {
+  const char *test = "operationOwnershipInternalizesConstants";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-operation-constants", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseByteOffsetOwnershipModule(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::OperationSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  auto selected = take(
+      test,
+      loom::frontend::materializeOperationSpatialOwnership(
+          compiled.structuredProgram,
+          findStructuredLoop(test, compiled.structuredProgram, "byte_offset"),
+          design.roots().front(), options));
+
+  auto wrapper =
+      selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "byte_offset");
+  if (!wrapper)
+    fail(test, "operation ownership removed the LLVM callable envelope");
+  dataflow::ThreadLaunchOp launch;
+  wrapper.getBody().walk([&](dataflow::ThreadLaunchOp candidate) {
+    if (launch)
+      fail(test, "operation ownership emitted multiple launches");
+    launch = candidate;
+  });
+  if (!launch || launch.getBodyOperands().size() != 2)
+    fail(test, "compile-time constants escaped through the launch ABI");
+
+  dataflow::ThreadOp thread;
+  selected.structuredProgram.module().walk([&](dataflow::ThreadOp candidate) {
+    if (thread)
+      fail(test, "operation ownership emitted multiple threads");
+    thread = candidate;
+  });
+  if (!thread || thread.getFunctionType().getNumInputs() != 2)
+    fail(test, "compile-time constants escaped through the thread ABI");
+
+  auto view = take(test, selected.canonicalDataflow.view());
+  bool sawConstant = false;
+  bool sawLoad = false;
+  bool sawStore = false;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    auto projection =
+        take(test, dataflow::projectRegisteredActorSchemaProjection(actor.op));
+    sawConstant |=
+        projection.schema == dataflow::OperationSchemaId::DataflowConstant;
+    sawLoad |= projection.schema == dataflow::OperationSchemaId::DataflowLoad;
+    sawStore |= projection.schema == dataflow::OperationSchemaId::DataflowStore;
+  }
+  if (!sawConstant || !sawLoad || !sawStore)
+    fail(test, "canonical graph lost its constant or memory actors");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationOwnershipScopesFollowCanonicalOrder() {
   const char *test = "operationOwnershipScopesFollowCanonicalOrder";
   llvm::SmallString<128> directory;
@@ -1010,6 +1113,7 @@ int main() {
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   explicitOperationSpatialOwnership();
+  operationOwnershipInternalizesConstants();
   wholeCallableScopesFollowCanonicalOrder();
   operationOwnershipScopesFollowCanonicalOrder();
   operationFmulAddDecisionIsCandidateLocal();

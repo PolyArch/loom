@@ -8,7 +8,6 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -119,15 +118,6 @@ memoryRoot(const char *test, const dataflow::CanonicalDataflowProgramView &view,
   fail(test, "materialized vecadd is missing an imported memory root");
 }
 
-loom::sim::CanonicalValueSequence oneDefinedValue(unsigned width,
-                                                  std::uint64_t value) {
-  loom::sim::CanonicalValueSequence sequence;
-  sequence.tokenCount = 1;
-  sequence.lanes.push_back(
-      loom::sim::SemanticLane::defined(llvm::APInt(width, value)));
-  return sequence;
-}
-
 loom::sim::RuntimeMemoryObject floatObject(float scale) {
   loom::sim::RuntimeMemoryObject object;
   object.initialBytes.reserve(64 * sizeof(float));
@@ -172,8 +162,6 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     fail(test, "source candidate did not produce a substantive Dataflow graph");
 
   loom::sim::SpatialSimulationWorkload workload{onlyLaunch(test, view)};
-  workload.valueInputPlan = {oneDefinedValue(64, 1), oneDefinedValue(64, 64),
-                             oneDefinedValue(64, 0)};
   workload.observableContract.memories.push_back(
       loom::sim::SpatialMemoryObservable{
           dataflow::LogicalMemoryRootOrViewRef{memoryRoot(test, view, 2)},
@@ -205,7 +193,13 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
           64)
     fail(test, "typed DFG execution did not run the vecadd workload");
 
-  auto destination = report.finalMemoryState.find("arg5");
+  std::string destinationPort;
+  for (const auto &[port, root] : report.finalMemoryRoots)
+    if (root == "memory_root2") {
+      destinationPort = port;
+      break;
+    }
+  auto destination = report.finalMemoryState.find(destinationPort);
   if (destination == report.finalMemoryState.end() ||
       destination->second.size() != 64 ||
       destination->second.front() != "f32:0" ||

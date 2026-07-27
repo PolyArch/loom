@@ -8,6 +8,7 @@
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/IR/LoomOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
@@ -15,9 +16,9 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -285,10 +286,16 @@ eligibleOwningCallable(mlir::Operation *operation) {
   return analysis.callable;
 }
 
-/// Derives every external SSA live-in used by the selected operation itself or
-/// recursively inside it, exactly once, in deterministic first-use order.
-llvm::SmallVector<mlir::Value> externalLiveIns(mlir::Operation *operation) {
+struct OperationClosure {
   llvm::SmallVector<mlir::Value> liveIns;
+  llvm::SmallVector<mlir::arith::ConstantOp> constants;
+};
+
+/// Derives the selected operation's external SSA closure exactly once in
+/// deterministic first-use order. Scalar literals remain part of the selected
+/// program; only genuinely dynamic values cross its launch boundary.
+OperationClosure deriveOperationClosure(mlir::Operation *operation) {
+  OperationClosure closure;
   llvm::SmallPtrSet<mlir::Value, 8> seen;
   operation->walk([&](mlir::Operation *nested) {
     for (mlir::Value operand : nested->getOperands()) {
@@ -298,12 +305,17 @@ llvm::SmallVector<mlir::Value> externalLiveIns(mlir::Operation *operation) {
       } else if (operation->isAncestor(operand.getDefiningOp())) {
         continue;
       }
-      if (seen.insert(operand).second)
-        liveIns.push_back(operand);
+      if (!seen.insert(operand).second)
+        continue;
+      if (auto constant = operand.getDefiningOp<mlir::arith::ConstantOp>()) {
+        closure.constants.push_back(constant);
+        continue;
+      }
+      closure.liveIns.push_back(operand);
     }
     return mlir::WalkResult::advance();
   });
-  return liveIns;
+  return closure;
 }
 
 llvm::Error materializeSelectedOperation(
@@ -318,19 +330,21 @@ llvm::Error materializeSelectedOperation(
     return error;
   if (fmuladdExecutionShape)
     raising::materializeFMulAddInOperation(*operation, *fmuladdExecutionShape);
-  const llvm::SmallVector<mlir::Value> liveIns = externalLiveIns(operation);
+  const OperationClosure closure = deriveOperationClosure(operation);
   mlir::Location location = operation->getLoc();
   auto boundary =
-      createSpatialThreadBoundary(module, *callable, liveIns, location);
+      createSpatialThreadBoundary(module, *callable, closure.liveIns, location);
   if (!boundary)
     return boundary.takeError();
 
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
-  for (auto [index, liveIn] : llvm::enumerate(liveIns))
+  for (auto [index, liveIn] : llvm::enumerate(closure.liveIns))
     mapping.map(liveIn, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
+  for (mlir::arith::ConstantOp constant : closure.constants)
+    builder.clone(*constant, mapping);
   builder.clone(*operation, mapping);
   loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
                                mlir::ValueRange{});
@@ -338,9 +352,9 @@ llvm::Error materializeSelectedOperation(
   builder.setInsertionPoint(operation);
   mlir::FlatSymbolRefAttr callee =
       mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
-  auto launch =
-      dataflow::ThreadLaunchOp::create(builder, location, callee, liveIns,
-                                       mlir::ValueRange{}, mlir::ValueRange{});
+  auto launch = dataflow::ThreadLaunchOp::create(
+      builder, location, callee, closure.liveIns, mlir::ValueRange{},
+      mlir::ValueRange{});
   dataflow::ThreadWaitOp::create(builder, location,
                                  mlir::ValueRange{launch.getAsyncToken()});
   operation->erase();
