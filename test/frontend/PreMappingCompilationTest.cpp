@@ -728,7 +728,22 @@ void explicitOperationSpatialOwnership() {
       design.roots().front(), options);
   if (unproven)
     fail(test, "runtime-bounded wide GEP index was narrowed without proof");
-  std::string unprovenMessage = llvm::toString(unproven.takeError());
+  std::string unprovenMessage;
+  bool classifiedNonFinalizable = false;
+  llvm::Error unhandled = llvm::handleErrors(
+      unproven.takeError(),
+      [&](const loom::frontend::SpatialOwnershipCandidateRejection &rejection) {
+        classifiedNonFinalizable =
+            rejection.kind() ==
+            loom::frontend::SpatialOwnershipCandidateRejectionKind::
+                NonFinalizable;
+        unprovenMessage = rejection.message();
+      });
+  if (unhandled)
+    fail(test, "unproven narrowing returned a non-candidate error: " +
+                   llvm::toString(std::move(unhandled)));
+  if (!classifiedNonFinalizable)
+    fail(test, "unproven narrowing was not a typed non-finalizable candidate");
   if (unprovenMessage.find("cannot prove") == std::string::npos)
     fail(test, "unproven narrowing did not report its proof boundary: " +
                    unprovenMessage);
@@ -895,6 +910,68 @@ void ownershipDecisionDomainIsScopeLocalAndTyped() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
+void unifiedOwnershipDomainMaterializesExplicitDecision() {
+  const char *test = "unifiedOwnershipDomainMaterializesExplicitDecision";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-unified-ownership-domain", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseOperationFmulAddModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto scopes = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+                               compiled.structuredProgram));
+  const loom::frontend::StructuredEntityRef callable =
+      findCallable(test, compiled.structuredProgram, "fmuladd_loop");
+  const loom::frontend::StructuredEntityRef loop =
+      findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop");
+
+  std::optional<loom::frontend::SpatialOwnershipScope> callableScope;
+  std::optional<loom::frontend::SpatialOwnershipScope> operationScope;
+  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
+    if (scope.selection == callable)
+      callableScope = scope;
+    if (scope.selection == loop)
+      operationScope = scope;
+  }
+  if (!callableScope ||
+      callableScope->kind !=
+          loom::frontend::SpatialOwnershipScopeKind::WholeCallable)
+    fail(test, "unified domain omitted the whole-callable ownership scope");
+  if (!operationScope ||
+      operationScope->kind !=
+          loom::frontend::SpatialOwnershipScopeKind::Operation)
+    fail(test, "unified domain omitted the operation ownership scope");
+
+  loom::frontend::SpatialOwnershipDecisionPoint decision{
+      loom::raising::FMulAddExecutionShape::Fused, 32};
+  auto selected =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, *operationScope, decision,
+                     design.roots().front()));
+  auto view = take(test, selected.canonicalDataflow.view());
+  if (view.graphs().size() != 1 || view.actors().empty())
+    fail(test, "unified materialization did not produce Spatial workload");
+  bool sawFma = false;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    auto projection =
+        take(test, dataflow::projectRegisteredActorSchemaProjection(actor.op));
+    sawFma |= projection.schema == dataflow::OperationSchemaId::MathFma;
+  }
+  if (!sawFma)
+    fail(test, "unified materialization lost the explicit execution shape");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
 void operationSpatialOwnershipRejectsEscapedResult() {
   const char *test = "operationSpatialOwnershipRejectsEscapedResult";
   llvm::SmallString<128> directory;
@@ -937,6 +1014,7 @@ int main() {
   operationOwnershipScopesFollowCanonicalOrder();
   operationFmulAddDecisionIsCandidateLocal();
   ownershipDecisionDomainIsScopeLocalAndTyped();
+  unifiedOwnershipDomainMaterializesExplicitDecision();
   operationSpatialOwnershipRejectsEscapedResult();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;

@@ -17,6 +17,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -26,11 +27,40 @@
 #include <vector>
 
 namespace loom::frontend {
+char SpatialOwnershipCandidateRejection::ID = 0;
+
+void SpatialOwnershipCandidateRejection::log(llvm::raw_ostream &stream) const {
+  switch (kind_) {
+  case SpatialOwnershipCandidateRejectionKind::NonFinalizable:
+    stream << "ownership_candidate_non_finalizable: ";
+    break;
+  case SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible:
+    stream << "ownership_candidate_exact_fabric_inadmissible: ";
+    break;
+  }
+  stream << message_;
+}
+
+std::error_code SpatialOwnershipCandidateRejection::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "ownership_candidate_invalid: " + message);
+}
+
+llvm::Error reject(SpatialOwnershipCandidateRejectionKind kind,
+                   const llvm::Twine &message) {
+  return llvm::make_error<SpatialOwnershipCandidateRejection>(kind,
+                                                              message.str());
+}
+
+llvm::Error reject(SpatialOwnershipCandidateRejectionKind kind,
+                   llvm::Error error) {
+  return reject(kind, llvm::toString(std::move(error)));
 }
 
 std::string typeSpelling(mlir::FunctionType type) {
@@ -337,17 +367,21 @@ llvm::Error requireExactFabricCapabilities(
       if (!resources)
         return resources.takeError();
       if (resources->empty())
-        return invalid("exact Fabric admits no memory resource for actor " +
-                       dataflow::operationSchemaSpelling(projection->schema));
+        return reject(
+            SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
+            "exact Fabric admits no memory resource for actor " +
+                dataflow::operationSchemaSpelling(projection->schema));
       continue;
     }
     auto resources = capabilities.admittingOperationResources(actor.op);
     if (!resources)
       return resources.takeError();
     if (resources->empty())
-      return invalid("exact Fabric admits no operation resource for actor " +
-                     dataflow::operationSchemaSpelling(projection->schema) +
-                     " with type " + typeSpelling(projection->type));
+      return reject(
+          SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
+          "exact Fabric admits no operation resource for actor " +
+              dataflow::operationSchemaSpelling(projection->schema) +
+              " with type " + typeSpelling(projection->type));
   }
   return llvm::Error::success();
 }
@@ -396,7 +430,8 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
   auto canonical = lowering::lowerStructuredProgramToCanonicalDataflow(
       *structured, loweringOptions);
   if (!canonical)
-    return canonical.takeError();
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  canonical.takeError());
   if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))
     return std::move(error);
   return MaterializedOwnershipCandidate{std::move(*structured),
@@ -428,6 +463,36 @@ enumerateWholeCallableSpatialOwnershipScopes(
   return scopes;
 }
 
+llvm::Expected<std::vector<SpatialOwnershipScope>>
+enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+
+  std::vector<SpatialOwnershipScope> scopes;
+  for (const StructuredEntity &entity :
+       view->entities(StructuredEntityKind::Operation)) {
+    if (!entity.operation)
+      continue;
+    if (auto callable =
+            llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(entity.operation)) {
+      if (llvm::Error rejection = verifyEligibleCallable(callable)) {
+        llvm::consumeError(std::move(rejection));
+        continue;
+      }
+      scopes.push_back(
+          {SpatialOwnershipScopeKind::WholeCallable, entity.reference});
+      continue;
+    }
+    if (auto callable = eligibleOwningCallable(entity.operation); !callable) {
+      llvm::consumeError(callable.takeError());
+      continue;
+    }
+    scopes.push_back({SpatialOwnershipScopeKind::Operation, entity.reference});
+  }
+  return scopes;
+}
+
 llvm::Expected<std::vector<StructuredEntityRef>>
 enumerateOperationSpatialOwnershipScopes(
     const StructuredProgramCandidate &parent) {
@@ -440,9 +505,10 @@ enumerateOperationSpatialOwnershipScopes(
        view->entities(StructuredEntityKind::Operation)) {
     if (!entity.operation)
       continue;
-    if (analyzeOwnershipScope(entity.operation).rejection !=
-        OwnershipScopeRejection::None)
+    if (auto callable = eligibleOwningCallable(entity.operation); !callable) {
+      llvm::consumeError(callable.takeError());
       continue;
+    }
     scopes.push_back(entity.reference);
   }
   return scopes;
@@ -508,6 +574,41 @@ enumerateSpatialOwnershipDecisionDomain(
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>
+materializeSpatialOwnershipDecision(
+    const StructuredProgramCandidate &parent,
+    const SpatialOwnershipScope &scope,
+    const SpatialOwnershipDecisionPoint &decision,
+    const fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &lowering) {
+  auto domain =
+      enumerateSpatialOwnershipDecisionDomain(parent, scope.selection);
+  if (!domain)
+    return domain.takeError();
+  if (llvm::find(*domain, decision) == domain->end())
+    return invalid("decision is not in the selected scope's typed domain");
+
+  switch (scope.kind) {
+  case SpatialOwnershipScopeKind::WholeCallable: {
+    WholeCallableSpatialOwnershipOptions options;
+    options.lowering = lowering;
+    options.fmuladdExecutionShape = decision.fmuladdExecutionShape;
+    options.canonicalIndexWidth = decision.canonicalIndexWidth;
+    return materializeWholeCallableSpatialOwnership(parent, scope.selection,
+                                                    fabric, options);
+  }
+  case SpatialOwnershipScopeKind::Operation: {
+    OperationSpatialOwnershipOptions options;
+    options.lowering = lowering;
+    options.fmuladdExecutionShape = decision.fmuladdExecutionShape;
+    options.canonicalIndexWidth = decision.canonicalIndexWidth;
+    return materializeOperationSpatialOwnership(parent, scope.selection, fabric,
+                                                options);
+  }
+  }
+  llvm_unreachable("unknown Spatial ownership scope kind");
+}
+
+llvm::Expected<MaterializedOwnershipCandidate>
 materializeWholeCallableSpatialOwnership(
     const StructuredProgramCandidate &parent,
     const StructuredEntityRef &callable,
@@ -524,7 +625,8 @@ materializeWholeCallableSpatialOwnership(
   if (llvm::Error error = detail::materializeAddressIndexContract(
           selection->clone.get(), function.getOperation(),
           options.canonicalIndexWidth))
-    return std::move(error);
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  std::move(error));
 
   if (options.fmuladdExecutionShape) {
     mlir::PassManager materialization(
@@ -533,11 +635,13 @@ materializeWholeCallableSpatialOwnership(
     materialization.addPass(
         raising::createMaterializeFMulAddPass(*options.fmuladdExecutionShape));
     if (mlir::failed(materialization.run(function.getOperation())))
-      return invalid("selected fmuladd execution shape is not materializable");
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    "selected fmuladd execution shape is not materializable");
   }
 
   if (llvm::Error error = materializeThread(selection->clone.get(), function))
-    return std::move(error);
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  std::move(error));
   return finalizeOwnershipCandidate(selection->clone.get(), fabric,
                                     options.lowering);
 }
@@ -554,7 +658,8 @@ materializeOperationSpatialOwnership(
   if (llvm::Error error = materializeSelectedOperation(
           selection->clone.get(), selection->operation,
           options.canonicalIndexWidth, options.fmuladdExecutionShape))
-    return std::move(error);
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  std::move(error));
   return finalizeOwnershipCandidate(selection->clone.get(), fabric,
                                     options.lowering);
 }

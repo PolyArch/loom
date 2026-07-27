@@ -9,6 +9,8 @@
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <string>
+#include <system_error>
 #include <vector>
 
 namespace loom::frontend {
@@ -59,6 +61,58 @@ struct SpatialOwnershipDecisionPoint final {
   }
 };
 
+enum class SpatialOwnershipCandidateRejectionKind {
+  NonFinalizable,
+  ExactFabricInadmissible,
+};
+
+/// An expected negative result for one otherwise well-formed scope-local
+/// candidate attempt. Other errors remain invocation or implementation
+/// failures and must not be silently treated as search-space pruning.
+class SpatialOwnershipCandidateRejection final
+    : public llvm::ErrorInfo<SpatialOwnershipCandidateRejection> {
+public:
+  static char ID;
+
+  SpatialOwnershipCandidateRejection(
+      SpatialOwnershipCandidateRejectionKind kind, std::string message)
+      : kind_(kind), message_(std::move(message)) {}
+
+  SpatialOwnershipCandidateRejectionKind kind() const { return kind_; }
+  std::string message() const override { return message_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SpatialOwnershipCandidateRejectionKind kind_;
+  std::string message_;
+};
+
+enum class SpatialOwnershipScopeKind {
+  WholeCallable,
+  Operation,
+};
+
+/// One finite ownership search coordinate in the exact parent candidate.
+/// Scope kind selects the materialization rule; the StructuredEntityRef is the
+/// only identity of the selected program structure.
+struct SpatialOwnershipScope final {
+  SpatialOwnershipScopeKind kind;
+  StructuredEntityRef selection;
+
+  friend bool operator==(const SpatialOwnershipScope &lhs,
+                         const SpatialOwnershipScope &rhs) {
+    return lhs.kind == rhs.kind && lhs.selection == rhs.selection;
+  }
+};
+
+/// Enumerates every ownership scope in the parent candidate's canonical
+/// operation order. Each returned scope remains independent: callers derive
+/// and explore its decision domain separately rather than constructing one
+/// cross-scope Cartesian product.
+llvm::Expected<std::vector<SpatialOwnershipScope>>
+enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent);
+
 /// Enumerates whole-callable ownership scopes in the exact parent candidate's
 /// canonical operation order. Only callables satisfying the complete
 /// whole-callable structural contract are returned; this is a generator
@@ -84,6 +138,17 @@ enumerateOperationSpatialOwnershipScopes(
 llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
 enumerateSpatialOwnershipDecisionDomain(
     const StructuredProgramCandidate &parent, const StructuredEntityRef &scope);
+
+/// Materializes one explicit point from one exact scope-local decision domain.
+/// This performs semantic finalization and exact-Fabric hard pruning, but no
+/// ranking, fallback, implicit decision, or Mapping.
+llvm::Expected<MaterializedOwnershipCandidate>
+materializeSpatialOwnershipDecision(
+    const StructuredProgramCandidate &parent,
+    const SpatialOwnershipScope &scope,
+    const SpatialOwnershipDecisionPoint &decision,
+    const ::loom::fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &lowering = {});
 
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
 /// one exact void, single-block LLVM callable. Its original body moves into an
