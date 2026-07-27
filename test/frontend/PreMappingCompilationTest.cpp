@@ -446,9 +446,23 @@ void exactFabricAndWholeProgramDataflow() {
   auto resources = capabilities.admittingOperationResources(add, 32);
   if (resources.empty())
     fail(test, "System Fabric hid its imported operation resources");
+  const std::uint64_t systemAddCount =
+      take(test, capabilities.admittingOperationResourceCount(add, 32));
   for (const auto &resource : resources)
     if (resource.artifact == design.roots().front().view().identity())
       fail(test, "module-local operation resource was rebound to the System");
+  auto importedModule =
+      take(test, loom::fabric::importEntireFabricRoot(
+                     design.roots().front().directDependencies().front().root,
+                     store));
+  loom::frontend::FabricCapabilityIndex moduleCapabilities(
+      importedModule.view());
+  const std::uint64_t moduleAddCount =
+      take(test, moduleCapabilities.admittingOperationResourceCount(add, 32));
+  if (moduleAddCount == 0 || systemAddCount != moduleAddCount * 4)
+    fail(test,
+         "System Fabric did not expand each module-local operation resource "
+         "through its four SpatialCore occurrences");
   llvm::LLVMContext context;
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseModule(test, context),

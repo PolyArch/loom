@@ -2,10 +2,16 @@
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
+
+#include <set>
+#include <utility>
 
 using namespace loom;
 
@@ -14,15 +20,73 @@ frontend::FabricCapabilityIndex::FabricCapabilityIndex(
     : fabric_(std::move(fabric)),
       operationsBySchema_(dataflow::operationSchemaCount()),
       memoryPortsBySchema_(dataflow::operationSchemaCount()) {
-  index(fabric_);
-  for (const fabric::FabricArtifactView &module : fabric_.importedModules())
-    index(module);
+  index(fabric_, 1);
+  if (fabric_.rootKind() != fabric::FabricRootKind::System) {
+    for (const fabric::FabricArtifactView &module : fabric_.importedModules())
+      index(module, 1);
+    return;
+  }
+
+  auto system = fabric::requireSystemRoot(fabric_);
+  if (!system)
+    llvm_unreachable("a finalized System Fabric must admit its typed view");
+  std::vector<std::uint64_t> moduleOccurrences(fabric_.importedModules().size(),
+                                               0);
+  std::set<std::pair<std::uint64_t, fabric::FabricEntityId>> seenOccurrences;
+  for (const fabric::FabricSpatialAttachmentRecordView &attachment :
+       system->spatialAttachments()) {
+    const fabric::SpatialCoreOccurrenceRef *spatial = nullptr;
+    if (const fabric::FabricTransportEndpointRef *endpoint =
+            attachment.spatialEndpoint.transport()) {
+      if (endpoint->owner.kind() !=
+          fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+        llvm_unreachable("a finalized Spatial attachment has the wrong owner");
+      spatial =
+          &std::get<fabric::SpatialCoreOccurrenceRef>(endpoint->owner.payload);
+    } else if (const fabric::FabricMemoryEndpointRef *endpoint =
+                   attachment.spatialEndpoint.memory()) {
+      if (endpoint->owner.kind() !=
+          fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+        llvm_unreachable("a finalized Spatial attachment has the wrong owner");
+      spatial =
+          &std::get<fabric::SpatialCoreOccurrenceRef>(endpoint->owner.payload);
+    }
+    if (!spatial)
+      llvm_unreachable("a finalized Spatial attachment has no endpoint");
+
+    const std::uint64_t dependencyOrdinal =
+        attachment.moduleEndpoint.dependencyOrdinal;
+    if (dependencyOrdinal >= moduleOccurrences.size())
+      llvm_unreachable("a finalized Spatial attachment has no module owner");
+    if (seenOccurrences.emplace(dependencyOrdinal, spatial->core.id()).second)
+      ++moduleOccurrences[dependencyOrdinal];
+  }
+
+  for (std::size_t ordinal = 0; ordinal < fabric_.importedModules().size();
+       ++ordinal)
+    index(fabric_.importedModules()[ordinal], moduleOccurrences[ordinal]);
 }
 
 void frontend::FabricCapabilityIndex::index(
-    const fabric::FabricArtifactView &fabric) {
+    const fabric::FabricArtifactView &fabric,
+    std::uint64_t rootOccurrenceCount) {
   const std::size_t ownerOrdinal = owners_.size();
   owners_.push_back(fabric);
+
+  llvm::DenseMap<fabric::FabricEntityId, std::uint64_t> fuOccurrences;
+  for (fabric::FabricEntityId id = 0;; ++id) {
+    std::optional<fabric::FabricEntityKind> kind = fabric.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != fabric::FabricEntityKind::FabricFuOccurrence)
+      continue;
+    std::optional<fabric::FabricFuTemplateRef> definition =
+        fabric.fuTemplateOf(fabric::FabricFuOccurrenceRef(id));
+    if (!definition)
+      llvm_unreachable("a finalized FU occurrence has no template");
+    ++fuOccurrences[definition->id()];
+  }
+
   for (fabric::FabricEntityId id = 0;; ++id) {
     std::optional<fabric::FabricEntityKind> kind = fabric.entityKind(id);
     if (!kind)
@@ -52,6 +116,9 @@ void frontend::FabricCapabilityIndex::index(
     }
     if (*kind == fabric::FabricEntityKind::FabricFuTemplate) {
       fabric::FabricFuTemplateRef definition(id);
+      const auto occurrences = fuOccurrences.find(id);
+      if (occurrences == fuOccurrences.end())
+        continue;
       for (const fabric::ResolvedFabricOpCapabilityView &capability :
            fabric.resolvedFabricOpCapabilities(definition)) {
         for (dataflow::OperationSchemaId schema :
@@ -61,7 +128,8 @@ void frontend::FabricCapabilityIndex::index(
           if (schemaOrdinal >= operationsBySchema_.size())
             continue;
           operationsBySchema_[schemaOrdinal].push_back(
-              OperationResource{ownerOrdinal, capability.occurrence});
+              OperationResource{ownerOrdinal, capability.occurrence,
+                                rootOccurrenceCount, occurrences->second});
         }
       }
     }
@@ -91,6 +159,42 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
     }
     result.push_back(ArtifactReference<fabric::FabricFuTemplateNodeRef>{
         owner.identity(), operation.reference});
+  }
+  return result;
+}
+
+llvm::Expected<std::uint64_t>
+frontend::FabricCapabilityIndex::admittingOperationResourceCount(
+    const dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth) const {
+  std::uint64_t result = 0;
+  const std::uint32_t schemaOrdinal = static_cast<std::uint32_t>(actor.schema);
+  if (schemaOrdinal >= operationsBySchema_.size())
+    return result;
+  for (const OperationResource &operation :
+       operationsBySchema_[schemaOrdinal]) {
+    const fabric::FabricArtifactView &owner = owners_[operation.ownerOrdinal];
+    const fabric::ResolvedFabricOpCapabilityView *capability =
+        owner.resolvedFabricOpCapability(operation.reference);
+    if (!capability)
+      continue;
+    if (llvm::Error error = capability->admit(actor, indexBitWidth)) {
+      llvm::consumeError(std::move(error));
+      continue;
+    }
+    const std::optional<std::uint64_t> concrete = llvm::checkedMulUnsigned(
+        operation.rootOccurrenceCount, operation.localOccurrenceCount);
+    if (!concrete)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "fabric_capability_count_overflow: operation occurrence product");
+    const std::optional<std::uint64_t> total =
+        llvm::checkedAddUnsigned(result, *concrete);
+    if (!total)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "fabric_capability_count_overflow: operation occurrence sum");
+    result = *total;
   }
   return result;
 }

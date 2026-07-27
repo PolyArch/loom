@@ -7,6 +7,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace loom::frontend {
@@ -20,13 +21,21 @@ public:
 
   const ::loom::fabric::FabricArtifactView &fabric() const { return fabric_; }
 
-  /// Returns every concrete operation resource whose Fabric-owned relation
-  /// admits `actor`. An empty result proves only resource-level
+  /// Returns every instantiated capability template whose Fabric-owned
+  /// relation admits `actor`. An empty result proves only resource-level
   /// unavailability; it says nothing about FU topology, placement, routing,
   /// contention, or performance.
   llvm::SmallVector<
       ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>
   admittingOperationResources(
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      unsigned indexBitWidth) const;
+
+  /// Counts the concrete operation occurrences represented by the admitted
+  /// capability templates. For a System root this expands both module-local
+  /// FU occurrences and SpatialCore attachment multiplicity. The count is a
+  /// removable Evaluation projection, not a placement or routing proof.
+  llvm::Expected<std::uint64_t> admittingOperationResourceCount(
       const ::dataflow::CanonicalActorSchemaProjection &actor,
       unsigned indexBitWidth) const;
 
@@ -48,6 +57,8 @@ private:
   struct OperationResource final {
     std::size_t ownerOrdinal = 0;
     ::loom::fabric::FabricFuTemplateNodeRef reference;
+    std::uint64_t rootOccurrenceCount = 0;
+    std::uint64_t localOccurrenceCount = 0;
   };
 
   struct MemoryResource final {
@@ -55,7 +66,8 @@ private:
     ::loom::fabric::FabricMemoryOperationPortRef reference;
   };
 
-  void index(const ::loom::fabric::FabricArtifactView &fabric);
+  void index(const ::loom::fabric::FabricArtifactView &fabric,
+             std::uint64_t rootOccurrenceCount);
 
   ::loom::fabric::FabricArtifactView fabric_;
   std::vector<::loom::fabric::FabricArtifactView> owners_;
