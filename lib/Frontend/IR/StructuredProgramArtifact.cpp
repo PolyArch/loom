@@ -2,8 +2,6 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/CanonicalRelation.h"
-#include "Dataflow/IR/OperationSchema.h"
-#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/Bytecode/BytecodeReader.h"
@@ -93,9 +91,8 @@ llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 bool isTransientAttribute(StringRef name) {
-  return name == "llvm.loop_annotation" || name == "loom.source_hint" ||
-         name == "loom.candidate_hint" || name == "loom.visual_metadata" ||
-         name == "graph_name";
+  return name == "loom.source_hint" || name == "loom.candidate_hint" ||
+         name == "loom.visual_metadata" || name == "graph_name";
 }
 
 llvm::Error removeTransients(ModuleOp module) {
@@ -206,16 +203,6 @@ void serializeAttribute(llvm::raw_ostream &stream, Attribute attribute,
 
 llvm::Expected<std::string>
 operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols) {
-  if (dataflow::findOperationSchema(op->getName().getStringRef())) {
-    auto projection = dataflow::projectRegisteredActorSchemaProjectionBytes(op);
-    if (!projection)
-      return projection.takeError();
-    ArrayRef<std::uint8_t> bytes = projection->bytes();
-    return std::string("ACTOR\x1f", 6) +
-           std::string(reinterpret_cast<const char *>(bytes.data()),
-                       bytes.size());
-  }
-
   std::string result;
   llvm::raw_string_ostream stream(result);
   stream << "OP\x1f" << op->getName().getStringRef() << '\x1e';

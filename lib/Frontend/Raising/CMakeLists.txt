@@ -7,26 +7,33 @@ add_mlir_library(LoomFrontendRaising
   Pipeline.cpp
   SCFForToForallPass.cpp
   SCFWhileToForPass.cpp
+  StructuredRaising.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Raising
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRLoom
   MLIRControlFlowDialect
   MLIRControlFlowToSCF
   MLIRFuncDialect
   MLIRFunctionInterfaces
   MLIRIR
+  MLIRFromLLVMIRTranslationRegistration
   MLIRLLVMDialect
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRRegisterAllDialects
+  MLIRRegisterAllPasses
   MLIRRewrite
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSupport
+  MLIRTargetLLVMIRImport
   MLIRTransformUtils
   MLIRTransforms
   MLIRUBDialect
+  LLVMCore
 )
