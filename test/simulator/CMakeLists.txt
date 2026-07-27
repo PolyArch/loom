@@ -75,6 +75,7 @@ target_link_libraries(loom-simulator-simulation-wire-test PRIVATE
   LoomSimulator
   MLIRArithDialect
   MLIRDataflow
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
   MLIRMemRefDialect

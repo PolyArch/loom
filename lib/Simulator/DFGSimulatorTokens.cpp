@@ -465,6 +465,16 @@ indexVectorTokenBitWidth(mlir::VectorType type, mlir::Operation *scope) {
   return narrowTokenBitWidth(*width);
 }
 
+llvm::Expected<unsigned> resolvedTokenTypeBitWidth(mlir::Type type,
+                                                   mlir::Operation *scope) {
+  if (mlir::isa<mlir::IndexType>(type))
+    return loom::getIndexBitWidth(scope);
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
+    if (mlir::isa<mlir::IndexType>(vector.getElementType()))
+      return indexVectorTokenBitWidth(vector, scope);
+  return tokenTypeBitWidth(type);
+}
+
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
                                                        mlir::VectorType type,
                                                        mlir::Operation *scope) {
@@ -514,6 +524,53 @@ Token indexToken(const llvm::APInt &value) {
   if (value.getBitWidth() <= 64)
     token.intValue = value.getSExtValue();
   return token;
+}
+
+llvm::Expected<llvm::APInt> resolvedTokenBitPattern(const Token &token,
+                                                    mlir::Type type,
+                                                    mlir::Operation *scope) {
+  if (mlir::isa<mlir::IndexType>(type)) {
+    auto width = loom::getIndexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    return indexTokenBitPattern(token, *width);
+  }
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
+    if (mlir::isa<mlir::IndexType>(vector.getElementType()))
+      return vectorIndexTokenBitPattern(token, vector, scope);
+  return tokenBitPattern(token, type);
+}
+
+llvm::Expected<Token> tokenFromResolvedBitPattern(const llvm::APInt &bits,
+                                                  mlir::Type type,
+                                                  mlir::Operation *scope) {
+  if (mlir::isa<mlir::IndexType>(type)) {
+    auto width = loom::getIndexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    if (bits.getBitWidth() != *width)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "bit pattern width does not match the resolved index width");
+    return indexToken(bits);
+  }
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
+      auto width = indexVectorTokenBitWidth(vector, scope);
+      if (!width)
+        return width.takeError();
+      if (bits.getBitWidth() != *width)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "bit pattern width does not match the resolved index-vector "
+            "width");
+      Token token;
+      token.kind = TokenKind::Vector;
+      token.bitPattern = bits;
+      return token;
+    }
+  }
+  return tokenFromBitPattern(bits, type);
 }
 
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,

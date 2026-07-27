@@ -317,6 +317,7 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
                             freshRoots);
     if (!root)
       return root.takeError();
+    context.memoryInputRoots.push_back(*root);
     if (*root)
       roots.push_back(**root);
   }

@@ -4,9 +4,11 @@
 // ordinals, observable contracts, strict wire parsing, and DFG/CGRA
 // admission.
 
+#include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationAdmission.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "Common/ArtifactText.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -14,6 +16,7 @@
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -65,8 +68,9 @@ bool errored(llvm::Error error) {
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
-    registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
-                    mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
+    registry.insert<dataflow::DataflowDialect, mlir::DLTIDialect,
+                    mlir::func::FuncDialect, mlir::arith::ArithDialect,
+                    mlir::memref::MemRefDialect>();
     auto *c = new mlir::MLIRContext(registry);
     c->loadAllAvailableDialects();
     return c;
@@ -98,7 +102,10 @@ CanonicalDataflowProgramView viewOf(const char *test,
 // access per root.
 const char *vecaddProgram() {
   return R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<
+  "dlti.endianness" = "little",
+  index = 32 : i64
+>} {
   dataflow.graph private @vecadd(%ctrl: none, %n: index, %a: memref<1024xf32>, %b: memref<1024xf32>, %c: memref<1024xf32>) -> () attributes {input_segments = array<i32: 1, 0, 3>, result_segments = array<i32: 0, 0, 0>} {
     %zero = arith.constant 0 : index
     %va, %da = dataflow.load %a[%zero] %ctrl : memref<1024xf32>
@@ -469,6 +476,69 @@ RuntimeMemoryObject byteObject(std::uint64_t count, std::uint8_t value) {
       count, SemanticMemoryByte{SemanticState::Defined, value})};
 }
 
+RuntimeMemoryObject littleEndianF32(std::uint64_t count, std::uint32_t bits) {
+  RuntimeMemoryObject object;
+  object.initialBytes.reserve(count * sizeof(bits));
+  for (std::uint64_t element = 0; element < count; ++element)
+    for (unsigned byte = 0; byte < sizeof(bits); ++byte)
+      object.initialBytes.push_back(
+          SemanticMemoryByte{SemanticState::Defined,
+                             static_cast<std::uint8_t>(bits >> (byte * 8))});
+  return object;
+}
+
+// The typed workload/runtime wire must drive the real DFG engine. A and B
+// intentionally alias one object, so the expected store also anchors the
+// neutral byte-addressed runtime-memory contract.
+void typedDfgExecution() {
+  const char *test = "typedDfgExecution";
+  CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
+  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  llvm::Expected<CanonicalSimulationWorkload> workload =
+      finalizeSimulationWorkload(makeVecaddWorkload(view), view);
+  if (!workload)
+    fail(test, "workload finalization failed: " +
+                   llvm::toString(workload.takeError()));
+
+  SpatialSimulationRuntimeInputDraft draft{workload->identity()};
+  draft.memoryObjects = {littleEndianF32(1024, 0x3f800000U),
+                         littleEndianF32(1024, 0)};
+  draft.memoryRootBindings = {
+      RuntimeMemoryBindingDraft{rootByFormal(test, view, 0), 0, 0},
+      RuntimeMemoryBindingDraft{rootByFormal(test, view, 1), 0, 0},
+      RuntimeMemoryBindingDraft{rootByFormal(test, view, 2), 1, 0}};
+  llvm::Expected<CanonicalSimulationRuntimeInput> input =
+      finalizeSimulationRuntimeInput(draft, *workload, view);
+  if (!input)
+    fail(test, "runtime-input finalization failed: " +
+                   llvm::toString(input.takeError()));
+
+  llvm::Expected<DFGSimulationReport> report =
+      simulateDfgWorkload(artifact, *workload, *input);
+  if (!report)
+    fail(test,
+         "typed DFG execution failed: " + llvm::toString(report.takeError()));
+  require(test,
+          report->workload == formatArtifactIdentityHex(workload->identity()),
+          "typed report does not identify its exact workload");
+  require(test, report->status == "pass", "typed run did not retire");
+  require(test,
+          report->operationFireCounts[OperationSchemaId::DataflowLoad] == 2,
+          "typed run did not execute both loads");
+  require(test,
+          report->operationFireCounts[OperationSchemaId::DataflowStore] == 1,
+          "typed run did not execute the store");
+  require(test, report->operationFireCounts[OperationSchemaId::ArithAddF] == 1,
+          "typed run did not execute the add");
+  auto output = report->finalMemoryState.find("arg3");
+  require(test,
+          output != report->finalMemoryState.end() &&
+              output->second.size() == 1024 &&
+              output->second.front() == "f32:2" &&
+              output->second.back() == "f32:0",
+          "typed aliased execution produced the wrong destination state");
+}
+
 // (b) Total Fixed/Runtime classification and exact lane-state validation.
 void valueClassificationAndLanes() {
   const char *test = "valueClassificationAndLanes";
@@ -666,6 +736,16 @@ void streamHorizonAndCardinality() {
           again->model().runtimeStreams[0].termination ==
               StreamTermination::OpenAfterLast,
           "the open horizon state survives the round trip");
+  llvm::Expected<DFGSimulationReport> report =
+      simulateDfgWorkload(artifact, *finalized, *again);
+  if (!report)
+    fail(test, "typed stream admission failed: " +
+                   llvm::toString(report.takeError()));
+  require(test,
+          report->status == "unsupported" && report->diagnostics.size() == 1 &&
+              report->diagnostics.front() ==
+                  "typed runtime stream termination is unsupported",
+          "DFG-sim must fail closed until typed stream horizons are modeled");
 }
 
 // (d) Canonical object-ordinal invariance under author ordering and
@@ -1414,6 +1494,7 @@ void freshExposureChain() {
 } // namespace
 
 int main() {
+  typedDfgExecution();
   rootedLaunchOwnership();
   valueClassificationAndLanes();
   streamHorizonAndCardinality();

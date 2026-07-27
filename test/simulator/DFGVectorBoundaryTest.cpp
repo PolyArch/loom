@@ -609,13 +609,16 @@ void serializeFailureIsAtomic(dataflow::SerializeOp op) {
 // A memory actor rejects an access entirely on peeked inputs. Only its reason
 // and the run's retained failure may change; inputs, outputs, actor mutation
 // state, events, fire counts, and memory may not.
-std::shared_ptr<MemoryValue>
-makeMemory(mlir::Type elementType, std::initializer_list<uint64_t> values) {
+std::shared_ptr<MemoryValue> makeMemory(mlir::Type elementType,
+                                        std::initializer_list<uint64_t> values,
+                                        mlir::Operation *scope) {
   auto memory = std::make_shared<MemoryValue>();
-  for (uint64_t value : values)
-    memory->elements.push_back(tokenWithBits(elementType, value));
-  memory->elementType = elementType;
-  memory->initialized = llvm::SmallBitVector(memory->elements.size(), true);
+  for (uint64_t value : values) {
+    auto bytes = takeExpected(encodeMemoryElement(
+        tokenWithBits(elementType, value), elementType, scope));
+    memory->bytes.append(bytes.begin(), bytes.end());
+  }
+  memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
   return memory;
 }
 
@@ -636,6 +639,7 @@ Token indexVectorToken(unsigned indexBits,
 }
 
 void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
+                        mlir::Type elementType, mlir::Operation *scope,
                         llvm::ArrayRef<uint64_t> elements,
                         llvm::StringRef message) {
   require(state.pendingChannels.empty() && state.pendingObservedOutputs.empty(),
@@ -644,15 +648,23 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
               state.operationFireCounts.empty(),
           message);
   require(state.terminalPrimitiveOps.empty(), message);
-  require(memory.elements.size() == elements.size(), message);
-  for (auto [token, value] : llvm::zip_equal(memory.elements, elements))
-    require(bitsOf(token, memory.elementType) == value, message);
+  llvm::SmallVector<loom::sim::SemanticMemoryByte> expected;
+  for (uint64_t value : elements) {
+    auto bytes = takeExpected(encodeMemoryElement(
+        tokenWithBits(elementType, value), elementType, scope));
+    expected.append(bytes.begin(), bytes.end());
+  }
+  require(memory.bytes.size() == expected.size(), message);
+  for (auto [actual, wanted] : llvm::zip_equal(memory.bytes, expected))
+    require(actual.state == wanted.state && actual.value == wanted.value,
+            message);
 }
 
 void loadRejectionIsAtomic(dataflow::LoadOp op) {
   SimulatorState state;
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
-  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  auto memory =
+      makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   state.channels[&op.getMemMutable()].push_back(
       pointerToken(op.getMem(), memory, 0));
   state.channels[&op.getAddrMutable()].push_back(
@@ -672,14 +684,16 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
               state.channels[&op.getAddrMutable()].size() == 1 &&
               state.channels[&op.getCtrlMutable()].size() == 1,
           "load consumed input on a rejected access");
-  expectUntouchedRun(state, *memory, {0x11, 0x22},
+  expectUntouchedRun(state, *memory, memoryType.getElementType(),
+                     op.getOperation(), {0x11, 0x22},
                      "load changed run or memory state on a rejected access");
 }
 
 void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   SimulatorState state;
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
-  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  auto memory =
+      makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   state.channels[&op.getMemMutable()].push_back(
       pointerToken(op.getMem(), memory, 0));
   state.channels[&op.getAddrMutable()].push_back(
@@ -714,7 +728,8 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
               state.admittedPlainMemoryActions.contains(op.getOperation()),
           "store partially issued on synchronization insertion failure");
   expectUntouchedRun(
-      state, *memory, {0x11, 0x22},
+      state, *memory, memoryType.getElementType(), op.getOperation(),
+      {0x11, 0x22},
       "store changed run or memory state on synchronization insertion failure");
 }
 
@@ -726,7 +741,8 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
 void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
   SimulatorState state;
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
-  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  auto memory =
+      makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   state.channels[&op.getMemMutable()].push_back(
       pointerToken(op.getMem(), memory, 0));
   state.channels[&op.getAddrMutable()].push_back(
@@ -758,7 +774,8 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
               state.admittedPlainMemoryActions.contains(op.getOperation()),
           "store partially issued a duplicate active destination");
   expectUntouchedRun(
-      state, *memory, {0x11, 0x22},
+      state, *memory, memoryType.getElementType(), op.getOperation(),
+      {0x11, 0x22},
       "store changed run or memory state on a duplicate active destination");
 }
 

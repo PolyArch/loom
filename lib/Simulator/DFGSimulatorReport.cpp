@@ -54,13 +54,20 @@ bool applyRunFailureTerminal(const SimulatorState &state,
   llvm_unreachable("the run failure kind is closed");
 }
 
-static std::shared_ptr<MemoryValue> memoryForValue(SimulatorState &state,
-                                                   mlir::Value value) {
+static std::optional<MemoryView> memoryForValue(SimulatorState &state,
+                                                mlir::Value value) {
   llvm::DenseSet<mlir::Value> visited;
   while (value && visited.insert(value).second) {
+    auto view = state.memoryViews.find(value);
+    if (view != state.memoryViews.end())
+      return view->second;
     auto memory = state.memories.find(value);
-    if (memory != state.memories.end())
-      return memory->second;
+    if (memory != state.memories.end()) {
+      mlir::Type elementType;
+      if (auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType()))
+        elementType = type.getElementType();
+      return MemoryView{memory->second, value, 0, elementType};
+    }
     if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
       value = cast.getSource();
       continue;
@@ -112,14 +119,36 @@ bool hasPendingVectorGroups(SimulatorState &state) {
 }
 
 static llvm::Expected<llvm::SmallVector<std::string>>
-serializeMemoryValue(const MemoryValue &memory, mlir::Operation *scope) {
+serializeMemoryValue(const MemoryView &view, SimulatorState &state,
+                     mlir::Operation *scope) {
+  if (!view.elementType)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "memory observation has no exact element type");
+  auto byteCount = byteSizeOfType(view.elementType, scope);
+  if (!byteCount)
+    return byteCount.takeError();
   llvm::SmallVector<std::string> values;
-  for (auto [index, token] : llvm::enumerate(memory.elements)) {
-    if (!memory.initialized[index]) {
+  // finalMemoryRoots names the complete backing object. A graph argument may
+  // be a view into that object, but this legacy report projection must not
+  // silently discard bytes before the view.
+  const std::size_t begin = 0;
+  const std::size_t stride = static_cast<std::size_t>(*byteCount);
+  for (std::size_t offset = begin; offset + stride <= view.memory->bytes.size();
+       offset += stride) {
+    bool initialized = true;
+    for (std::size_t byte = offset; byte < offset + stride; ++byte)
+      initialized &= view.memory->initialized[byte];
+    if (!initialized) {
       values.push_back("uninitialized");
       continue;
     }
-    auto value = tokenToString(token, memory.elementType, scope);
+    auto token = readMemoryElement(view, offset, view.elementType, state, scope,
+                                   "memory observation");
+    if (!token)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "memory observation decode failed");
+    auto value = tokenToString(*token, view.elementType, scope);
     if (!value)
       return value.takeError();
     values.push_back(std::move(*value));
@@ -153,10 +182,10 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
   for (unsigned index = 0, end = graph.getFunctionType().getNumInputs();
        index < end; ++index) {
     mlir::BlockArgument arg = entry.getArgument(index + 1);
-    std::shared_ptr<MemoryValue> memory = memoryForValue(state, arg);
+    std::optional<MemoryView> memory = memoryForValue(state, arg);
     std::string port = llvm::formatv("arg{0}", index).str();
     if (memory) {
-      auto values = serializeMemoryValue(*memory, graph);
+      auto values = serializeMemoryValue(*memory, state, graph);
       if (!values)
         return values.takeError();
       report.finalMemoryState[port] = std::move(*values);
@@ -167,10 +196,10 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
   }
   auto ret = mlir::cast<dataflow::GraphReturnOp>(entry.getTerminator());
   for (auto [index, memoryResult] : llvm::enumerate(ret.getMemories())) {
-    std::shared_ptr<MemoryValue> memory = memoryForValue(state, memoryResult);
+    std::optional<MemoryView> memory = memoryForValue(state, memoryResult);
     std::string port = llvm::formatv("memory_result{0}", index).str();
     if (memory) {
-      auto values = serializeMemoryValue(*memory, graph);
+      auto values = serializeMemoryValue(*memory, state, graph);
       if (!values)
         return values.takeError();
       report.finalMemoryState[port] = std::move(*values);

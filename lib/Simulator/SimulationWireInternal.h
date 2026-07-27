@@ -157,6 +157,11 @@ struct ResolvedLaunchContext {
   unsigned threadRank = 0;
   std::vector<LaneShape> valueInputShapes = {};
   std::vector<LaneShape> streamInputShapes = {};
+  // Graph memory-input ordinal -> imported runtime root. A missing entry is a
+  // fresh allocation or exposure owned by another graph activation and cannot
+  // be seeded from SimulationRuntimeInput.
+  std::vector<std::optional<dataflow::LogicalMemoryRootRef>> memoryInputRoots =
+      {};
   // Sorted by the typed root key; the imported logical-memory roots reachable
   // from this launch through its graph memory-input bindings.
   std::vector<dataflow::LogicalMemoryRootRef> importedRoots = {};

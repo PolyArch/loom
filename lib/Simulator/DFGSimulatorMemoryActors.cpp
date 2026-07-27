@@ -19,6 +19,7 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -54,8 +55,12 @@ peekMemoryView(SimulatorState &state, mlir::Value mem,
   if (viewIt != state.memoryViews.end())
     return viewIt->second;
   auto memIt = state.memories.find(mem);
-  if (memIt != state.memories.end())
-    return MemoryView{memIt->second, mem, 0};
+  if (memIt != state.memories.end()) {
+    mlir::Type elementType;
+    if (auto type = mlir::dyn_cast<mlir::MemRefType>(mem.getType()))
+      elementType = type.getElementType();
+    return MemoryView{memIt->second, mem, 0, elementType};
+  }
   return std::nullopt;
 }
 
@@ -65,68 +70,184 @@ static void consumeMemoryView(SimulatorState &state,
     (void)popToken(state, memOperand);
 }
 
-static std::optional<std::size_t>
-resolveElementIndex(const MemoryView &view, const llvm::APInt &address,
-                    llvm::SmallVectorImpl<std::string> &diagnostics,
-                    mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
-  auto elementSizeOrErr = byteSizeOfType(view.memory->elementType, scope);
+enum class MemoryByteOrder { Little, Big };
+
+static llvm::Expected<MemoryByteOrder> memoryByteOrder(mlir::Operation *scope) {
+  mlir::Attribute endianness = mlir::DataLayout::closest(scope).getEndianness();
+  if (!endianness)
+    return MemoryByteOrder::Little;
+  auto spelling = mlir::dyn_cast<mlir::StringAttr>(endianness);
+  if (!spelling)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory endianness is not a string");
+  if (spelling.getValue() == "little")
+    return MemoryByteOrder::Little;
+  if (spelling.getValue() == "big")
+    return MemoryByteOrder::Big;
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported memory endianness '%s'",
+                                 spelling.getValue().str().c_str());
+}
+
+static std::optional<std::size_t> resolveElementByteOffset(
+    const MemoryView &view, const llvm::APInt &address, mlir::Type elementType,
+    llvm::SmallVectorImpl<std::string> &diagnostics, mlir::Operation *scope,
+    llvm::StringRef diagnosticLabel) {
+  auto elementSizeOrErr = byteSizeOfType(elementType, scope);
   if (!elementSizeOrErr) {
     diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
     return std::nullopt;
   }
-  if (*elementSizeOrErr == 0 || view.byteOffset % *elementSizeOrErr != 0) {
+  if (*elementSizeOrErr == 0) {
+    diagnostics.push_back("memory element has zero storage size");
+    return std::nullopt;
+  }
+  if (view.byteOffset < 0 || view.byteOffset % *elementSizeOrErr != 0) {
     diagnostics.push_back("memory view byte offset is not element-aligned");
     return std::nullopt;
   }
-  const std::int64_t baseIndex = view.byteOffset / *elementSizeOrErr;
-  // The semantic address is signed at its own width. Widening both terms past
-  // that width keeps the sum exact, so a host slot is named only after the
-  // sign and bound checks below prove it exists.
+  // The semantic address is signed at its own width. Convert it to an exact
+  // byte offset before any host-size projection.
   const unsigned width = std::max(address.getBitWidth(), 64u) + 1;
-  const llvm::APInt slot =
-      address.sext(width) + llvm::APInt(width, baseIndex, /*isSigned=*/true);
-  const llvm::APInt limit(width, view.memory->elements.size());
-  if (slot.isNegative() || slot.uge(limit)) {
+  const llvm::APInt byteOffset =
+      address.sext(width) *
+          llvm::APInt(width, static_cast<std::uint64_t>(*elementSizeOrErr)) +
+      llvm::APInt(width, static_cast<std::uint64_t>(view.byteOffset));
+  const llvm::APInt end =
+      byteOffset +
+      llvm::APInt(width, static_cast<std::uint64_t>(*elementSizeOrErr));
+  const llvm::APInt limit(width, view.memory->bytes.size());
+  if (byteOffset.isNegative() || end.ugt(limit)) {
     diagnostics.push_back((diagnosticLabel + " address is out of range").str());
     return std::nullopt;
   }
-  return static_cast<std::size_t>(slot.getZExtValue());
+  return static_cast<std::size_t>(byteOffset.getZExtValue());
 }
 
 std::optional<std::size_t>
-resolveElementIndex(const MemoryView &view, const llvm::APInt &address,
-                    SimulatorState &state, mlir::Operation *scope,
-                    llvm::StringRef diagnosticLabel) {
-  return resolveElementIndex(view, address, state.diagnostics, scope,
-                             diagnosticLabel);
+resolveElementByteOffset(const MemoryView &view, const llvm::APInt &address,
+                         mlir::Type elementType, SimulatorState &state,
+                         mlir::Operation *scope,
+                         llvm::StringRef diagnosticLabel) {
+  return resolveElementByteOffset(view, address, elementType, state.diagnostics,
+                                  scope, diagnosticLabel);
 }
 
 std::optional<std::size_t>
-resolveElementIndex(const MemoryView &view, const Token &addr,
-                    SimulatorState &state, mlir::Operation *scope,
-                    llvm::StringRef diagnosticLabel) {
-  return resolveElementIndex(
+resolveElementByteOffset(const MemoryView &view, const Token &addr,
+                         mlir::Type elementType, SimulatorState &state,
+                         mlir::Operation *scope,
+                         llvm::StringRef diagnosticLabel) {
+  return resolveElementByteOffset(
       view,
       llvm::APInt(64, static_cast<std::uint64_t>(integerToken(addr)),
                   /*isSigned=*/true),
-      state, scope, diagnosticLabel);
+      elementType, state, scope, diagnosticLabel);
 }
 
-std::optional<Token> readMemoryElement(const MemoryView &view,
-                                       std::size_t index, SimulatorState &state,
-                                       llvm::StringRef diagnosticLabel) {
-  if (!view.memory->initialized[index]) {
-    state.diagnostics.push_back(
-        (diagnosticLabel + " reads uninitialized memory").str());
+std::optional<Token>
+readMemoryElement(const MemoryView &view, std::size_t byteOffset,
+                  mlir::Type elementType, SimulatorState &state,
+                  mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
+  auto byteCount = byteSizeOfType(elementType, scope);
+  auto bitWidth = resolvedTokenTypeBitWidth(elementType, scope);
+  auto order = memoryByteOrder(scope);
+  if (!byteCount || !bitWidth || !order) {
+    if (!byteCount)
+      state.diagnostics.push_back(llvm::toString(byteCount.takeError()));
+    if (!bitWidth)
+      state.diagnostics.push_back(llvm::toString(bitWidth.takeError()));
+    if (!order)
+      state.diagnostics.push_back(llvm::toString(order.takeError()));
     return std::nullopt;
   }
-  return view.memory->elements[index];
+  bool poison = false;
+  bool undef = false;
+  llvm::APInt bits(*bitWidth, 0);
+  for (std::size_t index = 0; index < static_cast<std::size_t>(*byteCount);
+       ++index) {
+    const std::size_t position = byteOffset + index;
+    if (!view.memory->initialized[position]) {
+      state.diagnostics.push_back(
+          (diagnosticLabel + " reads uninitialized memory").str());
+      return std::nullopt;
+    }
+    const SemanticMemoryByte &byte = view.memory->bytes[position];
+    poison |= byte.state == SemanticState::Poison;
+    undef |= byte.state == SemanticState::Undef;
+    if (byte.state != SemanticState::Defined)
+      continue;
+    const std::size_t semanticByte =
+        *order == MemoryByteOrder::Little
+            ? index
+            : static_cast<std::size_t>(*byteCount) - 1 - index;
+    const unsigned low = static_cast<unsigned>(semanticByte * 8);
+    if (low >= *bitWidth)
+      continue;
+    const unsigned width = std::min(8u, *bitWidth - low);
+    bits.insertBits(llvm::APInt(width, byte.value), low);
+  }
+  if (poison || undef) {
+    auto token = exceptionalValueToken(poison ? PrimitiveValueState::Poison
+                                              : PrimitiveValueState::Undef,
+                                       elementType);
+    if (!token) {
+      state.diagnostics.push_back(llvm::toString(token.takeError()));
+      return std::nullopt;
+    }
+    return *token;
+  }
+  auto token = tokenFromResolvedBitPattern(bits, elementType, scope);
+  if (!token) {
+    state.diagnostics.push_back(llvm::toString(token.takeError()));
+    return std::nullopt;
+  }
+  return *token;
 }
 
-void writeMemoryElement(const MemoryView &view, std::size_t index,
-                        Token value) {
-  view.memory->elements[index] = value;
-  view.memory->initialized.set(index);
+llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
+encodeMemoryElement(const Token &value, mlir::Type elementType,
+                    mlir::Operation *scope) {
+  auto byteCount = byteSizeOfType(elementType, scope);
+  if (!byteCount)
+    return byteCount.takeError();
+  auto bitWidth = resolvedTokenTypeBitWidth(elementType, scope);
+  if (!bitWidth)
+    return bitWidth.takeError();
+  auto order = memoryByteOrder(scope);
+  if (!order)
+    return order.takeError();
+  llvm::SmallVector<SemanticMemoryByte, 8> bytes(
+      static_cast<std::size_t>(*byteCount));
+  if (value.valueState != PrimitiveValueState::Defined) {
+    const SemanticState state = value.valueState == PrimitiveValueState::Poison
+                                    ? SemanticState::Poison
+                                    : SemanticState::Undef;
+    std::fill(bytes.begin(), bytes.end(), SemanticMemoryByte{state, 0});
+    return bytes;
+  }
+  auto bits = resolvedTokenBitPattern(value, elementType, scope);
+  if (!bits)
+    return bits.takeError();
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    const std::size_t semanticByte =
+        *order == MemoryByteOrder::Little ? index : bytes.size() - 1 - index;
+    const unsigned low = static_cast<unsigned>(semanticByte * 8);
+    const unsigned width = low >= *bitWidth ? 0 : std::min(8u, *bitWidth - low);
+    bytes[index] = SemanticMemoryByte{
+        SemanticState::Defined,
+        width == 0 ? std::uint8_t{0}
+                   : static_cast<std::uint8_t>(
+                         bits->extractBitsAsZExtValue(width, low))};
+  }
+  return bytes;
+}
+
+void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
+                        llvm::ArrayRef<SemanticMemoryByte> bytes) {
+  std::copy(bytes.begin(), bytes.end(),
+            view.memory->bytes.begin() + byteOffset);
+  view.memory->initialized.set(byteOffset, byteOffset + bytes.size());
 }
 
 static std::optional<llvm::APInt>
@@ -201,8 +322,8 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
         access.isGather() ? addressBits->extractBits(*width, *width * lane)
                           : base + llvm::APInt(*width, lane, /*isSigned=*/false,
                                                /*implicitTrunc=*/true);
-    auto slot = resolveElementIndex(view, laneAddress, diagnostics, scope,
-                                    diagnosticLabel);
+    auto slot = resolveElementByteOffset(view, laneAddress, access.elementType,
+                                         diagnostics, scope, diagnosticLabel);
     if (!slot)
       return std::nullopt;
     slots.push_back(*slot);
@@ -249,8 +370,9 @@ prepareDataflowMemoryRead(const MemoryView &view,
   // An element access is one complete memref element, even when that element
   // is itself a vector: one lane, one address, and no mask.
   if (!access.isVector()) {
-    auto value = readMemoryElement(view, projection.slots.front(), state,
-                                   "dataflow.load");
+    auto value =
+        readMemoryElement(view, projection.slots.front(), access.elementType,
+                          state, state.graphScope, "dataflow.load");
     if (!value)
       return std::nullopt;
     return DataflowMemoryRead{*value, true};
@@ -273,8 +395,9 @@ prepareDataflowMemoryRead(const MemoryView &view,
   for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
     if (!activeLanes[lane])
       continue;
-    auto element = readMemoryElement(view, projection.slots[active++], state,
-                                     "dataflow.load");
+    auto element =
+        readMemoryElement(view, projection.slots[active++], access.elementType,
+                          state, state.graphScope, "dataflow.load");
     if (!element)
       return std::nullopt;
     auto elementBits = tokenBitPattern(*element, access.elementType);
@@ -299,7 +422,17 @@ prepareDataflowMemoryWrite(const Token &data,
                            SimulatorState &state) {
   const auto &access = projection.type;
   if (!access.isVector()) {
-    return DataflowMemoryWrite{{{projection.slots.front(), data}}, true};
+    auto bytes =
+        encodeMemoryElement(data, access.elementType, state.graphScope);
+    if (!bytes) {
+      state.diagnostics.push_back(llvm::toString(bytes.takeError()));
+      return std::nullopt;
+    }
+    DataflowMemoryWrite write;
+    write.accessedMemory = true;
+    write.elements.push_back(DataflowMemoryWrite::Element{
+        projection.slots.front(), std::move(*bytes)});
+    return write;
   }
 
   const llvm::APInt &activeLanes = projection.activeLanes;
@@ -350,36 +483,45 @@ prepareDataflowMemoryWrite(const Token &data,
       state.diagnostics.push_back(llvm::toString(element.takeError()));
       return std::nullopt;
     }
-    write.elements.emplace_back(projection.slots[active++], *element);
+    auto bytes =
+        encodeMemoryElement(*element, access.elementType, state.graphScope);
+    if (!bytes) {
+      state.diagnostics.push_back(llvm::toString(bytes.takeError()));
+      return std::nullopt;
+    }
+    write.elements.push_back(DataflowMemoryWrite::Element{
+        projection.slots[active++], std::move(*bytes)});
   }
   return write;
 }
 
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write) {
-  for (const auto &[index, value] : write.elements)
-    writeMemoryElement(view, index, value);
+  for (const DataflowMemoryWrite::Element &element : write.elements)
+    writeMemoryElement(view, element.byteOffset, element.bytes);
 }
 
 // The byte ranges one issued access covers, derived from the active element
 // slots it already resolved. An inactive lane resolves no slot, so it
 // contributes no range and derives no access.
-static std::optional<MemoryActionRecord> projectMemoryAction(
-    const MemoryView &view, llvm::ArrayRef<std::size_t> slots, bool isWrite,
-    llvm::SmallVectorImpl<std::string> &diagnostics, mlir::Operation *scope) {
+static std::optional<MemoryActionRecord>
+projectMemoryAction(const MemoryView &view, llvm::ArrayRef<std::size_t> slots,
+                    mlir::Type elementType, bool isWrite,
+                    llvm::SmallVectorImpl<std::string> &diagnostics,
+                    mlir::Operation *scope) {
   MemoryActionRecord action;
   action.rootId = view.memory->logicalRootId;
   action.isWrite = isWrite;
   if (slots.empty())
     return action;
-  auto elementSize = byteSizeOfType(view.memory->elementType, scope);
+  auto elementSize = byteSizeOfType(elementType, scope);
   if (!elementSize) {
     diagnostics.push_back(llvm::toString(elementSize.takeError()));
     return std::nullopt;
   }
   action.byteRanges.reserve(slots.size());
   for (std::size_t slot : slots) {
-    const std::int64_t begin = static_cast<std::int64_t>(slot) * *elementSize;
+    const std::int64_t begin = static_cast<std::int64_t>(slot);
     action.byteRanges.emplace_back(begin, begin + *elementSize);
   }
   canonicalizeMemoryActionRanges(action.byteRanges);
@@ -549,6 +691,7 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
       return result;
     auto action =
         projectMemoryAction(projected->view, projected->access.slots,
+                            projected->access.type.elementType,
                             /*isWrite=*/false, result.diagnostics, operation);
     if (!action)
       return result;
@@ -566,6 +709,7 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
     return result;
   auto action =
       projectMemoryAction(projected->view, projected->access.slots,
+                          projected->access.type.elementType,
                           /*isWrite=*/true, result.diagnostics, operation);
   if (!action)
     return result;

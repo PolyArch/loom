@@ -13,8 +13,15 @@
 #include <map>
 #include <string>
 
+namespace dataflow {
+class CanonicalDataflowArtifact;
+}
+
 namespace loom {
 namespace sim {
+
+class CanonicalSimulationRuntimeInput;
+class CanonicalSimulationWorkload;
 
 struct DFGRuntimeArg {
   unsigned index = 0;
@@ -58,6 +65,15 @@ struct DFGSimulationReport {
 llvm::Expected<DFGSimulationReport>
 simulateDataflowGraph(::mlir::ModuleOp module,
                       const DFGSimulationOptions &options);
+
+/// Executes one exact spatial workload against its finalized Canonical
+/// Dataflow owner. The workload and runtime input are admitted through their
+/// shared typed wire; CLI strings are not an intermediate representation.
+llvm::Expected<DFGSimulationReport>
+simulateDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
+                    const CanonicalSimulationWorkload &workload,
+                    const CanonicalSimulationRuntimeInput &runtimeInput,
+                    std::uint64_t maxEventSteps = 100000);
 
 llvm::Error writeDFGSimulationReportJson(llvm::StringRef outputPath,
                                          const DFGSimulationReport &report);

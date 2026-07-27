@@ -3,6 +3,7 @@
 
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/MemorySynchronization.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,12 +35,14 @@
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
+struct ResolvedLaunchContext;
 struct MemoryValue;
 
 struct MemoryView {
   std::shared_ptr<MemoryValue> memory;
   mlir::Value root;
   std::int64_t byteOffset = 0;
+  mlir::Type elementType;
 };
 
 enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
@@ -315,7 +318,11 @@ struct DataflowMemoryRead {
 // The complete element update one store commits, prepared before any element
 // changes so a rejected access leaves memory untouched.
 struct DataflowMemoryWrite {
-  llvm::SmallVector<std::pair<std::size_t, Token>> elements;
+  struct Element {
+    std::size_t byteOffset = 0;
+    llvm::SmallVector<SemanticMemoryByte, 8> bytes;
+  };
+  llvm::SmallVector<Element> elements;
   bool accessedMemory = false;
 };
 
@@ -338,8 +345,9 @@ struct ParallelizeState {
 
 struct MemoryValue {
   std::uint64_t logicalRootId = 0;
-  mlir::Type elementType;
-  llvm::SmallVector<Token> elements;
+  llvm::SmallVector<SemanticMemoryByte> bytes;
+  // Fresh allocation bytes are not initialized. Runtime-input bytes remain
+  // initialized even when their semantic state is Poison or Undef.
   llvm::SmallBitVector initialized;
 };
 
@@ -521,6 +529,23 @@ struct UnsupportedOperation {
   std::string reason;
 };
 
+/// The first exact model's representability check. A returned string names a
+/// valid workload feature this provider cannot execute; malformed inputs have
+/// already been rejected by shared admission.
+std::optional<std::string>
+unsupportedTypedDfgInput(const CanonicalSimulationWorkload &workload,
+                         const CanonicalSimulationRuntimeInput &runtimeInput,
+                         const ResolvedLaunchContext &context);
+
+/// Seeds one already-admitted rooted graph directly from the typed workload
+/// and runtime-input models. No CLI syntax or simulator-local persistent ID is
+/// involved.
+llvm::Error
+seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
+                   const CanonicalSimulationWorkload &workload,
+                   const CanonicalSimulationRuntimeInput &runtimeInput,
+                   const ResolvedLaunchContext &context);
+
 Token noneToken();
 Token integerValueToken(std::int64_t value);
 Token floatValueToken(double value);
@@ -528,16 +553,24 @@ Token boolValueToken(bool value);
 llvm::Expected<Token> exceptionalValueToken(PrimitiveValueState state,
                                             mlir::Type type);
 llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type);
+llvm::Expected<unsigned> resolvedTokenTypeBitWidth(mlir::Type type,
+                                                   mlir::Operation *scope);
 llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
                                             mlir::Type type);
+llvm::Expected<llvm::APInt> resolvedTokenBitPattern(const Token &token,
+                                                    mlir::Type type,
+                                                    mlir::Operation *scope);
 llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
                                           mlir::Type type);
+llvm::Expected<Token> tokenFromResolvedBitPattern(const llvm::APInt &bits,
+                                                  mlir::Type type,
+                                                  mlir::Operation *scope);
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
                                         mlir::Operation *scope);
 llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
                                           mlir::Operation *scope);
 Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
-                   std::int64_t byteOffset = 0);
+                   std::int64_t byteOffset = 0, mlir::Type elementType = {});
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
 llvm::Expected<Token> zeroToken(mlir::Type type);
 
@@ -585,6 +618,8 @@ void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
                               Token token, MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
 bool recordActorEvent(SimulatorState &state, mlir::Operation *op);
+void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
+                       const Token &token);
 const dataflow::CanonicalActorSchemaProjection &
 actorProjection(const SimulatorState &state, mlir::Operation *op);
 std::int64_t integerToken(const Token &token);
@@ -603,20 +638,25 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
 
 // The host element slot one semantic address names. `address` is exact at its
 // own width and becomes a host index only after the sign and range checks.
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const llvm::APInt &address,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef diagnosticLabel);
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const Token &addr,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef diagnosticLabel);
-std::optional<Token> readMemoryElement(const MemoryView &view,
-                                       std::size_t index, SimulatorState &state,
-                                       llvm::StringRef diagnosticLabel);
-void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
+std::optional<std::size_t>
+resolveElementByteOffset(const MemoryView &view, const llvm::APInt &address,
+                         mlir::Type elementType, SimulatorState &state,
+                         mlir::Operation *scope,
+                         llvm::StringRef diagnosticLabel);
+std::optional<std::size_t>
+resolveElementByteOffset(const MemoryView &view, const Token &addr,
+                         mlir::Type elementType, SimulatorState &state,
+                         mlir::Operation *scope,
+                         llvm::StringRef diagnosticLabel);
+std::optional<Token>
+readMemoryElement(const MemoryView &view, std::size_t byteOffset,
+                  mlir::Type elementType, SimulatorState &state,
+                  mlir::Operation *scope, llvm::StringRef diagnosticLabel);
+llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
+encodeMemoryElement(const Token &value, mlir::Type elementType,
+                    mlir::Operation *scope);
+void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
+                        llvm::ArrayRef<SemanticMemoryByte> bytes);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 
