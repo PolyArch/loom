@@ -12,6 +12,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
 
@@ -138,20 +139,6 @@ bool hasRawPointerUse(mlir::Operation *op) {
 
 using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
 
-bool constrainSelectorLane(mlir::Value selector, unsigned lane,
-                           SelectorLanes &selectorLanes) {
-  auto [it, inserted] = selectorLanes.try_emplace(selector, lane);
-  return inserted || it->second == lane;
-}
-
-bool constrainDemuxLane(mlir::Value value, SelectorLanes &selectorLanes) {
-  auto result = llvm::dyn_cast<mlir::OpResult>(value);
-  auto demux =
-      result ? llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()) : nullptr;
-  return !demux || constrainSelectorLane(
-                       demux.getSel(), result.getResultNumber(), selectorLanes);
-}
-
 /// A canonical memory actor publishes its remaining results together with
 /// `done` as one retirement event.
 bool isRetirementPublication(mlir::Value witness, mlir::Value prerequisite) {
@@ -161,89 +148,190 @@ bool isRetirementPublication(mlir::Value witness, mlir::Value prerequisite) {
          prerequisite.getDefiningOp() == def;
 }
 
-bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
-                       llvm::DenseSet<mlir::Value> &visited,
-                       SelectorLanes &selectorLanes) {
-  if (!event || !constrainDemuxLane(event, selectorLanes))
-    return false;
-  if (event == prerequisite)
-    return true;
-  if (!visited.insert(event).second)
-    return false;
-  mlir::Operation *def = event.getDefiningOp();
-  if (!def)
-    return false;
+struct CausalConstraintTransition {
+  unsigned parent;
+  mlir::Value selector;
+  unsigned lane;
 
-  auto dependsOn = [&](mlir::Value operand, SelectorLanes branchLanes) {
-    llvm::DenseSet<mlir::Value> branchVisited = visited;
-    return causallyDependsOn(operand, prerequisite, branchVisited, branchLanes);
-  };
-  auto dependsOnAnyOperand = [&]() {
-    return llvm::any_of(def->getOperands(), [&](mlir::Value operand) {
-      return dependsOn(operand, selectorLanes);
-    });
+  bool operator==(const CausalConstraintTransition &other) const {
+    return parent == other.parent && selector == other.selector &&
+           lane == other.lane;
+  }
+};
+
+struct CausalConstraintTransitionInfo {
+  static CausalConstraintTransition getEmptyKey() {
+    return {std::numeric_limits<unsigned>::max(), {}, 0};
+  }
+  static CausalConstraintTransition getTombstoneKey() {
+    return {std::numeric_limits<unsigned>::max() - 1, {}, 0};
+  }
+  static unsigned getHashValue(const CausalConstraintTransition &key) {
+    return llvm::hash_combine(key.parent, key.selector.getAsOpaquePointer(),
+                              key.lane);
+  }
+  static bool isEqual(const CausalConstraintTransition &lhs,
+                      const CausalConstraintTransition &rhs) {
+    return lhs == rhs;
+  }
+};
+
+struct CausalMemoKey {
+  mlir::Value event;
+  unsigned constraints;
+
+  bool operator==(const CausalMemoKey &other) const {
+    return event == other.event && constraints == other.constraints;
+  }
+};
+
+struct CausalMemoKeyInfo {
+  static CausalMemoKey getEmptyKey() {
+    return {{}, std::numeric_limits<unsigned>::max()};
+  }
+  static CausalMemoKey getTombstoneKey() {
+    return {{}, std::numeric_limits<unsigned>::max() - 1};
+  }
+  static unsigned getHashValue(const CausalMemoKey &key) {
+    return llvm::hash_combine(key.event.getAsOpaquePointer(), key.constraints);
+  }
+  static bool isEqual(const CausalMemoKey &lhs, const CausalMemoKey &rhs) {
+    return lhs == rhs;
+  }
+};
+
+class CausalDependencyAnalysis {
+public:
+  explicit CausalDependencyAnalysis(mlir::Value prerequisite)
+      : prerequisite(prerequisite) {
+    constraintStates.push_back({0, {}, 0});
+  }
+
+  bool dependsOn(mlir::Value event) { return dependsOn(event, 0); }
+
+private:
+  struct ConstraintState {
+    unsigned parent;
+    mlir::Value selector;
+    unsigned lane;
   };
 
-  if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
-    if (prerequisite.getDefiningOp() == sync.getOperation())
-      return true;
-    return dependsOnAnyOperand();
-  }
-  if (dataflow::semantics::getMemoryActorDone(def)) {
-    if (isRetirementPublication(event, prerequisite))
-      return true;
-    return dependsOnAnyOperand();
-  }
-  if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
-    if (dependsOn(mux.getSel(), selectorLanes))
-      return true;
-    for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
-      SelectorLanes laneConstraints = selectorLanes;
-      if (constrainSelectorLane(mux.getSel(), lane, laneConstraints) &&
-          dependsOn(input, std::move(laneConstraints)))
-        return true;
+  enum class MemoState : uint8_t { Visiting, False, True };
+
+  mlir::Value prerequisite;
+  llvm::SmallVector<ConstraintState, 8> constraintStates;
+  llvm::DenseMap<CausalConstraintTransition, unsigned,
+                 CausalConstraintTransitionInfo>
+      constraintTransitions;
+  llvm::DenseMap<CausalMemoKey, MemoState, CausalMemoKeyInfo> memo;
+
+  std::optional<unsigned> constrain(unsigned state, mlir::Value selector,
+                                    unsigned lane) {
+    for (unsigned cursor = state; cursor != 0;
+         cursor = constraintStates[cursor].parent) {
+      const ConstraintState &constraint = constraintStates[cursor];
+      if (constraint.selector == selector)
+        return constraint.lane == lane ? std::optional<unsigned>(state)
+                                       : std::nullopt;
     }
-    return false;
+
+    CausalConstraintTransition transition{state, selector, lane};
+    auto known = constraintTransitions.find(transition);
+    if (known != constraintTransitions.end())
+      return known->second;
+    unsigned next = constraintStates.size();
+    constraintStates.push_back({state, selector, lane});
+    constraintTransitions.try_emplace(transition, next);
+    return next;
   }
-  if (auto select = llvm::dyn_cast<mlir::arith::SelectOp>(def)) {
-    if (dependsOn(select.getCondition(), selectorLanes))
+
+  bool dependsOn(mlir::Value event, unsigned state) {
+    if (!event)
+      return false;
+    if (auto result = llvm::dyn_cast<mlir::OpResult>(event)) {
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
+        auto constrained =
+            constrain(state, demux.getSel(), result.getResultNumber());
+        if (!constrained)
+          return false;
+        state = *constrained;
+      }
+    }
+
+    CausalMemoKey key{event, state};
+    auto known = memo.find(key);
+    if (known != memo.end())
+      return known->second == MemoState::True;
+    memo.try_emplace(key, MemoState::Visiting);
+    bool result = compute(event, state);
+    memo[key] = result ? MemoState::True : MemoState::False;
+    return result;
+  }
+
+  bool compute(mlir::Value event, unsigned state) {
+    if (event == prerequisite)
       return true;
-    return dependsOn(select.getTrueValue(), selectorLanes) ||
-           dependsOn(select.getFalseValue(), selectorLanes);
+    mlir::Operation *def = event.getDefiningOp();
+    if (!def)
+      return false;
+
+    auto depends = [&](mlir::Value operand) {
+      return dependsOn(operand, state);
+    };
+    auto dependsInLane = [&](mlir::Value operand, mlir::Value selector,
+                             unsigned lane) {
+      auto constrained = constrain(state, selector, lane);
+      return constrained && dependsOn(operand, *constrained);
+    };
+    auto dependsOnAnyOperand = [&]() {
+      return llvm::any_of(def->getOperands(), depends);
+    };
+
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+      if (prerequisite.getDefiningOp() == sync.getOperation())
+        return true;
+      return dependsOnAnyOperand();
+    }
+    if (dataflow::semantics::getMemoryActorDone(def)) {
+      if (isRetirementPublication(event, prerequisite))
+        return true;
+      return dependsOnAnyOperand();
+    }
+    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
+      if (depends(mux.getSel()))
+        return true;
+      for (auto [lane, input] : llvm::enumerate(mux.getInputs()))
+        if (dependsInLane(input, mux.getSel(), lane))
+          return true;
+      return false;
+    }
+    if (auto select = llvm::dyn_cast<mlir::arith::SelectOp>(def)) {
+      if (depends(select.getCondition()))
+        return true;
+      return depends(select.getTrueValue()) || depends(select.getFalseValue());
+    }
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def))
+      return depends(carry.getInit()) || depends(carry.getCarry());
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def))
+      return depends(demux.getSel()) || depends(demux.getInput());
+    if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def))
+      return depends(gate.getBeforeCond()) || depends(gate.getBeforeValue());
+    if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
+      return depends(invariant.getCond()) || depends(invariant.getInit());
+    if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
+      return depends(constant.getCtrl());
+    return dependsOnAnyOperand();
   }
-  if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
-    return dependsOn(carry.getInit(), selectorLanes) ||
-           dependsOn(carry.getCarry(), selectorLanes);
-  }
-  if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-    if (dependsOn(demux.getSel(), selectorLanes))
-      return true;
-    return dependsOn(demux.getInput(), selectorLanes);
-  }
-  if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
-    if (dependsOn(gate.getBeforeCond(), selectorLanes))
-      return true;
-    return dependsOn(gate.getBeforeValue(), selectorLanes);
-  }
-  if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def)) {
-    if (dependsOn(invariant.getCond(), selectorLanes))
-      return true;
-    return dependsOn(invariant.getInit(), selectorLanes);
-  }
-  if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
-    return dependsOn(constant.getCtrl(), selectorLanes);
-  return dependsOnAnyOperand();
-}
+};
 
 bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
-  llvm::DenseSet<mlir::Value> visited;
-  SelectorLanes selectorLanes;
-  return causallyDependsOn(event, prerequisite, visited, selectorLanes);
+  return CausalDependencyAnalysis(prerequisite).dependsOn(event);
 }
 
 bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
+  CausalDependencyAnalysis analysis(prerequisite);
   return llvm::any_of(completion, [&](mlir::Value witness) {
-    return causallyDependsOn(witness, prerequisite) ||
+    return analysis.dependsOn(witness) ||
            isRetirementPublication(witness, prerequisite);
   });
 }
@@ -251,16 +339,47 @@ bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
 bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
                       llvm::DenseSet<mlir::Value> &visited,
                       SelectorLanes &selectorLanes) {
-  if (!witness || !constrainDemuxLane(witness, selectorLanes) ||
-      !visited.insert(witness).second)
+  if (!witness)
     return false;
+
+  std::optional<mlir::Value> insertedSelector;
+  if (auto result = llvm::dyn_cast<mlir::OpResult>(witness)) {
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
+      auto [it, inserted] = selectorLanes.try_emplace(
+          demux.getSel(), result.getResultNumber());
+      if (!inserted && it->second != result.getResultNumber())
+        return false;
+      if (inserted)
+        insertedSelector = demux.getSel();
+    }
+  }
+  llvm::scope_exit selectorCleanup([&] {
+    if (insertedSelector)
+      selectorLanes.erase(*insertedSelector);
+  });
+
+  if (!visited.insert(witness).second)
+    return false;
+  llvm::scope_exit visitedCleanup([&] { visited.erase(witness); });
   mlir::Operation *def = witness.getDefiningOp();
   if (!def)
     return false;
 
-  auto covers = [&](mlir::Value value, SelectorLanes branchLanes) {
-    llvm::DenseSet<mlir::Value> branchVisited = visited;
-    return coversFalseClose(value, closeSignal, branchVisited, branchLanes);
+  auto covers = [&](mlir::Value value) {
+    return coversFalseClose(value, closeSignal, visited, selectorLanes);
+  };
+  auto coversInLane = [&](mlir::Value value, mlir::Value selector,
+                          unsigned lane) {
+    auto insertion = selectorLanes.try_emplace(selector, lane);
+    auto it = insertion.first;
+    bool inserted = insertion.second;
+    if (!inserted && it->second != lane)
+      return false;
+    llvm::scope_exit cleanup([&] {
+      if (inserted)
+        selectorLanes.erase(selector);
+    });
+    return covers(value);
   };
   if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
     auto result = llvm::dyn_cast<mlir::OpResult>(witness);
@@ -279,12 +398,10 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
         phase = *input;
       }
     }
-    return covers(demux.getInput(), selectorLanes);
+    return covers(demux.getInput());
   }
   if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
-    return llvm::any_of(sync.getInputs(), [&](mlir::Value input) {
-      return covers(input, selectorLanes);
-    });
+    return llvm::any_of(sync.getInputs(), covers);
   }
   if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
     if (auto gate = closeSignal.getDefiningOp<dataflow::GateOp>()) {
@@ -298,30 +415,24 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
         }
         if (!*closes)
           continue;
-        SelectorLanes laneConstraints = selectorLanes;
-        if (!constrainSelectorLane(mux.getSel(), lane, laneConstraints) ||
-            !covers(input, std::move(laneConstraints)))
+        if (!coversInLane(input, mux.getSel(), lane))
           return false;
       }
       if (conditional)
         return true;
     }
     for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
-      SelectorLanes laneConstraints = selectorLanes;
-      if (constrainSelectorLane(mux.getSel(), lane, laneConstraints) &&
-          covers(input, std::move(laneConstraints)))
+      if (coversInLane(input, mux.getSel(), lane))
         return true;
     }
     return false;
   }
   if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
-    return covers(carry.getInit(), selectorLanes) ||
-           covers(carry.getCarry(), selectorLanes);
+    return covers(carry.getInit()) || covers(carry.getCarry());
   }
   if (mlir::Value done = dataflow::semantics::getMemoryActorDone(def)) {
     return witness == done &&
-           covers(dataflow::semantics::getMemoryActorControl(def),
-                  selectorLanes);
+           covers(dataflow::semantics::getMemoryActorControl(def));
   }
   return false;
 }
@@ -381,6 +492,8 @@ enum class NestedAlignmentKind : uint8_t {
   Close,
   GateClose,
   SiblingGateClose,
+  SelectedClose,
+  SelectedTruePhaseClose,
 };
 
 struct NestedAlignmentQuery {
@@ -698,6 +811,11 @@ private:
         return isAligned(selector, phase, assumption, truePhaseOnly,
                          selectorVisited);
       }
+      if (result.getResultNumber() == 0 &&
+          isNestedCloseAlignedWhenSelected(
+              demux, result, selector, lane, phase, assumption,
+              truePhaseOnly))
+        return true;
       if (isGraphStreamInput(demux.getInput())) {
         auto activation = dataflow::semantics::getSelectorActivation(
             demux.getSel(), demux.getOutputs().size());
@@ -741,6 +859,65 @@ private:
         return false;
     }
     return hasSelectedOperand;
+  }
+
+  bool initializeSelectedNestedActivation(
+      mlir::Value childPhase, mlir::Value selector, unsigned lane,
+      mlir::Value parentPhase, mlir::Value parentAssumption,
+      bool truePhaseOnly, GraphCardinalityAnalysis &activation) {
+    auto assumeExact = [&](mlir::Value value) {
+      llvm::DenseSet<mlir::Value> visited;
+      if (!availableWhenSelectedAndAligned(
+              value, selector, lane, parentPhase, parentAssumption,
+              truePhaseOnly, visited))
+        return false;
+      activation.exactOneAssumptions.insert(value);
+      return true;
+    };
+
+    if (auto stream = childPhase.getDefiningOp<dataflow::StreamOp>()) {
+      if (childPhase != stream.getPhase() || !assumeExact(stream.getInit()) ||
+          !assumeExact(stream.getLimit()) || !assumeExact(stream.getStep()))
+        return false;
+    } else {
+      auto carries = graphIndex->carriesByPhase.find(childPhase);
+      if (carries == graphIndex->carriesByPhase.end() ||
+          carries->second.empty())
+        return false;
+    }
+
+    auto inputs = graphIndex->activationInputsByPhase.find(childPhase);
+    if (inputs != graphIndex->activationInputsByPhase.end())
+      for (mlir::Value input : inputs->second)
+        if (!assumeExact(input))
+          return false;
+    return true;
+  }
+
+  bool isNestedCloseAlignedWhenSelected(
+      dataflow::DemuxOp close, mlir::OpResult result, mlir::Value selector,
+      unsigned lane, mlir::Value parentPhase, mlir::Value parentAssumption,
+      bool truePhaseOnly) {
+    if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
+        close.getSel() == selector || close.getSel() == parentPhase)
+      return false;
+
+    NestedAlignmentQuery query{
+        alignmentRevision,
+        result,
+        parentPhase,
+        parentAssumption,
+        selector,
+        lane,
+        truePhaseOnly ? NestedAlignmentKind::SelectedTruePhaseClose
+                      : NestedAlignmentKind::SelectedClose};
+    return evaluateNestedAlignment(query, [&] {
+      GraphCardinalityAnalysis activation(graph, graphIndex);
+      return initializeSelectedNestedActivation(
+                 close.getSel(), selector, lane, parentPhase,
+                 parentAssumption, truePhaseOnly, activation) &&
+             activation.isExactOne(result);
+    });
   }
 
   bool initializeNestedActivation(dataflow::StreamOp stream,
