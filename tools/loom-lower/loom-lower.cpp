@@ -13,10 +13,9 @@
 // the lowering passes run inside this binary's PassManager.
 
 #include "Dataflow/IR/DataflowDialect.h"
-#include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Frontend/IR/LoomDialect.h"
-#include "Frontend/Lowering/Passes.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -31,7 +30,6 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
-#include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
@@ -50,11 +48,10 @@
 
 namespace {
 
-::llvm::cl::opt<std::string>
-    inputFilename(::llvm::cl::Positional,
-                  ::llvm::cl::desc(
-                      "<input MLIR with explicit ownership, or - for stdin>"),
-                  ::llvm::cl::init("-"));
+::llvm::cl::opt<std::string> inputFilename(
+    ::llvm::cl::Positional,
+    ::llvm::cl::desc("<input MLIR with explicit ownership, or - for stdin>"),
+    ::llvm::cl::init("-"));
 
 ::llvm::cl::opt<std::string> outputFilename("o",
                                             ::llvm::cl::desc("Output filename"),
@@ -131,26 +128,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Run the lowering pipeline.
-  ::mlir::registerAllPasses();
-  loom::lowering::registerLoweringPasses();
-
-  ::mlir::PassManager pm(&context);
-  pm.enableVerifier(verifyEach);
-  if (failed(::mlir::applyPassManagerCLOptions(pm))) {
-    ::llvm::errs() << "loom-lower: failed to apply pass-manager CLI options\n";
-    return 1;
-  }
-  loom::lowering::buildLoweringPipeline(pm);
-
-  if (failed(pm.run(*module))) {
-    ::llvm::errs() << "loom-lower: pipeline failed\n";
-    return 1;
-  }
-
-  if (auto error = ::dataflow::validateFinalizedProgram(*module)) {
-    ::llvm::errs() << "loom-lower: final Dataflow validation failed: "
-                   << ::llvm::toString(std::move(error)) << "\n";
+  if (auto error = loom::lowering::lowerStructuredModuleInPlace(
+          module.get(),
+          {verifyEach, /*applyPassManagerCommandLineOptions=*/true})) {
+    ::llvm::errs() << "loom-lower: " << ::llvm::toString(std::move(error))
+                   << "\n";
     return 1;
   }
 

@@ -28,7 +28,6 @@ target_link_libraries(loom-lower PRIVATE
   MLIRPass
   MLIRRegisterAllDialects
   MLIRRegisterAllExtensions
-  MLIRRegisterAllPasses
   MLIRSCFDialect
   MLIRSupport
   MLIRTransforms

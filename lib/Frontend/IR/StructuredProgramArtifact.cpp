@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/CanonicalRelation.h"
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/Bytecode/BytecodeReader.h"
@@ -541,7 +542,7 @@ struct ParsedModule {
 llvm::Expected<ParsedModule> parseBytecode(ArrayRef<std::uint8_t> bytes) {
   DialectRegistry registry;
   registerAllDialects(registry);
-  registry.insert<::loom::LoomDialect>();
+  registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
   auto context = std::make_unique<MLIRContext>(registry);
   context->loadAllAvailableDialects();
   StringRef text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
