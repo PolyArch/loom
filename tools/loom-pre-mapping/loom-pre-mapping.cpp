@@ -12,6 +12,7 @@
 //                      --counts=<counts.json>
 //                      [--whole-callable-spatial=<symbol>]
 //                      [--operation-spatial=<symbol>
+//                       --operation-spatial-scope-index=<index>
 //                       --canonical-index-width=<bits>]
 //                      [--fmuladd-shape=fused|split]
 //                      [-o output.mlir] input.ll
@@ -42,6 +43,7 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,9 +84,15 @@ namespace {
 
 ::llvm::cl::opt<std::string> operationSpatial(
     "operation-spatial",
-    ::llvm::cl::desc("materialize the unique structured operation in one "
-                     "LLVM callable as an explicit Spatial candidate"),
+    ::llvm::cl::desc("materialize one structured operation in an LLVM "
+                     "callable as an explicit Spatial candidate"),
     ::llvm::cl::value_desc("callable-symbol"), ::llvm::cl::init(""));
+
+::llvm::cl::opt<std::uint64_t> operationSpatialScopeIndex(
+    "operation-spatial-scope-index",
+    ::llvm::cl::desc("zero-based index in the callable's canonical eligible "
+                     "Spatial ownership scope enumeration"),
+    ::llvm::cl::value_desc("index"));
 
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
@@ -138,31 +146,46 @@ resolveCallable(const loom::frontend::StructuredProgramCandidate &candidate,
 ::llvm::Expected<loom::frontend::StructuredEntityRef>
 resolveUniqueStructuredOperation(
     const loom::frontend::StructuredProgramCandidate &candidate,
-    ::llvm::StringRef callableSymbol) {
+    ::llvm::StringRef callableSymbol, std::optional<std::uint64_t> scopeIndex) {
   auto view = candidate.view();
   if (!view)
     return view.takeError();
-  std::optional<loom::frontend::StructuredEntityRef> resolved;
-  for (const loom::frontend::StructuredEntity &entity :
-       view->entities(loom::frontend::StructuredEntityKind::Operation)) {
-    ::mlir::Operation *operation = entity.operation;
-    if (!operation || operation->getNumRegions() == 0 ||
-        ::llvm::isa<::mlir::LLVM::LLVMFuncOp>(operation))
+  auto scopes =
+      loom::frontend::enumerateOperationSpatialOwnershipScopes(candidate);
+  if (!scopes)
+    return scopes.takeError();
+  std::vector<loom::frontend::StructuredEntityRef> callableScopes;
+  for (const loom::frontend::StructuredEntityRef &scope : *scopes) {
+    auto entity = view->resolve(scope);
+    if (!entity)
+      return entity.takeError();
+    ::mlir::Operation *operation = entity->operation;
+    if (!operation)
       continue;
     auto callable = operation->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
     if (!callable || callable.getSymName() != callableSymbol)
       continue;
-    if (resolved)
-      return ::llvm::createStringError(
-          ::llvm::inconvertibleErrorCode(),
-          "callable contains more than one structured operation");
-    resolved = entity.reference;
+    callableScopes.push_back(scope);
   }
-  if (!resolved)
+  if (callableScopes.empty())
     return ::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
-        "callable contains no structured operation");
-  return *resolved;
+        "callable contains no eligible Spatial ownership scope");
+  if (scopeIndex) {
+    if (*scopeIndex >= callableScopes.size())
+      return ::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "operation Spatial scope index is out of range [0, %zu)",
+          callableScopes.size());
+    return callableScopes[*scopeIndex];
+  }
+  if (callableScopes.size() != 1)
+    return ::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "callable has %zu eligible Spatial ownership scopes; select one with "
+        "--operation-spatial-scope-index",
+        callableScopes.size());
+  return callableScopes.front();
 }
 
 std::unique_ptr<::llvm::Module> readLLVMModule(::llvm::LLVMContext &llvmContext,
@@ -247,6 +270,11 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "canonical index width requires a Spatial selection"));
+  if (operationSpatialScopeIndex.getNumOccurrences() != 0 &&
+      operationSpatial.empty())
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "operation Spatial scope index requires an operation selection"));
   if (fmuladdShape != FMulAddShapeOption::Unspecified &&
       wholeCallableSpatial.empty() && operationSpatial.empty())
     return reportError(::llvm::createStringError(
@@ -277,8 +305,11 @@ int main(int argc, char **argv) {
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));
   } else if (!operationSpatial.empty()) {
+    std::optional<std::uint64_t> scopeIndex;
+    if (operationSpatialScopeIndex.getNumOccurrences() != 0)
+      scopeIndex = operationSpatialScopeIndex;
     auto operation = resolveUniqueStructuredOperation(
-        compiled->structuredProgram, operationSpatial);
+        compiled->structuredProgram, operationSpatial, scopeIndex);
     if (!operation)
       return reportError(operation.takeError());
     loom::frontend::OperationSpatialOwnershipOptions ownershipOptions;
