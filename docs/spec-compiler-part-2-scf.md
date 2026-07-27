@@ -105,6 +105,17 @@ Target-specific intrinsics should be normalized to target-neutral scalar or
 vector operations when such a representation exists. Otherwise, preserving
 the registered LLVM operation is preferable to weakening its semantics.
 
+The LLVM dialect `passthrough` function attribute is an importer-owned lossless
+container, not a floating-point-environment authority. Mechanical raising uses
+one closed classifier owned by the exact-spelling projection. Typed LLVM
+floating environment attributes, `strictfp`, incompatible exception policy,
+and unknown string attributes block standard spelling. LLVM enum function
+attributes and explicitly classified code-generation-only strings do not.
+Clang's default `no-trapping-math=true` is compatible with the ordinary
+non-constrained floating operation spelling; any other value fails closed.
+Ownership materialization and Dataflow lowering never reinterpret this
+classification.
+
 FMA normalization is semantic rather than name based. An exact fused LLVM FMA
 becomes `math.fma`. `llvm.intr.fmuladd` remains unchanged in S0 until one typed
 `ExecutionShape` decision materializes either `Fused` or

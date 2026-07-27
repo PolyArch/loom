@@ -9,7 +9,10 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
+#include "llvm/ADT/StringSwitch.h"
+#include "llvm/IR/Attributes.h"
 
+#include <optional>
 #include <utility>
 
 namespace loom {
@@ -65,11 +68,58 @@ statesDefaultDenormalEnvironment(::mlir::LLVM::DenormalFPEnvAttr env) {
 // environment of its own. The typed attributes read below are compared against
 // that default directly. A reciprocal-estimate policy names the operations the
 // target may compute as an estimate plus refinement rather than exactly, so
-// any such policy blocks a rewrite. Any other environment fact an llvm.func
-// states arrives through its passthrough collection, whose entries are opaque
-// LLVM or target attributes that cannot be proven irrelevant, so a callable
-// with any nonempty passthrough collection keeps its floating operations in
-// llvm form.
+// any such policy blocks a rewrite. The importer's generic passthrough storage
+// is classified separately because it also contains unrelated LLVM function
+// and code-generation attributes.
+inline bool passthroughEntryStatesFloatingPolicy(::mlir::Attribute entry) {
+  ::llvm::StringRef name;
+  ::std::optional<::llvm::StringRef> value;
+  if (auto nameAttr = ::mlir::dyn_cast<::mlir::StringAttr>(entry)) {
+    name = nameAttr.getValue();
+  } else if (auto pair = ::mlir::dyn_cast<::mlir::ArrayAttr>(entry);
+             pair && pair.size() == 2) {
+    auto nameAttr = ::mlir::dyn_cast<::mlir::StringAttr>(pair[0]);
+    auto valueAttr = ::mlir::dyn_cast<::mlir::StringAttr>(pair[1]);
+    if (!nameAttr || !valueAttr)
+      return true;
+    name = nameAttr.getValue();
+    value = valueAttr.getValue();
+  } else {
+    return true;
+  }
+
+  // The LLVM importer places every function attribute that LLVMFuncOp does
+  // not model explicitly in one passthrough array. LLVM enum attributes still
+  // retain their stable native spelling there. Of those function attributes,
+  // strictfp alone changes the floating execution environment; the others
+  // describe effects, control, ABI, or code generation without changing the
+  // meaning of an ordinary floating instruction.
+  const ::llvm::Attribute::AttrKind kind =
+      ::llvm::Attribute::getAttrKindFromName(name);
+  if (kind != ::llvm::Attribute::None)
+    return kind == ::llvm::Attribute::StrictFP;
+
+  // These string attributes are emitted by ordinary Clang compilation but
+  // are not all modeled as typed LLVMFuncOp fields by the pinned importer.
+  // Keep this list closed: an unknown string attribute may carry target
+  // floating semantics and therefore fails closed.
+  const bool codegenOnly = ::llvm::StringSwitch<bool>(name)
+                               .Cases({"min-legal-vector-width",
+                                       "stack-protector-buffer-size",
+                                       "target-cpu"},
+                                      true)
+                               .Default(false);
+  if (codegenOnly)
+    return false;
+
+  // Clang's default -ffp-exception-behavior=ignore spelling. A false or
+  // malformed value cannot be represented by an unconstrained arith/math op.
+  if (name == "no-trapping-math")
+    return !value || *value != "true";
+
+  return true;
+}
+
 inline bool statesFloatingPolicy(::mlir::LLVM::LLVMFuncOp funcOp) {
   if (auto env = funcOp.getDenormalFpenvAttr())
     if (!statesDefaultDenormalEnvironment(env))
@@ -82,8 +132,11 @@ inline bool statesFloatingPolicy(::mlir::LLVM::LLVMFuncOp funcOp) {
       return true;
   if (funcOp.getReciprocalEstimatesAttr())
     return true;
-  ::mlir::ArrayAttr passthrough = funcOp.getPassthroughAttr();
-  return passthrough && !passthrough.empty();
+  if (auto passthrough = funcOp.getPassthroughAttr())
+    for (::mlir::Attribute entry : passthrough)
+      if (passthroughEntryStatesFloatingPolicy(entry))
+        return true;
+  return false;
 }
 
 // True when the enclosing callable states a floating-point environment the

@@ -29,6 +29,15 @@ overflow, exactness, fast-math, rounding, and predicates remain explicit. A
 single generated OperationSchema projection prevents frontend, Dataflow,
 simulator, Fabric, and backend from maintaining separate name tables.
 
+The LLVM importer uses one `passthrough` array for every function attribute it
+does not expose as a typed LLVMFuncOp field. Treating that storage container as
+the floating environment blocks ordinary Clang programs for unrelated facts
+such as recursion, synchronization, stack protection, or target selection.
+The exact-spelling owner therefore classifies the contained LLVM attributes,
+keeps unknown string semantics conservative, and lets only facts that can
+change floating execution block normalization. This preserves the ABI envelope
+without making ownership materialization a second compute-spelling authority.
+
 Scalable vectors remain structured candidates until a fixed chunk, loop, and
 mask materialization is selected. A fixed-width SpatialCore cannot infer a
 runtime `vscale` contract.

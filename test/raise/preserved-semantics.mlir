@@ -23,8 +23,11 @@
 //
 // A reciprocal-estimate policy names the operations the target may compute as
 // an estimate plus refinement rather than exactly, a non-IEEE denormal mode
-// and a nonempty fp-contract permission both change the result, and any other
-// environment fact arrives through the opaque passthrough collection.
+// and a nonempty fp-contract permission both change the result. The importer's
+// passthrough collection is not itself a floating environment: LLVM enum
+// function attributes and closed code-generation-only strings do not block a
+// rewrite, while strictfp, incompatible exception policy, and unknown strings
+// fail closed.
 // Integer arithmetic is independent of that environment and is normalized
 // beside a blocked floating operation.
 // ENVIRONMENT-LABEL: llvm.func @default_environment
@@ -36,10 +39,18 @@
 // ENVIRONMENT: arith.addi
 // ENVIRONMENT-LABEL: llvm.func @contracted
 // ENVIRONMENT: llvm.fmul
-// ENVIRONMENT-LABEL: llvm.func @target_specific
+// ENVIRONMENT-LABEL: llvm.func @ordinary_clang_envelope
+// ENVIRONMENT: arith.addf
+// ENVIRONMENT-LABEL: llvm.func @strict_environment
 // ENVIRONMENT: llvm.fadd
 // ENVIRONMENT-NOT: arith.addf
 // ENVIRONMENT-NOT: arith.mulf
+// ENVIRONMENT-LABEL: llvm.func @trapping_environment
+// ENVIRONMENT: llvm.fadd
+// ENVIRONMENT-NOT: arith.addf
+// ENVIRONMENT-LABEL: llvm.func @unknown_environment
+// ENVIRONMENT: llvm.fadd
+// ENVIRONMENT-NOT: arith.addf
 // ENVIRONMENT-LABEL: llvm.func @outer_policy
 // ENVIRONMENT: llvm.fadd
 // ENVIRONMENT-LABEL: func.func @native_scope
@@ -99,8 +110,28 @@ llvm.func @contracted(%a: f32, %b: f32) -> f32
   llvm.return %0 : f32
 }
 
-llvm.func @target_specific(%a: f32, %b: f32) -> f32
-    attributes {passthrough = ["nounwind"]} {
+llvm.func @ordinary_clang_envelope(%a: f32, %b: f32) -> f32
+    attributes {passthrough = ["nofree", "norecurse", "nosync",
+      ["min-legal-vector-width", "0"], ["no-trapping-math", "true"],
+      ["stack-protector-buffer-size", "8"], ["target-cpu", "generic-rv64"]]} {
+  %0 = llvm.fadd %a, %b : f32
+  llvm.return %0 : f32
+}
+
+llvm.func @strict_environment(%a: f32, %b: f32) -> f32
+    attributes {passthrough = ["strictfp"]} {
+  %0 = llvm.fadd %a, %b : f32
+  llvm.return %0 : f32
+}
+
+llvm.func @trapping_environment(%a: f32, %b: f32) -> f32
+    attributes {passthrough = [["no-trapping-math", "false"]]} {
+  %0 = llvm.fadd %a, %b : f32
+  llvm.return %0 : f32
+}
+
+llvm.func @unknown_environment(%a: f32, %b: f32) -> f32
+    attributes {passthrough = [["vendor-fp-mode", "custom"]]} {
   %0 = llvm.fadd %a, %b : f32
   llvm.return %0 : f32
 }
