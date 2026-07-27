@@ -201,29 +201,57 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   mlir::MLIRContext *context = module.getContext();
   mlir::Location location = function.getLoc();
   mlir::Block &source = function.getBody().front();
-  auto boundary = createSpatialThreadBoundary(module, function,
-                                              source.getArguments(), location);
+
+  // A global address is resolved by the stored-program launch owner and
+  // crosses the thread ABI as a memory capability. It is not a SpatialCore
+  // actor. Hoist nested address leaves to the wrapper entry so every retained
+  // leaf has one explicit launch binding and can be removed from the cloned
+  // graph body.
+  llvm::SmallVector<mlir::LLVM::AddressOfOp, 4> addressCaptures;
+  function.walk([&](mlir::LLVM::AddressOfOp address) {
+    if (!address.getRes().use_empty())
+      addressCaptures.push_back(address);
+  });
+  for (mlir::LLVM::AddressOfOp address : llvm::reverse(addressCaptures))
+    if (&source.front() != address.getOperation())
+      address->moveBefore(&source, source.begin());
+
+  llvm::SmallVector<mlir::Value, 8> captures(source.getArguments().begin(),
+                                             source.getArguments().end());
+  for (mlir::LLVM::AddressOfOp address : addressCaptures)
+    captures.push_back(address.getRes());
+  auto boundary =
+      createSpatialThreadBoundary(module, function, captures, location);
   if (!boundary)
     return boundary.takeError();
 
   mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
-  for (auto [index, argument] : llvm::enumerate(source.getArguments()))
-    mapping.map(argument, boundary->captureArguments[index]);
+  for (auto [index, capture] : llvm::enumerate(captures))
+    mapping.map(capture, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::Operation &operation : source.without_terminator())
-    builder.clone(operation, mapping);
+    if (!llvm::isa<mlir::LLVM::AddressOfOp>(operation))
+      builder.clone(operation, mapping);
   loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
                                mlir::ValueRange{});
 
-  while (!source.empty())
-    source.back().erase();
-  builder.setInsertionPointToStart(&source);
+  llvm::SmallPtrSet<mlir::Operation *, 4> retainedAddresses;
+  for (mlir::LLVM::AddressOfOp address : addressCaptures)
+    retainedAddresses.insert(address.getOperation());
+  llvm::SmallVector<mlir::Operation *, 16> oldBody;
+  for (mlir::Operation &operation : source)
+    oldBody.push_back(&operation);
+  for (mlir::Operation *operation : llvm::reverse(oldBody))
+    if (!retainedAddresses.contains(operation))
+      operation->erase();
+
+  builder.setInsertionPointToEnd(&source);
   mlir::FlatSymbolRefAttr callee =
       mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
-  auto launch = dataflow::ThreadLaunchOp::create(
-      builder, location, callee, source.getArguments(), mlir::ValueRange{},
-      mlir::ValueRange{});
+  auto launch =
+      dataflow::ThreadLaunchOp::create(builder, location, callee, captures,
+                                       mlir::ValueRange{}, mlir::ValueRange{});
   dataflow::ThreadWaitOp::create(builder, location,
                                  mlir::ValueRange{launch.getAsyncToken()});
   mlir::LLVM::ReturnOp::create(builder, location, mlir::ValueRange{});

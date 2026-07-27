@@ -96,6 +96,34 @@ entry:
 }
 
 std::unique_ptr<llvm::Module>
+parseGlobalMemoryModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
+target triple = "riscv32-unknown-unknown"
+
+@lookup = private constant i32 7
+
+define void @global_lookup(ptr %output) {
+entry:
+  %value = load i32, ptr @lookup, align 4
+  store i32 %value, ptr %output, align 4
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<global-memory-owner>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseFmulAddSpatialModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -517,6 +545,52 @@ void explicitWholeCallableSpatialOwnership() {
         dataflow::OperationSchemaId::DataflowStore})
     if (schemas.find(required) == schemas.end())
       fail(test, "canonical graph omitted a load-add-store actor");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void wholeCallableExternalizesGlobalMemoryCapability() {
+  const char *test = "wholeCallableExternalizesGlobalMemoryCapability";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-global-memory-owner", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseGlobalMemoryModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto selected = take(
+      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                compiled.structuredProgram,
+                findCallable(test, compiled.structuredProgram, "global_lookup"),
+                design.roots().front()));
+
+  auto wrapper =
+      selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "global_lookup");
+  unsigned addressCount = 0;
+  wrapper.walk([&](mlir::LLVM::AddressOfOp) { ++addressCount; });
+  if (addressCount != 1)
+    fail(test, "stored-program wrapper does not own the global address");
+
+  auto view = take(test, selected.canonicalDataflow.view());
+  if (view.graphs().size() != 1)
+    fail(test, "global-memory ownership did not publish exactly one graph");
+  auto graph = llvm::cast<dataflow::GraphOp>(view.graphs().front().op);
+  if (graph.getInputSegmentSizes()[2] != 2)
+    fail(test, "global memory did not cross the graph memory-capability ABI");
+  bool sawAddress = false;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    sawAddress |= llvm::isa<mlir::LLVM::AddressOfOp>(actor.op);
+  if (sawAddress)
+    fail(test, "global address escaped into the SpatialCore actor graph");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1110,6 +1184,7 @@ void operationSpatialOwnershipRejectsEscapedResult() {
 int main() {
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
+  wholeCallableExternalizesGlobalMemoryCapability();
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   explicitOperationSpatialOwnership();
