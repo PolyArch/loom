@@ -11,6 +11,7 @@ add_library(LoomEvaluation
   Finding.cpp
   Metric.cpp
   ModelDescriptor.cpp
+  ModelProvider.cpp
   NumericValue.cpp
   OwnerError.cpp
   QueryText.cpp

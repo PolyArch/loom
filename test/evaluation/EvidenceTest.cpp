@@ -1,4 +1,5 @@
 #include "Evaluation/Evidence.h"
+#include "Evaluation/ModelProvider.h"
 #include "Evaluation/OwnerError.h"
 
 #include "Common/ArtifactFinalizer.h"
@@ -273,6 +274,25 @@ const EvaluationModelDescriptor modelDescriptor{
     {},
     DeterminismContract::Deterministic,
     {}};
+
+llvm::Expected<EvaluationModelResult>
+evaluateTestModel(const EvaluationRequest &request,
+                  const CaseArtifactResolution &, const ArtifactStore &) {
+  std::vector<MetricResult> metrics;
+  metrics.reserve(request.metricRequests().size());
+  for (std::size_t index = 0; index < request.metricRequests().size(); ++index)
+    metrics.push_back({UncertaintyKind::ExactWithinModel,
+                       PointObservation{IntegerValue(7)}, {}});
+
+  std::vector<FindingResult> findings(request.findingRequests().size(),
+                                      FindingResult{AbsentFinding{}});
+  return EvaluationModelResult{
+      {{ModelOutputSlotRef(0), {subjectArtifact()}}},
+      CompletedEvidence{std::move(metrics), std::move(findings)}};
+}
+
+const EvaluationModelProvider modelProvider{modelDescriptor.reference(),
+                                            &evaluateTestModel};
 
 EvaluationSubjectBindings subjectBindings(const char *test) {
   return takeExpected(test, EvaluationSubjectBindings::get(
@@ -635,6 +655,42 @@ void terminalFindingFailsClosedWithoutExecutionOwner() {
                     caseResolution(__func__), store));
 }
 
+void providerAbsenceProducesTypedUnsupported() {
+  TemporaryDirectory directory(__func__);
+  const ArtifactStore store(directory.path());
+  const EvaluationRequest evaluationRequest = request(__func__, store);
+  takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
+  const EvaluationEvidence evidence = takeExpected(
+      __func__, evaluateRequest(evaluationRequest, caseResolution(__func__),
+                                store));
+  const auto *unsupported =
+      std::get_if<UnsupportedEvidence>(&evidence.outcome());
+  require(__func__, unsupported &&
+                        unsupported->reason ==
+                            OutcomeReason::RuntimeCapabilityUnavailable,
+          "provider absence did not produce RuntimeCapabilityUnavailable");
+}
+
+void providerDispatchUsesEvidenceOwner() {
+  TemporaryDirectory directory(__func__);
+  const ArtifactStore store(directory.path());
+  const EvaluationRequest evaluationRequest =
+      metricAndFindingRequest(__func__, store);
+  takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
+  const EvaluationEvidence evidence = takeExpected(
+      __func__, evaluateRequest(evaluationRequest, caseResolution(__func__),
+                                store));
+  const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
+  require(__func__, completed && completed->metricResults.size() == 1 &&
+                        completed->findingResults.size() == 1,
+          "provider result did not pass through the Evidence owner");
+  const auto *point = std::get_if<PointObservation>(
+      &completed->metricResults.front().observation);
+  require(__func__, point &&
+                        std::get<IntegerValue>(point->value).value() == 7,
+          "provider metric observation changed during Evidence finalization");
+}
+
 } // namespace
 
 int main() {
@@ -647,6 +703,10 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelDescriptor(modelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
+  providerAbsenceProducesTypedUnsupported();
+  if (llvm::Error error = registerEvaluationModelProvider(modelProvider))
+    fail("registration", llvm::toString(std::move(error)));
+  providerDispatchUsesEvidenceOwner();
   completedEvidenceIsTotalAndCanonical();
   completedEvidenceRejectsGapsAndInvalidFindings();
   completedMetricResultsUseRequestOwnedSemantics();
