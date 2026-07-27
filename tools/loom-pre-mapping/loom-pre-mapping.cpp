@@ -71,7 +71,7 @@ namespace {
 
 ::llvm::cl::opt<std::string> wholeCallableSpatial(
     "whole-callable-spatial",
-    ::llvm::cl::desc("materialize one exact internal LLVM callable as an "
+    ::llvm::cl::desc("materialize one exact LLVM callable as an "
                      "explicit whole-callable Spatial ownership candidate"),
     ::llvm::cl::value_desc("symbol"), ::llvm::cl::init(""));
 

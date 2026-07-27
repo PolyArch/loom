@@ -65,7 +65,7 @@ std::unique_ptr<llvm::Module> parseSpatialModule(const char *test,
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
 target triple = "riscv32-unknown-unknown"
 
-define internal void @kernel(ptr %a, ptr %b, ptr %c) {
+define void @kernel(ptr %a, ptr %b, ptr %c) {
 entry:
   %lhs = load float, ptr %a, align 4
   %rhs = load float, ptr %b, align 4
@@ -185,17 +185,28 @@ void explicitWholeCallableSpatialOwnership() {
 
   if (selected.structuredProgram.identity() == parentIdentity)
     fail(test, "ownership materialization did not create a child candidate");
-  if (!selected.structuredProgram.module().lookupSymbol("kernel"))
+  auto wrapper =
+      selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "kernel");
+  if (!wrapper || wrapper.getLinkage() != mlir::LLVM::Linkage::External ||
+      wrapper.getFunctionType().getNumParams() != 3)
     fail(test, "ownership materialization removed the LLVM ABI authority");
 
   bool sawLaunch = false;
   bool sawWait = false;
-  selected.structuredProgram.module().walk([&](mlir::Operation *operation) {
+  bool sawOriginalCompute = false;
+  wrapper.walk([&](mlir::Operation *operation) {
     sawLaunch |= llvm::isa<dataflow::ThreadLaunchOp>(operation);
     sawWait |= llvm::isa<dataflow::ThreadWaitOp>(operation);
+    sawOriginalCompute |=
+        llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(operation) ||
+        operation->getName().getStringRef() == "arith.addf";
   });
   if (!sawLaunch || !sawWait)
-    fail(test, "direct call was not replaced by ordered thread execution");
+    fail(test,
+         "ABI callable body was not replaced by ordered thread execution");
+  if (sawOriginalCompute)
+    fail(test, "ABI callable retained a competing InstructionCore body");
 
   auto view = take(test, selected.canonicalDataflow.view());
   if (view.graphs().size() != 1 || view.actors().empty())

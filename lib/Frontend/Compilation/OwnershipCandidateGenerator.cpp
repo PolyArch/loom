@@ -17,7 +17,6 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <optional>
 #include <string>
 
 namespace loom::frontend {
@@ -44,14 +43,9 @@ std::string uniqueSymbol(mlir::ModuleOp module, llvm::StringRef prefix,
   return candidate;
 }
 
-llvm::Expected<llvm::SmallVector<mlir::LLVM::CallOp, 4>>
-collectEligibleCallSites(mlir::ModuleOp module,
-                         mlir::LLVM::LLVMFuncOp function) {
+llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
   if (function.isExternal())
     return invalid("selected callable has no definition");
-  if (function.getLinkage() != mlir::LLVM::Linkage::Internal &&
-      function.getLinkage() != mlir::LLVM::Linkage::Private)
-    return invalid("whole-callable ownership requires internal linkage");
   if (function.isVarArg())
     return invalid("variadic callable ownership is not materialized");
   if (!llvm::isa<mlir::LLVM::LLVMVoidType>(
@@ -75,39 +69,13 @@ collectEligibleCallSites(mlir::ModuleOp module,
   });
   if (nestedCall)
     return invalid("selected callable contains an unresolved nested call");
-
-  std::optional<mlir::SymbolTable::UseRange> uses =
-      mlir::SymbolTable::getSymbolUses(function.getOperation(), module);
-  if (!uses)
-    return invalid("cannot prove the complete callable use set");
-  if (uses->empty())
-    return invalid("selected callable has no direct call sites");
-
-  llvm::SmallVector<mlir::LLVM::CallOp, 4> calls;
-  for (const mlir::SymbolTable::SymbolUse &use : *uses) {
-    auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(use.getUser());
-    if (!call || !call.getCalleeAttr() || call.getNumResults() != 0)
-      return invalid("selected callable has a non-void or non-call use");
-    if (call.getTailCallKind() ==
-        mlir::LLVM::tailcallkind::TailCallKind::MustTail)
-      return invalid("musttail call cannot be replaced by a thread launch");
-    if (llvm::any_of(call.getOpBundleOperands(),
-                     [](mlir::OperandRange bundle) { return !bundle.empty(); }))
-      return invalid("call operand bundles are not thread launch operands");
-    if (call.getCalleeOperands().size() != body.getNumArguments())
-      return invalid("direct call argument count does not match callable");
-    for (auto [actual, formal] :
-         llvm::zip_equal(call.getCalleeOperands(), body.getArguments()))
-      if (actual.getType() != formal.getType())
-        return invalid("direct call argument type does not match callable");
-    calls.push_back(call);
-  }
-  return calls;
+  return llvm::Error::success();
 }
 
 llvm::Expected<dataflow::ThreadOp>
-materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function,
-                  llvm::ArrayRef<mlir::LLVM::CallOp> calls) {
+materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function) {
+  if (llvm::Error error = verifyEligibleCallable(function))
+    return std::move(error);
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder builder(context);
   mlir::Location location = function.getLoc();
@@ -178,17 +146,17 @@ materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function,
   builder.setInsertionPointToEnd(threadEntry);
   dataflow::ThreadYieldOp::create(builder, location, mlir::ValueRange{});
 
+  while (!source.empty())
+    source.back().erase();
+  builder.setInsertionPointToStart(&source);
   mlir::FlatSymbolRefAttr callee =
       mlir::FlatSymbolRefAttr::get(context, threadName);
-  for (mlir::LLVM::CallOp call : calls) {
-    builder.setInsertionPoint(call);
-    auto launch = dataflow::ThreadLaunchOp::create(
-        builder, call.getLoc(), callee, call.getCalleeOperands(),
-        mlir::ValueRange{}, mlir::ValueRange{});
-    dataflow::ThreadWaitOp::create(builder, call.getLoc(),
-                                   mlir::ValueRange{launch.getAsyncToken()});
-    call.erase();
-  }
+  auto launch = dataflow::ThreadLaunchOp::create(
+      builder, location, callee, source.getArguments(), mlir::ValueRange{},
+      mlir::ValueRange{});
+  dataflow::ThreadWaitOp::create(builder, location,
+                                 mlir::ValueRange{launch.getAsyncToken()});
+  mlir::LLVM::ReturnOp::create(builder, location, mlir::ValueRange{});
   return thread;
 }
 
@@ -258,10 +226,7 @@ materializeWholeCallableSpatialOwnership(
   if (!function)
     return invalid("selected callable changed kind in the private clone");
 
-  auto calls = collectEligibleCallSites(clone.get(), function);
-  if (!calls)
-    return calls.takeError();
-  if (auto thread = materializeThread(clone.get(), function, *calls); !thread)
+  if (auto thread = materializeThread(clone.get(), function); !thread)
     return thread.takeError();
   if (mlir::failed(mlir::verify(clone.get())))
     return invalid("materialized Structured Program does not verify");

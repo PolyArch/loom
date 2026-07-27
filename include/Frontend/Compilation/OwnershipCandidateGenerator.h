@@ -18,10 +18,10 @@ struct MaterializedOwnershipCandidate final {
 };
 
 /// Materializes the explicit whole-callable SpatialCore ownership choice for
-/// one exact internal, void, single-block LLVM callable. Direct call sites are
-/// replaced by ordered thread launch/wait operations while the original LLVM
-/// callable remains the ABI authority. Fabric is used only for hard-negative
-/// actor-capability pruning; this function performs no Mapping or QoR choice.
+/// one exact void, single-block LLVM callable. Its original body moves into an
+/// ordered thread while the same LLVM callable remains the ABI authority and
+/// launches that thread. Fabric is used only for hard-negative actor-capability
+/// pruning; this function performs no Mapping or QoR choice.
 llvm::Expected<MaterializedOwnershipCandidate>
 materializeWholeCallableSpatialOwnership(
     const StructuredProgramCandidate &parent,
