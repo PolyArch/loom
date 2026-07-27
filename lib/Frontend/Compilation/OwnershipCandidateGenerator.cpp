@@ -13,12 +13,14 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
+#include <utility>
 
 namespace loom::frontend {
 namespace {
@@ -73,44 +75,54 @@ llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
   return llvm::Error::success();
 }
 
-llvm::Expected<dataflow::ThreadOp>
-materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function) {
-  if (llvm::Error error = verifyEligibleCallable(function))
-    return std::move(error);
+/// One new private rank-zero dataflow.thread holding one loom.spatial_region.
+/// The captured source values become the thread's function inputs, partitioned
+/// into the region's ordinary values and memory capabilities.
+struct SpatialThreadBoundary {
+  dataflow::ThreadOp thread;
+  mlir::Block *spatialEntry;
+  llvm::SmallVector<mlir::Value> captureArguments;
+};
+
+llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
+    mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp sourceCallable,
+    mlir::ValueRange captures, mlir::Location location) {
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder builder(context);
-  mlir::Location location = function.getLoc();
   const std::string threadName =
-      uniqueSymbol(module, "__loom_thread_", function.getSymName());
+      uniqueSymbol(module, "__loom_thread_", sourceCallable.getSymName());
   const std::string graphName =
-      uniqueSymbol(module, "__loom_graph_", function.getSymName());
+      uniqueSymbol(module, "__loom_graph_", sourceCallable.getSymName());
 
-  mlir::Block &source = function.getBody().front();
-  llvm::SmallVector<mlir::Type, 8> inputTypes(source.getArgumentTypes());
   builder.setInsertionPointToEnd(module.getBody());
   auto thread = dataflow::ThreadOp::create(
       builder, location, threadName,
-      builder.getFunctionType(inputTypes, mlir::TypeRange{}),
+      builder.getFunctionType(captures.getTypes(), mlir::TypeRange{}),
       dataflow::ThreadDomainAttr::get(context));
   thread.setSymVisibilityAttr(builder.getStringAttr("private"));
 
   llvm::SmallVector<mlir::DictionaryAttr, 8> argumentAttrs;
-  argumentAttrs.reserve(inputTypes.size());
-  for (std::size_t index = 0; index < inputTypes.size(); ++index)
-    argumentAttrs.push_back(
-        mlir::function_interface_impl::getArgAttrDict(function, index));
+  argumentAttrs.reserve(captures.size());
+  for (mlir::Value capture : captures) {
+    mlir::DictionaryAttr attrs = mlir::DictionaryAttr::get(context);
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(capture))
+      if (argument.getOwner() == &sourceCallable.getBody().front())
+        attrs = mlir::function_interface_impl::getArgAttrDict(
+            sourceCallable, argument.getArgNumber());
+    argumentAttrs.push_back(attrs);
+  }
   mlir::function_interface_impl::setAllArgAttrDicts(thread, argumentAttrs);
 
   mlir::Block *threadEntry = builder.createBlock(&thread.getBody());
-  for (mlir::Type type : inputTypes)
+  for (mlir::Type type : captures.getTypes())
     threadEntry->addArgument(type, location);
   threadEntry->addArgument(builder.getNoneType(), location);
 
   llvm::SmallVector<mlir::Value, 8> values;
   llvm::SmallVector<mlir::Value, 8> memories;
-  llvm::SmallVector<std::size_t, 8> spatialArgument(inputTypes.size());
+  llvm::SmallVector<std::size_t, 8> spatialArgument(captures.size());
   for (auto [index, argument] : llvm::enumerate(
-           threadEntry->getArguments().take_front(inputTypes.size()))) {
+           threadEntry->getArguments().take_front(captures.size()))) {
     if (dataflow::DataflowDialect::isMemoryCapabilityType(argument.getType())) {
       spatialArgument[index] = memories.size();
       memories.push_back(argument);
@@ -118,12 +130,13 @@ materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function) {
     }
     if (dataflow::DataflowDialect::containsMemoryCapability(argument.getType()))
       return invalid(
-          "callable input embeds an unmaterialized memory capability");
+          "captured input embeds an unmaterialized memory capability");
     spatialArgument[index] = values.size();
     values.push_back(argument);
   }
-  for (std::size_t index = 0; index < inputTypes.size(); ++index)
-    if (dataflow::DataflowDialect::isMemoryCapabilityType(inputTypes[index]))
+  for (std::size_t index = 0; index < captures.size(); ++index)
+    if (dataflow::DataflowDialect::isMemoryCapabilityType(
+            captures[index].getType()))
       spatialArgument[index] += values.size();
 
   builder.setInsertionPointToStart(threadEntry);
@@ -135,30 +148,138 @@ materializeThread(mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp function) {
   for (mlir::Type type : spatial.getOperandTypes())
     spatialEntry->addArgument(type, location);
 
+  builder.setInsertionPointToEnd(threadEntry);
+  dataflow::ThreadYieldOp::create(builder, location, mlir::ValueRange{});
+
+  llvm::SmallVector<mlir::Value, 8> captureArguments;
+  captureArguments.reserve(captures.size());
+  for (std::size_t index = 0; index < captures.size(); ++index)
+    captureArguments.push_back(
+        spatialEntry->getArgument(spatialArgument[index]));
+  return SpatialThreadBoundary{thread, spatialEntry,
+                               std::move(captureArguments)};
+}
+
+llvm::Error materializeThread(mlir::ModuleOp module,
+                              mlir::LLVM::LLVMFuncOp function) {
+  if (llvm::Error error = verifyEligibleCallable(function))
+    return error;
+  mlir::MLIRContext *context = module.getContext();
+  mlir::Location location = function.getLoc();
+  mlir::Block &source = function.getBody().front();
+  auto boundary = createSpatialThreadBoundary(module, function,
+                                              source.getArguments(), location);
+  if (!boundary)
+    return boundary.takeError();
+
+  mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
   for (auto [index, argument] : llvm::enumerate(source.getArguments()))
-    mapping.map(argument, spatialEntry->getArgument(spatialArgument[index]));
-  builder.setInsertionPointToEnd(spatialEntry);
+    mapping.map(argument, boundary->captureArguments[index]);
+  builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::Operation &operation : source.without_terminator())
     builder.clone(operation, mapping);
   loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
                                mlir::ValueRange{});
 
-  builder.setInsertionPointToEnd(threadEntry);
-  dataflow::ThreadYieldOp::create(builder, location, mlir::ValueRange{});
-
   while (!source.empty())
     source.back().erase();
   builder.setInsertionPointToStart(&source);
   mlir::FlatSymbolRefAttr callee =
-      mlir::FlatSymbolRefAttr::get(context, threadName);
+      mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
   auto launch = dataflow::ThreadLaunchOp::create(
       builder, location, callee, source.getArguments(), mlir::ValueRange{},
       mlir::ValueRange{});
   dataflow::ThreadWaitOp::create(builder, location,
                                  mlir::ValueRange{launch.getAsyncToken()});
   mlir::LLVM::ReturnOp::create(builder, location, mlir::ValueRange{});
-  return thread;
+  return llvm::Error::success();
+}
+
+/// Returns the ordinary LLVM callable that owns the selected operation, after
+/// proving the operation is an ownership-free structured entity: inside an
+/// LLVM callable, outside every dataflow.thread, dataflow.graph, and
+/// loom.spatial_region, with at least one region and no SSA result used
+/// outside itself.
+llvm::Expected<mlir::LLVM::LLVMFuncOp>
+eligibleOwningCallable(mlir::Operation *operation) {
+  mlir::LLVM::LLVMFuncOp callable;
+  for (mlir::Operation *ancestor = operation->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (llvm::isa<dataflow::ThreadOp, dataflow::GraphOp, loom::SpatialRegionOp>(
+            ancestor))
+      return invalid("selected operation already has an execution owner");
+    if (auto candidate = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(ancestor)) {
+      callable = candidate;
+      break;
+    }
+  }
+  if (!callable)
+    return invalid(
+        "selected operation is not inside an ordinary LLVM callable");
+  if (operation->getNumRegions() == 0)
+    return invalid("selected operation owns no region");
+  for (mlir::OpResult result : operation->getResults())
+    for (mlir::Operation *user : result.getUsers())
+      if (!operation->isProperAncestor(user))
+        return invalid(
+            "selected operation has an SSA result used outside itself");
+  return callable;
+}
+
+/// Derives every external SSA live-in used by the selected operation itself or
+/// recursively inside it, exactly once, in deterministic first-use order.
+llvm::SmallVector<mlir::Value> externalLiveIns(mlir::Operation *operation) {
+  llvm::SmallVector<mlir::Value> liveIns;
+  llvm::SmallPtrSet<mlir::Value, 8> seen;
+  operation->walk([&](mlir::Operation *nested) {
+    for (mlir::Value operand : nested->getOperands()) {
+      if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(operand)) {
+        if (operation->isAncestor(argument.getOwner()->getParentOp()))
+          continue;
+      } else if (operation->isAncestor(operand.getDefiningOp())) {
+        continue;
+      }
+      if (seen.insert(operand).second)
+        liveIns.push_back(operand);
+    }
+    return mlir::WalkResult::advance();
+  });
+  return liveIns;
+}
+
+llvm::Error materializeSelectedOperation(mlir::ModuleOp module,
+                                         mlir::Operation *operation) {
+  auto callable = eligibleOwningCallable(operation);
+  if (!callable)
+    return callable.takeError();
+  const llvm::SmallVector<mlir::Value> liveIns = externalLiveIns(operation);
+  mlir::Location location = operation->getLoc();
+  auto boundary =
+      createSpatialThreadBoundary(module, *callable, liveIns, location);
+  if (!boundary)
+    return boundary.takeError();
+
+  mlir::MLIRContext *context = module.getContext();
+  mlir::OpBuilder builder(context);
+  mlir::IRMapping mapping;
+  for (auto [index, liveIn] : llvm::enumerate(liveIns))
+    mapping.map(liveIn, boundary->captureArguments[index]);
+  builder.setInsertionPointToEnd(boundary->spatialEntry);
+  builder.clone(*operation, mapping);
+  loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
+                               mlir::ValueRange{});
+
+  builder.setInsertionPoint(operation);
+  mlir::FlatSymbolRefAttr callee =
+      mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
+  auto launch =
+      dataflow::ThreadLaunchOp::create(builder, location, callee, liveIns,
+                                       mlir::ValueRange{}, mlir::ValueRange{});
+  dataflow::ThreadWaitOp::create(builder, location,
+                                 mlir::ValueRange{launch.getAsyncToken()});
+  operation->erase();
+  return llvm::Error::success();
 }
 
 llvm::Error requireExactFabricCapabilities(
@@ -196,6 +317,57 @@ llvm::Error requireExactFabricCapabilities(
   return llvm::Error::success();
 }
 
+/// Resolves the exact parent-local selection, clones the complete parent
+/// candidate, and resolves the same reference in the clone.
+struct PrivateSelection {
+  mlir::OwningOpRef<mlir::ModuleOp> clone;
+  mlir::Operation *operation;
+};
+
+llvm::Expected<PrivateSelection>
+cloneSelectedOperation(const StructuredProgramCandidate &parent,
+                       const StructuredEntityRef &selection) {
+  auto parentView = parent.view();
+  if (!parentView)
+    return parentView.takeError();
+  auto parentEntity = parentView->resolve(selection);
+  if (!parentEntity)
+    return parentEntity.takeError();
+  if (!parentEntity->operation)
+    return invalid("selected StructuredEntityRef is not an operation");
+
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(parent.module()->clone()));
+  auto cloneView =
+      buildStructuredProgramCandidateView(clone.get(), parent.identity());
+  if (!cloneView)
+    return cloneView.takeError();
+  auto clonedEntity = cloneView->resolve(selection);
+  if (!clonedEntity)
+    return clonedEntity.takeError();
+  if (!clonedEntity->operation)
+    return invalid("selected operation changed kind in the private clone");
+  return PrivateSelection{std::move(clone), clonedEntity->operation};
+}
+
+llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
+    mlir::ModuleOp module, const fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  if (mlir::failed(mlir::verify(module)))
+    return invalid("materialized Structured Program does not verify");
+  auto structured = finalizeStructuredProgram(module);
+  if (!structured)
+    return structured.takeError();
+  auto canonical = lowering::lowerStructuredProgramToCanonicalDataflow(
+      *structured, loweringOptions);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))
+    return std::move(error);
+  return MaterializedOwnershipCandidate{std::move(*structured),
+                                        std::move(*canonical)};
+}
+
 } // namespace
 
 llvm::Expected<MaterializedOwnershipCandidate>
@@ -204,28 +376,13 @@ materializeWholeCallableSpatialOwnership(
     const StructuredEntityRef &callable,
     const fabric::FinalizedFabricRoot &fabric,
     const WholeCallableSpatialOwnershipOptions &options) {
-  auto parentView = parent.view();
-  if (!parentView)
-    return parentView.takeError();
-  auto parentEntity = parentView->resolve(callable);
-  if (!parentEntity)
-    return parentEntity.takeError();
-  if (!llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(parentEntity->operation))
-    return invalid("selected StructuredEntityRef is not an LLVM callable");
-
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone()));
-  auto cloneView =
-      buildStructuredProgramCandidateView(clone.get(), parent.identity());
-  if (!cloneView)
-    return cloneView.takeError();
-  auto clonedEntity = cloneView->resolve(callable);
-  if (!clonedEntity)
-    return clonedEntity.takeError();
+  auto selection = cloneSelectedOperation(parent, callable);
+  if (!selection)
+    return selection.takeError();
   auto function =
-      llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(clonedEntity->operation);
+      llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(selection->operation);
   if (!function)
-    return invalid("selected callable changed kind in the private clone");
+    return invalid("selected StructuredEntityRef is not an LLVM callable");
 
   if (options.fmuladdExecutionShape) {
     mlir::PassManager materialization(
@@ -237,23 +394,26 @@ materializeWholeCallableSpatialOwnership(
       return invalid("selected fmuladd execution shape is not materializable");
   }
 
-  if (auto thread = materializeThread(clone.get(), function); !thread)
-    return thread.takeError();
-  if (mlir::failed(mlir::verify(clone.get())))
-    return invalid("materialized Structured Program does not verify");
-
-  auto structured = finalizeStructuredProgram(clone.get());
-  if (!structured)
-    return structured.takeError();
-  auto canonical =
-      lowering::lowerStructuredProgramToCanonicalDataflow(*structured,
-                                                           options.lowering);
-  if (!canonical)
-    return canonical.takeError();
-  if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))
+  if (llvm::Error error = materializeThread(selection->clone.get(), function))
     return std::move(error);
-  return MaterializedOwnershipCandidate{std::move(*structured),
-                                        std::move(*canonical)};
+  return finalizeOwnershipCandidate(selection->clone.get(), fabric,
+                                    options.lowering);
+}
+
+llvm::Expected<MaterializedOwnershipCandidate>
+materializeOperationSpatialOwnership(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &operation,
+    const fabric::FinalizedFabricRoot &fabric,
+    const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  auto selection = cloneSelectedOperation(parent, operation);
+  if (!selection)
+    return selection.takeError();
+  if (llvm::Error error = materializeSelectedOperation(selection->clone.get(),
+                                                       selection->operation))
+    return std::move(error);
+  return finalizeOwnershipCandidate(selection->clone.get(), fabric,
+                                    loweringOptions);
 }
 
 } // namespace loom::frontend
