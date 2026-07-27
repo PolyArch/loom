@@ -302,8 +302,8 @@ entry:
 
 loop:
   %i = phi i32 [ 0, %entry ], [ %next, %loop ]
-  %offset = shl nuw nsw i32 %i, 2
-  %p = getelementptr inbounds i8, ptr %a, i32 %offset
+  %base = getelementptr inbounds float, ptr %a, i32 %i
+  %p = getelementptr inbounds i8, ptr %base, i64 -4
   %value = load float, ptr %p, align 4
   store float %value, ptr %p, align 4
   %next = add nuw nsw i32 %i, 1

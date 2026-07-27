@@ -256,7 +256,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     return error;
 
   mlir::OpBuilder builder(module.getContext());
-  mlir::Type narrowedType =
+  mlir::IntegerType narrowedType =
       mlir::IntegerType::get(module.getContext(), *canonicalIndexWidth);
   llvm::DenseMap<mlir::Value, mlir::Value> narrowed;
   for (mlir::Value source : sources) {
@@ -264,6 +264,14 @@ materializeAddressIndexContract(mlir::ModuleOp module,
       builder.setInsertionPointToStart(argument.getOwner());
     else
       builder.setInsertionPointAfter(source.getDefiningOp());
+    if (mlir::IntegerAttr constant = integerConstant(source)) {
+      llvm::APInt bits = constant.getValue().trunc(*canonicalIndexWidth);
+      auto attr = mlir::IntegerAttr::get(narrowedType, bits);
+      auto narrowedConstant = mlir::arith::ConstantOp::create(
+          builder, source.getLoc(), narrowedType, attr);
+      narrowed.try_emplace(source, narrowedConstant.getResult());
+      continue;
+    }
     auto trunc = mlir::arith::TruncIOp::create(builder, source.getLoc(),
                                                narrowedType, source);
     trunc.setOverflowFlags(mlir::arith::IntegerOverflowFlags::nsw);
