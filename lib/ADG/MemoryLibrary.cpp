@@ -7,10 +7,12 @@
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/SystemServiceContract.h"
 
 #include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 
 #include <optional>
 #include <utility>
@@ -146,7 +148,7 @@ llvm::Expected<::fabric::ResourceContract> operationPortResourceContract() {
   return ::fabric::ResourceContract::create(declaration);
 }
 
-llvm::Expected<::fabric::ResourceContract> localServiceResourceContract() {
+llvm::Expected<::fabric::ResourceContract> memoryServiceResourceContract() {
   ::fabric::ResourceContractDeclaration declaration;
   declaration.states = {
       {::fabric::StateKey(0),
@@ -251,7 +253,7 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
 
 llvm::Expected<::fabric::MemoryServiceContractRecord>
 localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes) {
-  auto resources = localServiceResourceContract();
+  auto resources = memoryServiceResourceContract();
   if (!resources)
     return resources.takeError();
   std::vector<::fabric::MemoryServiceCapabilityDeclaration> capabilities;
@@ -359,6 +361,79 @@ makeHybridF32LocalMemory(HybridF32LocalMemoryParameters parameters) {
   return MemorySpec::create(std::move(inputs), std::move(outputs), {}, {},
                             std::move(engine), std::move(*service),
                             std::move(*connectivity));
+}
+
+llvm::Expected<HybridF32SystemMemorySpec>
+makeHybridF32SystemMemory(HybridF32SystemMemoryParameters parameters,
+                          loom::fabric::ServiceRateContractRecord serviceRate) {
+  if (parameters.capacityBytes == 0)
+    return invalid("System memory capacity must be positive");
+  auto endAddress = llvm::checkedAddUnsigned(parameters.addressBaseBytes,
+                                             parameters.capacityBytes);
+  if (!endAddress)
+    return invalid("System memory address range overflows u64");
+  const std::uint64_t lastAddress = *endAddress - 1;
+
+  auto resources = memoryServiceResourceContract();
+  if (!resources)
+    return resources.takeError();
+  std::vector<::fabric::MemoryServiceCapabilityDeclaration> serviceCapabilities;
+  std::vector<loom::fabric::CanonicalServiceCapabilityRecord>
+      endpointCapabilities;
+  for (bool reads : {true, false}) {
+    auto serviceActors = actorDomain(reads);
+    if (!serviceActors)
+      return serviceActors.takeError();
+    auto serviceAccesses = accessDomain(reads);
+    if (!serviceAccesses)
+      return serviceAccesses.takeError();
+    serviceCapabilities.push_back({std::move(*serviceActors),
+                                   std::move(*serviceAccesses),
+                                   {0},
+                                   128,
+                                   {::fabric::UsePatternKey(reads ? 0 : 1)},
+                                   ::fabric::NoMemoryServiceConsistency{}});
+
+    auto endpointActors = actorDomain(reads);
+    if (!endpointActors)
+      return endpointActors.takeError();
+    auto endpointAccesses = accessDomain(reads);
+    if (!endpointAccesses)
+      return endpointAccesses.takeError();
+    auto addressDomain = ::fabric::UnsignedDomain::fromCanonical(
+        {{parameters.addressBaseBytes, lastAddress}});
+    if (!addressDomain)
+      return addressDomain.takeError();
+    auto domain = loom::fabric::AddressedMemoryCapabilityDomain::create(
+        std::move(*endpointActors), std::move(*endpointAccesses),
+        std::move(*addressDomain), 128, std::nullopt);
+    if (!domain)
+      return domain.takeError();
+    auto capability = loom::fabric::CanonicalServiceCapabilityRecord::create(
+        reads ? ::dataflow::semantics::ServiceKind::MemoryRead
+              : ::dataflow::semantics::ServiceKind::MemoryWrite,
+        loom::fabric::CanonicalServiceEndpointRole::Serve, std::move(*domain),
+        serviceRate);
+    if (!capability)
+      return capability.takeError();
+    endpointCapabilities.push_back(std::move(*capability));
+  }
+
+  mlir::MLIRContext context;
+  auto contract = ::fabric::MemoryServiceContractRecord::create(
+      &context, ::fabric::MemoryServiceOwnerKind::System,
+      {{{parameters.addressBaseBytes, parameters.capacityBytes,
+         ::fabric::MemoryServiceRegionBehavior::Storage, std::nullopt}},
+       std::move(*resources),
+       std::move(serviceCapabilities)});
+  if (!contract)
+    return contract.takeError();
+  auto capabilities = loom::fabric::CanonicalServiceCapabilitySet::create(
+      std::move(endpointCapabilities));
+  if (!capabilities)
+    return capabilities.takeError();
+  return HybridF32SystemMemorySpec{std::move(*contract),
+                                   std::move(*capabilities)};
 }
 
 } // namespace loom::adg

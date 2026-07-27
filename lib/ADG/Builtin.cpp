@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
 #include <array>
@@ -618,7 +619,8 @@ buildSystem(const loom::ArtifactStore &store,
   if (!bits128)
     return bits128.takeError();
   std::vector<HardwareDomainMember> clockMembers;
-  clockMembers.reserve(cores.size() * (2 + descriptor.scale.gatewayCount * 2));
+  clockMembers.reserve(cores.size() * (2 + descriptor.scale.gatewayCount * 2) +
+                       2);
   for (const AccCore &core : cores) {
     clockMembers.push_back(core.instructionCoreDomainMember());
     clockMembers.push_back(core.spatialCoreDomainMember());
@@ -665,6 +667,29 @@ buildSystem(const loom::ArtifactStore &store,
       loom::fabric::ClockDomainContractRecord::create(1'000, 0);
   if (!clockContract)
     return clockContract.takeError();
+  auto serviceRate = system->createServiceRate(
+      *clock, 1, 1, descriptor.scale.temporalResidentContexts,
+      loom::fabric::ServiceProgress(
+          std::in_place_type<::fabric::FairEventual>));
+  if (!serviceRate)
+    return serviceRate.takeError();
+  auto systemMemoryCapacity = llvm::checkedMulUnsigned<std::uint64_t>(
+      descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
+  if (!systemMemoryCapacity)
+    return invalid("builtin System memory capacity overflows u64");
+  auto systemMemory = makeHybridF32SystemMemory({0, *systemMemoryCapacity},
+                                                std::move(*serviceRate));
+  if (!systemMemory)
+    return systemMemory.takeError();
+  auto memoryService = system->addMemoryService(systemMemory->contract);
+  if (!memoryService)
+    return memoryService.takeError();
+  auto memoryEndpoint =
+      system->addServiceEndpoint(*memoryService, systemMemory->capabilities);
+  if (!memoryEndpoint)
+    return memoryEndpoint.takeError();
+  clockMembers.push_back(memoryService->domainMember());
+  clockMembers.push_back(memoryEndpoint->domainMember());
   if (llvm::Error error = clock->close(clockMembers, *clockContract))
     return std::move(error);
   if (llvm::Error error = system->close())

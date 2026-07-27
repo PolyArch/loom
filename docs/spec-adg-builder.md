@@ -395,6 +395,14 @@ Helper resource tables reference normative
 the HSG registry. They do not duplicate member lists, spell operation names as
 dispatch keys, or define backend modes.
 
+Each preset also owns one System memory service at base address zero. Its
+capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
+admits the `HybridF32SystemMemorySpec` read/write domain, and it exposes one
+Serve endpoint in the System clock domain. Its service rate is one operation
+per System clock tick, with `temporalResidentContexts` outstanding operations
+and fair-eventual progress. These are expanded Fabric facts, not additional
+preset fields or backend defaults.
+
 ### General-Purpose FU Library
 
 The initial family uses a small typed FU-construction library. The names below
@@ -453,6 +461,16 @@ manager or subordinate capability endpoint and advertises no atomic, fence,
 volatile, MMIO, or coherence behavior. Users needing another exact memory
 contract construct the same public `MemorySpec`, operation-port, service, and
 connectivity types directly; there is no parallel recipe schema.
+
+`makeHybridF32SystemMemory` is the matching System-level convenience recipe.
+It returns one `HybridF32SystemMemorySpec` containing the exact System
+`MemoryServiceContractRecord` and its matching Serve endpoint capability set.
+It admits the same scalar `f32` and contiguous `vector<4xf32>` plain read/write
+domain with a 128-bit service beat. The caller supplies one absolute address
+range and one domain-owned `ServiceRateContractRecord`, then passes the two
+returned records to `SystemBuilder::addMemoryService` and
+`SystemBuilder::addServiceEndpoint`. The pair is ordinary Fabric data; the
+helper owns no persistent memory kind, endpoint inventory, or identity.
 
 #### CoreAluFu Resource Inventory
 

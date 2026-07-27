@@ -933,8 +933,14 @@ void builtinPresetsExpandThroughPublicBuilder() {
             root.directDependencies().size() == 1 &&
             entityCount(root.view(),
                         loom::fabric::FabricEntityKind::AccCoreOccurrence) ==
-                expected.accCores,
-        "builtin lost its SpatialCore dependency or AccCore scale");
+                expected.accCores &&
+            entityCount(root.view(),
+                        loom::fabric::FabricEntityKind::SystemMemoryService) ==
+                1 &&
+            entityCount(
+                root.view(),
+                loom::fabric::FabricEntityKind::SystemServiceEndpoint) == 1,
+        "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto module =
         take(test, loom::fabric::importEntireFabricRoot(
