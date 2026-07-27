@@ -454,7 +454,6 @@ void replaceStructuredResults(
 void moveRegionBody(::mlir::Region &source, ::mlir::Region &target) {
   if (source.empty())
     return;
-  target.getBlocks().clear();
   target.takeBody(source);
 }
 
@@ -964,6 +963,7 @@ struct LowerForToGraphPass
         ::mlir::Operation *declaration = builder.clone(op);
         if (auto callable =
                 ::llvm::dyn_cast<::mlir::FunctionOpInterface>(declaration)) {
+          callable.getFunctionBody().dropAllReferences();
           callable.getFunctionBody().getBlocks().clear();
           // A body-less callable is a declaration, which cannot be public.
           ::mlir::SymbolTable::setSymbolVisibility(
