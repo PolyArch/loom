@@ -191,10 +191,10 @@ The target CMSIS scope includes:
 
 The global workload universe is owned by `docs/spec-loom-stack.md`.
 This document owns only the CMSIS-DSP and CMSIS-NN portion of that
-universe. Its canonical inventory is the tracked C source set in the
-pinned CMSIS submodules. Explicit smoke targets exercise real compiler paths
-while support expands, but they do not redefine that inventory or act as
-per-source status records.
+universe. Its canonical inventory is the independently invocable tracked C
+translation-unit set in the pinned CMSIS submodules. Explicit smoke targets
+exercise real compiler paths while support expands, but they do not redefine
+that inventory or act as per-source status records.
 
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
@@ -281,11 +281,16 @@ the schema, mutate source trees or vendored inputs, or become DSE inputs.
 
 ## Canonical Source Inventory
 
-Canonical CMSIS membership comes from every tracked `.c` file
-under `Source` at the submodule commits pinned by the parent repository.
-`test/corpus_inventory.py` derives these rows directly from each verified
-submodule commit tree, reports their counts mechanically, and verifies that the
-checked-out submodule revisions match the parent repository gitlinks.
+Canonical CMSIS membership comes from every independently invocable tracked C
+translation unit under `Source` at the submodule commits pinned by the parent
+repository. CMSIS reserves a leading underscore on a source basename for
+private implementation fragments that require an including translation unit's
+macro environment; those fragments are not independent compiler invocations.
+They remain covered through their including translation units and the
+target-feature configurations that select them. `test/corpus_inventory.py`
+derives these rows directly from each verified submodule commit tree, reports
+their counts mechanically, and verifies that the checked-out submodule
+revisions match the parent repository gitlinks.
 LoomBench membership is defined by its own manifest rather than by this CMSIS
 contract.
 
@@ -302,8 +307,8 @@ source used by a smoke run.
 
 Core CMSIS regression coverage requires:
 
-* the inventory count comes directly from tracked `.c` files in each pinned
-  `Source` tree;
+* the inventory count comes directly from independently invocable tracked C
+  translation units in each pinned `Source` tree;
 * smoke-selected CMSIS-DSP and CMSIS-NN sources compile through LLVM IR,
   raised MLIR, and dataflow MLIR without modifying the external source trees;
 * generated MLIR reparses, preserves the selected public source symbol, and

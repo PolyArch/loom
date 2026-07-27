@@ -36,7 +36,7 @@ def git_output(repository: Path, *arguments: str) -> str:
     return completed.stdout.decode()
 
 
-def tracked_c_sources(submodule: Path, revision: str = "HEAD") -> list[str]:
+def tracked_translation_units(submodule: Path, revision: str = "HEAD") -> list[str]:
     output = git_output(
         submodule,
         "ls-tree",
@@ -51,6 +51,7 @@ def tracked_c_sources(submodule: Path, revision: str = "HEAD") -> list[str]:
         path
         for path in output.split("\0")
         if path.startswith("Source/") and path.endswith(".c")
+        and not Path(path).name.startswith("_")
     )
 
 
@@ -95,7 +96,7 @@ class CorpusInventoryTest(unittest.TestCase):
         )
 
         for suite, submodule in CMSIS_SUITES.items():
-            tracked = tracked_c_sources(submodule)
+            tracked = tracked_translation_units(submodule)
             self.assertEqual(
                 [case.case for case in actual_by_suite[suite]],
                 [path.removeprefix("Source/") for path in tracked],
@@ -106,7 +107,8 @@ class CorpusInventoryTest(unittest.TestCase):
             )
 
         expected_total = len(expected_loombench) + sum(
-            len(tracked_c_sources(submodule)) for submodule in CMSIS_SUITES.values()
+            len(tracked_translation_units(submodule))
+            for submodule in CMSIS_SUITES.values()
         )
         self.assertEqual(len(self.cases), expected_total)
 
@@ -133,8 +135,17 @@ class CorpusInventoryTest(unittest.TestCase):
             source_root.mkdir()
             committed = source_root / "committed.c"
             committed.write_text("int committed(void) { return 0; }\n")
+            private_fragment = source_root / "_fragment.c"
+            private_fragment.write_text("FRAGMENT_BODY\n")
             subprocess.run(
-                ["git", "-C", str(repository), "add", "Source/committed.c"],
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "add",
+                    "Source/committed.c",
+                    "Source/_fragment.c",
+                ],
                 check=True,
             )
             subprocess.run(
@@ -163,7 +174,7 @@ class CorpusInventoryTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                corpus_inventory.tracked_c_sources_at_revision(
+                corpus_inventory.tracked_c_translation_units_at_revision(
                     repository, pinned_revision
                 ),
                 ("Source/committed.c",),

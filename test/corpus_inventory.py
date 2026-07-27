@@ -180,7 +180,9 @@ def require_pinned_submodule(
     return submodule, pinned_revision
 
 
-def tracked_c_sources_at_revision(submodule: Path, revision: str) -> tuple[str, ...]:
+def tracked_c_translation_units_at_revision(
+    submodule: Path, revision: str
+) -> tuple[str, ...]:
     tracked = run_git(
         ["ls-tree", "-r", "-z", "--name-only", revision, "--", "Source"],
         submodule,
@@ -188,7 +190,9 @@ def tracked_c_sources_at_revision(submodule: Path, revision: str) -> tuple[str, 
     source_paths = sorted(
         path
         for path in tracked.decode(errors="surrogateescape").split("\0")
-        if path.startswith("Source/") and path.endswith(".c")
+        if path.startswith("Source/")
+        and path.endswith(".c")
+        and not Path(path).name.startswith("_")
     )
     if len(source_paths) != len(set(source_paths)):
         raise InventoryError("commit tree returned duplicate source paths")
@@ -202,9 +206,9 @@ def load_cmsis_suite(
     submodule, pinned_revision = require_pinned_submodule(
         repo_root, external_root, relative_path
     )
-    source_paths = tracked_c_sources_at_revision(submodule, pinned_revision)
+    source_paths = tracked_c_translation_units_at_revision(submodule, pinned_revision)
     if not source_paths:
-        raise InventoryError(f"{suite} has no tracked C sources under Source")
+        raise InventoryError(f"{suite} has no tracked C translation units under Source")
 
     prefix = relative_path.as_posix()
     return [

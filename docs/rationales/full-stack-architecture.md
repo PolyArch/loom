@@ -85,10 +85,11 @@ sparse, irregular, DSP, stencil, vector, reduction, and multi-stage streaming
 behavior so that the core does not specialize around vector addition.
 
 The anchor list is not a benchmark inventory. LoomBench membership is owned by
-its manifest; CMSIS membership is owned by the pinned source trees; external
-SPEC membership is owned by its harness. Snapshot counts are evidence, not
-design constants. This distinction prevents a smoke subset or generated status
-file from becoming a false support boundary.
+its manifest; CMSIS membership is owned by the independently invocable
+translation units in the pinned source trees; external SPEC membership is
+owned by its harness. Snapshot counts are evidence, not design constants. This
+distinction prevents a smoke subset or generated status file from becoming a
+false support boundary.
 
 ## Why Suites Share One Compiler Contract
 

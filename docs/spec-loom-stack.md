@@ -338,11 +338,13 @@ the current contracts.
 ## Corpus
 
 The canonical high-level-language corpus consists of the repository-owned
-LoomBench applications and the complete pinned CMSIS-DSP and CMSIS-NN source
-suites. Membership is derived from their manifests or pinned source trees; a
-smoke subset is never an alternate corpus definition. SPEC CPU 2026 is a
-separate external conformance corpus rather than part of repository-owned
-membership.
+LoomBench applications and the complete pinned CMSIS-DSP and CMSIS-NN
+translation-unit inventories. Membership is derived from their manifests or
+pinned source trees. Private C implementation fragments that require an
+including translation unit's macro environment are not themselves compiler
+invocations. A smoke subset is never an alternate corpus definition. SPEC CPU
+2026 is a separate external conformance corpus rather than part of
+repository-owned membership.
 
 The representative frontend set is owned only by
 [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md). Anchor
