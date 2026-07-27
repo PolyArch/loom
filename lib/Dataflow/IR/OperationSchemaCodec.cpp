@@ -599,8 +599,8 @@ llvm::Error encodeType(Writer &writer, Type type, unsigned depth) {
     return encodeType(writer, array.getElementType(), depth + 1);
   }
   if (auto structure = llvm::dyn_cast<LLVM::LLVMStructType>(type)) {
-    if (structure.isIdentified() || structure.isOpaque())
-      return invalid("canonical LLVM aggregate type must be a literal struct");
+    if (structure.isOpaque())
+      return invalid("canonical LLVM aggregate type must have a body");
     writer.u32(static_cast<std::uint32_t>(TypeWireTag::LLVMLiteralStruct));
     writer.boolean(structure.isPacked());
     return encodeTypeList(writer, structure.getBody(), depth + 1);

@@ -322,6 +322,40 @@ bool checkOwnedAtomCodecs(MLIRContext &context) {
                         "trailing bytes");
   }
 
+  Type aggregateBody[] = {IntegerType::get(&context, 32),
+                          LLVM::LLVMArrayType::get(
+                              IntegerType::get(&context, 16), 4)};
+  Type namedAggregateA = LLVM::LLVMStructType::getNewIdentified(
+      &context, "private.aggregate.a", aggregateBody, false);
+  Type namedAggregateB = LLVM::LLVMStructType::getNewIdentified(
+      &context, "private.aggregate.b", aggregateBody, false);
+  auto namedBytesA = encodeCanonicalType(namedAggregateA);
+  auto namedBytesB = encodeCanonicalType(namedAggregateB);
+  if (!namedBytesA || !namedBytesB) {
+    if (!namedBytesA)
+      llvm::errs() << llvm::toString(namedBytesA.takeError()) << '\n';
+    if (!namedBytesB)
+      llvm::errs() << llvm::toString(namedBytesB.takeError()) << '\n';
+    ok = false;
+  } else {
+    if (namedBytesA->bytes() != namedBytesB->bytes()) {
+      llvm::errs() << "private LLVM aggregate names changed canonical type "
+                      "bytes\n";
+      ok = false;
+    }
+    auto decoded = decodeCanonicalType(namedBytesA->bytes(), &context);
+    Type literalAggregate =
+        LLVM::LLVMStructType::getLiteral(&context, aggregateBody, false);
+    if (!decoded || *decoded != literalAggregate) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "identified LLVM aggregate did not normalize to its "
+                        "literal semantic type\n";
+      ok = false;
+    }
+  }
+
   for (std::optional<VectorAtomicGranularity> value :
        {std::optional<VectorAtomicGranularity>{},
         std::optional<VectorAtomicGranularity>{
