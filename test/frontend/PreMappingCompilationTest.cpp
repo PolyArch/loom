@@ -4,6 +4,7 @@
 #include "Common/IndexWidth.h"
 #include "Common/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
@@ -1218,16 +1219,8 @@ void operationSpatialOwnershipRejectsEscapedResult() {
 }
 
 loom::evaluation::DecimalValue
-evaluateStructuredRuntime(const char *test,
-                          const loom::ArtifactRootReference &structuredProgram,
-                          const loom::ArtifactRootReference &fabric,
-                          const loom::ArtifactStore &store) {
-  auto prepared = take(
-      test,
-      loom::evaluation::models::prepareStructuredFabricRuntimeEvaluation(
-          structuredProgram, fabric, loom::defaultResolvedConfig(), store));
-  auto evidence = take(test, loom::evaluation::evaluateRequest(
-                                 prepared.request, prepared.resolution, store));
+runtimeResult(const char *test,
+              const loom::evaluation::EvaluationEvidence &evidence) {
   const auto *completed =
       std::get_if<loom::evaluation::CompletedEvidence>(&evidence.outcome());
   if (!completed || completed->metricResults.size() != 1)
@@ -1245,6 +1238,34 @@ evaluateStructuredRuntime(const char *test,
   if (!runtime)
     fail(test, "analytic Runtime result used the wrong numeric domain");
   return *runtime;
+}
+
+loom::evaluation::DecimalValue
+evaluateStructuredRuntime(const char *test,
+                          const loom::ArtifactRootReference &structuredProgram,
+                          const loom::ArtifactRootReference &fabric,
+                          const loom::ArtifactStore &store) {
+  auto prepared = take(
+      test,
+      loom::evaluation::models::prepareStructuredFabricRuntimeEvaluation(
+          structuredProgram, fabric, loom::defaultResolvedConfig(), store));
+  auto evidence = take(test, loom::evaluation::evaluateRequest(
+                                 prepared.request, prepared.resolution, store));
+  return runtimeResult(test, evidence);
+}
+
+loom::evaluation::DecimalValue
+evaluateCanonicalDataflowRuntime(const char *test,
+                                 const loom::ArtifactRootReference &program,
+                                 const loom::ArtifactRootReference &fabric,
+                                 const loom::ArtifactStore &store) {
+  auto prepared = take(
+      test,
+      loom::evaluation::models::prepareCanonicalDataflowFabricRuntimeEvaluation(
+          program, fabric, loom::defaultResolvedConfig(), store));
+  auto evidence = take(test, loom::evaluation::evaluateRequest(
+                                 prepared.request, prepared.resolution, store));
+  return runtimeResult(test, evidence);
 }
 
 void structuredFabricEvaluationRanksMaterializedOwnership() {
@@ -1276,6 +1297,9 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
   const loom::ArtifactRootReference spatialRef =
       take(test, loom::frontend::publishStructuredProgram(
                      spatial.structuredProgram, store));
+  const loom::ArtifactRootReference dataflowRef =
+      take(test, dataflow::publishCanonicalDataflow(spatial.canonicalDataflow,
+                                                    store));
   const loom::evaluation::DecimalValue baselineRuntime =
       evaluateStructuredRuntime(test, baselineRef,
                                 design.roots().front().reference(), store);
@@ -1286,6 +1310,11 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       0)
     fail(test, "Fabric-aware Evaluation did not prefer materialized Spatial "
                "ownership");
+  const loom::evaluation::DecimalValue dataflowRuntime =
+      evaluateCanonicalDataflowRuntime(
+          test, dataflowRef, design.roots().front().reference(), store);
+  if (dataflowRuntime.coefficient() <= 0)
+    fail(test, "Dataflow/Fabric Evaluation returned no spatial work");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1297,6 +1326,9 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
 int main() {
   if (llvm::Error error =
           loom::evaluation::models::registerStructuredFabricAnalyticModel())
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = loom::evaluation::models::
+          registerCanonicalDataflowFabricAnalyticModel())
     fail("registration", llvm::toString(std::move(error)));
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
