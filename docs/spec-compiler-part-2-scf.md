@@ -68,6 +68,12 @@ both lanes feed those values back through their respective identity
 results. No value numbering, pointer-alias assumption, or performance choice
 participates in this exact quotient.
 
+The lift-owned exit scaffold may publish a `scf.while` result through a value
+defined outside and dominating the loop. Mechanical raising projects that
+result directly to the exact published SSA value while retaining the loop and
+its control effects. This rule applies equally to defined, poison, and undef
+values; it never substitutes an ordinary constant for an exceptional value.
+
 ### Mechanical Disposition
 
 Every input construct has exactly one mechanical disposition:

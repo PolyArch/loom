@@ -30,6 +30,13 @@ identity-feedback shape. This narrow rule removes accidental CFG structure
 without introducing a general equivalence engine or turning canonicalization
 into an optimization decision.
 
+The same structuring utility can thread exit constants and exceptional-value
+placeholders through several adjacent loops as publication latches. When the
+failed condition publishes an exact value that already dominates the loop,
+retaining the loop result creates a false cross-loop dependence. Projecting
+that result back to the same SSA value removes the accidental state without
+moving the loop, changing termination, or weakening poison and undef semantics.
+
 LLVM operations are normalized to registered canonical compute schemas only
 when exact semantics are preserved. A familiar symbol name is not sufficient.
 In particular, `fmuladd` cannot be assumed to be fused; poison, undef, freeze,

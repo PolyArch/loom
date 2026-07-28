@@ -82,26 +82,23 @@ func.func @normalize_repeat_then(%bound: i64, %output: !llvm.ptr) {
   return
 }
 
-// A live while result carries poison on the exit edge. The normalizer must
-// leave the entire scaffold intact instead of manufacturing a non-poison
-// result.
-// CHECK-LABEL: func.func @preserve_live_exit_value
+// A live while result is exactly the value published by the failed condition.
+// When that value is defined outside and dominates the loop, project the result
+// directly without changing its poison semantics. The loop itself remains, so
+// the poison cannot become observable before termination.
+// CHECK-LABEL: func.func @normalize_live_external_exit
 // CHECK: %[[LIVE_POISON:.*]] = ub.poison : i64
 // CHECK: %[[LOOP:.*]] = scf.while
-// CHECK: %[[LIFTED:.*]]:3 = scf.if
-// CHECK: scf.yield %[[LIVE_POISON]],
-// CHECK: %[[SELECTOR:.*]] = arith.trunci %[[LIFTED]]#2
-// CHECK-NEXT: scf.condition(%[[SELECTOR]]) %[[LIFTED]]#0
-// CHECK: return %[[LOOP]]
-// UPLIFT-LABEL: func.func @preserve_live_exit_value
+// CHECK-NOT: scf.if
+// CHECK-NOT: arith.trunci
+// CHECK: return %[[LIVE_POISON]]
+// UPLIFT-LABEL: func.func @normalize_live_external_exit
 // UPLIFT: %[[LIVE_POISON:.*]] = ub.poison : i64
 // UPLIFT: %[[LOOP:.*]] = scf.while
-// UPLIFT: %[[LIFTED:.*]]:3 = scf.if
-// UPLIFT: scf.yield %[[LIVE_POISON]],
-// UPLIFT: %[[SELECTOR:.*]] = arith.trunci %[[LIFTED]]#2
-// UPLIFT-NEXT: scf.condition(%[[SELECTOR]]) %[[LIFTED]]#0
-// UPLIFT: return %[[LOOP]]
-func.func @preserve_live_exit_value(%bound: i64) -> i64 {
+// UPLIFT-NOT: scf.if
+// UPLIFT-NOT: arith.trunci
+// UPLIFT: return %[[LIVE_POISON]]
+func.func @normalize_live_external_exit(%bound: i64) -> i64 {
   %iv0 = arith.constant 0 : i64
   %step = arith.constant 1 : i64
   %flag0 = arith.constant 0 : i32

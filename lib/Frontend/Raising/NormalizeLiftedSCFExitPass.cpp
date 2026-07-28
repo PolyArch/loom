@@ -11,9 +11,9 @@
 // Generic SCF canonicalization is not safe here: it can combine nested lazy
 // scf.if conditions into an eager arith.andi. This pass instead recognizes the
 // complete lift-owned scaffold and rewrites it directly. A live result may be
-// redirected only when its exit value is exactly one of the continuation
-// values and its separate poison-initialized publication latch is otherwise
-// unused. A source poison, undef, or freeze therefore keeps its own meaning.
+// redirected only to its exact dominating exit value or to another recurrence
+// lane carrying that value. A source poison, undef, or freeze therefore keeps
+// its own meaning.
 
 #include "Frontend/Raising/Passes.h"
 
@@ -24,6 +24,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -31,6 +32,8 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <optional>
 
 namespace {
 
@@ -178,11 +181,13 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
 
   struct ResultProjection {
     unsigned source;
-    unsigned target;
+    ::mlir::Value replacement;
+    std::optional<unsigned> targetLane;
     ::llvm::SmallVector<::mlir::OpOperand *, 2> uses;
   };
   ::llvm::SmallVector<ResultProjection, 2> projections;
   ::llvm::SmallVector<::mlir::Operation *, 8> placeholders;
+  ::mlir::DominanceInfo dominance(loop->getParentOp());
   const auto rememberPlaceholder = [&](::mlir::Value value) {
     ::mlir::Operation *operation = value.getDefiningOp();
     if (operation && !::llvm::is_contained(placeholders, operation))
@@ -200,6 +205,14 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
       continue;
     }
 
+    if (dominance.properlyDominates(exitArgs[index], loop)) {
+      ResultProjection projection{index, exitArgs[index], std::nullopt, {}};
+      for (::mlir::OpOperand &use : result.getUses())
+        projection.uses.push_back(&use);
+      projections.push_back(std::move(projection));
+      continue;
+    }
+
     if (exceptionalPlaceholder(exitArgs[index]))
       return false;
     auto target = ::llvm::find(continuationArgs, exitArgs[index]);
@@ -208,7 +221,8 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
     unsigned targetIndex =
         static_cast<unsigned>(target - continuationArgs.begin());
 
-    ResultProjection projection{index, targetIndex, {}};
+    ResultProjection projection{
+        index, loop.getResult(targetIndex), targetIndex, {}};
     for (::mlir::OpOperand &use : result.getUses())
       projection.uses.push_back(&use);
 
@@ -224,10 +238,12 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
   }
 
   for (const ResultProjection &projection : projections) {
-    if (projection.source == projection.target)
+    if (!projection.targetLane || projection.source == *projection.targetLane)
       continue;
-    loop->setOperand(projection.source, loop.getInits()[projection.target]);
-    continuationArgs[projection.source] = continuationArgs[projection.target];
+    loop->setOperand(projection.source,
+                     loop.getInits()[*projection.targetLane]);
+    continuationArgs[projection.source] =
+        continuationArgs[*projection.targetLane];
   }
 
   rewriter.setInsertionPoint(condition);
@@ -258,7 +274,7 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
     rewriter.eraseOp(obsoleteComparison);
   for (const ResultProjection &projection : projections)
     for (::mlir::OpOperand *use : projection.uses)
-      use->set(loop.getResult(projection.target));
+      use->set(projection.replacement);
   for (::mlir::Operation *placeholder : placeholders)
     if (placeholder->use_empty())
       rewriter.eraseOp(placeholder);
