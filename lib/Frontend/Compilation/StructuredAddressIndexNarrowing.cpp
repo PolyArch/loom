@@ -227,6 +227,16 @@ struct PointerInductionLoop final {
   llvm::SmallVector<PointerInductionLane, 4> lanes;
 };
 
+bool isDefinedOutsideLoop(mlir::Value value, mlir::scf::WhileOp loop) {
+  if (mlir::Operation *definition = value.getDefiningOp())
+    return !loop->isAncestor(definition);
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  mlir::Operation *owner =
+      argument ? argument.getOwner()->getParentOp() : nullptr;
+  return !owner ||
+         (owner != loop.getOperation() && !loop->isAncestor(owner));
+}
+
 std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
   mlir::Block *before = loop.getBeforeBody();
   mlir::Block *after = loop.getAfterBody();
@@ -267,11 +277,8 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
     else if (compare.getRhs() == update.getResult())
       comparisonValue = compare.getLhs();
     if (compare.getPredicate() == mlir::arith::CmpIPredicate::ne &&
-        comparisonValue) {
-      mlir::IntegerAttr zero = integerConstant(comparisonValue);
-      if (zero && zero.getType() == integer && zero.getValue().isZero())
-        return integer.getWidth();
-    }
+        comparisonValue && isDefinedOutsideLoop(comparisonValue, loop))
+      return integer.getWidth();
 
     if (!delta.getValue().isAllOnes())
       continue;
@@ -321,14 +328,7 @@ mlir::Value invariantGepIndex(mlir::LLVM::GEPOp gep, mlir::scf::WhileOp loop) {
   if (!value || integerConstant(value) ||
       !llvm::isa<mlir::IntegerType>(value.getType()))
     return {};
-  if (mlir::Operation *definition = value.getDefiningOp())
-    return loop->isAncestor(definition) ? mlir::Value{} : value;
-  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
-  mlir::Operation *owner =
-      argument ? argument.getOwner()->getParentOp() : nullptr;
-  return !owner || owner == loop.getOperation() || loop->isAncestor(owner)
-             ? mlir::Value{}
-             : value;
+  return isDefinedOutsideLoop(value, loop) ? value : mlir::Value{};
 }
 
 std::optional<uint64_t> fixedByteSize(mlir::Operation *scope, mlir::Type type) {
