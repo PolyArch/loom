@@ -189,12 +189,15 @@ The target CMSIS scope includes:
 * fixed-point and floating-point kernels;
 * scalar paths and target-feature-gated intrinsic paths.
 
-The global workload universe is owned by `docs/spec-loom-stack.md`.
-This document owns only the CMSIS-DSP and CMSIS-NN portion of that
-universe. Its canonical inventory is the independently invocable tracked C
-translation-unit set in the pinned CMSIS submodules. Explicit smoke targets
-exercise real compiler paths while support expands, but they do not redefine
-that inventory or act as per-source status records.
+The two global corpus inventories and their coverage relation are owned by
+`docs/spec-loom-stack.md`. This document owns their CMSIS-DSP and CMSIS-NN
+derivation. The CMSIS source inventory is the independently invocable tracked
+C translation-unit set in the pinned submodules. The CMSIS workload inventory
+contains real public-API invocations linked from exact selected objects and
+archive members, with one applicable target profile, deterministic input, and
+a native or official reference oracle. Explicit smoke selections exercise real
+compiler paths while support expands, but they do not redefine either
+inventory or act as per-source status records.
 
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
@@ -294,6 +297,28 @@ revisions match the parent repository gitlinks.
 LoomBench membership is defined by its own manifest rather than by this CMSIS
 contract.
 
+Each CMSIS source row must be selected by at least one CMSIS workload under an
+applicable exact profile. Feature-gated algorithm sources are covered under a
+profile that exposes their real implementation. Table and constant-only
+sources are covered through linked consumers. A source that contributes only a
+stub under one profile is not thereby proven unacceleratable under every
+profile. Coverage is determined from actual compile and linker selection, not
+from filenames or symbol-name matching.
+
+Where CMSIS offers both aggregate translation units and the corresponding
+individual sources, a workload selects exactly one build form. Linking both is
+invalid because it changes ordinary symbol ownership and may introduce
+duplicate definitions. Private leading-underscore fragments remain covered by
+the independently invocable source that includes them.
+
+The preferred workload inputs and oracles are the pinned CMSIS validation data
+and reference implementations. When no upstream vector exists, the harness may
+construct a deterministic input satisfying the public API preconditions and
+compare against native execution of the same exact linked program. A generated
+wrapper may invoke a real public API, but it cannot add algorithmic work to a
+data-only unit, replace a feature-gated implementation, or stand in for a
+missing provider.
+
 The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public
 source symbol, and optional compiler flags. The tables must validate as strict
@@ -309,25 +334,31 @@ Core CMSIS regression coverage requires:
 
 * the inventory count comes directly from independently invocable tracked C
   translation units in each pinned `Source` tree;
-* smoke-selected CMSIS-DSP and CMSIS-NN sources compile through LLVM IR,
-  raised MLIR, and dataflow MLIR without modifying the external source trees;
-* generated MLIR reparses, preserves the selected public source symbol, and
-  contains a dataflow definition associated with that symbol;
+* every selected source compiles without modifying the external source trees
+  and any emitted relocatable accelerator payload passes its owner verifier;
+* every selected workload final-links only its selected objects and archive
+  members, then compiles through LLVM IR, raised MLIR, and dataflow MLIR;
+* generated workload MLIR reparses, preserves the linked program semantics,
+  and contains definitions associated with its real entry or public API;
 * validation rejects a dataflow artifact whose definitions are unrelated to
-  the selected source symbol;
+  the selected workload entry;
+* every source row has at least one mechanically verified workload coverage
+  edge under an applicable profile;
+* workload execution is checked against its deterministic native or official
+  reference oracle; and
 * ordinary compiler compatibility and acceleration-specific behavior are
   tested at their owning driver and pipeline boundaries.
 
-A complete-suite stage invocation attempts every requested translation unit
-through the public driver and the same in-process stage libraries used for
-LoomBench. Every unit must satisfy ordinary drop-in compilation when its
-underlying compiler target is supported. When Canonical Dataflow is requested,
-every unit must publish a valid whole-program Canonical Dataflow Artifact or
-report a real compiler/provider limitation. A valid Artifact may be graph-free
-when the exact profile selects no SpatialCore-owned region; this is not a
-CMSIS-specific exception and cannot be represented by an empty placeholder.
-When Mapping, simulation, or a later stage is requested, the same owner
-contracts apply without a CMSIS-specific stopping rule.
+A complete-suite source invocation attempts every requested translation unit
+through the public driver and the same in-process source-stage libraries used
+for LoomBench. Every unit must satisfy ordinary drop-in compilation when its
+underlying compiler target is supported. A complete-suite workload invocation
+operates on final-linked program rows rather than pretending each object is a
+whole program. Canonical Dataflow, Mapping, simulation, and later stages use
+those exact linked rows and the same owner contracts without a CMSIS-specific
+stopping rule. Graph-free legality is exactly the complete evidence contract in
+`docs/spec-loom-stack.md`; a per-TU empty module or target-profile stub is not
+such evidence.
 
 Smoke targets are deliberately replaceable as compiler coverage changes.
 Expanding coverage toward the complete inventory does not require a parallel

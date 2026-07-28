@@ -91,7 +91,7 @@ owned by its harness. Snapshot counts are evidence, not design constants. This
 distinction prevents a smoke subset or generated status file from becoming a
 false support boundary.
 
-## Why Suites Share One Compiler Contract
+## Why Source And Workload Coverage Are Separate
 
 LoomBench, CMSIS-DSP, and CMSIS-NN differ in ownership, build flags, source
 shape, and regression cost, not in compiler semantics. Assigning each suite a
@@ -99,13 +99,28 @@ different terminal stage would turn benchmark organization into a product
 capability rule and could make the same conforming C function succeed or fail
 solely because of its directory.
 
+An independently compiled translation unit is not necessarily a program. It
+may contain only constants, expose code only under another target profile, or
+call bodies that become visible only after archive selection and LTO. Requiring
+every object to invent a program entry or a nonempty graph would change source
+semantics. Conversely, accepting object compilation as proof of executable
+acceleration would hide unresolved calls, unused archive members, and workload
+behavior.
+
+Loom therefore checks source coverage and linked workload coverage separately,
+then requires a total relation between them. The source side protects drop-in
+and separate-compilation behavior. The workload side supplies the exact link
+closure, profile, inputs, and oracle needed by optimization, simulation, and
+Mapping. Data-only units receive honest coverage through real consumers rather
+than synthetic computation.
+
 Fast tests may stop at stage checkpoints to localize regressions, and smoke
-selections may keep routine execution affordable. Those are invocation choices.
-The complete inventory remains eligible for every requested stage under the
-same driver, Artifact, verifier, and typed-failure contracts. A graph-free
-Canonical Dataflow result is legal only because the exact ownership decision
-kept all work on stored-program cores, not because CMSIS or LoomBench received
-a weaker contract.
+selections may keep routine execution affordable. Those are invocation choices,
+not alternate semantics. A graph-free Canonical Dataflow result is legal only
+after the exact linked workload accounts for every legal Spatial candidate and
+selects stored-program ownership with the existing compiler and Evaluation
+evidence. Directory membership, an empty object, or a feature-disabled stub is
+never that proof.
 
 ## Why Hardware Construction Closes First
 

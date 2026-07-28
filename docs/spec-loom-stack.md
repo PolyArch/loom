@@ -337,14 +337,47 @@ the current contracts.
 
 ## Corpus
 
-The canonical high-level-language corpus consists of the repository-owned
-LoomBench applications and the complete pinned CMSIS-DSP and CMSIS-NN
-translation-unit inventories. Membership is derived from their manifests or
-pinned source trees. Private C implementation fragments that require an
-including translation unit's macro environment are not themselves compiler
-invocations. A smoke subset is never an alternate corpus definition. SPEC CPU
-2026 is a separate external conformance corpus rather than part of
-repository-owned membership.
+Repository conformance has two orthogonal derived inventories. Neither is a
+product Artifact or a second program authority:
+
+```text
+SourceTranslationUnitInventory
+  independently invocable source translation units
+
+ProgramWorkloadInventory
+  exact linked program roots or public-API invocations
+  + target profile
+  + deterministic runtime input
+  + native or official reference oracle
+```
+
+The source inventory consists of the LoomBench source rows and the complete
+pinned CMSIS-DSP and CMSIS-NN translation-unit inventories. Membership is
+derived from repository manifests or pinned source trees. Private C
+implementation fragments that require an including translation unit's macro
+environment are not themselves compiler invocations. Every source row must
+pass ordinary drop-in compilation and, when enabled for separate compilation,
+produce a valid frontend-owned relocatable accelerator payload.
+
+The workload inventory is derived from real program entries and public API
+invocations. Its exact linker-selected objects and archive members form one
+LLVM module through the final-link contract before S0, Sn, D0, D*, simulation,
+or Mapping is judged. Every source row has at least one workload coverage edge
+under an applicable exact target profile. A data-only translation unit is
+covered through a real consumer that selects its definitions. Alternative
+aggregate and individual-source library builds are distinct producer sets and
+must not be linked together.
+
+A target profile is a general typed compiler and provider configuration, not a
+suite exception. The repository conformance profiles cover portable scalar
+code, standard floating-point extensions used by the corpus, and any
+target-specific path for which Loom has an exact semantic provider. Defining a
+feature macro without the corresponding compiler and provider semantics does
+not establish coverage.
+
+A smoke subset is never an alternate inventory definition. SPEC CPU 2026 is a
+separate external conformance corpus rather than part of repository-owned
+membership.
 
 The representative frontend set is owned only by
 [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md). Anchor
@@ -357,9 +390,10 @@ inventory counts cannot stand in for completed semantics.
 All three repository corpus owners exercise one compiler product contract.
 LoomBench, CMSIS-DSP, and CMSIS-NN may use different source manifests,
 toolchain flags, runtime oracles, and fast regression selections, but no suite
-has a shallower permanent compiler boundary. A requested stage is attempted
-through the same public driver and in-process stage libraries for every
-selected member, and the same validity and failure contracts apply.
+has a shallower permanent compiler boundary. Source-stage requests apply to
+selected source rows. Whole-program and later-stage requests apply to selected
+workload rows after final link. Both use the same public driver and in-process
+stage libraries, and the same validity and failure contracts apply.
 
 Stage checkpoints are diagnostic and regression boundaries, not suite
 capabilities. A checkpoint can stop after ordinary execution, Structured
@@ -370,13 +404,19 @@ that stage uniformly to the requested inventory; a failure identifies a tool,
 provider, target, or program-semantics limitation rather than a suite-specific
 success rule.
 
-Canonical Dataflow publication is a whole-program result. It may contain no
-Spatial graph when the exact profile legitimately selects only HostCore or
-InstructionCore ownership. Such a graph-free program is different from an
-empty placeholder: it must retain the complete stored-program semantics and
-pass the same finalizer and importer. Representative acceleration anchors have
-separate nonempty Spatial graph requirements; corpus membership alone does not
-invent acceleration.
+Canonical Dataflow publication is a whole-program result and is never required
+from an isolated compile-only translation unit. It may contain no Spatial graph
+only when the exact linked program, target profile, Fabric, and workload admit
+no selected profitable Spatial region. Such a graph-free program is different
+from an empty placeholder: it retains the complete stored-program semantics,
+passes the same finalizer and importer, and has a complete candidate-domain
+accounting. Non-finalizable and exact-Fabric-inadmissible candidates retain
+their typed compiler dispositions in invocation provenance. A legal HostCore
+or InstructionCore selection is a `CandidateDecision`; a profitability choice
+is backed by workload-aware `EvaluationEvidence`. Missing candidate
+dispositions or unknown workload behavior cannot prove graph-free legality.
+These existing owners remain authoritative; there is no graph-free Artifact,
+status ledger, or duplicate diagnostic schema.
 
 Corpus contracts are specified by
 [CMSIS Compiler Contract](spec-cmsis-dropin-compiler.md), and
@@ -393,13 +433,16 @@ publication contract remain owned by [ADG Builder](spec-adg-builder.md) and
 Fabric Artifacts plus their human-readable MLIR and HTML projections without
 requiring a software input or an RTL provider.
 
-The next product gate is pre-Mapping compilation over every selected member of
-the complete repository corpus. Each input uses the same `loom-cc` or
-`loom-c++` contract to produce LLVM IR, Structured candidates, and a finalized
-Canonical Dataflow Program while resolving one exact Fabric target and using
-central Evaluation where required. Mapping is outside this gate. A typed
-unsupported outcome remains a tool or target limitation; it is not success
-and cannot be made suite-specific.
+The next product gate has two jointly required parts. The source gate compiles
+every selected source row through the ordinary object and relocatable-payload
+boundary. The pre-Mapping workload gate final-links every selected workload
+row, then uses the same `loom-cc` or `loom-c++` contract to produce LLVM IR,
+Structured candidates, and a finalized Canonical Dataflow Program while
+resolving one exact Fabric target and using central Evaluation where required.
+Mapping is outside this gate. The harness verifies total source-to-workload
+coverage separately from stage success. A typed unsupported outcome remains a
+tool or target limitation; it is not success and cannot be made
+suite-specific.
 
 Frontend and non-Mapping Evaluation capabilities advance together after at
 least one exact builtin Fabric is available. Hardware-aware compiler decisions

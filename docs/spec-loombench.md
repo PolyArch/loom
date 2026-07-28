@@ -99,10 +99,11 @@ source
 Artifacts must parse, verify, and retain the case and source identities needed
 for exact lineage. A `dfg` case cannot pass with residual unsupported control
 or an unsupported-scope placeholder. The Canonical Dataflow Program may be
-graph-free only when the exact profile selected no SpatialCore-owned region;
-it must still preserve the complete InstructionCore program and pass ordinary
-whole-program finalization. A representative anchor whose contract selects
-Spatial execution must contain the required nonempty graph.
+graph-free only under the complete linked-workload candidate and evidence
+contract owned by `spec-loom-stack.md`; it must still preserve the complete
+InstructionCore program and pass ordinary whole-program finalization. A
+representative anchor whose contract selects Spatial execution must contain
+the required nonempty graph.
 
 The representative ten-kernel frontend anchor set is owned by
 `spec-end-to-end-demonstrators.md`. Each anchor must resolve to a LoomBench
