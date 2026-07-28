@@ -16,9 +16,17 @@
 
 namespace loom::evaluation {
 
-enum class MetricKind { CycleCount, ClockPeriod, Runtime };
+enum class MetricKind {
+  CycleCount,
+  ClockPeriod,
+  Runtime,
+  LimitingClockFrequency,
+  TotalArea,
+  DynamicPower,
+  LeakagePower,
+};
 enum class MetricValueKind { Integer, Decimal };
-enum class MetricDimension { Cycle, Time };
+enum class MetricDimension { Cycle, Time, Frequency, Area, Power };
 enum class MetricValueDomain { NonNegative, Positive };
 
 enum class ObservationForm { Point, Interval, Censored, NotApplicable };

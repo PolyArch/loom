@@ -85,12 +85,12 @@ derive HardwareImplementation -> evaluate that exact implementation
 ## Metrics
 
 Metric kinds, dimensions, canonical units, scopes, and observation forms are
-owned by the central registry. Representative metrics include:
+owned by the central registry. The initial shared physical metrics are
+`LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
+Other representative future metrics include:
 
-* achievable or constrained clock frequency;
 * critical-path delay and timing slack;
-* cell, macro, routing, or total area;
-* dynamic and leakage power; and
+* cell, macro, or routing-area breakdowns; and
 * energy derived from compatible power and runtime observations.
 
 Every observation records its exact request ordinal and provenance. Point,

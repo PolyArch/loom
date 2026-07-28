@@ -54,7 +54,7 @@ const ScopeFormDescriptor runtimeWholeCaseScopeForms[] = {
      WholeExactCaseScope{}, nullptr, ReferenceCycleRequirement::NotRequired},
 };
 
-const std::array<MetricDescriptor, 3> metricDescriptors = {{
+const std::array<MetricDescriptor, 7> metricDescriptors = {{
     {MetricKind::CycleCount,
      "cycle_count",
      "Number of subject clock cycles required by the observed work.",
@@ -88,6 +88,54 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
      {},
      allObservationForms,
      subjectDidNotCompletePolicy},
+    {MetricKind::LimitingClockFrequency,
+     "limiting_clock_frequency",
+     "Maximum common clock frequency permitted by the limiting synchronous "
+     "domain of the exact evaluated case.",
+     MetricValueKind::Decimal,
+     MetricDimension::Frequency,
+     "hertz",
+     MetricValueDomain::Positive,
+     runtimeWholeCaseScopeForms,
+     {},
+     nonCensoredObservationForms,
+     std::nullopt},
+    {MetricKind::TotalArea,
+     "total_area",
+     "Total physical implementation footprint, including cells, macros, "
+     "and allocated routing area.",
+     MetricValueKind::Decimal,
+     MetricDimension::Area,
+     "square_meter",
+     MetricValueDomain::NonNegative,
+     runtimeWholeCaseScopeForms,
+     {},
+     nonCensoredObservationForms,
+     std::nullopt},
+    {MetricKind::DynamicPower,
+     "dynamic_power",
+     "Average dynamic power under the exact evaluated workload, activity, "
+     "and operating conditions.",
+     MetricValueKind::Decimal,
+     MetricDimension::Power,
+     "watt",
+     MetricValueDomain::NonNegative,
+     runtimeWholeCaseScopeForms,
+     {},
+     nonCensoredObservationForms,
+     std::nullopt},
+    {MetricKind::LeakagePower,
+     "leakage_power",
+     "Average static leakage power under the exact evaluated operating "
+     "conditions.",
+     MetricValueKind::Decimal,
+     MetricDimension::Power,
+     "watt",
+     MetricValueDomain::NonNegative,
+     runtimeWholeCaseScopeForms,
+     {},
+     nonCensoredObservationForms,
+     std::nullopt},
 }};
 
 template <typename Enum>

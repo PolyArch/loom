@@ -67,7 +67,9 @@ void exactRatioNormalizesAndChecksArithmetic() {
 
 void builtInMetricsOwnWholeCaseFormZero() {
   for (MetricKind metric :
-       {MetricKind::CycleCount, MetricKind::ClockPeriod, MetricKind::Runtime}) {
+       {MetricKind::CycleCount, MetricKind::ClockPeriod, MetricKind::Runtime,
+        MetricKind::LimitingClockFrequency, MetricKind::TotalArea,
+        MetricKind::DynamicPower, MetricKind::LeakagePower}) {
     const MetricDescriptor &descriptor = metricDescriptor(metric);
     require(__func__, descriptor.scopeForms.size() == 1,
             "built-in metric lost its sole whole-case scope form");
@@ -79,8 +81,7 @@ void builtInMetricsOwnWholeCaseFormZero() {
   expectErrorContains(
       __func__,
       llvm::Expected<std::vector<MetricQuery>>(canonicalizeMetricQueries(
-          {{MetricKind::CycleCount,
-            EvaluationScope{ScopeFormRef(1), {}}}})),
+          {{MetricKind::CycleCount, EvaluationScope{ScopeFormRef(1), {}}}})),
       "unknown scope form ordinal");
 
   require(__func__,
@@ -104,15 +105,51 @@ void builtInMetricsOwnWholeCaseFormZero() {
 
   const MetricQuery query{MetricKind::CycleCount,
                           EvaluationScope{ScopeFormRef(0), {}}};
-  const std::string canonical = takeExpected(__func__, serializeMetricQuery(query));
+  const std::string canonical =
+      takeExpected(__func__, serializeMetricQuery(query));
   require(__func__,
           canonical ==
               "{\"schema\":\"evaluation.metric_query\",\"schema_version\":"
               "\"1.0\",\"metric\":\"cycle_count\",\"scope\":{\"form\":0,"
               "\"targets\":[]}}",
           "metric query wire changed");
-  require(__func__, takeExpected(__func__, parseMetricQuery(canonical)) == query,
+  require(__func__,
+          takeExpected(__func__, parseMetricQuery(canonical)) == query,
           "metric query payload did not roundtrip");
+
+  struct PhysicalMetricExpectation {
+    MetricKind kind;
+    llvm::StringRef spelling;
+    MetricDimension dimension;
+    llvm::StringRef unit;
+  };
+  const PhysicalMetricExpectation physicalMetrics[] = {
+      {MetricKind::LimitingClockFrequency, "limiting_clock_frequency",
+       MetricDimension::Frequency, "hertz"},
+      {MetricKind::TotalArea, "total_area", MetricDimension::Area,
+       "square_meter"},
+      {MetricKind::DynamicPower, "dynamic_power", MetricDimension::Power,
+       "watt"},
+      {MetricKind::LeakagePower, "leakage_power", MetricDimension::Power,
+       "watt"},
+  };
+  for (const PhysicalMetricExpectation &expected : physicalMetrics) {
+    const MetricDescriptor &descriptor = metricDescriptor(expected.kind);
+    require(__func__, descriptor.spelling == expected.spelling,
+            "physical metric changed its canonical spelling");
+    require(__func__,
+            descriptor.dimension == expected.dimension &&
+                descriptor.canonicalUnit == expected.unit,
+            "physical metric changed its dimension or canonical unit");
+    require(__func__,
+            descriptor.scopeForms[0].referenceCycleRequirement ==
+                ReferenceCycleRequirement::NotRequired,
+            "whole-case physical metric unexpectedly requires one cycle");
+    require(__func__,
+            takeExpected(__func__, parseMetricKind(expected.spelling)) ==
+                expected.kind,
+            "physical metric spelling did not roundtrip through the registry");
+  }
 }
 
 } // namespace

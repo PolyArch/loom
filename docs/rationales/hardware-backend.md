@@ -94,3 +94,13 @@ DFG or CGRA execution under compatible workload and service contracts.
 Raw waveforms and reports are useful diagnostics but remain attempt or scratch
 material until an exact raw-bundle owner exists. Human summaries are removable
 projections of typed Artifacts and Evidence.
+
+## Why Low- And High-Fidelity FPA Share Metrics
+
+An analytical architecture model and an EDA-backed model differ in method,
+uncertainty, cost, and accuracy, not in what frequency, area, or power means.
+Both therefore publish ordinary shared MetricResults for limiting frequency,
+total area, dynamic power, and leakage power. Model-owned coefficients or EDA
+report parsers stay behind their descriptor; neither creates a private FPA
+record. This lets calibration compare like quantities while preserving the
+lower-confidence model as a fast, complete early-stage estimate.

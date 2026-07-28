@@ -217,13 +217,17 @@ Every registered MetricKind has a nonempty scope-form table. Schema 1.0 gives
 each initial metric one owner-defined form at `ScopeFormRef(0)`:
 
 ```text
-CycleCount  form 0: WholeExactCase
-ClockPeriod form 0: WholeExactCase
-Runtime     form 0: WholeExactCase
+CycleCount            form 0: WholeExactCase
+ClockPeriod           form 0: WholeExactCase
+Runtime               form 0: WholeExactCase
+LimitingClockFrequency form 0: WholeExactCase
+TotalArea             form 0: WholeExactCase
+DynamicPower          form 0: WholeExactCase
+LeakagePower          form 0: WholeExactCase
 ```
 
-`Runtime` covers the exact evaluated case directly. `CycleCount` and
-`ClockPeriod` use the exact case signature's executable
+`Runtime` and the four whole-case physical metrics cover the exact evaluated
+case directly. `CycleCount` and `ClockPeriod` use the exact case signature's executable
 `UniqueReferenceCycle` resolver; a model must not advertise either form when
 the signature declares `Absent` and cannot choose or rederive a different basis
 locally. A later clock-domain-specific form uses an exact target pattern rather
@@ -231,9 +235,26 @@ than changing form 0. An empty scope-form table, an unknown form ordinal, or a
 model capability naming a form not owned by the MetricKind is invalid.
 
 The schema-1.0 requirements are exact: `CycleCount` form 0 and `ClockPeriod`
-form 0 use `ExactCaseUniqueReferenceCycle`; `Runtime` form 0 uses
+form 0 use `ExactCaseUniqueReferenceCycle`; every other form 0 uses
 `NotRequired`. These descriptor fields, not duplicated switches in model
 registration or Request validation, control admissibility.
+
+The initial physical metric semantics and canonical units are:
+
+```text
+LimitingClockFrequency : positive DecimalValue, hertz
+TotalArea              : nonnegative DecimalValue, square_meter
+DynamicPower           : nonnegative DecimalValue, watt
+LeakagePower           : nonnegative DecimalValue, watt
+```
+
+`ClockPeriod` remains the duration of one exact reference cycle.
+`LimitingClockFrequency` is instead the whole-case maximum common frequency
+permitted by its limiting synchronous domain, so a multi-clock case does not
+invent one local cycle as the whole-case reference cycle. `TotalArea` includes
+cells, macros, and allocated routing footprint. Dynamic power is workload and
+activity dependent; leakage power is not. A model lacking the required
+activity returns typed `Unsupported`, never a hidden toggle-rate default.
 
 Cycle count and physical time are distinct kinds. Total energy and energy per
 work are distinct kinds. Quantities with different ground-truth definitions or
