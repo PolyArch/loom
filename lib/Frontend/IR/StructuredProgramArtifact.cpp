@@ -561,25 +561,36 @@ llvm::Expected<ParsedModule> parseBytecode(ArrayRef<std::uint8_t> bytes) {
   return ParsedModule{std::move(context), OwningOpRef<ModuleOp>(module)};
 }
 
-llvm::Expected<std::vector<std::uint8_t>> canonicalBytecode(ModuleOp source) {
-  auto first = writeBytecodeOnce(source.getOperation());
-  if (!first)
-    return first.takeError();
-  auto parsed = parseBytecode(*first);
-  if (!parsed)
-    return parsed.takeError();
-  auto second = writeBytecodeOnce(parsed->module.get());
-  if (!second)
-    return second.takeError();
-  auto verifyParsed = parseBytecode(*second);
-  if (!verifyParsed)
-    return verifyParsed.takeError();
-  auto third = writeBytecodeOnce(verifyParsed->module.get());
-  if (!third)
-    return third.takeError();
-  if (*second != *third)
+struct CanonicalModule {
+  std::unique_ptr<MLIRContext> context;
+  OwningOpRef<ModuleOp> module;
+  std::vector<std::uint8_t> bytecode;
+};
+
+llvm::Expected<CanonicalModule> canonicalModule(ModuleOp source) {
+  auto initial = writeBytecodeOnce(source.getOperation());
+  if (!initial)
+    return initial.takeError();
+  auto normalized = parseBytecode(*initial);
+  if (!normalized)
+    return normalized.takeError();
+  auto canonical = writeBytecodeOnce(normalized->module.get());
+  if (!canonical)
+    return canonical.takeError();
+
+  // Finalization validates the exact bytes it will publish in a second fresh
+  // context. The retained module and view therefore come from the same strict
+  // import that proves the family writer is byte stable.
+  auto verified = parseBytecode(*canonical);
+  if (!verified)
+    return verified.takeError();
+  auto rewritten = writeBytecodeOnce(verified->module.get());
+  if (!rewritten)
+    return rewritten.takeError();
+  if (*canonical != *rewritten)
     return invalid("the Structured Program bytecode writer is not byte stable");
-  return second;
+  return CanonicalModule{std::move(verified->context),
+                         std::move(verified->module), std::move(*canonical)};
 }
 
 CanonicalSemanticBytes frameSemanticBytes(ArrayRef<std::uint8_t> bytecode) {
@@ -715,13 +726,19 @@ finalizeStructuredProgram(ModuleOp source) {
   auto clone = canonicalizeClone(source);
   if (!clone)
     return clone.takeError();
-  auto bytecode = canonicalBytecode(clone->get());
-  if (!bytecode)
-    return bytecode.takeError();
-  CanonicalSemanticBytes semantic = frameSemanticBytes(*bytecode);
+  auto canonical = canonicalModule(clone->get());
+  if (!canonical)
+    return canonical.takeError();
+  CanonicalSemanticBytes semantic = frameSemanticBytes(canonical->bytecode);
   ArtifactIdentity identity =
       finalizeArtifactIdentity(structuredProgramArtifactSchema, semantic);
-  return importStructuredProgram(identity, semantic);
+  auto view =
+      buildStructuredProgramCandidateView(canonical->module.get(), identity);
+  if (!view)
+    return view.takeError();
+  return StructuredProgramCandidate(
+      identity, std::move(semantic), std::move(canonical->context),
+      std::move(canonical->module), std::move(*view));
 }
 
 llvm::Expected<StructuredProgramCandidate>
@@ -737,7 +754,7 @@ importStructuredProgram(const ArtifactIdentity &identity,
   auto parsed = parseBytecode(*bytecode);
   if (!parsed)
     return parsed.takeError();
-  auto rewritten = canonicalBytecode(parsed->module.get());
+  auto rewritten = writeBytecodeOnce(parsed->module.get().getOperation());
   if (!rewritten)
     return rewritten.takeError();
   CanonicalSemanticBytes reencoded = frameSemanticBytes(*rewritten);
@@ -747,10 +764,9 @@ importStructuredProgram(const ArtifactIdentity &identity,
       buildStructuredProgramCandidateView(parsed->module.get(), identity);
   if (!view)
     return view.takeError();
-  return StructuredProgramCandidate(identity, canonicalBytes,
-                                    std::move(parsed->context),
-                                    std::move(parsed->module),
-                                    std::move(*view));
+  return StructuredProgramCandidate(
+      identity, canonicalBytes, std::move(parsed->context),
+      std::move(parsed->module), std::move(*view));
 }
 
 llvm::Expected<ArtifactRootReference>
