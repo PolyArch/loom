@@ -286,7 +286,8 @@ def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Co
 // The retained operations are irreducible for exactly one of two reasons:
 //
 //   * no standard operation spells the computation at all (`llvm.freeze`,
-//     `llvm.fshl`, `llvm.bswap`, `llvm.usub.sat`); or
+//     `llvm.fshl`, `llvm.bswap`, and the signed/unsigned saturating add/sub
+//     intrinsics); or
 //   * the standard spelling exists but cannot state the operation's exact
 //     poison contract: `math.ctlz` and `math.absi` are exactly the
 //     flag-free `llvm.ctlz` and `llvm.abs` forms, so those forms normalize
@@ -324,6 +325,12 @@ def LLVMInsertValue : ActorSchema<75, 0x4c53024c, "::mlir::LLVM::InsertValueOp",
     "Compute", LLVMAggregatePosition>;
 def LLVMOrDisjoint : ActorSchema<97, 0x4c530262, "::mlir::LLVM::OrOp", "Compute",
     LLVMDisjoint>;
+def LLVMSAddSat : ActorSchema<98, 0x4c530263, "::mlir::LLVM::SAddSat", "Compute",
+    NoSemanticPayload>;
+def LLVMUAddSat : ActorSchema<99, 0x4c530264, "::mlir::LLVM::UAddSat", "Compute",
+    NoSemanticPayload>;
+def LLVMSSubSat : ActorSchema<100, 0x4c530265, "::mlir::LLVM::SSubSat", "Compute",
+    NoSemanticPayload>;
 
 //===----------------------------------------------------------------------===//
 // Canonical Dataflow control and memory actor schemas
@@ -531,5 +538,11 @@ def ScalarMathRsqrt : ImplementationFamily<62, [MathRsqrt],
     ScalarFloatParams, ScalarUniformFloatAdmission>;
 def ScalarMathErf : ImplementationFamily<63, [MathErf],
     ScalarFloatParams, ScalarUniformFloatAdmission>;
+def ScalarIntegerSaturatingAddSub : ImplementationFamily<64,
+    [LLVMSAddSat, LLVMUAddSat, LLVMSSubSat, LLVMUSubSat],
+    ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
+def FixedVectorIntegerSaturatingAddSub : ImplementationFamily<65,
+    [LLVMSAddSat, LLVMUAddSat, LLVMSSubSat, LLVMUSubSat],
+    FixedVectorIntegerParams, FixedVectorOrdinaryIntegerAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD

@@ -104,6 +104,10 @@ operation represents it and it later satisfies the canonical actor contract.
 Target-specific intrinsics should be normalized to target-neutral scalar or
 vector operations when such a representation exists. Otherwise, preserving
 the registered LLVM operation is preferable to weakening its semantics.
+The signed and unsigned saturating add and subtract intrinsics are such
+registered operations: no standard `arith` operation states their exact
+saturation semantics, so mechanical raising preserves
+`llvm.intr.{s,u}{add,sub}.sat` rather than expanding a private clamp graph.
 
 The LLVM dialect `passthrough` function attribute is an importer-owned lossless
 container, not a floating-point-environment authority. Mechanical raising uses

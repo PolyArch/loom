@@ -1333,7 +1333,7 @@ void resolvedCapabilityPreservesTypedVectorGeometry() {
           "Fabric capability index treated equal payload width as semantics");
 }
 
-void builtinResolvedIndexCastCoversTypedWidthDomain() {
+void builtinCoreCapabilitiesCoverTypedDomains() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
@@ -1355,6 +1355,29 @@ void builtinResolvedIndexCastCoversTypedWidthDomain() {
           "builtin Fabric rejected its 32-bit resolved index cast");
   require(test, !index.admittingOperationResources(actor, 64).empty(),
           "builtin Fabric rejected its 64-bit resolved index cast");
+
+  const auto saturatingAdd = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::LLVMSAddSat,
+      mlir::FunctionType::get(&context,
+                              {mlir::IntegerType::get(&context, 32),
+                               mlir::IntegerType::get(&context, 32)},
+                              {mlir::IntegerType::get(&context, 32)}),
+      ::dataflow::NoPayload{}};
+  require(test, !index.admittingOperationResources(saturatingAdd, 32).empty(),
+          "builtin Fabric has no scalar saturating arithmetic resource");
+
+  mlir::Type vectorI16 =
+      mlir::VectorType::get({4}, mlir::IntegerType::get(&context, 16));
+  const auto vectorSaturatingAdd =
+      ::dataflow::CanonicalActorSchemaProjection{
+          ::dataflow::OperationSchemaId::LLVMUAddSat,
+          mlir::FunctionType::get(&context, {vectorI16, vectorI16},
+                                  {vectorI16}),
+          ::dataflow::NoPayload{}};
+  require(
+      test,
+      !index.admittingOperationResources(vectorSaturatingAdd, 32).empty(),
+      "builtin Fabric has no fixed-vector saturating arithmetic resource");
 }
 
 void fuBackedgesAreExplicitAndResolved() {
@@ -1742,7 +1765,7 @@ int main() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
   resolvedCapabilityPreservesTypedVectorGeometry();
-  builtinResolvedIndexCastCoversTypedWidthDomain();
+  builtinCoreCapabilitiesCoverTypedDomains();
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
   routedFuLibraryBuildsHeterogeneousBoundaries();

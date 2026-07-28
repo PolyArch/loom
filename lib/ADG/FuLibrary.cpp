@@ -345,6 +345,8 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   std::vector<SelectableResource> resources;
   resources.push_back(
       scalarInteger(ImplementationFamilyId::ScalarIntegerAddSub, {0, 1}));
+  resources.push_back(scalarInteger(
+      ImplementationFamilyId::ScalarIntegerSaturatingAddSub, {0, 1}));
   resources.push_back(
       scalarInteger(ImplementationFamilyId::ScalarIntegerLogic, {0, 1}, true));
   resources.push_back(
@@ -923,6 +925,9 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   const auto strict = ::fabric::FloatBehaviorProfile::strictIEEE();
   std::vector<SelectableResource> resources = {
       {ImplementationFamilyId::FixedVectorIntegerAddSub,
+       ::fabric::FixedVectorIntegerParams{integer, 128},
+       {0, 1}},
+      {ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
        ::fabric::FixedVectorIntegerParams{integer, 128},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerLogic,

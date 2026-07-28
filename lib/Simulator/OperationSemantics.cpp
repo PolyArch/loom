@@ -78,6 +78,9 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::UBPoison:
   case Schema::LLVMFshl:
   case Schema::LLVMByteSwap:
+  case Schema::LLVMSAddSat:
+  case Schema::LLVMUAddSat:
+  case Schema::LLVMSSubSat:
   case Schema::LLVMUSubSat:
   case Schema::LLVMCountLeadingZeros:
   case Schema::LLVMAbs:
@@ -1009,6 +1012,9 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     return PrimitiveValue::integer((*value)->byteSwap());
   }
 
+  case Schema::LLVMSAddSat:
+  case Schema::LLVMUAddSat:
+  case Schema::LLVMSSubSat:
   case Schema::LLVMUSubSat: {
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
@@ -1019,7 +1025,18 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     auto pair = requireIntegerPair(schema, operands);
     if (!pair)
       return pair.takeError();
-    return PrimitiveValue::integer(pair->first->usub_sat(*pair->second));
+    switch (schema) {
+    case Schema::LLVMSAddSat:
+      return PrimitiveValue::integer(pair->first->sadd_sat(*pair->second));
+    case Schema::LLVMUAddSat:
+      return PrimitiveValue::integer(pair->first->uadd_sat(*pair->second));
+    case Schema::LLVMSSubSat:
+      return PrimitiveValue::integer(pair->first->ssub_sat(*pair->second));
+    case Schema::LLVMUSubSat:
+      return PrimitiveValue::integer(pair->first->usub_sat(*pair->second));
+    default:
+      llvm_unreachable("saturating arithmetic provider received another schema");
+    }
   }
 
   case Schema::MathCountLeadingZeros:

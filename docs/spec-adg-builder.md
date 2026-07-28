@@ -434,9 +434,9 @@ capability registry. Expansion produces only ordinary `fabric.fu`,
 
 | Builder helper       | Constructed capability |
 | -------------------- | ---------------------- |
-| `CoreAluFu`          | Scalar integer and floating-point arithmetic, logic, shifts, comparisons, min/max, selection, and casts. |
+| `CoreAluFu`          | Scalar integer and floating-point arithmetic, including saturating integer add/subtract, logic, shifts, comparisons, min/max, selection, and casts. |
 | `MacFu`              | Integer and floating-point multiply, floating-point fused multiply-add, and explicit multiply-add or accumulate configured graphs. |
-| `VectorComputeFu`    | Fixed-ranked elementwise arithmetic, comparison, selection, and multiply-add capabilities. |
+| `VectorComputeFu`    | Fixed-ranked elementwise arithmetic, including saturating integer add/subtract, comparison, selection, and multiply-add capabilities. |
 | `VectorAdapterFu`    | `dataflow.pack`, `dataflow.unpack`, `dataflow.parallelize`, and `dataflow.serialize` capabilities. |
 | `LoopControlFu`      | `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and `dataflow.gate` capabilities. |
 | `TokenControlFu`     | `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and `dataflow.demux` capabilities. |
@@ -507,6 +507,7 @@ following implementation families:
 
 ```text
 ScalarIntegerAddSub
+ScalarIntegerSaturatingAddSub
 ScalarIntegerLogic
 ScalarIntegerShift
 ScalarIntegerCompareMinMax
@@ -670,6 +671,7 @@ one independently editable backend mode table.
 | Implementation family | Concrete builtin parameter domain |
 | --------------------- | --------------------------------- |
 | `ScalarIntegerAddSub` | integer widths `{8, 16, 32, 64}` |
+| `ScalarIntegerSaturatingAddSub` | integer widths `{8, 16, 32, 64}` |
 | `ScalarIntegerLogic` | integer widths `{1, 8, 16, 32, 64}` |
 | `ScalarIntegerShift` | integer widths `{8, 16, 32, 64}` |
 | `ScalarIntegerCompareMinMax` | operand widths `{8, 16, 32, 64}` and all registered schema-valid integer comparison predicates |
@@ -751,11 +753,12 @@ contracts without copying their configuration or state machine.
 #### VectorComputeFu Resource Inventory
 
 `VectorComputeFu` constructs one concrete `fabric.op` resource for each fixed
-vector integer add/subtract, logic, shift, compare/min/max, select, multiply,
-floating sign, floating add/subtract, floating compare/min/max, floating
-multiply, and floating FMA implementation family registered by the normative
-HSG registry. It obtains every operation-member list from that registry and
-does not maintain a Builder-local operation table.
+vector integer add/subtract, saturating integer add/subtract, logic, shift,
+compare/min/max, select, multiply, floating sign, floating add/subtract,
+floating compare/min/max, floating multiply, and floating FMA implementation
+family registered by the normative HSG registry. It obtains every
+operation-member list from that registry and does not maintain a Builder-local
+operation table.
 
 Its stable helper boundary is:
 

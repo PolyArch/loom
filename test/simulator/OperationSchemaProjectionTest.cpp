@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -242,6 +243,38 @@ void checkTypedIntegerPolicies() {
           "strict integer operation did not propagate undef");
 }
 
+void checkSaturatingIntegerFamily() {
+  mlir::MLIRContext context;
+  mlir::Type i8 = mlir::IntegerType::get(&context, 8);
+  mlir::FunctionType binaryI8 =
+      mlir::FunctionType::get(&context, {i8, i8}, {i8});
+  struct SaturatingCase {
+    OperationSchemaId schema;
+    std::uint8_t lhs;
+    std::uint8_t rhs;
+    std::uint8_t expected;
+  };
+  const std::array cases = {
+      SaturatingCase{OperationSchemaId::LLVMSAddSat, 120, 20, 127},
+      SaturatingCase{OperationSchemaId::LLVMUAddSat, 250, 10, 255},
+      SaturatingCase{OperationSchemaId::LLVMSSubSat, 136, 20, 128},
+      SaturatingCase{OperationSchemaId::LLVMUSubSat, 3, 5, 0},
+  };
+  for (const SaturatingCase &entry : cases) {
+    require(__func__, loom::sim::isSupportedPrimitiveOperation(entry.schema),
+            "registered saturating arithmetic has no primitive provider");
+    PrimitiveOperationDescriptor operation =
+        descriptor(entry.schema, binaryI8, dataflow::NoPayload{}, 8, 8);
+    const PrimitiveValue operands[] = {integer(8, entry.lhs),
+                                       integer(8, entry.rhs)};
+    PrimitiveValue result = takeValue(
+        __func__, loom::sim::evaluatePrimitiveOperation(operation, operands));
+    require(__func__,
+            definedBits(__func__, result) == llvm::APInt(8, entry.expected),
+            "saturating arithmetic produced the wrong boundary value");
+  }
+}
+
 void checkLazySelectionAndFusedFma() {
   mlir::MLIRContext context;
   mlir::Type i1 = mlir::IntegerType::get(&context, 1);
@@ -311,6 +344,7 @@ int main() {
   checkTypedDispatchAndPayload();
   checkTypedLLVMExceptionalPolicies();
   checkTypedIntegerPolicies();
+  checkSaturatingIntegerFamily();
   checkLazySelectionAndFusedFma();
   checkTypedProviderAvailability();
   return EXIT_SUCCESS;

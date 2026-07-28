@@ -360,18 +360,6 @@ llvm::Error admitFixedVectorOrdinaryIntegerAdmission(
     return error;
   if (llvm::Error error = validateVectorCapacity(params.maxPayloadBits))
     return error;
-  switch (actor.schema) {
-  case OperationSchemaId::ArithAddI:
-  case OperationSchemaId::ArithSubI:
-  case OperationSchemaId::ArithShLI:
-  case OperationSchemaId::ArithShRSI:
-  case OperationSchemaId::ArithShRUI:
-  case OperationSchemaId::ArithMulI:
-    break;
-  default:
-    return reject(
-        "fixed-vector integer provider received an unsupported schema");
-  }
   if (llvm::Error error = requireUniformType(actor, 2))
     return error;
   auto vector = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
@@ -1679,21 +1667,7 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
     return error;
-  switch (actor.schema) {
-  case OperationSchemaId::ArithAddI:
-  case OperationSchemaId::ArithSubI:
-  case OperationSchemaId::ArithShLI:
-  case OperationSchemaId::ArithShRSI:
-  case OperationSchemaId::ArithShRUI:
-  case OperationSchemaId::ArithMulI:
-  case OperationSchemaId::ArithDivSI:
-  case OperationSchemaId::ArithDivUI:
-  case OperationSchemaId::ArithRemSI:
-  case OperationSchemaId::ArithRemUI:
-    return admitUniformInteger(actor, params.integerWidths, 2);
-  default:
-    return reject("integer admission provider received an unsupported schema");
-  }
+  return admitUniformInteger(actor, params.integerWidths, 2);
 }
 
 llvm::Error

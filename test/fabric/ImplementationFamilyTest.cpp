@@ -12,6 +12,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
@@ -21,6 +22,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <optional>
 
@@ -124,8 +126,8 @@ bool checkDescriptorRelations() {
   llvm::StringSet<> keywords;
   const std::uint32_t families = implementationFamilyCount();
   const std::uint32_t schemas = dataflow::operationSchemaCount();
-  if (families != 64) {
-    llvm::errs() << "the registry must contain exactly 64 families, found "
+  if (families != 66) {
+    llvm::errs() << "the registry must contain exactly 66 families, found "
                  << families << '\n';
     ok = false;
   }
@@ -166,6 +168,32 @@ bool checkDescriptorRelations() {
 
 bool checkMembership() {
   bool ok = true;
+  const std::optional<ImplementationFamilyId> scalarSaturating =
+      findImplementationFamily("ScalarIntegerSaturatingAddSub");
+  const std::optional<ImplementationFamilyId> vectorSaturating =
+      findImplementationFamily("FixedVectorIntegerSaturatingAddSub");
+  const std::array saturatingSpellings = {
+      "llvm.intr.sadd.sat", "llvm.intr.uadd.sat", "llvm.intr.ssub.sat",
+      "llvm.intr.usub.sat"};
+  if (!scalarSaturating || !vectorSaturating) {
+    llvm::errs() << "the integer saturation families are not registered\n";
+    ok = false;
+  }
+  for (llvm::StringRef spelling : saturatingSpellings) {
+    std::optional<OperationSchemaId> schema =
+        dataflow::findOperationSchema(spelling);
+    if (!schema ||
+        (scalarSaturating &&
+         !admitsOperationSchema(*scalarSaturating, *schema)) ||
+        (vectorSaturating &&
+         !admitsOperationSchema(*vectorSaturating, *schema)) ||
+        admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
+                              schema.value_or(OperationSchemaId::ArithAddI))) {
+      llvm::errs() << spelling
+                   << " is not owned exclusively by the saturation families\n";
+      ok = false;
+    }
+  }
   if (!admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
                              OperationSchemaId::ArithAddI) ||
       !admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
@@ -271,6 +299,8 @@ bool checkIntegerAdmission(MLIRContext &context) {
   Type i32 = fixture.builder.getI32Type();
   Operation *add8 = arith::AddIOp::create(
       fixture.builder, fixture.loc, fixture.poison(i8), fixture.poison(i8));
+  Operation *saturatingAdd = LLVM::SAddSat::create(
+      fixture.builder, fixture.loc, fixture.poison(i8), fixture.poison(i8));
   Operation *add7 = arith::AddIOp::create(
       fixture.builder, fixture.loc, fixture.poison(i7), fixture.poison(i7));
   Operation *signedLess = arith::CmpIOp::create(
@@ -299,6 +329,11 @@ bool checkIntegerAdmission(MLIRContext &context) {
       ok &= expectAdmission(family, params, *projection, admitted, reason);
   };
   check(add8, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, true, {});
+  check(saturatingAdd,
+        ImplementationFamilyId::ScalarIntegerSaturatingAddSub, &ordinary,
+        true, {});
+  check(saturatingAdd, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary,
+        false, "actor schema is not admitted");
   check(add7, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, false,
         "integer width");
   check(signedLess, ImplementationFamilyId::ScalarIntegerCompareMinMax,
@@ -652,8 +687,8 @@ bool checkAdapterAndTokenAdmission(MLIRContext &context) {
 
 int main() {
   DialectRegistry registry;
-  registry
-      .insert<arith::ArithDialect, ub::UBDialect, dataflow::DataflowDialect>();
+  registry.insert<arith::ArithDialect, LLVM::LLVMDialect, ub::UBDialect,
+                  dataflow::DataflowDialect>();
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 

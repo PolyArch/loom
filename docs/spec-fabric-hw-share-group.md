@@ -105,6 +105,7 @@ relations:
 | `ImplementationFamilyId` | Admitted canonical operation schemas |
 | ------------------------ | ------------------------------------ |
 | `ScalarIntegerAddSub` | `arith.addi`, `arith.subi` |
+| `ScalarIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
 | `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
 | `ScalarIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `ScalarIntegerCompareMinMax` | `arith.cmpi`, `arith.minsi`, `arith.maxsi`, `arith.minui`, `arith.maxui` |
@@ -174,6 +175,7 @@ payload width; it has no independent lane-count field.
 | `ImplementationFamilyId` | Admitted canonical operation schemas |
 | ------------------------ | ------------------------------------ |
 | `FixedVectorIntegerAddSub` | `arith.addi`, `arith.subi` |
+| `FixedVectorIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
 | `FixedVectorIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
 | `FixedVectorIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `FixedVectorIntegerCompareMinMax` | `arith.cmpi`, integer min/max schemas |
