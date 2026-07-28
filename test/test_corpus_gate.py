@@ -232,8 +232,44 @@ class CorpusGateTestBase(unittest.TestCase):
 
 
 class InventoryAggregationTest(CorpusGateTestBase):
-    def test_gate_selection_is_the_inventory(self) -> None:
-        inventory = corpus_inventory.load_inventory(corpus_inventory.ROOT)
+    def test_whole_program_stage_selects_workload_inventory(self) -> None:
+        exit_code, _, summary = self.run_gate(
+            "--case",
+            "loombench:axpy/axpy_func",
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["case_count"], 1)
+        result = summary["cases"][0]
+        self.assertEqual(result["identity"], "loombench:axpy/axpy_func")
+        self.assertEqual(result["sources"], 1)
+        self.assertTrue(
+            any(
+                "test/app/axpy/main_func.cpp" in line
+                for line in self.invocation_lines()
+            )
+        )
+
+    def test_unimplemented_workload_producer_fails_closed(self) -> None:
+        exit_code, _, summary = self.run_gate(
+            "--case",
+            "cmsis-nn:test_arm_avgpool_s8/test_arm_avgpool_s8",
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
+        )
+        self.assertEqual(exit_code, 1)
+        result = summary["cases"][0]
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["category"], "workload-provider-unavailable")
+        self.assertIn("cmsis-nn-unit-test", result["detail"])
+
+    def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
+        inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
         for suite in corpus_inventory.SUITE_ORDER:
             exit_code, _, summary = self.run_gate(
                 "--suite", suite, "--stage", "llvm", "--jobs", "4"
@@ -247,9 +283,9 @@ class InventoryAggregationTest(CorpusGateTestBase):
             )
             self.assertEqual(summary["suite_counts"], {suite: {"pass": len(expected), "fail": 0}})
 
-    def test_loombench_package_runs_every_source_as_one_case(self) -> None:
+    def test_source_package_compiles_every_translation_unit(self) -> None:
         exit_code, _, summary = self.run_gate(
-            "--case", "loombench:axpy", "--stage", "s0", "--jobs", "1"
+            "--case", "loombench:axpy", "--stage", "llvm", "--jobs", "1"
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["case_count"], 1)
@@ -260,11 +296,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         invocations = self.invocation_lines()
         compiled = [line for line in invocations if "-emit-llvm" in line]
-        raised = [line for line in invocations if "stub-raise " in line]
-        verified = [line for line in invocations if "stub-opt " in line]
         self.assertEqual(len(compiled), 2)
-        self.assertEqual(len(raised), 2)
-        self.assertEqual(len(verified), 2)
         for source in ("main_func.cpp", "main_inline.cpp"):
             self.assertTrue(
                 any(
@@ -284,9 +316,14 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(exit_code, 2)
         self.assertIn("unknown case selector", stdout.getvalue())
 
-    def test_d0_stage_runs_pre_mapping_per_source(self) -> None:
+    def test_d0_stage_runs_pre_mapping_per_workload(self) -> None:
         exit_code, _, summary = self.run_gate(
-            "--case", "loombench:axpy", "--stage", "d0", "--jobs", "1"
+            "--case",
+            "loombench:axpy/axpy_func",
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["case_count"], 1)
@@ -302,8 +339,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         pre_mapped = [
             line for line in invocations if "stub-pre-mapping " in line
         ]
-        self.assertEqual(len(compiled), 2)
-        self.assertEqual(len(pre_mapped), 2)
+        self.assertEqual(len(compiled), 1)
+        self.assertEqual(len(pre_mapped), 1)
         for line in pre_mapped:
             self.assertIn("--builtin=small", line)
             self.assertIn("--artifact-store=", line)
@@ -314,17 +351,22 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertFalse(any("stub-raise " in line for line in invocations))
         self.assertFalse(any("stub-opt " in line for line in invocations))
 
-    def test_dfg_sim_stage_runs_source_backed_comparison_per_source(self) -> None:
+    def test_dfg_sim_stage_runs_source_backed_comparison_per_workload(self) -> None:
         exit_code, _, summary = self.run_gate(
-            "--case", "loombench:axpy", "--stage", "dfg-sim", "--jobs", "1"
+            "--case",
+            "loombench:axpy/axpy_func",
+            "--stage",
+            "dfg-sim",
+            "--jobs",
+            "1",
         )
         self.assertEqual(exit_code, 0)
         result = summary["cases"][0]
         self.assertEqual(result["status"], "pass")
-        self.assertEqual(result["graphs"], 2)
-        self.assertEqual(result["actors"], 6)
-        self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 2)
-        self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 128)
+        self.assertEqual(result["graphs"], 1)
+        self.assertEqual(result["actors"], 3)
+        self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 1)
+        self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 64)
         self.assertEqual(
             result["dfg_simulation"]["wavefront_steps_per_second"], 1_000_000.0
         )
@@ -332,8 +374,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         invocations = self.invocation_lines()
         compiled = [line for line in invocations if "-emit-llvm" in line]
         simulated = [line for line in invocations if "stub-dfg-run " in line]
-        self.assertEqual(len(compiled), 4)
-        self.assertEqual(len(simulated), 2)
+        self.assertEqual(len(compiled), 2)
+        self.assertEqual(len(simulated), 1)
         for line in simulated:
             self.assertIn("--builtin=small", line)
             self.assertIn("--native-llvm=", line)
@@ -524,11 +566,9 @@ class DeterministicResultsTest(CorpusGateTestBase):
     def test_repeated_runs_and_job_counts_preserve_results(self) -> None:
         selection = [
             "--case",
-            "loombench:axpy",
+            "loombench:axpy/axpy_func",
             "--case",
-            "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c",
-            "--case",
-            "cmsis-nn:ConvolutionFunctions/arm_convolve_s8.c",
+            "loombench:axpy/axpy_inline",
         ]
         runs: list[tuple[str, list[str], list[str]]] = []
         for jobs in ("1", "4", "1"):
@@ -544,14 +584,13 @@ class DeterministicResultsTest(CorpusGateTestBase):
         self.assertEqual(
             runs[0][1],
             [
-                "loombench:axpy",
-                "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c",
-                "cmsis-nn:ConvolutionFunctions/arm_convolve_s8.c",
+                "loombench:axpy/axpy_func",
+                "loombench:axpy/axpy_inline",
             ],
         )
 
     def test_d0_repeated_runs_preserve_results_and_counts(self) -> None:
-        selection = ["--case", "loombench:axpy"]
+        selection = ["--case", "loombench:axpy/axpy_func"]
         runs: list[tuple[str, str, str, int, int]] = []
         for jobs in ("1", "4", "1"):
             exit_code, human, summary = self.run_gate(
@@ -574,7 +613,7 @@ class DeterministicResultsTest(CorpusGateTestBase):
     def test_d0_candidate_workers_are_forwarded_and_reported(self) -> None:
         exit_code, human, summary = self.run_gate(
             "--case",
-            "loombench:axpy",
+            "loombench:axpy/axpy_func",
             "--stage",
             "d0",
             "--jobs",
@@ -590,7 +629,7 @@ class DeterministicResultsTest(CorpusGateTestBase):
             for line in self.invocation_lines()
             if line.split(" ", 1)[0].endswith("stub-pre-mapping")
         ]
-        self.assertEqual(len(pre_mapping), 2)
+        self.assertEqual(len(pre_mapping), 1)
         self.assertTrue(
             all("--candidate-jobs=3" in invocation for invocation in pre_mapping)
         )
@@ -651,7 +690,7 @@ class NoFailureAsPassTest(CorpusGateTestBase):
     def test_compile_failure_fails_the_gate(self) -> None:
         os.environ["STUB_FAIL_SUFFIX"] = ".ll"
         exit_code, human, summary = self.run_gate(
-            "--case", "loombench:axpy", "--stage", "s0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "s0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "compile")
         self.assertIn("[corpus-gate] FAIL", human)
@@ -666,42 +705,42 @@ class NoFailureAsPassTest(CorpusGateTestBase):
     def test_fabricated_s0_artifact_fails_the_gate(self) -> None:
         os.environ["STUB_CORRUPT_SUFFIX"] = ".scf.mlir"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "s0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "s0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "s0-artifact")
 
     def test_raise_and_verify_failures_fail_the_gate(self) -> None:
         os.environ["STUB_FAIL_SUFFIX"] = ".scf.mlir"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "s0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "s0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "raise")
 
         os.environ.pop("STUB_FAIL_SUFFIX", None)
         os.environ["STUB_FAIL_INPUT_SUFFIX"] = ".scf.mlir"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "s0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "s0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "verify")
 
     def test_pre_mapping_failure_fails_the_gate(self) -> None:
         os.environ["STUB_FAIL_SUFFIX"] = ".dfg.mlir"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "d0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "pre-mapping")
 
     def test_fabricated_d0_artifact_fails_the_gate(self) -> None:
         os.environ["STUB_CORRUPT_SUFFIX"] = ".dfg.mlir"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "d0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "d0-artifact")
 
     def test_malformed_d0_counts_fail_the_gate(self) -> None:
         os.environ["STUB_CORRUPT_SUFFIX"] = ".counts.json"
         exit_code, _, summary = self.run_gate(
-            "--case", "cmsis-dsp:BasicMathFunctions/arm_abs_f32.c", "--stage", "d0"
+            "--case", "loombench:axpy/axpy_func", "--stage", "d0"
         )
         self.assert_every_requested_case_fails(exit_code, summary, "d0-artifact")
 

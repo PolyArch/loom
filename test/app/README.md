@@ -133,10 +133,12 @@ the runner retains only artifact and parseability checks after that native
 validation.
 
 The repository-wide `test/corpus_inventory.py` command validates this manifest
-and combines its cases with the two CMSIS suites. Running `list` without case
-selectors emits the complete inventory; `--case loombench:NAME` selects an
-explicit LoomBench case. Manifest tiers remain integration subsets and do not
-change membership.
+and combines it with the pinned CMSIS owners. `list-sources` emits the complete
+source translation-unit inventory; `list-workloads` emits real linked-program
+roots and public test invocations. `--case loombench:NAME` selects a source
+package, while a workload identity includes its executable variant, such as
+`loombench:axpy/axpy_func`. Manifest tiers remain integration subsets and do
+not change either inventory.
 
 ## Determinism notes
 

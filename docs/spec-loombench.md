@@ -134,9 +134,9 @@ evidence.
 ## Inventory Tooling
 
 `test/corpus_inventory.py` is the shared derived inventory view. It validates
-the LoomBench manifest and pinned CMSIS source inventories, preserves case and
-source identities, and supports complete-suite or explicit-case selection. It
-does not maintain its own membership list.
+the LoomBench manifest and pinned CMSIS owners, emits separate source and
+workload views, preserves their identities, and supports complete-suite or
+explicit-row selection. It does not maintain a competing membership list.
 
 Runners discover cases from that structured view. Empty selections, duplicate
 case/source identities, missing sources, malformed manifest records, stale

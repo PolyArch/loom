@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unified corpus gate for the canonical high-level source corpus.
+"""Unified source and linked-workload corpus gate.
 
-Runs every case selected from test/corpus_inventory.py (the sole inventory
-authority) through the production compiler tools and checks the resulting
-artifacts:
+The ``llvm`` stage consumes SourceTranslationUnitInventory rows. All later
+stages consume ProgramWorkloadInventory rows. Both are derived by
+test/corpus_inventory.py and run through production compiler tools:
 
 - stage ``llvm``: loom-cc/loom-c++ compiles each source to LLVM IR for the
   exact builtin Fabric InstructionCore target; the emitted module must carry
@@ -23,12 +23,11 @@ artifacts:
   exact Spatial invocation is compared with independently captured native
   memory results. Graph-free, unsupported, empty, or malformed executions fail.
 
-A source whose feature-guarded body is empty under the exact target still
-produces a valid module: a case passes on real compiler exit status,
-parse/verify success, and exact target facts, never on the presence of a
-callable. There are no source skips, no Unsupported-as-pass, and no output
-placeholders; every requested case either passes these checks or fails with
-an honest category.
+A source row whose feature-guarded body is empty under the exact target can
+still pass the ``llvm`` stage. It cannot stand in for a linked workload or a
+Canonical Dataflow result. There are no source skips, no Unsupported-as-pass,
+and no output placeholders; every requested row either passes its selected
+stage or fails with an honest category.
 
 Compilation uses a real configured RISC-V cross sysroot and GCC toolchain,
 given explicitly (--sysroot / --gcc-toolchain or the LOOM_CORPUS_SYSROOT /
@@ -82,6 +81,8 @@ MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
 BUILTIN_TARGET_PRESET = "small"
 
 STAGES = ("llvm", "s0", "d0", "dfg-sim")
+WORKLOAD_STAGES = frozenset({"s0", "d0", "dfg-sim"})
+TARGET_PROFILE = "riscv64-portable-scalar"
 
 # Honest failure categories. "compile"/"raise"/"verify"/"pre-mapping" are
 # nonzero exits from the production tools; "*-artifact" categories mean the
@@ -101,6 +102,7 @@ CATEGORY_NATIVE_COMPILE = "native-compile"
 CATEGORY_NATIVE_LLVM_ARTIFACT = "native-llvm-artifact"
 CATEGORY_DFG_SIM = "dfg-sim"
 CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
+CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE = "workload-provider-unavailable"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
 
@@ -218,7 +220,7 @@ class DfgSimulationMetrics:
 
 @dataclass(frozen=True)
 class CaseResult:
-    case: corpus_inventory.CorpusCase
+    case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload
     passed: bool
     category: str | None
     detail: str | None
@@ -774,12 +776,17 @@ def run_step(
     return None
 
 
-def case_out_dir(out_root: Path, case: corpus_inventory.CorpusCase) -> Path:
+def case_out_dir(
+    out_root: Path,
+    case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload,
+) -> Path:
+    if isinstance(case, corpus_inventory.ProgramWorkload):
+        return out_root / case.suite / case.case / case.executable
     return out_root / case.suite / case.case.removesuffix(".c")
 
 
 def run_case(
-    case: corpus_inventory.CorpusCase,
+    case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload,
     stage: str,
     toolchain: Toolchain,
     external_root: Path,
@@ -809,12 +816,30 @@ def run_case(
         )
 
     try:
+        if stage in WORKLOAD_STAGES:
+            if not isinstance(case, corpus_inventory.ProgramWorkload):
+                return finish(
+                    CATEGORY_INTERNAL,
+                    "whole-program stage received a source translation-unit row",
+                )
+            if case.producer.kind != "direct-source":
+                return finish(
+                    CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+                    "no linked-workload builder is available for producer kind "
+                    f"{case.producer.kind}",
+                )
         case_dir = case_out_dir(out_root, case)
         case_dir.mkdir(parents=True, exist_ok=True)
         store_dir = case_dir / "artifact-store"
         if stage in {"d0", "dfg-sim"}:
             store_dir.mkdir(parents=True, exist_ok=True)
         suite_flags = suite_compile_flags(case.suite, external_root)
+        if isinstance(case, corpus_inventory.ProgramWorkload):
+            if case.target_profile != TARGET_PROFILE:
+                raise GateConfigError(
+                    f"unsupported workload target profile: {case.target_profile}"
+                )
+            suite_flags.extend(case.compiler_flags)
         for repo_relative in case.sources:
             source = resolve_source(repo_relative, external_root)
             stem = source.stem
@@ -945,7 +970,9 @@ def run_case(
 
 
 def run_cases(
-    cases: Sequence[corpus_inventory.CorpusCase],
+    cases: Sequence[
+        corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload
+    ],
     stage: str,
     toolchain: Toolchain,
     external_root: Path,
@@ -1185,8 +1212,12 @@ def main(argv: Sequence[str]) -> int:
         )
         return 2
     try:
-        inventory = corpus_inventory.load_inventory(ROOT)
-        selected = corpus_inventory.select_cases(
+        inventory = (
+            corpus_inventory.load_workload_inventory(ROOT)
+            if args.stage in WORKLOAD_STAGES
+            else corpus_inventory.load_source_inventory(ROOT)
+        )
+        selected = corpus_inventory.select_rows(
             inventory, suite_names=args.suites, case_ids=args.cases
         )
         external_root = corpus_inventory.resolve_externals_root(ROOT)

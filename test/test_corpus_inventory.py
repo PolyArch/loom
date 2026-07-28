@@ -27,6 +27,85 @@ CMSIS_SUITES = {
 }
 
 
+class DualInventoryContractTest(unittest.TestCase):
+    def test_loombench_workloads_are_real_manifest_programs(self) -> None:
+        sources = corpus_inventory.load_source_inventory(ROOT)
+        workloads = corpus_inventory.load_workload_inventory(ROOT)
+
+        axpy_source = next(
+            row for row in sources if row.identity == "loombench:axpy"
+        )
+        self.assertEqual(
+            axpy_source.sources,
+            (
+                "test/app/axpy/main_func.cpp",
+                "test/app/axpy/main_inline.cpp",
+            ),
+        )
+
+        axpy_workloads = [
+            row for row in workloads if row.suite == "loombench" and row.case == "axpy"
+        ]
+        self.assertEqual(
+            [row.identity for row in axpy_workloads],
+            [
+                "loombench:axpy/axpy_func",
+                "loombench:axpy/axpy_inline",
+            ],
+        )
+        self.assertEqual(
+            [row.sources for row in axpy_workloads],
+            [
+                ("test/app/axpy/main_func.cpp",),
+                ("test/app/axpy/main_inline.cpp",),
+            ],
+        )
+        for workload in axpy_workloads:
+            self.assertEqual(workload.entry_symbol, "main")
+            self.assertEqual(workload.target_profile, "riscv64-portable-scalar")
+            self.assertEqual(workload.oracle.kind, "expected-stdout")
+            self.assertEqual(workload.oracle.path, "test/app/axpy/expected.txt")
+
+    def test_cmsis_workloads_are_upstream_test_owners(self) -> None:
+        workloads = corpus_inventory.load_workload_inventory(ROOT)
+
+        dsp = [row for row in workloads if row.suite == "cmsis-dsp"]
+        self.assertEqual(
+            [row.identity for row in dsp],
+            [
+                "cmsis-dsp:official-tests/float16",
+                "cmsis-dsp:official-tests/scalar",
+            ],
+        )
+        self.assertEqual(
+            [row.producer.kind for row in dsp],
+            ["cmsis-dsp-test-framework", "cmsis-dsp-test-framework"],
+        )
+        self.assertEqual(
+            [row.oracle.path for row in dsp],
+            [
+                "externals/cmsis-dsp/Testing/desc_f16.txt",
+                "externals/cmsis-dsp/Testing/desc.txt",
+            ],
+        )
+
+        nn = [row for row in workloads if row.suite == "cmsis-nn"]
+        self.assertEqual(len(nn), 41)
+        avgpool = next(
+            row
+            for row in nn
+            if row.case == "test_arm_avgpool_s8"
+        )
+        self.assertEqual(avgpool.producer.kind, "cmsis-nn-unit-test")
+        self.assertEqual(avgpool.producer.target, "test_arm_avgpool_s8")
+        self.assertEqual(avgpool.entry_symbol, "main")
+        self.assertEqual(avgpool.oracle.kind, "cmsis-nn-unity")
+        self.assertEqual(
+            avgpool.oracle.path,
+            "externals/cmsis-nn/Tests/UnitTest/TestCases/test_arm_avgpool_s8",
+        )
+
+
 def git_output(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repository), *arguments],
@@ -58,7 +137,7 @@ def tracked_translation_units(submodule: Path, revision: str = "HEAD") -> list[s
 class CorpusInventoryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cases = corpus_inventory.load_inventory(ROOT)
+        cls.cases = corpus_inventory.load_source_inventory(ROOT)
 
     def test_external_sources_resolve_from_primary_worktree(self) -> None:
         worktrees = git_output(ROOT, "worktree", "list", "--porcelain")
@@ -302,12 +381,12 @@ class CorpusInventoryTest(unittest.TestCase):
 
     def test_inventory_emission_rejects_duplicate_source_identity(self) -> None:
         cases = (
-            corpus_inventory.CorpusCase(
+            corpus_inventory.SourceTranslationUnit(
                 suite="loombench",
                 case="alpha",
                 sources=("test/app/shared/main.c",),
             ),
-            corpus_inventory.CorpusCase(
+            corpus_inventory.SourceTranslationUnit(
                 suite="loombench",
                 case="beta",
                 sources=("test/app/shared/main.c",),
@@ -317,7 +396,9 @@ class CorpusInventoryTest(unittest.TestCase):
             corpus_inventory.InventoryError,
             "duplicate corpus source identity: test/app/shared/main.c",
         ):
-            corpus_inventory.render_json(cases)
+            corpus_inventory.render_json(
+                cases, inventory_kind="source-translation-unit"
+            )
 
     def test_inventory_order_and_json_are_deterministic(self) -> None:
         expected_order = sorted(
@@ -331,10 +412,16 @@ class CorpusInventoryTest(unittest.TestCase):
         identities = [case.identity for case in self.cases]
         self.assertEqual(len(identities), len(set(identities)))
 
-        first = corpus_inventory.render_json(self.cases)
-        second = corpus_inventory.render_json(corpus_inventory.load_inventory(ROOT))
+        first = corpus_inventory.render_json(
+            self.cases, inventory_kind="source-translation-unit"
+        )
+        second = corpus_inventory.render_json(
+            corpus_inventory.load_source_inventory(ROOT),
+            inventory_kind="source-translation-unit",
+        )
         self.assertEqual(first, second)
         payload = json.loads(first)
+        self.assertEqual(payload["inventory_kind"], "source-translation-unit")
         self.assertEqual(payload["case_count"], len(self.cases))
         self.assertEqual(
             sum(payload["suite_counts"].values()),
@@ -342,7 +429,7 @@ class CorpusInventoryTest(unittest.TestCase):
         )
 
     def test_full_suite_and_explicit_case_selection(self) -> None:
-        dsp_cases = corpus_inventory.select_cases(
+        dsp_cases = corpus_inventory.select_rows(
             self.cases,
             suite_names=["cmsis-dsp"],
             case_ids=[],
@@ -351,7 +438,7 @@ class CorpusInventoryTest(unittest.TestCase):
         self.assertEqual({case.suite for case in dsp_cases}, {"cmsis-dsp"})
 
         requested = [self.cases[0].identity, dsp_cases[0].identity]
-        selected = corpus_inventory.select_cases(
+        selected = corpus_inventory.select_rows(
             self.cases,
             suite_names=[],
             case_ids=requested,
@@ -361,7 +448,7 @@ class CorpusInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(
             corpus_inventory.InventoryError, "duplicate case selector"
         ):
-            corpus_inventory.select_cases(
+            corpus_inventory.select_rows(
                 self.cases,
                 suite_names=[],
                 case_ids=[requested[0], requested[0]],
@@ -369,7 +456,7 @@ class CorpusInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(
             corpus_inventory.InventoryError, "unknown case selector"
         ):
-            corpus_inventory.select_cases(
+            corpus_inventory.select_rows(
                 self.cases,
                 suite_names=[],
                 case_ids=["cmsis-dsp:not/a/source.c"],
