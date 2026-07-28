@@ -1,4 +1,4 @@
-# Loom
+# Loom, Compiler for Fabric
 
 Loom is a full-stack compiler and architecture-exploration framework for
 multi-core heterogeneous spatial accelerators. It accepts software through an
