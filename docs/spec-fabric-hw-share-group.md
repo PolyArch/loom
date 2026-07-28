@@ -106,6 +106,7 @@ relations:
 | ------------------------ | ------------------------------------ |
 | `ScalarIntegerAddSub` | `arith.addi`, `arith.subi` |
 | `ScalarIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
+| `ScalarIntegerCountZeros` | `math.ctlz`, `math.cttz`, poison-flagged `llvm.intr.ctlz`, poison-flagged `llvm.intr.cttz` |
 | `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
 | `ScalarIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `ScalarIntegerCompareMinMax` | `arith.cmpi`, `arith.minsi`, `arith.maxsi`, `arith.minui`, `arith.maxui` |
@@ -176,6 +177,7 @@ payload width; it has no independent lane-count field.
 | ------------------------ | ------------------------------------ |
 | `FixedVectorIntegerAddSub` | `arith.addi`, `arith.subi` |
 | `FixedVectorIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
+| `FixedVectorIntegerCountZeros` | fixed-vector forms of `math.ctlz`, `math.cttz`, poison-flagged `llvm.intr.ctlz`, and poison-flagged `llvm.intr.cttz` |
 | `FixedVectorIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
 | `FixedVectorIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
 | `FixedVectorIntegerCompareMinMax` | `arith.cmpi`, integer min/max schemas |

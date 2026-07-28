@@ -288,11 +288,14 @@ readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
         actor.getPredicate(), actor.getFastmath()}};
   }
   case Case::LLVMZeroPoison: {
-    auto actor = llvm::dyn_cast<LLVM::CountLeadingZerosOp>(op);
-    if (!actor)
-      return mismatch(op, kind);
-    return dataflow::SemanticPayload{
-        dataflow::ZeroPoisonPayload{actor.getIsZeroPoison()}};
+    return llvm::TypeSwitch<Operation *,
+                            llvm::Expected<dataflow::SemanticPayload>>(op)
+        .Case<LLVM::CountLeadingZerosOp, LLVM::CountTrailingZerosOp>(
+            [](auto actor) {
+              return dataflow::SemanticPayload{
+                  dataflow::ZeroPoisonPayload{actor.getIsZeroPoison()}};
+            })
+        .Default([&](Operation *) { return mismatch(op, kind); });
   }
   case Case::LLVMIntegerMinPoison: {
     auto actor = llvm::dyn_cast<LLVM::AbsOp>(op);
@@ -424,6 +427,12 @@ dataflow::operationSchemaOf(Operation *op) {
   switch (*schema) {
   case OperationSchemaId::LLVMCountLeadingZeros: {
     auto actor = llvm::dyn_cast<LLVM::CountLeadingZerosOp>(op);
+    if (!actor || !actor.getIsZeroPoison())
+      return std::nullopt;
+    break;
+  }
+  case OperationSchemaId::LLVMCountTrailingZeros: {
+    auto actor = llvm::dyn_cast<LLVM::CountTrailingZerosOp>(op);
     if (!actor || !actor.getIsZeroPoison())
       return std::nullopt;
     break;

@@ -317,6 +317,19 @@ llvm.func @numeric_select(%cond: i1, %a: i32, %b: i32) -> i32 {
     llvm.return %0 : i32
 }
 
+// CHECK-LABEL: llvm.func @zero_count_aliases
+llvm.func @zero_count_aliases(%value: i32) -> i32 {
+    // CHECK: %[[CTLZ:.*]] = math.ctlz %arg0 : i32
+    %ctlz = "llvm.intr.ctlz"(%value) <{is_zero_poison = false}> : (i32) -> i32
+    // CHECK: %[[CTTZ:.*]] = math.cttz %arg0 : i32
+    %cttz = "llvm.intr.cttz"(%value) <{is_zero_poison = false}> : (i32) -> i32
+    // CHECK: %[[CTLZ_POISON:.*]] = "llvm.intr.ctlz"(%arg0) <{is_zero_poison = true}> : (i32) -> i32
+    %ctlz_poison = "llvm.intr.ctlz"(%value) <{is_zero_poison = true}> : (i32) -> i32
+    // CHECK: %[[CTTZ_POISON:.*]] = "llvm.intr.cttz"(%arg0) <{is_zero_poison = true}> : (i32) -> i32
+    %cttz_poison = "llvm.intr.cttz"(%value) <{is_zero_poison = true}> : (i32) -> i32
+    llvm.return %ctlz : i32
+}
+
 // CHECK-LABEL: llvm.func @int_constant
 llvm.func @int_constant() -> i32 {
     // CHECK: %{{.*}} = arith.constant 42 : i32

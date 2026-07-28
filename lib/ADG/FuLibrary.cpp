@@ -348,6 +348,8 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   resources.push_back(scalarInteger(
       ImplementationFamilyId::ScalarIntegerSaturatingAddSub, {0, 1}));
   resources.push_back(
+      scalarInteger(ImplementationFamilyId::ScalarIntegerCountZeros, {0}));
+  resources.push_back(
       scalarInteger(ImplementationFamilyId::ScalarIntegerLogic, {0, 1}, true));
   resources.push_back(
       scalarInteger(ImplementationFamilyId::ScalarIntegerShift, {0, 1}));
@@ -930,6 +932,9 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
       {ImplementationFamilyId::FixedVectorIntegerSaturatingAddSub,
        ::fabric::FixedVectorIntegerParams{integer, 128},
        {0, 1}},
+      {ImplementationFamilyId::FixedVectorIntegerCountZeros,
+       ::fabric::FixedVectorIntegerParams{integer, 128},
+       {0}},
       {ImplementationFamilyId::FixedVectorIntegerLogic,
        ::fabric::FixedVectorIntegerParams{logicIntegerWidths(), 128},
        {0, 1}},

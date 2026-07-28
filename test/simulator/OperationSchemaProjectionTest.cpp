@@ -160,6 +160,25 @@ void checkTypedLLVMExceptionalPolicies() {
   require(__func__, zeroResult.state == PrimitiveValueState::Poison,
           "LLVM ctlz zero policy did not produce poison");
 
+  PrimitiveOperationDescriptor trailingZeroPoison =
+      descriptor(OperationSchemaId::LLVMCountTrailingZeros, unaryI8,
+                 dataflow::ZeroPoisonPayload{true}, 8, 8);
+  PrimitiveValue trailingZeroResult = takeValue(
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(trailingZeroPoison, zero));
+  require(__func__, trailingZeroResult.state == PrimitiveValueState::Poison,
+          "LLVM cttz zero policy did not produce poison");
+
+  PrimitiveOperationDescriptor definedTrailingZeros =
+      descriptor(OperationSchemaId::MathCountTrailingZeros, unaryI8,
+                 dataflow::NoPayload{}, 8, 8);
+  const PrimitiveValue twentyFour[] = {integer(8, 24)};
+  PrimitiveValue trailingResult = takeValue(
+      __func__,
+      loom::sim::evaluatePrimitiveOperation(definedTrailingZeros, twentyFour));
+  require(__func__, definedBits(__func__, trailingResult) == llvm::APInt(8, 3),
+          "math cttz produced the wrong trailing-zero count");
+
   const PrimitiveValue signedMinimum[] = {integer(8, 128)};
   PrimitiveOperationDescriptor wrappingAbs =
       descriptor(OperationSchemaId::LLVMAbs, unaryI8,

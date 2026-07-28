@@ -136,6 +136,12 @@ library spelling is not a semantic proof. The first version deliberately has
 no such opaque-library model; it is reopened only when a required library body
 cannot be exposed through the ordinary final LLVM link.
 
+LLVM leading- and trailing-zero count intrinsics with
+`is_zero_poison = false` normalize mechanically to `math.ctlz` and
+`math.cttz`. The poison-flagged forms retain their LLVM spelling and project
+that flag through the registered typed semantic case; the standard Math ops
+cannot carry the poison-on-zero contract.
+
 ### Exceptional Values And Floating Semantics
 
 Mechanical raising preserves defined values, poison, undef, and `freeze`

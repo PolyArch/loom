@@ -126,8 +126,8 @@ bool checkDescriptorRelations() {
   llvm::StringSet<> keywords;
   const std::uint32_t families = implementationFamilyCount();
   const std::uint32_t schemas = dataflow::operationSchemaCount();
-  if (families != 66) {
-    llvm::errs() << "the registry must contain exactly 66 families, found "
+  if (families != 68) {
+    llvm::errs() << "the registry must contain exactly 68 families, found "
                  << families << '\n';
     ok = false;
   }
@@ -172,6 +172,10 @@ bool checkMembership() {
       findImplementationFamily("ScalarIntegerSaturatingAddSub");
   const std::optional<ImplementationFamilyId> vectorSaturating =
       findImplementationFamily("FixedVectorIntegerSaturatingAddSub");
+  const std::optional<ImplementationFamilyId> scalarCountZeros =
+      findImplementationFamily("ScalarIntegerCountZeros");
+  const std::optional<ImplementationFamilyId> vectorCountZeros =
+      findImplementationFamily("FixedVectorIntegerCountZeros");
   const std::array saturatingSpellings = {
       "llvm.intr.sadd.sat", "llvm.intr.uadd.sat", "llvm.intr.ssub.sat",
       "llvm.intr.usub.sat"};
@@ -191,6 +195,27 @@ bool checkMembership() {
                               schema.value_or(OperationSchemaId::ArithAddI))) {
       llvm::errs() << spelling
                    << " is not owned exclusively by the saturation families\n";
+      ok = false;
+    }
+  }
+  const std::array zeroCountSpellings = {
+      "math.ctlz", "math.cttz", "llvm.intr.ctlz", "llvm.intr.cttz"};
+  if (!scalarCountZeros || !vectorCountZeros) {
+    llvm::errs() << "the integer zero-count families are not registered\n";
+    ok = false;
+  }
+  for (llvm::StringRef spelling : zeroCountSpellings) {
+    std::optional<OperationSchemaId> schema =
+        dataflow::findOperationSchema(spelling);
+    if (!schema ||
+        (scalarCountZeros &&
+         !admitsOperationSchema(*scalarCountZeros, *schema)) ||
+        (vectorCountZeros &&
+         !admitsOperationSchema(*vectorCountZeros, *schema)) ||
+        admitsOperationSchema(ImplementationFamilyId::ScalarIntegerLogic,
+                              schema.value_or(OperationSchemaId::ArithAndI))) {
+      llvm::errs() << spelling
+                   << " is not owned exclusively by the zero-count families\n";
       ok = false;
     }
   }

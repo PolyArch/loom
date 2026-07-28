@@ -1366,6 +1366,17 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   require(test, !index.admittingOperationResources(saturatingAdd, 32).empty(),
           "builtin Fabric has no scalar saturating arithmetic resource");
 
+  const auto countTrailingZeros =
+      ::dataflow::CanonicalActorSchemaProjection{
+          ::dataflow::OperationSchemaId::MathCountTrailingZeros,
+          mlir::FunctionType::get(&context,
+                                  {mlir::IntegerType::get(&context, 32)},
+                                  {mlir::IntegerType::get(&context, 32)}),
+          ::dataflow::NoPayload{}};
+  require(test,
+          !index.admittingOperationResources(countTrailingZeros, 32).empty(),
+          "builtin Fabric has no scalar zero-count resource");
+
   mlir::Type vectorI16 =
       mlir::VectorType::get({4}, mlir::IntegerType::get(&context, 16));
   const auto vectorSaturatingAdd =
@@ -1378,6 +1389,16 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
       test,
       !index.admittingOperationResources(vectorSaturatingAdd, 32).empty(),
       "builtin Fabric has no fixed-vector saturating arithmetic resource");
+
+  const auto vectorCountLeadingZeros =
+      ::dataflow::CanonicalActorSchemaProjection{
+          ::dataflow::OperationSchemaId::LLVMCountLeadingZeros,
+          mlir::FunctionType::get(&context, {vectorI16}, {vectorI16}),
+          ::dataflow::ZeroPoisonPayload{true}};
+  require(test,
+          !index.admittingOperationResources(vectorCountLeadingZeros, 32)
+               .empty(),
+          "builtin Fabric has no fixed-vector zero-count resource");
 }
 
 void fuBackedgesAreExplicitAndResolved() {

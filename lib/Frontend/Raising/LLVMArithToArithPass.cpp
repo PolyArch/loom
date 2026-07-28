@@ -236,6 +236,22 @@ struct FMAAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::FMAOp> {
   }
 };
 
+// The math zero-count operations define zero to return the operand width.
+// That is exactly the non-poisoning LLVM form. The poisoning form retains its
+// LLVM spelling because math has no attribute that can carry that contract.
+template <typename LLVMOp, typename MathOp>
+struct CountZerosAlias : public ::mlir::OpRewritePattern<LLVMOp> {
+  using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
+    if (op.getIsZeroPoison() || !restatesExactly(op, /*floating=*/false))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<MathOp>(op, op.getRes().getType(), op.getIn());
+    return ::mlir::success();
+  }
+};
+
 // llvm.icmp -> arith.cmpi.
 struct ICmpAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::ICmpOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -473,6 +489,12 @@ struct LLVMArithToArithPass
 
         // exact fused multiply-add
         FMAAlias,
+
+        // zero-count aliases whose zero behavior is fully defined
+        CountZerosAlias<::mlir::LLVM::CountLeadingZerosOp,
+                        ::mlir::math::CountLeadingZerosOp>,
+        CountZerosAlias<::mlir::LLVM::CountTrailingZerosOp,
+                        ::mlir::math::CountTrailingZerosOp>,
 
         // compares, selection and constants
         ICmpAlias, FCmpAlias, SelectAlias, ConstantAlias,

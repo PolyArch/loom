@@ -75,6 +75,7 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::MathRoundEven:
   case Schema::MathFma:
   case Schema::MathCountLeadingZeros:
+  case Schema::MathCountTrailingZeros:
   case Schema::UBPoison:
   case Schema::LLVMFshl:
   case Schema::LLVMByteSwap:
@@ -83,6 +84,7 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::LLVMSSubSat:
   case Schema::LLVMUSubSat:
   case Schema::LLVMCountLeadingZeros:
+  case Schema::LLVMCountTrailingZeros:
   case Schema::LLVMAbs:
   case Schema::LLVMOrDisjoint:
     return &evaluateRegisteredPrimitiveOperation;
@@ -1040,10 +1042,15 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   }
 
   case Schema::MathCountLeadingZeros:
-  case Schema::LLVMCountLeadingZeros: {
+  case Schema::MathCountTrailingZeros:
+  case Schema::LLVMCountLeadingZeros:
+  case Schema::LLVMCountTrailingZeros: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    if (schema == Schema::LLVMCountLeadingZeros) {
+    const bool llvmPoisonForm =
+        schema == Schema::LLVMCountLeadingZeros ||
+        schema == Schema::LLVMCountTrailingZeros;
+    if (llvmPoisonForm) {
       if (auto payload = requirePayload<dataflow::ZeroPoisonPayload>(descriptor);
           !payload)
         return payload.takeError();
@@ -1056,15 +1063,19 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     auto value = requireDefinedBits(schema, operands[0]);
     if (!value)
       return value.takeError();
-    if (schema == Schema::LLVMCountLeadingZeros) {
+    if (llvmPoisonForm) {
       auto payload = requirePayload<dataflow::ZeroPoisonPayload>(descriptor);
       if (!payload)
         return payload.takeError();
       if ((*payload)->isZeroPoison && (*value)->isZero())
         return PrimitiveValue::poison();
     }
+    const unsigned count = schema == Schema::MathCountTrailingZeros ||
+                                   schema == Schema::LLVMCountTrailingZeros
+                               ? (*value)->countr_zero()
+                               : (*value)->countl_zero();
     return PrimitiveValue::integer(
-        llvm::APInt((*value)->getBitWidth(), (*value)->countl_zero()));
+        llvm::APInt((*value)->getBitWidth(), count));
   }
 
   case Schema::LLVMAbs: {

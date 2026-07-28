@@ -112,6 +112,9 @@ floatPredicate(const CanonicalActorSchemaProjection &actor);
 llvm::Error admitScalarOrdinaryIntegerAdmission(
     const FamilyCapabilityParams &capability,
     const CanonicalActorSchemaProjection &actor);
+llvm::Error admitScalarUnaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
@@ -145,6 +148,9 @@ llvm::Error
 admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
                          const CanonicalActorSchemaProjection &actor);
 llvm::Error admitFixedVectorOrdinaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error admitFixedVectorUnaryIntegerAdmission(
     const FamilyCapabilityParams &capability,
     const CanonicalActorSchemaProjection &actor);
 llvm::Error admitFixedVectorLogicIntegerAdmission(
@@ -368,6 +374,25 @@ llvm::Error admitFixedVectorOrdinaryIntegerAdmission(
     return vector.takeError();
   return admitVectorIntegerElement(*vector, params.elementWidths,
                                    "fixed-vector integer admission");
+}
+
+llvm::Error admitFixedVectorUnaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::FixedVectorIntegerParams>(capability);
+  if (llvm::Error error = validateIntegerWidths(
+          params.elementWidths, ordinaryIntegerWidths(), "fixed vector"))
+    return error;
+  if (llvm::Error error = validateVectorCapacity(params.maxPayloadBits))
+    return error;
+  if (llvm::Error error = requireUniformType(actor, 1))
+    return error;
+  auto vector = fixedVector(actor.type.getInput(0), params.maxPayloadBits,
+                            "fixed-vector unary integer admission");
+  if (!vector)
+    return vector.takeError();
+  return admitVectorIntegerElement(*vector, params.elementWidths,
+                                   "fixed-vector unary integer admission");
 }
 
 llvm::Error admitFixedVectorLogicIntegerAdmission(
@@ -948,6 +973,8 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
   case TypedAdmissionProviderId::ScalarOrdinaryIntegerAdmission:
     return std::get<ScalarIntegerParams>(params).integerWidths.size() > 1 &&
            hasSignedIntegerBehavior();
+  case TypedAdmissionProviderId::ScalarUnaryIntegerAdmission:
+    return false;
   case TypedAdmissionProviderId::ScalarLogicIntegerAdmission:
   case TypedAdmissionProviderId::ScalarBitReinterpretAdmission:
   case TypedAdmissionProviderId::ScalarValueSelectAdmission:
@@ -986,6 +1013,8 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
   }
   case TypedAdmissionProviderId::FixedVectorOrdinaryIntegerAdmission:
     return std::get<FixedVectorIntegerParams>(params).elementWidths.size() > 1;
+  case TypedAdmissionProviderId::FixedVectorUnaryIntegerAdmission:
+    return false;
   case TypedAdmissionProviderId::FixedVectorIntegerCompareAdmission: {
     const auto &typed = std::get<FixedVectorIntegerCompareMinMaxParams>(params);
     return typed.elementWidths.size() > 1 || typed.predicates.size() > 1;
@@ -1668,6 +1697,16 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
     return error;
   return admitUniformInteger(actor, params.integerWidths, 2);
+}
+
+llvm::Error admitScalarUnaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
+  const auto &params = std::get<fabric::ScalarIntegerParams>(capability);
+  if (llvm::Error error = validateIntegerWidths(
+          params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
+    return error;
+  return admitUniformInteger(actor, params.integerWidths, 1);
 }
 
 llvm::Error

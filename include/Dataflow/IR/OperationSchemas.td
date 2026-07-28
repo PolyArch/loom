@@ -113,6 +113,8 @@ def ConstantTokenAdmission : TypedAdmissionProvider<19>;
 def SyncTokenAdmission : TypedAdmissionProvider<20>;
 def MuxTokenAdmission : TypedAdmissionProvider<21>;
 def DemuxTokenAdmission : TypedAdmissionProvider<22>;
+def ScalarUnaryIntegerAdmission : TypedAdmissionProvider<23>;
+def FixedVectorUnaryIntegerAdmission : TypedAdmissionProvider<24>;
 
 //===----------------------------------------------------------------------===//
 // Standard integer, floating-point, and cast compute schemas
@@ -259,6 +261,8 @@ def MathFma : ActorSchema<66, 0x4c530243, "::mlir::math::FmaOp", "Compute",
     ArithFloatingPoint>;
 def MathCountLeadingZeros : ActorSchema<93, 0x4c53025e,
     "::mlir::math::CountLeadingZerosOp", "Compute", NoSemanticPayload>;
+def MathCountTrailingZeros : ActorSchema<101, 0x4c530266,
+    "::mlir::math::CountTrailingZerosOp", "Compute", NoSemanticPayload>;
 
 //===----------------------------------------------------------------------===//
 // Fixed-vector structural schemas
@@ -289,10 +293,10 @@ def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Co
 //     `llvm.fshl`, `llvm.bswap`, and the signed/unsigned saturating add/sub
 //     intrinsics); or
 //   * the standard spelling exists but cannot state the operation's exact
-//     poison contract: `math.ctlz` and `math.absi` are exactly the
-//     flag-free `llvm.ctlz` and `llvm.abs` forms, so those forms normalize
-//     away and only the poison-flagged form remains an LLVM actor, with the
-//     flag projected through its closed typed case.
+//     poison contract: `math.ctlz`, `math.cttz`, and `math.absi` are exactly
+//     the flag-free LLVM forms, so those forms normalize away and only the
+//     poison-flagged form remains an LLVM actor, with the flag projected
+//     through its closed typed case.
 //
 // `ub.poison` stands with them because no constant operation can spell a
 // poison value. Its built-in optional attribute has one parameterless
@@ -317,6 +321,8 @@ def LLVMUSubSat : ActorSchema<71, 0x4c530248, "::mlir::LLVM::USubSat", "Compute"
     NoSemanticPayload>;
 def LLVMCountLeadingZeros : ActorSchema<72, 0x4c530249,
     "::mlir::LLVM::CountLeadingZerosOp", "Compute", LLVMZeroPoison>;
+def LLVMCountTrailingZeros : ActorSchema<102, 0x4c530267,
+    "::mlir::LLVM::CountTrailingZerosOp", "Compute", LLVMZeroPoison>;
 def LLVMAbs : ActorSchema<73, 0x4c53024a, "::mlir::LLVM::AbsOp", "Compute",
     LLVMIntegerMinPoison>;
 def LLVMExtractValue : ActorSchema<74, 0x4c53024b, "::mlir::LLVM::ExtractValueOp",
@@ -544,5 +550,13 @@ def ScalarIntegerSaturatingAddSub : ImplementationFamily<64,
 def FixedVectorIntegerSaturatingAddSub : ImplementationFamily<65,
     [LLVMSAddSat, LLVMUAddSat, LLVMSSubSat, LLVMUSubSat],
     FixedVectorIntegerParams, FixedVectorOrdinaryIntegerAdmission>;
+def ScalarIntegerCountZeros : ImplementationFamily<66,
+    [MathCountLeadingZeros, MathCountTrailingZeros, LLVMCountLeadingZeros,
+     LLVMCountTrailingZeros], ScalarIntegerParams,
+    ScalarUnaryIntegerAdmission>;
+def FixedVectorIntegerCountZeros : ImplementationFamily<67,
+    [MathCountLeadingZeros, MathCountTrailingZeros, LLVMCountLeadingZeros,
+     LLVMCountTrailingZeros], FixedVectorIntegerParams,
+    FixedVectorUnaryIntegerAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD
