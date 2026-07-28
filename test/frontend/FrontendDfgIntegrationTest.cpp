@@ -244,6 +244,45 @@ entry:
   return module;
 }
 
+std::unique_ptr<llvm::Module> parseScalarReduction(const char *test,
+                                                   llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+define i32 @accum() {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  %sum = phi i32 [ 0, %entry ], [ %newsum, %loop ]
+  %newsum = add i32 %sum, %i
+  %next = add nuw i32 %i, 1
+  %done = icmp eq i32 %next, 8
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret i32 %newsum
+}
+
+define i32 @main() {
+entry:
+  %result = call i32 @accum()
+  %wrong = icmp ne i32 %result, 28
+  %status = zext i1 %wrong to i32
+  ret i32 %status
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<scalar-reduction>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
 void configureHostModule(const char *test, llvm::Module &module) {
   static const bool initializationFailed = [] {
     return llvm::InitializeNativeTarget() ||
@@ -274,6 +313,26 @@ findVecaddLoop(const char *test,
       return scope;
   }
   fail(test, "raised vecadd has no eligible structured loop");
+}
+
+loom::frontend::StructuredEntityRef
+findStructuredLoop(const char *test,
+                   const loom::frontend::StructuredProgramCandidate &candidate,
+                   llvm::StringRef callableName) {
+  auto view = take(test, candidate.view());
+  auto scopes =
+      take(test,
+           loom::frontend::enumerateOperationSpatialOwnershipScopes(candidate));
+  for (const loom::frontend::StructuredEntityRef &scope : scopes) {
+    auto entity = take(test, view.resolve(scope));
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
+    if (!loop)
+      continue;
+    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (callable && callable.getSymName() == callableName)
+      return scope;
+  }
+  fail(test, "raised Structured Program has no requested loop");
 }
 
 dataflow::RootedGraphLaunchRef
@@ -443,6 +502,87 @@ void selectedFmuladdShapesRemainObservable() {
       split.calls.front().objects[outputBinding.objectIndex];
   if (fusedOutput.finalBytes == splitOutput.finalBytes)
     fail(test, "typed fmuladd decisions did not produce distinct results");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
+void scalarLiveOutExecutesWithoutMemoryObjects() {
+  const char *test = "scalarLiveOutExecutesWithoutMemoryObjects";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-scalar-liveout", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  std::unique_ptr<llvm::Module> source = parseScalarReduction(test, context);
+  configureHostModule(test, *source);
+  auto compiled = take(
+      test, loom::frontend::compileLlvmModuleToPreMapping(
+                std::move(source), design.roots().front().reference(), store));
+  loom::frontend::StructuredEntityRef loop =
+      findStructuredLoop(test, compiled.structuredProgram, "accum");
+  auto domain =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, loop));
+  if (domain.size() != 1)
+    fail(test, "scalar loop did not expose one exact decision");
+  loom::frontend::SpatialOwnershipScope scope{
+      loom::frontend::SpatialOwnershipScopeKind::Operation, loop};
+  auto candidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, scope, domain.front(),
+                     design.roots().front()));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto prepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, scope, domain.front()));
+  auto plan =
+      take(test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                     view, launch, prepared.liveIns, prepared.liveOuts));
+  if (!plan.objects.empty() || !plan.memoryRootBindings.empty() ||
+      plan.valueResults.size() != 1 ||
+      plan.valueResults.front().valueResultOrdinal != 0)
+    fail(test, "scalar result capture invented memory or lost its output");
+
+  loom::sim::NativeSimulationInputCapture native =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(prepared.module), prepared.operation, plan));
+  if (native.entryResult != 0 || native.calls.size() != 1 ||
+      native.calls.front().valueResults.size() != 1)
+    fail(test, "native oracle did not capture one scalar graph result");
+
+  loom::sim::SpatialSimulationWorkload workload{launch};
+  workload.observableContract.valueResults = {0};
+  auto finalizedWorkload =
+      take(test, loom::sim::finalizeSimulationWorkload(workload, view));
+  loom::sim::SpatialSimulationRuntimeInputDraft input{
+      finalizedWorkload.identity()};
+  auto finalizedInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                                       input, finalizedWorkload, view));
+  loom::sim::RetiredDFGSimulation execution =
+      take(test,
+           loom::sim::simulateRetiredDfgWorkload(
+               candidate.canonicalDataflow, finalizedWorkload, finalizedInput));
+  if (execution.observations.valueResults.size() != 1)
+    fail(test, "DFG execution did not publish the scalar graph result");
+  const auto *published = std::get_if<loom::sim::PublishedValueResult>(
+      &execution.observations.valueResults.front());
+  if (!published || published->value.tokenCount != 1 ||
+      published->value.lanes.size() != 1 ||
+      published->value.lanes.front().state !=
+          loom::sim::SemanticState::Defined ||
+      published->value.lanes.front().bits != llvm::APInt(32, 28) ||
+      native.calls.front().valueResults.front().lanes.size() != 1 ||
+      native.calls.front().valueResults.front().lanes.front().bits !=
+          published->value.lanes.front().bits)
+    fail(test, "native and DFG scalar result observations differ");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -810,6 +950,7 @@ void staticTableExecutesThroughTypedDfgInput() {
 
 int main() {
   selectedFmuladdShapesRemainObservable();
+  scalarLiveOutExecutesWithoutMemoryObjects();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();
   llvm::outs() << "frontend to typed DFG integration anchor passed\n";

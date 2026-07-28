@@ -114,6 +114,7 @@ struct PreparedSpatialOwnershipSelection final {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   mlir::Operation *operation = nullptr;
   std::vector<mlir::Value> liveIns;
+  std::vector<mlir::Value> liveOuts;
 };
 
 /// Enumerates every ownership scope in the parent candidate's canonical

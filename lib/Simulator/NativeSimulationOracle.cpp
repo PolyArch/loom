@@ -58,11 +58,19 @@ struct ActiveCall {
   std::size_t captureIndex = 0;
   std::uint64_t nextBefore = 0;
   std::uint64_t nextValue = 0;
+  std::uint64_t nextResult = 0;
   std::uint64_t nextAfter = 0;
 };
 
 struct RuntimeValueCaptureShape {
   std::uint64_t graphInputOrdinal = 0;
+  std::uint64_t lanesPerToken = 0;
+  std::uint32_t laneBitWidth = 0;
+  std::uint64_t byteCount = 0;
+};
+
+struct ValueResultCaptureShape {
+  std::uint64_t graphResultOrdinal = 0;
   std::uint64_t lanesPerToken = 0;
   std::uint32_t laneBitWidth = 0;
   std::uint64_t byteCount = 0;
@@ -121,6 +129,7 @@ struct CaptureContext {
   NativeSimulationInputCapture result;
   std::vector<std::uint64_t> byteCounts;
   std::vector<RuntimeValueCaptureShape> runtimeValueShapes;
+  std::vector<ValueResultCaptureShape> valueResultShapes;
   bool littleEndian = true;
   std::vector<ActiveCall> activeCalls;
   std::optional<std::string> error;
@@ -140,6 +149,19 @@ void copyBytes(std::vector<std::uint8_t> &destination, void *base,
     std::memcpy(destination.data(), base, destination.size());
 }
 
+void captureBegin() {
+  if (!activeCapture)
+    return;
+  CaptureContext &context = *activeCapture;
+  if (context.error)
+    return;
+  context.result.calls.emplace_back();
+  NativeSimulationCallCapture &capture = context.result.calls.back();
+  capture.objects.resize(context.byteCounts.size());
+  context.activeCalls.push_back(
+      ActiveCall{context.result.calls.size() - 1, 0, 0, 0, 0});
+}
+
 void captureBefore(std::uint64_t objectOrdinal, void *base,
                    std::uint64_t byteCount) {
   if (!activeCapture)
@@ -151,13 +173,6 @@ void captureBefore(std::uint64_t objectOrdinal, void *base,
       context.byteCounts[objectOrdinal] != byteCount) {
     recordCaptureError("before callback has an invalid object projection");
     return;
-  }
-  if (objectOrdinal == 0) {
-    context.result.calls.emplace_back();
-    NativeSimulationCallCapture &capture = context.result.calls.back();
-    capture.objects.resize(context.byteCounts.size());
-    context.activeCalls.push_back(
-        ActiveCall{context.result.calls.size() - 1, 0, 0, 0});
   }
   if (context.activeCalls.empty() ||
       context.activeCalls.back().nextBefore != objectOrdinal) {
@@ -188,6 +203,7 @@ void captureAfter(std::uint64_t objectOrdinal, void *base,
   ActiveCall &active = context.activeCalls.back();
   if (active.nextBefore != context.byteCounts.size() ||
       active.nextValue != context.runtimeValueShapes.size() ||
+      active.nextResult != context.valueResultShapes.size() ||
       active.nextAfter != objectOrdinal) {
     recordCaptureError("after callbacks do not close the active call");
     return;
@@ -197,8 +213,6 @@ void captureAfter(std::uint64_t objectOrdinal, void *base,
                 .finalBytes,
             base, byteCount);
   ++active.nextAfter;
-  if (active.nextAfter == context.byteCounts.size())
-    context.activeCalls.pop_back();
 }
 
 llvm::APInt readLaneBits(llvm::ArrayRef<std::uint8_t> bytes,
@@ -215,6 +229,21 @@ llvm::APInt readLaneBits(llvm::ArrayRef<std::uint8_t> bytes,
       bits.setBit(bit);
   }
   return bits;
+}
+
+CanonicalValueSequence readCapturedValue(void *base, std::uint64_t byteCount,
+                                         std::uint64_t lanesPerToken,
+                                         std::uint32_t laneBitWidth,
+                                         bool littleEndian) {
+  llvm::ArrayRef<std::uint8_t> bytes(static_cast<const std::uint8_t *>(base),
+                                     static_cast<std::size_t>(byteCount));
+  CanonicalValueSequence sequence;
+  sequence.tokenCount = 1;
+  sequence.lanes.reserve(lanesPerToken);
+  for (std::uint64_t lane = 0; lane < lanesPerToken; ++lane)
+    sequence.lanes.push_back(SemanticLane::defined(
+        readLaneBits(bytes, lane * laneBitWidth, laneBitWidth, littleEndian)));
+  return sequence;
 }
 
 void captureValue(std::uint64_t valueOrdinal, void *base,
@@ -237,26 +266,76 @@ void captureValue(std::uint64_t valueOrdinal, void *base,
     return;
   }
 
-  llvm::ArrayRef<std::uint8_t> bytes(static_cast<const std::uint8_t *>(base),
-                                     static_cast<std::size_t>(byteCount));
   const RuntimeValueCaptureShape &shape =
       context.runtimeValueShapes[valueOrdinal];
-  CanonicalValueSequence sequence;
-  sequence.tokenCount = 1;
-  sequence.lanes.reserve(shape.lanesPerToken);
-  for (std::uint64_t lane = 0; lane < shape.lanesPerToken; ++lane)
-    sequence.lanes.push_back(SemanticLane::defined(
-        readLaneBits(bytes, lane * shape.laneBitWidth, shape.laneBitWidth,
-                     context.littleEndian)));
   context.result.calls[active.captureIndex].runtimeValues.push_back(
-      RuntimeValueEntry{shape.graphInputOrdinal, std::move(sequence)});
+      RuntimeValueEntry{shape.graphInputOrdinal,
+                        readCapturedValue(base, byteCount, shape.lanesPerToken,
+                                          shape.laneBitWidth,
+                                          context.littleEndian)});
   ++active.nextValue;
 }
 
+void captureResult(std::uint64_t resultOrdinal, void *base,
+                   std::uint64_t byteCount) {
+  if (!activeCapture)
+    return;
+  CaptureContext &context = *activeCapture;
+  if (context.error)
+    return;
+  if (resultOrdinal >= context.valueResultShapes.size() || !base ||
+      context.valueResultShapes[resultOrdinal].byteCount != byteCount ||
+      context.activeCalls.empty()) {
+    recordCaptureError("result callback has an invalid output projection");
+    return;
+  }
+  ActiveCall &active = context.activeCalls.back();
+  if (active.nextBefore != context.byteCounts.size() ||
+      active.nextValue != context.runtimeValueShapes.size() ||
+      active.nextResult != resultOrdinal) {
+    recordCaptureError("result callbacks are not in canonical output order");
+    return;
+  }
+  const ValueResultCaptureShape &shape =
+      context.valueResultShapes[resultOrdinal];
+  if (shape.graphResultOrdinal != resultOrdinal) {
+    recordCaptureError("result shape does not use dense graph output order");
+    return;
+  }
+  context.result.calls[active.captureIndex].valueResults.push_back(
+      readCapturedValue(base, byteCount, shape.lanesPerToken,
+                        shape.laneBitWidth, context.littleEndian));
+  ++active.nextResult;
+}
+
+void captureEnd() {
+  if (!activeCapture)
+    return;
+  CaptureContext &context = *activeCapture;
+  if (context.error)
+    return;
+  if (context.activeCalls.empty()) {
+    recordCaptureError("end callback has no active invocation");
+    return;
+  }
+  const ActiveCall &active = context.activeCalls.back();
+  if (active.nextBefore != context.byteCounts.size() ||
+      active.nextValue != context.runtimeValueShapes.size() ||
+      active.nextResult != context.valueResultShapes.size() ||
+      active.nextAfter != context.byteCounts.size()) {
+    recordCaptureError("end callback observed an incomplete invocation");
+    return;
+  }
+  context.activeCalls.pop_back();
+}
+
 struct CaptureCallbackNames {
+  std::string begin;
+  std::string end;
   std::string before;
   std::string after;
   std::optional<std::string> value;
+  std::optional<std::string> result;
 };
 
 std::string uniqueCallbackName(llvm::Module &module, llvm::StringRef prefix) {
@@ -290,10 +369,11 @@ llvm::Expected<CaptureCallbackNames>
 instrumentCapture(llvm::Module &module,
                   const DirectCallSimulationInputCapturePlan &plan,
                   llvm::StringRef entrySymbol) {
-  if (plan.input.objects.empty())
-    return invalid("memory capture plan has no finite objects");
   if (plan.hostCallerSymbol.empty() || plan.hostCalleeSymbol.empty())
-    return invalid("memory capture plan has no exact call-site locator");
+    return invalid("capture plan has no exact call-site locator");
+  if (!plan.input.valueResults.empty())
+    return invalid(
+        "direct call capture cannot infer an internal graph value result");
 
   llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration() || entry->arg_size() != 0 ||
@@ -321,12 +401,20 @@ instrumentCapture(llvm::Module &module,
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);
   llvm::Type *pointer = llvm::PointerType::getUnqual(context);
+  llvm::FunctionType *lifecycleType =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(context), {}, false);
   llvm::FunctionType *callbackType = llvm::FunctionType::get(
       llvm::Type::getVoidTy(context), {i64, pointer, i64}, false);
+  std::string beginName =
+      uniqueCallbackName(module, "__loom_native_capture_begin");
+  std::string endName = uniqueCallbackName(module, "__loom_native_capture_end");
   std::string beforeName =
       uniqueCallbackName(module, "__loom_native_capture_before");
   std::string afterName =
       uniqueCallbackName(module, "__loom_native_capture_after");
+  llvm::FunctionCallee begin =
+      module.getOrInsertFunction(beginName, lifecycleType);
+  llvm::FunctionCallee end = module.getOrInsertFunction(endName, lifecycleType);
   llvm::FunctionCallee before =
       module.getOrInsertFunction(beforeName, callbackType);
   llvm::FunctionCallee after =
@@ -345,6 +433,7 @@ instrumentCapture(llvm::Module &module,
   if (!afterInsertion)
     return invalid("selected host call has no continuation instruction");
   llvm::IRBuilder<> afterBuilder(afterInsertion);
+  beforeBuilder.CreateCall(begin);
   for (auto [ordinal, object] : llvm::enumerate(plan.input.objects)) {
     if (object.byteCount == 0 ||
         object.byteCount > std::numeric_limits<std::size_t>::max() ||
@@ -399,10 +488,12 @@ instrumentCapture(llvm::Module &module,
     llvm::Value *byteCount = llvm::ConstantInt::get(i64, input.byteCount);
     beforeBuilder.CreateCall(*valueCallback, {ordinalValue, slot, byteCount});
   }
+  afterBuilder.CreateCall(end);
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");
-  return CaptureCallbackNames{std::move(beforeName), std::move(afterName),
-                              std::move(valueName)};
+  return CaptureCallbackNames{std::move(beginName),  std::move(endName),
+                              std::move(beforeName), std::move(afterName),
+                              std::move(valueName),  std::nullopt};
 }
 
 std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {
@@ -420,8 +511,9 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   if (!selectedOperation ||
       selectedOperation->getParentOfType<mlir::ModuleOp>() != module)
     return invalid("selected operation is not owned by the prepared module");
-  if (plan.objects.empty())
-    return invalid("memory capture plan has no finite objects");
+  auto callable = selectedOperation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!callable || callable.getBody().empty())
+    return invalid("selected operation is not enclosed by an LLVM callable");
 
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder declarations(context);
@@ -429,8 +521,13 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   mlir::Location location = selectedOperation->getLoc();
   mlir::Type i64 = declarations.getI64Type();
   mlir::Type pointer = mlir::LLVM::LLVMPointerType::get(context);
+  mlir::Type lifecycleType = mlir::LLVM::LLVMFunctionType::get(
+      mlir::LLVM::LLVMVoidType::get(context), {});
   mlir::Type callbackType = mlir::LLVM::LLVMFunctionType::get(
       mlir::LLVM::LLVMVoidType::get(context), {i64, pointer, i64});
+  std::string beginName =
+      uniqueCallbackName(module, "__loom_native_capture_begin");
+  std::string endName = uniqueCallbackName(module, "__loom_native_capture_end");
   std::string beforeName =
       uniqueCallbackName(module, "__loom_native_capture_before");
   std::string afterName =
@@ -440,6 +537,13 @@ instrumentStructuredCapture(mlir::ModuleOp module,
         return !input.fixedValue.has_value();
       }))
     valueName = uniqueCallbackName(module, "__loom_native_capture_value");
+  std::optional<std::string> resultName;
+  if (!plan.valueResults.empty())
+    resultName = uniqueCallbackName(module, "__loom_native_capture_result");
+  mlir::LLVM::LLVMFuncOp::create(declarations, location, beginName,
+                                 lifecycleType);
+  mlir::LLVM::LLVMFuncOp::create(declarations, location, endName,
+                                 lifecycleType);
   mlir::LLVM::LLVMFuncOp::create(declarations, location, beforeName,
                                  callbackType);
   mlir::LLVM::LLVMFuncOp::create(declarations, location, afterName,
@@ -447,10 +551,15 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   if (valueName)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *valueName,
                                    callbackType);
+  if (resultName)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *resultName,
+                                   callbackType);
 
   mlir::OpBuilder before(selectedOperation);
   mlir::OpBuilder after(selectedOperation);
   after.setInsertionPointAfter(selectedOperation);
+  mlir::LLVM::CallOp::create(before, location, mlir::TypeRange{}, beginName,
+                             mlir::ValueRange{});
   for (auto [ordinal, object] : llvm::enumerate(plan.objects)) {
     if (!object.base ||
         !llvm::isa<mlir::LLVM::LLVMPointerType>(object.base.getType()) ||
@@ -467,15 +576,17 @@ instrumentStructuredCapture(mlir::ModuleOp module,
     mlir::LLVM::CallOp::create(
         before, location, mlir::TypeRange{}, beforeName,
         mlir::ValueRange{beforeOrdinal, object.base, beforeByteCount});
-
-    mlir::Value afterOrdinal =
-        mlir::LLVM::ConstantOp::create(after, location, i64, ordinalAttr);
-    mlir::Value afterByteCount =
-        mlir::LLVM::ConstantOp::create(after, location, i64, byteCountAttr);
-    mlir::LLVM::CallOp::create(
-        after, location, mlir::TypeRange{}, afterName,
-        mlir::ValueRange{afterOrdinal, object.base, afterByteCount});
   }
+  mlir::OpBuilder storage(context);
+  storage.setInsertionPointToStart(&callable.getBody().front());
+  mlir::Value one;
+  auto allocateSlot = [&](mlir::Type type) {
+    if (!one)
+      one = mlir::LLVM::ConstantOp::create(storage, location, i64,
+                                           storage.getI64IntegerAttr(1));
+    return mlir::LLVM::AllocaOp::create(storage, location, pointer, type, one)
+        .getRes();
+  };
   std::uint64_t runtimeOrdinal = 0;
   for (const SimulationValueInputCapture &input : plan.valueInputs) {
     if (input.fixedValue)
@@ -484,10 +595,7 @@ instrumentStructuredCapture(mlir::ModuleOp module,
         input.byteCount == 0 ||
         input.byteCount > std::numeric_limits<std::size_t>::max())
       return invalid("runtime value input has no finite boundary projection");
-    mlir::Value one = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(1));
-    mlir::Value slot = mlir::LLVM::AllocaOp::create(
-        before, location, pointer, input.boundaryValue.getType(), one);
+    mlir::Value slot = allocateSlot(input.boundaryValue.getType());
     mlir::LLVM::StoreOp::create(before, location, input.boundaryValue, slot);
     mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
         before, location, i64, before.getI64IntegerAttr(runtimeOrdinal));
@@ -497,10 +605,38 @@ instrumentStructuredCapture(mlir::ModuleOp module,
                                mlir::ValueRange{ordinalValue, slot, byteCount});
     ++runtimeOrdinal;
   }
+  for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
+    if (!resultName || result.valueResultOrdinal != ordinal ||
+        !result.boundaryValue ||
+        result.boundaryValue.getDefiningOp() != selectedOperation ||
+        result.byteCount == 0 ||
+        result.byteCount > std::numeric_limits<std::size_t>::max())
+      return invalid("graph value result has no exact boundary projection");
+    mlir::Value slot = allocateSlot(result.boundaryValue.getType());
+    mlir::LLVM::StoreOp::create(after, location, result.boundaryValue, slot);
+    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+        after, location, i64, after.getI64IntegerAttr(ordinal));
+    mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
+        after, location, i64, after.getI64IntegerAttr(result.byteCount));
+    mlir::LLVM::CallOp::create(after, location, mlir::TypeRange{}, *resultName,
+                               mlir::ValueRange{ordinalValue, slot, byteCount});
+  }
+  for (auto [ordinal, object] : llvm::enumerate(plan.objects)) {
+    mlir::Value afterOrdinal = mlir::LLVM::ConstantOp::create(
+        after, location, i64, after.getI64IntegerAttr(ordinal));
+    mlir::Value afterByteCount = mlir::LLVM::ConstantOp::create(
+        after, location, i64, after.getI64IntegerAttr(object.byteCount));
+    mlir::LLVM::CallOp::create(
+        after, location, mlir::TypeRange{}, afterName,
+        mlir::ValueRange{afterOrdinal, object.base, afterByteCount});
+  }
+  mlir::LLVM::CallOp::create(after, location, mlir::TypeRange{}, endName,
+                             mlir::ValueRange{});
   if (mlir::failed(mlir::verify(module)))
     return invalid("instrumented Structured Program does not verify");
-  return CaptureCallbackNames{std::move(beforeName), std::move(afterName),
-                              std::move(valueName)};
+  return CaptureCallbackNames{std::move(beginName),  std::move(endName),
+                              std::move(beforeName), std::move(afterName),
+                              std::move(valueName),  std::move(resultName)};
 }
 
 llvm::Error lowerStructuredOracleToLlvmDialect(mlir::ModuleOp module) {
@@ -757,8 +893,6 @@ llvm::Expected<NativeSimulationInputCapture>
 runNativeCapture(llvm::orc::ThreadSafeModule module,
                  const SimulationInputCapturePlan &plan,
                  llvm::StringRef entrySymbol, PrepareNativeModule prepare) {
-  if (plan.objects.empty())
-    return invalid("memory capture plan has no finite objects");
   if (llvm::Error error = initializeNativeTargetOnce())
     return std::move(error);
   llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> jitOrError =
@@ -789,6 +923,12 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     return generator.takeError();
 
   llvm::orc::SymbolMap callbacks;
+  callbacks[jit->mangleAndIntern(callbackNames.begin)] = {
+      llvm::orc::ExecutorAddr::fromPtr(&captureBegin),
+      llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  callbacks[jit->mangleAndIntern(callbackNames.end)] = {
+      llvm::orc::ExecutorAddr::fromPtr(&captureEnd),
+      llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   callbacks[jit->mangleAndIntern(callbackNames.before)] = {
       llvm::orc::ExecutorAddr::fromPtr(&captureBefore),
       llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
@@ -798,6 +938,10 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
   if (callbackNames.value)
     callbacks[jit->mangleAndIntern(*callbackNames.value)] = {
         llvm::orc::ExecutorAddr::fromPtr(&captureValue),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (callbackNames.result)
+    callbacks[jit->mangleAndIntern(*callbackNames.result)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&captureResult),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   if (llvm::Error error =
           dylib.define(llvm::orc::absoluteSymbols(std::move(callbacks))))
@@ -821,6 +965,11 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
       capture.runtimeValueShapes.push_back(
           RuntimeValueCaptureShape{input.valueInputOrdinal, input.lanesPerToken,
                                    input.laneBitWidth, input.byteCount});
+  capture.valueResultShapes.reserve(plan.valueResults.size());
+  for (const SimulationValueResultCapture &result : plan.valueResults)
+    capture.valueResultShapes.push_back(
+        ValueResultCaptureShape{result.valueResultOrdinal, result.lanesPerToken,
+                                result.laneBitWidth, result.byteCount});
   if (activeCapture)
     return executionFailed("nested native oracle execution is unsupported");
   activeCapture = &capture;

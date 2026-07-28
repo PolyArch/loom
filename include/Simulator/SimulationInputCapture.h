@@ -56,12 +56,24 @@ struct SimulationValueInputCapture {
   std::optional<CanonicalValueSequence> fixedValue;
 };
 
-/// The finite value and memory input planes of one concrete execution boundary
-/// that reaches one rooted graph launch. This is a derived instrumentation
-/// plan, not a persistent schema.
+/// One graph value result and its exact source value at the selected
+/// Structured boundary. The source value is an ephemeral instrumentation
+/// handle; only the resulting semantic value enters an execution observation.
+struct SimulationValueResultCapture {
+  std::uint64_t valueResultOrdinal = 0;
+  mlir::Value boundaryValue;
+  std::uint64_t lanesPerToken = 0;
+  std::uint32_t laneBitWidth = 0;
+  std::uint64_t byteCount = 0;
+};
+
+/// The finite value-input, value-result, and memory planes of one concrete
+/// execution boundary that reaches one rooted graph launch. This is a derived
+/// instrumentation plan, not a persistent schema.
 struct SimulationInputCapturePlan {
   dataflow::RootedGraphLaunchRef launch;
   std::vector<SimulationValueInputCapture> valueInputs;
+  std::vector<SimulationValueResultCapture> valueResults;
   std::vector<SimulationMemoryCaptureObject> objects;
   std::vector<SimulationMemoryRootCapture> memoryRootBindings;
 };
@@ -89,7 +101,8 @@ deriveSimulationInputCapturePlan(
 llvm::Expected<SimulationInputCapturePlan>
 deriveOperationSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
-    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs);
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults);
 
 } // namespace loom::sim
 

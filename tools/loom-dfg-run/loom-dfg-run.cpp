@@ -244,6 +244,7 @@ findCaptureBinding(const loom::sim::SimulationInputCapturePlan &plan,
 
 struct ExecutionTotals {
   std::uint64_t dynamicCalls = 0;
+  std::uint64_t valueLanesCompared = 0;
   std::uint64_t memoryBytesCompared = 0;
   std::uint64_t floatingVarianceBytes = 0;
   std::uint64_t wavefrontSteps = 0;
@@ -306,6 +307,36 @@ bool equalNativeCapture(const loom::sim::NativeSimulationInputCapture &lhs,
     }
   }
   return true;
+}
+
+llvm::Error compareValueObservations(
+    const loom::sim::SpatialSimulationWorkload &workload,
+    const loom::sim::SpatialFunctionalObservations &observations,
+    const loom::sim::SimulationInputCapturePlan &plan,
+    const loom::sim::NativeSimulationCallCapture &selectedNative,
+    ExecutionTotals &totals) {
+  if (workload.observableContract.valueResults.size() !=
+          plan.valueResults.size() ||
+      observations.valueResults.size() != plan.valueResults.size() ||
+      selectedNative.valueResults.size() != plan.valueResults.size())
+    return invalid("DFG and native value-result observation counts differ");
+  for (auto [position, projected] : llvm::enumerate(plan.valueResults)) {
+    if (projected.valueResultOrdinal !=
+        workload.observableContract.valueResults[position])
+      return invalid("value-result capture order differs from its workload");
+    const auto *published = std::get_if<loom::sim::PublishedValueResult>(
+        &observations.valueResults[position]);
+    if (!published)
+      return invalid("retired DFG execution did not publish a selected value");
+    if (!equalValueSequence(published->value,
+                            selectedNative.valueResults[position]))
+      return invalid(llvm::formatv(
+          "DFG value result {0} differs from selected-decision native "
+          "execution",
+          projected.valueResultOrdinal));
+    totals.valueLanesCompared += published->value.lanes.size();
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error compareMemoryObservations(
@@ -435,9 +466,9 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
                          const loom::sim::NativeSimulationInputCapture &capture,
                          const loom::sim::NativeSimulationInputCapture *source,
                          bool allowFloatingVariance, ExecutionTotals &totals) {
-  if (plan.objects.empty() || plan.memoryRootBindings.empty())
+  if (plan.valueResults.empty() && plan.memoryRootBindings.empty())
     return unsupported(
-        "Spatial execution has no finite captured memory objects");
+        "Spatial execution has no externally observable value or memory");
   if (capture.entryResult != 0)
     return invalid("native oracle entry returned a nonzero status");
   if (capture.calls.empty())
@@ -455,6 +486,14 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
       workload.valueInputPlan.push_back(*value.fixedValue);
     else
       workload.valueInputPlan.push_back(loom::sim::RuntimeValueInput{});
+  }
+  for (const loom::sim::SimulationValueResultCapture &value :
+       plan.valueResults) {
+    if (value.valueResultOrdinal !=
+        workload.observableContract.valueResults.size())
+      return invalid("capture value results are not dense in graph ABI order");
+    workload.observableContract.valueResults.push_back(
+        value.valueResultOrdinal);
   }
   for (const loom::sim::SimulationMemoryRootCapture &binding :
        plan.memoryRootBindings)
@@ -500,6 +539,10 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
     totals.eventCount += execution->report.eventCount;
     for (const auto &[schema, count] : execution->report.operationFireCounts)
       totals.operationFirings[schema] += count;
+    if (llvm::Error error = compareValueObservations(finalizedWorkload->model(),
+                                                     execution->observations,
+                                                     plan, dynamicCall, totals))
+      return error;
     if (llvm::Error error = compareMemoryObservations(
             finalizedWorkload->model(), execution->observations, plan,
             dynamicCall, source ? &source->calls[callOrdinal] : nullptr,
@@ -621,8 +664,8 @@ llvm::Error executeOperationLaunch(
   if (!prepared)
     return prepared.takeError();
   llvm::Expected<loom::sim::SimulationInputCapturePlan> plan =
-      loom::sim::deriveOperationSimulationInputCapturePlan(view, launch,
-                                                           prepared->liveIns);
+      loom::sim::deriveOperationSimulationInputCapturePlan(
+          view, launch, prepared->liveIns, prepared->liveOuts);
   if (!plan)
     return plan.takeError();
   llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
@@ -675,6 +718,7 @@ llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
   root["graphs"] = graphCount;
   root["actors"] = actorCount;
   root["dynamic_calls"] = totals.dynamicCalls;
+  root["value_lanes_compared"] = totals.valueLanesCompared;
   root["memory_bytes_compared"] = totals.memoryBytesCompared;
   root["floating_variance_bytes"] = totals.floatingVarianceBytes;
   root["floating_variance_kind"] =
@@ -765,7 +809,8 @@ int main(int argc, char **argv) {
     if (llvm::Error error =
             executeLaunch(*selected, *view, launch, store, totals))
       return reportError(std::move(error));
-  if (totals.dynamicCalls == 0 || totals.memoryBytesCompared == 0 ||
+  if (totals.dynamicCalls == 0 ||
+      (totals.valueLanesCompared == 0 && totals.memoryBytesCompared == 0) ||
       totals.eventCount == 0)
     return reportError(invalid("execution produced no substantive workload"));
   if (llvm::Error error = writeReport(outputPath, view->graphs().size(),

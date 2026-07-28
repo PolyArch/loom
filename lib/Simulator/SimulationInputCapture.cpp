@@ -3,6 +3,7 @@
 #include "SimulationWireInternal.h"
 
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -207,6 +208,18 @@ llvm::Expected<std::uint64_t> fixedTypeByteCount(mlir::Operation *scope,
   if (bytes.isScalable() || bytes.getFixedValue() == 0)
     return unsupported("LLVM type has no fixed nonzero byte size");
   return bytes.getFixedValue();
+}
+
+bool fitsStorageExtent(const detail::LaneShape &shape,
+                       std::uint64_t storageBytes) {
+  if (shape.lanesPerToken == 0 || shape.laneBitWidth == 0 ||
+      shape.lanesPerToken >
+          std::numeric_limits<std::uint64_t>::max() / shape.laneBitWidth)
+    return false;
+  const std::uint64_t semanticBits = shape.lanesPerToken * shape.laneBitWidth;
+  const std::uint64_t requiredBytes =
+      semanticBits / 8 + static_cast<std::uint64_t>(semanticBits % 8 != 0);
+  return requiredBytes <= storageBytes;
 }
 
 llvm::Expected<std::uint64_t>
@@ -437,9 +450,7 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
         boundaryValue.getType());
     if (!bytes)
       return bytes.takeError();
-    if (shape->lanesPerToken >
-            std::numeric_limits<std::uint64_t>::max() / shape->laneBitWidth ||
-        shape->lanesPerToken * shape->laneBitWidth > *bytes * 8)
+    if (!fitsStorageExtent(*shape, *bytes))
       return invalid("runtime graph value does not fit its storage extent");
     byteCount = *bytes;
   }
@@ -447,6 +458,51 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
                                      boundaryValue,       shape->lanesPerToken,
                                      shape->laneBitWidth, byteCount,
                                      std::move(*fixed)};
+}
+
+llvm::Expected<SimulationValueResultCapture>
+operationValueResultCapture(detail::ResolvedLaunchContext &context,
+                            std::uint64_t valueResultOrdinal,
+                            mlir::ValueRange boundaryResults) {
+  if (valueResultOrdinal >= boundaryResults.size() ||
+      valueResultOrdinal >= context.numValueResults)
+    return invalid("graph value result exceeds its Structured boundary");
+  mlir::Value boundaryValue = boundaryResults[valueResultOrdinal];
+  mlir::Type graphType =
+      context.graphOp.getFunctionType().getResult(valueResultOrdinal);
+  llvm::Expected<loom::CanonicalSemanticBytes> graphTypeBytes =
+      dataflow::encodeCanonicalType(graphType);
+  if (!graphTypeBytes)
+    return graphTypeBytes.takeError();
+  llvm::Expected<loom::CanonicalSemanticBytes> boundaryTypeBytes =
+      dataflow::encodeCanonicalType(boundaryValue.getType());
+  if (!boundaryTypeBytes)
+    return boundaryTypeBytes.takeError();
+  if (boundaryTypeBytes->bytes() != graphTypeBytes->bytes()) {
+    std::string graphTypeText;
+    llvm::raw_string_ostream graphTypeStream(graphTypeText);
+    graphType.print(graphTypeStream);
+    std::string boundaryTypeText;
+    llvm::raw_string_ostream boundaryTypeStream(boundaryTypeText);
+    boundaryValue.getType().print(boundaryTypeStream);
+    return invalid("graph value result type " + graphTypeText +
+                   " differs from its Structured source " + boundaryTypeText);
+  }
+  llvm::Expected<detail::LaneShape> shape =
+      detail::laneShapeOf(graphType, context.graphOp.getOperation());
+  if (!shape)
+    return shape.takeError();
+  llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
+      boundaryValue.getDefiningOp() ? boundaryValue.getDefiningOp()
+                                    : context.graphOp.getOperation(),
+      boundaryValue.getType());
+  if (!bytes)
+    return bytes.takeError();
+  if (!fitsStorageExtent(*shape, *bytes))
+    return invalid("graph value result does not fit its storage extent");
+  return SimulationValueResultCapture{valueResultOrdinal, boundaryValue,
+                                      shape->lanesPerToken, shape->laneBitWidth,
+                                      *bytes};
 }
 
 llvm::Expected<unsigned>
@@ -578,7 +634,7 @@ deriveSimulationInputCapturePlan(
     return callOrdinal.takeError();
 
   DirectCallSimulationInputCapturePlan plan{
-      SimulationInputCapturePlan{launch, {}, {}, {}}, hostCall,
+      SimulationInputCapturePlan{launch, {}, {}, {}, {}}, hostCall,
       hostCaller.getSymName().str(), hostCall.getCalleeAttr().getValue().str(),
       *callOrdinal};
   plan.input.valueInputs.reserve(context->numValueInputs);
@@ -646,13 +702,17 @@ deriveSimulationInputCapturePlan(
 llvm::Expected<SimulationInputCapturePlan>
 deriveOperationSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
-    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs) {
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults) {
   llvm::Expected<detail::ResolvedLaunchContext> context =
       detail::resolveLaunchContext(program, launch);
   if (!context)
     return context.takeError();
 
-  SimulationInputCapturePlan plan{launch, {}, {}, {}};
+  if (boundaryResults.size() != context->numValueResults)
+    return invalid(
+        "Structured live-out count differs from graph value results");
+  SimulationInputCapturePlan plan{launch, {}, {}, {}, {}};
   plan.valueInputs.reserve(context->numValueInputs);
   for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
        ++ordinal) {
@@ -661,6 +721,15 @@ deriveOperationSimulationInputCapturePlan(
     if (!value)
       return value.takeError();
     plan.valueInputs.push_back(std::move(*value));
+  }
+  plan.valueResults.reserve(context->numValueResults);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueResults;
+       ++ordinal) {
+    llvm::Expected<SimulationValueResultCapture> value =
+        operationValueResultCapture(*context, ordinal, boundaryResults);
+    if (!value)
+      return value.takeError();
+    plan.valueResults.push_back(std::move(*value));
   }
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =

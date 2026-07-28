@@ -768,12 +768,15 @@ prepareSpatialOwnershipSelection(
   if (mlir::failed(mlir::verify(selection->clone.get())))
     return invalid("prepared ownership selection does not verify");
   std::vector<mlir::Value> liveIns;
+  std::vector<mlir::Value> liveOuts;
   if (scope.kind == SpatialOwnershipScopeKind::Operation) {
     OperationClosure closure = deriveOperationClosure(operation);
     liveIns.assign(closure.liveIns.begin(), closure.liveIns.end());
+    liveOuts.assign(closure.liveOuts.begin(), closure.liveOuts.end());
   }
   return PreparedSpatialOwnershipSelection{std::move(selection->clone),
-                                           operation, std::move(liveIns)};
+                                           operation, std::move(liveIns),
+                                           std::move(liveOuts)};
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>
