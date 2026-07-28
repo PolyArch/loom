@@ -15,6 +15,15 @@ translate an actor or Fabric basis through exact Mapping and implementation
 lineage, or consume the exact implementation-signal basis directly. There is
 no independent `ActivityProfile` artifact.
 
+The sole pre-Mapping exception is an explicitly analytical `(S,F)` or `(D,F)`
+model whose immutable descriptor semantics define a structure-derived
+reference-activity rule over its exact software subject. That rule produces
+only low-confidence architecture estimates and cannot be reused as activity
+for a `HardwareImplementation`, RTL, synthesis, or layout case. Those cases
+still require the typed activity binding below. A model cannot silently add a
+default toggle rate when neither its exact subject contract nor an
+`ActivityBinding` owns the activity basis.
+
 The physical-evaluation descriptor references the shared case signature whose
 required role is:
 
@@ -115,6 +124,41 @@ Training and calibration are explicit Evaluation/DSE workflows that create new
 immutable parameter bundles and model bindings. Expensive raw tool products are
 stored in the configured artifact/bundle store, not committed as routine test
 fixtures.
+
+### Complete Low-Confidence Architecture Model
+
+The initial pre-Mapping analytical models over exact `(StructuredProgram,
+Fabric)` and `(CanonicalDataflowProgram, Fabric)` cases request and return this
+complete shared metric set:
+
+```text
+Runtime
+LimitingClockFrequency
+TotalArea
+DynamicPower
+LeakagePower
+```
+
+Every result is a point observation with `UncertaintyKind::Unknown`. Values use
+the central registry's canonical physical units even though the model's
+absolute coefficients are not calibrated. The exact model descriptor identity
+owns those coefficients and the structure-derived activity rule; neither
+Fabric nor DSE owns a fallback cost table.
+
+Static frequency, area, and leakage projections consume the complete finalized
+Fabric inventory, concrete operation capability families and physical widths,
+resource contracts, and actual System attachment multiplicity. Runtime and
+dynamic power additionally consume the exact software candidate's instruction
+ownership, canonical actor demand, scheduling pressure, type widths, and
+structure-derived activity. Relative ordering must remain physically sensible,
+including greater cost for floating-point than integer arithmetic at equal
+width and increasing cost with vector or physical payload width.
+
+An EDA-backed model returns the same metric kinds and numeric domains with a
+different descriptor, method, conditions, and uncertainty. Calibration may
+therefore compare or replace estimates without changing EvaluationRequest,
+EvaluationEvidence, or DSE result schemas. An analytical value is never labeled
+as synthesis, layout, signoff, or measured evidence.
 
 ## Tool And Library Binding
 

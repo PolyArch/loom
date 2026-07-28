@@ -104,3 +104,9 @@ total area, dynamic power, and leakage power. Model-owned coefficients or EDA
 report parsers stay behind their descriptor; neither creates a private FPA
 record. This lets calibration compare like quantities while preserving the
 lower-confidence model as a fast, complete early-stage estimate.
+
+Low confidence means inaccurate absolute values, not an incomplete question.
+The early model still estimates frequency, area, dynamic power, leakage power,
+and runtime with coherent relative scaling. Omitting a dimension would force
+frontend DSE to use a separate ad hoc score and would make later EDA calibration
+change the optimization data model instead of only improving its evidence.

@@ -19,7 +19,7 @@ namespace loom::evaluation::models {
 namespace {
 
 constexpr EvaluationCaseKind kCaseKind(1);
-constexpr EvaluationModelKind kModelKind(1);
+constexpr EvaluationModelKind kModelKind(3);
 constexpr CaseSubjectRoleRef kCanonicalDataflowRole(0);
 constexpr CaseSubjectRoleRef kFabricRole(1);
 
@@ -51,46 +51,55 @@ const EvaluationCaseSignatureDescriptor kCaseSignature{
     AbsentReferenceCycle{},
     {}};
 
-const ScopeFormRef kRuntimeScopeForms[] = {ScopeFormRef(0)};
+const ScopeFormRef kWholeCaseScopeForms[] = {ScopeFormRef(0)};
 const MetricCapability kMetricCapabilities[] = {
-    {MetricKind::Runtime, kRuntimeScopeForms,
+    {MetricKind::Runtime, kWholeCaseScopeForms,
+     observationFormMask(ObservationForm::Point)},
+    {MetricKind::LimitingClockFrequency, kWholeCaseScopeForms,
+     observationFormMask(ObservationForm::Point)},
+    {MetricKind::TotalArea, kWholeCaseScopeForms,
+     observationFormMask(ObservationForm::Point)},
+    {MetricKind::DynamicPower, kWholeCaseScopeForms,
+     observationFormMask(ObservationForm::Point)},
+    {MetricKind::LeakagePower, kWholeCaseScopeForms,
      observationFormMask(ObservationForm::Point)}};
 const ModeledPhenomenon kModeledPhenomena[] = {
     ModeledPhenomenon::CanonicalDataflow, ModeledPhenomenon::SpatialResources};
 const EvaluationModelDescriptor kModelDescriptor{
     kModelKind,
-    "canonical_dataflow_fabric_static_pressure",
-    "loom.canonical_dataflow_fabric.static_pressure.v1",
+    "canonical_dataflow_fabric_low_confidence",
+    "loom.canonical_dataflow_fabric.low_confidence.v1",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
     {},
     {},
     {},
-    detail::emptyStaticPressureConfigView(),
+    detail::emptyLowConfidenceConfigView(),
     kModeledPhenomena,
     EvaluationExecutionMethod::Analytic,
     {},
     DeterminismContract::Deterministic,
     {}};
 
-llvm::Expected<std::optional<MetricResult>>
-estimateRuntime(const dataflow::CanonicalDataflowArtifact &program,
+llvm::Expected<std::optional<detail::LowConfidenceMetricSet>>
+estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,
                 const fabric::FinalizedFabricRoot &fabricRoot) {
   auto view = program.view();
   if (!view)
     return view.takeError();
 
-  auto pressure = detail::canonicalDataflowStaticPressure(*view, fabricRoot);
+  auto pressure = detail::projectCanonicalDataflowWorkload(*view, fabricRoot);
   if (!pressure)
     return pressure.takeError();
   if (!*pressure)
-    return std::optional<MetricResult>{};
+    return std::optional<detail::LowConfidenceMetricSet>{};
 
-  auto metric = detail::staticPressureRuntimeMetric(0, **pressure);
-  if (!metric)
-    return metric.takeError();
-  return std::optional<MetricResult>(std::move(*metric));
+  auto metrics =
+      detail::estimateLowConfidenceMetrics(0, **pressure, fabricRoot);
+  if (!metrics)
+    return metrics.takeError();
+  return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));
 }
 
 llvm::Expected<EvaluationModelResult>
@@ -114,22 +123,20 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       fabric::importEntireFabricRoot(fabrics.front(), artifactStore);
   if (!fabricRoot)
     return fabricRoot.takeError();
-  auto runtime = estimateRuntime(*program, *fabricRoot);
-  if (!runtime)
-    return runtime.takeError();
-  if (!*runtime)
+  auto metrics = estimateMetrics(*program, *fabricRoot);
+  if (!metrics)
+    return metrics.takeError();
+  if (!*metrics)
     return EvaluationModelResult{
         {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   std::vector<MetricResult> metricResults;
   metricResults.reserve(request.metricRequests().size());
   for (const MetricRequest &metric : request.metricRequests()) {
-    if (metric.query().metric != MetricKind::Runtime)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "canonical_dataflow_fabric_model_invalid: unsupported metric "
-          "reached provider");
-    metricResults.push_back(**runtime);
+    auto result = (**metrics).result(metric.query().metric);
+    if (!result)
+      return result.takeError();
+    metricResults.push_back(std::move(*result));
   }
   return EvaluationModelResult{{},
                                CompletedEvidence{std::move(metricResults), {}}};
@@ -149,7 +156,7 @@ llvm::Error registerCanonicalDataflowFabricAnalyticModel() {
 }
 
 llvm::Expected<PreparedCanonicalDataflowFabricEvaluation>
-prepareCanonicalDataflowFabricRuntimeEvaluation(
+prepareCanonicalDataflowFabricEvaluation(
     const ArtifactRootReference &canonicalDataflow,
     const ArtifactRootReference &fabricReference, const ResolvedConfig &config,
     const ArtifactStore &artifactStore) {
@@ -179,16 +186,21 @@ prepareCanonicalDataflowFabricRuntimeEvaluation(
       *resolution, artifactStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
-  auto metric = MetricRequest::get(
-      MetricQuery{MetricKind::Runtime, EvaluationScope{ScopeFormRef(0), {}}},
-      {}, *evaluationCase, *resolution, artifactStore);
-  if (!metric)
-    return metric.takeError();
+  std::vector<MetricRequest> metrics;
+  metrics.reserve(std::size(kMetricCapabilities));
+  for (const MetricCapability &capability : kMetricCapabilities) {
+    auto metric = MetricRequest::get(
+        MetricQuery{capability.kind, EvaluationScope{ScopeFormRef(0), {}}}, {},
+        *evaluationCase, *resolution, artifactStore);
+    if (!metric)
+      return metric.takeError();
+    metrics.push_back(std::move(*metric));
+  }
   auto modelBinding =
       ResolvedModelBinding::project(kModelDescriptor.reference(), {}, config);
   if (!modelBinding)
     return modelBinding.takeError();
-  auto request = EvaluationRequest::get(*evaluationCase, {*metric}, {},
+  auto request = EvaluationRequest::get(*evaluationCase, metrics, {},
                                         std::move(*modelBinding), 0,
                                         *resolution, artifactStore);
   if (!request)

@@ -85,9 +85,8 @@ generateAndPromoteStructuredOwnership(
   evidence.reserve(candidateSet->candidates().size());
   std::optional<evaluation::CaseSubjectRoleRef> candidateRole;
   for (const ArtifactRootReference &candidate : candidateSet->candidates()) {
-    auto prepared =
-        evaluation::models::prepareStructuredFabricRuntimeEvaluation(
-            candidate, fabric.reference(), config, artifactStore);
+    auto prepared = evaluation::models::prepareStructuredFabricEvaluation(
+        candidate, fabric.reference(), config, artifactStore);
     if (!prepared)
       return prepared.takeError();
     if (candidateRole && *candidateRole != prepared->candidateRole)

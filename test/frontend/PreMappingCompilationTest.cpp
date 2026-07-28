@@ -1330,25 +1330,39 @@ void operationSpatialOwnershipRejectsEscapedResult() {
 }
 
 loom::evaluation::DecimalValue
-runtimeResult(const char *test,
-              const loom::evaluation::EvaluationEvidence &evidence) {
+metricResult(const char *test,
+             const loom::evaluation::EvaluationRequest &request,
+             const loom::evaluation::EvaluationEvidence &evidence,
+             loom::evaluation::MetricKind kind) {
   const auto *completed =
       std::get_if<loom::evaluation::CompletedEvidence>(&evidence.outcome());
-  if (!completed || completed->metricResults.size() != 1)
-    fail(test, "analytic model did not return one completed Runtime result");
+  if (!completed ||
+      completed->metricResults.size() != request.metricRequests().size())
+    fail(test, "analytic model did not return a total metric result vector");
+  std::optional<std::size_t> ordinal;
+  for (std::size_t index = 0; index < request.metricRequests().size();
+       ++index) {
+    if (request.metricRequests()[index].query().metric == kind) {
+      ordinal = index;
+      break;
+    }
+  }
+  if (!ordinal)
+    fail(test, "analytic model request omitted " +
+                   loom::evaluation::toString(kind).str());
   const loom::evaluation::MetricResult &result =
-      completed->metricResults.front();
+      completed->metricResults[*ordinal];
   if (result.uncertainty != loom::evaluation::UncertaintyKind::Unknown)
     fail(test, "analytic model presented its estimate as ground truth");
   const auto *point =
       std::get_if<loom::evaluation::PointObservation>(&result.observation);
   if (!point)
     fail(test, "analytic model did not return a point estimate");
-  const auto *runtime =
+  const auto *value =
       std::get_if<loom::evaluation::DecimalValue>(&point->value);
-  if (!runtime)
-    fail(test, "analytic Runtime result used the wrong numeric domain");
-  return *runtime;
+  if (!value)
+    fail(test, "analytic metric result used the wrong numeric domain");
+  return *value;
 }
 
 struct EvaluatedRuntime final {
@@ -1362,13 +1376,14 @@ evaluateStructuredRuntime(const char *test,
                           const loom::ArtifactRootReference &structuredProgram,
                           const loom::ArtifactRootReference &fabric,
                           const loom::ArtifactStore &store) {
-  auto prepared = take(
-      test,
-      loom::evaluation::models::prepareStructuredFabricRuntimeEvaluation(
-          structuredProgram, fabric, loom::defaultResolvedConfig(), store));
+  auto prepared =
+      take(test, loom::evaluation::models::prepareStructuredFabricEvaluation(
+                     structuredProgram, fabric, loom::defaultResolvedConfig(),
+                     store));
   auto evidence = take(test, loom::evaluation::evaluateRequest(
                                  prepared.request, prepared.resolution, store));
-  return EvaluatedRuntime{runtimeResult(test, evidence),
+  return EvaluatedRuntime{metricResult(test, prepared.request, evidence,
+                                       loom::evaluation::MetricKind::Runtime),
                           std::move(prepared.request), std::move(evidence)};
 }
 
@@ -1378,12 +1393,12 @@ evaluateCanonicalDataflowRuntime(const char *test,
                                  const loom::ArtifactRootReference &fabric,
                                  const loom::ArtifactStore &store) {
   auto prepared = take(
-      test,
-      loom::evaluation::models::prepareCanonicalDataflowFabricRuntimeEvaluation(
-          program, fabric, loom::defaultResolvedConfig(), store));
+      test, loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
+                program, fabric, loom::defaultResolvedConfig(), store));
   auto evidence = take(test, loom::evaluation::evaluateRequest(
                                  prepared.request, prepared.resolution, store));
-  return runtimeResult(test, evidence);
+  return metricResult(test, prepared.request, evidence,
+                      loom::evaluation::MetricKind::Runtime);
 }
 
 void structuredFabricEvaluationRanksMaterializedOwnership() {
@@ -1422,10 +1437,35 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       test, baselineRef, design.roots().front().reference(), store);
   EvaluatedRuntime spatialEvaluation = evaluateStructuredRuntime(
       test, spatialRef, design.roots().front().reference(), store);
+  if (baseline.request.metricRequests().size() != 5 ||
+      spatialEvaluation.request.metricRequests().size() != 5)
+    fail(test, "low-confidence model did not expose the complete metric set");
   if (loom::evaluation::compareDecimalValue(spatialEvaluation.value,
                                             baseline.value) >= 0)
     fail(test, "Fabric-aware Evaluation did not prefer materialized Spatial "
                "ownership");
+
+  for (loom::evaluation::MetricKind metric :
+       {loom::evaluation::MetricKind::LimitingClockFrequency,
+        loom::evaluation::MetricKind::TotalArea,
+        loom::evaluation::MetricKind::LeakagePower}) {
+    const auto baselineValue =
+        metricResult(test, baseline.request, baseline.evidence, metric);
+    const auto spatialValue = metricResult(test, spatialEvaluation.request,
+                                           spatialEvaluation.evidence, metric);
+    if (baselineValue != spatialValue)
+      fail(test, "static Fabric metric changed with software ownership");
+    if (baselineValue.coefficient() <= 0)
+      fail(test, "static Fabric metric was not physically populated");
+  }
+  const auto baselineDynamic =
+      metricResult(test, baseline.request, baseline.evidence,
+                   loom::evaluation::MetricKind::DynamicPower);
+  const auto spatialDynamic =
+      metricResult(test, spatialEvaluation.request, spatialEvaluation.evidence,
+                   loom::evaluation::MetricKind::DynamicPower);
+  if (baselineDynamic.coefficient() != 0 || spatialDynamic.coefficient() <= 0)
+    fail(test, "dynamic power did not follow Spatial workload activity");
 
   auto candidates =
       take(test, loom::dse::CandidateSet::get(

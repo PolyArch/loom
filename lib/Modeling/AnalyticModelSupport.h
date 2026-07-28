@@ -24,18 +24,35 @@ class FinalizedFabricRoot;
 
 namespace loom::evaluation::models::detail {
 
-const ResolvedModelConfigViewContract &emptyStaticPressureConfigView();
+const ResolvedModelConfigViewContract &emptyLowConfidenceConfigView();
+
+struct AnalyticWorkloadEstimate final {
+  std::uint64_t schedulingPressure = 0;
+  std::uint64_t activityUnits = 0;
+};
+
+struct LowConfidenceMetricSet final {
+  std::uint64_t runtimePicoseconds = 0;
+  std::uint64_t limitingClockFrequencyHertz = 0;
+  std::uint64_t totalAreaSquareMicrometers = 0;
+  std::uint64_t dynamicPowerMicrowatts = 0;
+  std::uint64_t leakagePowerMicrowatts = 0;
+
+  llvm::Expected<MetricResult> result(MetricKind metric) const;
+};
 
 llvm::Expected<CaseArtifactResolution>
 resolveSingleSubjectFabricCase(const ArtifactRootReference &subject,
                                const ArtifactRootReference &fabric,
                                const ArtifactStore &artifactStore);
 
-llvm::Expected<MetricResult>
-staticPressureRuntimeMetric(std::uint64_t instructionLeaves,
-                            std::uint64_t spatialPressure);
+llvm::Expected<LowConfidenceMetricSet>
+estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
+                             AnalyticWorkloadEstimate workload,
+                             const fabric::FinalizedFabricRoot &fabricRoot);
 
-llvm::Expected<std::optional<std::uint64_t>> canonicalDataflowStaticPressure(
+llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
+projectCanonicalDataflowWorkload(
     const ::dataflow::CanonicalDataflowProgramView &program,
     const fabric::FinalizedFabricRoot &fabricRoot);
 

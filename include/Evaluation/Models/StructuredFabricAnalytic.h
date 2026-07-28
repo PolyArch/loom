@@ -24,11 +24,11 @@ struct PreparedStructuredFabricEvaluation final {
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredFabricAnalyticModel();
 
-/// Constructs and publishes one Runtime request for the exact S/F pair. The
-/// returned resolution is the complete transient case closure used to execute
-/// and validate the resulting Evidence.
+/// Constructs and publishes the complete low-confidence metric request for the
+/// exact S/F pair. The returned resolution is the complete transient case
+/// closure used to execute and validate the resulting Evidence.
 llvm::Expected<PreparedStructuredFabricEvaluation>
-prepareStructuredFabricRuntimeEvaluation(
+prepareStructuredFabricEvaluation(
     const ::loom::ArtifactRootReference &structuredProgram,
     const ::loom::ArtifactRootReference &fabric,
     const ::loom::ResolvedConfig &config,

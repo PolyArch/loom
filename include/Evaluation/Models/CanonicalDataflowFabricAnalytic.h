@@ -22,7 +22,7 @@ struct PreparedCanonicalDataflowFabricEvaluation final {
 llvm::Error registerCanonicalDataflowFabricAnalyticModel();
 
 llvm::Expected<PreparedCanonicalDataflowFabricEvaluation>
-prepareCanonicalDataflowFabricRuntimeEvaluation(
+prepareCanonicalDataflowFabricEvaluation(
     const ::loom::ArtifactRootReference &canonicalDataflow,
     const ::loom::ArtifactRootReference &fabric,
     const ::loom::ResolvedConfig &config,
