@@ -24,7 +24,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <map>
 #include <memory>
@@ -326,7 +325,62 @@ struct DataflowMemoryWrite {
   bool accessedMemory = false;
 };
 
-using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
+/// Ordered token queue for one software edge. Most queues alternate between
+/// empty and one token, so contiguous storage keeps the channel table compact
+/// and retains its capacity across firings. A backlog advances a head index
+/// and is compacted only after enough consumed storage accumulates, preserving
+/// amortized linear movement for long streams.
+class TokenQueue {
+public:
+  bool empty() const { return head_ == tokens_.size(); }
+  std::size_t size() const { return tokens_.size() - head_; }
+
+  Token &front() {
+    assert(!empty() && "front of empty token queue");
+    return tokens_[head_];
+  }
+  const Token &front() const {
+    assert(!empty() && "front of empty token queue");
+    return tokens_[head_];
+  }
+
+  void push_back(const Token &token) { tokens_.push_back(token); }
+  void push_back(Token &&token) { tokens_.push_back(std::move(token)); }
+
+  void pop_front() {
+    assert(!empty() && "pop from empty token queue");
+    ++head_;
+    if (head_ == tokens_.size()) {
+      tokens_.clear();
+      head_ = 0;
+      return;
+    }
+    if (head_ >= 64 && head_ * 2 >= tokens_.size()) {
+      std::move(tokens_.begin() + static_cast<std::ptrdiff_t>(head_),
+                tokens_.end(), tokens_.begin());
+      tokens_.resize(tokens_.size() - head_);
+      head_ = 0;
+    }
+  }
+
+  void clear() {
+    tokens_.clear();
+    head_ = 0;
+  }
+
+  auto begin() { return tokens_.begin() + static_cast<std::ptrdiff_t>(head_); }
+  auto end() { return tokens_.end(); }
+  auto begin() const {
+    return tokens_.begin() + static_cast<std::ptrdiff_t>(head_);
+  }
+  auto end() const { return tokens_.end(); }
+
+private:
+  std::vector<Token> tokens_;
+  std::size_t head_ = 0;
+};
+
+using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, TokenQueue>;
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
 struct LoopState {
