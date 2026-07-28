@@ -330,6 +330,30 @@ llvm.func @zero_count_aliases(%value: i32) -> i32 {
     llvm.return %ctlz : i32
 }
 
+// Integer absolute value is not a distinct builtin Fabric capability. The
+// mechanical S0 spelling uses ordinary compare, subtract, and select actors.
+// The poisoning LLVM form carries its INT_MIN contract on the negation.
+// CHECK-LABEL: llvm.func @integer_abs_defined
+llvm.func @integer_abs_defined(%value: i32) -> i32 {
+    // CHECK: %[[ZERO0:.*]] = arith.constant 0 : i32
+    // CHECK: %[[NEG0:.*]] = arith.cmpi slt, %arg0, %[[ZERO0]] : i32
+    // CHECK: %[[MAG0:.*]] = arith.subi %[[ZERO0]], %arg0 : i32
+    // CHECK: %[[ABS0:.*]] = arith.select %[[NEG0]], %[[MAG0]], %arg0 : i32
+    %defined = "llvm.intr.abs"(%value) <{is_int_min_poison = false}> : (i32) -> i32
+    llvm.return %defined : i32
+}
+
+// CHECK-LABEL: llvm.func @integer_abs_poison
+llvm.func @integer_abs_poison(%value: i32) -> i32 {
+    // CHECK: %[[ZERO1:.*]] = arith.constant 0 : i32
+    // CHECK: %[[NEG1:.*]] = arith.cmpi slt, %arg0, %[[ZERO1]] : i32
+    // CHECK: %[[MAG1:.*]] = arith.subi %[[ZERO1]], %arg0 overflow<nsw> : i32
+    // CHECK: %[[ABS1:.*]] = arith.select %[[NEG1]], %[[MAG1]], %arg0 : i32
+    // CHECK-NOT: llvm.intr.abs
+    %poison = "llvm.intr.abs"(%value) <{is_int_min_poison = true}> : (i32) -> i32
+    llvm.return %poison : i32
+}
+
 // CHECK-LABEL: llvm.func @int_constant
 llvm.func @int_constant() -> i32 {
     // CHECK: %{{.*}} = arith.constant 42 : i32

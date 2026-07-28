@@ -252,6 +252,41 @@ struct CountZerosAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   }
 };
 
+// llvm.intr.abs -> compare, subtract, select.
+//
+// Integer magnitude is deliberately expressed using ordinary S0 actors: the
+// builtin Fabric ALU inventory does not advertise a distinct integer-abs
+// capability. LLVM's optional INT_MIN poison contract belongs on the only
+// overflowing operation in the expansion, the signed negation.
+struct IntegerAbsExpansion
+    : public ::mlir::OpRewritePattern<::mlir::LLVM::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::AbsOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/false))
+      return ::mlir::failure();
+
+    ::mlir::Type type = op.getRes().getType();
+    auto zeroAttr = rewriter.getZeroAttr(type);
+    if (!zeroAttr)
+      return ::mlir::failure();
+    auto zero = ::mlir::arith::ConstantOp::create(rewriter, op.getLoc(), type,
+                                                   zeroAttr);
+    auto isNegative = ::mlir::arith::CmpIOp::create(
+        rewriter, op.getLoc(), ::mlir::arith::CmpIPredicate::slt, op.getIn(),
+        zero);
+    auto negated = ::mlir::arith::SubIOp::create(rewriter, op.getLoc(), type,
+                                                 zero, op.getIn());
+    if (op.getIsIntMinPoison())
+      negated.setOverflowFlags(::mlir::arith::IntegerOverflowFlags::nsw);
+    rewriter.replaceOpWithNewOp<::mlir::arith::SelectOp>(
+        op, type, isNegative, negated, op.getIn());
+    return ::mlir::success();
+  }
+};
+
 // llvm.icmp -> arith.cmpi.
 struct ICmpAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::ICmpOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -495,6 +530,9 @@ struct LLVMArithToArithPass
                         ::mlir::math::CountLeadingZerosOp>,
         CountZerosAlias<::mlir::LLVM::CountTrailingZerosOp,
                         ::mlir::math::CountTrailingZerosOp>,
+
+        // integer magnitude in terms of the ordinary ALU graph
+        IntegerAbsExpansion,
 
         // compares, selection and constants
         ICmpAlias, FCmpAlias, SelectAlias, ConstantAlias,
