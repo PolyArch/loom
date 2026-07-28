@@ -304,6 +304,27 @@ loop:
 exit:
   ret void
 }
+
+define void @runtime_stride_pointer_induction(ptr %base, i32 %count,
+                                               i32 %stride) {
+entry:
+  %empty = icmp eq i32 %count, 0
+  %wide_stride = sext i32 %stride to i64
+  br i1 %empty, label %exit, label %loop
+
+loop:
+  %remaining = phi i32 [ %count, %entry ], [ %next_remaining, %loop ]
+  %cursor = phi ptr [ %base, %entry ], [ %next_cursor, %loop ]
+  %value = load i8, ptr %cursor, align 1
+  store i8 %value, ptr %cursor, align 1
+  %next_cursor = getelementptr inbounds i8, ptr %cursor, i64 %wide_stride
+  %next_remaining = add i32 %remaining, -1
+  %more = icmp ne i32 %next_remaining, 0
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer =
@@ -904,6 +925,22 @@ void wholeCallableNormalizesPointerInduction() {
   }
   if (!sawLoad || !sawStore)
     fail(test, "normalized pointer induction lost its memory transactions");
+
+  auto runtimeStride =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram,
+                                  "runtime_stride_pointer_induction"),
+                     design.roots().front(), options));
+  auto runtimeStrideView = take(test, runtimeStride.canonicalDataflow.view());
+  if (runtimeStrideView.graphs().size() != 1 ||
+      runtimeStrideView.actors().empty())
+    fail(test, "loop-invariant runtime stride did not publish its graph");
+  for (const dataflow::CanonicalActorView &actor : runtimeStrideView.actors())
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(actor.op))
+      if (dataflow::DataflowDialect::containsMemoryCapability(
+              carry.getOutput().getType()))
+        fail(test, "runtime pointer stride became memory carry state");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

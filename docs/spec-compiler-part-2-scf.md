@@ -553,9 +553,11 @@ semantics and are the sole input consumed by mechanical Dataflow lowering.
 A loop-carried raw pointer is not a second memory-capability recurrence. Before
 the selected region finalizes, a proven constant-stride pointer induction is
 materialized as one loop-invariant base capability plus a fixed-width integer
-element-offset recurrence. The proof must identify one finite counted-loop
-domain, one exact access element type per pointer lane, an integral element
-stride, and an accumulated offset that fits the selected signed index width.
+element-offset recurrence. Constant-stride means invariant for that loop; the
+stride may be a runtime value defined outside the loop. The proof must identify
+one finite counted-loop domain, one exact access element type per pointer lane,
+an integral element stride with a finite value range, and an accumulated offset
+that fits the selected signed index width.
 The transformed GEP is derived mechanically from the base and offset. If any
 of those facts is unknown, the candidate is non-finalizable; Part 3 never
 places the raw pointer in `dataflow.carry` or invents a dynamic capability.

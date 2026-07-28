@@ -17,7 +17,6 @@
 #include "llvm/ADT/Twine.h"
 
 #include <cstdint>
-#include <limits>
 #include <string>
 
 namespace loom::frontend::detail {
@@ -208,12 +207,18 @@ struct GepIndexUse final {
   mlir::Value source;
 };
 
+struct PointerInductionStride final {
+  std::optional<llvm::APInt> constantElements;
+  mlir::Value invariantIndex;
+  uint64_t elementScale = 1;
+};
+
 struct PointerInductionLane final {
   unsigned ordinal;
   mlir::Value base;
   mlir::LLVM::GEPOp update;
   mlir::Type accessElementType;
-  llvm::APInt stride;
+  PointerInductionStride stride;
 };
 
 struct PointerInductionLoop final {
@@ -294,7 +299,7 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
   return std::nullopt;
 }
 
-std::optional<llvm::APInt> positiveConstantGepIndex(mlir::LLVM::GEPOp gep) {
+std::optional<llvm::APInt> constantGepIndex(mlir::LLVM::GEPOp gep) {
   auto indices = gep.getIndices();
   if (indices.size() != 1)
     return std::nullopt;
@@ -304,9 +309,26 @@ std::optional<llvm::APInt> positiveConstantGepIndex(mlir::LLVM::GEPOp gep) {
   if (!constant)
     if (mlir::Value value = llvm::dyn_cast_if_present<mlir::Value>(index))
       constant = integerConstant(value);
-  if (!constant || !constant.getValue().isStrictlyPositive())
-    return std::nullopt;
-  return constant.getValue();
+  return constant ? std::optional<llvm::APInt>(constant.getValue())
+                  : std::nullopt;
+}
+
+mlir::Value invariantGepIndex(mlir::LLVM::GEPOp gep, mlir::scf::WhileOp loop) {
+  auto indices = gep.getIndices();
+  if (indices.size() != 1)
+    return {};
+  mlir::Value value = llvm::dyn_cast_if_present<mlir::Value>(indices[0]);
+  if (!value || integerConstant(value) ||
+      !llvm::isa<mlir::IntegerType>(value.getType()))
+    return {};
+  if (mlir::Operation *definition = value.getDefiningOp())
+    return loop->isAncestor(definition) ? mlir::Value{} : value;
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  mlir::Operation *owner =
+      argument ? argument.getOwner()->getParentOp() : nullptr;
+  return !owner || owner == loop.getOperation() || loop->isAncestor(owner)
+             ? mlir::Value{}
+             : value;
 }
 
 std::optional<uint64_t> fixedByteSize(mlir::Operation *scope, mlir::Type type) {
@@ -372,24 +394,33 @@ pointerLaneAccessElementType(mlir::BlockArgument pointer,
   return accessType;
 }
 
-std::optional<llvm::APInt> elementStride(mlir::LLVM::GEPOp update,
-                                         const llvm::APInt &rawStride,
-                                         mlir::Type accessElementType) {
-  if (rawStride.getActiveBits() > 64)
-    return std::nullopt;
+std::optional<llvm::APInt> constantElementStride(mlir::LLVM::GEPOp update,
+                                                 const llvm::APInt &rawStride,
+                                                 mlir::Type accessElementType) {
   std::optional<uint64_t> gepBytes =
       fixedByteSize(update, update.getElemType());
   std::optional<uint64_t> accessBytes =
       fixedByteSize(update, accessElementType);
-  if (!gepBytes || !accessBytes ||
-      rawStride.getZExtValue() >
-          std::numeric_limits<uint64_t>::max() / *gepBytes)
+  if (!gepBytes || !accessBytes)
     return std::nullopt;
-  uint64_t byteStride = rawStride.getZExtValue() * *gepBytes;
-  if (byteStride == 0 || byteStride % *accessBytes != 0)
+  const unsigned width = rawStride.getBitWidth() + 65;
+  llvm::APInt byteStride =
+      rawStride.sext(width) * llvm::APInt(width, *gepBytes);
+  llvm::APInt divisor(width, *accessBytes);
+  if (!byteStride.srem(divisor).isZero())
     return std::nullopt;
-  uint64_t elements = byteStride / *accessBytes;
-  return llvm::APInt(64, elements);
+  return byteStride.sdiv(divisor);
+}
+
+std::optional<uint64_t> dynamicElementScale(mlir::LLVM::GEPOp update,
+                                            mlir::Type accessElementType) {
+  std::optional<uint64_t> gepBytes =
+      fixedByteSize(update, update.getElemType());
+  std::optional<uint64_t> accessBytes =
+      fixedByteSize(update, accessElementType);
+  if (!gepBytes || !accessBytes || *gepBytes % *accessBytes != 0)
+    return std::nullopt;
+  return *gepBytes / *accessBytes;
 }
 
 std::optional<PointerInductionLoop>
@@ -430,18 +461,28 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
         ++feedbackUses;
     if (feedbackUses != 1)
       return std::nullopt;
-    std::optional<llvm::APInt> rawStride = positiveConstantGepIndex(update);
     std::optional<mlir::Type> accessElementType = pointerLaneAccessElementType(
         before->getArgument(lane), update, condition);
-    if (!rawStride || !accessElementType)
+    if (!accessElementType)
       return std::nullopt;
-    std::optional<llvm::APInt> stride =
-        elementStride(update, *rawStride, *accessElementType);
-    if (!stride)
-      return std::nullopt;
+
+    PointerInductionStride stride;
+    if (std::optional<llvm::APInt> rawStride = constantGepIndex(update)) {
+      stride.constantElements =
+          constantElementStride(update, *rawStride, *accessElementType);
+      if (!stride.constantElements)
+        return std::nullopt;
+    } else {
+      stride.invariantIndex = invariantGepIndex(update, loop);
+      std::optional<uint64_t> scale =
+          dynamicElementScale(update, *accessElementType);
+      if (!stride.invariantIndex || !scale)
+        return std::nullopt;
+      stride.elementScale = *scale;
+    }
     result.lanes.push_back(PointerInductionLane{lane, loop.getInits()[lane],
                                                 update, *accessElementType,
-                                                std::move(*stride)});
+                                                std::move(stride)});
   }
   if (pointerLanes == 0 || result.lanes.size() != pointerLanes)
     return std::nullopt;
@@ -459,11 +500,78 @@ collectPointerInductionLoops(mlir::Operation *operation) {
   return loops;
 }
 
+struct SignedRange final {
+  llvm::APInt minimum;
+  llvm::APInt maximum;
+};
+
+std::optional<SignedRange> signedIndexRange(mlir::Value value) {
+  auto type = llvm::dyn_cast<mlir::IntegerType>(value.getType());
+  if (!type)
+    return std::nullopt;
+  const unsigned width = type.getWidth();
+  if (mlir::IntegerAttr constant = integerConstant(value))
+    return SignedRange{constant.getValue(), constant.getValue()};
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
+    auto source =
+        llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
+    if (!source)
+      return std::nullopt;
+    return SignedRange{
+        llvm::APInt::getSignedMinValue(source.getWidth()).sext(width),
+        llvm::APInt::getSignedMaxValue(source.getWidth()).sext(width)};
+  }
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>()) {
+    auto source =
+        llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
+    if (!source)
+      return std::nullopt;
+    return SignedRange{llvm::APInt(width, 0),
+                       llvm::APInt::getMaxValue(source.getWidth()).zext(width)};
+  }
+  return SignedRange{llvm::APInt::getSignedMinValue(width),
+                     llvm::APInt::getSignedMaxValue(width)};
+}
+
+bool scaledAccumulationFits(const SignedRange &range, uint64_t scale,
+                            unsigned iterationWidth, unsigned width) {
+  if (iterationWidth >= width || scale == 0)
+    return false;
+  llvm::APInt scaleBits(width, scale);
+  if (scaleBits.isNegative())
+    return false;
+  llvm::APInt maxIterations = llvm::APInt::getLowBitsSet(width, iterationWidth);
+  for (const llvm::APInt *endpoint : {&range.minimum, &range.maximum}) {
+    if (!endpoint->isSignedIntN(width))
+      return false;
+    bool overflow = false;
+    llvm::APInt scaled =
+        endpoint->sextOrTrunc(width).smul_ov(scaleBits, overflow);
+    if (overflow)
+      return false;
+    (void)scaled.smul_ov(maxIterations, overflow);
+    if (overflow)
+      return false;
+  }
+  return true;
+}
+
 bool pointerOffsetsFit(const PointerInductionLoop &loop, unsigned width) {
   for (const PointerInductionLane &lane : loop.lanes) {
-    const uint64_t required = static_cast<uint64_t>(loop.iterationStateWidth) +
-                              lane.stride.getActiveBits() + 1;
-    if (required > width)
+    SignedRange range{llvm::APInt(1, 0), llvm::APInt(1, 0)};
+    uint64_t scale = lane.stride.elementScale;
+    if (lane.stride.constantElements) {
+      range = SignedRange{*lane.stride.constantElements,
+                          *lane.stride.constantElements};
+      scale = 1;
+    } else {
+      std::optional<SignedRange> dynamic =
+          signedIndexRange(lane.stride.invariantIndex);
+      if (!dynamic)
+        return false;
+      range = std::move(*dynamic);
+    }
+    if (!scaledAccumulationFits(range, scale, loop.iterationStateWidth, width))
       return false;
   }
   return true;
@@ -486,6 +594,37 @@ mlir::Value buildDerivedPointer(mlir::OpBuilder &builder,
       lane.base, mlir::ValueRange{offset}, update.getNoWrapFlags());
   derived->setDiscardableAttrs(update->getDiscardableAttrDictionary());
   return derived.getResult();
+}
+
+mlir::Value materializeElementStride(mlir::OpBuilder &builder,
+                                     const PointerInductionLane &lane,
+                                     mlir::IntegerType offsetType,
+                                     mlir::Location location) {
+  if (lane.stride.constantElements) {
+    llvm::APInt bits =
+        lane.stride.constantElements->sextOrTrunc(offsetType.getWidth());
+    return mlir::arith::ConstantOp::create(
+        builder, location, offsetType,
+        mlir::IntegerAttr::get(offsetType, bits));
+  }
+
+  mlir::Value stride = lane.stride.invariantIndex;
+  auto sourceType = llvm::cast<mlir::IntegerType>(stride.getType());
+  if (sourceType.getWidth() < offsetType.getWidth())
+    stride =
+        mlir::arith::ExtSIOp::create(builder, location, offsetType, stride);
+  else if (sourceType.getWidth() > offsetType.getWidth()) {
+    auto trunc =
+        mlir::arith::TruncIOp::create(builder, location, offsetType, stride);
+    trunc.setOverflowFlags(mlir::arith::IntegerOverflowFlags::nsw);
+    stride = trunc;
+  }
+  if (lane.stride.elementScale == 1)
+    return stride;
+  auto scale = mlir::arith::ConstantOp::create(
+      builder, location, offsetType,
+      builder.getIntegerAttr(offsetType, lane.stride.elementScale));
+  return mlir::arith::MulIOp::create(builder, location, stride, scale);
 }
 
 mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
@@ -523,10 +662,8 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
     for (const PointerInductionLane &lane : plan.lanes) {
       mlir::LLVM::GEPOp update = lane.update;
       skippedUpdates.insert(update.getOperation());
-      llvm::APInt strideBits = lane.stride.zextOrTrunc(width);
-      auto stride = mlir::arith::ConstantOp::create(
-          bodyBuilder, update.getLoc(), offsetType,
-          mlir::IntegerAttr::get(offsetType, strideBits));
+      mlir::Value stride = materializeElementStride(
+          bodyBuilder, lane, offsetType, update.getLoc());
       nextOffsets[lane.ordinal] = mlir::arith::AddIOp::create(
           bodyBuilder, update.getLoc(), arguments[lane.ordinal], stride);
       mapping.map(update.getResult(),

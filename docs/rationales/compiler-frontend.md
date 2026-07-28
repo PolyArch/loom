@@ -154,11 +154,13 @@ candidate rather than silently truncating source addresses.
 
 The same ownership explains pointer induction. A pointer updated on every
 iteration looks like loop state in imperative SSA, but its storage authority
-does not change: only an offset from one static capability changes. Keeping the
-base invariant and carrying the typed element offset preserves that fact,
-gives memory lowering an exact address relation, and avoids adding dynamic raw
-pointer semantics to canonical Dataflow. Shapes whose finite offset domain or
-element units cannot be proved remain ordinary InstructionCore candidates.
+does not change: only an offset from one static capability changes. This remains
+true when the fixed per-iteration stride is a runtime value invariant within the
+loop. Keeping the base invariant and carrying the typed element offset preserves
+that fact, gives memory lowering an exact address relation, and avoids adding
+dynamic raw pointer semantics to canonical Dataflow. Shapes whose finite offset
+domain or element units cannot be proved remain ordinary InstructionCore
+candidates.
 
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
