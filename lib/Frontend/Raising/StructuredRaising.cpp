@@ -21,9 +21,13 @@
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Import.h"
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
 
 #include <memory>
 
@@ -35,6 +39,33 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "structured_raising_invalid: " + message);
 }
 
+void normalizeBulkMemoryIntrinsics(llvm::Module &module) {
+  llvm::TargetTransformInfo target(module.getDataLayout());
+  llvm::SmallVector<llvm::MemIntrinsic *, 16> intrinsics;
+  for (llvm::Function &function : module)
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block)
+        if (auto *intrinsic = llvm::dyn_cast<llvm::MemIntrinsic>(&instruction))
+          intrinsics.push_back(intrinsic);
+
+  for (llvm::MemIntrinsic *intrinsic : intrinsics) {
+    if (auto *copy = llvm::dyn_cast<llvm::MemCpyInst>(intrinsic)) {
+      llvm::expandMemCpyAsLoop(copy, target);
+      copy->eraseFromParent();
+      continue;
+    }
+    if (auto *move = llvm::dyn_cast<llvm::MemMoveInst>(intrinsic)) {
+      if (llvm::expandMemMoveAsLoop(move, target))
+        move->eraseFromParent();
+      continue;
+    }
+    if (auto *set = llvm::dyn_cast<llvm::MemSetInst>(intrinsic)) {
+      llvm::expandMemSetAsLoop(set, nullptr);
+      set->eraseFromParent();
+    }
+  }
+}
+
 } // namespace
 
 llvm::Expected<frontend::StructuredProgramCandidate>
@@ -44,6 +75,10 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
     return invalid("missing LLVM module");
   if (llvm::verifyModule(*module))
     return invalid("LLVM module failed verification");
+
+  normalizeBulkMemoryIntrinsics(*module);
+  if (llvm::verifyModule(*module))
+    return invalid("bulk-memory normalization produced invalid LLVM IR");
 
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);

@@ -102,6 +102,14 @@ The compiler generates immutable candidates, uses typed analyses for legality,
 and asks the central Evaluation/DSE framework to compare legal alternatives,
 optionally against an exact Fabric target.
 
+LLVM bulk-memory intrinsics are expanded to exact structured loop semantics
+before ownership selection. This exposes direction, bounds, volatile behavior,
+and tail handling where vector width, chunking, staging, and unroll decisions
+belong. Retaining a second bulk operation in canonical Dataflow would hide
+those choices and invent semantics that no Fabric capability necessarily
+provides; an explicit DMA-like actor is justified only when a future typed
+hardware capability owns it.
+
 ## Why Structured Candidates Are Artifacts
 
 Structured optimization and hardware-aware Evaluation compare complete program

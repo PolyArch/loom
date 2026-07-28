@@ -125,8 +125,8 @@ bool isCanonicalMemoryBridge(dataflow::GraphOp graph, mlir::Operation *op) {
 
 bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
   return llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
-                   mlir::LLVM::MemcpyOp>(op) ||
-         op->getName().getStringRef() == "llvm.intr.memset";
+                   mlir::LLVM::MemcpyOp, mlir::LLVM::MemmoveOp,
+                   mlir::LLVM::MemsetOp>(op);
 }
 
 bool hasRawPointerUse(mlir::Operation *op) {
@@ -506,8 +506,8 @@ bool hasObservableEffect(mlir::Operation *op) {
   if (dialect == "arith" || dialect == "math" || dialect == "ub")
     return false;
   if (dialect == "llvm" &&
-      !llvm::isa<mlir::LLVM::CallOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp>(
-          op))
+      !llvm::isa<mlir::LLVM::CallOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
+                 mlir::LLVM::MemmoveOp, mlir::LLVM::MemsetOp>(op))
     return false;
   return true;
 }

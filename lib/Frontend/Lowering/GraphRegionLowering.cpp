@@ -87,10 +87,12 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
                   ::dataflow::LoadOp, ::dataflow::StoreOp,
                   ::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(op))
     return GraphLeafLowering::Implemented;
-  // Graph normalization rewrites these into dataflow memory actors before
-  // region lowering, and residual ones fail the normalized-effect check.
+  // Graph normalization rewrites ordinary loads and stores into dataflow
+  // memory actors. Bulk intrinsics must have been expanded before ownership
+  // selection; residual operations fail the normalized-effect check.
   if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
-                  ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemsetOp>(op))
+                  ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemmoveOp,
+                  ::mlir::LLVM::MemsetOp>(op))
     return GraphLeafLowering::Implemented;
   // A fresh allocation is the invocation-local memory root
   // `docs/spec-compiler-part-3-mem.md` defines, and the finalized graph keeps

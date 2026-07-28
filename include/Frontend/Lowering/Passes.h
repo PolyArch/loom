@@ -37,7 +37,7 @@ std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 std::unique_ptr<::mlir::Pass> createExpandGraphMemrefCopyPass();
 
 // Module-scope owner for graph-local memory and structured regions. It
-// normalizes supported LLVM and memref accesses to dataflow.load/store,
+// normalizes supported scalar LLVM and memref accesses to dataflow.load/store,
 // computes basic graph-local alias-root partitions, and recursively lowers
 // scf.if/scf.for/scf.while while carrying execution, values, and independent
 // write/read frontiers. Raw parallel SCF fails before mutation.

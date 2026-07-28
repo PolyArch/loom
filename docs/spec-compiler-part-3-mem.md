@@ -447,20 +447,22 @@ The owner rejects before mutation when:
 
 * raw or unverifiably owned parallel SCF reaches a graph;
 * an effectful or unmodeled nested operation reaches a graph;
-* a residual LLVM load, store, memcpy, or memset remains after normalization
-  and therefore has no explicit completion event;
+* a residual LLVM load, store, memcpy, memmove, or memset remains after
+  normalization and therefore has no explicit completion event;
 * a source memory access has not been normalized to the canonical linear
   memory-space form required by its scalar or vector Dataflow actor;
 * structured control carries a memref result or memref loop state;
 * the graph entry lacks the leading `none` execution value.
 
-Supported LLVM load, store, memcpy, and memset forms are normalized before
-recursive region lowering, after which the same frontier rules apply. Every
-residual raw LLVM memory operation fails closed. The finalized-graph gate also
-rejects residual `memref.load`/`memref.store`, `memref.get_global`, raw pointer
-arithmetic, pointer-bearing operations other than verified boundary bridges,
-and unknown memory-capability producers. An unsupported effectful operation
-inside a structured region must likewise fail closed instead of being hoisted.
+LLVM memcpy, memmove, and memset intrinsics are expanded into their exact
+structured loop semantics before ownership selection. Supported LLVM load and
+store forms are then normalized before recursive region lowering, after which
+the same frontier rules apply. Every residual raw LLVM memory operation fails
+closed. The finalized-graph gate also rejects residual
+`memref.load`/`memref.store`, `memref.get_global`, raw pointer arithmetic,
+pointer-bearing operations other than verified boundary bridges, and unknown
+memory-capability producers. An unsupported effectful operation inside a
+structured region must likewise fail closed instead of being hoisted.
 
 ## 13. Non-Goals
 

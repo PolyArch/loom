@@ -1,0 +1,25 @@
+# RUN: %loom-cc -emit-llvm -S -O0 %S/Inputs/bulk_memory.c -o %t.ll
+# RUN: %loom-raise %t.ll -o %t.mlir
+# RUN: FileCheck %s --check-prefix=NO-BULK --input-file=%t.mlir
+# RUN: FileCheck %s --check-prefix=COPY --input-file=%t.mlir
+# RUN: FileCheck %s --check-prefix=MOVE --input-file=%t.mlir
+# RUN: FileCheck %s --check-prefix=FILL --input-file=%t.mlir
+
+# NO-BULK: module
+# NO-BULK-NOT: llvm.intr.memcpy
+# NO-BULK-NOT: llvm.intr.memmove
+# NO-BULK-NOT: llvm.intr.memset
+
+# COPY-LABEL: llvm.func @copy_bytes
+# COPY: scf.{{for|while}}
+# COPY: llvm.load {{.*}} : !llvm.ptr -> i8
+# COPY: llvm.store {{.*}} : i8, !llvm.ptr
+
+# MOVE-LABEL: llvm.func @move_bytes
+# MOVE: scf.{{for|while}}
+# MOVE: llvm.load {{.*}} : !llvm.ptr -> i8
+# MOVE: llvm.store {{.*}} : i8, !llvm.ptr
+
+# FILL-LABEL: llvm.func @fill_bytes
+# FILL: scf.{{for|while}}
+# FILL: llvm.store {{.*}} : i8, !llvm.ptr
