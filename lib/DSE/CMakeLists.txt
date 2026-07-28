@@ -1,4 +1,5 @@
 add_library(LoomDSE
+  PreMappingExploration.cpp
   Promotion.cpp
   StructuredOwnership.cpp
 )

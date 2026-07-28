@@ -17,6 +17,15 @@ class Module;
 
 namespace loom::frontend {
 
+/// The exact result at the first mechanical compiler boundary. Fabric remains
+/// an invocation binding and static globals remain an ephemeral LLVM-owned
+/// projection; neither is copied into the Structured Program Artifact.
+struct StructuredCompilation final {
+  ArtifactRootReference fabric;
+  StaticGlobalMemoryCatalog staticGlobalMemory;
+  StructuredProgramCandidate structuredProgram;
+};
+
 /// The exact non-Mapping result of one front-end invocation. Fabric is an
 /// invocation input used for subsequent capability and Evaluation decisions;
 /// it is intentionally not embedded in either software artifact.
@@ -39,6 +48,20 @@ struct PublishedPreMappingCompilation final {
   ArtifactRootReference structuredProgram;
   ArtifactRootReference canonicalDataflow;
 };
+
+llvm::Expected<StructuredCompilation> raiseLlvmModuleToStructured(
+    std::unique_ptr<llvm::Module> module,
+    const ::loom::fabric::FinalizedFabricRoot &fabric,
+    const raising::StructuredRaisingOptions &options = {});
+
+llvm::Expected<StructuredCompilation> raiseLlvmModuleToStructured(
+    std::unique_ptr<llvm::Module> module, const ArtifactRootReference &fabric,
+    const ArtifactStore &store,
+    const raising::StructuredRaisingOptions &options = {});
+
+llvm::Expected<PreMappingCompilation> lowerStructuredCompilationToPreMapping(
+    StructuredCompilation compilation,
+    const lowering::CanonicalDataflowLoweringOptions &options = {});
 
 /// Runs the mechanical LLVM-to-Structured and Structured-to-Dataflow
 /// boundaries against one already-finalized exact Fabric target. Structured

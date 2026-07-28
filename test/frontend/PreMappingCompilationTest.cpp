@@ -3,8 +3,8 @@
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
 #include "Common/ResolvedConfig.h"
+#include "DSE/PreMappingExploration.h"
 #include "DSE/Promotion.h"
-#include "DSE/StructuredOwnership.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -1351,16 +1351,17 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       selection->selected.front() != spatialRef)
     fail(test, "central DSE TopK did not promote the best exact candidate");
 
-  loom::dse::StructuredOwnershipExplorationOptions exploration{
+  loom::dse::PreMappingExplorationOptions exploration{
       {},
-      {loom::evaluation::MetricRequestOrdinal(0),
-       loom::dse::ObjectiveDirection::Minimize, 1}};
+      {{},
+       {loom::evaluation::MetricRequestOrdinal(0),
+        loom::dse::ObjectiveDirection::Minimize, 1}}};
   auto explored =
-      take(test, loom::dse::generateAndPromoteStructuredOwnership(
-                     compiled.structuredProgram, design.roots().front(),
+      take(test, loom::dse::exploreLlvmModuleToPreMapping(
+                     parseSpatialModule(test, context), design.roots().front(),
                      loom::defaultResolvedConfig(), exploration, store));
   const auto *exploredSelection =
-      std::get_if<loom::dse::CompletedStructuredOwnershipSelection>(&explored);
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail(test, "central ownership exploration did not select one survivor");
   auto exploredView =

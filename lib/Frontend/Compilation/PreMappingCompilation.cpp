@@ -14,10 +14,22 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<PreMappingCompilation>
-compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
-                              const ::loom::fabric::FinalizedFabricRoot &fabric,
-                              const PreMappingCompilationOptions &options) {
+llvm::Expected<PreMappingCompilation> lowerStructuredCompilationToPreMapping(
+    StructuredCompilation compilation,
+    const lowering::CanonicalDataflowLoweringOptions &options) {
+  auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
+      compilation.structuredProgram, options);
+  if (!dataflow)
+    return dataflow.takeError();
+  return PreMappingCompilation{
+      std::move(compilation.fabric), std::move(compilation.staticGlobalMemory),
+      std::move(compilation.structuredProgram), std::move(*dataflow)};
+}
+
+llvm::Expected<StructuredCompilation>
+raiseLlvmModuleToStructured(std::unique_ptr<llvm::Module> module,
+                            const ::loom::fabric::FinalizedFabricRoot &fabric,
+                            const raising::StructuredRaisingOptions &options) {
   if (!module)
     return invalid("LLVM module is required");
   if (fabric.reference().schemaIdentity.empty())
@@ -25,28 +37,49 @@ compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
   auto staticGlobalMemory = projectStaticGlobalMemory(*module);
   if (!staticGlobalMemory)
     return staticGlobalMemory.takeError();
-  auto structured = raising::raiseLlvmModuleToStructuredProgram(
-      std::move(module), options.raising);
+  auto structured =
+      raising::raiseLlvmModuleToStructuredProgram(std::move(module), options);
   if (!structured)
     return structured.takeError();
-  auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
-      *structured, options.lowering);
-  if (!dataflow)
-    return dataflow.takeError();
-  return PreMappingCompilation{fabric.reference(),
+  return StructuredCompilation{fabric.reference(),
                                std::move(*staticGlobalMemory),
-                               std::move(*structured), std::move(*dataflow)};
+                               std::move(*structured)};
 }
 
-llvm::Expected<PreMappingCompilation> compileLlvmModuleToPreMapping(
-    std::unique_ptr<llvm::Module> module, const ArtifactRootReference &fabric,
-    const ArtifactStore &store, const PreMappingCompilationOptions &options) {
+llvm::Expected<StructuredCompilation>
+raiseLlvmModuleToStructured(std::unique_ptr<llvm::Module> module,
+                            const ArtifactRootReference &fabric,
+                            const ArtifactStore &store,
+                            const raising::StructuredRaisingOptions &options) {
   if (fabric.schemaIdentity.empty())
     return invalid("Fabric artifact reference is required");
   auto imported = ::loom::fabric::importEntireFabricRoot(fabric, store);
   if (!imported)
     return imported.takeError();
-  return compileLlvmModuleToPreMapping(std::move(module), *imported, options);
+  return raiseLlvmModuleToStructured(std::move(module), *imported, options);
+}
+
+llvm::Expected<PreMappingCompilation>
+compileLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
+                              const ::loom::fabric::FinalizedFabricRoot &fabric,
+                              const PreMappingCompilationOptions &options) {
+  auto structured =
+      raiseLlvmModuleToStructured(std::move(module), fabric, options.raising);
+  if (!structured)
+    return structured.takeError();
+  return lowerStructuredCompilationToPreMapping(std::move(*structured),
+                                                options.lowering);
+}
+
+llvm::Expected<PreMappingCompilation> compileLlvmModuleToPreMapping(
+    std::unique_ptr<llvm::Module> module, const ArtifactRootReference &fabric,
+    const ArtifactStore &store, const PreMappingCompilationOptions &options) {
+  auto structured = raiseLlvmModuleToStructured(std::move(module), fabric,
+                                                store, options.raising);
+  if (!structured)
+    return structured.takeError();
+  return lowerStructuredCompilationToPreMapping(std::move(*structured),
+                                                options.lowering);
 }
 
 llvm::Expected<PublishedPreMappingCompilation>
