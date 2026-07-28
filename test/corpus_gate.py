@@ -363,12 +363,14 @@ def pre_mapping_command(
     store_dir: Path,
     d0_module: Path,
     counts: Path,
+    candidate_jobs: int,
 ) -> list[str]:
     return [
         toolchain.pre_mapping,
         f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
         f"--counts={counts}",
+        f"--candidate-jobs={candidate_jobs}",
         str(llvm_ir),
         "-o",
         str(d0_module),
@@ -510,6 +512,7 @@ def run_case(
     external_root: Path,
     out_root: Path,
     case_timeout: float,
+    candidate_jobs: int,
 ) -> CaseResult:
     started = time.monotonic()
     deadline = started + case_timeout
@@ -557,7 +560,12 @@ def run_case(
                 counts_path = case_dir / f"{stem}.counts.json"
                 failure = run_step(
                     pre_mapping_command(
-                        toolchain, llvm_ir, store_dir, d0_module, counts_path
+                        toolchain,
+                        llvm_ir,
+                        store_dir,
+                        d0_module,
+                        counts_path,
+                        candidate_jobs,
                     ),
                     case_dir / f"{stem}.pre-mapping.log",
                     deadline,
@@ -612,12 +620,20 @@ def run_cases(
     out_root: Path,
     jobs: int,
     case_timeout: float,
+    candidate_jobs: int,
 ) -> list[CaseResult]:
     results: list[CaseResult | None] = [None] * len(cases)
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
             pool.submit(
-                run_case, case, stage, toolchain, external_root, out_root, case_timeout
+                run_case,
+                case,
+                stage,
+                toolchain,
+                external_root,
+                out_root,
+                case_timeout,
+                candidate_jobs,
             ): index
             for index, case in enumerate(cases)
         }
@@ -672,6 +688,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "when it expires (default: %(default)s)",
     )
     parser.add_argument(
+        "--candidate-jobs",
+        type=int,
+        default=1,
+        help="bounded ownership-candidate workers within each d0 case "
+        "(default: %(default)s)",
+    )
+    parser.add_argument(
         "--sysroot",
         help=f"RISC-V cross sysroot (or set {ENV_SYSROOT}; else derived from "
         f"{RISCV_GCC_NAME})",
@@ -705,12 +728,14 @@ def render_human(
     stage: str,
     toolchain: Toolchain,
     jobs: int,
+    candidate_jobs: int,
     duration_seconds: float,
 ) -> str:
     lines = [
         f"[corpus-gate] stage={stage} target={TARGET_TRIPLE} "
         f"march={TARGET_MARCH} mabi={TARGET_MABI} "
         f"builtin={BUILTIN_TARGET_PRESET} "
+        f"candidate-jobs={candidate_jobs} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
     ]
     for result in results:
@@ -749,6 +774,7 @@ def render_json(
     stage: str,
     toolchain: Toolchain,
     jobs: int,
+    candidate_jobs: int,
     case_timeout: float,
     duration_seconds: float,
 ) -> str:
@@ -763,6 +789,7 @@ def render_json(
     payload = {
         "case_count": len(results),
         "case_timeout_seconds": case_timeout,
+        "candidate_jobs": candidate_jobs,
         "cases": [result.as_dict() for result in results],
         "duration_seconds": round(duration_seconds, 3),
         "failed": len(results) - passed,
@@ -802,6 +829,12 @@ def main(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.candidate_jobs < 1:
+        print(
+            "[corpus-gate] configuration error: --candidate-jobs must be >= 1",
+            file=sys.stderr,
+        )
+        return 2
     try:
         inventory = corpus_inventory.load_inventory(ROOT)
         selected = corpus_inventory.select_cases(
@@ -835,11 +868,19 @@ def main(argv: Sequence[str]) -> int:
         out_root,
         args.jobs,
         args.case_timeout,
+        args.candidate_jobs,
     )
     duration = time.monotonic() - started
 
     sys.stdout.write(
-        render_human(results, args.stage, toolchain, args.jobs, duration)
+        render_human(
+            results,
+            args.stage,
+            toolchain,
+            args.jobs,
+            args.candidate_jobs,
+            duration,
+        )
     )
     json_path = args.json_path or (out_root / "summary.json")
     try:
@@ -849,6 +890,7 @@ def main(argv: Sequence[str]) -> int:
                 args.stage,
                 toolchain,
                 args.jobs,
+                args.candidate_jobs,
                 args.case_timeout,
                 duration,
             )

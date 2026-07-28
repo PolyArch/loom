@@ -455,6 +455,30 @@ class DeterministicResultsTest(CorpusGateTestBase):
         self.assertEqual(runs[0], runs[1])
         self.assertEqual(runs[1], runs[2])
 
+    def test_d0_candidate_workers_are_forwarded_and_reported(self) -> None:
+        exit_code, human, summary = self.run_gate(
+            "--case",
+            "loombench:axpy",
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
+            "--candidate-jobs",
+            "3",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["candidate_jobs"], 3)
+        self.assertIn("candidate-jobs=3", human)
+        pre_mapping = [
+            line
+            for line in self.invocation_lines()
+            if line.split(" ", 1)[0].endswith("stub-pre-mapping")
+        ]
+        self.assertEqual(len(pre_mapping), 2)
+        self.assertTrue(
+            all("--candidate-jobs=3" in invocation for invocation in pre_mapping)
+        )
+
 
 class TimeoutCleanupTest(CorpusGateTestBase):
     def test_deadline_kills_the_case_process_group(self) -> None:
