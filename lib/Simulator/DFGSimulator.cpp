@@ -1275,8 +1275,10 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
         }
       report.finalStreamOutputs.push_back(std::move(tokens));
     }
-    if (llvm::Error error = captureFinalMemoryState(graph, state, report))
-      return std::move(error);
+    if (!typedWorkload) {
+      if (llvm::Error error = captureFinalMemoryState(graph, state, report))
+        return std::move(error);
+    }
     pendingVectorGroups = hasPendingVectorGroups(state);
   }
   if (report.status == "pass" && !retired) {

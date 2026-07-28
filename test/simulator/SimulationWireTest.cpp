@@ -555,13 +555,9 @@ void typedDfgExecution() {
           "typed run did not execute the store");
   require(test, report.operationFireCounts[OperationSchemaId::ArithAddF] == 1,
           "typed run did not execute the add");
-  auto output = report.finalMemoryState.find("arg3");
   require(test,
-          output != report.finalMemoryState.end() &&
-              output->second.size() == 1024 &&
-              output->second.front() == "f32:2" &&
-              output->second.back() == "f32:0",
-          "typed aliased execution produced the wrong destination state");
+          report.finalMemoryState.empty() && report.finalMemoryRoots.empty(),
+          "typed execution retained the legacy element-level memory report");
   require(test, execution->observations.memories.size() == 3,
           "typed execution did not project its selected memories");
   const DiffMemoryObservation *diff = nullptr;

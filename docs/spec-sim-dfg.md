@@ -41,7 +41,11 @@ normalized outcome, metrics, findings, and binds the execution through that
 output slot. `Retired` returns every mandatory terminal finding as `Absent`;
 `Halted` returns the corresponding finding as `Present` and all others as
 `Absent`. A CLI report is a
-removable projection of those artifacts, never another result authority.
+removable projection of those artifacts, never another result authority. The
+legacy element-formatted `final_memory_state` projection belongs only to the
+fixture-oriented developer CLI. A typed workload returns memory state only
+through the byte-addressed Spatial functional-observation contract; simulator
+execution must not derive or validate a second element-level terminal state.
 
 ## Admission
 

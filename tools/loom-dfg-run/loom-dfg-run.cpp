@@ -280,8 +280,15 @@ llvm::Error compareMemoryObservations(
       return invalid("memory observation exceeds its native captured object");
     for (auto [ordinal, byte] : llvm::enumerate(full->bytes)) {
       if (byte.state != loom::sim::SemanticState::Defined ||
-          byte.value != expected[binding->byteOffset + ordinal])
-        return invalid("DFG memory observation differs from native execution");
+          byte.value != expected[binding->byteOffset + ordinal]) {
+        return invalid(llvm::formatv(
+            "DFG memory observation differs from native execution at "
+            "capture object {0}, root-relative byte {1}, object byte {2}: "
+            "state={3}, actual={4:X2}, expected={5:X2}",
+            binding->objectIndex, ordinal, binding->byteOffset + ordinal,
+            static_cast<std::uint32_t>(byte.state), byte.value,
+            expected[binding->byteOffset + ordinal]));
+      }
     }
     totals.memoryBytesCompared += full->bytes.size();
   }

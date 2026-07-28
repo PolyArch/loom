@@ -435,16 +435,8 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
           64)
     fail(test, "typed DFG execution did not run the vecadd workload");
 
-  std::string destinationPort;
-  for (const auto &[port, root] : report.finalMemoryRoots)
-    if (root == "memory_root2") {
-      destinationPort = port;
-      break;
-    }
-  auto destination = report.finalMemoryState.find(destinationPort);
-  if (destination == report.finalMemoryState.end() ||
-      destination->second.size() != 64)
-    fail(test, "typed DFG execution lost the destination state");
+  if (!report.finalMemoryState.empty() || !report.finalMemoryRoots.empty())
+    fail(test, "typed DFG execution retained the legacy memory report");
 
   if (execution.observations.valueResults.size() != 0 ||
       execution.observations.streamOutputs.size() != 0 ||
@@ -620,9 +612,11 @@ void staticTableExecutesThroughTypedDfgInput() {
   if (!outputObject)
     fail(test, "finalized runtime input lost the output root binding");
 
-  loom::sim::DFGSimulationReport report = take(
-      test, loom::sim::simulateDfgWorkload(candidate.canonicalDataflow,
-                                           finalizedWorkload, finalizedInput));
+  loom::sim::RetiredDFGSimulation execution = take(
+      test, loom::sim::simulateRetiredDfgWorkload(
+                candidate.canonicalDataflow, finalizedWorkload,
+                finalizedInput));
+  loom::sim::DFGSimulationReport &report = execution.report;
   if (report.status != "pass" ||
       report.operationFireCounts[dataflow::OperationSchemaId::DataflowLoad] !=
           4 ||
@@ -630,28 +624,21 @@ void staticTableExecutesThroughTypedDfgInput() {
           4)
     fail(test, "table workload did not execute real memory actors");
 
-  const std::string expectedRoot =
-      "memory_root" + std::to_string(*outputObject);
-  std::string outputPort;
-  for (const auto &[port, root] : report.finalMemoryRoots)
-    if (root == expectedRoot)
-      outputPort = port;
-  auto finalOutput = report.finalMemoryState.find(outputPort);
-  if (finalOutput == report.finalMemoryState.end() ||
-      finalOutput->second !=
-          llvm::SmallVector<std::string>{"i32:287454020", "i32:1432778632",
-                                         "i32:4294967295", "i32:7"}) {
-    std::string roots;
-    for (const auto &[port, root] : report.finalMemoryRoots)
-      roots += port + "=" + root + ";";
-    std::string values;
-    if (finalOutput != report.finalMemoryState.end())
-      for (const std::string &value : finalOutput->second)
-        values += value + ";";
-    fail(test, "table workload produced the wrong output memory for " +
-                   expectedRoot + " at port '" + outputPort +
-                   "' roots=" + roots + " values=" + values);
-  }
+  if (!report.finalMemoryState.empty() || !report.finalMemoryRoots.empty())
+    fail(test, "typed table execution retained the legacy memory report");
+  if (execution.observations.memories.size() != 1)
+    fail(test, "typed table execution lost its output observation");
+  const auto *finalOutput = std::get_if<loom::sim::FullMemoryObservation>(
+      &execution.observations.memories.front());
+  const std::vector<std::uint8_t> expectedBytes = {
+      0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55,
+      0xff, 0xff, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00};
+  if (!finalOutput || finalOutput->bytes.size() != expectedBytes.size())
+    fail(test, "typed table execution produced the wrong output extent");
+  for (std::size_t index = 0; index < expectedBytes.size(); ++index)
+    if (finalOutput->bytes[index].state != loom::sim::SemanticState::Defined ||
+        finalOutput->bytes[index].value != expectedBytes[index])
+      fail(test, "typed table execution produced the wrong output bytes");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
