@@ -527,7 +527,11 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
-  std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
+  // OperationSchemaId is a generated dense domain. The execution loop counts
+  // directly by ordinal; the report projects nonzero entries into its public
+  // ordered map only once after execution.
+  std::vector<std::uint64_t> operationFireCounts =
+      std::vector<std::uint64_t>(dataflow::operationSchemaCount(), 0);
   std::map<std::string, std::uint64_t> modeledLibraryCalls;
   std::uint64_t nextMemoryRootId = 0;
   std::uint64_t eventCount = 0;
@@ -658,7 +662,6 @@ void emitToken(SimulatorState &state, mlir::Value value, Token token);
 void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
                               Token token, MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
-bool recordActorEvent(SimulatorState &state, mlir::Operation *op);
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
                        const Token &token);
 const dataflow::CanonicalActorSchemaProjection &

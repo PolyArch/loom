@@ -231,7 +231,13 @@ void projectRunObservations(SimulatorState &state,
                             DFGSimulationReport &report) {
   report.dynamicWorkItems = dynamicWorkItems(state);
   report.eventCount = state.eventCount;
-  report.operationFireCounts = state.operationFireCounts;
+  report.operationFireCounts.clear();
+  for (auto [ordinal, count] : llvm::enumerate(state.operationFireCounts)) {
+    if (count == 0)
+      continue;
+    report.operationFireCounts.emplace(
+        static_cast<dataflow::OperationSchemaId>(ordinal), count);
+  }
   report.modeledLibraryCalls = state.modeledLibraryCalls;
   // Execution records every rejected attempt, which is what classifies an
   // actor transition as failed. The report projects each distinct reason once;

@@ -655,7 +655,8 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
   require(state.pendingChannels.empty() && state.pendingObservedOutputs.empty(),
           message);
   require(state.actorMutationEpoch == 0 && state.eventCount == 0 &&
-              state.operationFireCounts.empty(),
+              llvm::all_of(state.operationFireCounts,
+                           [](std::uint64_t count) { return count == 0; }),
           message);
   require(state.terminalPrimitiveOps.empty(), message);
   llvm::SmallVector<loom::sim::SemanticMemoryByte> expected;

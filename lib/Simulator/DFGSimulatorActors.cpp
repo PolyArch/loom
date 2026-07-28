@@ -123,7 +123,7 @@ fireStream(dataflow::StreamOp op,
   stream = transition->nextState;
   releaseActivationMemoryOrder(state, op.getOperation(),
                                stream.mode == StreamMode::Idle);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool
@@ -142,7 +142,7 @@ fireConstant(dataflow::ConstantOp op,
   }
   popToken(state, op->getOpOperand(0));
   emitToken(state, op.getValue(), *tokenOrErr);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
@@ -176,7 +176,7 @@ static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                carry.semanticState ==
                                    PhaseSemanticState::Initial);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
@@ -209,7 +209,7 @@ static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                invariant.semanticState ==
                                    PhaseSemanticState::Initial);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
@@ -240,7 +240,7 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
   releaseActivationMemoryOrder(state, op.getOperation(),
                                transition.nextState ==
                                    GateSemanticState::Closed);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
@@ -256,7 +256,7 @@ static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
 
   for (auto [result, token] : llvm::zip_equal(op->getResults(), consumed))
     emitToken(state, result, token);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
@@ -282,7 +282,7 @@ static bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
   (void)popToken(state, selOperand);
   Token value = popToken(state, selectedOperand);
   emitToken(state, op.getOutput(), value);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
@@ -306,7 +306,7 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
   (void)popToken(state, selOperand);
   Token value = popToken(state, inputOperand);
   emitToken(state, op.getOutputs()[static_cast<unsigned>(lane)], value);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 struct ParallelizeGroup {
@@ -444,7 +444,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     emitToken(state, op.getGroupPhase(), boolValueToken(true));
   if (transition.emitFalsePhase)
     emitToken(state, op.getGroupPhase(), boolValueToken(false));
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool firePack(dataflow::PackOp op, SimulatorState &state) {
@@ -463,7 +463,7 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
   }
   (void)popToken(state, op.getVectorMutable());
   emitToken(state, op.getPacked(), *packed);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
@@ -482,7 +482,7 @@ static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
   }
   (void)popToken(state, op.getPackedMutable());
   emitToken(state, op.getVector(), *vector);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
@@ -543,7 +543,7 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
   }
   if (transition.emitFalsePhase)
     emitToken(state, op.getScalarPhase(), boolValueToken(false));
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 static bool hasVectorPrimitiveType(mlir::Operation *op) {
@@ -772,7 +772,7 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   emitToken(state, result, *resultToken);
   if (op->getNumOperands() == 0)
     state.oneShotOps.insert(op);
-  return recordActorEvent(state, op);
+  return true;
 }
 
 static bool
@@ -791,7 +791,7 @@ fireArithConstant(mlir::arith::ConstantOp op,
   }
   emitToken(state, op.getResult(), *tokenOrErr);
   state.oneShotOps.insert(op.getOperation());
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 using ActorProvider = bool (*)(mlir::Operation *,
@@ -892,7 +892,9 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
   const auto &projection = actorProjection(state, op);
   ActorProvider provider = actorProvider(projection.schema);
   assert(provider && "admitted actor has no simulator provider");
-  return provider(op, projection, state);
+  if (!provider(op, projection, state))
+    return false;
+  return recordEvent(state, projection.schema);
 }
 
 std::optional<UnsupportedOperation> unsupportedActorProvider(

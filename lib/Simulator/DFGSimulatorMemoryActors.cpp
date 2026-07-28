@@ -793,7 +793,7 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   emitTokenWithMemoryOrder(state, op.getData(), read->data,
                            MemoryOrderFrontierId());
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
@@ -822,7 +822,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
     popToken(state, *maskOperand);
   commitDataflowMemoryWrite(view, *write);
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
-  return recordActorEvent(state, op.getOperation());
+  return true;
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

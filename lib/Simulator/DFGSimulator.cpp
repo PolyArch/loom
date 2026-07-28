@@ -203,7 +203,10 @@ void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
 
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema) {
   ++state.eventCount;
-  ++state.operationFireCounts[schema];
+  const auto ordinal = static_cast<std::size_t>(schema);
+  assert(ordinal < state.operationFireCounts.size() &&
+         "registered operation schema is outside its dense domain");
+  ++state.operationFireCounts[ordinal];
   return true;
 }
 
@@ -213,10 +216,6 @@ actorProjection(const SimulatorState &state, mlir::Operation *op) {
   assert(found != state.actorProjections.end() &&
          "admitted actor has no cached schema projection");
   return found->second;
-}
-
-bool recordActorEvent(SimulatorState &state, mlir::Operation *op) {
-  return recordEvent(state, actorProjection(state, op).schema);
 }
 
 static void flushPendingTokens(SimulatorState &state) {
