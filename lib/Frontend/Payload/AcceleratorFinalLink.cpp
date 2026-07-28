@@ -9,22 +9,26 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Bitcode/BitcodeWriter.h"
-#include "llvm/IR/DiagnosticInfo.h"
-#include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/BinaryFormat/Magic.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
-#include "llvm/LTO/Config.h"
-#include "llvm/LTO/LTO.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Object/Archive.h"
-#include "llvm/Support/Caching.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace loom {
 namespace {
@@ -49,6 +53,13 @@ struct CarrierContents {
   std::string label;
   std::optional<std::vector<std::uint8_t>> canonicalBytes;
 };
+
+struct SelectedInput {
+  std::string path;
+  std::optional<std::uint64_t> memberChildOffset;
+};
+
+using SelectedInputs = std::vector<SelectedInput>;
 
 llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>>
 openSelectedInput(llvm::StringRef path) {
@@ -106,11 +117,10 @@ readArchiveMemberCarrier(llvm::StringRef archivePath,
 ///
 /// The traversal indexes only the child offsets the ordinary linker selected,
 /// so an unselected member is stepped over and its contents are never read.
-llvm::Error
-readArchiveCarriers(llvm::StringRef archivePath,
-                    llvm::ArrayRef<LinkerSelectedInputs::Selection> selections,
-                    llvm::ArrayRef<std::size_t> selectedIndices,
-                    std::vector<CarrierContents> &carriers) {
+llvm::Error readArchiveCarriers(llvm::StringRef archivePath,
+                                llvm::ArrayRef<SelectedInput> selections,
+                                llvm::ArrayRef<std::size_t> selectedIndices,
+                                std::vector<CarrierContents> &carriers) {
   llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> file =
       openSelectedInput(archivePath);
   if (!file)
@@ -156,9 +166,7 @@ readArchiveCarriers(llvm::StringRef archivePath,
 /// Reads the carrier of every selected input, keeping the ordinary linker's
 /// selection order.
 llvm::Expected<std::vector<CarrierContents>>
-readSelectedCarriers(const LinkerSelectedInputs &selected) {
-  const llvm::ArrayRef<LinkerSelectedInputs::Selection> selections =
-      selected.selections();
+readSelectedCarriers(llvm::ArrayRef<SelectedInput> selections) {
   std::vector<CarrierContents> carriers(selections.size());
 
   llvm::MapVector<llvm::StringRef, llvm::SmallVector<std::size_t, 4>>
@@ -182,45 +190,14 @@ readSelectedCarriers(const LinkerSelectedInputs &selected) {
   return carriers;
 }
 
-/// One validated payload, the selection that identifies the input it came from,
-/// and the label diagnostics about it use.
+/// One validated payload and the label diagnostics about it use.
 struct CollectedPayload {
-  std::size_t selectionIndex;
   std::string label;
   RelocatableAcceleratorPayload payload;
 };
 
-llvm::MemoryBufferRef payloadBuffer(const CollectedPayload &member) {
-  const llvm::ArrayRef<std::uint8_t> bitcode =
-      member.payload.normalizedBitcode();
-  return llvm::MemoryBufferRef(
-      llvm::StringRef(reinterpret_cast<const char *>(bitcode.data()),
-                      bitcode.size()),
-      member.label);
-}
-
-std::vector<std::uint8_t> writeTransportBitcode(const llvm::Module &module) {
-  llvm::SmallVector<char, 0> written;
-  llvm::raw_svector_ostream stream(written);
-  llvm::WriteBitcodeToFile(module, stream);
-  return std::vector<std::uint8_t>(written.begin(), written.end());
-}
-
-} // namespace
-
-void LinkerSelectedInputs::selectObjectFile(llvm::StringRef objectPath) {
-  selections_.push_back(Selection{objectPath.str(), std::nullopt});
-}
-
-void LinkerSelectedInputs::selectArchiveMember(
-    llvm::StringRef archivePath, std::uint64_t memberChildOffset) {
-  selections_.push_back(Selection{archivePath.str(), memberChildOffset});
-}
-
-llvm::Expected<std::unique_ptr<llvm::Module>>
-linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
-                                LinkerSymbolResolver resolveSymbol,
-                                llvm::LLVMContext &context) {
+llvm::Expected<std::vector<CollectedPayload>>
+collectSelectedPayloads(llvm::ArrayRef<SelectedInput> selected) {
   llvm::Expected<std::vector<CarrierContents>> carriers =
       readSelectedCarriers(selected);
   if (!carriers)
@@ -229,102 +206,264 @@ linkSelectedAcceleratorPayloads(const LinkerSelectedInputs &selected,
   std::vector<CollectedPayload> collected;
   for (std::size_t index = 0; index < carriers->size(); ++index) {
     CarrierContents &contents = (*carriers)[index];
-    // A selected input without a payload is an ordinary external or
-    // InstructionCore-only link input and stays valid.
     if (!contents.canonicalBytes)
       continue;
-
     llvm::Expected<RelocatableAcceleratorPayload> payload =
         decodeRelocatableAcceleratorPayload(
             RelocatableAcceleratorPayload::artifactSchema,
             *contents.canonicalBytes);
     if (!payload)
       return attributed(contents.label, payload.takeError());
-    collected.push_back(CollectedPayload{index, std::move(contents.label),
-                                         std::move(*payload)});
+    collected.push_back(
+        CollectedPayload{std::move(contents.label), std::move(*payload)});
   }
+  return collected;
+}
 
-  // No selected member carries a payload, so no accelerator compilation is
-  // implied. That is a complete and valid result, not a failure.
+llvm::Error
+requireCompatiblePayloadCohort(llvm::ArrayRef<CollectedPayload> collected) {
   if (collected.empty())
-    return std::unique_ptr<llvm::Module>();
-
-  // The raw cohort preflight runs entirely through the production comparison,
-  // so no ABI-key formula or view rule is restated here.
+    return llvm::Error::success();
   const CollectedPayload &cohort = collected.front();
-  for (std::size_t index = 1; index < collected.size(); ++index) {
-    const CollectedPayload &member = collected[index];
+  for (const CollectedPayload &member : collected.drop_front())
     if (llvm::Error error = requireRelocatablePayloadCompatibility(
             cohort.payload, member.payload))
       return rejected("selected_payload_incompatible: '" + member.label +
                       "' does not join the cohort established by '" +
                       cohort.label + "': " + llvm::toString(std::move(error)));
+  return llvm::Error::success();
+}
+
+llvm::Expected<SelectedInput> decodeLldInputName(llvm::StringRef inputName) {
+  std::vector<SelectedInput> candidates;
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> direct =
+      llvm::MemoryBuffer::getFile(inputName, /*IsText=*/false,
+                                  /*RequiresNullTerminator=*/false);
+  if (direct &&
+      llvm::identify_magic((*direct)->getBuffer()) != llvm::file_magic::archive)
+    candidates.push_back({inputName.str(), std::nullopt});
+
+  for (std::size_t open = inputName.find('('); open != llvm::StringRef::npos;
+       open = inputName.find('(', open + 1)) {
+    if (!inputName.ends_with(")"))
+      break;
+    const llvm::StringRef archivePath = inputName.take_front(open);
+    const llvm::StringRef memberDescription =
+        inputName.slice(open + 1, inputName.size() - 1);
+    const std::size_t at = memberDescription.rfind(" at ");
+    if (archivePath.empty() || at == llvm::StringRef::npos)
+      continue;
+    std::uint64_t offset = 0;
+    if (memberDescription.drop_front(at + 4).getAsInteger(10, offset))
+      continue;
+
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> archiveFile =
+        llvm::MemoryBuffer::getFile(archivePath, /*IsText=*/false,
+                                    /*RequiresNullTerminator=*/false);
+    if (!archiveFile)
+      continue;
+    llvm::Expected<std::unique_ptr<llvm::object::Archive>> archive =
+        llvm::object::Archive::create((*archiveFile)->getMemBufferRef());
+    if (!archive) {
+      llvm::consumeError(archive.takeError());
+      continue;
+    }
+
+    llvm::Error iteration = llvm::Error::success();
+    for (const llvm::object::Archive::Child &child :
+         (*archive)->children(iteration)) {
+      if (child.getChildOffset() != offset)
+        continue;
+      llvm::Expected<llvm::MemoryBufferRef> member = child.getMemoryBufferRef();
+      if (!member) {
+        llvm::consumeError(member.takeError());
+        break;
+      }
+      const llvm::StringRef memberName =
+          llvm::sys::path::filename(member->getBufferIdentifier());
+      const std::string reconstructed = archivePath.str() + "(" +
+                                        memberName.str() + " at " +
+                                        std::to_string(offset) + ")";
+      if (reconstructed == inputName)
+        candidates.push_back({archivePath.str(), offset});
+      break;
+    }
+    if (iteration)
+      llvm::consumeError(std::move(iteration));
   }
 
-  // Diagnostics LTO reports are kept exactly as reported: they state decisions
-  // this code does not make.
-  std::string report;
-  llvm::lto::Config config;
-  config.DiagHandler = [&report](const llvm::DiagnosticInfo &info) {
-    llvm::raw_string_ostream stream(report);
-    if (!report.empty())
-      stream << "; ";
-    llvm::DiagnosticPrinterRawOStream printer(stream);
-    info.print(printer);
-  };
+  if (candidates.empty())
+    return rejected("lld_resolution_input_unreadable: cannot resolve selected "
+                    "LTO input '" +
+                    inputName + "' to an object or exact archive child");
+  if (candidates.size() != 1)
+    return rejected("lld_resolution_input_ambiguous: selected LTO input '" +
+                    inputName + "' has more than one filesystem meaning");
+  return std::move(candidates.front());
+}
 
-  // The last hook before code generation yields the unique post-LTO module.
-  // Refusing to continue there is how the pinned pipeline is asked for a linked
-  // module instead of native objects.
-  std::vector<std::uint8_t> linkedBitcode;
-  config.PreCodeGenModuleHook = [&linkedBitcode](unsigned,
-                                                 const llvm::Module &module) {
-    linkedBitcode = writeTransportBitcode(module);
-    return false;
-  };
-
-  llvm::lto::LTO lto(std::move(config));
-  for (const CollectedPayload &member : collected) {
-    llvm::Expected<std::unique_ptr<llvm::lto::InputFile>> input =
-        llvm::lto::InputFile::create(payloadBuffer(member));
-    if (!input)
-      return attributed(member.label, input.takeError());
-
-    // Every symbol of this input is resolved by the ordinary linker, in the
-    // order the pinned LTO API enumerates them. The exact selection identifies
-    // the input, so same-named archive members are resolved separately.
-    const LinkerSelectedInputs::Selection &selection =
-        selected.selections()[member.selectionIndex];
-    std::vector<llvm::lto::SymbolResolution> resolutions;
-    resolutions.reserve((*input)->symbols().size());
-    for (const llvm::lto::InputFile::Symbol &symbol : (*input)->symbols())
-      resolutions.push_back(resolveSymbol(selection, symbol));
-
-    // Admitting an input is where LTO merges it, so a rejection here is a link
-    // failure attributed to that member rather than a bad payload.
-    if (llvm::Error error = lto.add(std::move(*input), resolutions))
-      return rejected("accelerator_link_failed: the pinned LTO pipeline "
-                      "rejected '" +
-                      member.label + "': " + llvm::toString(std::move(error)));
+llvm::Error validateLldResolutionRow(llvm::StringRef inputName,
+                                     llvm::StringRef row) {
+  const std::string prefix = "-r=" + inputName.str() + ",";
+  if (!row.starts_with(prefix))
+    return rejected("lld_resolution_malformed: symbol row does not belong to "
+                    "its preceding input '" +
+                    inputName + "'");
+  const llvm::StringRef payload = row.drop_front(prefix.size());
+  const std::size_t comma = payload.rfind(',');
+  if (comma == llvm::StringRef::npos || comma == 0)
+    return rejected("lld_resolution_malformed: symbol row for '" + inputName +
+                    "' has no symbol or flag field");
+  const llvm::StringRef flags = payload.drop_front(comma + 1);
+  constexpr llvm::StringLiteral canonicalFlags = "plxr";
+  std::size_t previous = 0;
+  bool first = true;
+  for (char flag : flags) {
+    const std::size_t position = canonicalFlags.find(flag);
+    if (position == llvm::StringRef::npos || (!first && position <= previous))
+      return rejected("lld_resolution_malformed: symbol row for '" + inputName +
+                      "' has unknown, duplicate, or noncanonical "
+                      "flags");
+    previous = position;
+    first = false;
   }
+  return llvm::Error::success();
+}
 
-  const llvm::AddStreamFn refuseNativeOutput = [](unsigned, const llvm::Twine &)
-      -> llvm::Expected<std::unique_ptr<llvm::CachedFileStream>> {
-    return rejected("accelerator_link_unexpected_codegen: the final link asked "
-                    "for native output instead of a linked module");
-  };
-  if (llvm::Error error = lto.run(refuseNativeOutput))
-    return rejected("accelerator_link_failed: the pinned LTO pipeline rejected "
-                    "the selected payload cohort: " +
-                    llvm::toString(std::move(error)) +
-                    (report.empty() ? "" : "; " + report));
-  if (linkedBitcode.empty())
-    return rejected("accelerator_link_incomplete: the pinned LTO pipeline "
-                    "produced no linked module for the selected payload "
-                    "cohort" +
-                    (report.empty() ? "" : ": " + report));
+llvm::Expected<SelectedInputs>
+parseLldSelectedInputs(llvm::MemoryBufferRef resolution) {
+  SelectedInputs selected;
+  std::optional<std::string> currentInput;
+  llvm::SmallVector<llvm::StringRef, 32> lines;
+  resolution.getBuffer().split(lines, '\n', /*MaxSplit=*/-1,
+                               /*KeepEmpty=*/true);
+  for (std::size_t index = 0; index < lines.size(); ++index) {
+    llvm::StringRef line = lines[index];
+    line.consume_back("\r");
+    if (line.empty()) {
+      if (index + 1 == lines.size())
+        continue;
+      return rejected("lld_resolution_malformed: empty line before end of "
+                      "resolution report");
+    }
+    if (line.starts_with("-r=")) {
+      if (!currentInput)
+        return rejected("lld_resolution_malformed: symbol row precedes its "
+                        "selected input");
+      if (llvm::Error error = validateLldResolutionRow(*currentInput, line))
+        return std::move(error);
+      continue;
+    }
 
-  return parseCompleteLlvmModule(linkedBitcode, context);
+    llvm::Expected<SelectedInput> selection = decodeLldInputName(line);
+    if (!selection)
+      return selection.takeError();
+    selected.push_back(std::move(*selection));
+    currentInput = line.str();
+  }
+  return selected;
+}
+
+std::vector<std::string>
+canonicalCarrierMultiset(llvm::ArrayRef<CollectedPayload> payloads) {
+  std::vector<std::string> carriers;
+  carriers.reserve(payloads.size());
+  for (const CollectedPayload &payload : payloads) {
+    const CanonicalSemanticBytes bytes =
+        payload.payload.canonicalSemanticBytes();
+    carriers.emplace_back(reinterpret_cast<const char *>(bytes.bytes().data()),
+                          bytes.bytes().size());
+  }
+  std::sort(carriers.begin(), carriers.end());
+  return carriers;
+}
+
+std::vector<std::string> canonicalCarrierMultiset(
+    llvm::ArrayRef<std::vector<std::uint8_t>> carrierBytes) {
+  std::vector<std::string> carriers;
+  carriers.reserve(carrierBytes.size());
+  for (const std::vector<std::uint8_t> &bytes : carrierBytes)
+    carriers.emplace_back(reinterpret_cast<const char *>(bytes.data()),
+                          bytes.size());
+  std::sort(carriers.begin(), carriers.end());
+  return carriers;
+}
+
+llvm::Error
+verifyLinkedModuleCohort(const llvm::Module &module,
+                         llvm::ArrayRef<CollectedPayload> collected) {
+  if (collected.empty())
+    return llvm::Error::success();
+  const RelocatableAcceleratorPayload &cohort = collected.front().payload;
+  if (llvm::Triple::normalize(module.getTargetTriple().str()) !=
+      cohort.targetTriple())
+    return rejected("lld_linked_module_mismatch: target triple differs from "
+                    "the selected payload cohort");
+  llvm::Expected<llvm::DataLayout> linkedLayout =
+      llvm::DataLayout::parse(module.getDataLayoutStr());
+  llvm::Expected<llvm::DataLayout> cohortLayout =
+      llvm::DataLayout::parse(cohort.dataLayout());
+  if (!linkedLayout || !cohortLayout) {
+    if (!linkedLayout)
+      return rejected("lld_linked_module_mismatch: invalid linked data "
+                      "layout: " +
+                      llvm::toString(linkedLayout.takeError()));
+    return rejected("lld_linked_module_mismatch: invalid cohort data layout: " +
+                    llvm::toString(cohortLayout.takeError()));
+  }
+  if (*linkedLayout != *cohortLayout)
+    return rejected("lld_linked_module_mismatch: data layout differs from the "
+                    "selected payload cohort");
+  return llvm::Error::success();
+}
+
+} // namespace
+
+llvm::Expected<std::unique_ptr<llvm::Module>>
+importLldAcceleratorFinalLink(llvm::MemoryBufferRef resolution,
+                              llvm::MemoryBufferRef linkedBitcode,
+                              llvm::LLVMContext &context) {
+  llvm::Expected<SelectedInputs> selected = parseLldSelectedInputs(resolution);
+  if (!selected)
+    return selected.takeError();
+  llvm::Expected<std::vector<CollectedPayload>> collectedOrError =
+      collectSelectedPayloads(*selected);
+  if (!collectedOrError)
+    return collectedOrError.takeError();
+  std::vector<CollectedPayload> collected = std::move(*collectedOrError);
+  if (llvm::Error error = requireCompatiblePayloadCohort(collected))
+    return std::move(error);
+
+  const llvm::StringRef linkedBytes = linkedBitcode.getBuffer();
+  const llvm::ArrayRef<std::uint8_t> bitcode(
+      reinterpret_cast<const std::uint8_t *>(linkedBytes.data()),
+      linkedBytes.size());
+  llvm::Expected<std::unique_ptr<llvm::Module>> module =
+      parseCompleteLlvmModule(bitcode, context);
+  if (!module)
+    return rejected("lld_linked_module_invalid: " +
+                    llvm::toString(module.takeError()));
+  if (llvm::Error error = verifyLinkedModuleCohort(**module, collected))
+    return std::move(error);
+
+  llvm::Expected<std::vector<std::vector<std::uint8_t>>> linkedCarriers =
+      removeGeneratedRelocatablePayloadCarriers(**module);
+  if (!linkedCarriers)
+    return linkedCarriers.takeError();
+  if (canonicalCarrierMultiset(collected) !=
+      canonicalCarrierMultiset(*linkedCarriers))
+    return rejected("lld_linked_module_stale: linked carrier projections do "
+                    "not equal the selected payload cohort");
+
+  if (collected.empty())
+    return std::unique_ptr<llvm::Module>();
+  std::string verifierReport;
+  llvm::raw_string_ostream verifierStream(verifierReport);
+  if (llvm::verifyModule(**module, &verifierStream))
+    return rejected("lld_linked_module_invalid_after_carrier_removal: " +
+                    verifierReport);
+  return std::move(*module);
 }
 
 } // namespace loom

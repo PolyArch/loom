@@ -6,19 +6,18 @@
 #include "Frontend/Payload/RelocatableAcceleratorPayload.h"
 
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
-#include "llvm/Object/Archive.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
@@ -181,11 +180,6 @@ std::vector<char> emitObject(const char *test, llvm::StringRef assembly,
   return std::vector<char>(object.begin(), object.end());
 }
 
-std::vector<char> emitCarrierObject(const char *test,
-                                    llvm::StringRef assembly) {
-  return emitObject(test, assembly, payloadBytesFor(test, assembly));
-}
-
 class TempTree {
 public:
   explicit TempTree(const char *test) : test_(test) {
@@ -210,6 +204,14 @@ public:
     stream.close();
     requireSuccess(test_, llvm::errorCodeToError(stream.error()));
     return path;
+  }
+
+  std::string writeText(llvm::StringRef name, llvm::StringRef contents) {
+    return writeFile(name, llvm::ArrayRef(contents.data(), contents.size()));
+  }
+
+  std::string path(llvm::StringRef name) const {
+    return root_ + "/" + name.str();
   }
 
   std::string writeArchive(
@@ -238,86 +240,133 @@ private:
   std::string root_;
 };
 
-std::uint64_t archiveMemberOffset(const char *test, llvm::StringRef archivePath,
-                                  llvm::StringRef memberName) {
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> file =
-      llvm::MemoryBuffer::getFile(archivePath, /*IsText=*/false,
+void runProgram(const char *test, llvm::StringRef program,
+                llvm::ArrayRef<llvm::StringRef> arguments) {
+  std::string error;
+  bool executionFailed = false;
+  const int result = llvm::sys::ExecuteAndWait(
+      program, arguments, std::nullopt, {}, /*SecondsToWait=*/60,
+      /*MemoryLimit=*/1024, &error, &executionFailed);
+  require(test, !executionFailed,
+          "failed to execute " + program.str() + ": " + error);
+  require(test, result == 0,
+          program.str() + " returned " + std::to_string(result) +
+              (error.empty() ? "" : ": " + error));
+}
+
+std::unique_ptr<llvm::MemoryBuffer> readBuffer(const char *test,
+                                               llvm::StringRef path) {
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
-  requireSuccess(test, llvm::errorCodeToError(file.getError()));
-  const std::unique_ptr<llvm::object::Archive> archive = takeExpected(
-      test, llvm::object::Archive::create((*file)->getMemBufferRef()));
-
-  llvm::Error iteration = llvm::Error::success();
-  for (const llvm::object::Archive::Child &child :
-       archive->children(iteration)) {
-    if (takeExpected(test, child.getName()) != memberName)
-      continue;
-    const std::uint64_t offset = child.getChildOffset();
-    requireSuccess(test, std::move(iteration));
-    return offset;
-  }
-  requireSuccess(test, std::move(iteration));
-  fail(test, "the archive has no member named " + memberName.str());
+  requireSuccess(test, llvm::errorCodeToError(buffer.getError()));
+  return std::move(*buffer);
 }
 
-class OrdinaryLinkerResolutions {
-public:
-  llvm::lto::SymbolResolution
-  operator()(const LinkerSelectedInputs::Selection &,
-             const llvm::lto::InputFile::Symbol &symbol) {
-    llvm::lto::SymbolResolution resolution;
-    if (symbol.isUndefined())
-      return resolution;
-    resolution.Prevailing = prevailing_.insert(symbol.getName()).second;
-    resolution.FinalDefinitionInLinkageUnit = resolution.Prevailing;
-    resolution.VisibleToRegularObj = true;
-    return resolution;
-  }
-
-private:
-  llvm::StringSet<> prevailing_;
-};
-
-llvm::Expected<std::unique_ptr<llvm::Module>>
-linkWith(const LinkerSelectedInputs &selected, llvm::LLVMContext &context) {
-  OrdinaryLinkerResolutions resolutions;
-  return linkSelectedAcceleratorPayloads(selected, resolutions, context);
+std::vector<char> readBytes(const char *test, llvm::StringRef path) {
+  const std::unique_ptr<llvm::MemoryBuffer> buffer = readBuffer(test, path);
+  return std::vector<char>(buffer->getBufferStart(), buffer->getBufferEnd());
 }
 
-void selectedObjectsAndArchiveMemberLinkOnce() {
+std::string compileFatObject(const char *test, TempTree &tree,
+                             llvm::StringRef stem, llvm::StringRef source) {
+  const std::string sourceName = stem.str() + ".c";
+  const std::string objectName = stem.str() + ".o";
+  const std::string sourcePath = tree.writeText(sourceName, source);
+  const std::string objectPath = tree.path(objectName);
+  const std::string compiler = LOOM_TEST_CC_PATH;
+  const llvm::SmallVector<llvm::StringRef, 10> arguments = {
+      compiler, "-O1",      "-flto=full", "-ffat-lto-objects",
+      "-c",     sourcePath, "-o",         objectPath};
+  runProgram(test, compiler, arguments);
+  return objectPath;
+}
+
+void pinnedLldSelectionProducesUniqueLinkedModule() {
   TempTree tree(__func__);
-  const std::string firstObject = tree.writeFile(
-      "first.o",
-      emitCarrierObject(__func__, translationUnitAssembly("loom_first")));
-  const std::string secondObject = tree.writeFile(
-      "second.o",
-      emitCarrierObject(__func__, translationUnitAssembly("loom_second")));
+  const std::string mainObject =
+      compileFatObject(__func__, tree, "main",
+                       "extern int loom_first(int);\n"
+                       "extern int loom_selected(int);\n"
+                       "__attribute__((noinline, used))\n"
+                       "int loom_entry(int value) {\n"
+                       "  return loom_selected(loom_first(value));\n"
+                       "}\n");
+  const std::string firstObject =
+      compileFatObject(__func__, tree, "first",
+                       "__attribute__((noinline))\n"
+                       "int loom_first(int value) { return value + 1; }\n");
+  const std::string selectedObject =
+      compileFatObject(__func__, tree, "selected",
+                       "__attribute__((noinline))\n"
+                       "int loom_selected(int value) { return value * 3; }\n");
+  const std::string unselectedObject = compileFatObject(
+      __func__, tree, "unselected",
+      "__attribute__((noinline))\n"
+      "int loom_unselected(int value) { return value - 7; }\n");
   const std::string archive = tree.writeArchive(
-      "libloom.a",
-      {{"selected.o",
-        emitCarrierObject(__func__, translationUnitAssembly("loom_selected"))},
-       {"unselected.o", emitCarrierObject(__func__, translationUnitAssembly(
-                                                        "loom_unselected"))}});
+      "libmembers.a",
+      {{"selected.o", readBytes(__func__, selectedObject)},
+       {"unselected.o", readBytes(__func__, unselectedObject)}});
 
-  LinkerSelectedInputs selected;
-  selected.selectObjectFile(firstObject);
-  selected.selectObjectFile(secondObject);
-  selected.selectArchiveMember(
-      archive, archiveMemberOffset(__func__, archive, "selected.o"));
+  const std::string linkedBitcode = tree.path("linked.bc");
+  const std::string linker = LOOM_TEST_LLD_PATH;
+  const llvm::SmallVector<llvm::StringRef, 12> arguments = {
+      linker,
+      "-r",
+      "--fat-lto-objects",
+      "--lto-emit-llvm",
+      "--save-temps=resolution",
+      "-o",
+      linkedBitcode,
+      mainObject,
+      firstObject,
+      archive};
+  runProgram(__func__, linker, arguments);
 
+  const std::unique_ptr<llvm::MemoryBuffer> resolution =
+      readBuffer(__func__, linkedBitcode + ".resolution.txt");
+  const std::unique_ptr<llvm::MemoryBuffer> linked =
+      readBuffer(__func__, linkedBitcode);
   llvm::LLVMContext context;
-  const std::unique_ptr<llvm::Module> linked =
-      takeExpected(__func__, linkWith(selected, context));
-  require(__func__, linked != nullptr,
+  const std::unique_ptr<llvm::Module> module = takeExpected(
+      __func__,
+      importLldAcceleratorFinalLink(resolution->getMemBufferRef(),
+                                    linked->getMemBufferRef(), context));
+  require(__func__, module != nullptr,
           "the selected payload cohort produced no linked module");
-  require(__func__, linked->getFunction("loom_first") != nullptr,
+  require(__func__, module->getFunction("loom_entry") != nullptr,
           "the first selected object did not reach the linked module");
-  require(__func__, linked->getFunction("loom_second") != nullptr,
+  require(__func__, module->getFunction("loom_first") != nullptr,
           "the second selected object did not reach the linked module");
-  require(__func__, linked->getFunction("loom_selected") != nullptr,
+  require(__func__, module->getFunction("loom_selected") != nullptr,
           "the selected archive member did not reach the linked module");
-  require(__func__, linked->getFunction("loom_unselected") == nullptr,
+  require(__func__, module->getFunction("loom_unselected") == nullptr,
           "an unselected archive member entered the linked module");
+  require(
+      __func__,
+      !takeExpected(__func__, hasGeneratedRelocatablePayloadCarrier(*module)),
+      "the Part 1 hand-off retained a relocatable carrier projection");
+}
+
+std::string selectedInputReport(llvm::ArrayRef<std::string> paths) {
+  std::string report;
+  for (const std::string &path : paths) {
+    report += path;
+    report += '\n';
+  }
+  return report;
+}
+
+std::vector<std::uint8_t>
+linkedCarrierBitcode(const char *test, llvm::StringRef dataLayout,
+                     llvm::ArrayRef<std::vector<std::uint8_t>> carriers) {
+  llvm::LLVMContext context;
+  std::unique_ptr<llvm::Module> module = parseAssembly(
+      test, assemblyWithDataLayout(hostTriple(), dataLayout, ""), context);
+  for (const std::vector<std::uint8_t> &carrier : carriers)
+    embedRelocatablePayloadCarrier(*module, carrier);
+  return bitcodeOf(*module);
 }
 
 void equivalentDataLayoutSpellingsLinkWithDistinctPayloadIdentities() {
@@ -355,13 +404,25 @@ void equivalentDataLayoutSpellingsLinkWithDistinctPayloadIdentities() {
       "equivalent.o",
       emitObject(__func__, translationUnitAssembly("loom_equivalent_carrier"),
                  payloadBytesFor(__func__, equivalentAssembly)));
-  LinkerSelectedInputs selected;
-  selected.selectObjectFile(exactObject);
-  selected.selectObjectFile(equivalentObject);
+  const std::vector<std::uint8_t> exactBytes =
+      payloadBytesFor(__func__, exactAssembly);
+  const std::vector<std::uint8_t> equivalentBytes =
+      payloadBytesFor(__func__, equivalentAssembly);
+  const std::string report =
+      selectedInputReport({exactObject, equivalentObject});
+  const std::vector<std::uint8_t> linkedBytes = linkedCarrierBitcode(
+      __func__, exactLayout, {exactBytes, equivalentBytes});
 
   llvm::LLVMContext context;
-  const std::unique_ptr<llvm::Module> linked =
-      takeExpected(__func__, linkWith(selected, context));
+  const std::unique_ptr<llvm::Module> linked = takeExpected(
+      __func__,
+      importLldAcceleratorFinalLink(
+          llvm::MemoryBufferRef(report, "layout.resolution.txt"),
+          llvm::MemoryBufferRef(llvm::StringRef(reinterpret_cast<const char *>(
+                                                    linkedBytes.data()),
+                                                linkedBytes.size()),
+                                "layout.bc"),
+          context));
   require(__func__, linked != nullptr,
           "structurally equivalent layouts produced no linked module");
 }
@@ -391,13 +452,14 @@ void structurallyDifferentDataLayoutsFailFinalLink() {
       "different.o",
       emitObject(__func__, translationUnitAssembly("loom_different_carrier"),
                  payloadBytesFor(__func__, differentAssembly)));
-  LinkerSelectedInputs selected;
-  selected.selectObjectFile(exactObject);
-  selected.selectObjectFile(differentObject);
+  const std::string report =
+      selectedInputReport({exactObject, differentObject});
 
   llvm::LLVMContext context;
-  const std::string message =
-      rejectionMessage(__func__, linkWith(selected, context));
+  const std::string message = rejectionMessage(
+      __func__, importLldAcceleratorFinalLink(
+                    llvm::MemoryBufferRef(report, "layout.resolution.txt"),
+                    llvm::MemoryBufferRef("", "layout.bc"), context));
   requireMentions(__func__, message, "selected_payload_incompatible",
                   "a structural layout mismatch was not typed");
   requireMentions(__func__, message, "data layout",
@@ -410,7 +472,7 @@ int main() {
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
-  selectedObjectsAndArchiveMemberLinkOnce();
+  pinnedLldSelectionProducesUniqueLinkedModule();
   equivalentDataLayoutSpellingsLinkWithDistinctPayloadIdentities();
   structurallyDifferentDataLayoutsFailFinalLink();
   return 0;

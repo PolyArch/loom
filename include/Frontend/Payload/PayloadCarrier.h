@@ -49,6 +49,17 @@ void embedRelocatablePayloadCarrier(
 llvm::Expected<std::optional<std::vector<std::uint8_t>>>
 readRelocatablePayloadCarrier(llvm::MemoryBufferRef object);
 
+/// Removes every compiler-generated payload carrier from one linked module and
+/// returns the exact bytes each carrier held.
+///
+/// Multiple carriers are expected after LTO merges selected translation
+/// units. Every carrier must retain the owner metadata and may be referenced
+/// only by LLVM's used lists. A section-shaped global without that ownership,
+/// a malformed initializer, or any semantic use is rejected instead of being
+/// stripped.
+llvm::Expected<std::vector<std::vector<std::uint8_t>>>
+removeGeneratedRelocatablePayloadCarriers(llvm::Module &module);
+
 } // namespace loom
 
 #endif // LOOM_FRONTEND_PAYLOAD_PAYLOADCARRIER_H

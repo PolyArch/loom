@@ -35,3 +35,9 @@ target_link_libraries(loom-accelerator-final-link-test PRIVATE
   LoomCommon
   LoomFrontendPayload
 )
+
+add_dependencies(loom-accelerator-final-link-test loom-cc)
+target_compile_definitions(loom-accelerator-final-link-test PRIVATE
+  LOOM_TEST_CC_PATH="$<TARGET_FILE:loom-cc>"
+  LOOM_TEST_LLD_PATH="${LLVM_TOOLS_BINARY_DIR}/ld.lld"
+)
