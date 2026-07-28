@@ -586,10 +586,8 @@ executeSelectedDirectCallCapture(
     return invalid("native module has no selected callable symbol");
 
   llvm::Expected<loom::frontend::PreparedSpatialOwnershipSelection> prepared =
-      loom::frontend::prepareSpatialOwnershipSelection(
-          *host,
-          {loom::frontend::SpatialOwnershipScopeKind::WholeCallable, *callable},
-          derivation.decision);
+      loom::frontend::prepareSpatialOwnershipSelection(*host, {*callable},
+                                                       derivation.decision);
   if (!prepared)
     return prepared.takeError();
   llvm::Expected<llvm::orc::ThreadSafeModule> hostModule =
@@ -649,18 +647,11 @@ llvm::Error executeOperationLaunch(
     const dataflow::CanonicalDataflowProgramView &view,
     dataflow::RootedGraphLaunchRef launch,
     const loom::dse::StructuredOwnershipDerivation &derivation,
-    const loom::ArtifactStore &store, ExecutionTotals &totals) {
-  const loom::ArtifactRootReference parentReference{
-      loom::frontend::structuredProgramArtifactSchema.identity.str(),
-      loom::frontend::structuredProgramArtifactSchema.version,
-      derivation.scope.selection.parent};
-  llvm::Expected<loom::frontend::StructuredProgramCandidate> parent =
-      loom::frontend::importStructuredProgram(parentReference, store);
-  if (!parent)
-    return parent.takeError();
+    const loom::frontend::StructuredProgramCandidate &parent,
+    ExecutionTotals &totals) {
   llvm::Expected<loom::frontend::PreparedSpatialOwnershipSelection> prepared =
-      loom::frontend::prepareSpatialOwnershipSelection(
-          *parent, derivation.scope, derivation.decision);
+      loom::frontend::prepareSpatialOwnershipSelection(parent, derivation.scope,
+                                                       derivation.decision);
   if (!prepared)
     return prepared.takeError();
   llvm::Expected<loom::sim::SimulationInputCapturePlan> plan =
@@ -689,15 +680,25 @@ executeLaunch(const loom::dse::SelectedPreMappingCompilation &selected,
         "selected Spatial graph has no unique ownership lineage");
   const loom::dse::StructuredOwnershipDerivation &derivation =
       selected.derivations.front();
-  switch (derivation.scope.kind) {
-  case loom::frontend::SpatialOwnershipScopeKind::WholeCallable:
+  const loom::ArtifactRootReference parentReference{
+      loom::frontend::structuredProgramArtifactSchema.identity.str(),
+      loom::frontend::structuredProgramArtifactSchema.version,
+      derivation.scope.selection.parent};
+  llvm::Expected<loom::frontend::StructuredProgramCandidate> parent =
+      loom::frontend::importStructuredProgram(parentReference, store);
+  if (!parent)
+    return parent.takeError();
+  auto parentView = parent->view();
+  if (!parentView)
+    return parentView.takeError();
+  auto selection = parentView->resolve(derivation.scope.selection);
+  if (!selection)
+    return selection.takeError();
+  if (llvm::isa_and_nonnull<mlir::LLVM::LLVMFuncOp>(selection->operation))
     return executeDirectCallLaunch(selected.compilation, view, launch,
                                    derivation, totals);
-  case loom::frontend::SpatialOwnershipScopeKind::Operation:
-    return executeOperationLaunch(selected.compilation, view, launch,
-                                  derivation, store, totals);
-  }
-  llvm_unreachable("closed Spatial ownership scope kind");
+  return executeOperationLaunch(selected.compilation, view, launch, derivation,
+                                *parent, totals);
 }
 
 llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,

@@ -159,22 +159,21 @@ resolveUniqueStructuredOperation(
   auto view = candidate.view();
   if (!view)
     return view.takeError();
-  auto scopes =
-      loom::frontend::enumerateOperationSpatialOwnershipScopes(candidate);
+  auto scopes = loom::frontend::enumerateSpatialOwnershipScopes(candidate);
   if (!scopes)
     return scopes.takeError();
   std::vector<loom::frontend::StructuredEntityRef> callableScopes;
-  for (const loom::frontend::StructuredEntityRef &scope : *scopes) {
-    auto entity = view->resolve(scope);
+  for (const loom::frontend::SpatialOwnershipScope &scope : *scopes) {
+    auto entity = view->resolve(scope.selection);
     if (!entity)
       return entity.takeError();
     ::mlir::Operation *operation = entity->operation;
-    if (!operation)
+    if (!operation || ::llvm::isa<::mlir::LLVM::LLVMFuncOp>(operation))
       continue;
     auto callable = operation->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
     if (!callable || callable.getSymName() != callableSymbol)
       continue;
-    callableScopes.push_back(scope);
+    callableScopes.push_back(scope.selection);
   }
   if (callableScopes.empty())
     return ::llvm::createStringError(
@@ -340,7 +339,7 @@ int main(int argc, char **argv) {
         resolveCallable(explicitInput->structuredProgram, wholeCallableSpatial);
     if (!callable)
       return reportError(callable.takeError());
-    loom::frontend::WholeCallableSpatialOwnershipOptions ownershipOptions;
+    loom::frontend::SpatialOwnershipOptions ownershipOptions;
     ownershipOptions.lowering = compilationOptions.lowering;
     if (canonicalIndexWidth != 0)
       ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
@@ -350,10 +349,9 @@ int main(int argc, char **argv) {
     else if (fmuladdShape == FMulAddShapeOption::Split)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Split;
-    auto materialized =
-        loom::frontend::materializeWholeCallableSpatialOwnership(
-            explicitInput->structuredProgram, *callable,
-            design->roots().front(), ownershipOptions);
+    auto materialized = loom::frontend::materializeSpatialOwnership(
+        explicitInput->structuredProgram, *callable, design->roots().front(),
+        ownershipOptions);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));
@@ -365,7 +363,7 @@ int main(int argc, char **argv) {
         explicitInput->structuredProgram, operationSpatial, scopeIndex);
     if (!operation)
       return reportError(operation.takeError());
-    loom::frontend::OperationSpatialOwnershipOptions ownershipOptions;
+    loom::frontend::SpatialOwnershipOptions ownershipOptions;
     ownershipOptions.lowering = compilationOptions.lowering;
     if (canonicalIndexWidth != 0)
       ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
@@ -375,7 +373,7 @@ int main(int argc, char **argv) {
     else if (fmuladdShape == FMulAddShapeOption::Split)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Split;
-    auto materialized = loom::frontend::materializeOperationSpatialOwnership(
+    auto materialized = loom::frontend::materializeSpatialOwnership(
         explicitInput->structuredProgram, *operation, design->roots().front(),
         ownershipOptions);
     if (!materialized)

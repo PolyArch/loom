@@ -24,23 +24,10 @@ struct MaterializedOwnershipCandidate final {
 };
 
 /// Typed decisions that must be materialized in the selected Structured
-/// Program before the mechanical Dataflow boundary. The canonical index width
-/// applies to every dynamic LLVM GEP in the selected callable. An absent
-/// decision never selects a default; a selected region that still contains
-/// such a choice fails canonical publication.
-struct WholeCallableSpatialOwnershipOptions final {
-  lowering::CanonicalDataflowLoweringOptions lowering;
-  std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
-  std::optional<unsigned> canonicalIndexWidth;
-};
-
-/// Typed decisions selected for one operation-owned Spatial candidate. An
-/// explicit FMA execution shape and canonical index width are materialized
-/// only within the selected operation in the child Structured Program. Wider
-/// LLVM GEP indices are narrowed only when their complete value domain is
-/// proven to fit that signed width; absence never selects an ambient or
-/// Fabric-derived default.
-struct OperationSpatialOwnershipOptions final {
+/// Program before the mechanical Dataflow boundary. An absent decision never
+/// selects a default; a selected region that still contains such a choice
+/// fails canonical publication.
+struct SpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
@@ -88,21 +75,16 @@ private:
   std::string message_;
 };
 
-enum class SpatialOwnershipScopeKind {
-  WholeCallable,
-  Operation,
-};
-
 /// One finite ownership search coordinate in the exact parent candidate.
-/// Scope kind selects the materialization rule; the StructuredEntityRef is the
-/// only identity of the selected program structure.
+/// The StructuredEntityRef is the only identity of the selected program
+/// structure; its resolved operation type mechanically determines how the ABI
+/// envelope is rewritten.
 struct SpatialOwnershipScope final {
-  SpatialOwnershipScopeKind kind;
   StructuredEntityRef selection;
 
   friend bool operator==(const SpatialOwnershipScope &lhs,
                          const SpatialOwnershipScope &rhs) {
-    return lhs.kind == rhs.kind && lhs.selection == rhs.selection;
+    return lhs.selection == rhs.selection;
   }
 };
 
@@ -123,22 +105,6 @@ struct PreparedSpatialOwnershipSelection final {
 /// cross-scope Cartesian product.
 llvm::Expected<std::vector<SpatialOwnershipScope>>
 enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent);
-
-/// Enumerates whole-callable ownership scopes in the exact parent candidate's
-/// canonical operation order. Only callables satisfying the complete
-/// whole-callable structural contract are returned; this is a generator
-/// domain, not a QoR choice or an implicit ownership decision.
-llvm::Expected<std::vector<StructuredEntityRef>>
-enumerateWholeCallableSpatialOwnershipScopes(
-    const StructuredProgramCandidate &parent);
-
-/// Enumerates ownership-free structured scopes in the exact parent
-/// candidate's canonical operation order. These are search coordinates, not
-/// accepted or ranked candidates: applying a concrete typed decision may
-/// still fail legality, materialization, or exact-Fabric admission.
-llvm::Expected<std::vector<StructuredEntityRef>>
-enumerateOperationSpatialOwnershipScopes(
-    const StructuredProgramCandidate &parent);
 
 /// Derives the finite typed decision domain for one exact ownership scope.
 /// Canonical address widths come from the closed Fabric index-width schema;
@@ -169,36 +135,19 @@ materializeSpatialOwnershipDecision(
     const ::loom::fabric::FinalizedFabricRoot &fabric,
     const lowering::CanonicalDataflowLoweringOptions &lowering = {});
 
-/// Materializes the explicit whole-callable SpatialCore ownership choice for
-/// one exact void, single-block LLVM callable. Its original body moves into an
-/// ordered thread while the same LLVM callable remains the ABI authority and
-/// launches that thread. Fabric is used only for hard-negative actor-capability
-/// pruning; this function performs no Mapping or QoR choice.
+/// Materializes one exact dependency-closed Spatial ownership scope. A
+/// callable selection retains the callable as the LLVM ABI authority; a
+/// nested structured selection replaces that operation at its exact position.
+/// Both forms create one private rank-zero thread containing exactly one
+/// loom.spatial_region. Value live-outs cross the thread boundary through
+/// caller-owned result storage, while dataflow.thread retains no data results.
+/// Fabric is used only for hard-negative actor-capability pruning; this
+/// function performs no Mapping or QoR choice.
 llvm::Expected<MaterializedOwnershipCandidate>
-materializeWholeCallableSpatialOwnership(
-    const StructuredProgramCandidate &parent,
-    const StructuredEntityRef &callable,
-    const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const WholeCallableSpatialOwnershipOptions &options = {});
-
-/// Materializes the explicit SpatialCore ownership choice for one exact
-/// structured operation inside an ordinary LLVM callable. The operation must
-/// sit outside any dataflow.thread, dataflow.graph, or loom.spatial_region,
-/// and own at least one region. Every external SSA live-in becomes an explicit
-/// input of one new private rank-zero dataflow.thread holding one
-/// loom.spatial_region. Value live-outs are graph results consumed by
-/// InstructionCore code in that thread and cross the thread boundary through
-/// caller-owned result storage; dataflow.thread itself has no data results.
-/// The original LLVM callable remains the ABI authority and launches that
-/// thread at the operation's exact position. Fabric is used only for
-/// hard-negative actor-capability pruning; this function performs no Mapping
-/// or QoR choice.
-llvm::Expected<MaterializedOwnershipCandidate>
-materializeOperationSpatialOwnership(
-    const StructuredProgramCandidate &parent,
-    const StructuredEntityRef &operation,
-    const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const OperationSpatialOwnershipOptions &options = {});
+materializeSpatialOwnership(const StructuredProgramCandidate &parent,
+                            const StructuredEntityRef &selection,
+                            const ::loom::fabric::FinalizedFabricRoot &fabric,
+                            const SpatialOwnershipOptions &options = {});
 
 } // namespace loom::frontend
 

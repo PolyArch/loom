@@ -691,7 +691,7 @@ void explicitWholeCallableSpatialOwnership() {
       decisionDomain.front().fmuladdExecutionShape)
     fail(test, "constant GEP invented a dynamic ownership decision");
   auto selected = take(
-      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram, callable, design.roots().front()));
 
   if (selected.structuredProgram.identity() == parentIdentity)
@@ -756,7 +756,7 @@ void wholeCallableExternalizesGlobalMemoryCapability() {
                                  parseGlobalMemoryModule(test, context),
                                  design.roots().front().reference(), store));
   auto selected = take(
-      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,
                 findCallable(test, compiled.structuredProgram, "global_lookup"),
                 design.roots().front()));
@@ -821,12 +821,11 @@ void wholeCallableExternalizesUndefValue() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseUndefBoundaryModule(test, context),
                                  design.roots().front().reference(), store));
-  auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram,
-                                  "undef_store"),
-                     design.roots().front()));
+  auto selected = take(
+      test, loom::frontend::materializeSpatialOwnership(
+                compiled.structuredProgram,
+                findCallable(test, compiled.structuredProgram, "undef_store"),
+                design.roots().front()));
   auto view = take(test, selected.canonicalDataflow.view());
   if (view.graphs().size() != 1)
     fail(test, "undef boundary did not produce one graph");
@@ -861,12 +860,11 @@ void explicitFmulAddExecutionShape() {
   loom::frontend::StructuredEntityRef callable =
       findCallable(test, compiled.structuredProgram, "kernel");
 
-  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
-  auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram, callable,
-                     design.roots().front(), options));
+  auto selected = take(test, loom::frontend::materializeSpatialOwnership(
+                                 compiled.structuredProgram, callable,
+                                 design.roots().front(), options));
   auto view = take(test, selected.canonicalDataflow.view());
   bool sawFma = false;
   for (const dataflow::CanonicalActorView &actor : view.actors()) {
@@ -897,7 +895,7 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseWholeCallableLoopModule(test, context),
                                  design.roots().front().reference(), store));
-  auto candidate = loom::frontend::materializeWholeCallableSpatialOwnership(
+  auto candidate = loom::frontend::materializeSpatialOwnership(
       compiled.structuredProgram,
       findCallable(test, compiled.structuredProgram, "kernel"),
       design.roots().front());
@@ -907,10 +905,10 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
   if (message.find("explicit canonical index width") == std::string::npos)
     fail(test, "missing index decision was not diagnosed: " + message);
 
-  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
   auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
                      findCallable(test, compiled.structuredProgram, "kernel"),
                      design.roots().front(), options));
@@ -924,7 +922,7 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
 
   auto unsignedIndex =
       take(test,
-           loom::frontend::materializeWholeCallableSpatialOwnership(
+           loom::frontend::materializeSpatialOwnership(
                compiled.structuredProgram,
                findCallable(test, compiled.structuredProgram, "unsigned_index"),
                design.roots().front(), options));
@@ -932,12 +930,10 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
   if (unsignedView.graphs().size() != 1 || unsignedView.actors().empty())
     fail(test, "proven nonnegative extended index did not publish its graph");
 
-  auto unprovenUnsigned =
-      loom::frontend::materializeWholeCallableSpatialOwnership(
-          compiled.structuredProgram,
-          findCallable(test, compiled.structuredProgram,
-                       "unsigned_may_not_fit"),
-          design.roots().front(), options);
+  auto unprovenUnsigned = loom::frontend::materializeSpatialOwnership(
+      compiled.structuredProgram,
+      findCallable(test, compiled.structuredProgram, "unsigned_may_not_fit"),
+      design.roots().front(), options);
   if (unprovenUnsigned)
     fail(test, "unproven unsigned index narrowing was accepted");
   message = llvm::toString(unprovenUnsigned.takeError());
@@ -975,9 +971,9 @@ void wholeCallableNormalizesPointerInduction() {
   if (!saw64BitAddressDomain)
     fail(test, "pointer induction did not request a canonical address domain");
 
-  loom::frontend::WholeCallableSpatialOwnershipOptions narrowOptions;
+  loom::frontend::SpatialOwnershipOptions narrowOptions;
   narrowOptions.canonicalIndexWidth = 32;
-  auto narrow = loom::frontend::materializeWholeCallableSpatialOwnership(
+  auto narrow = loom::frontend::materializeSpatialOwnership(
       compiled.structuredProgram, callable, design.roots().front(),
       narrowOptions);
   if (narrow)
@@ -987,12 +983,11 @@ void wholeCallableNormalizesPointerInduction() {
     fail(test,
          "insufficient pointer induction width was misdiagnosed: " + message);
 
-  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 64;
-  auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram, callable,
-                     design.roots().front(), options));
+  auto selected = take(test, loom::frontend::materializeSpatialOwnership(
+                                 compiled.structuredProgram, callable,
+                                 design.roots().front(), options));
   auto view = take(test, selected.canonicalDataflow.view());
   bool sawLoad = false;
   bool sawStore = false;
@@ -1010,7 +1005,7 @@ void wholeCallableNormalizesPointerInduction() {
     fail(test, "normalized pointer induction lost its memory transactions");
 
   auto runtimeStride =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
                      findCallable(test, compiled.structuredProgram,
                                   "runtime_stride_pointer_induction"),
@@ -1025,12 +1020,11 @@ void wholeCallableNormalizesPointerInduction() {
               carry.getOutput().getType()))
         fail(test, "runtime pointer stride became memory carry state");
 
-  auto bounded =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram,
-                                  "bounded_pointer_induction"),
-                     design.roots().front(), options));
+  auto bounded = take(test, loom::frontend::materializeSpatialOwnership(
+                                compiled.structuredProgram,
+                                findCallable(test, compiled.structuredProgram,
+                                             "bounded_pointer_induction"),
+                                design.roots().front(), options));
   auto boundedView = take(test, bounded.canonicalDataflow.view());
   if (boundedView.graphs().size() != 1 || boundedView.actors().empty())
     fail(test, "runtime-bounded pointer induction did not publish its graph");
@@ -1061,14 +1055,13 @@ void wholeCallableNormalizesNestedPointerInduction() {
       take(test, loom::frontend::compileLlvmModuleToPreMapping(
                      parseNestedPointerInductionModule(test, context),
                      design.roots().front().reference(), store));
-  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 64;
-  auto selected =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram,
-                                  "nested_pointer_induction"),
-                     design.roots().front(), options));
+  auto selected = take(test, loom::frontend::materializeSpatialOwnership(
+                                 compiled.structuredProgram,
+                                 findCallable(test, compiled.structuredProgram,
+                                              "nested_pointer_induction"),
+                                 design.roots().front(), options));
   auto view = take(test, selected.canonicalDataflow.view());
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "nested pointer induction did not publish its graph");
@@ -1102,7 +1095,7 @@ void explicitOperationSpatialOwnership() {
       compiled.structuredProgram.identity();
   loom::frontend::StructuredEntityRef loop =
       findStructuredLoop(test, compiled.structuredProgram, "kernel");
-  auto implicit = loom::frontend::materializeOperationSpatialOwnership(
+  auto implicit = loom::frontend::materializeSpatialOwnership(
       compiled.structuredProgram, loop, design.roots().front());
   if (implicit)
     fail(test, "operation ownership silently selected an index width");
@@ -1111,12 +1104,11 @@ void explicitOperationSpatialOwnership() {
       std::string::npos)
     fail(test, "missing index decision was not diagnosed: " + implicitMessage);
 
-  loom::frontend::OperationSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
-  auto selected =
-      take(test, loom::frontend::materializeOperationSpatialOwnership(
-                     compiled.structuredProgram, loop, design.roots().front(),
-                     options));
+  auto selected = take(test, loom::frontend::materializeSpatialOwnership(
+                                 compiled.structuredProgram, loop,
+                                 design.roots().front(), options));
 
   if (selected.structuredProgram.identity() == parentIdentity)
     fail(test, "operation ownership did not create a child candidate");
@@ -1212,7 +1204,7 @@ void explicitOperationSpatialOwnership() {
   if (!sawStore)
     fail(test, "canonical graph dropped the loop's side-effecting store");
 
-  auto unproven = loom::frontend::materializeOperationSpatialOwnership(
+  auto unproven = loom::frontend::materializeSpatialOwnership(
       compiled.structuredProgram,
       findStructuredLoop(test, compiled.structuredProgram, "dynamic"),
       design.roots().front(), options);
@@ -1258,11 +1250,11 @@ void operationOwnershipInternalizesConstants() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseByteOffsetOwnershipModule(test, context),
                                  design.roots().front().reference(), store));
-  loom::frontend::OperationSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
   auto selected = take(
       test,
-      loom::frontend::materializeOperationSpatialOwnership(
+      loom::frontend::materializeSpatialOwnership(
           compiled.structuredProgram,
           findStructuredLoop(test, compiled.structuredProgram, "byte_offset"),
           design.roots().front(), options));
@@ -1325,10 +1317,16 @@ void operationOwnershipScopesFollowCanonicalOrder() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseLoopOwnershipModule(test, context),
                                  design.roots().front().reference(), store));
-  auto scopes =
-      take(test, loom::frontend::enumerateOperationSpatialOwnershipScopes(
-                     compiled.structuredProgram));
+  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+                               compiled.structuredProgram));
   auto view = take(test, compiled.structuredProgram.view());
+
+  std::vector<loom::frontend::StructuredEntityRef> scopes;
+  for (const loom::frontend::SpatialOwnershipScope &scope : domain) {
+    auto entity = take(test, view.resolve(scope.selection));
+    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation))
+      scopes.push_back(scope.selection);
+  }
 
   std::vector<loom::frontend::StructuredEntityRef> expected;
   for (const loom::frontend::StructuredEntity &entity :
@@ -1363,9 +1361,15 @@ void wholeCallableScopesFollowCanonicalOrder() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseSpatialModule(test, context),
                                  design.roots().front().reference(), store));
-  auto scopes =
-      take(test, loom::frontend::enumerateWholeCallableSpatialOwnershipScopes(
-                     compiled.structuredProgram));
+  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+                               compiled.structuredProgram));
+  auto view = take(test, compiled.structuredProgram.view());
+  std::vector<loom::frontend::StructuredEntityRef> scopes;
+  for (const loom::frontend::SpatialOwnershipScope &scope : domain) {
+    auto entity = take(test, view.resolve(scope.selection));
+    if (llvm::isa_and_nonnull<mlir::LLVM::LLVMFuncOp>(entity.operation))
+      scopes.push_back(scope.selection);
+  }
   if (scopes.size() != 1 ||
       scopes.front() !=
           findCallable(test, compiled.structuredProgram, "kernel"))
@@ -1395,12 +1399,12 @@ void operationFmulAddDecisionIsCandidateLocal() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseOperationFmulAddModule(test, context),
                                  design.roots().front().reference(), store));
-  loom::frontend::OperationSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
   options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
   auto selected = take(
       test,
-      loom::frontend::materializeOperationSpatialOwnership(
+      loom::frontend::materializeSpatialOwnership(
           compiled.structuredProgram,
           findStructuredLoop(test, compiled.structuredProgram, "fmuladd_loop"),
           design.roots().front(), options));
@@ -1497,13 +1501,9 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
     if (scope.selection == loop)
       operationScope = scope;
   }
-  if (!callableScope ||
-      callableScope->kind !=
-          loom::frontend::SpatialOwnershipScopeKind::WholeCallable)
+  if (!callableScope)
     fail(test, "unified domain omitted the whole-callable ownership scope");
-  if (!operationScope ||
-      operationScope->kind !=
-          loom::frontend::SpatialOwnershipScopeKind::Operation)
+  if (!operationScope)
     fail(test, "unified domain omitted the operation ownership scope");
 
   loom::frontend::SpatialOwnershipDecisionPoint decision{
@@ -1544,10 +1544,10 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseEscapedLoopModule(test, context),
                                  design.roots().front().reference(), store));
-  loom::frontend::OperationSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   options.canonicalIndexWidth = 32;
   auto selected = take(
-      test, loom::frontend::materializeOperationSpatialOwnership(
+      test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,
                 findStructuredLoop(test, compiled.structuredProgram, "accum"),
                 design.roots().front(), options));
@@ -1691,9 +1691,9 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseSpatialModule(test, context),
                                  design.roots().front().reference(), store));
-  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  loom::frontend::SpatialOwnershipOptions options;
   auto spatial =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
                      findCallable(test, compiled.structuredProgram, "kernel"),
                      design.roots().front(), options));

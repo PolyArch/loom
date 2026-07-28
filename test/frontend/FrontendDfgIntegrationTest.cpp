@@ -301,16 +301,15 @@ findVecaddLoop(const char *test,
                const loom::frontend::StructuredProgramCandidate &candidate) {
   auto view = take(test, candidate.view());
   auto scopes =
-      take(test,
-           loom::frontend::enumerateOperationSpatialOwnershipScopes(candidate));
-  for (const loom::frontend::StructuredEntityRef &scope : scopes) {
-    auto entity = take(test, view.resolve(scope));
+      take(test, loom::frontend::enumerateSpatialOwnershipScopes(candidate));
+  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
+    auto entity = take(test, view.resolve(scope.selection));
     auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
     if (!loop)
       continue;
     auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == "vecadd")
-      return scope;
+      return scope.selection;
   }
   fail(test, "raised vecadd has no eligible structured loop");
 }
@@ -321,16 +320,15 @@ findStructuredLoop(const char *test,
                    llvm::StringRef callableName) {
   auto view = take(test, candidate.view());
   auto scopes =
-      take(test,
-           loom::frontend::enumerateOperationSpatialOwnershipScopes(candidate));
-  for (const loom::frontend::StructuredEntityRef &scope : scopes) {
-    auto entity = take(test, view.resolve(scope));
+      take(test, loom::frontend::enumerateSpatialOwnershipScopes(candidate));
+  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
+    auto entity = take(test, view.resolve(scope.selection));
     auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
     if (!loop)
       continue;
     auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == callableName)
-      return scope;
+      return scope.selection;
   }
   fail(test, "raised Structured Program has no requested loop");
 }
@@ -443,10 +441,10 @@ void selectedFmuladdShapesRemainObservable() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseFmuladd(test, targetContext),
                                  design.roots().front().reference(), store));
-  loom::frontend::WholeCallableSpatialOwnershipOptions ownership;
+  loom::frontend::SpatialOwnershipOptions ownership;
   ownership.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
   auto candidate = take(
-      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,
                 findCallable(test, compiled.structuredProgram, "fma_kernel"),
                 design.roots().front(), ownership));
@@ -469,7 +467,6 @@ void selectedFmuladdShapesRemainObservable() {
   auto host = take(test, loom::raising::raiseLlvmModuleToStructuredProgram(
                              std::move(hostModule)));
   loom::frontend::SpatialOwnershipScope hostScope{
-      loom::frontend::SpatialOwnershipScopeKind::WholeCallable,
       findCallable(test, host, "fma_kernel")};
   auto captureShape = [&](loom::raising::FMulAddExecutionShape shape) {
     auto prepared =
@@ -532,8 +529,7 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
                      compiled.structuredProgram, loop));
   if (domain.size() != 1)
     fail(test, "scalar loop did not expose one exact decision");
-  loom::frontend::SpatialOwnershipScope scope{
-      loom::frontend::SpatialOwnershipScopeKind::Operation, loop};
+  loom::frontend::SpatialOwnershipScope scope{loop};
   auto candidate =
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, domain.front(),
@@ -605,7 +601,7 @@ void wholeCallableScalarResultUsesCallerStorage() {
                                  parseScalarReduction(test, context),
                                  design.roots().front().reference(), store));
   auto candidate =
-      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
                      findCallable(test, compiled.structuredProgram, "accum"),
                      design.roots().front()));
@@ -662,10 +658,10 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                                  parseVecadd(test, context),
                                  design.roots().front().reference(), store));
 
-  loom::frontend::OperationSpatialOwnershipOptions ownership;
+  loom::frontend::SpatialOwnershipOptions ownership;
   ownership.canonicalIndexWidth = 32;
   auto candidate =
-      take(test, loom::frontend::materializeOperationSpatialOwnership(
+      take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
                      findVecaddLoop(test, compiled.structuredProgram),
                      design.roots().front(), ownership));
@@ -854,10 +850,10 @@ void staticTableExecutesThroughTypedDfgInput() {
                                  parseTableLookup(test, context),
                                  design.roots().front().reference(), store));
 
-  loom::frontend::WholeCallableSpatialOwnershipOptions ownership;
+  loom::frontend::SpatialOwnershipOptions ownership;
   ownership.canonicalIndexWidth = 64;
   auto candidate = take(
-      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+      test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,
                 findCallable(test, compiled.structuredProgram, "table_lookup"),
                 design.roots().front(), ownership));
@@ -893,7 +889,7 @@ void staticTableExecutesThroughTypedDfgInput() {
 
   auto captureCandidate = take(
       test,
-      loom::frontend::materializeWholeCallableSpatialOwnership(
+      loom::frontend::materializeSpatialOwnership(
           compiled.structuredProgram,
           findCallable(test, compiled.structuredProgram, "table_lookup_arg"),
           design.roots().front(), ownership));

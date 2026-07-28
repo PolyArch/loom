@@ -573,29 +573,6 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
 
 } // namespace
 
-llvm::Expected<std::vector<StructuredEntityRef>>
-enumerateWholeCallableSpatialOwnershipScopes(
-    const StructuredProgramCandidate &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-
-  std::vector<StructuredEntityRef> scopes;
-  for (const StructuredEntity &entity :
-       view->entities(StructuredEntityKind::Operation)) {
-    auto callable =
-        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
-    if (!callable)
-      continue;
-    if (llvm::Error rejection = verifyEligibleCallable(callable)) {
-      llvm::consumeError(std::move(rejection));
-      continue;
-    }
-    scopes.push_back(entity.reference);
-  }
-  return scopes;
-}
-
 llvm::Expected<std::vector<SpatialOwnershipScope>>
 enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent) {
   auto view = parent.view();
@@ -613,36 +590,14 @@ enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent) {
         llvm::consumeError(std::move(rejection));
         continue;
       }
-      scopes.push_back(
-          {SpatialOwnershipScopeKind::WholeCallable, entity.reference});
+      scopes.push_back({entity.reference});
       continue;
     }
     if (auto callable = eligibleOwningCallable(entity.operation); !callable) {
       llvm::consumeError(callable.takeError());
       continue;
     }
-    scopes.push_back({SpatialOwnershipScopeKind::Operation, entity.reference});
-  }
-  return scopes;
-}
-
-llvm::Expected<std::vector<StructuredEntityRef>>
-enumerateOperationSpatialOwnershipScopes(
-    const StructuredProgramCandidate &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-
-  std::vector<StructuredEntityRef> scopes;
-  for (const StructuredEntity &entity :
-       view->entities(StructuredEntityKind::Operation)) {
-    if (!entity.operation)
-      continue;
-    if (auto callable = eligibleOwningCallable(entity.operation); !callable) {
-      llvm::consumeError(callable.takeError());
-      continue;
-    }
-    scopes.push_back(entity.reference);
+    scopes.push_back({entity.reference});
   }
   return scopes;
 }
@@ -717,24 +672,16 @@ materializeSpatialOwnershipDecision(
   if (!prepared)
     return prepared.takeError();
 
-  switch (scope.kind) {
-  case SpatialOwnershipScopeKind::WholeCallable: {
-    auto function =
-        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(prepared->operation);
-    if (!function)
-      return invalid("selected StructuredEntityRef is not an LLVM callable");
+  if (auto function =
+          llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(prepared->operation)) {
     if (llvm::Error error = materializeThread(prepared->module.get(), function))
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
-    break;
-  }
-  case SpatialOwnershipScopeKind::Operation: {
+  } else {
     if (llvm::Error error = materializePreparedOperation(prepared->module.get(),
                                                          prepared->operation))
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
-    break;
-  }
   }
   return finalizeOwnershipCandidate(prepared->module.get(), fabric, lowering);
 }
@@ -768,34 +715,19 @@ prepareSpatialOwnershipSelection(
   if (!selection)
     return selection.takeError();
   mlir::Operation *operation = selection->operation;
-  switch (scope.kind) {
-  case SpatialOwnershipScopeKind::WholeCallable: {
-    auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(operation);
-    if (!function)
-      return invalid("selected StructuredEntityRef is not an LLVM callable");
+  if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
     if (llvm::Error error = verifyEligibleCallable(function))
       return std::move(error);
-    auto normalized = detail::materializeAddressIndexContract(
-        selection->clone.get(), function.getOperation(),
-        decision.canonicalIndexWidth);
-    if (!normalized)
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    normalized.takeError());
-    operation = *normalized;
-    break;
-  }
-  case SpatialOwnershipScopeKind::Operation: {
+  } else {
     if (auto callable = eligibleOwningCallable(operation); !callable)
       return callable.takeError();
-    auto normalized = detail::materializeAddressIndexContract(
-        selection->clone.get(), operation, decision.canonicalIndexWidth);
-    if (!normalized)
-      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                    normalized.takeError());
-    operation = *normalized;
-    break;
   }
-  }
+  auto normalized = detail::materializeAddressIndexContract(
+      selection->clone.get(), operation, decision.canonicalIndexWidth);
+  if (!normalized)
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  normalized.takeError());
+  operation = *normalized;
   if (decision.fmuladdExecutionShape)
     raising::materializeFMulAddInOperation(*operation,
                                            *decision.fmuladdExecutionShape);
@@ -803,7 +735,7 @@ prepareSpatialOwnershipSelection(
     return invalid("prepared ownership selection does not verify");
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
-  if (scope.kind == SpatialOwnershipScopeKind::Operation) {
+  if (!llvm::isa<mlir::LLVM::LLVMFuncOp>(operation)) {
     OperationClosure closure = deriveOperationClosure(operation);
     liveIns.assign(closure.liveIns.begin(), closure.liveIns.end());
     liveOuts.assign(closure.liveOuts.begin(), closure.liveOuts.end());
@@ -814,25 +746,12 @@ prepareSpatialOwnershipSelection(
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>
-materializeWholeCallableSpatialOwnership(
-    const StructuredProgramCandidate &parent,
-    const StructuredEntityRef &callable,
-    const fabric::FinalizedFabricRoot &fabric,
-    const WholeCallableSpatialOwnershipOptions &options) {
+materializeSpatialOwnership(const StructuredProgramCandidate &parent,
+                            const StructuredEntityRef &selection,
+                            const fabric::FinalizedFabricRoot &fabric,
+                            const SpatialOwnershipOptions &options) {
   return materializeSpatialOwnershipDecision(
-      parent, {SpatialOwnershipScopeKind::WholeCallable, callable},
-      {options.fmuladdExecutionShape, options.canonicalIndexWidth}, fabric,
-      options.lowering);
-}
-
-llvm::Expected<MaterializedOwnershipCandidate>
-materializeOperationSpatialOwnership(
-    const StructuredProgramCandidate &parent,
-    const StructuredEntityRef &operation,
-    const fabric::FinalizedFabricRoot &fabric,
-    const OperationSpatialOwnershipOptions &options) {
-  return materializeSpatialOwnershipDecision(
-      parent, {SpatialOwnershipScopeKind::Operation, operation},
+      parent, {selection},
       {options.fmuladdExecutionShape, options.canonicalIndexWidth}, fabric,
       options.lowering);
 }
