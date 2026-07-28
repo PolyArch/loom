@@ -125,7 +125,8 @@ entry:
 }
 
 std::unique_ptr<llvm::Module> parseTableLookup(const char *test,
-                                               llvm::LLVMContext &context) {
+                                               llvm::LLVMContext &context,
+                                               bool riscvTarget = true) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
 target triple = "riscv64-unknown-unknown-elf"
@@ -150,6 +151,31 @@ loop:
 exit:
   ret void
 }
+
+define void @table_lookup_arg(ptr %table, ptr %output) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %source = getelementptr i32, ptr %table, i64 %i
+  %value = load i32, ptr %source, align 4
+  %destination = getelementptr i32, ptr %output, i64 %i
+  store i32 %value, ptr %destination, align 4
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp eq i64 %next, 4
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define i32 @main() {
+entry:
+  %output = alloca [4 x i32], align 16
+  call void @table_lookup_arg(ptr @lookup, ptr %output)
+  ret i32 0
+}
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<table-lookup>");
@@ -159,6 +185,10 @@ exit:
     llvm::raw_string_ostream stream(message);
     diagnostic.print(test, stream);
     fail(test, stream.str());
+  }
+  if (!riscvTarget) {
+    module->setDataLayout("");
+    module->setTargetTriple(llvm::Triple());
   }
   return module;
 }
@@ -469,6 +499,8 @@ void staticTableExecutesThroughTypedDfgInput() {
 
   auto design = take(test, loom::adg::buildBuiltinTarget(
                                store, loom::adg::BuiltinTargetPreset::Small));
+  auto nativeContext = std::make_unique<llvm::LLVMContext>();
+  auto nativeModule = parseTableLookup(test, *nativeContext, false);
   llvm::LLVMContext context;
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseTableLookup(test, context),
@@ -510,6 +542,58 @@ void staticTableExecutesThroughTypedDfgInput() {
   }
   if (!tableRoot || !outputRoot)
     fail(test, "table and runtime output roots were not distinguished");
+
+  auto captureCandidate = take(
+      test,
+      loom::frontend::materializeWholeCallableSpatialOwnership(
+          compiled.structuredProgram,
+          findCallable(test, compiled.structuredProgram, "table_lookup_arg"),
+          design.roots().front(), ownership));
+  auto captureView = take(test, captureCandidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef captureLaunch = onlyLaunch(test, captureView);
+  mlir::LLVM::CallOp hostCall;
+  captureCandidate.canonicalDataflow.module().walk(
+      [&](mlir::LLVM::CallOp call) {
+        auto caller = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+        if (caller && caller.getSymName() == "main" && call.getCalleeAttr() &&
+            call.getCalleeAttr().getValue() == "table_lookup_arg")
+          hostCall = call;
+      });
+  if (!hostCall)
+    fail(test, "table lookup candidate has no direct host call");
+  auto capturePlan = take(test, loom::sim::deriveSimulationInputCapturePlan(
+                                    captureView, captureLaunch, hostCall));
+  if (capturePlan.input.objects.size() != 2 ||
+      capturePlan.input.memoryRootBindings.size() != 2)
+    fail(test, "table lookup capture did not retain both backing objects");
+  for (const loom::sim::SimulationMemoryCaptureObject &object :
+       capturePlan.input.objects)
+    if (object.byteCount != 4 * sizeof(std::int32_t))
+      fail(test, "table lookup capture object has the wrong byte extent");
+  loom::sim::NativeSimulationInputCapture nativeCapture =
+      take(test, loom::sim::executeNativeSimulationInputCapture(
+                     llvm::orc::ThreadSafeModule(std::move(nativeModule),
+                                                 std::move(nativeContext)),
+                     capturePlan));
+  if (nativeCapture.entryResult != 0 || nativeCapture.calls.size() != 1 ||
+      nativeCapture.calls.front().objects.size() != 2)
+    fail(test, "native table oracle did not capture one complete call");
+  const auto &capturedTable =
+      nativeCapture.calls.front()
+          .objects[captureBinding(test, capturePlan.input,
+                                  memoryRoot(test, captureView, 0))
+                       .objectIndex];
+  const auto &capturedOutput =
+      nativeCapture.calls.front()
+          .objects[captureBinding(test, capturePlan.input,
+                                  memoryRoot(test, captureView, 1))
+                       .objectIndex];
+  const loom::frontend::StaticGlobalMemory *staticTable =
+      compiled.staticGlobalMemory.lookup("lookup");
+  if (!staticTable || capturedTable.initialBytes != staticTable->bytes ||
+      capturedTable.finalBytes != capturedTable.initialBytes ||
+      capturedOutput.finalBytes != capturedTable.initialBytes)
+    fail(test, "native table oracle did not preserve the static image");
 
   loom::sim::SpatialSimulationWorkload workload{launch};
   workload.observableContract.memories.push_back(

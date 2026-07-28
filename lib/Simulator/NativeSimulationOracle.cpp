@@ -94,19 +94,25 @@ resolveNativeObject(llvm::Value *pointer, const llvm::DataLayout &layout) {
     return *base;
   }
   auto *allocation = llvm::dyn_cast<llvm::AllocaInst>(pointer);
-  if (!allocation)
-    return invalid("native call operand does not resolve to a finite alloca");
-  auto *count = llvm::dyn_cast<llvm::ConstantInt>(allocation->getArraySize());
-  if (!count || count->isZero() || count->getValue().getActiveBits() > 64)
-    return invalid("native alloca has no positive constant element count");
-  const llvm::TypeSize elementBytes =
-      layout.getTypeAllocSize(allocation->getAllocatedType());
+  llvm::Type *elementType = nullptr;
+  std::uint64_t arrayCount = 1;
+  if (allocation) {
+    auto *count = llvm::dyn_cast<llvm::ConstantInt>(allocation->getArraySize());
+    if (!count || count->isZero() || count->getValue().getActiveBits() > 64)
+      return invalid("native alloca has no positive constant element count");
+    arrayCount = count->getZExtValue();
+    elementType = allocation->getAllocatedType();
+  } else if (auto *global = llvm::dyn_cast<llvm::GlobalVariable>(pointer)) {
+    elementType = global->getValueType();
+  } else {
+    return invalid("native call operand does not resolve to a finite object");
+  }
+  const llvm::TypeSize elementBytes = layout.getTypeAllocSize(elementType);
   if (elementBytes.isScalable() || elementBytes.getFixedValue() == 0)
-    return invalid("native alloca has no fixed nonzero element size");
-  const std::uint64_t arrayCount = count->getZExtValue();
+    return invalid("native object has no fixed nonzero element size");
   if (arrayCount >
       std::numeric_limits<std::uint64_t>::max() / elementBytes.getFixedValue())
-    return invalid("native alloca byte count overflows uint64");
+    return invalid("native object byte count overflows uint64");
   return ResolvedNativeObject{arrayCount * elementBytes.getFixedValue(), 0};
 }
 
@@ -365,10 +371,9 @@ instrumentCapture(llvm::Module &module,
     afterBuilder.CreateCall(after, {objectOrdinal, base, byteCount});
   }
   std::uint64_t runtimeOrdinal = 0;
-  llvm::IRBuilder<> entryBuilder(&selected->getFunction()->getEntryBlock(),
-                                 selected->getFunction()
-                                     ->getEntryBlock()
-                                     .getFirstInsertionPt());
+  llvm::IRBuilder<> entryBuilder(
+      &selected->getFunction()->getEntryBlock(),
+      selected->getFunction()->getEntryBlock().getFirstInsertionPt());
   for (const SimulationValueInputCapture &input : plan.input.valueInputs) {
     if (input.fixedValue)
       continue;
@@ -389,11 +394,9 @@ instrumentCapture(llvm::Module &module,
     llvm::AllocaInst *slot = entryBuilder.CreateAlloca(
         operand->getType(), nullptr, "loom.capture.value");
     beforeBuilder.CreateStore(operand, slot);
-    llvm::Value *ordinalValue =
-        llvm::ConstantInt::get(i64, runtimeOrdinal++);
+    llvm::Value *ordinalValue = llvm::ConstantInt::get(i64, runtimeOrdinal++);
     llvm::Value *byteCount = llvm::ConstantInt::get(i64, input.byteCount);
-    beforeBuilder.CreateCall(*valueCallback,
-                             {ordinalValue, slot, byteCount});
+    beforeBuilder.CreateCall(*valueCallback, {ordinalValue, slot, byteCount});
   }
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");

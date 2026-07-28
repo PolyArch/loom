@@ -77,6 +77,7 @@ fixedAllocationByteCount(mlir::LLVM::AllocaOp allocation) {
 
 struct ResolvedObject {
   mlir::Value base;
+  mlir::Operation *owner = nullptr;
   std::uint64_t byteCount = 0;
   std::uint64_t byteOffset = 0;
 };
@@ -142,9 +143,24 @@ llvm::Expected<ResolvedObject> resolveObject(mlir::Value pointer) {
         fixedAllocationByteCount(allocation);
     if (!byteCount)
       return byteCount.takeError();
-    return ResolvedObject{allocation.getResult(), *byteCount, 0};
+    return ResolvedObject{allocation.getResult(), allocation.getOperation(),
+                          *byteCount, 0};
   }
-  return unsupported("call operand does not resolve to a finite LLVM alloca");
+  if (auto address = pointer.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
+    auto global =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::GlobalOp>(
+            address, address.getGlobalNameAttr());
+    if (!global)
+      return unsupported(
+          "LLVM address does not resolve to a finite global object");
+    llvm::Expected<std::uint64_t> byteCount =
+        fixedTypeByteCount(global.getOperation(), global.getGlobalType());
+    if (!byteCount)
+      return byteCount.takeError();
+    return ResolvedObject{address.getResult(), global.getOperation(),
+                          *byteCount, 0};
+  }
+  return unsupported("call operand does not resolve to a finite LLVM object");
 }
 
 CanonicalValueSequence exceptionalValue(const detail::LaneShape &shape,
@@ -322,8 +338,9 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return fixed.takeError();
   if (*fixed)
     return SimulationValueInputCapture{
-        valueInputOrdinal, std::nullopt, callableSource, shape->lanesPerToken,
-        shape->laneBitWidth, 0, std::move(*fixed)};
+        valueInputOrdinal,    std::nullopt,        callableSource,
+        shape->lanesPerToken, shape->laneBitWidth, 0,
+        std::move(*fixed)};
 
   llvm::Expected<unsigned> callableArgument =
       enclosingCallableArgument(callableSource, enclosingCallable);
@@ -338,8 +355,9 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return fixed.takeError();
   if (*fixed)
     return SimulationValueInputCapture{
-        valueInputOrdinal, std::nullopt, hostOperand, shape->lanesPerToken,
-        shape->laneBitWidth, 0, std::move(*fixed)};
+        valueInputOrdinal,    std::nullopt,        hostOperand,
+        shape->lanesPerToken, shape->laneBitWidth, 0,
+        std::move(*fixed)};
 
   llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
       hostOperand.getDefiningOp() ? hostOperand.getDefiningOp()
@@ -351,9 +369,10 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
           std::numeric_limits<std::uint64_t>::max() / shape->laneBitWidth ||
       shape->lanesPerToken * shape->laneBitWidth > *bytes * 8)
     return invalid("runtime graph value does not fit its storage extent");
-  return SimulationValueInputCapture{
-      valueInputOrdinal, *callableArgument, hostOperand, shape->lanesPerToken,
-      shape->laneBitWidth, *bytes, std::nullopt};
+  return SimulationValueInputCapture{valueInputOrdinal,   *callableArgument,
+                                     hostOperand,         shape->lanesPerToken,
+                                     shape->laneBitWidth, *bytes,
+                                     std::nullopt};
 }
 
 llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
@@ -446,9 +465,15 @@ deriveSimulationInputCapturePlan(
     if (!object)
       return object.takeError();
     std::uint64_t objectIndex = 0;
-    while (objectIndex < plan.input.objects.size() &&
-           plan.input.objects[objectIndex].base != object->base)
+    while (objectIndex < plan.input.objects.size()) {
+      llvm::Expected<ResolvedObject> existing =
+          resolveObject(plan.input.objects[objectIndex].base);
+      if (!existing)
+        return existing.takeError();
+      if (existing->owner == object->owner)
+        break;
       ++objectIndex;
+    }
     if (objectIndex == plan.input.objects.size()) {
       SimulationMemoryCaptureObject capture;
       capture.base = object->base;
@@ -502,9 +527,15 @@ deriveOperationSimulationInputCapturePlan(
     if (!object)
       return object.takeError();
     std::uint64_t objectIndex = 0;
-    while (objectIndex < plan.objects.size() &&
-           plan.objects[objectIndex].base != object->base)
+    while (objectIndex < plan.objects.size()) {
+      llvm::Expected<ResolvedObject> existing =
+          resolveObject(plan.objects[objectIndex].base);
+      if (!existing)
+        return existing.takeError();
+      if (existing->owner == object->owner)
+        break;
       ++objectIndex;
+    }
     if (objectIndex == plan.objects.size()) {
       plan.objects.push_back(
           SimulationMemoryCaptureObject{object->base, object->byteCount,
