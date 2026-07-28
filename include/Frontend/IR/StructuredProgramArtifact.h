@@ -113,15 +113,18 @@ private:
   StructuredProgramCandidate(ArtifactIdentity identity,
                              CanonicalSemanticBytes canonicalBytes,
                              std::unique_ptr<mlir::MLIRContext> context,
-                             mlir::OwningOpRef<mlir::ModuleOp> module)
+                             mlir::OwningOpRef<mlir::ModuleOp> module,
+                             StructuredProgramCandidateView view)
       : identity_(std::move(identity)),
         canonicalBytes_(std::move(canonicalBytes)),
-        context_(std::move(context)), module_(std::move(module)) {}
+        context_(std::move(context)), module_(std::move(module)),
+        view_(std::move(view)) {}
 
   ArtifactIdentity identity_;
   CanonicalSemanticBytes canonicalBytes_;
   std::unique_ptr<mlir::MLIRContext> context_;
   mlir::OwningOpRef<mlir::ModuleOp> module_;
+  StructuredProgramCandidateView view_;
 
   friend llvm::Expected<StructuredProgramCandidate>
       finalizeStructuredProgram(mlir::ModuleOp);

@@ -706,7 +706,7 @@ llvm::Expected<StructuredEntity> StructuredProgramCandidateView::resolve(
 
 llvm::Expected<StructuredProgramCandidateView>
 StructuredProgramCandidate::view() const {
-  return buildStructuredProgramCandidateView(module(), identity_);
+  return view_;
 }
 
 llvm::Expected<StructuredProgramCandidate>
@@ -748,7 +748,8 @@ importStructuredProgram(const ArtifactIdentity &identity,
     return view.takeError();
   return StructuredProgramCandidate(identity, canonicalBytes,
                                     std::move(parsed->context),
-                                    std::move(parsed->module));
+                                    std::move(parsed->module),
+                                    std::move(*view));
 }
 
 llvm::Expected<ArtifactRootReference>

@@ -449,18 +449,14 @@ cloneSelectedOperation(const StructuredProgramCandidate &parent,
   if (!parentEntity->operation)
     return invalid("selected StructuredEntityRef is not an operation");
 
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone()));
-  auto cloneView =
-      buildStructuredProgramCandidateView(clone.get(), parent.identity());
-  if (!cloneView)
-    return cloneView.takeError();
-  auto clonedEntity = cloneView->resolve(selection);
-  if (!clonedEntity)
-    return clonedEntity.takeError();
-  if (!clonedEntity->operation)
-    return invalid("selected operation changed kind in the private clone");
-  return PrivateSelection{std::move(clone), clonedEntity->operation};
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> clone(llvm::cast<mlir::ModuleOp>(
+      parent.module()->clone(mapping)));
+  mlir::Operation *clonedOperation =
+      mapping.lookupOrNull(parentEntity->operation);
+  if (!clonedOperation)
+    return invalid("selected operation was not mapped into the private clone");
+  return PrivateSelection{std::move(clone), clonedOperation};
 }
 
 llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
@@ -468,16 +464,16 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
-  auto structured = finalizeStructuredProgram(module);
-  if (!structured)
-    return structured.takeError();
-  auto canonical = lowering::lowerStructuredProgramToCanonicalDataflow(
-      *structured, loweringOptions);
+  auto canonical = lowering::lowerStructuredModuleToCanonicalDataflow(
+      module, loweringOptions);
   if (!canonical)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   canonical.takeError());
   if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))
     return std::move(error);
+  auto structured = finalizeStructuredProgram(module);
+  if (!structured)
+    return structured.takeError();
   return MaterializedOwnershipCandidate{std::move(*structured),
                                         std::move(*canonical)};
 }
