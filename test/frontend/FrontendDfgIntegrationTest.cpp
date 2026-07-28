@@ -5,6 +5,7 @@
 #include "Frontend/Compilation/StaticMemoryBinding.h"
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationInputCapture.h"
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -67,6 +68,24 @@ loop:
 
 exit:
   ret void
+}
+
+define i32 @main() {
+entry:
+  %a = alloca [64 x float], align 4
+  %b = alloca [64 x float], align 4
+  %c = alloca [64 x float], align 4
+  call void @vecadd(ptr %a, ptr %b, ptr %c)
+  ret i32 0
+}
+
+define i32 @slice_main() {
+entry:
+  %ab = alloca [128 x float], align 4
+  %b = getelementptr [128 x float], ptr %ab, i64 0, i64 64
+  %c = alloca [64 x float], align 4
+  call void @vecadd(ptr %ab, ptr %b, ptr %c)
+  ret i32 0
 }
 )llvm";
   llvm::SMDiagnostic diagnostic;
@@ -159,6 +178,33 @@ memoryRoot(const char *test, const dataflow::CanonicalDataflowProgramView &view,
   fail(test, "materialized vecadd is missing an imported memory root");
 }
 
+mlir::LLVM::CallOp
+findVecaddCall(const char *test,
+               const dataflow::CanonicalDataflowArtifact &artifact,
+               llvm::StringRef caller) {
+  mlir::LLVM::CallOp result;
+  artifact.module().walk([&](mlir::LLVM::CallOp call) {
+    auto function = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (function && function.getSymName() == caller && call.getCalleeAttr() &&
+        call.getCalleeAttr().getValue() == "vecadd")
+      result = call;
+  });
+  if (!result)
+    fail(test, "materialized vecadd has no requested host call site");
+  return result;
+}
+
+const loom::sim::SimulationMemoryRootCapture &
+captureBinding(const char *test,
+               const loom::sim::SimulationMemoryCapturePlan &plan,
+               dataflow::LogicalMemoryRootRef root) {
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       plan.memoryRootBindings)
+    if (binding.root == root)
+      return binding;
+  fail(test, "capture plan is missing a logical memory root");
+}
+
 loom::frontend::StructuredEntityRef
 findCallable(const char *test,
              const loom::frontend::StructuredProgramCandidate &candidate,
@@ -226,7 +272,42 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
   if (view.graphs().size() != 1 || view.actors().size() < 20)
     fail(test, "source candidate did not produce a substantive Dataflow graph");
 
-  loom::sim::SpatialSimulationWorkload workload{onlyLaunch(test, view)};
+  const dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto capturePlan = take(
+      test, loom::sim::deriveSimulationMemoryCapturePlan(
+                view, launch,
+                findVecaddCall(test, candidate.canonicalDataflow, "main")));
+  if (capturePlan.objects.size() != 3 ||
+      capturePlan.memoryRootBindings.size() != 3)
+    fail(test, "vecadd capture plan did not recover three memory objects");
+  for (const loom::sim::SimulationMemoryCaptureObject &object :
+       capturePlan.objects)
+    if (object.byteCount != 64 * sizeof(float))
+      fail(test, "vecadd capture object has the wrong byte extent");
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       capturePlan.memoryRootBindings)
+    if (binding.byteOffset != 0 || binding.objectIndex >= 3)
+      fail(test, "vecadd capture binding has the wrong object projection");
+
+  auto slicePlan = take(
+      test,
+      loom::sim::deriveSimulationMemoryCapturePlan(
+          view, launch,
+          findVecaddCall(test, candidate.canonicalDataflow, "slice_main")));
+  const auto &sliceA =
+      captureBinding(test, slicePlan, memoryRoot(test, view, 0));
+  const auto &sliceB =
+      captureBinding(test, slicePlan, memoryRoot(test, view, 1));
+  const auto &sliceC =
+      captureBinding(test, slicePlan, memoryRoot(test, view, 2));
+  if (slicePlan.objects.size() != 2 ||
+      slicePlan.objects[sliceA.objectIndex].byteCount != 128 * sizeof(float) ||
+      sliceA.objectIndex != sliceB.objectIndex || sliceA.byteOffset != 0 ||
+      sliceB.byteOffset != 64 * sizeof(float) ||
+      sliceC.objectIndex == sliceA.objectIndex || sliceC.byteOffset != 0)
+    fail(test, "vecadd slice capture did not preserve host aliasing");
+
+  loom::sim::SpatialSimulationWorkload workload{launch};
   workload.observableContract.memories.push_back(
       loom::sim::SpatialMemoryObservable{
           dataflow::LogicalMemoryRootOrViewRef{memoryRoot(test, view, 2)},

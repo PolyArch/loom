@@ -12,6 +12,7 @@ add_mlir_library(LoomSimulator
   MemorySynchronization.cpp
   OperationSemantics.cpp
   SimulationAdmission.cpp
+  SimulationInputCapture.cpp
   SimulationRuntimeInput.cpp
   SimulationWireSupport.cpp
   SimulationWorkload.cpp
