@@ -1,9 +1,11 @@
 #include "GraphMemoryAddressing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Target/LLVMIR/TypeToLLVM.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
@@ -45,24 +47,97 @@ std::optional<llvm::APInt> integerConstantValue(mlir::Value value) {
   return std::nullopt;
 }
 
-bool isKnownMultipleOfPowerOfTwo(mlir::Value value, unsigned shift) {
-  if (shift == 0)
-    return true;
-  if (std::optional<llvm::APInt> constant = integerConstantValue(value))
-    return constant->countTrailingZeros() >= shift;
-  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
-    for (mlir::Value factor : {multiply.getLhs(), multiply.getRhs()})
-      if (std::optional<llvm::APInt> constant = integerConstantValue(factor))
-        if (constant->countTrailingZeros() >= shift)
-          return true;
+class PowerOfTwoMultipleProof final {
+public:
+  explicit PowerOfTwoMultipleProof(unsigned shift) : shift(shift) {}
+
+  bool prove(mlir::Value value) {
+    if (shift == 0 || assumptions.contains(value))
+      return true;
+    if (!active.insert(value).second)
+      return false;
+    bool result = proveImpl(value);
+    active.erase(value);
+    return result;
   }
-  auto leftShift = value.getDefiningOp<mlir::arith::ShLIOp>();
-  if (!leftShift)
+
+private:
+  bool proveWhileInvariant(mlir::scf::WhileOp loop, unsigned ordinal,
+                           mlir::BlockArgument beforeArgument) {
+    if (ordinal >= loop.getInits().size() ||
+        ordinal >= loop.getYieldOp().getNumOperands() ||
+        !prove(loop.getInits()[ordinal]))
+      return false;
+    const bool inserted = assumptions.insert(beforeArgument).second;
+    bool preserved = prove(loop.getYieldOp().getOperand(ordinal));
+    if (inserted)
+      assumptions.erase(beforeArgument);
+    return preserved;
+  }
+
+  bool proveBlockArgument(mlir::BlockArgument argument) {
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(
+        argument.getOwner()->getParentOp());
+    if (!loop)
+      return false;
+    const unsigned ordinal = argument.getArgNumber();
+    if (argument.getOwner() == loop.getBeforeBody())
+      return proveWhileInvariant(loop, ordinal, argument);
+    if (argument.getOwner() == loop.getAfterBody() &&
+        ordinal < loop.getConditionOp().getArgs().size())
+      return prove(loop.getConditionOp().getArgs()[ordinal]);
     return false;
-  std::optional<llvm::APInt> amount = integerConstantValue(leftShift.getRhs());
-  auto integerType = llvm::dyn_cast<mlir::IntegerType>(value.getType());
-  return amount && integerType && amount->ult(integerType.getWidth()) &&
-         amount->getZExtValue() >= shift;
+  }
+
+  bool proveImpl(mlir::Value value) {
+    if (std::optional<llvm::APInt> constant = integerConstantValue(value))
+      return constant->isZero() || constant->countTrailingZeros() >= shift;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value))
+      return proveBlockArgument(argument);
+    if (auto add = value.getDefiningOp<mlir::arith::AddIOp>())
+      return prove(add.getLhs()) && prove(add.getRhs());
+    if (auto subtract = value.getDefiningOp<mlir::arith::SubIOp>())
+      return prove(subtract.getLhs()) && prove(subtract.getRhs());
+    if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>())
+      return prove(multiply.getLhs()) || prove(multiply.getRhs());
+    if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>())
+      return prove(extension.getIn());
+    if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>())
+      return prove(extension.getIn());
+    if (auto truncation = value.getDefiningOp<mlir::arith::TruncIOp>()) {
+      auto resultType = llvm::dyn_cast<mlir::IntegerType>(value.getType());
+      return resultType && resultType.getWidth() >= shift &&
+             prove(truncation.getIn());
+    }
+    if (auto leftShift = value.getDefiningOp<mlir::arith::ShLIOp>()) {
+      if (prove(leftShift.getLhs()))
+        return true;
+      std::optional<llvm::APInt> amount =
+          integerConstantValue(leftShift.getRhs());
+      auto integerType = llvm::dyn_cast<mlir::IntegerType>(value.getType());
+      return amount && integerType && amount->ult(integerType.getWidth()) &&
+             amount->getZExtValue() >= shift;
+    }
+    if (auto loop = value.getDefiningOp<mlir::scf::WhileOp>()) {
+      const unsigned ordinal =
+          llvm::cast<mlir::OpResult>(value).getResultNumber();
+      if (ordinal >= loop.getBeforeBody()->getNumArguments() ||
+          ordinal >= loop.getConditionOp().getArgs().size())
+        return false;
+      auto beforeArgument = loop.getBeforeBody()->getArgument(ordinal);
+      return proveWhileInvariant(loop, ordinal, beforeArgument) &&
+             prove(loop.getConditionOp().getArgs()[ordinal]);
+    }
+    return false;
+  }
+
+  unsigned shift;
+  llvm::SmallDenseSet<mlir::Value, 8> assumptions;
+  llvm::SmallDenseSet<mlir::Value, 16> active;
+};
+
+bool isKnownMultipleOfPowerOfTwo(mlir::Value value, unsigned shift) {
+  return PowerOfTwoMultipleProof(shift).prove(value);
 }
 
 bool isSupportedElementType(mlir::Type type) {
