@@ -8,7 +8,11 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ThreadPool.h"
+#include "llvm/Support/Threading.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -34,6 +38,40 @@ llvm::Expected<bool> isExpectedCandidateRejection(llvm::Error error) {
   return rejected;
 }
 
+struct OwnershipWorkItem final {
+  frontend::SpatialOwnershipScope scope;
+  frontend::SpatialOwnershipDecisionPoint decision;
+};
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+materializeOwnershipWorkItem(
+    const frontend::StructuredProgramCandidate &parent,
+    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
+    const StructuredOwnershipExplorationOptions &options,
+    const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem) {
+  auto candidate = frontend::materializeSpatialOwnershipDecision(
+      parent, workItem.scope, workItem.decision, fabric, options.lowering);
+  if (!candidate) {
+    auto rejected = isExpectedCandidateRejection(candidate.takeError());
+    if (!rejected)
+      return rejected.takeError();
+    if (*rejected)
+      return std::optional<ArtifactRootReference>{};
+    return invalid("candidate failed without a classified error");
+  }
+
+  auto reference = frontend::publishStructuredProgram(
+      candidate->structuredProgram, artifactStore);
+  if (!reference)
+    return reference.takeError();
+  if (llvm::Error error =
+          evaluation::models::primeStructuredFabricAnalyticResult(
+              *reference, candidate->structuredProgram,
+              candidate->canonicalDataflow, fabric, config, artifactStore))
+    return std::move(error);
+  return std::optional<ArtifactRootReference>(std::move(*reference));
+}
+
 } // namespace
 
 llvm::Expected<StructuredOwnershipExplorationOutcome>
@@ -42,6 +80,12 @@ generateAndPromoteStructuredOwnership(
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
     const ArtifactStore &artifactStore) {
+  if (options.candidateWorkerCount == 0)
+    return invalid("candidate worker count must be positive");
+  if (llvm::Error error =
+          evaluation::models::registerStructuredFabricAnalyticModel())
+    return std::move(error);
+
   std::vector<ArtifactRootReference> candidateReferences;
   auto parentReference =
       frontend::publishStructuredProgram(parent, artifactStore);
@@ -52,34 +96,59 @@ generateAndPromoteStructuredOwnership(
   auto scopes = frontend::enumerateSpatialOwnershipScopes(parent);
   if (!scopes)
     return scopes.takeError();
+  std::vector<OwnershipWorkItem> workItems;
   for (const frontend::SpatialOwnershipScope &scope : *scopes) {
     auto decisions = frontend::enumerateSpatialOwnershipDecisionDomain(
         parent, scope.selection);
     if (!decisions)
       return decisions.takeError();
-    for (const frontend::SpatialOwnershipDecisionPoint &decision : *decisions) {
-      auto candidate = frontend::materializeSpatialOwnershipDecision(
-          parent, scope, decision, fabric, options.lowering);
-      if (!candidate) {
-        auto rejected = isExpectedCandidateRejection(candidate.takeError());
-        if (!rejected)
-          return rejected.takeError();
-        if (*rejected)
-          continue;
-        return invalid("candidate failed without a classified error");
-      }
-      auto reference = frontend::publishStructuredProgram(
-          candidate->structuredProgram, artifactStore);
-      if (!reference)
-        return reference.takeError();
-      if (llvm::Error error =
-              evaluation::models::primeStructuredFabricAnalyticResult(
-                  *reference, candidate->structuredProgram,
-                  candidate->canonicalDataflow, fabric, config, artifactStore))
-        return std::move(error);
-      candidateReferences.push_back(std::move(*reference));
-    }
+    for (const frontend::SpatialOwnershipDecisionPoint &decision : *decisions)
+      workItems.push_back({scope, decision});
   }
+
+  struct WorkResult final {
+    std::optional<ArtifactRootReference> candidate;
+    std::optional<llvm::Error> error;
+  };
+  std::vector<WorkResult> results(workItems.size());
+  auto execute = [&](std::size_t index) {
+    auto result = materializeOwnershipWorkItem(parent, fabric, config, options,
+                                               artifactStore, workItems[index]);
+    if (!result) {
+      results[index].error.emplace(result.takeError());
+      return;
+    }
+    results[index].candidate = std::move(*result);
+  };
+
+  const std::size_t workerCount =
+      parent.module()->getContext()->isMultithreadingEnabled()
+          ? std::min<std::size_t>(options.candidateWorkerCount,
+                                  workItems.size())
+          : 1;
+  if (workerCount <= 1) {
+    for (std::size_t index = 0; index < workItems.size(); ++index)
+      execute(index);
+  } else {
+    llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
+        static_cast<unsigned>(workerCount)));
+    for (std::size_t index = 0; index < workItems.size(); ++index)
+      pool.async([&, index] { execute(index); });
+    pool.wait();
+  }
+
+  llvm::Error failures = llvm::Error::success();
+  for (WorkResult &result : results) {
+    if (result.error) {
+      failures =
+          llvm::joinErrors(std::move(failures), std::move(*result.error));
+      continue;
+    }
+    if (result.candidate)
+      candidateReferences.push_back(std::move(*result.candidate));
+  }
+  if (failures)
+    return std::move(failures);
 
   auto candidateSet = CandidateSet::get(
       frontend::structuredProgramArtifactSchema, candidateReferences);

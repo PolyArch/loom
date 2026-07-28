@@ -1610,6 +1610,25 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       take(test, exploredSelection->selected.front().canonicalDataflow.view());
   if (exploredView.actors().empty())
     fail(test, "central ownership exploration selected no Spatial workload");
+
+  auto parallelExploration = exploration;
+  parallelExploration.ownership.candidateWorkerCount = 2;
+  auto parallel = take(
+      test, loom::dse::exploreLlvmModuleToPreMapping(
+                parseSpatialModule(test, context), design.roots().front(),
+                loom::defaultResolvedConfig(), parallelExploration, store));
+  const auto *parallelSelection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&parallel);
+  if (!parallelSelection || parallelSelection->selected.size() != 1)
+    fail(test, "parallel ownership exploration did not select one survivor");
+  if (parallelSelection->selected.front().structuredProgram.identity() !=
+          exploredSelection->selected.front().structuredProgram.identity() ||
+      parallelSelection->selected.front().canonicalDataflow.identity() !=
+          exploredSelection->selected.front().canonicalDataflow.identity() ||
+      parallelSelection->satisfiedEvidence !=
+          exploredSelection->satisfiedEvidence)
+    fail(test, "candidate worker count changed the formal DSE result");
+
   const loom::evaluation::DecimalValue dataflowRuntime =
       evaluateCanonicalDataflowRuntime(
           test, dataflowRef, design.roots().front().reference(), store);

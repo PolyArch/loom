@@ -14,6 +14,7 @@
 //                       --operation-spatial-scope-index=<index>
 //                       --canonical-index-width=<bits>]
 //                      [--fmuladd-shape=fused|split]
+//                      [--candidate-jobs=<positive count>]
 //                      [-o output.mlir] input.ll
 //
 // stdin is read when input is "-" or the positional arg is missing.
@@ -95,6 +96,12 @@ namespace {
     ::llvm::cl::desc("zero-based index in the callable's canonical eligible "
                      "Spatial ownership scope enumeration"),
     ::llvm::cl::value_desc("index"));
+
+::llvm::cl::opt<unsigned> candidateJobs(
+    "candidate-jobs",
+    ::llvm::cl::desc("parallel ownership candidate workers; affects execution "
+                     "time only"),
+    ::llvm::cl::value_desc("count"), ::llvm::cl::init(1));
 
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
@@ -274,6 +281,10 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "fmuladd shape requires a Spatial selection"));
+  if (candidateJobs == 0)
+    return reportError(
+        ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
+                                  "candidate worker count must be positive"));
 
   loom::frontend::PreMappingCompilationOptions compilationOptions;
   compilationOptions.raising.applyPassManagerCommandLineOptions = true;
@@ -287,7 +298,8 @@ int main(int argc, char **argv) {
         compilationOptions.raising,
         {compilationOptions.lowering,
          {loom::evaluation::MetricRequestOrdinal(0),
-          loom::dse::ObjectiveDirection::Minimize, 1}}};
+          loom::dse::ObjectiveDirection::Minimize, 1},
+         candidateJobs}};
     auto outcome = loom::dse::exploreLlvmModuleToPreMapping(
         std::move(llvmModule), design->roots().front(),
         loom::defaultResolvedConfig(), exploration, store);

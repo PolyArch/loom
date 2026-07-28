@@ -6,6 +6,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <variant>
 #include <vector>
 
@@ -19,6 +20,7 @@ namespace loom::dse {
 struct StructuredOwnershipExplorationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   PointMetricTopKSelection selection;
+  std::uint32_t candidateWorkerCount = 1;
 };
 
 struct CompletedStructuredOwnershipSelection final {
