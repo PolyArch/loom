@@ -45,6 +45,10 @@ struct BuiltinSpatialCoreExpansion final {
 const BuiltinTargetDescriptor &
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset);
 
+/// Exact InstructionCore architecture shared by all builtin target presets.
+llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>
+getBuiltinInstructionCoreArchitecture();
+
 llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 
 llvm::Expected<BuiltinSpatialCoreExpansion>

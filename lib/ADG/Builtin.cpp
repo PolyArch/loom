@@ -75,16 +75,21 @@ llvm::Expected<::fabric::ResourceContract> exclusiveResourceContract() {
 }
 
 llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>
-instructionArchitecture() {
+makeBuiltinInstructionCoreArchitecture() {
   loom::fabric::RiscVArchitectureDeclaration declaration;
   declaration.xlen = loom::fabric::RiscVXLen::X64;
   declaration.base = loom::fabric::RiscVBase::I;
   declaration.extensions = {loom::fabric::RiscVExtension::M,
-                            loom::fabric::RiscVExtension::Zicsr};
+                            loom::fabric::RiscVExtension::A,
+                            loom::fabric::RiscVExtension::F,
+                            loom::fabric::RiscVExtension::D,
+                            loom::fabric::RiscVExtension::C,
+                            loom::fabric::RiscVExtension::Zicsr,
+                            loom::fabric::RiscVExtension::Zifencei};
   declaration.endianness = loom::fabric::InstructionEndianness::Little;
   declaration.physicalAddressWidthBits = 48;
   declaration.privilegeModes = {loom::fabric::PrivilegeMode::Machine};
-  declaration.abiCapabilities = {loom::fabric::RiscVAbi::Lp64};
+  declaration.abiCapabilities = {loom::fabric::RiscVAbi::Lp64d};
   declaration.memoryOrdering = loom::fabric::RiscVMemoryOrdering::Rvwmo;
   declaration.syncScopes = {loom::fabric::InstructionSyncScope::Hart};
   declaration.codeModels = {loom::fabric::RiscVCodeModel::MediumAny};
@@ -104,7 +109,13 @@ inOrderMicroarchitecture() {
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
-       {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1}},
+       {loom::fabric::InstructionOperationClass::IntegerMultiply, 1, 3, 1},
+       {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1},
+       {loom::fabric::InstructionOperationClass::FloatingPointAlu, 1, 3, 1},
+       {loom::fabric::InstructionOperationClass::FloatingPointMultiply, 1, 4,
+        1},
+       {loom::fabric::InstructionOperationClass::FloatingPointDivide, 1, 12,
+        12}},
       std::move(*resources)};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 4, 2};
@@ -120,7 +131,13 @@ outOfOrderMicroarchitecture() {
   loom::fabric::InstructionCoreCommonDeclaration common{
       2,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
-       {loom::fabric::InstructionOperationClass::LoadStore, 2, 2, 1}},
+       {loom::fabric::InstructionOperationClass::IntegerMultiply, 1, 3, 1},
+       {loom::fabric::InstructionOperationClass::LoadStore, 2, 2, 1},
+       {loom::fabric::InstructionOperationClass::FloatingPointAlu, 2, 3, 1},
+       {loom::fabric::InstructionOperationClass::FloatingPointMultiply, 1, 4,
+        1},
+       {loom::fabric::InstructionOperationClass::FloatingPointDivide, 1, 12,
+        12}},
       std::move(*resources)};
   loom::fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
       2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 32, 32};
@@ -611,7 +628,7 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   auto imported = system->importSpatialCore(module);
   if (!imported)
     return imported.takeError();
-  auto architecture = instructionArchitecture();
+  auto architecture = getBuiltinInstructionCoreArchitecture();
   if (!architecture)
     return architecture.takeError();
   auto inOrder = inOrderMicroarchitecture();
@@ -716,6 +733,11 @@ expandBuiltinSystemImpl(DesignBuilder &design,
 }
 
 } // namespace
+
+llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>
+getBuiltinInstructionCoreArchitecture() {
+  return makeBuiltinInstructionCoreArchitecture();
+}
 
 const BuiltinTargetDescriptor &
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

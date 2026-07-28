@@ -68,8 +68,9 @@ import corpus_inventory  # noqa: E402
 # is the triple carried through the LLVMIR import into the Structured and
 # Canonical Dataflow modules.
 TARGET_TRIPLE = "riscv64-unknown-elf"
-TARGET_MARCH = "rv64im"
-TARGET_MABI = "lp64"
+TARGET_MARCH = "rv64imafdc_zicsr_zifencei"
+TARGET_MABI = "lp64d"
+TARGET_CODE_MODEL = "medany"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
 LLVM_DATALAYOUT_LINE = (
     'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
@@ -373,6 +374,7 @@ def target_flags(toolchain: Toolchain) -> list[str]:
         f"--target={TARGET_TRIPLE}",
         f"-march={TARGET_MARCH}",
         f"-mabi={TARGET_MABI}",
+        f"-mcmodel={TARGET_CODE_MODEL}",
         f"--sysroot={toolchain.sysroot}",
         f"--gcc-toolchain={toolchain.gcc_toolchain}",
     ]
@@ -1093,6 +1095,7 @@ def render_human(
     lines = [
         f"[corpus-gate] stage={stage} target={TARGET_TRIPLE} "
         f"march={TARGET_MARCH} mabi={TARGET_MABI} "
+        f"code-model={TARGET_CODE_MODEL} "
         f"builtin={BUILTIN_TARGET_PRESET} "
         f"candidate-jobs={candidate_jobs} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
@@ -1167,6 +1170,7 @@ def render_json(
         "suite_counts": suite_counts,
         "target": {
             "builtin_preset": BUILTIN_TARGET_PRESET,
+            "code_model": TARGET_CODE_MODEL,
             "datalayout": LLVM_DATALAYOUT_LINE,
             "gcc_toolchain": str(toolchain.gcc_toolchain),
             "mabi": TARGET_MABI,

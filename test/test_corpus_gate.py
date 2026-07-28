@@ -243,6 +243,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["case_count"], 1)
+        self.assertEqual(summary["target"]["code_model"], "medany")
         result = summary["cases"][0]
         self.assertEqual(result["identity"], "loombench:axpy/axpy_func")
         self.assertEqual(result["sources"], 1)
@@ -413,8 +414,9 @@ class CommandConstructionTest(CorpusGateTestBase):
             [
                 self.tool_paths["cc"],
                 "--target=riscv64-unknown-elf",
-                "-march=rv64im",
-                "-mabi=lp64",
+                "-march=rv64imafdc_zicsr_zifencei",
+                "-mabi=lp64d",
+                "-mcmodel=medany",
                 f"--sysroot={self.sysroot}",
                 f"--gcc-toolchain={self.gcc_toolchain}",
                 "-D__GNUC_PYTHON__",

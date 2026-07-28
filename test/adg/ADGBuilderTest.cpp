@@ -973,6 +973,18 @@ void builtinPresetsExpandThroughPublicBuilder() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
+  const auto architecture =
+      take(test, loom::adg::getBuiltinInstructionCoreArchitecture());
+  const std::array expectedExtensions{
+      loom::fabric::RiscVExtension::M,     loom::fabric::RiscVExtension::A,
+      loom::fabric::RiscVExtension::F,     loom::fabric::RiscVExtension::D,
+      loom::fabric::RiscVExtension::C,     loom::fabric::RiscVExtension::Zicsr,
+      loom::fabric::RiscVExtension::Zifencei};
+  require(test,
+          llvm::equal(architecture.extensions(), expectedExtensions) &&
+              llvm::equal(architecture.abiCapabilities(),
+                          std::array{loom::fabric::RiscVAbi::Lp64d}),
+          "builtin InstructionCore does not cover its exact compiler target");
   struct Expectation {
     loom::adg::BuiltinTargetPreset preset;
     std::uint32_t accCores;
