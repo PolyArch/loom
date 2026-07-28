@@ -371,9 +371,6 @@ instrumentCapture(llvm::Module &module,
                   llvm::StringRef entrySymbol) {
   if (plan.hostCallerSymbol.empty() || plan.hostCalleeSymbol.empty())
     return invalid("capture plan has no exact call-site locator");
-  if (!plan.input.valueResults.empty())
-    return invalid(
-        "direct call capture cannot infer an internal graph value result");
 
   llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration() || entry->arg_size() != 0 ||
@@ -427,6 +424,14 @@ instrumentCapture(llvm::Module &module,
     valueName = uniqueCallbackName(module, "__loom_native_capture_value");
     valueCallback = module.getOrInsertFunction(*valueName, callbackType);
   }
+  std::optional<std::string> resultName;
+  std::optional<llvm::FunctionCallee> resultCallback;
+  if (!plan.input.valueResults.empty()) {
+    if (plan.input.valueResults.size() != 1 || selected->getType()->isVoidTy())
+      return invalid("direct call has no exact scalar result projection");
+    resultName = uniqueCallbackName(module, "__loom_native_capture_result");
+    resultCallback = module.getOrInsertFunction(*resultName, callbackType);
+  }
 
   llvm::IRBuilder<> beforeBuilder(selected);
   llvm::Instruction *afterInsertion = selected->getNextNode();
@@ -434,6 +439,13 @@ instrumentCapture(llvm::Module &module,
     return invalid("selected host call has no continuation instruction");
   llvm::IRBuilder<> afterBuilder(afterInsertion);
   beforeBuilder.CreateCall(begin);
+  struct DeferredMemoryCapture {
+    llvm::Value *ordinal;
+    llvm::Value *base;
+    llvm::Value *byteCount;
+  };
+  llvm::SmallVector<DeferredMemoryCapture, 4> deferredMemoryCaptures;
+  deferredMemoryCaptures.reserve(plan.input.objects.size());
   for (auto [ordinal, object] : llvm::enumerate(plan.input.objects)) {
     if (object.byteCount == 0 ||
         object.byteCount > std::numeric_limits<std::size_t>::max() ||
@@ -458,7 +470,7 @@ instrumentCapture(llvm::Module &module,
         llvm::ConstantInt::get(i64, static_cast<std::uint64_t>(ordinal));
     llvm::Value *byteCount = llvm::ConstantInt::get(i64, object.byteCount);
     beforeBuilder.CreateCall(before, {objectOrdinal, base, byteCount});
-    afterBuilder.CreateCall(after, {objectOrdinal, base, byteCount});
+    deferredMemoryCaptures.push_back({objectOrdinal, base, byteCount});
   }
   std::uint64_t runtimeOrdinal = 0;
   llvm::IRBuilder<> entryBuilder(
@@ -488,12 +500,32 @@ instrumentCapture(llvm::Module &module,
     llvm::Value *byteCount = llvm::ConstantInt::get(i64, input.byteCount);
     beforeBuilder.CreateCall(*valueCallback, {ordinalValue, slot, byteCount});
   }
+  for (const SimulationValueResultCapture &result : plan.input.valueResults) {
+    if (!resultCallback || result.valueResultOrdinal != 0 ||
+        !selected->getType()->isSized() || result.byteCount == 0 ||
+        result.byteCount > std::numeric_limits<std::size_t>::max())
+      return invalid("direct call result has no finite native projection");
+    llvm::TypeSize nativeBytes =
+        module.getDataLayout().getTypeStoreSize(selected->getType());
+    if (nativeBytes.isScalable() ||
+        nativeBytes.getFixedValue() != result.byteCount)
+      return invalid("direct call result native extent differs from plan");
+    llvm::AllocaInst *slot = entryBuilder.CreateAlloca(
+        selected->getType(), nullptr, "loom.capture.result");
+    afterBuilder.CreateStore(selected, slot);
+    llvm::Value *ordinalValue = llvm::ConstantInt::get(i64, 0);
+    llvm::Value *byteCount = llvm::ConstantInt::get(i64, result.byteCount);
+    afterBuilder.CreateCall(*resultCallback, {ordinalValue, slot, byteCount});
+  }
+  for (const DeferredMemoryCapture &capture : deferredMemoryCaptures)
+    afterBuilder.CreateCall(after,
+                            {capture.ordinal, capture.base, capture.byteCount});
   afterBuilder.CreateCall(end);
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");
   return CaptureCallbackNames{std::move(beginName),  std::move(endName),
                               std::move(beforeName), std::move(afterName),
-                              std::move(valueName),  std::nullopt};
+                              std::move(valueName),  std::move(resultName)};
 }
 
 std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {

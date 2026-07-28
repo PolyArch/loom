@@ -177,14 +177,29 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
     return unsupported("root launch is not an isolated single-block callable");
 
   unsigned rootLaunchCount = 0;
+  unsigned resultSlotCount = 0;
+  unsigned resultLoadCount = 0;
+  unsigned waitCount = 0;
   for (mlir::Operation &operation : callable.getBody().front()) {
     if (&operation == rootLaunch.getOperation()) {
       ++rootLaunchCount;
       continue;
     }
-    if (mlir::isa<dataflow::ThreadWaitOp, mlir::LLVM::ReturnOp,
-                  mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
+    if (mlir::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp,
+                  mlir::LLVM::ConstantOp, mlir::LLVM::ReturnOp>(operation))
       continue;
+    if (mlir::isa<mlir::LLVM::AllocaOp>(operation)) {
+      ++resultSlotCount;
+      continue;
+    }
+    if (mlir::isa<mlir::LLVM::LoadOp>(operation)) {
+      ++resultLoadCount;
+      continue;
+    }
+    if (mlir::isa<dataflow::ThreadWaitOp>(operation)) {
+      ++waitCount;
+      continue;
+    }
     return unsupported("root callable contains work outside the selected "
                        "Spatial launch");
   }
@@ -192,6 +207,7 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
     return invalid("root callable does not contain its exact launch once");
 
   unsigned staticLaunchCount = 0;
+  unsigned resultStoreCount = 0;
   for (mlir::Operation &operation : thread.getBody().front()) {
     if (&operation == staticLaunch.getOperation()) {
       ++staticLaunchCount;
@@ -199,10 +215,19 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
     }
     if (mlir::isa<dataflow::ThreadYieldOp>(operation))
       continue;
+    if (mlir::isa<mlir::LLVM::StoreOp>(operation)) {
+      ++resultStoreCount;
+      continue;
+    }
     return unsupported("root thread contains work outside the selected graph");
   }
   if (staticLaunchCount != 1)
     return invalid("root thread does not contain its exact graph launch once");
+  const unsigned valueResultCount = staticLaunch.getValueResults().size();
+  if (waitCount != 1 || resultSlotCount != valueResultCount ||
+      resultLoadCount != valueResultCount ||
+      resultStoreCount != valueResultCount)
+    return invalid("whole-callable result wrapper is not mechanically total");
 
   const std::size_t functionInputs = thread.getFunctionType().getNumInputs();
   const std::size_t entryArguments = thread.getBody().front().getNumArguments();

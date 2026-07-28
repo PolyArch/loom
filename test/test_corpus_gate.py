@@ -55,6 +55,7 @@ VALID_DFG_REPORT = json.dumps(
         "operation_firings": {"arith.addi": 4},
         "simulation_seconds": 0.0001,
         "status": "pass",
+        "value_lanes_compared": 0,
         "wavefront_steps": 100,
         "wavefront_steps_per_second": 1_000_000.0,
     },
@@ -431,6 +432,13 @@ class CommandConstructionTest(CorpusGateTestBase):
 
         payload = json.loads(VALID_DFG_REPORT)
         payload["memory_bytes_compared"] = 0
+        payload["value_lanes_compared"] = 1
+        report.write_text(json.dumps(payload))
+        parsed, defect = corpus_gate.parse_dfg_simulation_report(report)
+        self.assertIsNone(defect)
+        self.assertEqual(parsed.value_lanes_compared, 1)
+
+        payload["value_lanes_compared"] = 0
         report.write_text(json.dumps(payload))
         parsed, defect = corpus_gate.parse_dfg_simulation_report(report)
         self.assertIsNone(parsed)

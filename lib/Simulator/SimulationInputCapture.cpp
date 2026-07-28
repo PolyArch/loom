@@ -581,6 +581,82 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
                                      std::nullopt};
 }
 
+llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(
+    detail::ResolvedLaunchContext &context, std::uint64_t valueResultOrdinal,
+    mlir::LLVM::LLVMFuncOp enclosingCallable, mlir::LLVM::CallOp hostCall) {
+  if (context.numValueResults != 1 || valueResultOrdinal != 0 ||
+      context.graphLaunchOp.getValueResults().size() != 1 ||
+      hostCall.getNumResults() != 1)
+    return invalid(
+        "whole-callable capture requires one exact LLVM value result");
+
+  mlir::Value graphResult = context.graphLaunchOp.getValueResults().front();
+  if (!graphResult.hasOneUse())
+    return invalid("graph value result does not have one thread publication");
+  auto store =
+      llvm::dyn_cast<mlir::LLVM::StoreOp>(graphResult.use_begin()->getOwner());
+  if (!store || store.getValue() != graphResult)
+    return invalid("graph value result is not stored into caller-owned state");
+
+  auto threadSlot = llvm::dyn_cast<mlir::BlockArgument>(store.getAddr());
+  if (!threadSlot ||
+      threadSlot.getOwner() != &context.thread.getBody().front() ||
+      threadSlot.getArgNumber() >=
+          context.thread.getFunctionType().getNumInputs() ||
+      threadSlot.getArgNumber() >=
+          context.rootLaunchOp.getBodyOperands().size())
+    return invalid("graph value result is not stored through a thread formal");
+  mlir::Value callerSlot =
+      context.rootLaunchOp.getBodyOperands()[threadSlot.getArgNumber()];
+  if (!callerSlot.getDefiningOp<mlir::LLVM::AllocaOp>())
+    return invalid("graph value result has no caller-owned result slot");
+
+  auto returnOp = llvm::dyn_cast<mlir::LLVM::ReturnOp>(
+      enclosingCallable.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getNumOperands() != 1)
+    return invalid("whole-callable result has no direct LLVM return");
+  auto load = returnOp.getOperand(0).getDefiningOp<mlir::LLVM::LoadOp>();
+  if (!load || load.getAddr() != callerSlot)
+    return invalid("whole-callable result is not loaded from its result slot");
+
+  if (!context.rootLaunchOp.getAsyncToken().hasOneUse())
+    return invalid("whole-callable result has no unique thread wait");
+  auto wait = llvm::dyn_cast<dataflow::ThreadWaitOp>(
+      context.rootLaunchOp.getAsyncToken().use_begin()->getOwner());
+  if (!wait || wait->getBlock() != load->getBlock() ||
+      !wait->isBeforeInBlock(load))
+    return invalid("whole-callable result is loaded before thread retirement");
+
+  mlir::Type graphType =
+      context.graphOp.getFunctionType().getResult(valueResultOrdinal);
+  mlir::Type hostType = hostCall.getResult().getType();
+  llvm::Expected<loom::CanonicalSemanticBytes> graphTypeBytes =
+      dataflow::encodeCanonicalType(graphType);
+  if (!graphTypeBytes)
+    return graphTypeBytes.takeError();
+  llvm::Expected<loom::CanonicalSemanticBytes> hostTypeBytes =
+      dataflow::encodeCanonicalType(hostType);
+  if (!hostTypeBytes)
+    return hostTypeBytes.takeError();
+  if (graphTypeBytes->bytes() != hostTypeBytes->bytes() ||
+      load.getResult().getType() != hostType)
+    return invalid("whole-callable graph and host result types differ");
+
+  llvm::Expected<detail::LaneShape> shape =
+      detail::laneShapeOf(graphType, context.graphOp.getOperation());
+  if (!shape)
+    return shape.takeError();
+  llvm::Expected<std::uint64_t> bytes =
+      fixedTypeByteCount(hostCall.getOperation(), hostType);
+  if (!bytes)
+    return bytes.takeError();
+  if (!fitsStorageExtent(*shape, *bytes))
+    return invalid("whole-callable result does not fit its storage extent");
+  return SimulationValueResultCapture{valueResultOrdinal, hostCall.getResult(),
+                                      shape->lanesPerToken, shape->laneBitWidth,
+                                      *bytes};
+}
+
 llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
                                                 mlir::LLVM::CallOp target,
                                                 llvm::StringRef callee) {
@@ -646,6 +722,16 @@ deriveSimulationInputCapturePlan(
     if (!value)
       return value.takeError();
     plan.input.valueInputs.push_back(std::move(*value));
+  }
+  plan.input.valueResults.reserve(context->numValueResults);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueResults;
+       ++ordinal) {
+    llvm::Expected<SimulationValueResultCapture> value =
+        directCallValueResultCapture(*context, ordinal, enclosingCallable,
+                                     hostCall);
+    if (!value)
+      return value.takeError();
+    plan.input.valueResults.push_back(std::move(*value));
   }
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =

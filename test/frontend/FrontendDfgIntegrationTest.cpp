@@ -635,6 +635,60 @@ void wholeCallableScalarResultUsesCallerStorage() {
   if (!graph || graph.getFunctionType().getNumResults() != 1)
     fail(test, "whole-callable graph lost its scalar value result");
 
+  auto plan = take(test, loom::sim::deriveSimulationInputCapturePlan(
+                             view, rooted,
+                             findHostCall(test, candidate.canonicalDataflow,
+                                          "main", "accum")));
+  if (!plan.input.objects.empty() || !plan.input.memoryRootBindings.empty() ||
+      plan.input.valueResults.size() != 1 ||
+      plan.input.valueResults.front().valueResultOrdinal != 0)
+    fail(test, "whole-callable capture lost its direct scalar result");
+
+  auto capture = [&](bool selected) {
+    auto nativeContext = std::make_unique<llvm::LLVMContext>();
+    std::unique_ptr<llvm::Module> nativeModule =
+        parseScalarReduction(test, *nativeContext);
+    configureHostModule(test, *nativeModule);
+    llvm::orc::ThreadSafeModule hostModule(std::move(nativeModule),
+                                           std::move(nativeContext));
+    if (!selected)
+      return take(test, loom::sim::executeNativeSimulationInputCapture(
+                            std::move(hostModule), plan));
+
+    llvm::LLVMContext selectedContext;
+    std::unique_ptr<llvm::Module> selectedModule =
+        parseScalarReduction(test, selectedContext);
+    configureHostModule(test, *selectedModule);
+    auto selectedProgram =
+        take(test, loom::raising::raiseLlvmModuleToStructuredProgram(
+                       std::move(selectedModule)));
+    loom::frontend::SpatialOwnershipScope scope{
+        findCallable(test, selectedProgram, "accum")};
+    auto domain =
+        take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                       selectedProgram, scope.selection));
+    if (domain.size() != 1)
+      fail(test, "whole-callable scalar result has an ambiguous decision");
+    auto prepared = take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                                   selectedProgram, scope, domain.front()));
+    return take(test,
+                loom::sim::executeStructuredDirectCallSimulationInputCapture(
+                    std::move(hostModule), std::move(prepared.module), plan));
+  };
+  loom::sim::NativeSimulationInputCapture source = capture(false);
+  loom::sim::NativeSimulationInputCapture selected = capture(true);
+  if (source.entryResult != 0 || selected.entryResult != 0 ||
+      source.calls.size() != 1 || selected.calls.size() != 1 ||
+      source.calls.front().valueResults.size() != 1 ||
+      selected.calls.front().valueResults.size() != 1 ||
+      source.calls.front().valueResults.front().lanes.size() != 1 ||
+      selected.calls.front().valueResults.front().lanes.size() != 1 ||
+      source.calls.front().valueResults.front().lanes.front().bits !=
+          llvm::APInt(32, 28) ||
+      selected.calls.front().valueResults.front().lanes.front().bits !=
+          llvm::APInt(32, 28))
+    fail(test, "whole-callable native result capture is not exact");
+
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
     fail(test, "cannot remove artifact store: " + cleanup.message());

@@ -156,6 +156,7 @@ class DfgSimulationMetrics:
     graphs: int
     actors: int
     dynamic_calls: int
+    value_lanes_compared: int
     memory_bytes_compared: int
     floating_variance_bytes: int
     wavefront_steps: int
@@ -165,7 +166,7 @@ class DfgSimulationMetrics:
 
     @staticmethod
     def zero() -> "DfgSimulationMetrics":
-        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0, 0.0, {})
+        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0.0, {})
 
     @property
     def wavefront_steps_per_second(self) -> float:
@@ -181,6 +182,9 @@ class DfgSimulationMetrics:
             graphs=self.graphs + other.graphs,
             actors=self.actors + other.actors,
             dynamic_calls=self.dynamic_calls + other.dynamic_calls,
+            value_lanes_compared=(
+                self.value_lanes_compared + other.value_lanes_compared
+            ),
             memory_bytes_compared=(
                 self.memory_bytes_compared + other.memory_bytes_compared
             ),
@@ -203,6 +207,7 @@ class DfgSimulationMetrics:
                 if self.floating_variance_bytes
                 else "none"
             ),
+            "value_lanes_compared": self.value_lanes_compared,
             "memory_bytes_compared": self.memory_bytes_compared,
             "operation_firings": dict(sorted(self.operation_firings.items())),
             "simulation_seconds": self.simulation_seconds,
@@ -606,6 +611,7 @@ def parse_dfg_simulation_report(
         "operation_firings",
         "simulation_seconds",
         "status",
+        "value_lanes_compared",
         "wavefront_steps",
         "wavefront_steps_per_second",
     }
@@ -623,7 +629,6 @@ def parse_dfg_simulation_report(
         "dynamic_calls",
         "event_count",
         "graphs",
-        "memory_bytes_compared",
         "wavefront_steps",
     ):
         value = payload[field]
@@ -633,6 +638,23 @@ def parse_dfg_simulation_report(
                 f"{field} must be a positive integer: {path}"
             )
         integers[field] = value
+
+    for field in ("value_lanes_compared", "memory_bytes_compared"):
+        value = payload[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None, (
+                "DFG simulation report has an invalid observable count: "
+                f"{field}: {path}"
+            )
+        integers[field] = value
+    if (
+        integers["value_lanes_compared"] == 0
+        and integers["memory_bytes_compared"] == 0
+    ):
+        return None, (
+            "DFG simulation report is not a substantive execution: no value "
+            f"or memory observation was compared: {path}"
+        )
 
     variance_bytes = payload["floating_variance_bytes"]
     variance_kind = payload["floating_variance_kind"]
@@ -690,6 +712,7 @@ def parse_dfg_simulation_report(
             graphs=integers["graphs"],
             actors=integers["actors"],
             dynamic_calls=integers["dynamic_calls"],
+            value_lanes_compared=integers["value_lanes_compared"],
             memory_bytes_compared=integers["memory_bytes_compared"],
             floating_variance_bytes=variance_bytes,
             wavefront_steps=integers["wavefront_steps"],
@@ -1059,6 +1082,7 @@ def render_human(
         if result.dfg_simulation is not None:
             line += (
                 f" calls={result.dfg_simulation.dynamic_calls}"
+                f" values={result.dfg_simulation.value_lanes_compared}"
                 f" bytes={result.dfg_simulation.memory_bytes_compared}"
                 f" wavefront-hz="
                 f"{result.dfg_simulation.wavefront_steps_per_second:.0f}"
