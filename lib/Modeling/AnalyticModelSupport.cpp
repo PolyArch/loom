@@ -426,8 +426,9 @@ llvm::Expected<MetricResult> decimalMetric(std::uint64_t coefficient,
       DecimalValue::get(static_cast<std::int64_t>(coefficient), exponent);
   if (!decimal)
     return decimal.takeError();
-  return MetricResult{
-      UncertaintyKind::Unknown, PointObservation{MetricValue{*decimal}}, {}};
+  return MetricResult{UncertaintyKind::Unquantified,
+                      PointObservation{MetricValue{*decimal}},
+                      {}};
 }
 
 llvm::ArrayRef<std::uint8_t> configSchemaBytes() {

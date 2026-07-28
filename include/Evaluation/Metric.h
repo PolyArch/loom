@@ -30,7 +30,9 @@ enum class MetricDimension { Cycle, Time, Frequency, Area, Power };
 enum class MetricValueDomain { NonNegative, Positive };
 
 enum class ObservationForm { Point, Interval, Censored, NotApplicable };
-enum class UncertaintyKind { ExactWithinModel, Bounded, Statistical, Unknown };
+enum class UncertaintyKind {
+  ExactWithinModel, Bounded, Statistical, Unquantified
+};
 enum class CensoredReason { SubjectDidNotComplete };
 enum class NotApplicableReason { UndefinedForSubject };
 

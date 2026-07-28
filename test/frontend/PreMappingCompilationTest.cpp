@@ -1445,7 +1445,8 @@ metricResult(const char *test,
                    loom::evaluation::toString(kind).str());
   const loom::evaluation::MetricResult &result =
       completed->metricResults[*ordinal];
-  if (result.uncertainty != loom::evaluation::UncertaintyKind::Unknown)
+  if (result.uncertainty !=
+      loom::evaluation::UncertaintyKind::Unquantified)
     fail(test, "analytic model presented its estimate as ground truth");
   const auto *point =
       std::get_if<loom::evaluation::PointObservation>(&result.observation);

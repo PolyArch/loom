@@ -152,10 +152,22 @@ void builtInMetricsOwnWholeCaseFormZero() {
   }
 }
 
+void unquantifiedUncertaintyHasOneCanonicalSpelling() {
+  require(__func__, toString(UncertaintyKind::Unquantified) == "unquantified",
+          "unquantified uncertainty changed its canonical spelling");
+  require(__func__,
+          takeExpected(__func__, parseUncertaintyKind("unquantified")) ==
+              UncertaintyKind::Unquantified,
+          "unquantified uncertainty did not roundtrip");
+  expectErrorContains(__func__, parseUncertaintyKind("unknown"),
+                      "unknown UncertaintyKind");
+}
+
 } // namespace
 
 int main() {
   exactRatioNormalizesAndChecksArithmetic();
   builtInMetricsOwnWholeCaseFormZero();
+  unquantifiedUncertaintyHasOneCanonicalSpelling();
   return 0;
 }

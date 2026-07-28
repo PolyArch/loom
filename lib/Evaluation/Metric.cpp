@@ -419,8 +419,8 @@ llvm::StringRef toString(UncertaintyKind kind) {
     return "bounded";
   case UncertaintyKind::Statistical:
     return "statistical";
-  case UncertaintyKind::Unknown:
-    return "unknown";
+  case UncertaintyKind::Unquantified:
+    return "unquantified";
   }
   llvm_unreachable("unknown UncertaintyKind");
 }
@@ -467,8 +467,8 @@ llvm::Expected<UncertaintyKind> parseUncertaintyKind(llvm::StringRef spelling) {
     return UncertaintyKind::Bounded;
   if (spelling == "statistical")
     return UncertaintyKind::Statistical;
-  if (spelling == "unknown")
-    return UncertaintyKind::Unknown;
+  if (spelling == "unquantified")
+    return UncertaintyKind::Unquantified;
   return unknownEnum<UncertaintyKind>("UncertaintyKind", spelling);
 }
 
@@ -659,8 +659,8 @@ llvm::Error validateMetricObservationValue(
     return evaluationError("censored observation requires at least one bound");
   }
 
-  if (uncertainty != UncertaintyKind::Unknown)
-    return evaluationError("not_applicable requires unknown uncertainty");
+  if (uncertainty != UncertaintyKind::Unquantified)
+    return evaluationError("not_applicable requires unquantified uncertainty");
   return llvm::Error::success();
 }
 

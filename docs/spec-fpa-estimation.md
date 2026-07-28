@@ -139,7 +139,8 @@ DynamicPower
 LeakagePower
 ```
 
-Every result is a point observation with `UncertaintyKind::Unknown`. Values use
+Every result is a point observation with `UncertaintyKind::Unquantified`:
+the model supplies a point estimate but no quantified error bound. Values use
 the central registry's canonical physical units even though the model's
 absolute coefficients are not calibrated. The exact model descriptor identity
 owns those coefficients and the structure-derived activity rule; neither

@@ -562,7 +562,7 @@ A metric observation has three orthogonal dimensions:
 
 ```text
 ObservationForm = Point | Interval | Censored | NotApplicable
-UncertaintyKind = ExactWithinModel | Bounded | Statistical | Unknown
+UncertaintyKind = ExactWithinModel | Bounded | Statistical | Unquantified
 EvidenceMethod  = derived from EvaluationModelDescriptor
 ```
 
