@@ -9,7 +9,8 @@
 namespace loom::frontend::detail {
 
 /// Whether this exact scope still needs a candidate-owned fixed index-width
-/// decision. Constant-only GEPs do not create such a decision.
+/// decision. Constant-only addresses do not create such a decision unless
+/// they form a proven pointer induction that must become integer loop state.
 bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
                                            mlir::Operation *selectedOperation);
 
@@ -18,7 +19,7 @@ bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
 /// narrowed only when their complete signed value domain is proven to fit.
 /// Without a selected width, an existing explicit module declaration is
 /// required. The caller owns failure atomicity through a private clone.
-llvm::Error
+llvm::Expected<mlir::Operation *>
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,
                                 std::optional<unsigned> canonicalIndexWidth);

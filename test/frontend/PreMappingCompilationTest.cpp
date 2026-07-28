@@ -273,6 +273,50 @@ entry:
 }
 
 std::unique_ptr<llvm::Module>
+parsePointerInductionModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define void @pointer_induction(ptr %a, ptr %b, ptr %c, i32 %count) {
+entry:
+  %empty = icmp eq i32 %count, 0
+  br i1 %empty, label %exit, label %loop
+
+loop:
+  %remaining = phi i32 [ %count, %entry ], [ %next_remaining, %loop ]
+  %pa = phi ptr [ %a, %entry ], [ %next_a, %loop ]
+  %pb = phi ptr [ %b, %entry ], [ %next_b, %loop ]
+  %pc = phi ptr [ %c, %entry ], [ %next_c, %loop ]
+  %lhs = load float, ptr %pa, align 4
+  %rhs = load float, ptr %pb, align 4
+  %sum = fadd float %lhs, %rhs
+  store float %sum, ptr %pc, align 4
+  %next_a = getelementptr inbounds i8, ptr %pa, i64 4
+  %next_b = getelementptr inbounds i8, ptr %pb, i64 4
+  %next_c = getelementptr inbounds i8, ptr %pc, i64 4
+  %next_remaining = add i32 %remaining, -1
+  %more = icmp ne i32 %next_remaining, 0
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<pointer-induction-owner>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseLoopOwnershipModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -738,6 +782,71 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
   message = llvm::toString(unprovenUnsigned.takeError());
   if (message.find("cannot prove a wide GEP index") == std::string::npos)
     fail(test, "unproven unsigned index was misdiagnosed: " + message);
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void wholeCallableNormalizesPointerInduction() {
+  const char *test = "wholeCallableNormalizesPointerInduction";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-pointer-induction", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parsePointerInductionModule(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::StructuredEntityRef callable =
+      findCallable(test, compiled.structuredProgram, "pointer_induction");
+  auto decisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, callable));
+  bool saw64BitAddressDomain = false;
+  for (const auto &decision : decisions)
+    saw64BitAddressDomain |= decision.canonicalIndexWidth == 64;
+  if (!saw64BitAddressDomain)
+    fail(test, "pointer induction did not request a canonical address domain");
+
+  loom::frontend::WholeCallableSpatialOwnershipOptions narrowOptions;
+  narrowOptions.canonicalIndexWidth = 32;
+  auto narrow = loom::frontend::materializeWholeCallableSpatialOwnership(
+      compiled.structuredProgram, callable, design.roots().front(),
+      narrowOptions);
+  if (narrow)
+    fail(test, "insufficient pointer induction width was accepted");
+  std::string message = llvm::toString(narrow.takeError());
+  if (message.find("pointer induction offset") == std::string::npos)
+    fail(test,
+         "insufficient pointer induction width was misdiagnosed: " + message);
+
+  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 64;
+  auto selected =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram, callable,
+                     design.roots().front(), options));
+  auto view = take(test, selected.canonicalDataflow.view());
+  bool sawLoad = false;
+  bool sawStore = false;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    auto projection =
+        take(test, dataflow::projectRegisteredActorSchemaProjection(actor.op));
+    sawLoad |= projection.schema == dataflow::OperationSchemaId::DataflowLoad;
+    sawStore |= projection.schema == dataflow::OperationSchemaId::DataflowStore;
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(actor.op))
+      if (dataflow::DataflowDialect::containsMemoryCapability(
+              carry.getOutput().getType()))
+        fail(test, "pointer induction became dynamic memory carry state");
+  }
+  if (!sawLoad || !sawStore)
+    fail(test, "normalized pointer induction lost its memory transactions");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1393,6 +1502,7 @@ int main() {
   wholeCallableExternalizesGlobalMemoryCapability();
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
+  wholeCallableNormalizesPointerInduction();
   explicitOperationSpatialOwnership();
   operationOwnershipInternalizesConstants();
   wholeCallableScopesFollowCanonicalOrder();

@@ -353,9 +353,11 @@ llvm::Error materializeSelectedOperation(
   auto callable = eligibleOwningCallable(operation);
   if (!callable)
     return callable.takeError();
-  if (llvm::Error error = detail::materializeAddressIndexContract(
-          module, operation, canonicalIndexWidth))
-    return error;
+  auto normalized = detail::materializeAddressIndexContract(
+      module, operation, canonicalIndexWidth);
+  if (!normalized)
+    return normalized.takeError();
+  operation = *normalized;
   if (fmuladdExecutionShape)
     raising::materializeFMulAddInOperation(*operation, *fmuladdExecutionShape);
   const OperationClosure closure = deriveOperationClosure(operation);
@@ -664,11 +666,12 @@ materializeWholeCallableSpatialOwnership(
   if (!function)
     return invalid("selected StructuredEntityRef is not an LLVM callable");
 
-  if (llvm::Error error = detail::materializeAddressIndexContract(
-          selection->clone.get(), function.getOperation(),
-          options.canonicalIndexWidth))
+  auto normalized = detail::materializeAddressIndexContract(
+      selection->clone.get(), function.getOperation(),
+      options.canonicalIndexWidth);
+  if (!normalized)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  std::move(error));
+                  normalized.takeError());
 
   if (options.fmuladdExecutionShape) {
     mlir::PassManager materialization(
