@@ -9,8 +9,10 @@
 #include "llvm/Bitcode/LLVMBitCodes.h"
 #include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Value.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -110,6 +112,49 @@ llvm::Expected<std::string> readRawDataLayout(llvm::MemoryBufferRef buffer) {
   }
 }
 
+using NamedValue = std::pair<llvm::Value *, std::string>;
+
+void rebuildValueSymbolTable(llvm::ArrayRef<NamedValue> values) {
+  for (const NamedValue &entry : values)
+    entry.first->setName("");
+  for (const NamedValue &entry : values)
+    entry.first->setName(entry.second);
+}
+
+void canonicalizeValueSymbolTables(llvm::Module &module) {
+  std::vector<NamedValue> moduleValues;
+  moduleValues.reserve(module.global_size() + module.size() +
+                       module.alias_size() + module.ifunc_size());
+  for (llvm::GlobalVariable &global : module.globals())
+    if (global.hasName())
+      moduleValues.emplace_back(&global, global.getName().str());
+  for (llvm::Function &function : module)
+    if (function.hasName())
+      moduleValues.emplace_back(&function, function.getName().str());
+  for (llvm::GlobalAlias &alias : module.aliases())
+    if (alias.hasName())
+      moduleValues.emplace_back(&alias, alias.getName().str());
+  for (llvm::GlobalIFunc &ifunc : module.ifuncs())
+    if (ifunc.hasName())
+      moduleValues.emplace_back(&ifunc, ifunc.getName().str());
+  rebuildValueSymbolTable(moduleValues);
+
+  for (llvm::Function &function : module) {
+    std::vector<NamedValue> localValues;
+    for (llvm::Argument &argument : function.args())
+      if (argument.hasName())
+        localValues.emplace_back(&argument, argument.getName().str());
+    for (llvm::BasicBlock &block : function) {
+      if (block.hasName())
+        localValues.emplace_back(&block, block.getName().str());
+      for (llvm::Instruction &instruction : block)
+        if (instruction.hasName())
+          localValues.emplace_back(&instruction, instruction.getName().str());
+    }
+    rebuildValueSymbolTable(localValues);
+  }
+}
+
 } // namespace
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
@@ -188,6 +233,10 @@ normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
     return rejected("data_layout_absent: the module declares no data layout");
 
   module.setTargetTriple(triple);
+  // LLVM's value symbol tables are hash maps. Rebuild them from structural IR
+  // order so their bitcode record order does not depend on parser insertion
+  // history; every exact name and all semantic IR ordering remain unchanged.
+  canonicalizeValueSymbolTables(module);
 
   llvm::SmallVector<char, 0> written;
   llvm::raw_svector_ostream stream(written);

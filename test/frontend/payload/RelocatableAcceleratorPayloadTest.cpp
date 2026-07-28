@@ -69,9 +69,10 @@ constexpr llvm::StringRef riscv64Lp64eAssembly = R"(
 target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S64"
 target triple = "riscv64-unknown-elf"
 
-define i32 @identity(i32 %value) {
+define i32 @sum(i32 %a, i32 %b) {
 entry:
-  ret i32 %value
+  %sum = add i32 %a, %b
+  ret i32 %sum
 }
 )";
 
@@ -174,6 +175,16 @@ void normalizationPreservesRiscv64Lp64eDataLayoutSpelling() {
               .contains("target datalayout = \"" +
                         riscv64Lp64eDataLayout.str() + "\""),
           "normalized bitcode did not preserve the exact data layout spelling");
+}
+
+void normalizationIsIdempotentForNamedRiscvValues() {
+  const NormalizedLlvmModule first = takeExpected(
+      __func__,
+      normalizeLlvmModule(buildSourceBitcode(__func__, riscv64Lp64eAssembly)));
+  const NormalizedLlvmModule second =
+      takeExpected(__func__, normalizeLlvmModule(first.bitcode));
+  require(__func__, second.bitcode == first.bitcode,
+          "rewriting a normalized module changed its canonical bytes");
 }
 
 void payloadRoundTripsThroughCanonicalBytes() {
@@ -321,6 +332,7 @@ void noncanonicalModuleBytesAreRejected() {
 
 int main() {
   normalizationPreservesRiscv64Lp64eDataLayoutSpelling();
+  normalizationIsIdempotentForNamedRiscvValues();
   payloadRoundTripsThroughCanonicalBytes();
   normalizationFailsClosed();
   unsupportedSchemaAndMalformedEncodingAreRejected();
