@@ -48,7 +48,7 @@ std::unique_ptr<llvm::Module> parseVecadd(const char *test,
                                           llvm::LLVMContext &context,
                                           bool riscvTarget = true) {
   constexpr llvm::StringLiteral source = R"llvm(
-define void @vecadd(ptr %a, ptr %b, ptr %c) {
+define void @vecadd(ptr %a, ptr %b, ptr %c, float %bias) {
 entry:
   br label %loop
 
@@ -59,7 +59,8 @@ loop:
   %pc = getelementptr float, ptr %c, i64 %i
   %va = load float, ptr %pa, align 4
   %vb = load float, ptr %pb, align 4
-  %sum = fadd float %va, %vb
+  %partial = fadd float %va, %vb
+  %sum = fadd float %partial, %bias
   store float %sum, ptr %pc, align 4
   %next = add nuw nsw i64 %i, 1
   %done = icmp eq i64 %next, 64
@@ -74,6 +75,8 @@ entry:
   %a = alloca [64 x float], align 4
   %b = alloca [64 x float], align 4
   %c = alloca [64 x float], align 4
+  %bias.slot = alloca float, align 4
+  store float 2.500000e-01, ptr %bias.slot, align 4
   br label %init
 
 init:
@@ -91,7 +94,8 @@ init:
   br i1 %jdone, label %invoke, label %init
 
 invoke:
-  call void @vecadd(ptr %a, ptr %b, ptr %c)
+  %bias = load float, ptr %bias.slot, align 4
+  call void @vecadd(ptr %a, ptr %b, ptr %c, float %bias)
   ret i32 0
 }
 
@@ -100,7 +104,7 @@ entry:
   %ab = alloca [128 x float], align 4
   %b = getelementptr [128 x float], ptr %ab, i64 0, i64 64
   %c = alloca [64 x float], align 4
-  call void @vecadd(ptr %ab, ptr %b, ptr %c)
+  call void @vecadd(ptr %ab, ptr %b, ptr %c, float 1.000000e+00)
   ret i32 0
 }
 )llvm";
@@ -308,6 +312,10 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
   if (capturePlan.input.objects.size() != 3 ||
       capturePlan.input.memoryRootBindings.size() != 3)
     fail(test, "vecadd capture plan did not recover three memory objects");
+  if (capturePlan.input.valueInputs.size() != 1 ||
+      capturePlan.input.valueInputs.front().fixedValue ||
+      capturePlan.input.valueInputs.front().boundaryOperandOrdinal != 3)
+    fail(test, "vecadd capture plan did not recover its runtime scalar");
   for (const loom::sim::SimulationMemoryCaptureObject &object :
        capturePlan.input.objects)
     if (object.byteCount != 64 * sizeof(float))
@@ -323,7 +331,8 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                                                  std::move(nativeContext)),
                      capturePlan));
   if (nativeCapture.entryResult != 0 || nativeCapture.calls.size() != 1 ||
-      nativeCapture.calls.front().objects.size() != 3)
+      nativeCapture.calls.front().objects.size() != 3 ||
+      nativeCapture.calls.front().runtimeValues.size() != 1)
     fail(test, "native vecadd oracle did not capture one complete call");
 
   auto mismatchedPlan = capturePlan;
@@ -342,6 +351,9 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
       loom::sim::deriveSimulationInputCapturePlan(
           view, launch,
           findVecaddCall(test, candidate.canonicalDataflow, "slice_main")));
+  if (slicePlan.input.valueInputs.size() != 1 ||
+      !slicePlan.input.valueInputs.front().fixedValue)
+    fail(test, "constant call operand did not become a fixed graph input");
   const auto &sliceA =
       captureBinding(test, slicePlan.input, memoryRoot(test, view, 0));
   const auto &sliceB =
@@ -357,6 +369,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     fail(test, "vecadd slice capture did not preserve host aliasing");
 
   loom::sim::SpatialSimulationWorkload workload{launch};
+  workload.valueInputPlan.push_back(loom::sim::RuntimeValueInput{});
   workload.observableContract.memories.push_back(
       loom::sim::SpatialMemoryObservable{
           dataflow::LogicalMemoryRootOrViewRef{memoryRoot(test, view, 2)},
@@ -366,6 +379,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   loom::sim::SpatialSimulationRuntimeInputDraft input{
       finalizedWorkload.identity()};
+  input.runtimeValues = nativeCapture.calls.front().runtimeValues;
   for (const loom::sim::NativeCapturedMemoryObject &object :
        nativeCapture.calls.front().objects)
     input.memoryObjects.push_back(definedByteObject(object.initialBytes));
@@ -384,7 +398,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
   if (report.status != "pass")
     fail(test, "typed DFG execution did not retire: " + report.status);
   if (report.operationFireCounts[dataflow::OperationSchemaId::ArithAddF] !=
-          64 ||
+          128 ||
       report.operationFireCounts[dataflow::OperationSchemaId::DataflowLoad] !=
           128 ||
       report.operationFireCounts[dataflow::OperationSchemaId::DataflowStore] !=

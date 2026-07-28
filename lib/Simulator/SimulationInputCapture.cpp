@@ -292,6 +292,70 @@ enclosingCallableArgument(mlir::Value value, mlir::LLVM::LLVMFuncOp function) {
   return argument.getArgNumber();
 }
 
+llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
+    detail::ResolvedLaunchContext &context, std::uint64_t valueInputOrdinal,
+    mlir::LLVM::LLVMFuncOp enclosingCallable, mlir::LLVM::CallOp hostCall) {
+  mlir::Value graphSource =
+      context.graphLaunchOp.getValueInputs()[valueInputOrdinal];
+  mlir::Type graphType =
+      context.graphOp.getFunctionType().getInput(valueInputOrdinal);
+  llvm::Expected<detail::LaneShape> shape =
+      detail::laneShapeOf(graphType, context.graphOp.getOperation());
+  if (!shape)
+    return shape.takeError();
+
+  mlir::Value callableSource = graphSource;
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(graphSource)) {
+    if (argument.getOwner()->getParentOp() != context.thread.getOperation() ||
+        argument.getArgNumber() >=
+            context.thread.getFunctionType().getNumInputs() ||
+        argument.getArgNumber() >=
+            context.rootLaunchOp.getBodyOperands().size())
+      return invalid("graph value input is not a rooted thread formal");
+    callableSource =
+        context.rootLaunchOp.getBodyOperands()[argument.getArgNumber()];
+  }
+
+  llvm::Expected<std::optional<CanonicalValueSequence>> fixed =
+      fixedValueOf(callableSource, *shape);
+  if (!fixed)
+    return fixed.takeError();
+  if (*fixed)
+    return SimulationValueInputCapture{
+        valueInputOrdinal, std::nullopt, callableSource, shape->lanesPerToken,
+        shape->laneBitWidth, 0, std::move(*fixed)};
+
+  llvm::Expected<unsigned> callableArgument =
+      enclosingCallableArgument(callableSource, enclosingCallable);
+  if (!callableArgument)
+    return callableArgument.takeError();
+  if (*callableArgument >= hostCall.getCalleeOperands().size())
+    return invalid("callable value argument exceeds host call operands");
+  mlir::Value hostOperand = hostCall.getCalleeOperands()[*callableArgument];
+
+  fixed = fixedValueOf(hostOperand, *shape);
+  if (!fixed)
+    return fixed.takeError();
+  if (*fixed)
+    return SimulationValueInputCapture{
+        valueInputOrdinal, std::nullopt, hostOperand, shape->lanesPerToken,
+        shape->laneBitWidth, 0, std::move(*fixed)};
+
+  llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
+      hostOperand.getDefiningOp() ? hostOperand.getDefiningOp()
+                                  : hostCall.getOperation(),
+      hostOperand.getType());
+  if (!bytes)
+    return bytes.takeError();
+  if (shape->lanesPerToken >
+          std::numeric_limits<std::uint64_t>::max() / shape->laneBitWidth ||
+      shape->lanesPerToken * shape->laneBitWidth > *bytes * 8)
+    return invalid("runtime graph value does not fit its storage extent");
+  return SimulationValueInputCapture{
+      valueInputOrdinal, *callableArgument, hostOperand, shape->lanesPerToken,
+      shape->laneBitWidth, *bytes, std::nullopt};
+}
+
 llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
                                                 mlir::LLVM::CallOp target,
                                                 llvm::StringRef callee) {
@@ -322,9 +386,6 @@ deriveSimulationInputCapturePlan(
       detail::resolveLaunchContext(program, launch);
   if (!context)
     return context.takeError();
-  if (context->numValueInputs != 0)
-    return unsupported(
-        "direct-call capture does not yet project graph value inputs");
 
   auto enclosingCallable =
       context->rootLaunchOp->getParentOfType<mlir::LLVM::LLVMFuncOp>();
@@ -351,6 +412,16 @@ deriveSimulationInputCapturePlan(
       SimulationInputCapturePlan{launch, {}, {}, {}}, hostCall,
       hostCaller.getSymName().str(), hostCall.getCalleeAttr().getValue().str(),
       *callOrdinal};
+  plan.input.valueInputs.reserve(context->numValueInputs);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
+       ++ordinal) {
+    llvm::Expected<SimulationValueInputCapture> value =
+        directCallValueInputCapture(*context, ordinal, enclosingCallable,
+                                    hostCall);
+    if (!value)
+      return value.takeError();
+    plan.input.valueInputs.push_back(std::move(*value));
+  }
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
         program.resolve(root);

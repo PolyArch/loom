@@ -131,6 +131,31 @@ entry:
 }
 
 std::unique_ptr<llvm::Module>
+parseUndefBoundaryModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
+target triple = "riscv32-unknown-unknown"
+
+define void @undef_store(ptr %output) {
+entry:
+  store i32 undef, ptr %output, align 4
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<undef-boundary-owner>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseFmulAddSpatialModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -775,6 +800,43 @@ void wholeCallableExternalizesGlobalMemoryCapability() {
   }
   if (staticSources != 1)
     fail(test, "static global did not bind exactly one logical memory root");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void wholeCallableExternalizesUndefValue() {
+  const char *test = "wholeCallableExternalizesUndefValue";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-undef-boundary-owner", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseUndefBoundaryModule(test, context),
+                                 design.roots().front().reference(), store));
+  auto selected =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram,
+                                  "undef_store"),
+                     design.roots().front()));
+  auto view = take(test, selected.canonicalDataflow.view());
+  if (view.graphs().size() != 1)
+    fail(test, "undef boundary did not produce one graph");
+  auto graph = mlir::cast<dataflow::GraphOp>(view.graphs().front().op);
+  llvm::ArrayRef<std::int32_t> segments = graph.getInputSegmentSizes();
+  if (segments.size() != 3 || segments[0] != 1 || segments[2] != 1)
+    fail(test, "undef was not externalized as one graph value input");
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (actor.op->getName().getStringRef() == "llvm.mlir.undef")
+      fail(test, "undef remained a canonical actor");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1735,6 +1797,7 @@ int main() {
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
   wholeCallableExternalizesGlobalMemoryCapability();
+  wholeCallableExternalizesUndefValue();
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   wholeCallableNormalizesPointerInduction();

@@ -208,18 +208,28 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   // leaf has one explicit launch binding and can be removed from the cloned
   // graph body.
   llvm::SmallVector<mlir::LLVM::AddressOfOp, 4> addressCaptures;
+  llvm::SmallVector<mlir::LLVM::UndefOp, 4> undefCaptures;
   function.walk([&](mlir::LLVM::AddressOfOp address) {
     if (!address.getRes().use_empty())
       addressCaptures.push_back(address);
   });
+  function.walk([&](mlir::LLVM::UndefOp undef) {
+    if (!undef.getRes().use_empty())
+      undefCaptures.push_back(undef);
+  });
   for (mlir::LLVM::AddressOfOp address : llvm::reverse(addressCaptures))
     if (&source.front() != address.getOperation())
       address->moveBefore(&source, source.begin());
+  for (mlir::LLVM::UndefOp undef : llvm::reverse(undefCaptures))
+    if (&source.front() != undef.getOperation())
+      undef->moveBefore(&source, source.begin());
 
   llvm::SmallVector<mlir::Value, 8> captures(source.getArguments().begin(),
                                              source.getArguments().end());
   for (mlir::LLVM::AddressOfOp address : addressCaptures)
     captures.push_back(address.getRes());
+  for (mlir::LLVM::UndefOp undef : undefCaptures)
+    captures.push_back(undef.getRes());
   auto boundary =
       createSpatialThreadBoundary(module, function, captures, location);
   if (!boundary)
@@ -231,19 +241,21 @@ llvm::Error materializeThread(mlir::ModuleOp module,
     mapping.map(capture, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::Operation &operation : source.without_terminator())
-    if (!llvm::isa<mlir::LLVM::AddressOfOp>(operation))
+    if (!llvm::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
       builder.clone(operation, mapping);
   loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
                                mlir::ValueRange{});
 
-  llvm::SmallPtrSet<mlir::Operation *, 4> retainedAddresses;
+  llvm::SmallPtrSet<mlir::Operation *, 8> retainedBoundarySources;
   for (mlir::LLVM::AddressOfOp address : addressCaptures)
-    retainedAddresses.insert(address.getOperation());
+    retainedBoundarySources.insert(address.getOperation());
+  for (mlir::LLVM::UndefOp undef : undefCaptures)
+    retainedBoundarySources.insert(undef.getOperation());
   llvm::SmallVector<mlir::Operation *, 16> oldBody;
   for (mlir::Operation &operation : source)
     oldBody.push_back(&operation);
   for (mlir::Operation *operation : llvm::reverse(oldBody))
-    if (!retainedAddresses.contains(operation))
+    if (!retainedBoundarySources.contains(operation))
       operation->erase();
 
   builder.setInsertionPointToEnd(&source);

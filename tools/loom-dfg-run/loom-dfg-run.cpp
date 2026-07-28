@@ -181,7 +181,8 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
       ++rootLaunchCount;
       continue;
     }
-    if (mlir::isa<dataflow::ThreadWaitOp, mlir::LLVM::ReturnOp>(operation))
+    if (mlir::isa<dataflow::ThreadWaitOp, mlir::LLVM::ReturnOp,
+                  mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
       continue;
     return unsupported("root callable contains work outside the selected "
                        "Spatial launch");

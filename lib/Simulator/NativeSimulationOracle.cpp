@@ -324,6 +324,14 @@ instrumentCapture(llvm::Module &module,
       module.getOrInsertFunction(beforeName, callbackType);
   llvm::FunctionCallee after =
       module.getOrInsertFunction(afterName, callbackType);
+  std::optional<std::string> valueName;
+  std::optional<llvm::FunctionCallee> valueCallback;
+  if (llvm::any_of(plan.input.valueInputs, [](const auto &input) {
+        return !input.fixedValue.has_value();
+      })) {
+    valueName = uniqueCallbackName(module, "__loom_native_capture_value");
+    valueCallback = module.getOrInsertFunction(*valueName, callbackType);
+  }
 
   llvm::IRBuilder<> beforeBuilder(selected);
   llvm::Instruction *afterInsertion = selected->getNextNode();
@@ -356,10 +364,41 @@ instrumentCapture(llvm::Module &module,
     beforeBuilder.CreateCall(before, {objectOrdinal, base, byteCount});
     afterBuilder.CreateCall(after, {objectOrdinal, base, byteCount});
   }
+  std::uint64_t runtimeOrdinal = 0;
+  llvm::IRBuilder<> entryBuilder(&selected->getFunction()->getEntryBlock(),
+                                 selected->getFunction()
+                                     ->getEntryBlock()
+                                     .getFirstInsertionPt());
+  for (const SimulationValueInputCapture &input : plan.input.valueInputs) {
+    if (input.fixedValue)
+      continue;
+    if (!valueCallback || !input.boundaryOperandOrdinal ||
+        *input.boundaryOperandOrdinal >= selected->arg_size() ||
+        input.byteCount == 0 ||
+        input.byteCount > std::numeric_limits<std::size_t>::max())
+      return invalid("runtime value input has no finite call projection");
+    llvm::Value *operand =
+        selected->getArgOperand(*input.boundaryOperandOrdinal);
+    if (!operand->getType()->isSized())
+      return invalid("runtime value input has no sized native type");
+    llvm::TypeSize nativeBytes =
+        module.getDataLayout().getTypeStoreSize(operand->getType());
+    if (nativeBytes.isScalable() ||
+        nativeBytes.getFixedValue() != input.byteCount)
+      return invalid("runtime value input native extent differs from plan");
+    llvm::AllocaInst *slot = entryBuilder.CreateAlloca(
+        operand->getType(), nullptr, "loom.capture.value");
+    beforeBuilder.CreateStore(operand, slot);
+    llvm::Value *ordinalValue =
+        llvm::ConstantInt::get(i64, runtimeOrdinal++);
+    llvm::Value *byteCount = llvm::ConstantInt::get(i64, input.byteCount);
+    beforeBuilder.CreateCall(*valueCallback,
+                             {ordinalValue, slot, byteCount});
+  }
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");
   return CaptureCallbackNames{std::move(beforeName), std::move(afterName),
-                              std::nullopt};
+                              std::move(valueName)};
 }
 
 std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {
