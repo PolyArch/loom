@@ -33,8 +33,8 @@ llvm::StringRef relocatablePayloadCarrierSection();
 void embedRelocatablePayloadCarrier(
     llvm::Module &module, llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
-/// Reads back the complete canonical payload bytes one relocatable object
-/// carries.
+/// Reads back the complete canonical payload bytes one native or LTO
+/// relocatable object carries.
 ///
 /// An object without the carrier section is a valid payload-free link input and
 /// yields no bytes. An object that cannot be read as an object, or that carries

@@ -46,6 +46,11 @@ target_link_libraries(loom-cc PRIVATE
   clangSerialization
 )
 
+add_dependencies(loom-cc LoomRelocatablePayloadPass)
+target_compile_definitions(loom-cc PRIVATE
+  LOOM_RELOCATABLE_PAYLOAD_PASS_PATH="$<TARGET_FILE:LoomRelocatablePayloadPass>"
+)
+
 mlir_check_all_link_libraries(loom-cc)
 
 # Mirror upstream's clang++/clang-cl symlinks: produce a loom-c++ alongside

@@ -4,10 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// This file is derived from clang/tools/driver/driver.cpp in the LLVM
-// project. Loom-specific deviations are confined to argv[0] mode mapping
-// (loom-cc / loom-c++) and a comment marking where Loom frontend hooks
-// will plug in.
+// This file is derived from clang/tools/driver/driver.cpp in the LLVM project.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,10 +20,9 @@
 // A loom-c++ symlink to loom-cc is produced at build time so that the same
 // binary covers both languages.
 //
-// Loom-specific frontend behavior (pragma/attribute parsing, IR-metadata
-// emission) is intentionally not present at this point. The driver is wired
-// in here so that subsequent work can attach a metadata pass at the cc1
-// boundary or via a clang plugin without touching the build graph again.
+// Object-producing frontend jobs embed the frontend-owned relocatable
+// accelerator payload through Loom's LLVM module pass. Preprocessing, syntax
+// checking, LLVM IR output, and assembly output retain their ordinary forms.
 //
 //===----------------------------------------------------------------------===//
 
@@ -96,13 +92,6 @@ extern int cc1gen_reproducer_main(llvm::ArrayRef<const char *> Argv,
                                   const char *Argv0, void *MainAddr,
                                   const llvm::ToolContext &);
 
-// TODO(loom-frontend): hook for Loom metadata pragmas / attributes
-// A future change wires Loom-specific pragma/attribute parsing and the
-// IR-metadata pass into the cc1 boundary (either by registering a plugin
-// before invoking cc1_main, or by intercepting BuildCompilation jobs to
-// thread an extra cc1 phase). The driver entry point is left identical to
-// upstream so that hook can be added without disturbing the gcc/g++ ABI.
-
 static void insertTargetAndModeArgs(const ParsedClangName &NameParts,
                                     llvm::SmallVectorImpl<const char *> &ArgV,
                                     llvm::StringSet<> &Saved) {
@@ -118,6 +107,28 @@ static void insertTargetAndModeArgs(const ParsedClangName &NameParts,
                           GetStableCStr(Saved, NameParts.TargetPrefix)};
     ArgV.insert(ArgV.begin() + Insert, std::begin(Pair), std::end(Pair));
   }
+}
+
+static bool shouldEmbedRelocatablePayload(llvm::ArrayRef<const char *> args) {
+  for (const char *rawArg : llvm::ArrayRef(args).drop_front()) {
+    if (rawArg == nullptr)
+      continue;
+    const llvm::StringRef arg(rawArg);
+    if (arg == "-E" || arg == "-S" || arg == "-emit-llvm" ||
+        arg == "-fsyntax-only" || arg == "-M" || arg == "-MM" || arg == "-###")
+      return false;
+  }
+  return true;
+}
+
+static void
+insertRelocatablePayloadPass(llvm::SmallVectorImpl<const char *> &args,
+                             llvm::StringSet<> &saved) {
+  if (!shouldEmbedRelocatablePayload(args))
+    return;
+  const std::string option =
+      std::string("-fpass-plugin=") + LOOM_RELOCATABLE_PAYLOAD_PASS_PATH;
+  args.insert(args.begin() + 1, GetStableCStr(saved, option));
 }
 
 template <class T>
@@ -267,6 +278,7 @@ static int loom_main(int Argc, char **Argv,
     TheDriver.setPrependArg(ToolContext.PrependArg);
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
+  insertRelocatablePayloadPass(Args, SavedStrings);
   SetBackdoorDriverOutputsFromEnvVars(TheDriver);
 
   auto ExecuteCC1WithContext =

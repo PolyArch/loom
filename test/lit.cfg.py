@@ -32,6 +32,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
     os.path.join(config.loom_obj_root, "tools", "loom-adg"),
     os.path.join(config.loom_obj_root, "tools", "loom-cc"),
+    os.path.join(config.loom_obj_root, "tools", "loom-payload"),
     os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
     os.path.join(config.loom_obj_root, "tools", "loom-tblgen"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
@@ -101,9 +102,8 @@ tools = [
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 
-# %loom-c++ / %loom-cc / %loom-raise all share a "%loom-c" or "%loom-r"
-# prefix; lit's substitution is substring-based, so list the longest
-# patterns first and pin all to the built binary paths explicitly.
+# Loom driver tools share name prefixes with other substitutions. Lit's
+# substitution is substring-based, so match their complete placeholders.
 _loom_cc_dir = os.path.join(config.loom_obj_root, "bin")
 config.substitutions.insert(
     0, ("%loom-c\\+\\+", os.path.join(_loom_cc_dir, "loom-c++")))
@@ -114,5 +114,7 @@ config.substitutions.insert(
 config.substitutions.insert(
     3, ("%loom-lower\\b", os.path.join(_loom_cc_dir, "loom-lower")))
 config.substitutions.insert(
-    4, ("%objdump-h",
+    4, ("%loom-payload\\b", os.path.join(_loom_cc_dir, "loom-payload")))
+config.substitutions.insert(
+    5, ("%objdump-h",
         os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))

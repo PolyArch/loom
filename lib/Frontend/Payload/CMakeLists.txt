@@ -76,10 +76,26 @@ add_mlir_library(LoomFrontendPayload
   RelocatableAcceleratorPayload.cpp
   RelocatablePayloadRootCodec.cpp
 
+  PARTIAL_SOURCES_INTENDED
+
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Frontend/Payload
 
   LINK_LIBS PUBLIC
   LoomCommon
   ${loom_payload_llvm_libs}
+)
+
+add_llvm_pass_plugin(LoomRelocatablePayloadPass
+  RelocatablePayloadPass.cpp
+
+  PARTIAL_SOURCES_INTENDED
+)
+
+target_link_libraries(LoomRelocatablePayloadPass PRIVATE
+  LoomFrontendPayload
+)
+
+set_target_properties(LoomRelocatablePayloadPass PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/loom"
 )
