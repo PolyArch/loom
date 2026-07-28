@@ -38,6 +38,19 @@ struct LowConfidenceMetricSet final {
   std::uint64_t dynamicPowerMicrowatts = 0;
   std::uint64_t leakagePowerMicrowatts = 0;
 
+  friend bool operator==(const LowConfidenceMetricSet &lhs,
+                         const LowConfidenceMetricSet &rhs) {
+    return lhs.runtimePicoseconds == rhs.runtimePicoseconds &&
+           lhs.limitingClockFrequencyHertz == rhs.limitingClockFrequencyHertz &&
+           lhs.totalAreaSquareMicrometers == rhs.totalAreaSquareMicrometers &&
+           lhs.dynamicPowerMicrowatts == rhs.dynamicPowerMicrowatts &&
+           lhs.leakagePowerMicrowatts == rhs.leakagePowerMicrowatts;
+  }
+  friend bool operator!=(const LowConfidenceMetricSet &lhs,
+                         const LowConfidenceMetricSet &rhs) {
+    return !(lhs == rhs);
+  }
+
   llvm::Expected<MetricResult> result(MetricKind metric) const;
 };
 

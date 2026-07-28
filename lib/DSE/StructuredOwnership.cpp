@@ -72,6 +72,11 @@ generateAndPromoteStructuredOwnership(
           candidate->structuredProgram, artifactStore);
       if (!reference)
         return reference.takeError();
+      if (llvm::Error error =
+              evaluation::models::primeStructuredFabricAnalyticResult(
+                  *reference, candidate->structuredProgram,
+                  candidate->canonicalDataflow, fabric, config, artifactStore))
+        return std::move(error);
       candidateReferences.push_back(std::move(*reference));
     }
   }

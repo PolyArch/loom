@@ -12,6 +12,18 @@ class ArtifactStore;
 struct ResolvedConfig;
 } // namespace loom
 
+namespace dataflow {
+class CanonicalDataflowArtifact;
+}
+
+namespace loom::fabric {
+class FinalizedFabricRoot;
+}
+
+namespace loom::frontend {
+class StructuredProgramCandidate;
+}
+
 namespace loom::evaluation::models {
 
 struct PreparedStructuredFabricEvaluation final {
@@ -31,6 +43,18 @@ llvm::Expected<PreparedStructuredFabricEvaluation>
 prepareStructuredFabricEvaluation(
     const ::loom::ArtifactRootReference &structuredProgram,
     const ::loom::ArtifactRootReference &fabric,
+    const ::loom::ResolvedConfig &config,
+    const ::loom::ArtifactStore &artifactStore);
+
+/// Primes the removable model-result cache from already finalized owner views.
+/// The full provider remains the oracle on a miss; this function only avoids
+/// re-importing and mechanically re-lowering an exact candidate that the
+/// caller has just finalized.
+llvm::Error primeStructuredFabricAnalyticResult(
+    const ::loom::ArtifactRootReference &structuredProgramReference,
+    const ::loom::frontend::StructuredProgramCandidate &structuredProgram,
+    const ::dataflow::CanonicalDataflowArtifact &canonicalDataflow,
+    const ::loom::fabric::FinalizedFabricRoot &fabric,
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);
 
