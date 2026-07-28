@@ -25,6 +25,34 @@ add_executable(loom-pre-mapping-compilation-test
 target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LoomADGBuilder
   LoomCommon
+  LoomFrontendCompilation
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)
+
+add_executable(loom-structured-ownership-accounting-test
+  StructuredOwnershipAccountingTest.cpp
+)
+
+target_link_libraries(loom-structured-ownership-accounting-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomDSE
+  LoomFrontendCompilation
+  LoomStructuredFabricAnalyticModel
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)
+
+add_executable(loom-structured-ownership-evaluation-test
+  StructuredOwnershipEvaluationTest.cpp
+)
+
+target_link_libraries(loom-structured-ownership-evaluation-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
   LoomDSE
   LoomFrontendCompilation
   LoomStructuredFabricAnalyticModel

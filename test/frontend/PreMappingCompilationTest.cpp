@@ -2,12 +2,6 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
-#include "Common/ResolvedConfig.h"
-#include "DSE/PreMappingExploration.h"
-#include "DSE/Promotion.h"
-#include "Evaluation/ModelProvider.h"
-#include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
-#include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
@@ -1317,15 +1311,19 @@ void operationOwnershipScopesFollowCanonicalOrder() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseLoopOwnershipModule(test, context),
                                  design.roots().front().reference(), store));
-  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopeDomain(
                                compiled.structuredProgram));
   auto view = take(test, compiled.structuredProgram.view());
 
   std::vector<loom::frontend::StructuredEntityRef> scopes;
-  for (const loom::frontend::SpatialOwnershipScope &scope : domain) {
-    auto entity = take(test, view.resolve(scope.selection));
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = take(test, view.resolve(scope->selection));
     if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation))
-      scopes.push_back(scope.selection);
+      scopes.push_back(scope->selection);
   }
 
   std::vector<loom::frontend::StructuredEntityRef> expected;
@@ -1361,14 +1359,18 @@ void wholeCallableScopesFollowCanonicalOrder() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseSpatialModule(test, context),
                                  design.roots().front().reference(), store));
-  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopeDomain(
                                compiled.structuredProgram));
   auto view = take(test, compiled.structuredProgram.view());
   std::vector<loom::frontend::StructuredEntityRef> scopes;
-  for (const loom::frontend::SpatialOwnershipScope &scope : domain) {
-    auto entity = take(test, view.resolve(scope.selection));
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = take(test, view.resolve(scope->selection));
     if (llvm::isa_and_nonnull<mlir::LLVM::LLVMFuncOp>(entity.operation))
-      scopes.push_back(scope.selection);
+      scopes.push_back(scope->selection);
   }
   if (scopes.size() != 1 ||
       scopes.front() !=
@@ -1486,7 +1488,7 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseOperationFmulAddModule(test, context),
                                  design.roots().front().reference(), store));
-  auto scopes = take(test, loom::frontend::enumerateSpatialOwnershipScopes(
+  auto domain = take(test, loom::frontend::enumerateSpatialOwnershipScopeDomain(
                                compiled.structuredProgram));
   const loom::frontend::StructuredEntityRef callable =
       findCallable(test, compiled.structuredProgram, "fmuladd_loop");
@@ -1495,11 +1497,15 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
 
   std::optional<loom::frontend::SpatialOwnershipScope> callableScope;
   std::optional<loom::frontend::SpatialOwnershipScope> operationScope;
-  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
-    if (scope.selection == callable)
-      callableScope = scope;
-    if (scope.selection == loop)
-      operationScope = scope;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    if (scope->selection == callable)
+      callableScope = *scope;
+    if (scope->selection == loop)
+      operationScope = *scope;
   }
   if (!callableScope)
     fail(test, "unified domain omitted the whole-callable ownership scope");
@@ -1604,241 +1610,9 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
-loom::evaluation::DecimalValue
-metricResult(const char *test,
-             const loom::evaluation::EvaluationRequest &request,
-             const loom::evaluation::EvaluationEvidence &evidence,
-             loom::evaluation::MetricKind kind) {
-  const auto *completed =
-      std::get_if<loom::evaluation::CompletedEvidence>(&evidence.outcome());
-  if (!completed ||
-      completed->metricResults.size() != request.metricRequests().size())
-    fail(test, "analytic model did not return a total metric result vector");
-  std::optional<std::size_t> ordinal;
-  for (std::size_t index = 0; index < request.metricRequests().size();
-       ++index) {
-    if (request.metricRequests()[index].query().metric == kind) {
-      ordinal = index;
-      break;
-    }
-  }
-  if (!ordinal)
-    fail(test, "analytic model request omitted " +
-                   loom::evaluation::toString(kind).str());
-  const loom::evaluation::MetricResult &result =
-      completed->metricResults[*ordinal];
-  if (result.uncertainty != loom::evaluation::UncertaintyKind::Unquantified)
-    fail(test, "analytic model presented its estimate as ground truth");
-  const auto *point =
-      std::get_if<loom::evaluation::PointObservation>(&result.observation);
-  if (!point)
-    fail(test, "analytic model did not return a point estimate");
-  const auto *value =
-      std::get_if<loom::evaluation::DecimalValue>(&point->value);
-  if (!value)
-    fail(test, "analytic metric result used the wrong numeric domain");
-  return *value;
-}
-
-struct EvaluatedRuntime final {
-  loom::evaluation::DecimalValue value;
-  loom::evaluation::EvaluationRequest request;
-  loom::evaluation::EvaluationEvidence evidence;
-};
-
-EvaluatedRuntime
-evaluateStructuredRuntime(const char *test,
-                          const loom::ArtifactRootReference &structuredProgram,
-                          const loom::ArtifactRootReference &fabric,
-                          const loom::ArtifactStore &store) {
-  auto prepared =
-      take(test, loom::evaluation::models::prepareStructuredFabricEvaluation(
-                     structuredProgram, fabric, loom::defaultResolvedConfig(),
-                     store));
-  auto evidence = take(test, loom::evaluation::evaluateRequest(
-                                 prepared.request, prepared.resolution, store));
-  return EvaluatedRuntime{metricResult(test, prepared.request, evidence,
-                                       loom::evaluation::MetricKind::Runtime),
-                          std::move(prepared.request), std::move(evidence)};
-}
-
-loom::evaluation::DecimalValue
-evaluateCanonicalDataflowRuntime(const char *test,
-                                 const loom::ArtifactRootReference &program,
-                                 const loom::ArtifactRootReference &fabric,
-                                 const loom::ArtifactStore &store) {
-  auto prepared = take(
-      test, loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
-                program, fabric, loom::defaultResolvedConfig(), store));
-  auto evidence = take(test, loom::evaluation::evaluateRequest(
-                                 prepared.request, prepared.resolution, store));
-  return metricResult(test, prepared.request, evidence,
-                      loom::evaluation::MetricKind::Runtime);
-}
-
-void structuredFabricEvaluationRanksMaterializedOwnership() {
-  const char *test = "structuredFabricEvaluationRanksMaterializedOwnership";
-  llvm::SmallString<128> directory;
-  std::error_code error = llvm::sys::fs::createUniqueDirectory(
-      "loom-structured-fabric-evaluation", directory);
-  if (error)
-    fail(test, "cannot create artifact store directory: " + error.message());
-  loom::ArtifactStore store(directory);
-  auto design = take(test, loom::adg::buildBuiltinTarget(
-                               store, loom::adg::BuiltinTargetPreset::Small));
-
-  llvm::LLVMContext context;
-  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
-                                 parseSpatialModule(test, context),
-                                 design.roots().front().reference(), store));
-  loom::frontend::SpatialOwnershipOptions options;
-  auto spatial =
-      take(test, loom::frontend::materializeSpatialOwnership(
-                     compiled.structuredProgram,
-                     findCallable(test, compiled.structuredProgram, "kernel"),
-                     design.roots().front(), options));
-
-  const loom::ArtifactRootReference baselineRef =
-      take(test, loom::frontend::publishStructuredProgram(
-                     compiled.structuredProgram, store));
-  const loom::ArtifactRootReference spatialRef =
-      take(test, loom::frontend::publishStructuredProgram(
-                     spatial.structuredProgram, store));
-  const loom::ArtifactRootReference dataflowRef =
-      take(test, dataflow::publishCanonicalDataflow(spatial.canonicalDataflow,
-                                                    store));
-  EvaluatedRuntime baseline = evaluateStructuredRuntime(
-      test, baselineRef, design.roots().front().reference(), store);
-  EvaluatedRuntime spatialEvaluation = evaluateStructuredRuntime(
-      test, spatialRef, design.roots().front().reference(), store);
-  if (baseline.request.metricRequests().size() != 5 ||
-      spatialEvaluation.request.metricRequests().size() != 5)
-    fail(test, "low-confidence model did not expose the complete metric set");
-  if (loom::evaluation::compareDecimalValue(spatialEvaluation.value,
-                                            baseline.value) >= 0)
-    fail(test, "Fabric-aware Evaluation did not prefer materialized Spatial "
-               "ownership");
-
-  for (loom::evaluation::MetricKind metric :
-       {loom::evaluation::MetricKind::LimitingClockFrequency,
-        loom::evaluation::MetricKind::TotalArea,
-        loom::evaluation::MetricKind::LeakagePower}) {
-    const auto baselineValue =
-        metricResult(test, baseline.request, baseline.evidence, metric);
-    const auto spatialValue = metricResult(test, spatialEvaluation.request,
-                                           spatialEvaluation.evidence, metric);
-    if (baselineValue != spatialValue)
-      fail(test, "static Fabric metric changed with software ownership");
-    if (baselineValue.coefficient() <= 0)
-      fail(test, "static Fabric metric was not physically populated");
-  }
-  const auto baselineDynamic =
-      metricResult(test, baseline.request, baseline.evidence,
-                   loom::evaluation::MetricKind::DynamicPower);
-  const auto spatialDynamic =
-      metricResult(test, spatialEvaluation.request, spatialEvaluation.evidence,
-                   loom::evaluation::MetricKind::DynamicPower);
-  if (baselineDynamic.coefficient() != 0 || spatialDynamic.coefficient() <= 0)
-    fail(test, "dynamic power did not follow Spatial workload activity");
-
-  auto candidates =
-      take(test, loom::dse::CandidateSet::get(
-                     loom::frontend::structuredProgramArtifactSchema,
-                     {baselineRef, spatialRef}));
-  const auto incomplete =
-      take(test, loom::dse::promoteMetricTopK(
-                     candidates, loom::evaluation::CaseSubjectRoleRef(0),
-                     {{baseline.request, baseline.evidence}},
-                     {loom::evaluation::MetricRequestOrdinal(0),
-                      loom::dse::ObjectiveDirection::Minimize, 1},
-                     store));
-  const auto *missing =
-      std::get_if<loom::dse::IncompleteSelection>(&incomplete);
-  if (!missing ||
-      missing->reason != loom::dse::IncompleteSelectionReason::MissingEvidence)
-    fail(test, "central DSE treated missing Evidence as a ranking value");
-
-  std::vector<loom::dse::PromotionEvidence> evidence;
-  evidence.push_back({std::move(spatialEvaluation.request),
-                      std::move(spatialEvaluation.evidence)});
-  evidence.push_back(
-      {std::move(baseline.request), std::move(baseline.evidence)});
-  auto promoted = take(
-      test, loom::dse::promoteMetricTopK(
-                candidates, loom::evaluation::CaseSubjectRoleRef(0), evidence,
-                {loom::evaluation::MetricRequestOrdinal(0),
-                 loom::dse::ObjectiveDirection::Minimize, 1},
-                store));
-  const auto *selection = std::get_if<loom::dse::CompletedSelection>(&promoted);
-  if (!selection || selection->selected.size() != 1 ||
-      selection->selected.front() != spatialRef)
-    fail(test, "central DSE TopK did not promote the best exact candidate");
-
-  loom::dse::PreMappingExplorationOptions exploration{
-      {},
-      {{},
-       {loom::evaluation::MetricRequestOrdinal(0),
-        loom::dse::ObjectiveDirection::Minimize, 1}}};
-  auto explored =
-      take(test, loom::dse::exploreLlvmModuleToPreMapping(
-                     parseSpatialModule(test, context), design.roots().front(),
-                     loom::defaultResolvedConfig(), exploration, store));
-  const auto *exploredSelection =
-      std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
-  if (!exploredSelection || exploredSelection->selected.size() != 1)
-    fail(test, "central ownership exploration did not select one survivor");
-  auto exploredView = take(
-      test,
-      exploredSelection->selected.front().compilation.canonicalDataflow.view());
-  if (exploredView.actors().empty())
-    fail(test, "central ownership exploration selected no Spatial workload");
-  if (exploredSelection->selected.front().derivations.size() != 1)
-    fail(test, "central ownership exploration lost exact candidate lineage");
-
-  auto parallelExploration = exploration;
-  parallelExploration.ownership.candidateWorkerCount = 2;
-  auto parallel = take(
-      test, loom::dse::exploreLlvmModuleToPreMapping(
-                parseSpatialModule(test, context), design.roots().front(),
-                loom::defaultResolvedConfig(), parallelExploration, store));
-  const auto *parallelSelection =
-      std::get_if<loom::dse::CompletedPreMappingSelection>(&parallel);
-  if (!parallelSelection || parallelSelection->selected.size() != 1)
-    fail(test, "parallel ownership exploration did not select one survivor");
-  if (parallelSelection->selected.front()
-              .compilation.structuredProgram.identity() !=
-          exploredSelection->selected.front()
-              .compilation.structuredProgram.identity() ||
-      parallelSelection->selected.front()
-              .compilation.canonicalDataflow.identity() !=
-          exploredSelection->selected.front()
-              .compilation.canonicalDataflow.identity() ||
-      parallelSelection->selected.front().derivations !=
-          exploredSelection->selected.front().derivations ||
-      parallelSelection->satisfiedEvidence !=
-          exploredSelection->satisfiedEvidence)
-    fail(test, "candidate worker count changed the formal DSE result");
-
-  const loom::evaluation::DecimalValue dataflowRuntime =
-      evaluateCanonicalDataflowRuntime(
-          test, dataflowRef, design.roots().front().reference(), store);
-  if (dataflowRuntime.coefficient() <= 0)
-    fail(test, "Dataflow/Fabric Evaluation returned no spatial work");
-
-  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
-  if (cleanup)
-    fail(test, "cannot remove artifact store directory: " + cleanup.message());
-}
-
 } // namespace
 
 int main() {
-  if (llvm::Error error =
-          loom::evaluation::models::registerStructuredFabricAnalyticModel())
-    fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error = loom::evaluation::models::
-          registerCanonicalDataflowFabricAnalyticModel())
-    fail("registration", llvm::toString(std::move(error)));
   exactFabricAndWholeProgramDataflow();
   explicitWholeCallableSpatialOwnership();
   wholeCallableExternalizesGlobalMemoryCapability();
@@ -1855,7 +1629,6 @@ int main() {
   ownershipDecisionDomainIsScopeLocalAndTyped();
   unifiedOwnershipDomainMaterializesExplicitDecision();
   operationSpatialOwnershipExternalizesEscapedResult();
-  structuredFabricEvaluationRanksMaterializedOwnership();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;
 }

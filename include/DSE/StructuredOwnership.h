@@ -7,6 +7,8 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -35,6 +37,47 @@ struct StructuredOwnershipDerivation final {
   }
 };
 
+/// One exact coordinate in the invocation-local finite ownership domain. An
+/// absent decision denotes a definition-level scope rejection before a typed
+/// decision domain could be derived.
+struct StructuredOwnershipCandidateCoordinate final {
+  frontend::SpatialOwnershipScope scope;
+  std::optional<frontend::SpatialOwnershipDecisionPoint> decision;
+
+  friend bool operator==(const StructuredOwnershipCandidateCoordinate &lhs,
+                         const StructuredOwnershipCandidateCoordinate &rhs) {
+    return lhs.scope == rhs.scope && lhs.decision == rhs.decision;
+  }
+};
+
+struct StructuredOwnershipCandidateRejectionRecord final {
+  frontend::SpatialOwnershipCandidateRejectionKind kind;
+  std::string message;
+
+  friend bool
+  operator==(const StructuredOwnershipCandidateRejectionRecord &lhs,
+             const StructuredOwnershipCandidateRejectionRecord &rhs) {
+    return lhs.kind == rhs.kind && lhs.message == rhs.message;
+  }
+};
+
+using StructuredOwnershipCandidateResult =
+    std::variant<ArtifactRootReference,
+                 StructuredOwnershipCandidateRejectionRecord>;
+
+/// Complete invocation-local accounting for one scope or decision attempt.
+/// This is a projection for InvocationManifest provenance, not an Artifact or
+/// a second candidate identity.
+struct StructuredOwnershipCandidateDisposition final {
+  StructuredOwnershipCandidateCoordinate coordinate;
+  StructuredOwnershipCandidateResult result;
+
+  friend bool operator==(const StructuredOwnershipCandidateDisposition &lhs,
+                         const StructuredOwnershipCandidateDisposition &rhs) {
+    return lhs.coordinate == rhs.coordinate && lhs.result == rhs.result;
+  }
+};
+
 struct SelectedStructuredOwnershipCandidate final {
   frontend::MaterializedOwnershipCandidate candidate;
   std::vector<StructuredOwnershipDerivation> derivations;
@@ -43,6 +86,7 @@ struct SelectedStructuredOwnershipCandidate final {
 struct CompletedStructuredOwnershipSelection final {
   std::vector<SelectedStructuredOwnershipCandidate> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
 };
 
 using StructuredOwnershipExplorationOutcome =

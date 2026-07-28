@@ -27,18 +27,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
-llvm::Expected<bool> isExpectedCandidateRejection(llvm::Error error) {
-  bool rejected = false;
-  llvm::Error unhandled = llvm::handleErrors(
-      std::move(error),
-      [&](const frontend::SpatialOwnershipCandidateRejection &) {
-        rejected = true;
-      });
-  if (unhandled)
-    return std::move(unhandled);
-  return rejected;
-}
-
 struct OwnershipWorkItem final {
   frontend::SpatialOwnershipScope scope;
   frontend::SpatialOwnershipDecisionPoint decision;
@@ -46,11 +34,13 @@ struct OwnershipWorkItem final {
 
 struct MaterializedOwnershipWorkItem final {
   ArtifactRootReference candidate;
-  StructuredOwnershipDerivation derivation;
 };
 
-llvm::Expected<std::optional<MaterializedOwnershipWorkItem>>
-materializeOwnershipWorkItem(
+using OwnershipAttemptResult =
+    std::variant<MaterializedOwnershipWorkItem,
+                 StructuredOwnershipCandidateRejectionRecord>;
+
+llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const frontend::StructuredProgramCandidate &parent,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
@@ -58,12 +48,18 @@ materializeOwnershipWorkItem(
   auto candidate = frontend::materializeSpatialOwnershipDecision(
       parent, workItem.scope, workItem.decision, fabric, options.lowering);
   if (!candidate) {
-    auto rejected = isExpectedCandidateRejection(candidate.takeError());
-    if (!rejected)
-      return rejected.takeError();
-    if (*rejected)
-      return std::optional<MaterializedOwnershipWorkItem>{};
-    return invalid("candidate failed without a classified error");
+    std::optional<StructuredOwnershipCandidateRejectionRecord> rejection;
+    llvm::Error unhandled = llvm::handleErrors(
+        candidate.takeError(),
+        [&](const frontend::SpatialOwnershipCandidateRejection &error) {
+          rejection.emplace(StructuredOwnershipCandidateRejectionRecord{
+              error.kind(), error.message()});
+        });
+    if (unhandled)
+      return std::move(unhandled);
+    if (!rejection)
+      return invalid("candidate failed without a classified error");
+    return OwnershipAttemptResult{std::move(*rejection)};
   }
 
   auto reference = frontend::publishStructuredProgram(
@@ -75,10 +71,8 @@ materializeOwnershipWorkItem(
               *reference, candidate->structuredProgram,
               candidate->canonicalDataflow, fabric, config, artifactStore))
     return std::move(error);
-  return std::optional<MaterializedOwnershipWorkItem>(
-      MaterializedOwnershipWorkItem{
-          std::move(*reference),
-          StructuredOwnershipDerivation{workItem.scope, workItem.decision}});
+  return OwnershipAttemptResult{
+      MaterializedOwnershipWorkItem{std::move(*reference)}};
 }
 
 } // namespace
@@ -102,20 +96,41 @@ generateAndPromoteStructuredOwnership(
     return parentReference.takeError();
   candidateReferences.push_back(*parentReference);
 
-  auto scopes = frontend::enumerateSpatialOwnershipScopes(parent);
-  if (!scopes)
-    return scopes.takeError();
+  auto domain = frontend::enumerateSpatialOwnershipScopeDomain(parent);
+  if (!domain)
+    return domain.takeError();
   std::vector<OwnershipWorkItem> workItems;
-  for (const frontend::SpatialOwnershipScope &scope : *scopes) {
+  struct PlannedDisposition final {
+    StructuredOwnershipCandidateCoordinate coordinate;
+    std::variant<std::size_t, StructuredOwnershipCandidateRejectionRecord>
+        source;
+  };
+  std::vector<PlannedDisposition> plannedDispositions;
+  for (const frontend::SpatialOwnershipScopeDomainEntry &entry : *domain) {
+    if (const auto *rejected =
+            std::get_if<frontend::RejectedSpatialOwnershipScope>(&entry)) {
+      plannedDispositions.push_back(
+          {StructuredOwnershipCandidateCoordinate{rejected->scope,
+                                                  std::nullopt},
+           StructuredOwnershipCandidateRejectionRecord{
+               frontend::SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+               rejected->message}});
+      continue;
+    }
+    const auto &scope = std::get<frontend::SpatialOwnershipScope>(entry);
     auto decisions = frontend::enumerateSpatialOwnershipDecisionDomain(
         parent, scope.selection);
     if (!decisions)
       return decisions.takeError();
-    for (const frontend::SpatialOwnershipDecisionPoint &decision : *decisions)
+    for (const frontend::SpatialOwnershipDecisionPoint &decision : *decisions) {
+      const std::size_t workIndex = workItems.size();
       workItems.push_back({scope, decision});
+      plannedDispositions.push_back(
+          {StructuredOwnershipCandidateCoordinate{scope, decision}, workIndex});
+    }
   }
   struct WorkResult final {
-    std::optional<MaterializedOwnershipWorkItem> materialized;
+    std::optional<OwnershipAttemptResult> attempt;
     std::optional<llvm::Error> error;
   };
   std::vector<WorkResult> results(workItems.size());
@@ -127,7 +142,7 @@ generateAndPromoteStructuredOwnership(
       results[index].error.emplace(result.takeError());
       return;
     }
-    results[index].materialized = std::move(*result);
+    results[index].attempt = std::move(*result);
   };
 
   const std::size_t workerCount =
@@ -167,17 +182,37 @@ generateAndPromoteStructuredOwnership(
   }
 
   llvm::Error failures = llvm::Error::success();
-  for (WorkResult &result : results) {
+  for (WorkResult &result : results)
     if (result.error) {
       failures =
           llvm::joinErrors(std::move(failures), std::move(*result.error));
-      continue;
     }
-    if (result.materialized)
-      candidateReferences.push_back(result.materialized->candidate);
-  }
   if (failures)
     return std::move(failures);
+
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  dispositions.reserve(plannedDispositions.size());
+  for (const PlannedDisposition &planned : plannedDispositions) {
+    if (const auto *rejection =
+            std::get_if<StructuredOwnershipCandidateRejectionRecord>(
+                &planned.source)) {
+      dispositions.push_back({planned.coordinate, *rejection});
+      continue;
+    }
+    const std::size_t workIndex = std::get<std::size_t>(planned.source);
+    if (workIndex >= results.size() || !results[workIndex].attempt)
+      return invalid("candidate work completed without a disposition");
+    const OwnershipAttemptResult &attempt = *results[workIndex].attempt;
+    if (const auto *materialized =
+            std::get_if<MaterializedOwnershipWorkItem>(&attempt)) {
+      candidateReferences.push_back(materialized->candidate);
+      dispositions.push_back({planned.coordinate, materialized->candidate});
+    } else {
+      dispositions.push_back(
+          {planned.coordinate,
+           std::get<StructuredOwnershipCandidateRejectionRecord>(attempt)});
+    }
+  }
 
   auto candidateSet = CandidateSet::get(
       frontend::structuredProgramArtifactSchema, candidateReferences);
@@ -227,16 +262,24 @@ generateAndPromoteStructuredOwnership(
     if (!dataflow)
       return dataflow.takeError();
     std::vector<StructuredOwnershipDerivation> derivations;
-    for (const WorkResult &result : results)
-      if (result.materialized && result.materialized->candidate == reference)
-        derivations.push_back(result.materialized->derivation);
+    for (const StructuredOwnershipCandidateDisposition &disposition :
+         dispositions) {
+      const auto *candidate =
+          std::get_if<ArtifactRootReference>(&disposition.result);
+      if (!candidate || *candidate != reference ||
+          !disposition.coordinate.decision)
+        continue;
+      derivations.push_back(StructuredOwnershipDerivation{
+          disposition.coordinate.scope, *disposition.coordinate.decision});
+    }
     selected.push_back({frontend::MaterializedOwnershipCandidate{
                             std::move(*structured), std::move(*dataflow)},
                         std::move(derivations)});
   }
   return StructuredOwnershipExplorationOutcome{
       CompletedStructuredOwnershipSelection{std::move(selected),
-                                            selection.satisfiedEvidence}};
+                                            selection.satisfiedEvidence,
+                                            std::move(dispositions)}};
 }
 
 } // namespace loom::dse

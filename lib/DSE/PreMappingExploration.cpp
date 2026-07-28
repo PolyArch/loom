@@ -43,7 +43,8 @@ exploreLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
         std::move(candidate.derivations)});
   }
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
-      std::move(selected), std::move(selection.satisfiedEvidence)}};
+      std::move(selected), std::move(selection.satisfiedEvidence),
+      std::move(selection.dispositions)}};
 }
 
 } // namespace loom::dse

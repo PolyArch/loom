@@ -159,12 +159,17 @@ resolveUniqueStructuredOperation(
   auto view = candidate.view();
   if (!view)
     return view.takeError();
-  auto scopes = loom::frontend::enumerateSpatialOwnershipScopes(candidate);
-  if (!scopes)
-    return scopes.takeError();
+  auto domain = loom::frontend::enumerateSpatialOwnershipScopeDomain(candidate);
+  if (!domain)
+    return domain.takeError();
   std::vector<loom::frontend::StructuredEntityRef> callableScopes;
-  for (const loom::frontend::SpatialOwnershipScope &scope : *scopes) {
-    auto entity = view->resolve(scope.selection);
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry :
+       *domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = view->resolve(scope->selection);
     if (!entity)
       return entity.takeError();
     ::mlir::Operation *operation = entity->operation;
@@ -173,7 +178,7 @@ resolveUniqueStructuredOperation(
     auto callable = operation->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
     if (!callable || callable.getSymName() != callableSymbol)
       continue;
-    callableScopes.push_back(scope.selection);
+    callableScopes.push_back(scope->selection);
   }
   if (callableScopes.empty())
     return ::llvm::createStringError(

@@ -29,6 +29,7 @@ struct SelectedPreMappingCompilation final {
 struct CompletedPreMappingSelection final {
   std::vector<SelectedPreMappingCompilation> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
 };
 
 using PreMappingExplorationOutcome =

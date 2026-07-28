@@ -541,6 +541,38 @@ consume only the typed Evidence projections declared by the central plan; they
 do not scan an Artifact Store, choose the latest result, or accept free-form
 backend advice.
 
+### Complete Candidate Dispositions
+
+An Ownership Generate invocation enumerates one finite scope-local domain in
+canonical Structured operation order. Every defined callable considered as a
+whole-callable scope appears exactly once. A callable that cannot yet be
+materialized records one scope coordinate with no decision and a typed
+`NonFinalizable` disposition. External declarations and operations that are
+not ownership scopes are not candidate attempts. Every accepted scope then
+enumerates its typed decision domain in owner-defined canonical order.
+
+Each concrete decision records exactly one of:
+
+```text
+exact child Structured Program ArtifactRootReference
+NonFinalizable(reason)
+ExactFabricInadmissible(reason)
+```
+
+Unexpected invocation, ArtifactStore, provider, or implementation failures
+abort the invocation and cannot be relabeled as candidate rejection. Parallel
+execution may evaluate coordinates in any physical order, but the completed
+disposition sequence retains canonical domain order. Multiple coordinates may
+produce the same child identity; central candidate Evaluation deduplicates by
+ArtifactIdentity while invocation provenance retains each valid derivation.
+
+This sequence is invocation-local work accounting and the mechanical source
+for the `InvocationManifest` candidate records defined by the central DSE
+specification. It is not an Artifact, a graph-free status, or a second lineage
+authority. A completed graph-free result requires this total sequence plus an
+explicit stored-program `CandidateDecision` backed by workload-aware Evidence;
+silently skipped scopes or decisions make that conclusion incomplete.
+
 ## Ownership Materialization And Handoff
 
 The Structured Program Candidate lineage is the sole owner of schedule, loop,

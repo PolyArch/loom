@@ -167,6 +167,15 @@ Requiring one explicit decision for every Spatial ownership shape avoids an
 ambient default and lets proof-backed narrowing reject only the infeasible
 candidate rather than silently truncating source addresses.
 
+Candidate rejection must remain as observable invocation provenance. Dropping
+a whole callable because it contains an unresolved call, or dropping one
+address-width choice because narrowing cannot be proved, makes a graph-free
+result indistinguishable from an unexplored domain. One canonical disposition
+sequence preserves that evidence without creating another persistent program
+or diagnostic owner: successful coordinates reference ordinary child
+Artifacts, expected failures retain their typed compiler reason, and central
+Evaluation still deduplicates equal children by Artifact identity.
+
 The same ownership explains pointer induction. A pointer updated on every
 iteration looks like loop state in imperative SSA, but its storage authority
 does not change: only an offset from one static capability changes. This remains

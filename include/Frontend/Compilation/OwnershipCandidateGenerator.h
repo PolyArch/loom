@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 namespace loom::frontend {
@@ -88,6 +89,23 @@ struct SpatialOwnershipScope final {
   }
 };
 
+/// One definition-level ownership scope that belongs to the finite domain but
+/// cannot be materialized by the current lowering semantics. Declarations and
+/// operations that are not ownership scopes are omitted rather than recorded
+/// as rejected candidates.
+struct RejectedSpatialOwnershipScope final {
+  SpatialOwnershipScope scope;
+  std::string message;
+
+  friend bool operator==(const RejectedSpatialOwnershipScope &lhs,
+                         const RejectedSpatialOwnershipScope &rhs) {
+    return lhs.scope == rhs.scope && lhs.message == rhs.message;
+  }
+};
+
+using SpatialOwnershipScopeDomainEntry =
+    std::variant<SpatialOwnershipScope, RejectedSpatialOwnershipScope>;
+
 /// A private clone in which one exact ownership scope has had all selected
 /// semantic decisions materialized, but no execution owner has yet replaced
 /// the selected operation. The parent candidate owns the MLIRContext and must
@@ -99,12 +117,14 @@ struct PreparedSpatialOwnershipSelection final {
   std::vector<mlir::Value> liveOuts;
 };
 
-/// Enumerates every ownership scope in the parent candidate's canonical
-/// operation order. Each returned scope remains independent: callers derive
-/// and explore its decision domain separately rather than constructing one
-/// cross-scope Cartesian product.
-llvm::Expected<std::vector<SpatialOwnershipScope>>
-enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent);
+/// Enumerates the complete finite ownership scope domain in the parent
+/// candidate's canonical operation order. Expected definition-level failures
+/// remain typed entries; non-scope operations and external declarations are
+/// not candidate attempts. Each accepted scope remains independent: callers
+/// derive and explore its decision domain separately rather than constructing
+/// one cross-scope Cartesian product.
+llvm::Expected<std::vector<SpatialOwnershipScopeDomainEntry>>
+enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent);
 
 /// Derives the finite typed decision domain for one exact ownership scope.
 /// Canonical address widths come from the closed Fabric index-width schema;

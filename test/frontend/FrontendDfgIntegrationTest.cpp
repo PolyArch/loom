@@ -307,16 +307,20 @@ loom::frontend::StructuredEntityRef
 findVecaddLoop(const char *test,
                const loom::frontend::StructuredProgramCandidate &candidate) {
   auto view = take(test, candidate.view());
-  auto scopes =
-      take(test, loom::frontend::enumerateSpatialOwnershipScopes(candidate));
-  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
-    auto entity = take(test, view.resolve(scope.selection));
+  auto domain = take(
+      test, loom::frontend::enumerateSpatialOwnershipScopeDomain(candidate));
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = take(test, view.resolve(scope->selection));
     auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
     if (!loop)
       continue;
     auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == "vecadd")
-      return scope.selection;
+      return scope->selection;
   }
   fail(test, "raised vecadd has no eligible structured loop");
 }
@@ -326,16 +330,20 @@ findStructuredLoop(const char *test,
                    const loom::frontend::StructuredProgramCandidate &candidate,
                    llvm::StringRef callableName) {
   auto view = take(test, candidate.view());
-  auto scopes =
-      take(test, loom::frontend::enumerateSpatialOwnershipScopes(candidate));
-  for (const loom::frontend::SpatialOwnershipScope &scope : scopes) {
-    auto entity = take(test, view.resolve(scope.selection));
+  auto domain = take(
+      test, loom::frontend::enumerateSpatialOwnershipScopeDomain(candidate));
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = take(test, view.resolve(scope->selection));
     auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
     if (!loop)
       continue;
     auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == callableName)
-      return scope.selection;
+      return scope->selection;
   }
   fail(test, "raised Structured Program has no requested loop");
 }

@@ -80,22 +80,23 @@ std::string uniqueSymbol(mlir::ModuleOp module, llvm::StringRef prefix,
   return candidate;
 }
 
-llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
+std::optional<std::string>
+callableOwnershipRejection(mlir::LLVM::LLVMFuncOp function) {
   if (function.isExternal())
-    return invalid("selected callable has no definition");
+    return "selected callable has no definition";
   if (function.isVarArg())
-    return invalid("variadic callable ownership is not materialized");
+    return "variadic callable ownership is not materialized";
   if (!function.getBody().hasOneBlock())
-    return invalid("whole-callable ownership requires one structured block");
+    return "whole-callable ownership requires one structured block";
 
   mlir::Block &body = function.getBody().front();
   auto returnOp = llvm::dyn_cast<mlir::LLVM::ReturnOp>(body.getTerminator());
   if (!returnOp)
-    return invalid("selected callable has no direct LLVM return");
+    return "selected callable has no direct LLVM return";
   const bool returnsVoid = llvm::isa<mlir::LLVM::LLVMVoidType>(
       function.getFunctionType().getReturnType());
   if (returnOp.getNumOperands() != static_cast<unsigned>(!returnsVoid))
-    return invalid("selected callable return does not match its LLVM ABI");
+    return "selected callable return does not match its LLVM ABI";
 
   mlir::Operation *nestedCall = nullptr;
   function.getBody().walk([&](mlir::Operation *operation) {
@@ -106,7 +107,15 @@ llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
     return mlir::WalkResult::advance();
   });
   if (nestedCall)
-    return invalid("selected callable contains an unresolved nested call");
+    return "selected callable contains an unresolved nested call";
+  return std::nullopt;
+}
+
+llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
+  if (std::optional<std::string> rejection =
+          callableOwnershipRejection(function))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  *rejection);
   return llvm::Error::success();
 }
 
@@ -573,33 +582,37 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
 
 } // namespace
 
-llvm::Expected<std::vector<SpatialOwnershipScope>>
-enumerateSpatialOwnershipScopes(const StructuredProgramCandidate &parent) {
+llvm::Expected<std::vector<SpatialOwnershipScopeDomainEntry>>
+enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
   auto view = parent.view();
   if (!view)
     return view.takeError();
 
-  std::vector<SpatialOwnershipScope> scopes;
+  std::vector<SpatialOwnershipScopeDomainEntry> domain;
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     if (!entity.operation)
       continue;
     if (auto callable =
             llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(entity.operation)) {
-      if (llvm::Error rejection = verifyEligibleCallable(callable)) {
-        llvm::consumeError(std::move(rejection));
+      if (callable.isExternal())
         continue;
+      SpatialOwnershipScope scope{entity.reference};
+      if (std::optional<std::string> rejection =
+              callableOwnershipRejection(callable)) {
+        domain.push_back(
+            RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
+      } else {
+        domain.push_back(scope);
       }
-      scopes.push_back({entity.reference});
       continue;
     }
-    if (auto callable = eligibleOwningCallable(entity.operation); !callable) {
-      llvm::consumeError(callable.takeError());
+    if (analyzeOwnershipScope(entity.operation).rejection !=
+        OwnershipScopeRejection::None)
       continue;
-    }
-    scopes.push_back({entity.reference});
+    domain.push_back(SpatialOwnershipScope{entity.reference});
   }
-  return scopes;
+  return domain;
 }
 
 llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
