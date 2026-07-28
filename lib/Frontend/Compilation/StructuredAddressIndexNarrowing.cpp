@@ -317,32 +317,53 @@ std::optional<uint64_t> fixedByteSize(mlir::Operation *scope, mlir::Type type) {
   return size.getFixedValue();
 }
 
-std::optional<mlir::Type>
-pointerLaneAccessElementType(mlir::BlockArgument pointer,
-                             mlir::LLVM::GEPOp update) {
-  mlir::Type accessType;
+bool collectPointerAccessElementType(mlir::Value pointer,
+                                     mlir::Operation *ignored,
+                                     mlir::Region *region,
+                                     mlir::Type &accessType,
+                                     bool &foundAccess) {
   for (mlir::OpOperand &use : pointer.getUses()) {
-    if (use.getOwner() == update.getOperation())
+    if (use.getOwner() == ignored)
       continue;
+    if (use.getOwner()->getParentRegion() != region)
+      return false;
     mlir::Type current;
     if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(use.getOwner())) {
       if (load.getAddr() != pointer)
-        return std::nullopt;
+        return false;
       current = load.getResult().getType();
     } else if (auto store =
                    llvm::dyn_cast<mlir::LLVM::StoreOp>(use.getOwner())) {
       if (store.getAddr() != pointer)
-        return std::nullopt;
+        return false;
       current = store.getValue().getType();
     } else {
-      return std::nullopt;
+      return false;
     }
     if (!accessType)
       accessType = current;
     else if (accessType != current)
-      return std::nullopt;
+      return false;
+    foundAccess = true;
   }
-  return accessType ? std::optional<mlir::Type>(accessType) : std::nullopt;
+  return true;
+}
+
+std::optional<mlir::Type>
+pointerLaneAccessElementType(mlir::BlockArgument pointer,
+                             mlir::LLVM::GEPOp update,
+                             mlir::scf::ConditionOp condition) {
+  mlir::Type accessType;
+  bool foundAccess = false;
+  mlir::Region *region = pointer.getOwner()->getParent();
+  if (!collectPointerAccessElementType(pointer, update.getOperation(), region,
+                                       accessType, foundAccess) ||
+      !collectPointerAccessElementType(update.getResult(),
+                                       condition.getOperation(), region,
+                                       accessType, foundAccess) ||
+      !foundAccess)
+    return std::nullopt;
+  return accessType;
 }
 
 std::optional<llvm::APInt> elementStride(mlir::LLVM::GEPOp update,
@@ -395,13 +416,17 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
 
     auto update = condition.getArgs()[lane].getDefiningOp<mlir::LLVM::GEPOp>();
     if (!update || update->getParentRegion() != &loop.getBefore() ||
-        update.getBase() != before->getArgument(lane) ||
-        !update.getResult().hasOneUse() ||
-        *update.getResult().getUsers().begin() != condition.getOperation())
+        update.getBase() != before->getArgument(lane))
+      return std::nullopt;
+    unsigned feedbackUses = 0;
+    for (mlir::OpOperand &use : update.getResult().getUses())
+      if (use.getOwner() == condition.getOperation())
+        ++feedbackUses;
+    if (feedbackUses != 1)
       return std::nullopt;
     std::optional<llvm::APInt> rawStride = positiveConstantGepIndex(update);
-    std::optional<mlir::Type> accessElementType =
-        pointerLaneAccessElementType(before->getArgument(lane), update);
+    std::optional<mlir::Type> accessElementType = pointerLaneAccessElementType(
+        before->getArgument(lane), update, condition);
     if (!rawStride || !accessElementType)
       return std::nullopt;
     std::optional<llvm::APInt> stride =
@@ -487,26 +512,26 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
       }
     }
 
+    llvm::SmallVector<mlir::Value, 4> nextOffsets(arguments.size());
     llvm::SmallPtrSet<mlir::Operation *, 4> skippedUpdates;
     for (const PointerInductionLane &lane : plan.lanes) {
       mlir::LLVM::GEPOp update = lane.update;
       skippedUpdates.insert(update.getOperation());
-    }
-    for (mlir::Operation &operation :
-         loop.getBeforeBody()->without_terminator())
-      if (!skippedUpdates.contains(&operation))
-        bodyBuilder.clone(operation, mapping);
-
-    llvm::SmallVector<mlir::Value, 4> nextOffsets(arguments.size());
-    for (const PointerInductionLane &lane : plan.lanes) {
-      mlir::LLVM::GEPOp update = lane.update;
       llvm::APInt strideBits = lane.stride.zextOrTrunc(width);
       auto stride = mlir::arith::ConstantOp::create(
           bodyBuilder, update.getLoc(), offsetType,
           mlir::IntegerAttr::get(offsetType, strideBits));
       nextOffsets[lane.ordinal] = mlir::arith::AddIOp::create(
           bodyBuilder, update.getLoc(), arguments[lane.ordinal], stride);
+      mapping.map(update.getResult(),
+                  buildDerivedPointer(bodyBuilder, lane,
+                                      nextOffsets[lane.ordinal],
+                                      update.getLoc()));
     }
+    for (mlir::Operation &operation :
+         loop.getBeforeBody()->without_terminator())
+      if (!skippedUpdates.contains(&operation))
+        bodyBuilder.clone(operation, mapping);
 
     llvm::SmallVector<mlir::Value, 4> nextArguments;
     nextArguments.reserve(loop.getConditionOp().getArgs().size());
