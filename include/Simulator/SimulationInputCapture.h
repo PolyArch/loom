@@ -32,6 +32,14 @@ struct SimulationMemoryRootCapture {
   dataflow::LogicalMemoryRootRef root;
   std::uint64_t objectIndex = 0;
   std::uint64_t byteOffset = 0;
+  // True when the canonical memory actor relation can observe bytes supplied
+  // before this graph activation. Independent native replays must agree on
+  // these bytes; output-only roots may begin with different concrete storage.
+  bool requiresInitialState = true;
+  // Derived from all canonical write actors reachable from this root. A null
+  // type means the root is read-only or does not have one uniform floating
+  // lane semantics, so source-backed validation compares its bytes exactly.
+  mlir::FloatType floatingWriteLaneType;
 };
 
 /// One exact graph value-input source at an execution boundary. Fixed values

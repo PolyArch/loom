@@ -3,6 +3,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
+#include "Frontend/Raising/StructuredRaising.h"
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -12,6 +13,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -20,6 +22,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -193,6 +196,67 @@ entry:
   return module;
 }
 
+std::unique_ptr<llvm::Module> parseFmuladd(const char *test,
+                                           llvm::LLVMContext &context,
+                                           bool riscvTarget = true) {
+  constexpr llvm::StringLiteral source = R"llvm(
+declare float @llvm.fmuladd.f32(float, float, float)
+
+define void @fma_kernel(ptr %a, ptr %b, ptr %c, ptr %output) {
+entry:
+  %av = load float, ptr %a, align 4
+  %bv = load float, ptr %b, align 4
+  %cv = load float, ptr %c, align 4
+  %result = call float @llvm.fmuladd.f32(float %av, float %bv, float %cv)
+  store float %result, ptr %output, align 4
+  ret void
+}
+
+define i32 @main() {
+entry:
+  %a = alloca float, align 4
+  %b = alloca float, align 4
+  %c = alloca float, align 4
+  %output = alloca float, align 4
+  %one_plus_epsilon = bitcast i32 1065353217 to float
+  %negative_rounded_product = bitcast i32 -1082130430 to float
+  store float %one_plus_epsilon, ptr %a, align 4
+  store float %one_plus_epsilon, ptr %b, align 4
+  store float %negative_rounded_product, ptr %c, align 4
+  store float 0.000000e+00, ptr %output, align 4
+  call void @fma_kernel(ptr %a, ptr %b, ptr %c, ptr %output)
+  ret i32 0
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<fmuladd>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  if (riscvTarget) {
+    module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
+    module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
+  }
+  return module;
+}
+
+void configureHostModule(const char *test, llvm::Module &module) {
+  static const bool initializationFailed = [] {
+    return llvm::InitializeNativeTarget() ||
+           llvm::InitializeNativeTargetAsmPrinter();
+  }();
+  if (initializationFailed)
+    fail(test, "cannot initialize the native target");
+  auto target = take(test, llvm::orc::JITTargetMachineBuilder::detectHost());
+  auto layout = take(test, target.getDefaultDataLayoutForTarget());
+  module.setTargetTriple(target.getTargetTriple());
+  module.setDataLayout(layout);
+}
+
 loom::frontend::StructuredEntityRef
 findVecaddLoop(const char *test,
                const loom::frontend::StructuredProgramCandidate &candidate) {
@@ -233,18 +297,18 @@ memoryRoot(const char *test, const dataflow::CanonicalDataflowProgramView &view,
 }
 
 mlir::LLVM::CallOp
-findVecaddCall(const char *test,
-               const dataflow::CanonicalDataflowArtifact &artifact,
-               llvm::StringRef caller) {
+findHostCall(const char *test,
+             const dataflow::CanonicalDataflowArtifact &artifact,
+             llvm::StringRef caller, llvm::StringRef callee) {
   mlir::LLVM::CallOp result;
   artifact.module().walk([&](mlir::LLVM::CallOp call) {
     auto function = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (function && function.getSymName() == caller && call.getCalleeAttr() &&
-        call.getCalleeAttr().getValue() == "vecadd")
+        call.getCalleeAttr().getValue() == callee)
       result = call;
   });
   if (!result)
-    fail(test, "materialized vecadd has no requested host call site");
+    fail(test, "materialized candidate has no requested host call site");
   return result;
 }
 
@@ -305,6 +369,86 @@ applyMemoryDiff(const char *test,
   return result;
 }
 
+void selectedFmuladdShapesRemainObservable() {
+  const char *test = "selectedFmuladdShapesRemainObservable";
+  llvm::SmallString<128> directory;
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-fmuladd-oracle", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext targetContext;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseFmuladd(test, targetContext),
+                                 design.roots().front().reference(), store));
+  loom::frontend::WholeCallableSpatialOwnershipOptions ownership;
+  ownership.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
+  auto candidate = take(
+      test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                compiled.structuredProgram,
+                findCallable(test, compiled.structuredProgram, "fma_kernel"),
+                design.roots().front(), ownership));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto plan = take(test, loom::sim::deriveSimulationInputCapturePlan(
+                             view, launch,
+                             findHostCall(test, candidate.canonicalDataflow,
+                                          "main", "fma_kernel")));
+  const auto &outputBinding =
+      captureBinding(test, plan.input, memoryRoot(test, view, 3));
+  if (outputBinding.floatingWriteLaneType !=
+      mlir::Float32Type::get(candidate.canonicalDataflow.module().getContext()))
+    fail(test, "fmuladd output is not a uniform floating write root");
+
+  llvm::LLVMContext hostContext;
+  std::unique_ptr<llvm::Module> hostModule =
+      parseFmuladd(test, hostContext, false);
+  configureHostModule(test, *hostModule);
+  auto host = take(test, loom::raising::raiseLlvmModuleToStructuredProgram(
+                             std::move(hostModule)));
+  loom::frontend::SpatialOwnershipScope hostScope{
+      loom::frontend::SpatialOwnershipScopeKind::WholeCallable,
+      findCallable(test, host, "fma_kernel")};
+  auto captureShape = [&](loom::raising::FMulAddExecutionShape shape) {
+    auto prepared =
+        take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                       host, hostScope,
+                       loom::frontend::SpatialOwnershipDecisionPoint{
+                           shape, std::nullopt}));
+    auto nativeContext = std::make_unique<llvm::LLVMContext>();
+    std::unique_ptr<llvm::Module> nativeModule =
+        parseFmuladd(test, *nativeContext, false);
+    configureHostModule(test, *nativeModule);
+    return take(test,
+                loom::sim::executeStructuredDirectCallSimulationInputCapture(
+                    llvm::orc::ThreadSafeModule(std::move(nativeModule),
+                                                std::move(nativeContext)),
+                    std::move(prepared.module), plan));
+  };
+  loom::sim::NativeSimulationInputCapture fused =
+      captureShape(loom::raising::FMulAddExecutionShape::Fused);
+  loom::sim::NativeSimulationInputCapture split =
+      captureShape(loom::raising::FMulAddExecutionShape::Split);
+  if (fused.entryResult != 0 || split.entryResult != 0 ||
+      fused.calls.size() != 1 || split.calls.size() != 1 ||
+      outputBinding.objectIndex >= fused.calls.front().objects.size() ||
+      outputBinding.objectIndex >= split.calls.front().objects.size())
+    fail(test, "fmuladd native captures are malformed");
+  const auto &fusedOutput =
+      fused.calls.front().objects[outputBinding.objectIndex];
+  const auto &splitOutput =
+      split.calls.front().objects[outputBinding.objectIndex];
+  if (fusedOutput.finalBytes == splitOutput.finalBytes)
+    fail(test, "typed fmuladd decisions did not produce distinct results");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
 void sourceCandidateExecutesThroughTypedDfgInput() {
   const char *test = "sourceCandidateExecutesThroughTypedDfgInput";
   llvm::SmallString<128> directory;
@@ -336,12 +480,20 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto capturePlan = take(
-      test, loom::sim::deriveSimulationInputCapturePlan(
-                view, launch,
-                findVecaddCall(test, candidate.canonicalDataflow, "main")));
+      test,
+      loom::sim::deriveSimulationInputCapturePlan(
+          view, launch,
+          findHostCall(test, candidate.canonicalDataflow, "main", "vecadd")));
   if (capturePlan.input.objects.size() != 3 ||
       capturePlan.input.memoryRootBindings.size() != 3)
     fail(test, "vecadd capture plan did not recover three memory objects");
+  if (!captureBinding(test, capturePlan.input, memoryRoot(test, view, 0))
+           .requiresInitialState ||
+      !captureBinding(test, capturePlan.input, memoryRoot(test, view, 1))
+           .requiresInitialState ||
+      captureBinding(test, capturePlan.input, memoryRoot(test, view, 2))
+          .requiresInitialState)
+    fail(test, "vecadd capture plan has the wrong initial-state relation");
   if (capturePlan.input.valueInputs.size() != 1 ||
       capturePlan.input.valueInputs.front().fixedValue ||
       capturePlan.input.valueInputs.front().boundaryOperandOrdinal != 3)
@@ -354,6 +506,15 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
        capturePlan.input.memoryRootBindings)
     if (binding.byteOffset != 0 || binding.objectIndex >= 3)
       fail(test, "vecadd capture binding has the wrong object projection");
+  if (captureBinding(test, capturePlan.input, memoryRoot(test, view, 0))
+          .floatingWriteLaneType ||
+      captureBinding(test, capturePlan.input, memoryRoot(test, view, 1))
+          .floatingWriteLaneType ||
+      captureBinding(test, capturePlan.input, memoryRoot(test, view, 2))
+              .floatingWriteLaneType !=
+          mlir::Float32Type::get(
+              candidate.canonicalDataflow.module().getContext()))
+    fail(test, "vecadd capture plan has the wrong floating write projection");
 
   loom::sim::NativeSimulationInputCapture nativeCapture =
       take(test, loom::sim::executeNativeSimulationInputCapture(
@@ -376,11 +537,11 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     fail(test, "native oracle accepted a mismatched host allocation extent");
   llvm::consumeError(mismatchedCapture.takeError());
 
-  auto slicePlan = take(
-      test,
-      loom::sim::deriveSimulationInputCapturePlan(
-          view, launch,
-          findVecaddCall(test, candidate.canonicalDataflow, "slice_main")));
+  auto slicePlan =
+      take(test, loom::sim::deriveSimulationInputCapturePlan(
+                     view, launch,
+                     findHostCall(test, candidate.canonicalDataflow,
+                                  "slice_main", "vecadd")));
   if (slicePlan.input.valueInputs.size() != 1 ||
       !slicePlan.input.valueInputs.front().fixedValue)
     fail(test, "constant call operand did not become a fixed graph input");
@@ -648,6 +809,7 @@ void staticTableExecutesThroughTypedDfgInput() {
 } // namespace
 
 int main() {
+  selectedFmuladdShapesRemainObservable();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();
   llvm::outs() << "frontend to typed DFG integration anchor passed\n";

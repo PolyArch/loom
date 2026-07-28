@@ -23,6 +23,7 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include <cstring>
 #include <limits>
@@ -502,14 +503,33 @@ instrumentStructuredCapture(mlir::ModuleOp module,
                               std::move(valueName)};
 }
 
-llvm::Expected<llvm::orc::ThreadSafeModule>
-lowerStructuredOracleToLlvm(mlir::OwningOpRef<mlir::ModuleOp> module) {
+llvm::Error lowerStructuredOracleToLlvmDialect(mlir::ModuleOp module) {
   mlir::PassManager pipeline(module->getContext());
   pipeline.enableVerifier(true);
   pipeline.addPass(mlir::createSCFToControlFlowPass());
   pipeline.addPass(mlir::createConvertToLLVMPass());
-  if (mlir::failed(pipeline.run(*module)))
-    return invalid("instrumented Structured Program cannot lower to LLVM");
+  if (mlir::failed(pipeline.run(module)))
+    return invalid("prepared Structured Program cannot lower to LLVM");
+  return llvm::Error::success();
+}
+
+void collectReferencedGlobals(llvm::Value *value,
+                              llvm::SmallPtrSetImpl<llvm::GlobalValue *> &out) {
+  if (auto *global = llvm::dyn_cast<llvm::GlobalValue>(value)) {
+    out.insert(global);
+    return;
+  }
+  auto *constant = llvm::dyn_cast<llvm::Constant>(value);
+  if (!constant)
+    return;
+  for (llvm::Value *operand : constant->operands())
+    collectReferencedGlobals(operand, out);
+}
+
+llvm::Expected<llvm::orc::ThreadSafeModule>
+lowerStructuredOracleToLlvm(mlir::OwningOpRef<mlir::ModuleOp> module) {
+  if (llvm::Error error = lowerStructuredOracleToLlvmDialect(*module))
+    return std::move(error);
 
   auto context = std::make_unique<llvm::LLVMContext>();
   std::unique_ptr<llvm::Module> translated = mlir::translateModuleToLLVMIR(
@@ -517,6 +537,85 @@ lowerStructuredOracleToLlvm(mlir::OwningOpRef<mlir::ModuleOp> module) {
   if (!translated)
     return invalid("instrumented Structured Program cannot translate to LLVM");
   return llvm::orc::ThreadSafeModule(std::move(translated), std::move(context));
+}
+
+llvm::Error replaceCallableBody(llvm::Module &host,
+                                mlir::ModuleOp preparedModule,
+                                llvm::StringRef callableSymbol) {
+  std::unique_ptr<llvm::Module> prepared = mlir::translateModuleToLLVMIR(
+      preparedModule.getOperation(), host.getContext(),
+      "loom-selected-callable-oracle");
+  if (!prepared)
+    return invalid("prepared Structured Program cannot translate to LLVM");
+
+  llvm::Function *source = prepared->getFunction(callableSymbol);
+  llvm::Function *target = host.getFunction(callableSymbol);
+  if (!source || source->isDeclaration() || !target || target->isDeclaration())
+    return invalid("selected callable is absent from one native oracle module");
+  if (source->getFunctionType() != target->getFunctionType())
+    return invalid("selected callable changed its native ABI");
+
+  llvm::ValueToValueMapTy values;
+  values[source] = target;
+  for (auto [sourceArgument, targetArgument] :
+       llvm::zip_equal(source->args(), target->args()))
+    values[&sourceArgument] = &targetArgument;
+
+  llvm::SmallPtrSet<llvm::GlobalValue *, 16> dependencies;
+  for (llvm::BasicBlock &block : *source)
+    for (llvm::Instruction &instruction : block)
+      for (llvm::Value *operand : instruction.operands())
+        collectReferencedGlobals(operand, dependencies);
+  if (source->hasPersonalityFn())
+    collectReferencedGlobals(source->getPersonalityFn(), dependencies);
+  if (source->hasPrefixData())
+    collectReferencedGlobals(source->getPrefixData(), dependencies);
+  if (source->hasPrologueData())
+    collectReferencedGlobals(source->getPrologueData(), dependencies);
+
+  for (llvm::GlobalValue *global : dependencies) {
+    if (global == source)
+      continue;
+    if (llvm::GlobalValue *existing = host.getNamedValue(global->getName())) {
+      if (existing->getValueType() != global->getValueType())
+        return invalid("selected callable dependency changed native type: " +
+                       global->getName());
+      values[global] = existing;
+      continue;
+    }
+    auto *function = llvm::dyn_cast<llvm::Function>(global);
+    if (!function || !function->isDeclaration())
+      return invalid("selected callable introduced an unknown native global");
+    auto *declaration = llvm::Function::Create(
+        function->getFunctionType(), function->getLinkage(),
+        function->getAddressSpace(), function->getName(), &host);
+    declaration->copyAttributesFrom(function);
+    declaration->setCallingConv(function->getCallingConv());
+    values[function] = declaration;
+  }
+
+  target->deleteBody();
+  llvm::SmallVector<llvm::ReturnInst *> returns;
+  llvm::CloneFunctionInto(target, source, values,
+                          llvm::CloneFunctionChangeType::DifferentModule,
+                          returns);
+  if (llvm::verifyFunction(*target, &llvm::errs()) ||
+      llvm::verifyModule(host, &llvm::errs()))
+    return invalid("selected callable replacement does not verify");
+  return llvm::Error::success();
+}
+
+llvm::Error admitNativeHostModule(llvm::Module &module,
+                                  const llvm::orc::LLJIT &jit) {
+  if (module.getTargetTriple().empty())
+    module.setTargetTriple(jit.getTargetTriple());
+  else if (llvm::Triple(module.getTargetTriple()) != jit.getTargetTriple())
+    return invalid("native module target triple does not match this host");
+  if (module.getDataLayoutStr().empty())
+    module.setDataLayout(jit.getDataLayout());
+  else if (module.getDataLayout() != jit.getDataLayout())
+    return invalid("native module data layout does not match this host");
+  return llvm::Error::success();
 }
 
 void collectExecutionLayoutType(
@@ -749,17 +848,32 @@ executeNativeSimulationInputCapture(
       std::move(module), plan.input, entrySymbol,
       [&](llvm::Module &native,
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
-        if (native.getTargetTriple().empty())
-          native.setTargetTriple(jit.getTargetTriple());
-        else if (llvm::Triple(native.getTargetTriple()) !=
-                 jit.getTargetTriple())
-          return invalid(
-              "native module target triple does not match this host");
-        if (native.getDataLayoutStr().empty())
-          native.setDataLayout(jit.getDataLayout());
-        else if (native.getDataLayout() != jit.getDataLayout())
-          return invalid("native module data layout does not match this host");
+        if (llvm::Error error = admitNativeHostModule(native, jit))
+          return std::move(error);
         return instrumentCapture(native, plan, entrySymbol);
+      });
+}
+
+llvm::Expected<NativeSimulationInputCapture>
+executeStructuredDirectCallSimulationInputCapture(
+    llvm::orc::ThreadSafeModule hostModule,
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    const DirectCallSimulationInputCapturePlan &plan,
+    llvm::StringRef entrySymbol) {
+  if (!module)
+    return invalid("prepared Structured Program module is absent");
+  if (llvm::Error error = lowerStructuredOracleToLlvmDialect(*module))
+    return std::move(error);
+  return runNativeCapture(
+      std::move(hostModule), plan.input, entrySymbol,
+      [&](llvm::Module &target,
+          const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
+        if (llvm::Error error = admitNativeHostModule(target, jit))
+          return std::move(error);
+        if (llvm::Error error =
+                replaceCallableBody(target, *module, plan.hostCalleeSymbol))
+          return std::move(error);
+        return instrumentCapture(target, plan, entrySymbol);
       });
 }
 

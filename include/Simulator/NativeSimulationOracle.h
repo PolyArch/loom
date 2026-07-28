@@ -41,6 +41,18 @@ executeNativeSimulationInputCapture(
     const DirectCallSimulationInputCapturePlan &plan,
     llvm::StringRef entrySymbol = "main");
 
+/// Lower the selected callable from one prepared Structured Program, replace
+/// only that callable's body in the exact host LLVM module, and capture the
+/// direct call named by `plan`. Host initialization, residual work, ABI, and
+/// target properties remain owned by `hostModule`; only the selected callable
+/// receives the typed compiler decisions already materialized in `module`.
+llvm::Expected<NativeSimulationInputCapture>
+executeStructuredDirectCallSimulationInputCapture(
+    llvm::orc::ThreadSafeModule hostModule,
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    const DirectCallSimulationInputCapturePlan &plan,
+    llvm::StringRef entrySymbol = "main");
+
 /// Execute one exact prepared Structured Program clone and capture its finite
 /// graph inputs immediately before, and memory state immediately after, every
 /// dynamic execution of the selected operation. The clone must already contain

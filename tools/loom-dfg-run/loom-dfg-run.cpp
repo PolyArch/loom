@@ -5,6 +5,7 @@
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Frontend/Raising/StructuredRaising.h"
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -223,7 +224,7 @@ std::vector<mlir::LLVM::CallOp> findHostCalls(mlir::ModuleOp module,
 }
 
 loom::sim::RuntimeMemoryObject
-definedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
+capturedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
   loom::sim::RuntimeMemoryObject object;
   object.initialBytes.reserve(bytes.size());
   for (std::uint8_t byte : bytes)
@@ -244,21 +245,85 @@ findCaptureBinding(const loom::sim::SimulationInputCapturePlan &plan,
 struct ExecutionTotals {
   std::uint64_t dynamicCalls = 0;
   std::uint64_t memoryBytesCompared = 0;
+  std::uint64_t floatingVarianceBytes = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   double simulationSeconds = 0.0;
   std::map<dataflow::OperationSchemaId, std::uint64_t> operationFirings;
 };
 
+bool equalSemanticLane(const loom::sim::SemanticLane &lhs,
+                       const loom::sim::SemanticLane &rhs) {
+  return lhs.state == rhs.state &&
+         (lhs.state != loom::sim::SemanticState::Defined ||
+          lhs.bits == rhs.bits);
+}
+
+bool equalValueSequence(const loom::sim::CanonicalValueSequence &lhs,
+                        const loom::sim::CanonicalValueSequence &rhs) {
+  return lhs.tokenCount == rhs.tokenCount &&
+         lhs.lanes.size() == rhs.lanes.size() &&
+         llvm::equal(lhs.lanes, rhs.lanes, equalSemanticLane);
+}
+
+bool equalRuntimeValues(llvm::ArrayRef<loom::sim::RuntimeValueEntry> lhs,
+                        llvm::ArrayRef<loom::sim::RuntimeValueEntry> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::equal(lhs, rhs, [](const auto &left, const auto &right) {
+           return left.valueInputOrdinal == right.valueInputOrdinal &&
+                  equalValueSequence(left.value, right.value);
+         });
+}
+
+bool equalNativeCapture(const loom::sim::NativeSimulationInputCapture &lhs,
+                        const loom::sim::NativeSimulationInputCapture &rhs,
+                        bool includeFinalMemory,
+                        const loom::sim::SimulationInputCapturePlan &plan) {
+  std::vector<bool> requiresInitialState(plan.objects.size(), false);
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       plan.memoryRootBindings) {
+    if (binding.objectIndex >= requiresInitialState.size())
+      return false;
+    requiresInitialState[binding.objectIndex] =
+        requiresInitialState[binding.objectIndex] ||
+        binding.requiresInitialState;
+  }
+  if (lhs.entryResult != rhs.entryResult ||
+      lhs.calls.size() != rhs.calls.size())
+    return false;
+  for (auto [leftCall, rightCall] : llvm::zip_equal(lhs.calls, rhs.calls)) {
+    if (!equalRuntimeValues(leftCall.runtimeValues, rightCall.runtimeValues) ||
+        leftCall.objects.size() != rightCall.objects.size())
+      return false;
+    for (auto [objectOrdinal, objects] : llvm::enumerate(
+             llvm::zip_equal(leftCall.objects, rightCall.objects))) {
+      const auto &[leftObject, rightObject] = objects;
+      if (requiresInitialState[objectOrdinal] &&
+          leftObject.initialBytes != rightObject.initialBytes)
+        return false;
+      if (includeFinalMemory && leftObject.finalBytes != rightObject.finalBytes)
+        return false;
+    }
+  }
+  return true;
+}
+
 llvm::Error compareMemoryObservations(
     const loom::sim::SpatialSimulationWorkload &workload,
     const loom::sim::SpatialFunctionalObservations &observations,
     const loom::sim::SimulationInputCapturePlan &plan,
-    const loom::sim::NativeSimulationCallCapture &native,
-    ExecutionTotals &totals) {
+    const loom::sim::NativeSimulationCallCapture &selectedNative,
+    const loom::sim::NativeSimulationCallCapture *sourceNative,
+    bool allowFloatingVariance, ExecutionTotals &totals) {
   if (observations.memories.size() !=
       workload.observableContract.memories.size())
     return invalid("DFG execution returned the wrong memory observation count");
+  std::vector<std::vector<bool>> floatingCoverage;
+  floatingCoverage.reserve(selectedNative.objects.size());
+  for (const loom::sim::NativeCapturedMemoryObject &object :
+       selectedNative.objects)
+    floatingCoverage.emplace_back(object.finalBytes.size(), false);
+
   for (auto [observable, payload] : llvm::zip_equal(
            workload.observableContract.memories, observations.memories)) {
     const auto *rootOrView =
@@ -271,26 +336,73 @@ llvm::Error compareMemoryObservations(
       return invalid("native comparison requires full logical-root state");
     const loom::sim::SimulationMemoryRootCapture *binding =
         findCaptureBinding(plan, *root);
-    if (!binding || binding->objectIndex >= native.objects.size())
+    if (!binding || binding->objectIndex >= selectedNative.objects.size())
       return invalid("memory observation has no native capture binding");
     const std::vector<std::uint8_t> &expected =
-        native.objects[binding->objectIndex].finalBytes;
+        selectedNative.objects[binding->objectIndex].finalBytes;
     if (binding->byteOffset > expected.size() ||
         full->bytes.size() > expected.size() - binding->byteOffset)
       return invalid("memory observation exceeds its native captured object");
-    for (auto [ordinal, byte] : llvm::enumerate(full->bytes)) {
-      if (byte.state != loom::sim::SemanticState::Defined ||
-          byte.value != expected[binding->byteOffset + ordinal]) {
-        return invalid(llvm::formatv(
-            "DFG memory observation differs from native execution at "
-            "capture object {0}, root-relative byte {1}, object byte {2}: "
-            "state={3}, actual={4:X2}, expected={5:X2}",
-            binding->objectIndex, ordinal, binding->byteOffset + ordinal,
-            static_cast<std::uint32_t>(byte.state), byte.value,
-            expected[binding->byteOffset + ordinal]));
-      }
+    llvm::ArrayRef<std::uint8_t> expectedRoot(expected);
+    expectedRoot = expectedRoot.slice(binding->byteOffset, full->bytes.size());
+    for (auto [ordinal, actualByte] : llvm::enumerate(full->bytes)) {
+      if (actualByte.state == loom::sim::SemanticState::Defined &&
+          actualByte.value == expectedRoot[ordinal])
+        continue;
+      return invalid(llvm::formatv(
+          "DFG memory observation differs from selected-decision native "
+          "execution at "
+          "capture object {0}, root-relative byte {1}, object byte {2}: "
+          "state={3}, actual={4:X2}, expected={5:X2}",
+          binding->objectIndex, ordinal, binding->byteOffset + ordinal,
+          static_cast<std::uint32_t>(actualByte.state), actualByte.value,
+          expectedRoot[ordinal]));
+    }
+    if (binding->floatingWriteLaneType) {
+      std::vector<bool> &coverage = floatingCoverage[binding->objectIndex];
+      for (std::uint64_t ordinal = 0; ordinal < full->bytes.size(); ++ordinal)
+        coverage[binding->byteOffset + ordinal] = true;
     }
     totals.memoryBytesCompared += full->bytes.size();
+  }
+
+  if (!sourceNative)
+    return llvm::Error::success();
+  if (sourceNative->objects.size() != selectedNative.objects.size())
+    return invalid(
+        "source and selected native captures have different objects");
+  for (auto [objectOrdinal, pair] : llvm::enumerate(
+           llvm::zip_equal(sourceNative->objects, selectedNative.objects))) {
+    const auto &[sourceObject, selectedObject] = pair;
+    if (sourceObject.initialBytes.size() != sourceObject.finalBytes.size() ||
+        selectedObject.initialBytes.size() !=
+            selectedObject.finalBytes.size() ||
+        sourceObject.finalBytes.size() != selectedObject.finalBytes.size())
+      return invalid("source and selected native object extents differ");
+    for (std::uint64_t byte = 0; byte < sourceObject.finalBytes.size();
+         ++byte) {
+      if (sourceObject.finalBytes[byte] == selectedObject.finalBytes[byte])
+        continue;
+      const bool sourceChanged =
+          sourceObject.initialBytes[byte] != sourceObject.finalBytes[byte];
+      const bool selectedChanged =
+          selectedObject.initialBytes[byte] != selectedObject.finalBytes[byte];
+      // Output-only objects may start with different concrete stack bytes in
+      // two independent JIT executions. A byte unchanged by both executions
+      // is an environment difference, not a compiler semantic difference.
+      if (!sourceChanged && !selectedChanged)
+        continue;
+      if (!allowFloatingVariance)
+        return invalid(
+            "selected native execution differs without a typed floating "
+            "execution decision");
+      if (!floatingCoverage[objectOrdinal][byte])
+        return invalid(llvm::formatv(
+            "selected floating decision changed non-floating memory at "
+            "capture object {0}, byte {1}",
+            objectOrdinal, byte));
+      ++totals.floatingVarianceBytes;
+    }
   }
   return llvm::Error::success();
 }
@@ -321,7 +433,8 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
                          dataflow::RootedGraphLaunchRef launch,
                          const loom::sim::SimulationInputCapturePlan &plan,
                          const loom::sim::NativeSimulationInputCapture &capture,
-                         ExecutionTotals &totals) {
+                         const loom::sim::NativeSimulationInputCapture *source,
+                         bool allowFloatingVariance, ExecutionTotals &totals) {
   if (plan.objects.empty() || plan.memoryRootBindings.empty())
     return unsupported(
         "Spatial execution has no finite captured memory objects");
@@ -330,6 +443,9 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
   if (capture.calls.empty())
     return unsupported(
         "selected Spatial region produced no dynamic invocation");
+  if (source && !equalNativeCapture(*source, capture, false, plan))
+    return invalid(
+        "source and selected-decision native executions have different inputs");
 
   loom::sim::SpatialSimulationWorkload workload{launch};
   for (const loom::sim::SimulationValueInputCapture &value : plan.valueInputs) {
@@ -351,8 +467,7 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
   if (!finalizedWorkload)
     return finalizedWorkload.takeError();
 
-  for (const loom::sim::NativeSimulationCallCapture &dynamicCall :
-       capture.calls) {
+  for (auto [callOrdinal, dynamicCall] : llvm::enumerate(capture.calls)) {
     if (dynamicCall.objects.size() != plan.objects.size())
       return invalid("native capture object count changed during execution");
     loom::sim::SpatialSimulationRuntimeInputDraft input{
@@ -360,7 +475,7 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
     input.runtimeValues = dynamicCall.runtimeValues;
     for (const loom::sim::NativeCapturedMemoryObject &object :
          dynamicCall.objects)
-      input.memoryObjects.push_back(definedMemoryObject(object.initialBytes));
+      input.memoryObjects.push_back(capturedMemoryObject(object.initialBytes));
     for (const loom::sim::SimulationMemoryRootCapture &binding :
          plan.memoryRootBindings)
       input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
@@ -387,18 +502,67 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
       totals.operationFirings[schema] += count;
     if (llvm::Error error = compareMemoryObservations(
             finalizedWorkload->model(), execution->observations, plan,
-            dynamicCall, totals))
+            dynamicCall, source ? &source->calls[callOrdinal] : nullptr,
+            allowFloatingVariance, totals))
       return error;
     ++totals.dynamicCalls;
   }
   return llvm::Error::success();
 }
 
-llvm::Error
-executeDirectCallLaunch(const loom::frontend::PreMappingCompilation &compiled,
-                        const dataflow::CanonicalDataflowProgramView &view,
-                        dataflow::RootedGraphLaunchRef launch,
-                        ExecutionTotals &totals) {
+llvm::Expected<loom::sim::NativeSimulationInputCapture>
+executeSelectedDirectCallCapture(
+    const loom::sim::DirectCallSimulationInputCapturePlan &plan,
+    const loom::dse::StructuredOwnershipDerivation &derivation) {
+  llvm::LLVMContext context;
+  llvm::Expected<std::unique_ptr<llvm::Module>> module =
+      readModule(context, nativeModulePath);
+  if (!module)
+    return module.takeError();
+  llvm::Expected<loom::frontend::StructuredProgramCandidate> host =
+      loom::raising::raiseLlvmModuleToStructuredProgram(std::move(*module));
+  if (!host)
+    return host.takeError();
+  llvm::Expected<loom::frontend::StructuredProgramCandidateView> hostView =
+      host->view();
+  if (!hostView)
+    return hostView.takeError();
+
+  std::optional<loom::frontend::StructuredEntityRef> callable;
+  for (const loom::frontend::StructuredEntity &entity :
+       hostView->entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (!function || function.getSymName() != plan.hostCalleeSymbol)
+      continue;
+    if (callable)
+      return invalid("native module has duplicate selected callable symbols");
+    callable = entity.reference;
+  }
+  if (!callable)
+    return invalid("native module has no selected callable symbol");
+
+  llvm::Expected<loom::frontend::PreparedSpatialOwnershipSelection> prepared =
+      loom::frontend::prepareSpatialOwnershipSelection(
+          *host,
+          {loom::frontend::SpatialOwnershipScopeKind::WholeCallable, *callable},
+          derivation.decision);
+  if (!prepared)
+    return prepared.takeError();
+  llvm::Expected<llvm::orc::ThreadSafeModule> hostModule =
+      readNativeModule(nativeModulePath);
+  if (!hostModule)
+    return hostModule.takeError();
+  return loom::sim::executeStructuredDirectCallSimulationInputCapture(
+      std::move(*hostModule), std::move(prepared->module), plan);
+}
+
+llvm::Error executeDirectCallLaunch(
+    const loom::frontend::PreMappingCompilation &compiled,
+    const dataflow::CanonicalDataflowProgramView &view,
+    dataflow::RootedGraphLaunchRef launch,
+    const loom::dse::StructuredOwnershipDerivation &derivation,
+    ExecutionTotals &totals) {
   llvm::Expected<mlir::LLVM::LLVMFuncOp> callable =
       requireIsolatedCallable(view, launch);
   if (!callable)
@@ -418,13 +582,20 @@ executeDirectCallLaunch(const loom::frontend::PreMappingCompilation &compiled,
         readNativeModule(nativeModulePath);
     if (!nativeModule)
       return nativeModule.takeError();
-    llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
+    llvm::Expected<loom::sim::NativeSimulationInputCapture> sourceCapture =
         loom::sim::executeNativeSimulationInputCapture(std::move(*nativeModule),
                                                        *plan);
-    if (!capture)
-      return capture.takeError();
+    if (!sourceCapture)
+      return sourceCapture.takeError();
+    llvm::Expected<loom::sim::NativeSimulationInputCapture> selectedCapture =
+        executeSelectedDirectCallCapture(*plan, derivation);
+    if (!selectedCapture)
+      return selectedCapture.takeError();
+
     if (llvm::Error error = executeCapturedInputPlan(
-            compiled, view, launch, plan->input, *capture, totals))
+            compiled, view, launch, plan->input, *selectedCapture,
+            &*sourceCapture,
+            derivation.decision.fmuladdExecutionShape.has_value(), totals))
       return error;
   }
   return llvm::Error::success();
@@ -460,7 +631,7 @@ llvm::Error executeOperationLaunch(
   if (!capture)
     return capture.takeError();
   return executeCapturedInputPlan(compiled, view, launch, *plan, *capture,
-                                  totals);
+                                  nullptr, false, totals);
 }
 
 llvm::Error
@@ -477,7 +648,8 @@ executeLaunch(const loom::dse::SelectedPreMappingCompilation &selected,
       selected.derivations.front();
   switch (derivation.scope.kind) {
   case loom::frontend::SpatialOwnershipScopeKind::WholeCallable:
-    return executeDirectCallLaunch(selected.compilation, view, launch, totals);
+    return executeDirectCallLaunch(selected.compilation, view, launch,
+                                   derivation, totals);
   case loom::frontend::SpatialOwnershipScopeKind::Operation:
     return executeOperationLaunch(selected.compilation, view, launch,
                                   derivation, store, totals);
@@ -504,6 +676,9 @@ llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
   root["actors"] = actorCount;
   root["dynamic_calls"] = totals.dynamicCalls;
   root["memory_bytes_compared"] = totals.memoryBytesCompared;
+  root["floating_variance_bytes"] = totals.floatingVarianceBytes;
+  root["floating_variance_kind"] =
+      totals.floatingVarianceBytes == 0 ? "none" : "selected_decision_replay";
   root["wavefront_steps"] = totals.wavefrontSteps;
   root["event_count"] = totals.eventCount;
   root["simulation_seconds"] = totals.simulationSeconds;

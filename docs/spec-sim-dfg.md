@@ -87,6 +87,14 @@ graph ABI order. Memory roots are projected onto finite byte-addressed backing
 objects, and roots that share one object ordinal preserve aliasing. Unknown
 extent, stream input capture, ambiguous ownership lineage, or an unsafe native
 execution target is typed `Unsupported`, not repaired with fabricated input.
+The canonical memory-actor relation also determines whether independent
+native replays must agree on an imported object's pre-activation bytes. If any
+aliasing root loads, performs RMW, or otherwise may read initial state, those
+bytes are part of the replay input and must agree. Output-only roots may have
+different concrete storage before independent executions; unchanged bytes in
+those objects are not compiler-output differences. Each captured execution
+still supplies one complete concrete Defined runtime memory object to DFG-sim.
+Unknown capability consumers conservatively require initial-state agreement.
 
 An operation-owned oracle executes only when the target triple equals the host
 JIT triple and every root execution-layout property, used pointer address
@@ -94,6 +102,22 @@ space, used type layout, and used struct element offset is equal. Equivalent
 DataLayout spellings are accepted through their effective projections; a real
 layout difference fails closed. Residual host work executes as host work and
 is never inserted into the Canonical Dataflow graph.
+
+Source-backed functional validation replays the exact selected typed semantic
+decision in an independently lowered native execution. DFG-sim observations
+must match that selected-decision execution bit for bit. A numeric tolerance is
+not a correctness authority.
+
+The unmodified source execution may differ from the selected execution only
+when the selected lineage contains an explicit typed floating-point decision,
+while observable call inputs and every changed byte outside uniformly floating
+canonical write relations remain exact. `llvm.intr.fmuladd` permits its fused
+or split execution shape independently at each occurrence, so one source
+execution is not required to equal an artificial all-fused or all-split replay
+of the complete callable. The selected callable itself remains one exact typed
+member and is the native oracle for DFG-sim. Allowed differing bytes are
+reported as selected floating-decision variance; integer, address, input, and
+non-floating memory differences fail closed.
 
 ## Execution Semantics
 

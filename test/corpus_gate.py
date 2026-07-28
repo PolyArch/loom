@@ -157,6 +157,7 @@ class DfgSimulationMetrics:
     actors: int
     dynamic_calls: int
     memory_bytes_compared: int
+    floating_variance_bytes: int
     wavefront_steps: int
     event_count: int
     simulation_seconds: float
@@ -164,7 +165,7 @@ class DfgSimulationMetrics:
 
     @staticmethod
     def zero() -> "DfgSimulationMetrics":
-        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0.0, {})
+        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0, 0.0, {})
 
     @property
     def wavefront_steps_per_second(self) -> float:
@@ -183,6 +184,9 @@ class DfgSimulationMetrics:
             memory_bytes_compared=(
                 self.memory_bytes_compared + other.memory_bytes_compared
             ),
+            floating_variance_bytes=(
+                self.floating_variance_bytes + other.floating_variance_bytes
+            ),
             wavefront_steps=self.wavefront_steps + other.wavefront_steps,
             event_count=self.event_count + other.event_count,
             simulation_seconds=self.simulation_seconds + other.simulation_seconds,
@@ -193,6 +197,12 @@ class DfgSimulationMetrics:
         return {
             "dynamic_calls": self.dynamic_calls,
             "event_count": self.event_count,
+            "floating_variance_bytes": self.floating_variance_bytes,
+            "floating_variance_kind": (
+                "selected_decision_replay"
+                if self.floating_variance_bytes
+                else "none"
+            ),
             "memory_bytes_compared": self.memory_bytes_compared,
             "operation_firings": dict(sorted(self.operation_firings.items())),
             "simulation_seconds": self.simulation_seconds,
@@ -588,6 +598,8 @@ def parse_dfg_simulation_report(
         "actors",
         "dynamic_calls",
         "event_count",
+        "floating_variance_bytes",
+        "floating_variance_kind",
         "graphs",
         "kind",
         "memory_bytes_compared",
@@ -621,6 +633,20 @@ def parse_dfg_simulation_report(
                 f"{field} must be a positive integer: {path}"
             )
         integers[field] = value
+
+    variance_bytes = payload["floating_variance_bytes"]
+    variance_kind = payload["floating_variance_kind"]
+    if (
+        isinstance(variance_bytes, bool)
+        or not isinstance(variance_bytes, int)
+        or variance_bytes < 0
+    ):
+        return None, f"DFG simulation report has invalid floating variance: {path}"
+    expected_variance_kind = (
+        "selected_decision_replay" if variance_bytes else "none"
+    )
+    if variance_kind != expected_variance_kind:
+        return None, f"DFG simulation report has inconsistent floating variance: {path}"
 
     seconds = payload["simulation_seconds"]
     rate = payload["wavefront_steps_per_second"]
@@ -665,6 +691,7 @@ def parse_dfg_simulation_report(
             actors=integers["actors"],
             dynamic_calls=integers["dynamic_calls"],
             memory_bytes_compared=integers["memory_bytes_compared"],
+            floating_variance_bytes=variance_bytes,
             wavefront_steps=integers["wavefront_steps"],
             event_count=integers["event_count"],
             simulation_seconds=float(seconds),

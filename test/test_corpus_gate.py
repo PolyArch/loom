@@ -47,6 +47,8 @@ VALID_DFG_REPORT = json.dumps(
         "actors": 3,
         "dynamic_calls": 1,
         "event_count": 11,
+        "floating_variance_bytes": 0,
+        "floating_variance_kind": "none",
         "graphs": 1,
         "kind": "source_backed_dfg_comparison",
         "memory_bytes_compared": 64,

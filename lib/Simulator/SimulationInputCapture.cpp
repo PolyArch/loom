@@ -2,8 +2,10 @@
 
 #include "SimulationWireInternal.h"
 
+#include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/APFloat.h"
@@ -24,6 +26,154 @@ llvm::Error unsupported(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::not_supported),
       llvm::Twine("simulation_input_capture_unsupported: ") + message);
+}
+
+mlir::FloatType floatingLaneType(mlir::Type elementType) {
+  if (auto floating = llvm::dyn_cast<mlir::FloatType>(elementType))
+    return floating;
+  if (auto vector = llvm::dyn_cast<mlir::VectorType>(elementType))
+    return llvm::dyn_cast<mlir::FloatType>(vector.getElementType());
+  return {};
+}
+
+struct FloatingWriteProjection {
+  mlir::FloatType laneType;
+  bool sawWrite = false;
+  bool conflict = false;
+};
+
+void recordFloatingWrite(mlir::Value memory,
+                         FloatingWriteProjection &projection) {
+  projection.sawWrite = true;
+  auto memoryType = llvm::dyn_cast<mlir::MemRefType>(memory.getType());
+  mlir::FloatType laneType = memoryType
+                                 ? floatingLaneType(memoryType.getElementType())
+                                 : mlir::FloatType{};
+  if (!laneType || (projection.laneType && projection.laneType != laneType)) {
+    projection.conflict = true;
+    return;
+  }
+  projection.laneType = laneType;
+}
+
+void collectFloatingWrites(mlir::Value memory,
+                           llvm::DenseSet<mlir::Value> &visited,
+                           FloatingWriteProjection &projection) {
+  if (!visited.insert(memory).second)
+    return;
+  for (mlir::OpOperand &use : memory.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (auto store = llvm::dyn_cast<dataflow::StoreOp>(owner)) {
+      if (store.getMem() == memory)
+        recordFloatingWrite(memory, projection);
+      continue;
+    }
+    if (auto atomic = llvm::dyn_cast<dataflow::AtomicRmwOp>(owner)) {
+      if (atomic.getMem() == memory)
+        recordFloatingWrite(memory, projection);
+      continue;
+    }
+    if (auto cmpxchg = llvm::dyn_cast<dataflow::CmpXchgOp>(owner)) {
+      if (cmpxchg.getMem() == memory)
+        recordFloatingWrite(memory, projection);
+      continue;
+    }
+    if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(owner)) {
+      if (cast.getSource() == memory)
+        collectFloatingWrites(cast.getResult(), visited, projection);
+      continue;
+    }
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(owner)) {
+      if (cast.getInputs().size() == 1 && cast.getResults().size() == 1 &&
+          cast.getInputs().front() == memory)
+        collectFloatingWrites(cast.getResults().front(), visited, projection);
+    }
+  }
+}
+
+mlir::FloatType
+uniformFloatingWriteLaneType(detail::ResolvedLaunchContext &context,
+                             dataflow::LogicalMemoryRootRef root) {
+  FloatingWriteProjection projection;
+  llvm::DenseSet<mlir::Value> visited;
+  const unsigned firstMemory = 1 +
+                               static_cast<unsigned>(context.numValueInputs) +
+                               static_cast<unsigned>(context.numStreamInputs);
+  mlir::Block &entry = context.graphOp.getBody().front();
+  for (auto [ordinal, candidate] : llvm::enumerate(context.memoryInputRoots)) {
+    if (!candidate || *candidate != root)
+      continue;
+    collectFloatingWrites(entry.getArgument(firstMemory + ordinal), visited,
+                          projection);
+  }
+  if (!projection.sawWrite || projection.conflict)
+    return {};
+  return projection.laneType;
+}
+
+void collectInitialStateReads(mlir::Value memory,
+                              llvm::DenseSet<mlir::Value> &visited,
+                              bool &requiresInitialState) {
+  if (requiresInitialState || !visited.insert(memory).second)
+    return;
+  for (mlir::OpOperand &use : memory.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (auto load = llvm::dyn_cast<dataflow::LoadOp>(owner)) {
+      if (load.getMem() == memory)
+        requiresInitialState = true;
+      continue;
+    }
+    if (auto atomic = llvm::dyn_cast<dataflow::AtomicRmwOp>(owner)) {
+      if (atomic.getMem() == memory)
+        requiresInitialState = true;
+      continue;
+    }
+    if (auto cmpxchg = llvm::dyn_cast<dataflow::CmpXchgOp>(owner)) {
+      if (cmpxchg.getMem() == memory)
+        requiresInitialState = true;
+      continue;
+    }
+    if (auto store = llvm::dyn_cast<dataflow::StoreOp>(owner)) {
+      if (store.getMem() == memory)
+        continue;
+    }
+    if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(owner)) {
+      if (cast.getSource() == memory) {
+        collectInitialStateReads(cast.getResult(), visited,
+                                 requiresInitialState);
+        continue;
+      }
+    }
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(owner)) {
+      if (cast.getInputs().size() == 1 && cast.getResults().size() == 1 &&
+          cast.getInputs().front() == memory) {
+        collectInitialStateReads(cast.getResults().front(), visited,
+                                 requiresInitialState);
+        continue;
+      }
+    }
+    // Unknown capability consumers may observe pre-activation state. The
+    // source-backed projection remains conservative rather than inventing a
+    // write-only proof.
+    requiresInitialState = true;
+  }
+}
+
+bool memoryRequiresInitialState(detail::ResolvedLaunchContext &context,
+                                dataflow::LogicalMemoryRootRef root) {
+  bool requiresInitialState = false;
+  llvm::DenseSet<mlir::Value> visited;
+  const unsigned firstMemory = 1 +
+                               static_cast<unsigned>(context.numValueInputs) +
+                               static_cast<unsigned>(context.numStreamInputs);
+  mlir::Block &entry = context.graphOp.getBody().front();
+  for (auto [ordinal, candidate] : llvm::enumerate(context.memoryInputRoots)) {
+    if (!candidate || *candidate != root)
+      continue;
+    collectInitialStateReads(entry.getArgument(firstMemory + ordinal), visited,
+                             requiresInitialState);
+  }
+  return requiresInitialState;
 }
 
 std::optional<std::uint64_t> constantUnsigned(mlir::Value value) {
@@ -485,8 +635,10 @@ deriveSimulationInputCapturePlan(
       return invalid("one host allocation resolved to inconsistent extents");
     if (object->byteOffset >= object->byteCount)
       return invalid("logical root offset is outside its host allocation");
-    plan.input.memoryRootBindings.push_back(
-        SimulationMemoryRootCapture{root, objectIndex, object->byteOffset});
+    plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
+        root, objectIndex, object->byteOffset,
+        memoryRequiresInitialState(*context, root),
+        uniformFloatingWriteLaneType(*context, root)});
   }
   return plan;
 }
@@ -543,8 +695,10 @@ deriveOperationSimulationInputCapturePlan(
     } else if (plan.objects[objectIndex].byteCount != object->byteCount) {
       return invalid("one source allocation resolved to inconsistent extents");
     }
-    plan.memoryRootBindings.push_back(
-        SimulationMemoryRootCapture{root, objectIndex, object->byteOffset});
+    plan.memoryRootBindings.push_back(SimulationMemoryRootCapture{
+        root, objectIndex, object->byteOffset,
+        memoryRequiresInitialState(*context, root),
+        uniformFloatingWriteLaneType(*context, root)});
   }
   return plan;
 }
