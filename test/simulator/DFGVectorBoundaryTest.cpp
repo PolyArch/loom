@@ -309,6 +309,8 @@ template <typename T> T takeExpected(llvm::Expected<T> value) {
 template <typename Op>
 bool fireAdmittedActorOperation(Op op, SimulatorState &state) {
   mlir::Operation *operation = op.getOperation();
+  for (mlir::Value result : operation->getResults())
+    state.observedValues.insert(result);
   if (!state.actorProjections.contains(operation)) {
     auto projection =
         dataflow::projectRegisteredActorSchemaProjection(operation);
@@ -363,11 +365,13 @@ void flushPending(SimulatorState &state) {
     }
   }
   state.pendingChannels.clear();
+  state.pendingChannelKeys.clear();
   for (auto &entry : state.pendingObservedOutputs) {
     auto &target = state.observedOutputs[entry.first];
     target.append(entry.second.begin(), entry.second.end());
   }
   state.pendingObservedOutputs.clear();
+  state.pendingObservedValues.clear();
 }
 
 void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {

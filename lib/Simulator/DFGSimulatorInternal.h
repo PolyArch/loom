@@ -461,10 +461,24 @@ enum class RunFailure {
 struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, dataflow::CanonicalActorSchemaProjection>
       actorProjections;
+  // Dense canonical actor order and the candidates whose readiness may have
+  // changed for the next wave. This is a derived execution cache: token
+  // arrival schedules only the consuming actor, while a firing schedules
+  // itself in case another transition is already buffered. The bitset keeps
+  // equal-wave evaluation in structural order without rescanning the graph.
+  llvm::SmallVector<mlir::Operation *> actorOperations;
+  llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
+  llvm::SmallBitVector nextActorCandidates;
   ChannelMap channels;
   ChannelMap pendingChannels;
+  llvm::SmallVector<const mlir::OpOperand *, 16> pendingChannelKeys;
+  // Values whose complete publication sequence is an explicit graph
+  // observation. Internal SSA token history is represented by the edge
+  // queues alone and is not retained as an implicit trace.
+  llvm::DenseSet<mlir::Value> observedValues;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
+  llvm::SmallVector<mlir::Value, 8> pendingObservedValues;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
   llvm::DenseMap<mlir::Value, MemoryView> memoryViews;
   llvm::DenseMap<mlir::Value, std::uint64_t> memoryRootIds;
@@ -611,6 +625,7 @@ void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
                                   bool retire);
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
+void scheduleActor(SimulatorState &state, mlir::Operation *actor);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);
 Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);

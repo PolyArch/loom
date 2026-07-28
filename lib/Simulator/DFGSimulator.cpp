@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -151,6 +152,12 @@ bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return it != channels.end() && !it->second.empty();
 }
 
+void scheduleActor(SimulatorState &state, mlir::Operation *actor) {
+  auto ordinal = state.actorOrdinals.find(actor);
+  if (ordinal != state.actorOrdinals.end())
+    state.nextActorCandidates.set(ordinal->second);
+}
+
 Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
   auto &queue = state.channels[&operand];
   Token token = queue.front();
@@ -168,9 +175,18 @@ Token peekToken(ChannelMap &channels, mlir::OpOperand &operand) {
 
 static void publishToken(SimulatorState &state, mlir::Value value,
                          const Token &token) {
-  for (mlir::OpOperand &use : value.getUses())
-    state.pendingChannels[&use].push_back(token);
-  state.pendingObservedOutputs[value].push_back(token);
+  for (mlir::OpOperand &use : value.getUses()) {
+    auto &pending = state.pendingChannels[&use];
+    if (pending.empty())
+      state.pendingChannelKeys.push_back(&use);
+    pending.push_back(token);
+  }
+  if (state.observedValues.contains(value)) {
+    auto &pending = state.pendingObservedOutputs[value];
+    if (pending.empty())
+      state.pendingObservedValues.push_back(value);
+    pending.push_back(token);
+  }
   ++state.actorMutationEpoch;
 }
 
@@ -204,25 +220,28 @@ bool recordActorEvent(SimulatorState &state, mlir::Operation *op) {
 }
 
 static void flushPendingTokens(SimulatorState &state) {
-  for (auto &entry : state.pendingChannels) {
-    if (!entry.second.empty()) {
-      mlir::Operation *owner = entry.first->getOwner();
-      auto ordinal = state.plainMemoryOperationOrder.find(owner);
-      if (ordinal != state.plainMemoryOperationOrder.end())
-        state.plainMemoryCandidates.try_emplace(ordinal->second, owner);
-    }
-    auto &target = state.channels[entry.first];
-    while (!entry.second.empty()) {
-      target.push_back(entry.second.front());
-      entry.second.pop_front();
+  for (const mlir::OpOperand *operand : state.pendingChannelKeys) {
+    auto &pending = state.pendingChannels[operand];
+    mlir::Operation *owner = operand->getOwner();
+    scheduleActor(state, owner);
+    auto ordinal = state.plainMemoryOperationOrder.find(owner);
+    if (ordinal != state.plainMemoryOperationOrder.end())
+      state.plainMemoryCandidates.try_emplace(ordinal->second, owner);
+    auto &target = state.channels[operand];
+    while (!pending.empty()) {
+      target.push_back(std::move(pending.front()));
+      pending.pop_front();
     }
   }
-  state.pendingChannels.clear();
-  for (auto &entry : state.pendingObservedOutputs) {
-    auto &target = state.observedOutputs[entry.first];
-    target.append(entry.second.begin(), entry.second.end());
+  state.pendingChannelKeys.clear();
+  for (mlir::Value value : state.pendingObservedValues) {
+    auto &pending = state.pendingObservedOutputs[value];
+    auto &target = state.observedOutputs[value];
+    target.append(std::make_move_iterator(pending.begin()),
+                  std::make_move_iterator(pending.end()));
+    pending.clear();
   }
-  state.pendingObservedOutputs.clear();
+  state.pendingObservedValues.clear();
 }
 
 std::int64_t integerToken(const Token &token) {
@@ -785,6 +804,12 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   SimulatorState state;
   state.graphScope = graph.getOperation();
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
+  state.observedValues.insert(returnObservation.complete.begin(),
+                              returnObservation.complete.end());
+  state.observedValues.insert(returnObservation.values.begin(),
+                              returnObservation.values.end());
+  state.observedValues.insert(returnObservation.streams.begin(),
+                              returnObservation.streams.end());
   seedBlockArgument(state, graph.getStart(), noneToken());
 
   if (typedWorkload) {
@@ -909,6 +934,9 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
       continue;
     }
     state.actorProjections.try_emplace(&op, std::move(*projection));
+    state.actorOrdinals.try_emplace(
+        &op, static_cast<unsigned>(state.actorOperations.size()));
+    state.actorOperations.push_back(&op);
     ++operationOrdinal;
   }
   if (!unsupported.empty()) {
@@ -921,6 +949,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     }
     return report;
   }
+  state.nextActorCandidates.resize(state.actorOperations.size(), true);
 
   auto outputCount = [&](mlir::Value value) -> size_t {
     auto it = state.observedOutputs.find(value);
@@ -1018,15 +1047,20 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   };
   observeRetirement();
 
+  llvm::SmallBitVector candidates(state.actorOperations.size(), false);
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
     if (!admitReadyPlainMemoryActions(state))
       break;
+    candidates.swap(state.nextActorCandidates);
+    state.nextActorCandidates.reset();
     bool fired = false;
-    for (mlir::Operation &op : entry.getOperations()) {
-      if (isSupportedNonEvent(&op))
-        continue;
-      FireOutcome outcome = fireOperation(&op, state);
+    for (int ordinal = candidates.find_first(); ordinal >= 0;
+         ordinal = candidates.find_next(ordinal)) {
+      mlir::Operation *op = state.actorOperations[ordinal];
+      FireOutcome outcome = fireOperation(op, state);
+      if (outcome == FireOutcome::Fired)
+        scheduleActor(state, op);
       // The run has already failed at runtime, so it leaves the wave here,
       // before any later actor observes or mutates state and before this wave
       // publishes anything. The retained failure overrides the lifecycle
@@ -1037,11 +1071,12 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
         break;
       if (retired && outcome != FireOutcome::NotReady) {
         report.status = "invalid";
-        report.diagnostics.push_back(("actor '" + op.getName().getStringRef() +
-                                      (outcome == FireOutcome::Fired
-                                           ? "' fired after graph retirement"
-                                           : "' failed after graph retirement"))
-                                         .str());
+        report.diagnostics.push_back(
+            ("actor '" + op->getName().getStringRef() +
+             (outcome == FireOutcome::Fired
+                  ? "' fired after graph retirement"
+                  : "' failed after graph retirement"))
+                .str());
         break;
       }
       fired |= outcome == FireOutcome::Fired;
