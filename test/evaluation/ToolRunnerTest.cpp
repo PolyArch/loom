@@ -471,19 +471,43 @@ void streamsExitAndLaunchFailureAreDistinct() {
 }
 
 void continuousOutputCannotStarveControlOrOtherStreams() {
-  TemporaryDirectory scratch;
-  ToolInvocation invocation =
-      baseInvocation(scratch.path(), "--continuous-output");
-  invocation.timeout = std::chrono::milliseconds(150);
+  TemporaryDirectory timeoutScratch;
+  ToolInvocation timeout =
+      baseInvocation(timeoutScratch.path(), "--continuous-output");
+  timeout.timeout = std::chrono::milliseconds(150);
 
   const auto started = std::chrono::steady_clock::now();
-  ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
+  ToolRunOutcome outcome = takeExpected(__func__, runTool(timeout));
   const auto elapsed = std::chrono::steady_clock::now() - started;
 
-  require(__func__, outcome.status == ToolRunStatus::TimedOut,
-          "continuous stdout starved timeout delivery");
+  if (outcome.status != ToolRunStatus::TimedOut) {
+    std::ostringstream message;
+    message << "continuous stdout starved timeout delivery: status="
+            << static_cast<int>(outcome.status);
+    if (outcome.terminationSignal)
+      message << " signal=" << *outcome.terminationSignal;
+    if (outcome.infrastructureDiagnostic)
+      message << " infrastructure=" << *outcome.infrastructureDiagnostic;
+    fail(__func__, message.str());
+  }
   require(__func__, elapsed < std::chrono::seconds(2),
           "continuous stdout prevented bounded return");
+
+  TemporaryDirectory captureScratch;
+  ToolInvocation capture =
+      baseInvocation(captureScratch.path(), "--continuous-output");
+  const std::filesystem::path ready = captureScratch.path() / "ready.txt";
+  capture.cancellationRequested = [ready] {
+    return std::filesystem::exists(ready);
+  };
+  capture.timeout = std::chrono::seconds(2);
+  outcome = takeExpected(__func__, runTool(capture));
+
+  require(__func__, outcome.status == ToolRunStatus::Cancelled,
+          "continuous stdout starved ready-driven cancellation");
+  require(__func__,
+          llvm::StringRef(outcome.standardOutput).contains("stdout-marker"),
+          "continuous output lost the stdout marker");
   require(__func__,
           llvm::StringRef(outcome.standardError).contains("stderr-marker"),
           "continuous stdout starved stderr capture");
@@ -1301,14 +1325,17 @@ int runChild(int argc, char **argv) {
   if (mode == "--exit-zero")
     return 0;
   if (mode == "--continuous-output") {
-    const char marker[] = "stderr-marker\n";
-    if (::write(STDERR_FILENO, marker, sizeof(marker) - 1) < 0)
+    const char outputMarker[] = "stdout-marker\n";
+    const char errorMarker[] = "stderr-marker\n";
+    if (::write(STDOUT_FILENO, outputMarker, sizeof(outputMarker) - 1) < 0 ||
+        ::write(STDERR_FILENO, errorMarker, sizeof(errorMarker) - 1) < 0)
       return 89;
     const pid_t writer = ::fork();
     if (writer < 0)
       return 88;
     if (writer == 0)
       writeForever(STDOUT_FILENO);
+    writeFile("./ready.txt", "ready\n");
     for (;;)
       ::pause();
   }
