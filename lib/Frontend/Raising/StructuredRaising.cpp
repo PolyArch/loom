@@ -47,7 +47,7 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
   mlir::registerAllDialects(registry);
   mlir::registerAllFromLLVMIRTranslations(registry);
 
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.allowUnregisteredDialects(options.allowUnregisteredDialects);
   context.loadAllAvailableDialects();
   context.loadDialect<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,

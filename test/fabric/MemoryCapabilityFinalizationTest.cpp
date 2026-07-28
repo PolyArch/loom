@@ -172,7 +172,8 @@ emptyConnectivityAttr(mlir::MLIRContext &context) {
 int main() {
   mlir::DialectRegistry registry;
   registry.insert<FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   if (llvm::Error error = validateMemoryCapabilityFinalization({}, {}))

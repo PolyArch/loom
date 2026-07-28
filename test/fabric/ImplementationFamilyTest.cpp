@@ -714,7 +714,7 @@ int main() {
   DialectRegistry registry;
   registry.insert<arith::ArithDialect, LLVM::LLVMDialect, ub::UBDialect,
                   dataflow::DataflowDialect>();
-  MLIRContext context(registry);
+  MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   bool ok = true;

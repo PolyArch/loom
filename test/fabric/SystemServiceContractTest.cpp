@@ -402,7 +402,8 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
 int main() {
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   checkCapabilityCatalog(context);
   checkOwnerAndTransform(context);
   return EXIT_SUCCESS;

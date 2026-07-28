@@ -63,7 +63,7 @@ static FailureOr<std::string> elaborate(MLIRContext &context,
 }
 
 int main() {
-  MLIRContext context;
+  MLIRContext context(MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<fabric::FabricDialect>();
 
   FailureOr<std::string> forward = elaborate(context, false);

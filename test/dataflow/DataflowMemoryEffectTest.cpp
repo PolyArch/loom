@@ -208,7 +208,8 @@ bool checkActor(mlir::Operation *actor, const Expectation &expectation) {
 int main() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =

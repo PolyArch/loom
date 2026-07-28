@@ -484,7 +484,8 @@ int main() {
   mlir::DialectRegistry registry;
   registry.insert<DataflowDialect, FabricDialect, mlir::DLTIDialect,
                   mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(fixture, &context);

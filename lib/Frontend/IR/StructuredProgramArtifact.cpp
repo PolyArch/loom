@@ -543,7 +543,8 @@ llvm::Expected<ParsedModule> parseBytecode(ArrayRef<std::uint8_t> bytes) {
   DialectRegistry registry;
   registerAllDialects(registry);
   registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
-  auto context = std::make_unique<MLIRContext>(registry);
+  auto context =
+      std::make_unique<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
   context->loadAllAvailableDialects();
   StringRef text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   llvm::MemoryBufferRef buffer(text, "<canonical-structured-program>");

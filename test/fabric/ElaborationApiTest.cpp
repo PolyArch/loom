@@ -125,7 +125,7 @@ static bool verifyFailureAtomicity(MLIRContext &context) {
 }
 
 int main() {
-  MLIRContext context;
+  MLIRContext context(MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<fabric::FabricDialect>();
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(input, &context);
   OwningOpRef<ModuleOp> passModule =

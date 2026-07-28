@@ -130,7 +130,7 @@ void checkCompareExchangePairCorrelation(mlir::MLIRContext &context) {
 } // namespace
 
 int main() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   checkLoadStoreReductionAndCodec(context);
   checkCompareExchangePairCorrelation(context);
   return EXIT_SUCCESS;

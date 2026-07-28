@@ -86,7 +86,8 @@ int main(int argc, char **argv) {
   ::mlir::registerAllDialects(registry);
   registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
 
-  ::mlir::MLIRContext context(registry);
+  ::mlir::MLIRContext context(registry,
+                              ::mlir::MLIRContext::Threading::DISABLED);
   context.allowUnregisteredDialects(allowUnregisteredDialects);
   context.loadAllAvailableDialects();
   context

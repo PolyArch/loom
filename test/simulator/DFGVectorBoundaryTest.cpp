@@ -290,7 +290,7 @@ void actorTransitionDescriptorContract() {
 // narrowed into a legal one. The exact width is named in the diagnostic and no
 // value of that width is ever built, so the check stays arithmetic.
 void tokenWidthNarrowsAtTokenBoundary() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type wide =
       mlir::VectorType::get({257}, mlir::IntegerType::get(&context, 16777215));
   llvm::Expected<unsigned> width = tokenTypeBitWidth(wide);
@@ -817,7 +817,8 @@ int main() {
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(fixture, &context);

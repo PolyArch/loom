@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::ub::UBDialect>();
 
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.allowUnregisteredDialects();
   context.loadAllAvailableDialects();
 

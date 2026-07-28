@@ -83,7 +83,7 @@ bool sameFabricKind(mlir::Type left, mlir::Type right) {
 } // namespace
 
 detail::DesignState::DesignState(const loom::ArtifactStore &store)
-    : store(store) {
+    : context(mlir::MLIRContext::Threading::DISABLED), store(store) {
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
   context.appendDialectRegistry(registry);

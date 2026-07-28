@@ -584,7 +584,7 @@ void exactFabricAndWholeProgramDataflow() {
                                store, loom::adg::BuiltinTargetPreset::Small));
   if (design.roots().size() != 1)
     fail(test, "builtin target did not publish one System Fabric root");
-  mlir::MLIRContext actorContext;
+  mlir::MLIRContext actorContext(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i32 = mlir::IntegerType::get(&actorContext, 32);
   dataflow::CanonicalActorSchemaProjection add{
       dataflow::OperationSchemaId::ArithAddI,

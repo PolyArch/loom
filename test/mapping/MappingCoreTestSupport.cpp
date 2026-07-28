@@ -111,7 +111,8 @@ void expectMapError(const char *test, const TestCase &testCase,
 namespace {
 
 ::mlir::MLIRContext &testContext() {
-  static ::mlir::MLIRContext context;
+  static ::mlir::MLIRContext context(
+      ::mlir::MLIRContext::Threading::DISABLED);
   return context;
 }
 

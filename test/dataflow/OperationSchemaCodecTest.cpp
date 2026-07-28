@@ -631,7 +631,7 @@ bool checkProjectionCodec(MLIRContext &context) {
 int main() {
   DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, LLVM::LLVMDialect>();
-  MLIRContext context(registry);
+  MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   bool ok = true;

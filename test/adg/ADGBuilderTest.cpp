@@ -766,7 +766,8 @@ void typedMemoryFormsFinalize() {
 
   const PortType tagged0 = take(test, PortType::taggedBits(0, 4));
   const PortType tagged32 = take(test, PortType::taggedBits(32, 4));
-  mlir::MLIRContext localContractContext;
+  mlir::MLIRContext localContractContext(
+      mlir::MLIRContext::Threading::DISABLED);
   auto temporal = take(test, design.createSpatialCore("temporal-local-memory",
                                                       {tagged32, tagged0},
                                                       {tagged32, tagged0}));
@@ -1334,7 +1335,7 @@ void resolvedCapabilityPreservesTypedVectorGeometry() {
           !typedCapability.elementFormats.contains(::fabric::FloatFormat::F64),
       "custom vector FU changed its typed floating format domain");
 
-  mlir::MLIRContext actorContext;
+  mlir::MLIRContext actorContext(mlir::MLIRContext::Threading::DISABLED);
   auto vectorActor = [&](mlir::Type elementType, std::int64_t lanes) {
     mlir::Type vector = mlir::VectorType::get({lanes}, elementType);
     require(test,
@@ -1376,7 +1377,7 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
                      system.roots().front().directDependencies().front().root,
                      store));
 
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   const auto actor = ::dataflow::CanonicalActorSchemaProjection{
       ::dataflow::OperationSchemaId::ArithIndexCast,
       mlir::FunctionType::get(&context, {mlir::IntegerType::get(&context, 32)},
@@ -1656,7 +1657,8 @@ void heterogeneousSystemFinalizes() {
                      clock, 1, 1, 4,
                      loom::fabric::ServiceProgress(
                          std::in_place_type<::fabric::FairEventual>)));
-  mlir::MLIRContext contractContext;
+  mlir::MLIRContext contractContext(
+      mlir::MLIRContext::Threading::DISABLED);
   auto memoryService = take(test, system.addMemoryService(systemMemoryContract(
                                       test, contractContext)));
   auto memoryEndpoint =

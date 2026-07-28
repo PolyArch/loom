@@ -588,7 +588,7 @@ int main() {
   registry.insert<arith::ArithDialect, func::FuncDialect, LLVM::LLVMDialect,
                   math::MathDialect, ub::UBDialect, vector::VectorDialect,
                   DataflowDialect>();
-  MLIRContext context(registry);
+  MLIRContext context(registry, MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   bool ok = true;

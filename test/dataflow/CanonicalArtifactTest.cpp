@@ -72,7 +72,8 @@ mlir::MLIRContext &context() {
     registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
                     mlir::arith::ArithDialect, mlir::DLTIDialect,
                     mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
-    auto *c = new mlir::MLIRContext(registry);
+    auto *c = new mlir::MLIRContext(
+        registry, mlir::MLIRContext::Threading::DISABLED);
     c->loadAllAvailableDialects();
     return c;
   }();

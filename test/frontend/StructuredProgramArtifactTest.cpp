@@ -44,7 +44,8 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::LLVM::LLVMDialect>();
-    auto *created = new mlir::MLIRContext(registry);
+    auto *created = new mlir::MLIRContext(
+        registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
     return created;
   }();
@@ -185,6 +186,22 @@ module {
           "a graph-free candidate unexpectedly acquired a SpatialCore graph");
 }
 
+void finalizedArtifactsDoNotOwnThreadPools() {
+  const char *test = __func__;
+  StructuredProgramCandidate structured = finalize(test, R"mlir(
+module { func.func @main(%arg0: i32) -> i32 { return %arg0 : i32 } }
+)mlir");
+  require(test, structured.module().getContext()->getNumThreads() == 1,
+          "a finalized Structured Program owns an implicit thread pool");
+
+  auto dataflow = take(
+      test,
+      loom::lowering::lowerStructuredProgramToCanonicalDataflow(structured));
+  require(test, dataflow.module().getContext()->getNumThreads() == 1,
+          "a finalized Canonical Dataflow Program owns an implicit thread "
+          "pool");
+}
+
 } // namespace
 
 int main() {
@@ -193,6 +210,7 @@ int main() {
   referencesAreParentAndKindChecked();
   importedCandidateReencodesExactly();
   graphFreeInstructionCoreProgramPublishesDataflowArtifact();
+  finalizedArtifactsDoNotOwnThreadPools();
   llvm::outs() << "structured program artifact anchors passed\n";
   return EXIT_SUCCESS;
 }

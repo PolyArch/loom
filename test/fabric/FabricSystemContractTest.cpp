@@ -220,7 +220,8 @@ void checkSystemStructuralRelations() {
 
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   const std::string sourceText =
       "module {\n"
       "  fabric.system @soc {\n"
@@ -278,7 +279,8 @@ void checkSystemTransportResource() {
       ::fabric::encodeResourceContractRecord(instructionContextContract()));
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   const std::string sourceText =
       "module {\n"
       "  fabric.system @soc {\n"
@@ -355,7 +357,8 @@ void checkTypedSystemRoot() {
   constexpr llvm::StringLiteral test = "typed System root";
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
 
   const std::vector<std::uint8_t> architecture = take(
       test,
@@ -385,7 +388,8 @@ void checkTypedSystemRejections() {
   constexpr llvm::StringLiteral test = "typed System rejection";
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   mlir::ScopedDiagnosticHandler diagnostics(
       &context, [](mlir::Diagnostic &) { return mlir::success(); });
 
@@ -652,7 +656,8 @@ void checkHardwareDomainContract() {
 
   mlir::DialectRegistry registry;
   registry.insert<::fabric::FabricDialect>();
-  mlir::MLIRContext context(registry);
+  mlir::MLIRContext context(registry,
+                            mlir::MLIRContext::Threading::DISABLED);
   const std::string source = "module { fabric.system @soc { "
                              "fabric.system.hardware_domain contract = " +
                              denseI8Assembly(context, clockBytes) +

@@ -79,7 +79,7 @@ PrimitiveOperationDescriptor descriptor(OperationSchemaId schema,
 }
 
 void checkTypedDispatchAndPayload() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i1 = mlir::IntegerType::get(&context, 1);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::Type i16 = mlir::IntegerType::get(&context, 16);
@@ -147,7 +147,7 @@ void checkTypedDispatchAndPayload() {
 }
 
 void checkTypedLLVMExceptionalPolicies() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::FunctionType unaryI8 = mlir::FunctionType::get(&context, {i8}, {i8});
 
@@ -223,7 +223,7 @@ void checkTypedLLVMExceptionalPolicies() {
 }
 
 void checkTypedIntegerPolicies() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::Type i16 = mlir::IntegerType::get(&context, 16);
 
@@ -263,7 +263,7 @@ void checkTypedIntegerPolicies() {
 }
 
 void checkSaturatingIntegerFamily() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::FunctionType binaryI8 =
       mlir::FunctionType::get(&context, {i8, i8}, {i8});
@@ -295,7 +295,7 @@ void checkSaturatingIntegerFamily() {
 }
 
 void checkLazySelectionAndFusedFma() {
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i1 = mlir::IntegerType::get(&context, 1);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   mlir::Type f64 = mlir::Float64Type::get(&context);
@@ -346,7 +346,7 @@ void checkTypedProviderAvailability() {
           loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::UBPoison),
           "registered poison value has no primitive provider");
 
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i8 = mlir::IntegerType::get(&context, 8);
   PrimitiveOperationDescriptor poison = descriptor(
       OperationSchemaId::UBPoison, mlir::FunctionType::get(&context, {}, {i8}),

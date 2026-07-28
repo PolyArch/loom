@@ -348,7 +348,7 @@ makeLocalMemory(LocalMemoryParameters parameters, CatalogMemoryDomain domain) {
     outputs.push_back(std::move(*type));
   }
 
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   const auto endpoints = endpointInventory(tagWidth);
   std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts;
   for (bool reads : {true, false}) {
@@ -451,7 +451,7 @@ makeSystemMemory(SystemMemoryParameters parameters,
     endpointCapabilities.push_back(std::move(*capability));
   }
 
-  mlir::MLIRContext context;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   auto contract = ::fabric::MemoryServiceContractRecord::create(
       &context, ::fabric::MemoryServiceOwnerKind::System,
       {{{parameters.addressBaseBytes, parameters.capacityBytes,

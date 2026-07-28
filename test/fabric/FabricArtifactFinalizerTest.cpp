@@ -98,7 +98,8 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
     registry.insert<::fabric::FabricDialect>();
-    auto *result = new mlir::MLIRContext(registry);
+    auto *result = new mlir::MLIRContext(
+        registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
     return result;
   }();
