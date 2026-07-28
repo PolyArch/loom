@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace loom::sim {
@@ -21,9 +22,22 @@ namespace loom::sim {
 struct SimulationMemoryCaptureObject {
   mlir::Value base;
   std::uint64_t byteCount = 0;
-  std::uint64_t boundaryOperandOrdinal = 0;
   std::uint64_t operandByteOffset = 0;
 };
+
+struct DirectCallOperandMemorySource final {
+  std::uint64_t operandOrdinal = 0;
+};
+
+struct DirectCallGlobalMemorySource final {
+  std::string symbol;
+};
+
+/// The exact native source of one direct-call capture object. This relation is
+/// ephemeral instrumentation state: the persistent runtime input contains only
+/// canonical bytes and Dataflow-owned root bindings.
+using DirectCallMemorySource =
+    std::variant<DirectCallOperandMemorySource, DirectCallGlobalMemorySource>;
 
 /// The exact projection from a Dataflow-owned logical root into one ephemeral
 /// capture object. Object indices are draft-local and are canonicalized by the
@@ -80,6 +94,7 @@ struct SimulationInputCapturePlan {
 
 struct DirectCallSimulationInputCapturePlan final {
   SimulationInputCapturePlan input;
+  std::vector<DirectCallMemorySource> memoryObjectSources;
   mlir::LLVM::CallOp hostCall;
   std::string hostCallerSymbol;
   std::string hostCalleeSymbol;

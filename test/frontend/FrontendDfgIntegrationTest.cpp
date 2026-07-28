@@ -179,6 +179,13 @@ entry:
   call void @table_lookup_arg(ptr @lookup, ptr %output)
   ret i32 0
 }
+
+define i32 @direct_main() {
+entry:
+  %output = alloca [4 x i32], align 16
+  call void @table_lookup(ptr %output)
+  ret i32 0
+}
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<table-lookup>");
@@ -940,6 +947,36 @@ void staticTableExecutesThroughTypedDfgInput() {
   }
   if (!tableRoot || !outputRoot)
     fail(test, "table and runtime output roots were not distinguished");
+
+  auto directPlan =
+      take(test, loom::sim::deriveSimulationInputCapturePlan(
+                     view, launch,
+                     findHostCall(test, candidate.canonicalDataflow,
+                                  "direct_main", "table_lookup")));
+  if (directPlan.input.objects.size() != 2 ||
+      directPlan.input.memoryRootBindings.size() != 2)
+    fail(test, "direct table capture lost its global or output object");
+  auto directContext = std::make_unique<llvm::LLVMContext>();
+  auto directModule = parseTableLookup(test, *directContext, false);
+  loom::sim::NativeSimulationInputCapture directCapture =
+      take(test, loom::sim::executeNativeSimulationInputCapture(
+                     llvm::orc::ThreadSafeModule(std::move(directModule),
+                                                 std::move(directContext)),
+                     directPlan, "direct_main"));
+  if (directCapture.entryResult != 0 || directCapture.calls.size() != 1 ||
+      directCapture.calls.front().objects.size() != 2)
+    fail(test, "direct table oracle did not capture one complete call");
+  const auto &directTable =
+      directCapture.calls.front().objects
+          [captureBinding(test, directPlan.input, *tableRoot).objectIndex];
+  const auto &directOutput =
+      directCapture.calls.front().objects
+          [captureBinding(test, directPlan.input, *outputRoot).objectIndex];
+  if (directTable.initialBytes !=
+          compiled.staticGlobalMemory.lookup("lookup")->bytes ||
+      directTable.finalBytes != directTable.initialBytes ||
+      directOutput.finalBytes != directTable.initialBytes)
+    fail(test, "direct table oracle did not preserve the static image");
 
   auto captureCandidate = take(
       test,

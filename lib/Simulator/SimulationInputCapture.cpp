@@ -245,6 +245,11 @@ struct ResolvedObject {
   std::uint64_t byteOffset = 0;
 };
 
+struct ResolvedDirectCallObject {
+  ResolvedObject object;
+  DirectCallMemorySource source;
+};
+
 llvm::Expected<std::uint64_t> constantGepByteOffset(mlir::LLVM::GEPOp gep) {
   mlir::Type indexedType = gep.getElemType();
   std::uint64_t offset = 0;
@@ -657,6 +662,36 @@ llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(
                                       *bytes};
 }
 
+llvm::Expected<ResolvedDirectCallObject>
+directCallMemoryObject(mlir::Value callableSource,
+                       mlir::LLVM::LLVMFuncOp enclosingCallable,
+                       mlir::LLVM::CallOp hostCall) {
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(callableSource)) {
+    if (argument.getOwner() != &enclosingCallable.getBody().front())
+      return unsupported("root launch memory is not owned by its callable");
+    const unsigned ordinal = argument.getArgNumber();
+    if (ordinal >= hostCall.getCalleeOperands().size())
+      return invalid("callable argument exceeds host call operands");
+    llvm::Expected<ResolvedObject> object =
+        resolveObject(hostCall.getCalleeOperands()[ordinal]);
+    if (!object)
+      return object.takeError();
+    return ResolvedDirectCallObject{std::move(*object),
+                                    DirectCallOperandMemorySource{ordinal}};
+  }
+
+  llvm::Expected<ResolvedObject> object = resolveObject(callableSource);
+  if (!object)
+    return object.takeError();
+  auto address = object->base.getDefiningOp<mlir::LLVM::AddressOfOp>();
+  if (!address)
+    return unsupported(
+        "root launch memory is neither a callable argument nor a global");
+  return ResolvedDirectCallObject{
+      std::move(*object),
+      DirectCallGlobalMemorySource{address.getGlobalName().str()}};
+}
+
 llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
                                                 mlir::LLVM::CallOp target,
                                                 llvm::StringRef callee) {
@@ -710,8 +745,11 @@ deriveSimulationInputCapturePlan(
     return callOrdinal.takeError();
 
   DirectCallSimulationInputCapturePlan plan{
-      SimulationInputCapturePlan{launch, {}, {}, {}, {}}, hostCall,
-      hostCaller.getSymName().str(), hostCall.getCalleeAttr().getValue().str(),
+      SimulationInputCapturePlan{launch, {}, {}, {}, {}},
+      {},
+      hostCall,
+      hostCaller.getSymName().str(),
+      hostCall.getCalleeAttr().getValue().str(),
       *callOrdinal};
   plan.input.valueInputs.reserve(context->numValueInputs);
   for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
@@ -744,41 +782,32 @@ deriveSimulationInputCapturePlan(
     const unsigned threadFormal = *resolvedRoot->formalArgIndex;
     if (threadFormal >= context->rootLaunchOp.getBodyOperands().size())
       return invalid("thread memory formal exceeds root launch operands");
-    llvm::Expected<unsigned> callableArgument = enclosingCallableArgument(
+    llvm::Expected<ResolvedDirectCallObject> resolved = directCallMemoryObject(
         context->rootLaunchOp.getBodyOperands()[threadFormal],
-        enclosingCallable);
-    if (!callableArgument)
-      return callableArgument.takeError();
-    if (*callableArgument >= hostCall.getCalleeOperands().size())
-      return invalid("callable argument exceeds host call operands");
-
-    llvm::Expected<ResolvedObject> object =
-        resolveObject(hostCall.getCalleeOperands()[*callableArgument]);
-    if (!object)
-      return object.takeError();
+        enclosingCallable, hostCall);
+    if (!resolved)
+      return resolved.takeError();
+    ResolvedObject &object = resolved->object;
     std::uint64_t objectIndex = 0;
     while (objectIndex < plan.input.objects.size()) {
       llvm::Expected<ResolvedObject> existing =
           resolveObject(plan.input.objects[objectIndex].base);
       if (!existing)
         return existing.takeError();
-      if (existing->owner == object->owner)
+      if (existing->owner == object.owner)
         break;
       ++objectIndex;
     }
     if (objectIndex == plan.input.objects.size()) {
-      SimulationMemoryCaptureObject capture;
-      capture.base = object->base;
-      capture.byteCount = object->byteCount;
-      capture.boundaryOperandOrdinal = *callableArgument;
-      capture.operandByteOffset = object->byteOffset;
-      plan.input.objects.push_back(capture);
-    } else if (plan.input.objects[objectIndex].byteCount != object->byteCount)
+      plan.input.objects.push_back(SimulationMemoryCaptureObject{
+          object.base, object.byteCount, object.byteOffset});
+      plan.memoryObjectSources.push_back(std::move(resolved->source));
+    } else if (plan.input.objects[objectIndex].byteCount != object.byteCount)
       return invalid("one host allocation resolved to inconsistent extents");
-    if (object->byteOffset >= object->byteCount)
+    if (object.byteOffset >= object.byteCount)
       return invalid("logical root offset is outside its host allocation");
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
-        root, objectIndex, object->byteOffset,
+        root, objectIndex, object.byteOffset,
         memoryRequiresInitialState(*context, root),
         uniformFloatingWriteLaneType(*context, root)});
   }
@@ -844,9 +873,8 @@ deriveOperationSimulationInputCapturePlan(
       ++objectIndex;
     }
     if (objectIndex == plan.objects.size()) {
-      plan.objects.push_back(
-          SimulationMemoryCaptureObject{object->base, object->byteCount,
-                                        boundaryOrdinal, object->byteOffset});
+      plan.objects.push_back(SimulationMemoryCaptureObject{
+          object->base, object->byteCount, object->byteOffset});
     } else if (plan.objects[objectIndex].byteCount != object->byteCount) {
       return invalid("one source allocation resolved to inconsistent extents");
     }

@@ -125,6 +125,23 @@ resolveNativeObject(llvm::Value *pointer, const llvm::DataLayout &layout) {
   return ResolvedNativeObject{arrayCount * elementBytes.getFixedValue(), 0};
 }
 
+llvm::Expected<llvm::Value *>
+resolveDirectCallMemorySource(llvm::Module &module, llvm::CallInst &selected,
+                              const DirectCallMemorySource &source) {
+  if (const auto *operand =
+          std::get_if<DirectCallOperandMemorySource>(&source)) {
+    if (operand->operandOrdinal >= selected.arg_size())
+      return invalid("capture object exceeds native call operands");
+    return selected.getArgOperand(operand->operandOrdinal);
+  }
+  const auto &global = std::get<DirectCallGlobalMemorySource>(source);
+  llvm::GlobalVariable *resolved =
+      module.getGlobalVariable(global.symbol, true);
+  if (!resolved)
+    return invalid("capture global is absent from the native module");
+  return resolved;
+}
+
 struct CaptureContext {
   NativeSimulationInputCapture result;
   std::vector<std::uint64_t> byteCounts;
@@ -382,12 +399,17 @@ instrumentCapture(llvm::Module &module,
     return invalid("selected direct host call is absent or musttail");
   selected->setTailCallKind(llvm::CallInst::TCK_None);
 
-  for (const SimulationMemoryCaptureObject &object : plan.input.objects) {
-    if (object.boundaryOperandOrdinal >= selected->arg_size())
-      return invalid("capture object exceeds native call operands");
-    llvm::Expected<ResolvedNativeObject> resolved = resolveNativeObject(
-        selected->getArgOperand(object.boundaryOperandOrdinal),
-        module.getDataLayout());
+  if (plan.memoryObjectSources.size() != plan.input.objects.size())
+    return invalid("direct-call memory source table is not total");
+
+  for (auto [object, source] :
+       llvm::zip_equal(plan.input.objects, plan.memoryObjectSources)) {
+    llvm::Expected<llvm::Value *> pointer =
+        resolveDirectCallMemorySource(module, *selected, source);
+    if (!pointer)
+      return pointer.takeError();
+    llvm::Expected<ResolvedNativeObject> resolved =
+        resolveNativeObject(*pointer, module.getDataLayout());
     if (!resolved)
       return resolved.takeError();
     if (resolved->byteCount != object.byteCount ||
@@ -449,14 +471,16 @@ instrumentCapture(llvm::Module &module,
   for (auto [ordinal, object] : llvm::enumerate(plan.input.objects)) {
     if (object.byteCount == 0 ||
         object.byteCount > std::numeric_limits<std::size_t>::max() ||
-        object.boundaryOperandOrdinal >= selected->arg_size() ||
         object.operandByteOffset >= object.byteCount ||
         object.operandByteOffset >
             static_cast<std::uint64_t>(
                 std::numeric_limits<std::int64_t>::max()))
       return invalid("capture object has an invalid finite projection");
-    llvm::Value *operand =
-        selected->getArgOperand(object.boundaryOperandOrdinal);
+    llvm::Expected<llvm::Value *> pointer = resolveDirectCallMemorySource(
+        module, *selected, plan.memoryObjectSources[ordinal]);
+    if (!pointer)
+      return pointer.takeError();
+    llvm::Value *operand = *pointer;
     if (!operand->getType()->isPointerTy())
       return invalid("capture object representative is not a pointer operand");
     llvm::Value *base = operand;
