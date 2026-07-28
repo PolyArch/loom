@@ -175,13 +175,22 @@ private:
 };
 
 void writeFile(const std::filesystem::path &path, llvm::StringRef contents) {
-  std::filesystem::create_directories(path.parent_path());
-  std::ofstream stream(path, std::ios::binary);
+  if (!path.parent_path().empty())
+    std::filesystem::create_directories(path.parent_path());
+  std::filesystem::path temporary = path;
+  temporary += ".partial";
+  std::ofstream stream(temporary, std::ios::binary);
   if (!stream)
-    fail(__func__, "could not open " + path.string());
+    fail(__func__, "could not open " + temporary.string());
   stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  stream.close();
   if (!stream)
-    fail(__func__, "could not write " + path.string());
+    fail(__func__, "could not write " + temporary.string());
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  if (error)
+    fail(__func__, "could not publish " + path.string() + ": " +
+                       error.message());
 }
 
 std::string readFile(const std::filesystem::path &path) {
@@ -1380,15 +1389,13 @@ int runChild(int argc, char **argv) {
     while (::waitpid(alternateGroup, nullptr, 0) < 0 && errno == EINTR) {
     }
 
-    std::ofstream report("escape.txt");
+    std::ostringstream report;
     report << "pid " << ::getpid() << '\n';
     report << "pgrp " << ::getpgrp() << '\n';
     report << "pdeath " << deathSignal << '\n';
     report << "setsid " << sessionResult << ' ' << sessionError << '\n';
     report << "setpgid " << groupResult << ' ' << groupError << '\n';
-    report.close();
-    if (!report)
-      return 110;
+    writeFile("escape.txt", report.str());
     std::signal(SIGTERM, SIG_IGN);
     for (;;)
       ::pause();
@@ -1442,11 +1449,7 @@ int runChild(int argc, char **argv) {
     if (::write(STDOUT_FILENO, output, sizeof(output) - 1) < 0 ||
         ::write(STDERR_FILENO, error, sizeof(error) - 1) < 0)
       return 111;
-    std::ofstream ready("ready.txt");
-    ready << ::getpid() << '\n';
-    ready.close();
-    if (!ready)
-      return 112;
+    writeFile("ready.txt", std::to_string(::getpid()) + "\n");
     std::signal(SIGTERM, SIG_IGN);
     for (;;)
       ::pause();
@@ -1462,9 +1465,9 @@ int runChild(int argc, char **argv) {
       for (;;)
         ::pause();
     }
-    std::ofstream pids(argv[2]);
+    std::ostringstream pids;
     pids << ::getpid() << '\n' << child << '\n';
-    pids.close();
+    writeFile(argv[2], pids.str());
     for (;;)
       ::pause();
   }
@@ -1474,11 +1477,7 @@ int runChild(int argc, char **argv) {
     ::sigaddset(&signalSet, SIGUSR1);
     if (::pthread_sigmask(SIG_BLOCK, &signalSet, nullptr) != 0)
       return 92;
-    std::ofstream ready("ready.txt");
-    ready << ::getpid() << '\n';
-    ready.close();
-    if (!ready)
-      return 93;
+    writeFile("ready.txt", std::to_string(::getpid()) + "\n");
     int received = 0;
     if (::sigwait(&signalSet, &received) != 0 || received != SIGUSR1)
       return 94;
@@ -1512,9 +1511,9 @@ int runChild(int argc, char **argv) {
     ::close(ready[0]);
     if (readyCount != 1)
       return 99;
-    std::ofstream pids(argv[2]);
+    std::ostringstream pids;
     pids << ::getpid() << '\n' << child << '\n';
-    pids.close();
+    writeFile(argv[2], pids.str());
     for (;;)
       ::pause();
   }
