@@ -172,6 +172,14 @@ class MakeWorktreeTest(unittest.TestCase):
         )
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
+    def test_shared_llvm_build_includes_riscv_codegen(self) -> None:
+        targets = next(
+            argument
+            for argument in self.module.LLVM_SEMANTIC_CMAKE_ARGS
+            if argument.startswith("-DLLVM_TARGETS_TO_BUILD=")
+        )
+        self.assertIn("RISCV", targets.removeprefix("-DLLVM_TARGETS_TO_BUILD=").split(";"))
+
     def build_environment(self, module, run=UNSET):
         stack = ExitStack()
         stack.enter_context(patch.object(module, "check_git_version"))
