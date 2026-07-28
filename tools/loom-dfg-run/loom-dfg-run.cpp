@@ -11,6 +11,7 @@
 #include "Simulator/SimulationInputCapture.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
@@ -23,6 +24,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
@@ -61,6 +63,11 @@ llvm::cl::opt<std::string> outputPath("output",
                                       llvm::cl::desc("comparison report JSON"),
                                       llvm::cl::value_desc("path"),
                                       llvm::cl::Required);
+
+llvm::cl::opt<std::string> canonicalOutputPath(
+    "canonical-output",
+    llvm::cl::desc("optional finalized Canonical Dataflow MLIR projection"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 llvm::cl::opt<unsigned>
     candidateJobs("candidate-jobs",
@@ -423,6 +430,22 @@ llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
   return llvm::Error::success();
 }
 
+llvm::Error writeCanonicalDataflow(
+    llvm::StringRef path,
+    const dataflow::CanonicalDataflowArtifact &canonical) {
+  if (path.empty())
+    return llvm::Error::success();
+  std::string message;
+  std::unique_ptr<llvm::ToolOutputFile> output =
+      mlir::openOutputFile(path, &message);
+  if (!output)
+    return invalid("cannot open canonical output: " + message);
+  canonical.module()->print(output->os());
+  output->os() << '\n';
+  output->keep();
+  return llvm::Error::success();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -458,6 +481,10 @@ int main(int argc, char **argv) {
       compiled->canonicalDataflow.view();
   if (!view)
     return reportError(view.takeError());
+  if (llvm::Error error =
+          writeCanonicalDataflow(canonicalOutputPath,
+                                 compiled->canonicalDataflow))
+    return reportError(std::move(error));
 
   std::vector<dataflow::RootedGraphLaunchRef> launches;
   view->forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {

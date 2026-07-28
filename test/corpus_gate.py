@@ -18,6 +18,10 @@ artifacts:
   must carry the exact target triple attribute and its structured
   graph/actor counts must parse, so a graph-free whole-program result is
   distinguishable from a nonempty Spatial graph.
+- stage ``dfg-sim``: compiles target and native LLVM modules, then runs the
+  production pre-Mapping path and typed DFG simulator in one invocation. Each
+  exact Spatial invocation is compared with independently captured native
+  memory results. Graph-free, unsupported, empty, or malformed executions fail.
 
 A source whose feature-guarded body is empty under the exact target still
 produces a valid module: a case passes on real compiler exit status,
@@ -37,6 +41,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 import shlex
 import shutil
@@ -76,7 +81,7 @@ MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
 # loom-pre-mapping.
 BUILTIN_TARGET_PRESET = "small"
 
-STAGES = ("llvm", "s0", "d0")
+STAGES = ("llvm", "s0", "d0", "dfg-sim")
 
 # Honest failure categories. "compile"/"raise"/"verify"/"pre-mapping" are
 # nonzero exits from the production tools; "*-artifact" categories mean the
@@ -92,6 +97,10 @@ CATEGORY_S0_ARTIFACT = "s0-artifact"
 CATEGORY_VERIFY = "verify"
 CATEGORY_PRE_MAPPING = "pre-mapping"
 CATEGORY_D0_ARTIFACT = "d0-artifact"
+CATEGORY_NATIVE_COMPILE = "native-compile"
+CATEGORY_NATIVE_LLVM_ARTIFACT = "native-llvm-artifact"
+CATEGORY_DFG_SIM = "dfg-sim"
+CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
 
@@ -106,6 +115,7 @@ ENV_TOOL_NAMES = {
     "raise": "LOOM_RAISE",
     "raise_opt": "LOOM_RAISE_OPT",
     "pre_mapping": "LOOM_PRE_MAPPING",
+    "dfg_run": "LOOM_DFG_RUN",
 }
 TOOL_FILE_NAMES = {
     "cc": "loom-cc",
@@ -113,6 +123,7 @@ TOOL_FILE_NAMES = {
     "raise": "loom-raise",
     "raise_opt": "loom-raise-opt",
     "pre_mapping": "loom-pre-mapping",
+    "dfg_run": "loom-dfg-run",
 }
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
@@ -129,6 +140,7 @@ class Toolchain:
     raise_tool: str
     raise_opt: str
     pre_mapping: str
+    dfg_run: str
     sysroot: Path
     gcc_toolchain: Path
 
@@ -140,6 +152,56 @@ class StepFailure:
 
 
 @dataclass(frozen=True)
+class DfgSimulationMetrics:
+    graphs: int
+    actors: int
+    dynamic_calls: int
+    memory_bytes_compared: int
+    wavefront_steps: int
+    event_count: int
+    simulation_seconds: float
+    operation_firings: dict[str, int]
+
+    @staticmethod
+    def zero() -> "DfgSimulationMetrics":
+        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0.0, {})
+
+    @property
+    def wavefront_steps_per_second(self) -> float:
+        if self.simulation_seconds == 0.0:
+            return 0.0
+        return self.wavefront_steps / self.simulation_seconds
+
+    def combine(self, other: "DfgSimulationMetrics") -> "DfgSimulationMetrics":
+        firings = dict(self.operation_firings)
+        for operation, count in other.operation_firings.items():
+            firings[operation] = firings.get(operation, 0) + count
+        return DfgSimulationMetrics(
+            graphs=self.graphs + other.graphs,
+            actors=self.actors + other.actors,
+            dynamic_calls=self.dynamic_calls + other.dynamic_calls,
+            memory_bytes_compared=(
+                self.memory_bytes_compared + other.memory_bytes_compared
+            ),
+            wavefront_steps=self.wavefront_steps + other.wavefront_steps,
+            event_count=self.event_count + other.event_count,
+            simulation_seconds=self.simulation_seconds + other.simulation_seconds,
+            operation_firings=firings,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "dynamic_calls": self.dynamic_calls,
+            "event_count": self.event_count,
+            "memory_bytes_compared": self.memory_bytes_compared,
+            "operation_firings": dict(sorted(self.operation_firings.items())),
+            "simulation_seconds": self.simulation_seconds,
+            "wavefront_steps": self.wavefront_steps,
+            "wavefront_steps_per_second": self.wavefront_steps_per_second,
+        }
+
+
+@dataclass(frozen=True)
 class CaseResult:
     case: corpus_inventory.CorpusCase
     passed: bool
@@ -148,6 +210,7 @@ class CaseResult:
     duration_seconds: float
     graphs: int | None = None
     actors: int | None = None
+    dfg_simulation: DfgSimulationMetrics | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -167,6 +230,8 @@ class CaseResult:
             payload["graphs"] = self.graphs
         if self.actors is not None:
             payload["actors"] = self.actors
+        if self.dfg_simulation is not None:
+            payload["dfg_simulation"] = self.dfg_simulation.as_dict()
         return payload
 
 
@@ -280,6 +345,7 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
         raise_tool=tools["raise"],
         raise_opt=tools["raise_opt"],
         pre_mapping=tools["pre_mapping"],
+        dfg_run=tools["dfg_run"],
         sysroot=sysroot,
         gcc_toolchain=gcc_toolchain,
     )
@@ -349,6 +415,24 @@ def compile_command(
     ]
 
 
+def native_compile_command(
+    toolchain: Toolchain,
+    suite_flags: Sequence[str],
+    source: Path,
+    output: Path,
+) -> list[str]:
+    return [
+        compiler_for(toolchain, source),
+        *suite_flags,
+        "-emit-llvm",
+        "-S",
+        "-O1",
+        str(source),
+        "-o",
+        str(output),
+    ]
+
+
 def raise_command(toolchain: Toolchain, llvm_ir: Path, output: Path) -> list[str]:
     return [toolchain.raise_tool, str(llvm_ir), "-o", str(output)]
 
@@ -377,6 +461,27 @@ def pre_mapping_command(
     ]
 
 
+def dfg_sim_command(
+    toolchain: Toolchain,
+    target_llvm_ir: Path,
+    native_llvm_ir: Path,
+    store_dir: Path,
+    d0_module: Path,
+    report: Path,
+    candidate_jobs: int,
+) -> list[str]:
+    return [
+        toolchain.dfg_run,
+        f"--builtin={BUILTIN_TARGET_PRESET}",
+        f"--artifact-store={store_dir}",
+        f"--native-llvm={native_llvm_ir}",
+        f"--canonical-output={d0_module}",
+        f"--output={report}",
+        f"--candidate-jobs={candidate_jobs}",
+        str(target_llvm_ir),
+    ]
+
+
 def llvm_ir_defect(path: Path) -> str | None:
     """Return why a .ll artifact is not a real exact-target module."""
     try:
@@ -390,6 +495,22 @@ def llvm_ir_defect(path: Path) -> str | None:
         return f"LLVM IR lacks exact target triple {LLVM_TRIPLE_LINE!r}: {path}"
     if LLVM_DATALAYOUT_LINE not in lines:
         return f"LLVM IR lacks exact target DataLayout {LLVM_DATALAYOUT_LINE!r}: {path}"
+    return None
+
+
+def native_llvm_ir_defect(path: Path) -> str | None:
+    """Return why a host LLVM module cannot serve as a native oracle."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"cannot read native LLVM IR {path}: {exc}"
+    if not text.strip():
+        return f"empty native LLVM IR: {path}"
+    lines = text.splitlines()
+    if not any(line.startswith("target triple = ") for line in lines):
+        return f"native LLVM IR lacks a target triple: {path}"
+    if not any(line.startswith("target datalayout = ") for line in lines):
+        return f"native LLVM IR lacks a DataLayout: {path}"
     return None
 
 
@@ -449,6 +570,108 @@ def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
             )
         counts[key] = value
     return counts, None
+
+
+def parse_dfg_simulation_report(
+    path: Path,
+) -> tuple[DfgSimulationMetrics | None, str | None]:
+    """Parse the exact substantive projection emitted by loom-dfg-run."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as exc:
+        return None, f"cannot read DFG simulation report {path}: {exc}"
+    except json.JSONDecodeError as exc:
+        return None, f"malformed DFG simulation report {path}: {exc}"
+    if not isinstance(payload, dict):
+        return None, f"DFG simulation report is not a JSON object: {path}"
+    expected_fields = {
+        "actors",
+        "dynamic_calls",
+        "event_count",
+        "graphs",
+        "kind",
+        "memory_bytes_compared",
+        "operation_firings",
+        "simulation_seconds",
+        "status",
+        "wavefront_steps",
+        "wavefront_steps_per_second",
+    }
+    if set(payload) != expected_fields:
+        return None, (
+            "DFG simulation report contains missing or unexpected fields "
+            f"(expected {sorted(expected_fields)}): {path}"
+        )
+    if payload["kind"] != "source_backed_dfg_comparison" or payload["status"] != "pass":
+        return None, f"DFG simulation report has invalid kind or status: {path}"
+
+    integers: dict[str, int] = {}
+    for field in (
+        "actors",
+        "dynamic_calls",
+        "event_count",
+        "graphs",
+        "memory_bytes_compared",
+        "wavefront_steps",
+    ):
+        value = payload[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None, (
+                "DFG simulation report is not a substantive execution: "
+                f"{field} must be a positive integer: {path}"
+            )
+        integers[field] = value
+
+    seconds = payload["simulation_seconds"]
+    rate = payload["wavefront_steps_per_second"]
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or seconds <= 0.0
+    ):
+        return None, f"DFG simulation report has invalid simulation_seconds: {path}"
+    if (
+        isinstance(rate, bool)
+        or not isinstance(rate, (int, float))
+        or not math.isfinite(rate)
+        or rate <= 0.0
+    ):
+        return None, (
+            "DFG simulation report has invalid wavefront_steps_per_second: "
+            f"{path}"
+        )
+    derived_rate = integers["wavefront_steps"] / float(seconds)
+    if not math.isclose(float(rate), derived_rate, rel_tol=1e-12, abs_tol=1e-9):
+        return None, f"DFG simulation report rate is not derived from totals: {path}"
+
+    raw_firings = payload["operation_firings"]
+    if not isinstance(raw_firings, dict) or not raw_firings:
+        return None, f"DFG simulation report has no operation firings: {path}"
+    firings: dict[str, int] = {}
+    for operation, count in raw_firings.items():
+        if not isinstance(operation, str) or not operation:
+            return None, f"DFG simulation report has an invalid operation key: {path}"
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            return None, (
+                "DFG simulation report has a non-positive operation firing "
+                f"count for {operation!r}: {path}"
+            )
+        firings[operation] = count
+
+    return (
+        DfgSimulationMetrics(
+            graphs=integers["graphs"],
+            actors=integers["actors"],
+            dynamic_calls=integers["dynamic_calls"],
+            memory_bytes_compared=integers["memory_bytes_compared"],
+            wavefront_steps=integers["wavefront_steps"],
+            event_count=integers["event_count"],
+            simulation_seconds=float(seconds),
+            operation_firings=firings,
+        ),
+        None,
+    )
 
 
 def run_step(
@@ -518,6 +741,7 @@ def run_case(
     deadline = started + case_timeout
     graphs = 0
     actors = 0
+    dfg_totals = DfgSimulationMetrics.zero()
 
     def finish(category: str | None, detail: str | None) -> CaseResult:
         passed = category is None
@@ -527,15 +751,18 @@ def run_case(
             category=category,
             detail=detail,
             duration_seconds=time.monotonic() - started,
-            graphs=graphs if passed and stage == "d0" else None,
-            actors=actors if passed and stage == "d0" else None,
+            graphs=graphs if passed and stage in {"d0", "dfg-sim"} else None,
+            actors=actors if passed and stage in {"d0", "dfg-sim"} else None,
+            dfg_simulation=(
+                dfg_totals if passed and stage == "dfg-sim" else None
+            ),
         )
 
     try:
         case_dir = case_out_dir(out_root, case)
         case_dir.mkdir(parents=True, exist_ok=True)
         store_dir = case_dir / "artifact-store"
-        if stage == "d0":
+        if stage in {"d0", "dfg-sim"}:
             store_dir.mkdir(parents=True, exist_ok=True)
         suite_flags = suite_compile_flags(case.suite, external_root)
         for repo_relative in case.sources:
@@ -554,6 +781,61 @@ def run_case(
             if defect is not None:
                 return finish(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
             if stage == "llvm":
+                continue
+            if stage == "dfg-sim":
+                native_llvm_ir = case_dir / f"{stem}.native.ll"
+                failure = run_step(
+                    native_compile_command(
+                        toolchain, suite_flags, source, native_llvm_ir
+                    ),
+                    case_dir / f"{stem}.native-compile.log",
+                    deadline,
+                    CATEGORY_NATIVE_COMPILE,
+                )
+                if failure is not None:
+                    return finish(
+                        failure.category, f"{repo_relative}: {failure.detail}"
+                    )
+                defect = native_llvm_ir_defect(native_llvm_ir)
+                if defect is not None:
+                    return finish(
+                        CATEGORY_NATIVE_LLVM_ARTIFACT,
+                        f"{repo_relative}: {defect}",
+                    )
+
+                d0_module = case_dir / f"{stem}.dfg.mlir"
+                report_path = case_dir / f"{stem}.dfg-sim.json"
+                failure = run_step(
+                    dfg_sim_command(
+                        toolchain,
+                        llvm_ir,
+                        native_llvm_ir,
+                        store_dir,
+                        d0_module,
+                        report_path,
+                        candidate_jobs,
+                    ),
+                    case_dir / f"{stem}.dfg-sim.log",
+                    deadline,
+                    CATEGORY_DFG_SIM,
+                )
+                if failure is not None:
+                    return finish(
+                        failure.category, f"{repo_relative}: {failure.detail}"
+                    )
+                defect = d0_module_defect(d0_module)
+                if defect is not None:
+                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
+                report, defect = parse_dfg_simulation_report(report_path)
+                if defect is not None:
+                    return finish(
+                        CATEGORY_DFG_SIM_ARTIFACT,
+                        f"{repo_relative}: {defect}",
+                    )
+                assert report is not None
+                graphs += report.graphs
+                actors += report.actors
+                dfg_totals = dfg_totals.combine(report)
                 continue
             if stage == "d0":
                 d0_module = case_dir / f"{stem}.dfg.mlir"
@@ -691,7 +973,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--candidate-jobs",
         type=int,
         default=1,
-        help="bounded ownership-candidate workers within each d0 case "
+        help="bounded ownership-candidate workers within each d0/dfg-sim case "
         "(default: %(default)s)",
     )
     parser.add_argument(
@@ -747,6 +1029,13 @@ def render_human(
         )
         if result.passed and result.graphs is not None:
             line += f"  graphs={result.graphs} actors={result.actors}"
+        if result.dfg_simulation is not None:
+            line += (
+                f" calls={result.dfg_simulation.dynamic_calls}"
+                f" bytes={result.dfg_simulation.memory_bytes_compared}"
+                f" wavefront-hz="
+                f"{result.dfg_simulation.wavefront_steps_per_second:.0f}"
+            )
         if not result.passed:
             line += f"  [{result.category}] {result.detail}"
         lines.append(line)
@@ -810,11 +1099,20 @@ def render_json(
         "tools": {
             "cc": toolchain.cc,
             "cxx": toolchain.cxx,
+            "dfg_run": toolchain.dfg_run,
             "pre_mapping": toolchain.pre_mapping,
             "raise": toolchain.raise_tool,
             "raise_opt": toolchain.raise_opt,
         },
     }
+    dfg_totals = DfgSimulationMetrics.zero()
+    has_dfg_result = False
+    for result in results:
+        if result.dfg_simulation is not None:
+            dfg_totals = dfg_totals.combine(result.dfg_simulation)
+            has_dfg_result = True
+    if has_dfg_result:
+        payload["dfg_simulation"] = dfg_totals.as_dict()
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 

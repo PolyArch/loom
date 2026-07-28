@@ -42,6 +42,22 @@ VALID_S0 = (
 )
 VALID_D0 = VALID_S0
 VALID_COUNTS = '{"actors": 0, "graphs": 0}\n'
+VALID_DFG_REPORT = json.dumps(
+    {
+        "actors": 3,
+        "dynamic_calls": 1,
+        "event_count": 11,
+        "graphs": 1,
+        "kind": "source_backed_dfg_comparison",
+        "memory_bytes_compared": 64,
+        "operation_firings": {"arith.addi": 4},
+        "simulation_seconds": 0.0001,
+        "status": "pass",
+        "wavefront_steps": 100,
+        "wavefront_steps_per_second": 1_000_000.0,
+    },
+    sort_keys=True,
+) + "\n"
 
 STUB = """#!/usr/bin/env python3
 import os
@@ -58,6 +74,14 @@ args = sys.argv[1:]
 out = args[args.index("-o") + 1] if "-o" in args else None
 counts = next(
     (arg.split("=", 1)[1] for arg in args if arg.startswith("--counts=")),
+    None,
+)
+canonical = next(
+    (arg.split("=", 1)[1] for arg in args if arg.startswith("--canonical-output=")),
+    None,
+)
+report = next(
+    (arg.split("=", 1)[1] for arg in args if arg.startswith("--output=")),
     None,
 )
 
@@ -99,11 +123,22 @@ if counts:
     )
     with open(counts, "w") as handle:
         handle.write(content)
+if canonical:
+    with open(canonical, "w") as handle:
+        handle.write(VALID_D0)
+if report:
+    content = (
+        "garbage\\n"
+        if corrupt and report.endswith(corrupt)
+        else VALID_DFG_REPORT
+    )
+    with open(report, "w") as handle:
+        handle.write(content)
 sys.exit(0)
 """
 
 TOOL_ENV = ("LOOM_CC", "LOOM_CXX", "LOOM_RAISE", "LOOM_RAISE_OPT",
-            "LOOM_PRE_MAPPING")
+            "LOOM_PRE_MAPPING", "LOOM_DFG_RUN")
 SYSROOT_ENV = (
     corpus_gate.ENV_SYSROOT,
     corpus_gate.ENV_GCC_TOOLCHAIN,
@@ -127,6 +162,7 @@ class CorpusGateTestBase(unittest.TestCase):
             .replace("VALID_S0", repr(VALID_S0))
             .replace("VALID_D0", repr(VALID_D0))
             .replace("VALID_COUNTS", repr(VALID_COUNTS))
+            .replace("VALID_DFG_REPORT", repr(VALID_DFG_REPORT))
         )
         self.tool_paths: dict[str, str] = {}
         for key, name in (
@@ -135,6 +171,7 @@ class CorpusGateTestBase(unittest.TestCase):
             ("raise", "stub-raise"),
             ("opt", "stub-opt"),
             ("pre_mapping", "stub-pre-mapping"),
+            ("dfg_run", "stub-dfg-run"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -155,6 +192,7 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_RAISE": self.tool_paths["raise"],
             "LOOM_RAISE_OPT": self.tool_paths["opt"],
             "LOOM_PRE_MAPPING": self.tool_paths["pre_mapping"],
+            "LOOM_DFG_RUN": self.tool_paths["dfg_run"],
             "STUB_LOG": str(self.log),
         }
         for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
@@ -273,6 +311,33 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertFalse(any("stub-raise " in line for line in invocations))
         self.assertFalse(any("stub-opt " in line for line in invocations))
 
+    def test_dfg_sim_stage_runs_source_backed_comparison_per_source(self) -> None:
+        exit_code, _, summary = self.run_gate(
+            "--case", "loombench:axpy", "--stage", "dfg-sim", "--jobs", "1"
+        )
+        self.assertEqual(exit_code, 0)
+        result = summary["cases"][0]
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["graphs"], 2)
+        self.assertEqual(result["actors"], 6)
+        self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 2)
+        self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 128)
+        self.assertEqual(
+            result["dfg_simulation"]["wavefront_steps_per_second"], 1_000_000.0
+        )
+
+        invocations = self.invocation_lines()
+        compiled = [line for line in invocations if "-emit-llvm" in line]
+        simulated = [line for line in invocations if "stub-dfg-run " in line]
+        self.assertEqual(len(compiled), 4)
+        self.assertEqual(len(simulated), 2)
+        for line in simulated:
+            self.assertIn("--builtin=small", line)
+            self.assertIn("--native-llvm=", line)
+            self.assertIn("--canonical-output=", line)
+            self.assertIn("--output=", line)
+            self.assertIn("--candidate-jobs=1", line)
+
 
 class CommandConstructionTest(CorpusGateTestBase):
     def toolchain(self) -> corpus_gate.Toolchain:
@@ -282,6 +347,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             raise_tool=self.tool_paths["raise"],
             raise_opt=self.tool_paths["opt"],
             pre_mapping=self.tool_paths["pre_mapping"],
+            dfg_run=self.tool_paths["dfg_run"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -327,6 +393,46 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "main_func.ll",
         )
         self.assertEqual(command[0], self.tool_paths["cxx"])
+
+    def test_dfg_sim_command_binds_target_native_and_outputs(self) -> None:
+        command = corpus_gate.dfg_sim_command(
+            self.toolchain(),
+            self.out_dir / "target.ll",
+            self.out_dir / "native.ll",
+            self.out_dir / "store",
+            self.out_dir / "program.dfg.mlir",
+            self.out_dir / "simulation.json",
+            3,
+        )
+        self.assertEqual(
+            command,
+            [
+                self.tool_paths["dfg_run"],
+                "--builtin=small",
+                f"--artifact-store={self.out_dir / 'store'}",
+                f"--native-llvm={self.out_dir / 'native.ll'}",
+                f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",
+                f"--output={self.out_dir / 'simulation.json'}",
+                "--candidate-jobs=3",
+                str(self.out_dir / "target.ll"),
+            ],
+        )
+
+    def test_dfg_report_requires_exact_substantive_projection(self) -> None:
+        report = self.out_dir / "simulation.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(VALID_DFG_REPORT)
+        parsed, defect = corpus_gate.parse_dfg_simulation_report(report)
+        self.assertIsNone(defect)
+        self.assertEqual(parsed.graphs, 1)
+        self.assertEqual(parsed.operation_firings, {"arith.addi": 4})
+
+        payload = json.loads(VALID_DFG_REPORT)
+        payload["memory_bytes_compared"] = 0
+        report.write_text(json.dumps(payload))
+        parsed, defect = corpus_gate.parse_dfg_simulation_report(report)
+        self.assertIsNone(parsed)
+        self.assertIn("substantive", defect)
 
     def namespace(self, **overrides: object) -> argparse.Namespace:
         values: dict[str, object] = {
