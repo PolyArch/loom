@@ -4,5 +4,8 @@
 # RUN: %loom-cc -c -O1 -flto %S/Inputs/payload_anchor.c -o %t.lto.o
 # RUN: %loom-payload --bitcode-output=%t.lto.bc %t.lto.o
 # RUN: llvm-dis %t.lto.bc -o - | FileCheck %s
+# RUN: %loom-cc -c -O1 -flto -ffat-lto-objects %S/Inputs/payload_anchor.c -o %t.fat.o
+# RUN: %loom-payload --bitcode-output=%t.fat.bc %t.fat.o
+# RUN: llvm-dis %t.fat.bc -o - | FileCheck %s
 
 # CHECK: define{{.*}} i32 @payload_anchor(i32

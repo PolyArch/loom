@@ -5,7 +5,6 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
-#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Plugins/PassPlugin.h"
@@ -19,13 +18,16 @@ class EmbedRelocatablePayloadPass
 public:
   llvm::PreservedAnalyses run(llvm::Module &module,
                               llvm::ModuleAnalysisManager &) {
-    for (const llvm::GlobalVariable &global : module.globals()) {
-      if (global.getSection() == loom::relocatablePayloadCarrierSection()) {
-        module.getContext().emitError("module already contains a relocatable "
-                                      "accelerator payload carrier");
-        return llvm::PreservedAnalyses::all();
-      }
+    llvm::Expected<bool> alreadyGenerated =
+        loom::hasGeneratedRelocatablePayloadCarrier(module);
+    if (!alreadyGenerated) {
+      module.getContext().emitError(
+          "cannot inspect relocatable accelerator payload carrier: " +
+          llvm::toString(alreadyGenerated.takeError()));
+      return llvm::PreservedAnalyses::all();
     }
+    if (*alreadyGenerated)
+      return llvm::PreservedAnalyses::all();
 
     llvm::SmallVector<char, 0> bitcode;
     llvm::raw_svector_ostream stream(bitcode);
