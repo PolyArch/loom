@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <string>
 #include <utility>
@@ -15,10 +16,6 @@
 
 namespace loom {
 namespace {
-
-void appendU8(std::string &bytes, std::uint8_t value) {
-  bytes.push_back(static_cast<char>(value));
-}
 
 void appendU64(std::string &bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
@@ -91,48 +88,94 @@ private:
     }
   }
 
+  struct RefinementNeighbor {
+    std::uint8_t direction;
+    llvm::StringRef label;
+    std::uint64_t color;
+  };
+
+  struct RefinementSignature {
+    std::uint64_t color;
+    llvm::SmallVector<RefinementNeighbor, 4> neighbors;
+  };
+
+  static int compareEncodedLabel(llvm::StringRef lhs, llvm::StringRef rhs) {
+    if (lhs.size() != rhs.size())
+      return lhs.size() < rhs.size() ? -1 : 1;
+    return lhs.compare(rhs);
+  }
+
+  static int compareNeighbor(const RefinementNeighbor &lhs,
+                             const RefinementNeighbor &rhs) {
+    if (lhs.direction != rhs.direction)
+      return lhs.direction < rhs.direction ? -1 : 1;
+    if (int labelOrder = compareEncodedLabel(lhs.label, rhs.label))
+      return labelOrder;
+    if (lhs.color != rhs.color)
+      return lhs.color < rhs.color ? -1 : 1;
+    return 0;
+  }
+
+  static int compareSignature(const RefinementSignature &lhs,
+                              const RefinementSignature &rhs) {
+    if (lhs.color != rhs.color)
+      return lhs.color < rhs.color ? -1 : 1;
+    if (lhs.neighbors.size() != rhs.neighbors.size())
+      return lhs.neighbors.size() < rhs.neighbors.size() ? -1 : 1;
+    for (auto [left, right] : llvm::zip(lhs.neighbors, rhs.neighbors))
+      if (int order = compareNeighbor(left, right))
+        return order;
+    return 0;
+  }
+
   std::vector<std::uint64_t> refine(std::vector<std::uint64_t> colors) const {
     while (true) {
-      std::vector<std::string> signatures(intrinsics_.size());
+      std::vector<RefinementSignature> signatures;
+      signatures.reserve(intrinsics_.size());
       for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex) {
-        std::string signature;
-        appendU64(signature, colors[vertex]);
-        llvm::SmallVector<std::string> neighbors;
-        neighbors.reserve(outgoing_[vertex].size() + incoming_[vertex].size());
+        RefinementSignature signature{colors[vertex], {}};
+        signature.neighbors.reserve(outgoing_[vertex].size() +
+                                    incoming_[vertex].size());
         for (std::uint32_t ordinal : outgoing_[vertex]) {
           const CanonicalRelationEdge &edge = edges_[ordinal];
-          std::string neighbor;
-          appendU8(neighbor, 0);
-          appendBytes(neighbor, edge.label);
-          appendU64(neighbor, colors[edge.target]);
-          neighbors.push_back(std::move(neighbor));
+          signature.neighbors.push_back(
+              {0, edge.label, colors[edge.target]});
         }
         for (std::uint32_t ordinal : incoming_[vertex]) {
           const CanonicalRelationEdge &edge = edges_[ordinal];
-          std::string neighbor;
-          appendU8(neighbor, 1);
-          appendBytes(neighbor, edge.label);
-          appendU64(neighbor, colors[edge.source]);
-          neighbors.push_back(std::move(neighbor));
+          signature.neighbors.push_back(
+              {1, edge.label, colors[edge.source]});
         }
-        llvm::sort(neighbors);
-        appendU64(signature, neighbors.size());
-        for (const std::string &neighbor : neighbors)
-          signature.append(neighbor);
-        signatures[vertex] = std::move(signature);
+        llvm::sort(signature.neighbors,
+                   [](const RefinementNeighbor &lhs,
+                      const RefinementNeighbor &rhs) {
+                     return compareNeighbor(lhs, rhs) < 0;
+                   });
+        signatures.push_back(std::move(signature));
       }
 
-      std::map<std::string, std::uint64_t> ranks;
-      for (const std::string &signature : signatures)
-        ranks.emplace(signature, 0);
-      std::uint64_t next = 0;
-      for (auto &entry : ranks)
-        entry.second = next++;
+      std::vector<std::uint32_t> order(intrinsics_.size());
+      std::iota(order.begin(), order.end(), 0);
+      llvm::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
+        return compareSignature(signatures[lhs], signatures[rhs]) < 0;
+      });
 
-      const std::size_t previousClassCount =
-          std::set<std::uint64_t>(colors.begin(), colors.end()).size();
-      for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
-        colors[vertex] = ranks[signatures[vertex]];
+      const std::uint64_t previousClassCount =
+          colors.empty()
+              ? 0
+              : *llvm::max_element(colors) + static_cast<std::uint64_t>(1);
+      std::vector<std::uint64_t> refined(colors.size());
+      std::uint64_t rank = 0;
+      if (!order.empty())
+        refined[order.front()] = rank;
+      for (std::size_t index = 1; index < order.size(); ++index) {
+        if (compareSignature(signatures[order[index - 1]],
+                             signatures[order[index]]) != 0)
+          ++rank;
+        refined[order[index]] = rank;
+      }
+      const std::uint64_t next = order.empty() ? 0 : rank + 1;
+      colors = std::move(refined);
       if (next == previousClassCount)
         return colors;
     }
