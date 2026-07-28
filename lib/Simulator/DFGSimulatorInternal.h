@@ -380,7 +380,17 @@ private:
   std::size_t head_ = 0;
 };
 
-using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, TokenQueue>;
+using ChannelOrdinal = std::uint32_t;
+
+/// Run-local storage for one canonical software edge. The graph's OpOperand
+/// remains the semantic owner; the ordinal and colocated queues are a dense
+/// execution cache derived before firing begins.
+struct ChannelSlot {
+  const mlir::OpOperand *operand = nullptr;
+  TokenQueue ready;
+  TokenQueue pending;
+};
+
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
 struct LoopState {
@@ -549,9 +559,9 @@ struct SimulatorState {
   llvm::SmallVector<mlir::Operation *> actorOperations;
   llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
   llvm::SmallBitVector nextActorCandidates;
-  ChannelMap channels;
-  ChannelMap pendingChannels;
-  llvm::SmallVector<const mlir::OpOperand *, 16> pendingChannelKeys;
+  llvm::DenseMap<const mlir::OpOperand *, ChannelOrdinal> channelOrdinals;
+  std::vector<ChannelSlot> channelSlots;
+  llvm::SmallVector<ChannelOrdinal, 16> pendingChannelOrdinals;
   // Values whose complete publication sequence is an explicit graph
   // observation. Internal SSA token history is represented by the edge
   // queues alone and is not retained as an implicit trace.
@@ -708,14 +718,16 @@ void retainAndPublishActivationMemoryOrder(SimulatorState &state,
 void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
                                   bool retire);
 
-bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
+TokenQueue &channelQueue(SimulatorState &state, mlir::OpOperand &operand);
+bool hasToken(const SimulatorState &state, mlir::OpOperand &operand);
 void scheduleActor(SimulatorState &state, mlir::Operation *actor);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);
-Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
+const Token &peekToken(const SimulatorState &state, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);
 void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
                               Token token, MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
+void flushPendingTokens(SimulatorState &state);
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
                        const Token &token);
 const dataflow::CanonicalActorSchemaProjection &

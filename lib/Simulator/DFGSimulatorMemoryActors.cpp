@@ -43,8 +43,8 @@ static std::optional<MemoryView>
 peekMemoryView(SimulatorState &state, mlir::Value mem,
                mlir::OpOperand &memOperand,
                llvm::SmallVectorImpl<std::string> &diagnostics) {
-  if (hasToken(state.channels, memOperand)) {
-    Token token = peekToken(state.channels, memOperand);
+  if (hasToken(state, memOperand)) {
+    Token token = peekToken(state, memOperand);
     if (token.kind != TokenKind::Pointer || !token.pointer.memory) {
       diagnostics.push_back("dataflow memory operand is not a memory view");
       return std::nullopt;
@@ -66,7 +66,7 @@ peekMemoryView(SimulatorState &state, mlir::Value mem,
 
 static void consumeMemoryView(SimulatorState &state,
                               mlir::OpOperand &memOperand) {
-  if (hasToken(state.channels, memOperand))
+  if (hasToken(state, memOperand))
     (void)popToken(state, memOperand);
 }
 
@@ -623,9 +623,9 @@ static MemorySynchronization &memorySynchronization(SimulatorState &state) {
 static llvm::SmallVector<SyncEffectId, 2>
 peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
-  if (hasToken(state.channels, ctrl))
+  if (hasToken(state, ctrl))
     frontier.assign(state.memoryOrderFrontiers.elements(
-        peekToken(state.channels, ctrl).memoryOrder));
+        peekToken(state, ctrl).memoryOrder));
   return frontier;
 }
 
@@ -671,18 +671,18 @@ projectLoadFiring(dataflow::LoadOp op, SimulatorState &state,
                   llvm::SmallVectorImpl<std::string> &diagnostics) {
   mlir::OpOperand *maskOperand =
       getOptionalMaskOperand(op.getOperation(), op.getMask());
-  if (!hasToken(state.channels, op.getAddrMutable()) ||
-      !hasToken(state.channels, op.getCtrlMutable()) ||
-      (maskOperand && !hasToken(state.channels, *maskOperand)))
+  if (!hasToken(state, op.getAddrMutable()) ||
+      !hasToken(state, op.getCtrlMutable()) ||
+      (maskOperand && !hasToken(state, *maskOperand)))
     return std::nullopt;
   std::optional<MemoryView> view =
       peekMemoryView(state, op.getMem(), op.getMemMutable(), diagnostics);
   if (!view)
     return std::nullopt;
-  Token addr = peekToken(state.channels, op.getAddrMutable());
+  Token addr = peekToken(state, op.getAddrMutable());
   std::optional<Token> mask;
   if (maskOperand)
-    mask = peekToken(state.channels, *maskOperand);
+    mask = peekToken(state, *maskOperand);
   auto plan = state.memoryActorPlans.find(op.getOperation());
   assert(plan != state.memoryActorPlans.end() &&
          "admitted load has no execution plan");
@@ -701,19 +701,19 @@ projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
                    llvm::SmallVectorImpl<std::string> &diagnostics) {
   mlir::OpOperand *maskOperand =
       getOptionalMaskOperand(op.getOperation(), op.getMask());
-  if (!hasToken(state.channels, op.getAddrMutable()) ||
-      !hasToken(state.channels, op.getDataMutable()) ||
-      !hasToken(state.channels, op.getCtrlMutable()) ||
-      (maskOperand && !hasToken(state.channels, *maskOperand)))
+  if (!hasToken(state, op.getAddrMutable()) ||
+      !hasToken(state, op.getDataMutable()) ||
+      !hasToken(state, op.getCtrlMutable()) ||
+      (maskOperand && !hasToken(state, *maskOperand)))
     return std::nullopt;
   std::optional<MemoryView> view =
       peekMemoryView(state, op.getMem(), op.getMemMutable(), diagnostics);
   if (!view)
     return std::nullopt;
-  Token addr = peekToken(state.channels, op.getAddrMutable());
+  Token addr = peekToken(state, op.getAddrMutable());
   std::optional<Token> mask;
   if (maskOperand)
-    mask = peekToken(state.channels, *maskOperand);
+    mask = peekToken(state, *maskOperand);
   auto plan = state.memoryActorPlans.find(op.getOperation());
   assert(plan != state.memoryActorPlans.end() &&
          "admitted store has no execution plan");
@@ -802,7 +802,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
     return false;
   ReadyPlainMemoryAction &ready = admitted->second;
   const auto &plan = state.memoryActorPlans.find(op.getOperation())->second;
-  Token data = peekToken(state.channels, op.getDataMutable());
+  Token data = peekToken(state, op.getDataMutable());
   auto write = prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots,
                                           plan, state);
   if (!write)

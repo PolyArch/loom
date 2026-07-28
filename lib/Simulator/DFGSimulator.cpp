@@ -147,9 +147,44 @@ llvm::Expected<Token> zeroToken(mlir::Type type) {
                                  typeToString(type).c_str());
 }
 
-bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
-  auto it = channels.find(&operand);
-  return it != channels.end() && !it->second.empty();
+static ChannelSlot *findChannelSlot(SimulatorState &state,
+                                    mlir::OpOperand &operand) {
+  auto found = state.channelOrdinals.find(&operand);
+  if (found != state.channelOrdinals.end())
+    return &state.channelSlots[found->second];
+  return nullptr;
+}
+
+static const ChannelSlot *findChannelSlot(const SimulatorState &state,
+                                          mlir::OpOperand &operand) {
+  auto found = state.channelOrdinals.find(&operand);
+  if (found == state.channelOrdinals.end())
+    return nullptr;
+  return &state.channelSlots[found->second];
+}
+
+static ChannelSlot &getOrCreateChannelSlot(SimulatorState &state,
+                                           mlir::OpOperand &operand) {
+  if (ChannelSlot *slot = findChannelSlot(state, operand))
+    return *slot;
+
+  assert(state.channelSlots.size() <
+             std::numeric_limits<ChannelOrdinal>::max() &&
+         "DFG channel ordinal overflow");
+  ChannelOrdinal ordinal =
+      static_cast<ChannelOrdinal>(state.channelSlots.size());
+  state.channelOrdinals.try_emplace(&operand, ordinal);
+  state.channelSlots.push_back(ChannelSlot{&operand, {}, {}});
+  return state.channelSlots.back();
+}
+
+TokenQueue &channelQueue(SimulatorState &state, mlir::OpOperand &operand) {
+  return getOrCreateChannelSlot(state, operand).ready;
+}
+
+bool hasToken(const SimulatorState &state, mlir::OpOperand &operand) {
+  const ChannelSlot *slot = findChannelSlot(state, operand);
+  return slot && !slot->ready.empty();
 }
 
 void scheduleActor(SimulatorState &state, mlir::Operation *actor) {
@@ -159,8 +194,11 @@ void scheduleActor(SimulatorState &state, mlir::Operation *actor) {
 }
 
 Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
-  auto &queue = state.channels[&operand];
-  Token token = queue.front();
+  ChannelSlot *slot = findChannelSlot(state, operand);
+  assert(slot && !slot->ready.empty() &&
+         "pop requires an existing nonempty token channel");
+  TokenQueue &queue = slot->ready;
+  Token token = std::move(queue.front());
   queue.pop_front();
   state.firingMemoryOrderFrontier.absorb(
       state.memoryOrderFrontiers.elements(token.memoryOrder),
@@ -169,16 +207,23 @@ Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
   return token;
 }
 
-Token peekToken(ChannelMap &channels, mlir::OpOperand &operand) {
-  return channels[&operand].front();
+const Token &peekToken(const SimulatorState &state, mlir::OpOperand &operand) {
+  const ChannelSlot *slot = findChannelSlot(state, operand);
+  assert(slot && !slot->ready.empty() &&
+         "peek requires an existing nonempty token channel");
+  return slot->ready.front();
 }
 
 static void publishToken(SimulatorState &state, mlir::Value value,
                          const Token &token) {
   for (mlir::OpOperand &use : value.getUses()) {
-    auto &pending = state.pendingChannels[&use];
-    if (pending.empty())
-      state.pendingChannelKeys.push_back(&use);
+    ChannelSlot &slot = getOrCreateChannelSlot(state, use);
+    TokenQueue &pending = slot.pending;
+    if (pending.empty()) {
+      auto ordinal =
+          static_cast<ChannelOrdinal>(&slot - state.channelSlots.data());
+      state.pendingChannelOrdinals.push_back(ordinal);
+    }
     pending.push_back(token);
   }
   if (state.observedValues.contains(value)) {
@@ -218,21 +263,25 @@ actorProjection(const SimulatorState &state, mlir::Operation *op) {
   return found->second;
 }
 
-static void flushPendingTokens(SimulatorState &state) {
-  for (const mlir::OpOperand *operand : state.pendingChannelKeys) {
-    auto &pending = state.pendingChannels[operand];
+void flushPendingTokens(SimulatorState &state) {
+  for (ChannelOrdinal ordinal : state.pendingChannelOrdinals) {
+    ChannelSlot &slot = state.channelSlots[ordinal];
+    assert(slot.operand && !slot.pending.empty() &&
+           "a scheduled pending channel must exist and contain a token");
+    TokenQueue &pending = slot.pending;
+    const mlir::OpOperand *operand = slot.operand;
     mlir::Operation *owner = operand->getOwner();
     scheduleActor(state, owner);
-    auto ordinal = state.plainMemoryOperationOrder.find(owner);
-    if (ordinal != state.plainMemoryOperationOrder.end())
-      state.plainMemoryCandidates.try_emplace(ordinal->second, owner);
-    auto &target = state.channels[operand];
+    auto memoryOrder = state.plainMemoryOperationOrder.find(owner);
+    if (memoryOrder != state.plainMemoryOperationOrder.end())
+      state.plainMemoryCandidates.try_emplace(memoryOrder->second, owner);
+    TokenQueue &target = slot.ready;
     while (!pending.empty()) {
       target.push_back(std::move(pending.front()));
       pending.pop_front();
     }
   }
-  state.pendingChannelKeys.clear();
+  state.pendingChannelOrdinals.clear();
   for (mlir::Value value : state.pendingObservedValues) {
     auto &pending = state.pendingObservedOutputs[value];
     auto &target = state.observedOutputs[value];
@@ -458,10 +507,22 @@ static GraphReturnObservation observeReturnOperands(dataflow::GraphOp graph) {
   return observation;
 }
 
+static void initializeChannelStorage(SimulatorState &state,
+                                     mlir::Block &entry) {
+  std::size_t channelCount = 0;
+  for (mlir::Operation &op : entry.getOperations())
+    channelCount += op.getNumOperands();
+  state.channelOrdinals.reserve(channelCount);
+  state.channelSlots.reserve(channelCount);
+  for (mlir::Operation &op : entry.getOperations())
+    for (mlir::OpOperand &operand : op.getOpOperands())
+      (void)channelQueue(state, operand);
+}
+
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
                        const Token &token) {
   for (mlir::OpOperand &use : arg.getUses())
-    state.channels[&use].push_back(token);
+    channelQueue(state, use).push_back(token);
   state.observedOutputs[arg].push_back(token);
   ++state.seededTokenCounts[arg];
 }
@@ -804,6 +865,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
 
   SimulatorState state;
   state.graphScope = graph.getOperation();
+  initializeChannelStorage(state, entry);
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
   state.observedValues.insert(returnObservation.complete.begin(),
                               returnObservation.complete.end());
@@ -1027,8 +1089,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
         continue;
       mlir::BlockArgument arg = entry.getArgument(index + 1);
       for (mlir::OpOperand &use : arg.getUses()) {
-        auto channel = state.channels.find(&use);
-        if (channel != state.channels.end() && !channel->second.empty())
+        if (hasToken(state, use))
           return false;
       }
     }
