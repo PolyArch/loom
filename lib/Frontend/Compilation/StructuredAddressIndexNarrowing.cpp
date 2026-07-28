@@ -672,7 +672,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     use.operation.getDynamicIndicesMutable().assign(indices);
   }
 
-  for (PointerInductionLoop &loop : llvm::reverse(pointerLoops)) {
+  for (PointerInductionLoop &loop : pointerLoops) {
     const bool replacesSelection =
         selectedOperation == loop.operation.getOperation();
     mlir::scf::WhileOp replacement =

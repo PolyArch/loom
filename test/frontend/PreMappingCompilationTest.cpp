@@ -317,6 +317,61 @@ exit:
 }
 
 std::unique_ptr<llvm::Module>
+parseNestedPointerInductionModule(const char *test,
+                                  llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define void @nested_pointer_induction(ptr %outer_base, ptr %inner_base,
+                                      i32 %rows, i32 %columns) {
+entry:
+  %empty_rows = icmp eq i32 %rows, 0
+  %empty_columns = icmp eq i32 %columns, 0
+  %empty = or i1 %empty_rows, %empty_columns
+  br i1 %empty, label %exit, label %outer
+
+outer:
+  %rows_left = phi i32 [ %rows, %entry ], [ %next_rows, %outer_latch ]
+  %row = phi ptr [ %outer_base, %entry ], [ %next_row, %outer_latch ]
+  %row_value = load i32, ptr %row, align 4
+  store i32 %row_value, ptr %row, align 4
+  br label %inner
+
+inner:
+  %columns_left = phi i32 [ %columns, %outer ], [ %next_columns, %inner ]
+  %element = phi ptr [ %inner_base, %outer ], [ %next_element, %inner ]
+  %value = load i32, ptr %element, align 4
+  store i32 %value, ptr %element, align 4
+  %next_element = getelementptr inbounds i8, ptr %element, i64 4
+  %next_columns = add i32 %columns_left, -1
+  %more_columns = icmp ne i32 %next_columns, 0
+  br i1 %more_columns, label %inner, label %outer_latch
+
+outer_latch:
+  %next_row = getelementptr inbounds i8, ptr %row, i64 64
+  %next_rows = add i32 %rows_left, -1
+  %more_rows = icmp ne i32 %next_rows, 0
+  br i1 %more_rows, label %outer, label %exit
+
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(
+      source, "<nested-pointer-induction-owner>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseLoopOwnershipModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -847,6 +902,44 @@ void wholeCallableNormalizesPointerInduction() {
   }
   if (!sawLoad || !sawStore)
     fail(test, "normalized pointer induction lost its memory transactions");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void wholeCallableNormalizesNestedPointerInduction() {
+  const char *test = "wholeCallableNormalizesNestedPointerInduction";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-nested-pointer-induction", directory);
+  if (error)
+    fail(test, "cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseNestedPointerInductionModule(test,
+                                                                   context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::WholeCallableSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 64;
+  auto selected =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram,
+                                  "nested_pointer_induction"),
+                     design.roots().front(), options));
+  auto view = take(test, selected.canonicalDataflow.view());
+  if (view.graphs().size() != 1 || view.actors().empty())
+    fail(test, "nested pointer induction did not publish its graph");
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(actor.op))
+      if (dataflow::DataflowDialect::containsMemoryCapability(
+              carry.getOutput().getType()))
+        fail(test, "nested pointer induction retained pointer carry state");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1543,6 +1636,7 @@ int main() {
   explicitFmulAddExecutionShape();
   wholeCallableRequiresCanonicalAddressIndexDecision();
   wholeCallableNormalizesPointerInduction();
+  wholeCallableNormalizesNestedPointerInduction();
   explicitOperationSpatialOwnership();
   operationOwnershipInternalizesConstants();
   wholeCallableScopesFollowCanonicalOrder();
