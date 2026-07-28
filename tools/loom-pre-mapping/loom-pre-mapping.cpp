@@ -1,10 +1,9 @@
 // loom-pre-mapping: read an LLVM IR (.ll / .bc) file via parseIRFile, resolve
 // one exact builtin Fabric target through an existing ArtifactStore, and run
-// the production pre-Mapping compilation library
-// (loom::frontend::compileLlvmModuleToPreMapping). The mechanical
-// LLVM-to-Structured raising and Structured-to-Dataflow lowering boundaries,
-// including the Structured Program and Canonical Dataflow finalizers, execute
-// inside the shared library; this driver owns only CLI and presentation.
+// the production pre-Mapping compilation libraries. Without an explicit
+// ownership selection, central Generate/Evaluate/Promote explores Structured
+// candidates against the exact Fabric. Focused explicit selections bypass
+// ranking but use the same mechanical boundaries and candidate materializer.
 //
 // CLI shape mirrors loom-raise / loom-adg:
 //
@@ -25,6 +24,9 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/ResolvedConfig.h"
+#include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
@@ -225,11 +227,11 @@ int main(int argc, char **argv) {
       argc, argv,
       "Loom LLVM IR -> pre-Mapping compilation driver\n"
       "Resolves one exact builtin Fabric target through an existing "
-      "ArtifactStore and runs the production pre-Mapping compilation "
-      "library (mechanical LLVM-to-Structured raising, Structured Program "
-      "finalization, mechanical Structured-to-Dataflow lowering, and "
-      "Canonical Dataflow finalization). Emits the finalized Canonical "
-      "Dataflow module and structured graph/actor counts.\n");
+      "ArtifactStore. The default path runs central Structured "
+      "Generate/Evaluate/Promote between mechanical LLVM raising and "
+      "Dataflow lowering; explicit ownership flags materialize one focused "
+      "candidate. Emits the finalized Canonical Dataflow module and "
+      "structured graph/actor counts.\n");
 
   auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
   if (!preset)
@@ -252,21 +254,14 @@ int main(int argc, char **argv) {
         ::llvm::inconvertibleErrorCode(),
         "builtin target did not produce exactly one Fabric root"));
 
-  loom::frontend::PreMappingCompilationOptions compilationOptions;
-  compilationOptions.raising.applyPassManagerCommandLineOptions = true;
-  compilationOptions.lowering.applyPassManagerCommandLineOptions = true;
-  auto compiled = loom::frontend::compileLlvmModuleToPreMapping(
-      std::move(llvmModule), design->roots().front().reference(), store,
-      compilationOptions);
-  if (!compiled)
-    return reportError(compiled.takeError());
+  const bool hasExplicitSelection =
+      !wholeCallableSpatial.empty() || !operationSpatial.empty();
 
   if (!wholeCallableSpatial.empty() && !operationSpatial.empty())
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "whole-callable and operation Spatial selections are exclusive"));
-  if (canonicalIndexWidth != 0 && operationSpatial.empty() &&
-      wholeCallableSpatial.empty())
+  if (canonicalIndexWidth != 0 && !hasExplicitSelection)
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "canonical index width requires a Spatial selection"));
@@ -275,16 +270,62 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "operation Spatial scope index requires an operation selection"));
-  if (fmuladdShape != FMulAddShapeOption::Unspecified &&
-      wholeCallableSpatial.empty() && operationSpatial.empty())
+  if (fmuladdShape != FMulAddShapeOption::Unspecified && !hasExplicitSelection)
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "fmuladd shape requires a Spatial selection"));
 
+  loom::frontend::PreMappingCompilationOptions compilationOptions;
+  compilationOptions.raising.applyPassManagerCommandLineOptions = true;
+  compilationOptions.lowering.applyPassManagerCommandLineOptions = true;
+
+  std::optional<loom::frontend::PreMappingCompilation> compiled;
+  std::optional<loom::frontend::StructuredCompilation> explicitInput;
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
+  if (!hasExplicitSelection) {
+    loom::dse::PreMappingExplorationOptions exploration{
+        compilationOptions.raising,
+        {compilationOptions.lowering,
+         {loom::evaluation::MetricRequestOrdinal(0),
+          loom::dse::ObjectiveDirection::Minimize, 1}}};
+    auto outcome = loom::dse::exploreLlvmModuleToPreMapping(
+        std::move(llvmModule), design->roots().front(),
+        loom::defaultResolvedConfig(), exploration, store);
+    if (!outcome)
+      return reportError(outcome.takeError());
+    if (const auto *incomplete =
+            std::get_if<loom::dse::IncompleteSelection>(&*outcome))
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "central DSE is incomplete for candidate %s: %s",
+          loom::formatArtifactIdentityHex(incomplete->candidate.artifact)
+              .c_str(),
+          loom::dse::toString(incomplete->reason).str().c_str()));
+    if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(
+            *outcome))
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "central DSE completed without a feasible candidate"));
+    auto &completion =
+        std::get<loom::dse::CompletedPreMappingSelection>(*outcome);
+    if (completion.selected.size() != 1)
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "TopK(1) returned %zu pre-Mapping candidates",
+          completion.selected.size()));
+    compiled.emplace(std::move(completion.selected.front()));
+  } else {
+    auto mechanical = loom::frontend::raiseLlvmModuleToStructured(
+        std::move(llvmModule), design->roots().front().reference(), store,
+        compilationOptions.raising);
+    if (!mechanical)
+      return reportError(mechanical.takeError());
+    explicitInput.emplace(std::move(*mechanical));
+  }
+
   if (!wholeCallableSpatial.empty()) {
     auto callable =
-        resolveCallable(compiled->structuredProgram, wholeCallableSpatial);
+        resolveCallable(explicitInput->structuredProgram, wholeCallableSpatial);
     if (!callable)
       return reportError(callable.takeError());
     loom::frontend::WholeCallableSpatialOwnershipOptions ownershipOptions;
@@ -299,8 +340,8 @@ int main(int argc, char **argv) {
           loom::raising::FMulAddExecutionShape::Split;
     auto materialized =
         loom::frontend::materializeWholeCallableSpatialOwnership(
-            compiled->structuredProgram, *callable, design->roots().front(),
-            ownershipOptions);
+            explicitInput->structuredProgram, *callable,
+            design->roots().front(), ownershipOptions);
     if (!materialized)
       return reportError(materialized.takeError());
     selected.emplace(std::move(*materialized));
@@ -309,7 +350,7 @@ int main(int argc, char **argv) {
     if (operationSpatialScopeIndex.getNumOccurrences() != 0)
       scopeIndex = operationSpatialScopeIndex;
     auto operation = resolveUniqueStructuredOperation(
-        compiled->structuredProgram, operationSpatial, scopeIndex);
+        explicitInput->structuredProgram, operationSpatial, scopeIndex);
     if (!operation)
       return reportError(operation.takeError());
     loom::frontend::OperationSpatialOwnershipOptions ownershipOptions;
@@ -323,7 +364,7 @@ int main(int argc, char **argv) {
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Split;
     auto materialized = loom::frontend::materializeOperationSpatialOwnership(
-        compiled->structuredProgram, *operation, design->roots().front(),
+        explicitInput->structuredProgram, *operation, design->roots().front(),
         ownershipOptions);
     if (!materialized)
       return reportError(materialized.takeError());

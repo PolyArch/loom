@@ -5,6 +5,7 @@
 #include "Evaluation/Evidence.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -66,6 +67,8 @@ enum class IncompleteSelectionReason : std::uint8_t {
   CancelledOrTimeoutEvidence,
   NonComparableEvidence,
 };
+
+llvm::StringRef toString(IncompleteSelectionReason reason);
 
 struct IncompleteSelection final {
   IncompleteSelectionReason reason;

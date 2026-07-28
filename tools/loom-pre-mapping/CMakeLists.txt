@@ -17,6 +17,7 @@ set_target_properties(loom-pre-mapping PROPERTIES
 target_link_libraries(loom-pre-mapping PRIVATE
   LoomADGBuilder
   LoomCommon
+  LoomDSE
   LoomFrontendCompilation
 )
 

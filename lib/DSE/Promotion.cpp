@@ -107,6 +107,22 @@ struct RankedCandidate final {
 
 } // namespace
 
+llvm::StringRef toString(IncompleteSelectionReason reason) {
+  switch (reason) {
+  case IncompleteSelectionReason::MissingEvidence:
+    return "missing_evidence";
+  case IncompleteSelectionReason::UnsupportedEvidence:
+    return "unsupported_evidence";
+  case IncompleteSelectionReason::ExecutionFailedEvidence:
+    return "execution_failed_evidence";
+  case IncompleteSelectionReason::CancelledOrTimeoutEvidence:
+    return "cancelled_or_timeout_evidence";
+  case IncompleteSelectionReason::NonComparableEvidence:
+    return "non_comparable_evidence";
+  }
+  llvm_unreachable("unknown IncompleteSelectionReason");
+}
+
 llvm::Expected<CandidateSet>
 CandidateSet::get(const ArtifactSchemaDescriptor &schema,
                   llvm::ArrayRef<ArtifactRootReference> candidates) {
