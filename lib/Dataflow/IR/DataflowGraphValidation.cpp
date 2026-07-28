@@ -874,6 +874,25 @@ private:
     return branch.isExactOne(value);
   }
 
+  bool isExactOneWhenSelectedAndAligned(
+      mlir::Value value, mlir::Value selector, unsigned lane, mlir::Value phase,
+      mlir::Value assumption, bool truePhaseOnly) {
+    GraphCardinalityAnalysis branch(graph, sharedState);
+    auto demuxes = graphIndex->demuxesBySelector.find(selector);
+    if (demuxes != graphIndex->demuxesBySelector.end()) {
+      for (dataflow::DemuxOp demux : demuxes->second) {
+        if (lane >= demux.getOutputs().size())
+          continue;
+        llvm::DenseSet<mlir::Value> visited;
+        if (!isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
+                       visited))
+          continue;
+        branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+      }
+    }
+    return branch.isExactOne(value);
+  }
+
   bool computeAvailableWhenSelected(mlir::Value value, mlir::Value selector,
                                     unsigned lane,
                                     llvm::DenseSet<mlir::Value> &visited) {
@@ -984,10 +1003,12 @@ private:
       }
       return false;
     }
+    if (llvm::isa<dataflow::MuxOp>(def))
+      return isExactOneWhenSelectedAndAligned(
+          value, selector, lane, phase, assumption, truePhaseOnly);
     if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp, dataflow::InvariantOp,
                   dataflow::GateOp, dataflow::ParallelizeOp, dataflow::PackOp,
-                  dataflow::UnpackOp, dataflow::SerializeOp, dataflow::MuxOp>(
-            def))
+                  dataflow::UnpackOp, dataflow::SerializeOp>(def))
       return false;
     if (!dataflow::isCanonicalDataflowActor(def) &&
         !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))

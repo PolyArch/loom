@@ -96,3 +96,41 @@ dataflow.graph private @nested_while_with_inner_selection(
   }
   dataflow.graph.return %start : none
 }
+
+// A lifted CFG may represent the continue decision as an integer selected by
+// structured control before converting it back to i1. The selected condition
+// still owns one trailing false phase and therefore one completion token.
+// CHECK-LABEL: dataflow.graph private @selected_integer_while_condition
+// CHECK: dataflow.carry
+// CHECK: dataflow.graph.return
+// CHECK-NOT: scf.if
+// CHECK-NOT: scf.while
+dataflow.graph private @selected_integer_while_condition(
+    %start: none, %limit: i32) -> ()
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %result:2 = scf.while (%i = %zero, %value = %zero)
+      : (i32, i32) -> (i32, i32) {
+    %past_end = arith.cmpi sge, %i, %limit : i32
+    %state:3 = scf.if %past_end -> (i32, i32, i32) {
+      scf.yield %i, %value, %zero : i32, i32, i32
+    } else {
+      %next = arith.addi %i, %one : i32
+      %at_end = arith.cmpi eq, %next, %limit : i32
+      %selected_continue = scf.if %at_end -> (i32) {
+        scf.yield %zero : i32
+      } else {
+        scf.yield %one : i32
+      }
+      scf.yield %next, %value, %selected_continue : i32, i32, i32
+    }
+    %continue = arith.trunci %state#2 : i32 to i1
+    scf.condition(%continue) %state#0, %state#1 : i32, i32
+  } do {
+  ^bb0(%i: i32, %value: i32):
+    scf.yield %i, %value : i32, i32
+  }
+  dataflow.graph.return %start : none
+}
