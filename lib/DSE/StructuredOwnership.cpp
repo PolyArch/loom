@@ -11,6 +11,7 @@
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -111,9 +112,10 @@ generateAndPromoteStructuredOwnership(
     std::optional<llvm::Error> error;
   };
   std::vector<WorkResult> results(workItems.size());
-  auto execute = [&](std::size_t index) {
-    auto result = materializeOwnershipWorkItem(parent, fabric, config, options,
-                                               artifactStore, workItems[index]);
+  auto execute = [&](const frontend::StructuredProgramCandidate &workerParent,
+                     std::size_t index) {
+    auto result = materializeOwnershipWorkItem(
+        workerParent, fabric, config, options, artifactStore, workItems[index]);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;
@@ -122,18 +124,38 @@ generateAndPromoteStructuredOwnership(
   };
 
   const std::size_t workerCount =
-      parent.module()->getContext()->isMultithreadingEnabled()
-          ? std::min<std::size_t>(options.candidateWorkerCount,
-                                  workItems.size())
-          : 1;
+      std::min<std::size_t>(options.candidateWorkerCount, workItems.size());
   if (workerCount <= 1) {
     for (std::size_t index = 0; index < workItems.size(); ++index)
-      execute(index);
+      execute(parent, index);
   } else {
+    // Each worker owns one independently imported parent and therefore one
+    // thread-confined MLIRContext. Explicit DSE parallelism must not depend on
+    // enabling an MLIRContext's implicit all-host thread pool or concurrently
+    // mutate IR interned in another worker's context.
+    std::vector<frontend::StructuredProgramCandidate> workerParents;
+    workerParents.reserve(workerCount);
+    for (std::size_t worker = 0; worker < workerCount; ++worker) {
+      auto imported = frontend::importStructuredProgram(
+          parent.identity(), parent.canonicalBytes());
+      if (!imported)
+        return imported.takeError();
+      workerParents.push_back(std::move(*imported));
+    }
+
     llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
         static_cast<unsigned>(workerCount)));
-    for (std::size_t index = 0; index < workItems.size(); ++index)
-      pool.async([&, index] { execute(index); });
+    std::atomic_size_t nextWorkItem{0};
+    for (std::size_t worker = 0; worker < workerCount; ++worker)
+      pool.async([&, worker] {
+        while (true) {
+          const std::size_t index =
+              nextWorkItem.fetch_add(1, std::memory_order_relaxed);
+          if (index >= workItems.size())
+            break;
+          execute(workerParents[worker], index);
+        }
+      });
     pool.wait();
   }
 
