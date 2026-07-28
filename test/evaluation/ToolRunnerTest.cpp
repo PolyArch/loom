@@ -722,10 +722,13 @@ void invokedToolCannotEscapeItsProcessGroup() {
   ToolInvocation invocation =
       baseInvocation(scratch.path(), "--attempt-self-escape");
   invocation.declaredOutputs = {"escape.txt"};
-  invocation.timeout = std::chrono::milliseconds(200);
+  const std::filesystem::path reportPath = scratch.path() / "escape.txt";
+  invocation.cancellationRequested = [reportPath] {
+    return std::filesystem::exists(reportPath);
+  };
 
   ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
-  std::istringstream report(readFile(scratch.path() / "escape.txt"));
+  std::istringstream report(readFile(reportPath));
   std::string processLabel;
   std::string groupLabel;
   std::string deathLabel;
@@ -763,26 +766,12 @@ void invokedToolCannotEscapeItsProcessGroup() {
   require(__func__, groupResult < 0 && groupError == EPERM,
           "invoked executable escaped with setpgid");
   require(__func__, processGone,
-          "invoked executable survived process-group timeout cleanup");
-  require(__func__, outcome.status == ToolRunStatus::TimedOut,
-          "self-escape attempt changed timeout classification");
+          "invoked executable survived process-group interruption cleanup");
+  require(__func__, outcome.status == ToolRunStatus::Cancelled,
+          "self-escape attempt changed cancellation classification");
 }
 
-void timeoutAndCancellationReapProcessGroups() {
-  TemporaryDirectory timeoutScratch;
-  ToolInvocation timeout =
-      baseInvocation(timeoutScratch.path(), "--spawn-descendant");
-  timeout.argv.push_back("pids.txt");
-  timeout.declaredOutputs = {"pids.txt"};
-  timeout.timeout = std::chrono::milliseconds(200);
-
-  ToolRunOutcome timedOut = takeExpected(__func__, runTool(timeout));
-  require(__func__, timedOut.status == ToolRunStatus::TimedOut,
-          "timeout was not distinguished");
-  require(__func__, timedOut.terminationSignal == SIGKILL,
-          "timeout did not reach bounded forceful cleanup");
-  requireProcessesGone(__func__, readPids(timeoutScratch.path() / "pids.txt"));
-
+void cancellationReapsProcessGroups() {
   TemporaryDirectory cancelScratch;
   ToolInvocation cancelled =
       baseInvocation(cancelScratch.path(), "--spawn-descendant");
@@ -894,23 +883,31 @@ void completedLeaderWinsAgainstLateCancellation() {
   requireProcessGone(__func__, supervisor);
 }
 
-void detachedCaptureHolderDoesNotExtendTimeout() {
+void detachedCaptureHolderDoesNotExtendInterruption() {
   TemporaryDirectory scratch;
   ToolInvocation invocation =
       baseInvocation(scratch.path(), "--spawn-detached");
   invocation.argv.push_back("pids.txt");
   invocation.declaredOutputs = {"pids.txt"};
-  invocation.timeout = std::chrono::milliseconds(150);
+  const std::filesystem::path pidFile = scratch.path() / "pids.txt";
+  std::optional<std::chrono::steady_clock::time_point> interruptedAt;
+  invocation.cancellationRequested = [&] {
+    if (!std::filesystem::exists(pidFile))
+      return false;
+    interruptedAt = std::chrono::steady_clock::now();
+    return true;
+  };
 
-  const auto started = std::chrono::steady_clock::now();
   ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
-  const auto elapsed = std::chrono::steady_clock::now() - started;
-  const std::vector<pid_t> pids = readPids(scratch.path() / "pids.txt");
+  const auto returnedAt = std::chrono::steady_clock::now();
+  const std::vector<pid_t> pids = readPids(pidFile);
   require(__func__, pids.size() == 2,
           "detached helper did not record both process IDs");
-  require(__func__, outcome.status == ToolRunStatus::TimedOut,
-          "detached capture holder changed timeout classification");
-  require(__func__, elapsed < std::chrono::seconds(2),
+  require(__func__, outcome.status == ToolRunStatus::Cancelled,
+          "detached capture holder changed cancellation classification");
+  require(__func__, interruptedAt.has_value(),
+          "detached helper was not interrupted after becoming ready");
+  require(__func__, returnedAt - *interruptedAt < std::chrono::seconds(2),
           "detached capture holder kept runTool waiting for pipe EOF");
   requireProcessGone(__func__, pids.front());
   terminateAndRequireGone(__func__, pids.back());
@@ -1538,11 +1535,11 @@ int main(int argc, char **argv) {
   concurrentSupervisorsDoNotRetainPeerControlSockets();
   descriptorFallbackClosesHighFdsAboveLoweredLimits();
   inheritedSignalStateIsNormalized();
-  timeoutAndCancellationReapProcessGroups();
+  cancellationReapsProcessGroups();
   groupSignalsEndBeforePgidReservationRelease();
   invokedToolCannotEscapeItsProcessGroup();
   completedLeaderWinsAgainstLateCancellation();
-  detachedCaptureHolderDoesNotExtendTimeout();
+  detachedCaptureHolderDoesNotExtendInterruption();
   callerDeathAbortsOwnedProcessGroup();
   supervisorDeathUsesEmergencyGroupOwnership();
   interruptTransportFailureReturnsRawOutcome();
