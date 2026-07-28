@@ -1493,7 +1493,7 @@ MemoryOperationPort:
         access_classes = [
           {
             access_form = element,
-            element_width_bits = {32},
+            element_width_bits = {8, 16, 32},
             flattened_lane_count = {1},
             mask_inactive_pairs = {(absent, not_applicable)},
             source_alignment.accepted_log2_byte_alignments = {[0, 63]},
@@ -1527,11 +1527,11 @@ use-pattern references are not duplicated. Contiguous `vector<2xf64>` is
 rejected because element width 64 is absent even though its total payload also
 has 128 bits.
 
-For an element firing on that hybrid port, the 32-bit value occupies the low
-data bits, unused high result bits are zero, and the mask endpoint is inactive.
-A narrow store is legal only because the declared subword-write use pattern
-provides the required byte enables or equivalent behavior. Width adaptation
-alone would not prove that store.
+For an element firing on that hybrid port, the 8-, 16-, or 32-bit value
+occupies the low data bits, unused high result bits are zero, and the mask
+endpoint is inactive. A narrow store is legal only because the declared
+subword-write use pattern provides the required byte enables or equivalent
+behavior. Width adaptation alone would not prove that store.
 
 The three Temporal interfaces replace every operation-channel `B<W>` above
 with `BT<W,4>` and retain the same accepted-view domains. They therefore form

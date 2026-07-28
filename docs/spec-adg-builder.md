@@ -470,10 +470,12 @@ convenience and do not enter Fabric identity. The recipe has two independent
 physical operation ports, one for plain load and one for plain store, and one
 shared Local Memory Service. Both ports use 64-bit address channels and the
 maximal 128-bit data interface from `docs/spec-fabric-mem.md`. They admit
-scalar 32-bit elements and contiguous four-lane 32-bit elements, including
-`i32`, `f32`, `vector<4xi32>`, and `vector<4xf32>`, with an absent or dynamic
-four-lane mask where that form permits it. Equal-width `vector<2xf64>` is not
-admitted because its element width is 64 bits.
+scalar 8-, 16-, and 32-bit elements and contiguous four-lane 32-bit elements,
+including `i8`, `i16`, `i32`, `f32`, `vector<4xi32>`, and `vector<4xf32>`,
+with an absent or dynamic four-lane mask where that form permits it. Scalar
+subword reads use the declared zero-extension guarantee and scalar subword
+writes use the declared byte-enable guarantee. Equal-width `vector<2xf64>` is
+not admitted because its element width is 64 bits.
 
 The spatial form uses untagged operation-channel ports. Supplying the typed
 temporal parameters replaces every operation-channel port with the exact
@@ -491,10 +493,10 @@ connectivity types directly; there is no parallel recipe schema.
 `makeHybrid32SystemMemory` is the matching System-level convenience recipe.
 It returns one `Hybrid32SystemMemorySpec` containing the exact System
 `MemoryServiceContractRecord` and its matching Serve endpoint capability set.
-It admits the same scalar and contiguous four-lane 32-bit plain read/write
-domain with a 128-bit service beat. The caller supplies one absolute address
-range and one domain-owned `ServiceRateContractRecord`, then passes the two
-returned records to `SystemBuilder::addMemoryService` and
+It admits the same scalar 8-, 16-, and 32-bit and contiguous four-lane 32-bit
+plain read/write domain with a 128-bit service beat. The caller supplies one
+absolute address range and one domain-owned `ServiceRateContractRecord`, then
+passes the two returned records to `SystemBuilder::addMemoryService` and
 `SystemBuilder::addServiceEndpoint`. The pair is ordinary Fabric data; the
 helper owns no persistent memory kind, endpoint inventory, or identity.
 

@@ -27,6 +27,11 @@ memory can be realized through several services, only when each Mapping proves
 width, access, throughput, consistency, lifetime, and routing constraints.
 Equal payload width is not enough: element width, lane geometry, address form,
 mask, atomic granularity, and inactive-lane semantics remain typed facts.
+Conversely, a wide physical data endpoint need not force exact-width scalar
+software accesses. A memory advertises each admitted scalar element width and
+the physical zero-extension or byte-enable guarantee explicitly. This keeps
+ordinary low-bit-aligned transport adaptation and memory-specific subword
+behavior separate without introducing another width policy.
 
 Local placement and manager-backed placement are targets of the same typed
 operation request, not distinct memory actor kinds. A memory occurrence may

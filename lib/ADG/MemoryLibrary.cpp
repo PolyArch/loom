@@ -35,6 +35,10 @@ llvm::Expected<::fabric::UnsignedDomain> singleton(std::uint64_t value) {
   return ::fabric::UnsignedDomain::fromCanonical({{value, value}});
 }
 
+llvm::Expected<::fabric::UnsignedDomain> scalarElementWidths() {
+  return ::fabric::UnsignedDomain::fromCanonical({{8, 8}, {16, 16}, {32, 32}});
+}
+
 llvm::Expected<::fabric::AlignmentDomain> allAlignments() {
   auto exponents = ::fabric::UnsignedDomain::fromCanonical({{0, 63}});
   if (!exponents)
@@ -49,7 +53,7 @@ enumDomain(std::initializer_list<Enum> values) {
 }
 
 llvm::Expected<::fabric::MemoryAccessClass> elementAccess(bool reads) {
-  auto widths = singleton(32);
+  auto widths = scalarElementWidths();
   if (!widths)
     return widths.takeError();
   auto lanes = singleton(1);

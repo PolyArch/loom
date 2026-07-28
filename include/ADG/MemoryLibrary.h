@@ -27,9 +27,9 @@ struct Hybrid32LocalMemoryParameters final {
 };
 
 /// Address range of the catalog's System memory-service recipe. The helper
-/// admits the same scalar 32-bit and contiguous four-lane 32-bit accesses as
-/// the local-memory recipe, but publishes them through the System service
-/// plane.
+/// admits the same scalar 8-, 16-, and 32-bit accesses and contiguous
+/// four-lane 32-bit accesses as the local-memory recipe, but publishes them
+/// through the System service plane.
 struct Hybrid32SystemMemoryParameters final {
   std::uint64_t addressBaseBytes = 0;
   std::uint64_t capacityBytes = 0;

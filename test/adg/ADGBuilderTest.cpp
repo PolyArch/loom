@@ -902,6 +902,35 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
             view.declaresLocalMemoryService(memory) &&
                 view.memoryOperationPorts(memory).size() == 2,
             "memory library lost its local service or load/store ports");
+    for (const loom::fabric::FabricMemoryOperationPortRef port :
+         view.memoryOperationPorts(memory)) {
+      const auto *alternative = view.memoryCapabilityAlternative({port, 0});
+      require(test, alternative && alternative->accessDomain,
+              "hybrid memory lost its addressed access domain");
+      const ::fabric::MemoryAccessClass *element = nullptr;
+      for (const ::fabric::MemoryAccessClass &accessClass :
+           alternative->accessDomain->accessClasses())
+        if (accessClass.accessForm() ==
+            ::dataflow::semantics::MemoryAccessForm::Element)
+          element = &accessClass;
+      require(test, element != nullptr,
+              "hybrid memory lost its scalar element access class");
+      require(test,
+              element->elementWidths().contains(8) &&
+                  element->elementWidths().contains(16) &&
+                  element->elementWidths().contains(32) &&
+                  !element->elementWidths().contains(64),
+              "hybrid memory changed its scalar subword width domain");
+      const bool reads = alternative->actorContractDomain.actorSchema() ==
+                         ::dataflow::OperationSchemaId::DataflowLoad;
+      require(
+          test,
+          reads ? element->readSubwordSemantics().contains(
+                      ::fabric::ReadSubwordSemantics::ZeroExtend)
+                : element->writeSubwordSemantics().contains(
+                      ::fabric::WriteSubwordSemantics::ByteEnable),
+          "hybrid memory lost its scalar subword physical guarantee");
+    }
     const loom::fabric::FabricMemoryEndpointOwnerRef owner =
         loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
     const std::uint64_t endpointCount = view.memoryEndpointCount(owner);
