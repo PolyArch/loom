@@ -57,6 +57,7 @@ tools = [
     "loom-dataflow-operation-schema-test",
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
+    "loom-dfg-run",
     "loom-fabric-artifact-gate-test",
     "loom-fabric-artifact-codec-test",
     "loom-fabric-artifact-finalizer-test",

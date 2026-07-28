@@ -3,10 +3,12 @@
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/TargetSelect.h"
 
@@ -38,6 +40,49 @@ struct ActiveCall {
   std::uint64_t nextBefore = 0;
   std::uint64_t nextAfter = 0;
 };
+
+struct ResolvedNativeObject {
+  std::uint64_t byteCount = 0;
+  std::uint64_t byteOffset = 0;
+};
+
+llvm::Expected<ResolvedNativeObject>
+resolveNativeObject(llvm::Value *pointer, const llvm::DataLayout &layout) {
+  if (auto *gep = llvm::dyn_cast<llvm::GEPOperator>(pointer)) {
+    llvm::Expected<ResolvedNativeObject> base =
+        resolveNativeObject(gep->getPointerOperand(), layout);
+    if (!base)
+      return base.takeError();
+    llvm::APInt offset(layout.getIndexSizeInBits(gep->getPointerAddressSpace()),
+                       0, true);
+    if (!gep->accumulateConstantOffset(layout, offset) || offset.isNegative() ||
+        offset.getActiveBits() > 64)
+      return invalid("native call operand has no nonnegative constant offset");
+    const std::uint64_t increment = offset.getZExtValue();
+    if (base->byteOffset >
+        std::numeric_limits<std::uint64_t>::max() - increment)
+      return invalid("native call operand byte offset overflows uint64");
+    base->byteOffset += increment;
+    if (base->byteOffset >= base->byteCount)
+      return invalid("native call operand points outside its allocation");
+    return *base;
+  }
+  auto *allocation = llvm::dyn_cast<llvm::AllocaInst>(pointer);
+  if (!allocation)
+    return invalid("native call operand does not resolve to a finite alloca");
+  auto *count = llvm::dyn_cast<llvm::ConstantInt>(allocation->getArraySize());
+  if (!count || count->isZero() || count->getValue().getActiveBits() > 64)
+    return invalid("native alloca has no positive constant element count");
+  const llvm::TypeSize elementBytes =
+      layout.getTypeAllocSize(allocation->getAllocatedType());
+  if (elementBytes.isScalable() || elementBytes.getFixedValue() == 0)
+    return invalid("native alloca has no fixed nonzero element size");
+  const std::uint64_t arrayCount = count->getZExtValue();
+  if (arrayCount >
+      std::numeric_limits<std::uint64_t>::max() / elementBytes.getFixedValue())
+    return invalid("native alloca byte count overflows uint64");
+  return ResolvedNativeObject{arrayCount * elementBytes.getFixedValue(), 0};
+}
 
 struct CaptureContext {
   NativeSimulationMemoryCapture result;
@@ -163,6 +208,19 @@ instrumentCapture(llvm::Module &module, const SimulationMemoryCapturePlan &plan,
   if (!selected || selected->isMustTailCall())
     return invalid("selected direct host call is absent or musttail");
   selected->setTailCallKind(llvm::CallInst::TCK_None);
+
+  for (const SimulationMemoryCaptureObject &object : plan.objects) {
+    if (object.callOperandOrdinal >= selected->arg_size())
+      return invalid("capture object exceeds native call operands");
+    llvm::Expected<ResolvedNativeObject> resolved =
+        resolveNativeObject(selected->getArgOperand(object.callOperandOrdinal),
+                            module.getDataLayout());
+    if (!resolved)
+      return resolved.takeError();
+    if (resolved->byteCount != object.byteCount ||
+        resolved->byteOffset != object.operandByteOffset)
+      return invalid("native allocation projection differs from target plan");
+  }
 
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);

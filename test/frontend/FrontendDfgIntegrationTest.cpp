@@ -326,6 +326,17 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
       nativeCapture.calls.front().objects.size() != 3)
     fail(test, "native vecadd oracle did not capture one complete call");
 
+  auto mismatchedPlan = capturePlan;
+  mismatchedPlan.objects.front().byteCount -= sizeof(float);
+  auto mismatchContext = std::make_unique<llvm::LLVMContext>();
+  auto mismatchedCapture = loom::sim::executeNativeSimulationMemoryCapture(
+      llvm::orc::ThreadSafeModule(parseVecadd(test, *mismatchContext, false),
+                                  std::move(mismatchContext)),
+      mismatchedPlan);
+  if (mismatchedCapture)
+    fail(test, "native oracle accepted a mismatched host allocation extent");
+  llvm::consumeError(mismatchedCapture.takeError());
+
   auto slicePlan = take(
       test,
       loom::sim::deriveSimulationMemoryCapturePlan(

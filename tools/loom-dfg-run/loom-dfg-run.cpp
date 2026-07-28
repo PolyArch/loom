@@ -1,0 +1,480 @@
+#include "ADG/Builtin.h"
+#include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/ResolvedConfig.h"
+#include "DSE/PreMappingExploration.h"
+#include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Simulator/DFGSimulator.h"
+#include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationInputCapture.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <chrono>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace {
+
+llvm::cl::opt<std::string>
+    targetModulePath(llvm::cl::Positional,
+                     llvm::cl::desc("<target LLVM IR module (.ll/.bc)>"),
+                     llvm::cl::Required);
+
+llvm::cl::opt<std::string>
+    nativeModulePath("native-llvm",
+                     llvm::cl::desc("host LLVM IR used as the native oracle"),
+                     llvm::cl::value_desc("path"), llvm::cl::Required);
+
+llvm::cl::opt<std::string>
+    builtinName("builtin", llvm::cl::desc("builtin Fabric target preset"),
+                llvm::cl::value_desc("small|default|large"),
+                llvm::cl::Required);
+
+llvm::cl::opt<std::string>
+    artifactStorePath("artifact-store",
+                      llvm::cl::desc("ArtifactStore directory"),
+                      llvm::cl::value_desc("path"), llvm::cl::Required);
+
+llvm::cl::opt<std::string> outputPath("output",
+                                      llvm::cl::desc("comparison report JSON"),
+                                      llvm::cl::value_desc("path"),
+                                      llvm::cl::Required);
+
+llvm::cl::opt<unsigned>
+    candidateJobs("candidate-jobs",
+                  llvm::cl::desc("parallel ownership-candidate workers"),
+                  llvm::cl::value_desc("count"), llvm::cl::init(1));
+
+llvm::cl::opt<std::uint64_t>
+    maxEventSteps("max-event-steps",
+                  llvm::cl::desc("maximum DFG event wavefronts"),
+                  llvm::cl::init(100000));
+
+llvm::Error invalid(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      llvm::Twine("source_backed_dfg_invalid: ") + message);
+}
+
+llvm::Error unsupported(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::not_supported),
+      llvm::Twine("source_backed_dfg_unsupported: ") + message);
+}
+
+int reportError(llvm::Error error) {
+  llvm::errs() << "loom-dfg-run: " << llvm::toString(std::move(error)) << '\n';
+  return 1;
+}
+
+llvm::Expected<std::unique_ptr<llvm::Module>>
+readModule(llvm::LLVMContext &context, llvm::StringRef path) {
+  llvm::SMDiagnostic diagnostic;
+  std::unique_ptr<llvm::Module> module =
+      llvm::parseIRFile(path, diagnostic, context);
+  if (module)
+    return std::move(module);
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  diagnostic.print("loom-dfg-run", stream);
+  return invalid(stream.str());
+}
+
+llvm::Expected<llvm::orc::ThreadSafeModule>
+readNativeModule(llvm::StringRef path) {
+  auto context = std::make_unique<llvm::LLVMContext>();
+  llvm::Expected<std::unique_ptr<llvm::Module>> module =
+      readModule(*context, path);
+  if (!module)
+    return module.takeError();
+  return llvm::orc::ThreadSafeModule(std::move(*module), std::move(context));
+}
+
+llvm::Expected<loom::frontend::PreMappingCompilation>
+compileTarget(std::unique_ptr<llvm::Module> module,
+              const loom::fabric::FinalizedFabricRoot &fabric,
+              const loom::ArtifactStore &store) {
+  loom::frontend::PreMappingCompilationOptions compilation;
+  loom::dse::PreMappingExplorationOptions exploration{
+      compilation.raising,
+      {compilation.lowering,
+       {loom::evaluation::MetricRequestOrdinal(0),
+        loom::dse::ObjectiveDirection::Minimize, 1},
+       candidateJobs}};
+  llvm::Expected<loom::dse::PreMappingExplorationOutcome> outcome =
+      loom::dse::exploreLlvmModuleToPreMapping(std::move(module), fabric,
+                                               loom::defaultResolvedConfig(),
+                                               exploration, store);
+  if (!outcome)
+    return outcome.takeError();
+  if (const auto *incomplete =
+          std::get_if<loom::dse::IncompleteSelection>(&*outcome))
+    return unsupported(
+        "central DSE did not complete for candidate " +
+        loom::formatArtifactIdentityHex(incomplete->candidate.artifact));
+  if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(*outcome))
+    return unsupported("central DSE found no feasible ownership candidate");
+  auto completed =
+      std::get<loom::dse::CompletedPreMappingSelection>(std::move(*outcome));
+  if (completed.selected.size() != 1)
+    return invalid("TopK(1) did not select exactly one candidate");
+  return std::move(completed.selected.front());
+}
+
+llvm::Expected<mlir::LLVM::LLVMFuncOp>
+requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
+                        dataflow::RootedGraphLaunchRef launch) {
+  llvm::Expected<dataflow::CanonicalRootThreadLaunchView> root =
+      view.resolve(launch.rootThreadLaunch);
+  if (!root)
+    return root.takeError();
+  llvm::Expected<dataflow::CanonicalStaticGraphLaunchView> graphLaunch =
+      view.resolve(launch.staticGraphLaunch);
+  if (!graphLaunch)
+    return graphLaunch.takeError();
+
+  auto rootLaunch = llvm::dyn_cast_or_null<dataflow::ThreadLaunchOp>(root->op);
+  auto thread = llvm::dyn_cast_or_null<dataflow::ThreadOp>(root->callee);
+  auto staticLaunch =
+      llvm::dyn_cast_or_null<dataflow::GraphLaunchOp>(graphLaunch->op);
+  if (!rootLaunch || !thread || !staticLaunch)
+    return invalid("rooted launch does not resolve to canonical launch ops");
+  if (thread.getDomain().getKind() !=
+      dataflow::ThreadDomainKind::DenseRectangular)
+    return unsupported("DynamicWork workloads have no schema-1.0 capture");
+  auto callable = rootLaunch->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!callable || callable.getBody().getBlocks().size() != 1)
+    return unsupported("root launch is not an isolated single-block callable");
+
+  unsigned rootLaunchCount = 0;
+  for (mlir::Operation &operation : callable.getBody().front()) {
+    if (&operation == rootLaunch.getOperation()) {
+      ++rootLaunchCount;
+      continue;
+    }
+    if (mlir::isa<dataflow::ThreadWaitOp, mlir::LLVM::ReturnOp>(operation))
+      continue;
+    return unsupported("root callable contains work outside the selected "
+                       "Spatial launch");
+  }
+  if (rootLaunchCount != 1)
+    return invalid("root callable does not contain its exact launch once");
+
+  unsigned staticLaunchCount = 0;
+  for (mlir::Operation &operation : thread.getBody().front()) {
+    if (&operation == staticLaunch.getOperation()) {
+      ++staticLaunchCount;
+      continue;
+    }
+    if (mlir::isa<dataflow::ThreadYieldOp>(operation))
+      continue;
+    return unsupported("root thread contains work outside the selected graph");
+  }
+  if (staticLaunchCount != 1)
+    return invalid("root thread does not contain its exact graph launch once");
+
+  const std::size_t functionInputs = thread.getFunctionType().getNumInputs();
+  const std::size_t entryArguments = thread.getBody().front().getNumArguments();
+  if (entryArguments < functionInputs + 1)
+    return invalid("root thread entry arguments are malformed");
+  if (entryArguments != functionInputs + 1)
+    return unsupported("non-rank-zero Spatial workloads are not yet captured");
+  return callable;
+}
+
+std::vector<mlir::LLVM::CallOp> findHostCalls(mlir::ModuleOp module,
+                                              llvm::StringRef callee) {
+  std::vector<mlir::LLVM::CallOp> calls;
+  module.walk([&](mlir::LLVM::CallOp call) {
+    if (call.getCalleeAttr() && call.getCalleeAttr().getValue() == callee)
+      calls.push_back(call);
+  });
+  return calls;
+}
+
+loom::sim::RuntimeMemoryObject
+definedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
+  loom::sim::RuntimeMemoryObject object;
+  object.initialBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    object.initialBytes.push_back({loom::sim::SemanticState::Defined, byte});
+  return object;
+}
+
+const loom::sim::SimulationMemoryRootCapture *
+findCaptureBinding(const loom::sim::SimulationMemoryCapturePlan &plan,
+                   dataflow::LogicalMemoryRootRef root) {
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       plan.memoryRootBindings)
+    if (binding.root == root)
+      return &binding;
+  return nullptr;
+}
+
+struct ExecutionTotals {
+  std::uint64_t dynamicCalls = 0;
+  std::uint64_t memoryBytesCompared = 0;
+  std::uint64_t wavefrontSteps = 0;
+  std::uint64_t eventCount = 0;
+  double simulationSeconds = 0.0;
+  std::map<dataflow::OperationSchemaId, std::uint64_t> operationFirings;
+};
+
+llvm::Error compareMemoryObservations(
+    const loom::sim::SpatialSimulationWorkload &workload,
+    const loom::sim::SpatialFunctionalObservations &observations,
+    const loom::sim::SimulationMemoryCapturePlan &plan,
+    const loom::sim::NativeSimulationCallCapture &native,
+    ExecutionTotals &totals) {
+  if (observations.memories.size() !=
+      workload.observableContract.memories.size())
+    return invalid("DFG execution returned the wrong memory observation count");
+  for (auto [observable, payload] : llvm::zip_equal(
+           workload.observableContract.memories, observations.memories)) {
+    const auto *rootOrView =
+        std::get_if<dataflow::LogicalMemoryRootOrViewRef>(&observable.target);
+    if (!rootOrView)
+      return invalid("native comparison received a memory exposure");
+    const auto *root = std::get_if<dataflow::LogicalMemoryRootRef>(rootOrView);
+    const auto *full = std::get_if<loom::sim::FullMemoryObservation>(&payload);
+    if (!root || !full)
+      return invalid("native comparison requires full logical-root state");
+    const loom::sim::SimulationMemoryRootCapture *binding =
+        findCaptureBinding(plan, *root);
+    if (!binding || binding->objectIndex >= native.objects.size())
+      return invalid("memory observation has no native capture binding");
+    const std::vector<std::uint8_t> &expected =
+        native.objects[binding->objectIndex].finalBytes;
+    if (binding->byteOffset > expected.size() ||
+        full->bytes.size() > expected.size() - binding->byteOffset)
+      return invalid("memory observation exceeds its native captured object");
+    for (auto [ordinal, byte] : llvm::enumerate(full->bytes)) {
+      if (byte.state != loom::sim::SemanticState::Defined ||
+          byte.value != expected[binding->byteOffset + ordinal])
+        return invalid("DFG memory observation differs from native execution");
+    }
+    totals.memoryBytesCompared += full->bytes.size();
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error executeLaunch(const loom::frontend::PreMappingCompilation &compiled,
+                          const dataflow::CanonicalDataflowProgramView &view,
+                          dataflow::RootedGraphLaunchRef launch,
+                          ExecutionTotals &totals) {
+  llvm::Expected<mlir::LLVM::LLVMFuncOp> callable =
+      requireIsolatedCallable(view, launch);
+  if (!callable)
+    return callable.takeError();
+
+  llvm::Expected<dataflow::GraphRef> graphRef = view.resolve(launch);
+  if (!graphRef)
+    return graphRef.takeError();
+  llvm::Expected<dataflow::CanonicalGraphView> graphView =
+      view.resolve(*graphRef);
+  if (!graphView)
+    return graphView.takeError();
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView->op);
+  llvm::ArrayRef<std::int32_t> inputSegments = graph.getInputSegmentSizes();
+  if (inputSegments.size() != 3)
+    return invalid("canonical graph input segments are malformed");
+  if (inputSegments[0] != 0 || inputSegments[1] != 0)
+    return unsupported("native comparison does not yet capture graph value "
+                       "or stream inputs");
+
+  std::vector<mlir::LLVM::CallOp> calls = findHostCalls(
+      compiled.canonicalDataflow.module(), callable->getSymName());
+  if (calls.empty())
+    return unsupported("isolated Spatial callable has no direct host call");
+
+  for (mlir::LLVM::CallOp call : calls) {
+    llvm::Expected<loom::sim::SimulationMemoryCapturePlan> plan =
+        loom::sim::deriveSimulationMemoryCapturePlan(view, launch, call);
+    if (!plan)
+      return plan.takeError();
+    if (plan->objects.empty() || plan->memoryRootBindings.empty())
+      return unsupported("Spatial call has no finite captured memory objects");
+
+    loom::sim::SpatialSimulationWorkload workload{launch};
+    for (const loom::sim::SimulationMemoryRootCapture &binding :
+         plan->memoryRootBindings)
+      workload.observableContract.memories.push_back(
+          loom::sim::SpatialMemoryObservable{
+              dataflow::LogicalMemoryRootOrViewRef{binding.root},
+              loom::sim::MemoryObservationForm::FullState});
+    llvm::Expected<loom::sim::CanonicalSimulationWorkload> finalizedWorkload =
+        loom::sim::finalizeSimulationWorkload(workload, view);
+    if (!finalizedWorkload)
+      return finalizedWorkload.takeError();
+
+    llvm::Expected<llvm::orc::ThreadSafeModule> nativeModule =
+        readNativeModule(nativeModulePath);
+    if (!nativeModule)
+      return nativeModule.takeError();
+    llvm::Expected<loom::sim::NativeSimulationMemoryCapture> capture =
+        loom::sim::executeNativeSimulationMemoryCapture(
+            std::move(*nativeModule), *plan);
+    if (!capture)
+      return capture.takeError();
+    if (capture->entryResult != 0)
+      return invalid("native oracle entry returned a nonzero status");
+    if (capture->calls.empty())
+      return unsupported("selected host call produced no dynamic invocation");
+
+    for (const loom::sim::NativeSimulationCallCapture &dynamicCall :
+         capture->calls) {
+      if (dynamicCall.objects.size() != plan->objects.size())
+        return invalid("native capture object count changed during execution");
+      loom::sim::SpatialSimulationRuntimeInputDraft input{
+          finalizedWorkload->identity()};
+      for (const loom::sim::NativeCapturedMemoryObject &object :
+           dynamicCall.objects)
+        input.memoryObjects.push_back(definedMemoryObject(object.initialBytes));
+      for (const loom::sim::SimulationMemoryRootCapture &binding :
+           plan->memoryRootBindings)
+        input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
+            binding.root, binding.objectIndex, binding.byteOffset});
+      llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput>
+          finalizedInput = loom::sim::finalizeSimulationRuntimeInput(
+              input, *finalizedWorkload, view);
+      if (!finalizedInput)
+        return finalizedInput.takeError();
+
+      const auto started = std::chrono::steady_clock::now();
+      llvm::Expected<loom::sim::RetiredDFGSimulation> execution =
+          loom::sim::simulateRetiredDfgWorkload(compiled.canonicalDataflow,
+                                                *finalizedWorkload,
+                                                *finalizedInput, maxEventSteps);
+      const auto stopped = std::chrono::steady_clock::now();
+      if (!execution)
+        return execution.takeError();
+      totals.simulationSeconds +=
+          std::chrono::duration<double>(stopped - started).count();
+      totals.wavefrontSteps += execution->report.wavefrontSteps;
+      totals.eventCount += execution->report.eventCount;
+      for (const auto &[schema, count] : execution->report.operationFireCounts)
+        totals.operationFirings[schema] += count;
+      if (llvm::Error error = compareMemoryObservations(
+              finalizedWorkload->model(), execution->observations, *plan,
+              dynamicCall, totals))
+        return error;
+      ++totals.dynamicCalls;
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
+                        std::uint64_t actorCount,
+                        const ExecutionTotals &totals) {
+  llvm::SmallString<256> parent(path);
+  llvm::sys::path::remove_filename(parent);
+  if (!parent.empty())
+    if (std::error_code error = llvm::sys::fs::create_directories(parent))
+      return llvm::createStringError(error, "cannot create %s", parent.c_str());
+
+  llvm::json::Object firings;
+  for (const auto &[schema, count] : totals.operationFirings)
+    firings[dataflow::operationSchemaSpelling(schema)] = count;
+  llvm::json::Object root;
+  root["kind"] = "source_backed_dfg_comparison";
+  root["status"] = "pass";
+  root["graphs"] = graphCount;
+  root["actors"] = actorCount;
+  root["dynamic_calls"] = totals.dynamicCalls;
+  root["memory_bytes_compared"] = totals.memoryBytesCompared;
+  root["wavefront_steps"] = totals.wavefrontSteps;
+  root["event_count"] = totals.eventCount;
+  root["simulation_seconds"] = totals.simulationSeconds;
+  root["wavefront_steps_per_second"] =
+      totals.simulationSeconds > 0.0
+          ? static_cast<double>(totals.wavefrontSteps) /
+                totals.simulationSeconds
+          : 0.0;
+  root["operation_firings"] = std::move(firings);
+
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::createStringError(error, "cannot open %s", path.str().c_str());
+  output << llvm::formatv("{0:2}", llvm::json::Value(std::move(root))) << '\n';
+  return llvm::Error::success();
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+  llvm::InitLLVM init(argc, argv);
+  llvm::cl::ParseCommandLineOptions(
+      argc, argv,
+      "Compile one LLVM module to Canonical Dataflow and compare each exact "
+      "capturable Spatial invocation with an independent native execution.\n");
+  if (candidateJobs == 0)
+    return reportError(invalid("candidate-jobs must be positive"));
+
+  llvm::Expected<loom::adg::BuiltinTargetPreset> preset =
+      loom::adg::parseBuiltinTargetPreset(builtinName);
+  if (!preset)
+    return reportError(preset.takeError());
+  loom::ArtifactStore store(artifactStorePath);
+  auto design = loom::adg::buildBuiltinTarget(store, *preset);
+  if (!design)
+    return reportError(design.takeError());
+  if (design->roots().size() != 1)
+    return reportError(invalid("builtin target has no unique Fabric root"));
+
+  llvm::LLVMContext targetContext;
+  llvm::Expected<std::unique_ptr<llvm::Module>> target =
+      readModule(targetContext, targetModulePath);
+  if (!target)
+    return reportError(target.takeError());
+  llvm::Expected<loom::frontend::PreMappingCompilation> compiled =
+      compileTarget(std::move(*target), design->roots().front(), store);
+  if (!compiled)
+    return reportError(compiled.takeError());
+  llvm::Expected<dataflow::CanonicalDataflowProgramView> view =
+      compiled->canonicalDataflow.view();
+  if (!view)
+    return reportError(view.takeError());
+
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  view->forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    launches.push_back(launch);
+  });
+  if (launches.empty())
+    return reportError(unsupported("selected program is graph-free"));
+
+  ExecutionTotals totals;
+  for (dataflow::RootedGraphLaunchRef launch : launches)
+    if (llvm::Error error = executeLaunch(*compiled, *view, launch, totals))
+      return reportError(std::move(error));
+  if (totals.dynamicCalls == 0 || totals.memoryBytesCompared == 0 ||
+      totals.eventCount == 0)
+    return reportError(invalid("execution produced no substantive workload"));
+  if (llvm::Error error = writeReport(outputPath, view->graphs().size(),
+                                      view->actors().size(), totals))
+    return reportError(std::move(error));
+  return 0;
+}
