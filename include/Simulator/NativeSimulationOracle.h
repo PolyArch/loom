@@ -7,6 +7,9 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/Error.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -18,22 +21,36 @@ struct NativeCapturedMemoryObject {
 };
 
 struct NativeSimulationCallCapture {
+  std::vector<RuntimeValueEntry> runtimeValues;
   std::vector<NativeCapturedMemoryObject> objects;
 };
 
-struct NativeSimulationMemoryCapture {
+struct NativeSimulationInputCapture {
   std::int32_t entryResult = 0;
   std::vector<NativeSimulationCallCapture> calls;
 };
 
-/// Execute one native LLVM module and capture the finite memory objects around
+/// Execute one native LLVM module and capture the finite graph inputs around
 /// every dynamic execution of the exact statically selected host call. This is
-/// an ephemeral independent oracle; its bytes may initialize a typed
-/// SimulationRuntimeInput, but this record is not a persistent wire format.
-llvm::Expected<NativeSimulationMemoryCapture>
-executeNativeSimulationMemoryCapture(llvm::orc::ThreadSafeModule module,
-                                     const SimulationMemoryCapturePlan &plan,
-                                     llvm::StringRef entrySymbol = "main");
+/// an ephemeral independent oracle; its values and bytes may initialize a
+/// typed SimulationRuntimeInput, but this record is not a persistent wire
+/// format.
+llvm::Expected<NativeSimulationInputCapture>
+executeNativeSimulationInputCapture(
+    llvm::orc::ThreadSafeModule module,
+    const DirectCallSimulationInputCapturePlan &plan,
+    llvm::StringRef entrySymbol = "main");
+
+/// Execute one exact prepared Structured Program clone and capture its finite
+/// graph inputs immediately before, and memory state immediately after, every
+/// dynamic execution of the selected operation. The clone must already contain
+/// the DSE-selected semantic decisions, but the operation itself must not yet
+/// have been replaced by a Spatial ownership carrier.
+llvm::Expected<NativeSimulationInputCapture>
+executeStructuredSimulationInputCapture(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
+    mlir::Operation *selectedOperation, const SimulationInputCapturePlan &plan,
+    llvm::StringRef entrySymbol = "main");
 
 } // namespace loom::sim
 

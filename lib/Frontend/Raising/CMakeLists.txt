@@ -29,12 +29,15 @@ mlir_target_link_libraries(LoomFrontendRaising PUBLIC
   MLIRMemRefDialect
   MLIRPass
   MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   MLIRRegisterAllPasses
   MLIRRewrite
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSupport
   MLIRTargetLLVMIRImport
+  MLIRTargetLLVMIRExport
+  MLIRToLLVMIRTranslationRegistration
   MLIRTransformUtils
   MLIRTransforms
   MLIRUBDialect

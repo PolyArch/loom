@@ -21,8 +21,13 @@ struct PreMappingExplorationOptions final {
   StructuredOwnershipExplorationOptions ownership;
 };
 
+struct SelectedPreMappingCompilation final {
+  frontend::PreMappingCompilation compilation;
+  std::vector<StructuredOwnershipDerivation> derivations;
+};
+
 struct CompletedPreMappingSelection final {
-  std::vector<frontend::PreMappingCompilation> selected;
+  std::vector<SelectedPreMappingCompilation> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
 };
 

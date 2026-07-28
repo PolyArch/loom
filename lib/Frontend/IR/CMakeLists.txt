@@ -21,7 +21,9 @@ mlir_target_link_libraries(MLIRLoom PUBLIC
   MLIRBytecodeWriter
   MLIRParser
   MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   MLIRIR
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRToLLVMIRTranslationRegistration
 )

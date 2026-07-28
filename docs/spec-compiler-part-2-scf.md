@@ -433,6 +433,10 @@ Applying a decision:
 
 Failure exposes no partial child. Equal canonical semantic bytes deduplicate by
 ArtifactIdentity. A no-op such as factor one produces no new candidate.
+An active DSE invocation may retain the exact parent reference, scope, and
+typed decision for a selected child so downstream validation can replay that
+derivation. This invocation-local lineage is neither candidate identity nor a
+persistent Structured Program field.
 
 ### Artifact Anchors
 

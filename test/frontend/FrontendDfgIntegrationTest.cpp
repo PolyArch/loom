@@ -216,7 +216,7 @@ findVecaddCall(const char *test,
 
 const loom::sim::SimulationMemoryRootCapture &
 captureBinding(const char *test,
-               const loom::sim::SimulationMemoryCapturePlan &plan,
+               const loom::sim::SimulationInputCapturePlan &plan,
                dataflow::LogicalMemoryRootRef root) {
   for (const loom::sim::SimulationMemoryRootCapture &binding :
        plan.memoryRootBindings)
@@ -302,23 +302,23 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto capturePlan = take(
-      test, loom::sim::deriveSimulationMemoryCapturePlan(
+      test, loom::sim::deriveSimulationInputCapturePlan(
                 view, launch,
                 findVecaddCall(test, candidate.canonicalDataflow, "main")));
-  if (capturePlan.objects.size() != 3 ||
-      capturePlan.memoryRootBindings.size() != 3)
+  if (capturePlan.input.objects.size() != 3 ||
+      capturePlan.input.memoryRootBindings.size() != 3)
     fail(test, "vecadd capture plan did not recover three memory objects");
   for (const loom::sim::SimulationMemoryCaptureObject &object :
-       capturePlan.objects)
+       capturePlan.input.objects)
     if (object.byteCount != 64 * sizeof(float))
       fail(test, "vecadd capture object has the wrong byte extent");
   for (const loom::sim::SimulationMemoryRootCapture &binding :
-       capturePlan.memoryRootBindings)
+       capturePlan.input.memoryRootBindings)
     if (binding.byteOffset != 0 || binding.objectIndex >= 3)
       fail(test, "vecadd capture binding has the wrong object projection");
 
-  loom::sim::NativeSimulationMemoryCapture nativeCapture =
-      take(test, loom::sim::executeNativeSimulationMemoryCapture(
+  loom::sim::NativeSimulationInputCapture nativeCapture =
+      take(test, loom::sim::executeNativeSimulationInputCapture(
                      llvm::orc::ThreadSafeModule(std::move(nativeModule),
                                                  std::move(nativeContext)),
                      capturePlan));
@@ -327,9 +327,9 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     fail(test, "native vecadd oracle did not capture one complete call");
 
   auto mismatchedPlan = capturePlan;
-  mismatchedPlan.objects.front().byteCount -= sizeof(float);
+  mismatchedPlan.input.objects.front().byteCount -= sizeof(float);
   auto mismatchContext = std::make_unique<llvm::LLVMContext>();
-  auto mismatchedCapture = loom::sim::executeNativeSimulationMemoryCapture(
+  auto mismatchedCapture = loom::sim::executeNativeSimulationInputCapture(
       llvm::orc::ThreadSafeModule(parseVecadd(test, *mismatchContext, false),
                                   std::move(mismatchContext)),
       mismatchedPlan);
@@ -339,17 +339,18 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   auto slicePlan = take(
       test,
-      loom::sim::deriveSimulationMemoryCapturePlan(
+      loom::sim::deriveSimulationInputCapturePlan(
           view, launch,
           findVecaddCall(test, candidate.canonicalDataflow, "slice_main")));
   const auto &sliceA =
-      captureBinding(test, slicePlan, memoryRoot(test, view, 0));
+      captureBinding(test, slicePlan.input, memoryRoot(test, view, 0));
   const auto &sliceB =
-      captureBinding(test, slicePlan, memoryRoot(test, view, 1));
+      captureBinding(test, slicePlan.input, memoryRoot(test, view, 1));
   const auto &sliceC =
-      captureBinding(test, slicePlan, memoryRoot(test, view, 2));
-  if (slicePlan.objects.size() != 2 ||
-      slicePlan.objects[sliceA.objectIndex].byteCount != 128 * sizeof(float) ||
+      captureBinding(test, slicePlan.input, memoryRoot(test, view, 2));
+  if (slicePlan.input.objects.size() != 2 ||
+      slicePlan.input.objects[sliceA.objectIndex].byteCount !=
+          128 * sizeof(float) ||
       sliceA.objectIndex != sliceB.objectIndex || sliceA.byteOffset != 0 ||
       sliceB.byteOffset != 64 * sizeof(float) ||
       sliceC.objectIndex == sliceA.objectIndex || sliceC.byteOffset != 0)
@@ -369,7 +370,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
        nativeCapture.calls.front().objects)
     input.memoryObjects.push_back(definedByteObject(object.initialBytes));
   for (const loom::sim::SimulationMemoryRootCapture &binding :
-       capturePlan.memoryRootBindings)
+       capturePlan.input.memoryRootBindings)
     input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
         binding.root, binding.objectIndex, binding.byteOffset});
   auto finalizedInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
@@ -425,7 +426,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
           .initialBytes,
       *diff);
   const loom::sim::SimulationMemoryRootCapture &capturedDestination =
-      captureBinding(test, capturePlan, destinationRoot);
+      captureBinding(test, capturePlan.input, destinationRoot);
   llvm::ArrayRef<std::uint8_t> expected(
       nativeCapture.calls.front()
           .objects[capturedDestination.objectIndex]

@@ -119,7 +119,7 @@ readNativeModule(llvm::StringRef path) {
   return llvm::orc::ThreadSafeModule(std::move(*module), std::move(context));
 }
 
-llvm::Expected<loom::frontend::PreMappingCompilation>
+llvm::Expected<loom::dse::SelectedPreMappingCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
               const loom::ArtifactStore &store) {
@@ -231,7 +231,7 @@ definedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 const loom::sim::SimulationMemoryRootCapture *
-findCaptureBinding(const loom::sim::SimulationMemoryCapturePlan &plan,
+findCaptureBinding(const loom::sim::SimulationInputCapturePlan &plan,
                    dataflow::LogicalMemoryRootRef root) {
   for (const loom::sim::SimulationMemoryRootCapture &binding :
        plan.memoryRootBindings)
@@ -252,7 +252,7 @@ struct ExecutionTotals {
 llvm::Error compareMemoryObservations(
     const loom::sim::SpatialSimulationWorkload &workload,
     const loom::sim::SpatialFunctionalObservations &observations,
-    const loom::sim::SimulationMemoryCapturePlan &plan,
+    const loom::sim::SimulationInputCapturePlan &plan,
     const loom::sim::NativeSimulationCallCapture &native,
     ExecutionTotals &totals) {
   if (observations.memories.size() !=
@@ -287,15 +287,9 @@ llvm::Error compareMemoryObservations(
   return llvm::Error::success();
 }
 
-llvm::Error executeLaunch(const loom::frontend::PreMappingCompilation &compiled,
-                          const dataflow::CanonicalDataflowProgramView &view,
-                          dataflow::RootedGraphLaunchRef launch,
-                          ExecutionTotals &totals) {
-  llvm::Expected<mlir::LLVM::LLVMFuncOp> callable =
-      requireIsolatedCallable(view, launch);
-  if (!callable)
-    return callable.takeError();
-
+llvm::Error
+validateCapturableGraph(const dataflow::CanonicalDataflowProgramView &view,
+                        dataflow::RootedGraphLaunchRef launch) {
   llvm::Expected<dataflow::GraphRef> graphRef = view.resolve(launch);
   if (!graphRef)
     return graphRef.takeError();
@@ -307,9 +301,100 @@ llvm::Error executeLaunch(const loom::frontend::PreMappingCompilation &compiled,
   llvm::ArrayRef<std::int32_t> inputSegments = graph.getInputSegmentSizes();
   if (inputSegments.size() != 3)
     return invalid("canonical graph input segments are malformed");
-  if (inputSegments[0] != 0 || inputSegments[1] != 0)
-    return unsupported("native comparison does not yet capture graph value "
-                       "or stream inputs");
+  if (inputSegments[1] != 0)
+    return unsupported(
+        "native comparison does not yet capture graph stream inputs");
+  return llvm::Error::success();
+}
+
+llvm::Error
+executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
+                         const dataflow::CanonicalDataflowProgramView &view,
+                         dataflow::RootedGraphLaunchRef launch,
+                         const loom::sim::SimulationInputCapturePlan &plan,
+                         const loom::sim::NativeSimulationInputCapture &capture,
+                         ExecutionTotals &totals) {
+  if (plan.objects.empty() || plan.memoryRootBindings.empty())
+    return unsupported(
+        "Spatial execution has no finite captured memory objects");
+  if (capture.entryResult != 0)
+    return invalid("native oracle entry returned a nonzero status");
+  if (capture.calls.empty())
+    return unsupported(
+        "selected Spatial region produced no dynamic invocation");
+
+  loom::sim::SpatialSimulationWorkload workload{launch};
+  for (const loom::sim::SimulationValueInputCapture &value : plan.valueInputs) {
+    if (value.valueInputOrdinal != workload.valueInputPlan.size())
+      return invalid("capture value inputs are not dense in graph ABI order");
+    if (value.fixedValue)
+      workload.valueInputPlan.push_back(*value.fixedValue);
+    else
+      workload.valueInputPlan.push_back(loom::sim::RuntimeValueInput{});
+  }
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       plan.memoryRootBindings)
+    workload.observableContract.memories.push_back(
+        loom::sim::SpatialMemoryObservable{
+            dataflow::LogicalMemoryRootOrViewRef{binding.root},
+            loom::sim::MemoryObservationForm::FullState});
+  llvm::Expected<loom::sim::CanonicalSimulationWorkload> finalizedWorkload =
+      loom::sim::finalizeSimulationWorkload(workload, view);
+  if (!finalizedWorkload)
+    return finalizedWorkload.takeError();
+
+  for (const loom::sim::NativeSimulationCallCapture &dynamicCall :
+       capture.calls) {
+    if (dynamicCall.objects.size() != plan.objects.size())
+      return invalid("native capture object count changed during execution");
+    loom::sim::SpatialSimulationRuntimeInputDraft input{
+        finalizedWorkload->identity()};
+    input.runtimeValues = dynamicCall.runtimeValues;
+    for (const loom::sim::NativeCapturedMemoryObject &object :
+         dynamicCall.objects)
+      input.memoryObjects.push_back(definedMemoryObject(object.initialBytes));
+    for (const loom::sim::SimulationMemoryRootCapture &binding :
+         plan.memoryRootBindings)
+      input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
+          binding.root, binding.objectIndex, binding.byteOffset});
+    llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> finalizedInput =
+        loom::sim::finalizeSimulationRuntimeInput(input, *finalizedWorkload,
+                                                  view);
+    if (!finalizedInput)
+      return finalizedInput.takeError();
+
+    const auto started = std::chrono::steady_clock::now();
+    llvm::Expected<loom::sim::RetiredDFGSimulation> execution =
+        loom::sim::simulateRetiredDfgWorkload(compiled.canonicalDataflow,
+                                              *finalizedWorkload,
+                                              *finalizedInput, maxEventSteps);
+    const auto stopped = std::chrono::steady_clock::now();
+    if (!execution)
+      return execution.takeError();
+    totals.simulationSeconds +=
+        std::chrono::duration<double>(stopped - started).count();
+    totals.wavefrontSteps += execution->report.wavefrontSteps;
+    totals.eventCount += execution->report.eventCount;
+    for (const auto &[schema, count] : execution->report.operationFireCounts)
+      totals.operationFirings[schema] += count;
+    if (llvm::Error error = compareMemoryObservations(
+            finalizedWorkload->model(), execution->observations, plan,
+            dynamicCall, totals))
+      return error;
+    ++totals.dynamicCalls;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+executeDirectCallLaunch(const loom::frontend::PreMappingCompilation &compiled,
+                        const dataflow::CanonicalDataflowProgramView &view,
+                        dataflow::RootedGraphLaunchRef launch,
+                        ExecutionTotals &totals) {
+  llvm::Expected<mlir::LLVM::LLVMFuncOp> callable =
+      requireIsolatedCallable(view, launch);
+  if (!callable)
+    return callable.takeError();
 
   std::vector<mlir::LLVM::CallOp> calls = findHostCalls(
       compiled.canonicalDataflow.module(), callable->getSymName());
@@ -317,80 +402,79 @@ llvm::Error executeLaunch(const loom::frontend::PreMappingCompilation &compiled,
     return unsupported("isolated Spatial callable has no direct host call");
 
   for (mlir::LLVM::CallOp call : calls) {
-    llvm::Expected<loom::sim::SimulationMemoryCapturePlan> plan =
-        loom::sim::deriveSimulationMemoryCapturePlan(view, launch, call);
+    llvm::Expected<loom::sim::DirectCallSimulationInputCapturePlan> plan =
+        loom::sim::deriveSimulationInputCapturePlan(view, launch, call);
     if (!plan)
       return plan.takeError();
-    if (plan->objects.empty() || plan->memoryRootBindings.empty())
-      return unsupported("Spatial call has no finite captured memory objects");
-
-    loom::sim::SpatialSimulationWorkload workload{launch};
-    for (const loom::sim::SimulationMemoryRootCapture &binding :
-         plan->memoryRootBindings)
-      workload.observableContract.memories.push_back(
-          loom::sim::SpatialMemoryObservable{
-              dataflow::LogicalMemoryRootOrViewRef{binding.root},
-              loom::sim::MemoryObservationForm::FullState});
-    llvm::Expected<loom::sim::CanonicalSimulationWorkload> finalizedWorkload =
-        loom::sim::finalizeSimulationWorkload(workload, view);
-    if (!finalizedWorkload)
-      return finalizedWorkload.takeError();
-
     llvm::Expected<llvm::orc::ThreadSafeModule> nativeModule =
         readNativeModule(nativeModulePath);
     if (!nativeModule)
       return nativeModule.takeError();
-    llvm::Expected<loom::sim::NativeSimulationMemoryCapture> capture =
-        loom::sim::executeNativeSimulationMemoryCapture(
-            std::move(*nativeModule), *plan);
+    llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
+        loom::sim::executeNativeSimulationInputCapture(std::move(*nativeModule),
+                                                       *plan);
     if (!capture)
       return capture.takeError();
-    if (capture->entryResult != 0)
-      return invalid("native oracle entry returned a nonzero status");
-    if (capture->calls.empty())
-      return unsupported("selected host call produced no dynamic invocation");
-
-    for (const loom::sim::NativeSimulationCallCapture &dynamicCall :
-         capture->calls) {
-      if (dynamicCall.objects.size() != plan->objects.size())
-        return invalid("native capture object count changed during execution");
-      loom::sim::SpatialSimulationRuntimeInputDraft input{
-          finalizedWorkload->identity()};
-      for (const loom::sim::NativeCapturedMemoryObject &object :
-           dynamicCall.objects)
-        input.memoryObjects.push_back(definedMemoryObject(object.initialBytes));
-      for (const loom::sim::SimulationMemoryRootCapture &binding :
-           plan->memoryRootBindings)
-        input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
-            binding.root, binding.objectIndex, binding.byteOffset});
-      llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput>
-          finalizedInput = loom::sim::finalizeSimulationRuntimeInput(
-              input, *finalizedWorkload, view);
-      if (!finalizedInput)
-        return finalizedInput.takeError();
-
-      const auto started = std::chrono::steady_clock::now();
-      llvm::Expected<loom::sim::RetiredDFGSimulation> execution =
-          loom::sim::simulateRetiredDfgWorkload(compiled.canonicalDataflow,
-                                                *finalizedWorkload,
-                                                *finalizedInput, maxEventSteps);
-      const auto stopped = std::chrono::steady_clock::now();
-      if (!execution)
-        return execution.takeError();
-      totals.simulationSeconds +=
-          std::chrono::duration<double>(stopped - started).count();
-      totals.wavefrontSteps += execution->report.wavefrontSteps;
-      totals.eventCount += execution->report.eventCount;
-      for (const auto &[schema, count] : execution->report.operationFireCounts)
-        totals.operationFirings[schema] += count;
-      if (llvm::Error error = compareMemoryObservations(
-              finalizedWorkload->model(), execution->observations, *plan,
-              dynamicCall, totals))
-        return error;
-      ++totals.dynamicCalls;
-    }
+    if (llvm::Error error = executeCapturedInputPlan(
+            compiled, view, launch, plan->input, *capture, totals))
+      return error;
   }
   return llvm::Error::success();
+}
+
+llvm::Error executeOperationLaunch(
+    const loom::frontend::PreMappingCompilation &compiled,
+    const dataflow::CanonicalDataflowProgramView &view,
+    dataflow::RootedGraphLaunchRef launch,
+    const loom::dse::StructuredOwnershipDerivation &derivation,
+    const loom::ArtifactStore &store, ExecutionTotals &totals) {
+  const loom::ArtifactRootReference parentReference{
+      loom::frontend::structuredProgramArtifactSchema.identity.str(),
+      loom::frontend::structuredProgramArtifactSchema.version,
+      derivation.scope.selection.parent};
+  llvm::Expected<loom::frontend::StructuredProgramCandidate> parent =
+      loom::frontend::importStructuredProgram(parentReference, store);
+  if (!parent)
+    return parent.takeError();
+  llvm::Expected<loom::frontend::PreparedSpatialOwnershipSelection> prepared =
+      loom::frontend::prepareSpatialOwnershipSelection(
+          *parent, derivation.scope, derivation.decision);
+  if (!prepared)
+    return prepared.takeError();
+  llvm::Expected<loom::sim::SimulationInputCapturePlan> plan =
+      loom::sim::deriveOperationSimulationInputCapturePlan(view, launch,
+                                                           prepared->liveIns);
+  if (!plan)
+    return plan.takeError();
+  llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
+      loom::sim::executeStructuredSimulationInputCapture(
+          std::move(prepared->module), prepared->operation, *plan);
+  if (!capture)
+    return capture.takeError();
+  return executeCapturedInputPlan(compiled, view, launch, *plan, *capture,
+                                  totals);
+}
+
+llvm::Error
+executeLaunch(const loom::dse::SelectedPreMappingCompilation &selected,
+              const dataflow::CanonicalDataflowProgramView &view,
+              dataflow::RootedGraphLaunchRef launch,
+              const loom::ArtifactStore &store, ExecutionTotals &totals) {
+  if (llvm::Error error = validateCapturableGraph(view, launch))
+    return error;
+  if (selected.derivations.size() != 1)
+    return unsupported(
+        "selected Spatial graph has no unique ownership lineage");
+  const loom::dse::StructuredOwnershipDerivation &derivation =
+      selected.derivations.front();
+  switch (derivation.scope.kind) {
+  case loom::frontend::SpatialOwnershipScopeKind::WholeCallable:
+    return executeDirectCallLaunch(selected.compilation, view, launch, totals);
+  case loom::frontend::SpatialOwnershipScopeKind::Operation:
+    return executeOperationLaunch(selected.compilation, view, launch,
+                                  derivation, store, totals);
+  }
+  llvm_unreachable("closed Spatial ownership scope kind");
 }
 
 llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
@@ -430,9 +514,9 @@ llvm::Error writeReport(llvm::StringRef path, std::uint64_t graphCount,
   return llvm::Error::success();
 }
 
-llvm::Error writeCanonicalDataflow(
-    llvm::StringRef path,
-    const dataflow::CanonicalDataflowArtifact &canonical) {
+llvm::Error
+writeCanonicalDataflow(llvm::StringRef path,
+                       const dataflow::CanonicalDataflowArtifact &canonical) {
   if (path.empty())
     return llvm::Error::success();
   std::string message;
@@ -473,17 +557,17 @@ int main(int argc, char **argv) {
       readModule(targetContext, targetModulePath);
   if (!target)
     return reportError(target.takeError());
-  llvm::Expected<loom::frontend::PreMappingCompilation> compiled =
+  llvm::Expected<loom::dse::SelectedPreMappingCompilation> selected =
       compileTarget(std::move(*target), design->roots().front(), store);
-  if (!compiled)
-    return reportError(compiled.takeError());
+  if (!selected)
+    return reportError(selected.takeError());
+  loom::frontend::PreMappingCompilation &compiled = selected->compilation;
   llvm::Expected<dataflow::CanonicalDataflowProgramView> view =
-      compiled->canonicalDataflow.view();
+      compiled.canonicalDataflow.view();
   if (!view)
     return reportError(view.takeError());
-  if (llvm::Error error =
-          writeCanonicalDataflow(canonicalOutputPath,
-                                 compiled->canonicalDataflow))
+  if (llvm::Error error = writeCanonicalDataflow(canonicalOutputPath,
+                                                 compiled.canonicalDataflow))
     return reportError(std::move(error));
 
   std::vector<dataflow::RootedGraphLaunchRef> launches;
@@ -495,7 +579,8 @@ int main(int argc, char **argv) {
 
   ExecutionTotals totals;
   for (dataflow::RootedGraphLaunchRef launch : launches)
-    if (llvm::Error error = executeLaunch(*compiled, *view, launch, totals))
+    if (llvm::Error error =
+            executeLaunch(*selected, *view, launch, store, totals))
       return reportError(std::move(error));
   if (totals.dynamicCalls == 0 || totals.memoryBytesCompared == 0 ||
       totals.eventCount == 0)

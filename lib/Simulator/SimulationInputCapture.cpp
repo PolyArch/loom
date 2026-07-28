@@ -6,6 +6,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/APFloat.h"
 #include <limits>
 #include <optional>
 #include <system_error>
@@ -16,13 +17,13 @@ namespace {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
-      llvm::Twine("simulation_memory_capture_invalid: ") + message);
+      llvm::Twine("simulation_input_capture_invalid: ") + message);
 }
 
 llvm::Error unsupported(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::not_supported),
-      llvm::Twine("simulation_memory_capture_unsupported: ") + message);
+      llvm::Twine("simulation_input_capture_unsupported: ") + message);
 }
 
 std::optional<std::uint64_t> constantUnsigned(mlir::Value value) {
@@ -146,6 +147,142 @@ llvm::Expected<ResolvedObject> resolveObject(mlir::Value pointer) {
   return unsupported("call operand does not resolve to a finite LLVM alloca");
 }
 
+CanonicalValueSequence exceptionalValue(const detail::LaneShape &shape,
+                                        SemanticState state) {
+  CanonicalValueSequence value;
+  value.tokenCount = 1;
+  value.lanes.reserve(shape.lanesPerToken);
+  for (std::uint64_t lane = 0; lane < shape.lanesPerToken; ++lane)
+    value.lanes.push_back(state == SemanticState::Poison
+                              ? SemanticLane::poison()
+                              : SemanticLane::undef());
+  return value;
+}
+
+llvm::Expected<llvm::APInt> attributeBits(mlir::Attribute attribute,
+                                          std::uint32_t width) {
+  if (auto integer = llvm::dyn_cast<mlir::IntegerAttr>(attribute)) {
+    if (integer.getValue().getBitWidth() != width)
+      return invalid("constant integer width differs from its graph input");
+    return integer.getValue();
+  }
+  if (auto floating = llvm::dyn_cast<mlir::FloatAttr>(attribute)) {
+    llvm::APInt bits = floating.getValue().bitcastToAPInt();
+    if (bits.getBitWidth() != width)
+      return invalid("constant float width differs from its graph input");
+    return bits;
+  }
+  return unsupported("constant graph value has no integer or float bits");
+}
+
+llvm::Expected<std::optional<CanonicalValueSequence>>
+fixedValueOf(mlir::Value source, const detail::LaneShape &shape) {
+  if (source.getDefiningOp<mlir::LLVM::UndefOp>())
+    return std::optional<CanonicalValueSequence>(
+        exceptionalValue(shape, SemanticState::Undef));
+  if (source.getDefiningOp<mlir::LLVM::PoisonOp>())
+    return std::optional<CanonicalValueSequence>(
+        exceptionalValue(shape, SemanticState::Poison));
+
+  mlir::Attribute attribute;
+  if (auto constant = source.getDefiningOp<mlir::arith::ConstantOp>())
+    attribute = constant.getValue();
+  else if (auto constant = source.getDefiningOp<mlir::LLVM::ConstantOp>())
+    attribute = constant.getValue();
+  if (!attribute)
+    return std::optional<CanonicalValueSequence>{};
+
+  CanonicalValueSequence value;
+  value.tokenCount = 1;
+  value.lanes.reserve(shape.lanesPerToken);
+  if (shape.lanesPerToken == 1 && !llvm::isa<mlir::ElementsAttr>(attribute)) {
+    llvm::Expected<llvm::APInt> bits =
+        attributeBits(attribute, shape.laneBitWidth);
+    if (!bits)
+      return bits.takeError();
+    value.lanes.push_back(SemanticLane::defined(std::move(*bits)));
+    return std::optional<CanonicalValueSequence>(std::move(value));
+  }
+
+  auto dense = llvm::dyn_cast<mlir::DenseElementsAttr>(attribute);
+  if (!dense || dense.getNumElements() < 0 ||
+      static_cast<std::uint64_t>(dense.getNumElements()) != shape.lanesPerToken)
+    return unsupported("vector constant does not match its graph input shape");
+  if (llvm::isa<mlir::IntegerType>(dense.getElementType())) {
+    for (const llvm::APInt &raw : dense.getValues<llvm::APInt>()) {
+      if (raw.getBitWidth() != shape.laneBitWidth)
+        return invalid("vector integer lane width differs from graph input");
+      value.lanes.push_back(SemanticLane::defined(raw));
+    }
+  } else if (llvm::isa<mlir::FloatType>(dense.getElementType())) {
+    for (const llvm::APFloat &raw : dense.getValues<llvm::APFloat>()) {
+      llvm::APInt bits = raw.bitcastToAPInt();
+      if (bits.getBitWidth() != shape.laneBitWidth)
+        return invalid("vector float lane width differs from graph input");
+      value.lanes.push_back(SemanticLane::defined(std::move(bits)));
+    }
+  } else {
+    return unsupported("vector constant element type is not bit-valued");
+  }
+  return std::optional<CanonicalValueSequence>(std::move(value));
+}
+
+llvm::Expected<SimulationValueInputCapture>
+operationValueInputCapture(detail::ResolvedLaunchContext &context,
+                           std::uint64_t valueInputOrdinal,
+                           mlir::ValueRange boundaryInputs) {
+  mlir::Value graphSource =
+      context.graphLaunchOp.getValueInputs()[valueInputOrdinal];
+  mlir::Type graphType =
+      context.graphOp.getFunctionType().getInput(valueInputOrdinal);
+  llvm::Expected<detail::LaneShape> shape =
+      detail::laneShapeOf(graphType, context.graphOp.getOperation());
+  if (!shape)
+    return shape.takeError();
+
+  mlir::Value boundaryValue;
+  std::optional<std::uint64_t> boundaryOrdinal;
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(graphSource)) {
+    if (argument.getOwner()->getParentOp() != context.thread.getOperation() ||
+        argument.getArgNumber() >=
+            context.thread.getFunctionType().getNumInputs())
+      return invalid("graph value input is not a thread value formal");
+    boundaryOrdinal = argument.getArgNumber();
+    if (*boundaryOrdinal >= boundaryInputs.size())
+      return invalid("thread value formal exceeds source boundary inputs");
+    boundaryValue = boundaryInputs[*boundaryOrdinal];
+  } else {
+    boundaryValue = graphSource;
+  }
+
+  llvm::Expected<std::optional<CanonicalValueSequence>> fixed =
+      fixedValueOf(boundaryValue, *shape);
+  if (!fixed)
+    return fixed.takeError();
+  if (!*fixed && !boundaryOrdinal)
+    return unsupported(
+        "graph value input is neither fixed nor a boundary formal");
+
+  std::uint64_t byteCount = 0;
+  if (!*fixed) {
+    llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
+        boundaryValue.getDefiningOp() ? boundaryValue.getDefiningOp()
+                                      : context.graphOp.getOperation(),
+        boundaryValue.getType());
+    if (!bytes)
+      return bytes.takeError();
+    if (shape->lanesPerToken >
+            std::numeric_limits<std::uint64_t>::max() / shape->laneBitWidth ||
+        shape->lanesPerToken * shape->laneBitWidth > *bytes * 8)
+      return invalid("runtime graph value does not fit its storage extent");
+    byteCount = *bytes;
+  }
+  return SimulationValueInputCapture{valueInputOrdinal,   boundaryOrdinal,
+                                     boundaryValue,       shape->lanesPerToken,
+                                     shape->laneBitWidth, byteCount,
+                                     std::move(*fixed)};
+}
+
 llvm::Expected<unsigned>
 enclosingCallableArgument(mlir::Value value, mlir::LLVM::LLVMFuncOp function) {
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
@@ -177,13 +314,17 @@ llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
 
 } // namespace
 
-llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
+llvm::Expected<DirectCallSimulationInputCapturePlan>
+deriveSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
     dataflow::RootedGraphLaunchRef launch, mlir::LLVM::CallOp hostCall) {
   llvm::Expected<detail::ResolvedLaunchContext> context =
       detail::resolveLaunchContext(program, launch);
   if (!context)
     return context.takeError();
+  if (context->numValueInputs != 0)
+    return unsupported(
+        "direct-call capture does not yet project graph value inputs");
 
   auto enclosingCallable =
       context->rootLaunchOp->getParentOfType<mlir::LLVM::LLVMFuncOp>();
@@ -206,13 +347,10 @@ llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
   if (!callOrdinal)
     return callOrdinal.takeError();
 
-  SimulationMemoryCapturePlan plan{launch,
-                                   hostCall,
-                                   hostCaller.getSymName().str(),
-                                   hostCall.getCalleeAttr().getValue().str(),
-                                   *callOrdinal,
-                                   {},
-                                   {}};
+  DirectCallSimulationInputCapturePlan plan{
+      SimulationInputCapturePlan{launch, {}, {}, {}}, hostCall,
+      hostCaller.getSymName().str(), hostCall.getCalleeAttr().getValue().str(),
+      *callOrdinal};
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
         program.resolve(root);
@@ -237,20 +375,72 @@ llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
     if (!object)
       return object.takeError();
     std::uint64_t objectIndex = 0;
+    while (objectIndex < plan.input.objects.size() &&
+           plan.input.objects[objectIndex].base != object->base)
+      ++objectIndex;
+    if (objectIndex == plan.input.objects.size()) {
+      SimulationMemoryCaptureObject capture;
+      capture.base = object->base;
+      capture.byteCount = object->byteCount;
+      capture.boundaryOperandOrdinal = *callableArgument;
+      capture.operandByteOffset = object->byteOffset;
+      plan.input.objects.push_back(capture);
+    } else if (plan.input.objects[objectIndex].byteCount != object->byteCount)
+      return invalid("one host allocation resolved to inconsistent extents");
+    if (object->byteOffset >= object->byteCount)
+      return invalid("logical root offset is outside its host allocation");
+    plan.input.memoryRootBindings.push_back(
+        SimulationMemoryRootCapture{root, objectIndex, object->byteOffset});
+  }
+  return plan;
+}
+
+llvm::Expected<SimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs) {
+  llvm::Expected<detail::ResolvedLaunchContext> context =
+      detail::resolveLaunchContext(program, launch);
+  if (!context)
+    return context.takeError();
+
+  SimulationInputCapturePlan plan{launch, {}, {}, {}};
+  plan.valueInputs.reserve(context->numValueInputs);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
+       ++ordinal) {
+    llvm::Expected<SimulationValueInputCapture> value =
+        operationValueInputCapture(*context, ordinal, boundaryInputs);
+    if (!value)
+      return value.takeError();
+    plan.valueInputs.push_back(std::move(*value));
+  }
+  for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
+    llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
+        program.resolve(root);
+    if (!resolvedRoot)
+      return resolvedRoot.takeError();
+    if (resolvedRoot->op != context->thread.getOperation() ||
+        !resolvedRoot->formalArgIndex)
+      return invalid("imported root is not owned by the rooted thread");
+    const std::uint64_t boundaryOrdinal = *resolvedRoot->formalArgIndex;
+    if (boundaryOrdinal >= boundaryInputs.size())
+      return invalid("thread memory formal exceeds source boundary inputs");
+
+    llvm::Expected<ResolvedObject> object =
+        resolveObject(boundaryInputs[boundaryOrdinal]);
+    if (!object)
+      return object.takeError();
+    std::uint64_t objectIndex = 0;
     while (objectIndex < plan.objects.size() &&
            plan.objects[objectIndex].base != object->base)
       ++objectIndex;
     if (objectIndex == plan.objects.size()) {
-      SimulationMemoryCaptureObject capture;
-      capture.base = object->base;
-      capture.byteCount = object->byteCount;
-      capture.callOperandOrdinal = *callableArgument;
-      capture.operandByteOffset = object->byteOffset;
-      plan.objects.push_back(capture);
-    } else if (plan.objects[objectIndex].byteCount != object->byteCount)
-      return invalid("one host allocation resolved to inconsistent extents");
-    if (object->byteOffset >= object->byteCount)
-      return invalid("logical root offset is outside its host allocation");
+      plan.objects.push_back(
+          SimulationMemoryCaptureObject{object->base, object->byteCount,
+                                        boundaryOrdinal, object->byteOffset});
+    } else if (plan.objects[objectIndex].byteCount != object->byteCount) {
+      return invalid("one source allocation resolved to inconsistent extents");
+    }
     plan.memoryRootBindings.push_back(
         SimulationMemoryRootCapture{root, objectIndex, object->byteOffset});
   }

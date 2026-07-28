@@ -132,3 +132,20 @@ subjects, workload, external services, reference cycles, and implementation
 correlations align. Functional equality may be meaningful when cycle equality
 is not. Comparison therefore validates exact coupling before deriving metrics
 or findings instead of coercing unlike executions into one score.
+
+## Why Source-Backed Validation Uses Ownership Lineage
+
+An operation-owned Spatial graph is only one region of a complete stored
+program. Executing the graph alone cannot recover the values and aliased memory
+state produced by residual host code, while moving that residual code into the
+graph would falsify ownership. The independent oracle therefore replays the
+already selected Structured ownership decision and observes its exact boundary
+inside the complete program execution.
+
+For an operation-owned region, matching the target graph back to a separate
+native module by debug location, symbol spelling, or operation position would
+create a second and unstable identity system. Invocation-local DSE lineage
+already names the exact parent, scope, and typed decision, so it is sufficient
+and introduces no persistent schema. Requiring effective execution-layout
+equivalence before host JIT execution prevents the oracle from becoming a
+silent cross-target emulator.

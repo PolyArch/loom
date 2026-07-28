@@ -23,8 +23,25 @@ struct StructuredOwnershipExplorationOptions final {
   std::uint32_t candidateWorkerCount = 1;
 };
 
+/// One exact parent-local ownership decision that produced a child candidate.
+/// This is invocation lineage, not part of either Artifact's identity.
+struct StructuredOwnershipDerivation final {
+  frontend::SpatialOwnershipScope scope;
+  frontend::SpatialOwnershipDecisionPoint decision;
+
+  friend bool operator==(const StructuredOwnershipDerivation &lhs,
+                         const StructuredOwnershipDerivation &rhs) {
+    return lhs.scope == rhs.scope && lhs.decision == rhs.decision;
+  }
+};
+
+struct SelectedStructuredOwnershipCandidate final {
+  frontend::MaterializedOwnershipCandidate candidate;
+  std::vector<StructuredOwnershipDerivation> derivations;
+};
+
 struct CompletedStructuredOwnershipSelection final {
-  std::vector<frontend::MaterializedOwnershipCandidate> selected;
+  std::vector<SelectedStructuredOwnershipCandidate> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
 };
 

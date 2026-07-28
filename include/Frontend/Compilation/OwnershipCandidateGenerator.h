@@ -106,6 +106,16 @@ struct SpatialOwnershipScope final {
   }
 };
 
+/// A private clone in which one exact ownership scope has had all selected
+/// semantic decisions materialized, but no execution owner has yet replaced
+/// the selected operation. The parent candidate owns the MLIRContext and must
+/// outlive this ephemeral projection.
+struct PreparedSpatialOwnershipSelection final {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  mlir::Operation *operation = nullptr;
+  std::vector<mlir::Value> liveIns;
+};
+
 /// Enumerates every ownership scope in the parent candidate's canonical
 /// operation order. Each returned scope remains independent: callers derive
 /// and explore its decision domain separately rather than constructing one
@@ -138,6 +148,14 @@ enumerateOperationSpatialOwnershipScopes(
 llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
 enumerateSpatialOwnershipDecisionDomain(
     const StructuredProgramCandidate &parent, const StructuredEntityRef &scope);
+
+/// Clone one exact parent and materialize one point from the selected scope's
+/// typed decision domain without changing ownership. Candidate publication and
+/// independent execution oracles both consume this single implementation.
+llvm::Expected<PreparedSpatialOwnershipSelection>
+prepareSpatialOwnershipSelection(const StructuredProgramCandidate &parent,
+                                 const SpatialOwnershipScope &scope,
+                                 const SpatialOwnershipDecisionPoint &decision);
 
 /// Materializes one explicit point from one exact scope-local decision domain.
 /// This performs semantic finalization and exact-Fabric hard pruning, but no

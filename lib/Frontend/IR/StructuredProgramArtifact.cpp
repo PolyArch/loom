@@ -17,7 +17,9 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -542,6 +544,8 @@ struct ParsedModule {
 llvm::Expected<ParsedModule> parseBytecode(ArrayRef<std::uint8_t> bytes) {
   DialectRegistry registry;
   registerAllDialects(registry);
+  registerAllExtensions(registry);
+  registerAllToLLVMIRTranslations(registry);
   registry.insert<::dataflow::DataflowDialect, ::loom::LoomDialect>();
   auto context =
       std::make_unique<MLIRContext>(registry, MLIRContext::Threading::DISABLED);

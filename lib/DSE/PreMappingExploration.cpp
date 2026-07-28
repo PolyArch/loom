@@ -32,13 +32,15 @@ exploreLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
 
   auto selection =
       std::get<CompletedStructuredOwnershipSelection>(std::move(*explored));
-  std::vector<frontend::PreMappingCompilation> selected;
+  std::vector<SelectedPreMappingCompilation> selected;
   selected.reserve(selection.selected.size());
   for (auto &candidate : selection.selected) {
-    selected.push_back(frontend::PreMappingCompilation{
-        structured->fabric, structured->staticGlobalMemory,
-        std::move(candidate.structuredProgram),
-        std::move(candidate.canonicalDataflow)});
+    selected.push_back(SelectedPreMappingCompilation{
+        frontend::PreMappingCompilation{
+            structured->fabric, structured->staticGlobalMemory,
+            std::move(candidate.candidate.structuredProgram),
+            std::move(candidate.candidate.canonicalDataflow)},
+        std::move(candidate.derivations)});
   }
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(selection.satisfiedEvidence)}};

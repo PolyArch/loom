@@ -325,7 +325,7 @@ int main(int argc, char **argv) {
           ::llvm::inconvertibleErrorCode(),
           "TopK(1) returned %zu pre-Mapping candidates",
           completion.selected.size()));
-    compiled.emplace(std::move(completion.selected.front()));
+    compiled.emplace(std::move(completion.selected.front().compilation));
   } else {
     auto mechanical = loom::frontend::raiseLlvmModuleToStructured(
         std::move(llvmModule), design->roots().front().reference(), store,

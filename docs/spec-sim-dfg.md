@@ -61,6 +61,36 @@ references fail admission before execution state exists.
 An admitted actor without implemented semantics is `unsupported`. It must not
 be approximated, skipped, or interpreted through a compatibility path.
 
+### Source-Backed Validation
+
+A developer validation invocation may derive a `SimulationWorkload` and
+`SimulationRuntimeInput` from an independently executed source-backed program.
+This derivation is ephemeral and does not add fields to the persistent
+Simulation schemas.
+
+For whole-callable Spatial ownership, the oracle resolves the exact direct
+LLVM call site retained by the selected candidate. For operation-owned Spatial
+ownership, it consumes the exact invocation-local ownership derivation,
+reimports that derivation's parent Structured Program, reapplies the selected
+typed decision without changing ownership, and observes the selected operation
+at its explicit value and memory boundary. Source locations, symbol position,
+operation position, and printer order are never persistent identity or
+ownership authority.
+
+Graph value inputs are classified totally as `Fixed` or `Runtime`. Fixed
+inputs preserve defined, poison, or undef state; runtime inputs are captured in
+graph ABI order. Memory roots are projected onto finite byte-addressed backing
+objects, and roots that share one object ordinal preserve aliasing. Unknown
+extent, stream input capture, ambiguous ownership lineage, or an unsafe native
+execution target is typed `Unsupported`, not repaired with fabricated input.
+
+An operation-owned oracle executes only when the target triple equals the host
+JIT triple and every root execution-layout property, used pointer address
+space, used type layout, and used struct element offset is equal. Equivalent
+DataLayout spellings are accepted through their effective projections; a real
+layout difference fails closed. Residual host work executes as host work and
+is never inserted into the Canonical Dataflow graph.
+
 ## Execution Semantics
 
 DFG-sim and CGRA-sim share one dependency-driven progress protocol:

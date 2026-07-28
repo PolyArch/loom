@@ -13,10 +13,12 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
+#include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Import.h"
 
 #include "llvm/IR/Module.h"
@@ -45,7 +47,9 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
 
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
+  mlir::registerAllExtensions(registry);
   mlir::registerAllFromLLVMIRTranslations(registry);
+  mlir::registerAllToLLVMIRTranslations(registry);
 
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.allowUnregisteredDialects(options.allowUnregisteredDialects);

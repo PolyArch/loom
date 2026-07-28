@@ -1585,7 +1585,6 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
                                  parseSpatialModule(test, context),
                                  design.roots().front().reference(), store));
   loom::frontend::WholeCallableSpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
   auto spatial =
       take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
                      compiled.structuredProgram,
@@ -1681,10 +1680,13 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail(test, "central ownership exploration did not select one survivor");
-  auto exploredView =
-      take(test, exploredSelection->selected.front().canonicalDataflow.view());
+  auto exploredView = take(
+      test,
+      exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty())
     fail(test, "central ownership exploration selected no Spatial workload");
+  if (exploredSelection->selected.front().derivations.size() != 1)
+    fail(test, "central ownership exploration lost exact candidate lineage");
 
   auto parallelExploration = exploration;
   parallelExploration.ownership.candidateWorkerCount = 2;
@@ -1696,10 +1698,16 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&parallel);
   if (!parallelSelection || parallelSelection->selected.size() != 1)
     fail(test, "parallel ownership exploration did not select one survivor");
-  if (parallelSelection->selected.front().structuredProgram.identity() !=
-          exploredSelection->selected.front().structuredProgram.identity() ||
-      parallelSelection->selected.front().canonicalDataflow.identity() !=
-          exploredSelection->selected.front().canonicalDataflow.identity() ||
+  if (parallelSelection->selected.front()
+              .compilation.structuredProgram.identity() !=
+          exploredSelection->selected.front()
+              .compilation.structuredProgram.identity() ||
+      parallelSelection->selected.front()
+              .compilation.canonicalDataflow.identity() !=
+          exploredSelection->selected.front()
+              .compilation.canonicalDataflow.identity() ||
+      parallelSelection->selected.front().derivations !=
+          exploredSelection->selected.front().derivations ||
       parallelSelection->satisfiedEvidence !=
           exploredSelection->satisfiedEvidence)
     fail(test, "candidate worker count changed the formal DSE result");
