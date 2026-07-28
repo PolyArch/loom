@@ -51,9 +51,9 @@ llvm::ArrayRef<std::uint8_t> asBytes(llvm::StringRef text) {
   return {reinterpret_cast<const std::uint8_t *>(text.data()), text.size()};
 }
 
-/// The closed provider identity of payload version 1.0. The build derives the
-/// production value from the selected gitlink; repeating it here checks that
-/// the build still selects the provider this payload version closed over.
+/// Fixed provider input for the independently computed ABI-key known vector.
+/// Production payloads derive their provider from the selected gitlink; this
+/// vector intentionally stays independent of the current checkout.
 constexpr llvm::StringRef closedRepositoryIdentity = "llvm-project";
 constexpr llvm::StringRef closedCommitIdentity =
     "040a641988f6ed6f4fab250706ca2b620c1de2d8";
