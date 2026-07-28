@@ -68,7 +68,21 @@ import corpus_inventory  # noqa: E402
 # is the triple carried through the LLVMIR import into the Structured and
 # Canonical Dataflow modules.
 TARGET_TRIPLE = "riscv64-unknown-elf"
-TARGET_MARCH = "rv64imafdc_zicsr_zifencei"
+TARGET_SINGLE_LETTER_EXTENSIONS = ("m", "a", "f", "d", "c")
+TARGET_MULTI_LETTER_EXTENSIONS = ("zicsr", "zifencei")
+TARGET_MARCH = (
+    "rv64i"
+    + "".join(TARGET_SINGLE_LETTER_EXTENSIONS)
+    + "_"
+    + "_".join(TARGET_MULTI_LETTER_EXTENSIONS)
+)
+TARGET_LTO_MATTR = ",".join(
+    f"+{extension}"
+    for extension in (
+        *TARGET_SINGLE_LETTER_EXTENSIONS,
+        *TARGET_MULTI_LETTER_EXTENSIONS,
+    )
+)
 TARGET_MABI = "lp64d"
 TARGET_CODE_MODEL = "medany"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
@@ -99,7 +113,12 @@ CATEGORY_S0_ARTIFACT = "s0-artifact"
 CATEGORY_VERIFY = "verify"
 CATEGORY_PRE_MAPPING = "pre-mapping"
 CATEGORY_D0_ARTIFACT = "d0-artifact"
+CATEGORY_FINAL_LINK = "final-link"
+CATEGORY_FINAL_LINK_ARTIFACT = "final-link-artifact"
+CATEGORY_PAYLOAD_IMPORT = "payload-import"
+CATEGORY_LINKED_LLVM_ARTIFACT = "linked-llvm-artifact"
 CATEGORY_NATIVE_COMPILE = "native-compile"
+CATEGORY_NATIVE_LINK = "native-link"
 CATEGORY_NATIVE_LLVM_ARTIFACT = "native-llvm-artifact"
 CATEGORY_DFG_SIM = "dfg-sim"
 CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
@@ -119,6 +138,10 @@ ENV_TOOL_NAMES = {
     "raise_opt": "LOOM_RAISE_OPT",
     "pre_mapping": "LOOM_PRE_MAPPING",
     "dfg_run": "LOOM_DFG_RUN",
+    "lld": "LOOM_LLD",
+    "payload": "LOOM_PAYLOAD",
+    "llvm_dis": "LOOM_LLVM_DIS",
+    "llvm_link": "LOOM_LLVM_LINK",
 }
 TOOL_FILE_NAMES = {
     "cc": "loom-cc",
@@ -127,7 +150,12 @@ TOOL_FILE_NAMES = {
     "raise_opt": "loom-raise-opt",
     "pre_mapping": "loom-pre-mapping",
     "dfg_run": "loom-dfg-run",
+    "lld": "ld.lld",
+    "payload": "loom-payload",
+    "llvm_dis": "llvm-dis",
+    "llvm_link": "llvm-link",
 }
+LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis", "llvm_link"})
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
 
@@ -144,6 +172,10 @@ class Toolchain:
     raise_opt: str
     pre_mapping: str
     dfg_run: str
+    lld: str
+    payload: str
+    llvm_dis: str
+    llvm_link: str
     sysroot: Path
     gcc_toolchain: Path
 
@@ -152,6 +184,12 @@ class Toolchain:
 class StepFailure:
     category: str
     detail: str
+
+
+@dataclass(frozen=True)
+class LinkedWorkloadModules:
+    target: Path
+    native: Path | None
 
 
 @dataclass(frozen=True)
@@ -337,8 +375,13 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
 
     tools: dict[str, str] = {}
     for key, file_name in TOOL_FILE_NAMES.items():
+        default_root = (
+            ROOT / "externals" / "llvm" / "build" / "bin"
+            if key in LLVM_TOOL_KEYS
+            else ROOT / "build" / "bin"
+        )
         candidate = os.environ.get(ENV_TOOL_NAMES[key]) or str(
-            ROOT / "build" / "bin" / file_name
+            default_root / file_name
         )
         if not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
             raise GateConfigError(
@@ -364,6 +407,10 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
         raise_opt=tools["raise_opt"],
         pre_mapping=tools["pre_mapping"],
         dfg_run=tools["dfg_run"],
+        lld=tools["lld"],
+        payload=tools["payload"],
+        llvm_dis=tools["llvm_dis"],
+        llvm_link=tools["llvm_link"],
         sysroot=sysroot,
         gcc_toolchain=gcc_toolchain,
     )
@@ -434,6 +481,26 @@ def compile_command(
     ]
 
 
+def target_object_command(
+    toolchain: Toolchain,
+    suite_flags: Sequence[str],
+    source: Path,
+    output: Path,
+) -> list[str]:
+    return [
+        compiler_for(toolchain, source),
+        *target_flags(toolchain),
+        *suite_flags,
+        "-O1",
+        "-flto=full",
+        "-ffat-lto-objects",
+        "-c",
+        str(source),
+        "-o",
+        str(output),
+    ]
+
+
 def native_compile_command(
     toolchain: Toolchain,
     suite_flags: Sequence[str],
@@ -447,6 +514,68 @@ def native_compile_command(
         "-S",
         "-O1",
         str(source),
+        "-o",
+        str(output),
+    ]
+
+
+def final_link_command(
+    toolchain: Toolchain,
+    sources: Sequence[Path],
+    objects: Sequence[Path],
+    link_flags: Sequence[str],
+    output: Path,
+) -> list[str]:
+    driver = (
+        toolchain.cxx
+        if any(source.suffix in CXX_SUFFIXES for source in sources)
+        else toolchain.cc
+    )
+    return [
+        driver,
+        *target_flags(toolchain),
+        f"-fuse-ld={toolchain.lld}",
+        "-O1",
+        "-flto=full",
+        "-Wl,--fat-lto-objects",
+        "-Wl,--save-temps=resolution",
+        "-Wl,--save-temps=precodegen",
+        "-Wl,--lto-O1",
+        "-Xlinker",
+        f"--plugin-opt=-mattr={TARGET_LTO_MATTR}",
+        *(str(path) for path in objects),
+        *link_flags,
+        "-o",
+        str(output),
+    ]
+
+
+def payload_import_command(
+    toolchain: Toolchain,
+    executable: Path,
+    bitcode_output: Path,
+) -> list[str]:
+    return [
+        toolchain.payload,
+        f"--resolution={executable}.resolution.txt",
+        f"--linked-bitcode={executable}.0.5.precodegen.bc",
+        f"--bitcode-output={bitcode_output}",
+    ]
+
+
+def disassemble_command(
+    toolchain: Toolchain, bitcode: Path, llvm_ir: Path
+) -> list[str]:
+    return [toolchain.llvm_dis, str(bitcode), "-o", str(llvm_ir)]
+
+
+def native_link_command(
+    toolchain: Toolchain, modules: Sequence[Path], output: Path
+) -> list[str]:
+    return [
+        toolchain.llvm_link,
+        *(str(path) for path in modules),
+        "-S",
         "-o",
         str(output),
     ]
@@ -787,6 +916,156 @@ def case_out_dir(
     return out_root / case.suite / case.case.removesuffix(".c")
 
 
+def clear_artifacts(*paths: Path) -> None:
+    for path in paths:
+        path.unlink(missing_ok=True)
+
+
+def binary_artifact_defect(path: Path, role: str) -> str | None:
+    try:
+        if not path.is_file():
+            return f"missing {role}: {path}"
+        if path.stat().st_size == 0:
+            return f"empty {role}: {path}"
+    except OSError as exc:
+        return f"cannot inspect {role} {path}: {exc}"
+    return None
+
+
+def prepare_linked_workload(
+    case: corpus_inventory.ProgramWorkload,
+    toolchain: Toolchain,
+    external_root: Path,
+    case_dir: Path,
+    deadline: float,
+    need_native: bool,
+) -> LinkedWorkloadModules | StepFailure:
+    if not case.sources:
+        return StepFailure(
+            CATEGORY_FINAL_LINK,
+            "direct-source workload has no source inputs",
+        )
+
+    suite_flags = suite_compile_flags(case.suite, external_root)
+    suite_flags.extend(case.compiler_flags)
+    sources = [resolve_source(path, external_root) for path in case.sources]
+    target_objects: list[Path] = []
+    native_modules: list[Path] = []
+    for ordinal, (repo_relative, source) in enumerate(
+        zip(case.sources, sources, strict=True)
+    ):
+        target_object = case_dir / f"source-{ordinal:03d}.o"
+        clear_artifacts(target_object)
+        failure = run_step(
+            target_object_command(
+                toolchain, suite_flags, source, target_object
+            ),
+            case_dir / f"source-{ordinal:03d}.compile.log",
+            deadline,
+            CATEGORY_COMPILE,
+        )
+        if failure is not None:
+            return StepFailure(
+                failure.category, f"{repo_relative}: {failure.detail}"
+            )
+        defect = binary_artifact_defect(target_object, "target object")
+        if defect is not None:
+            return StepFailure(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
+        target_objects.append(target_object)
+
+        if need_native:
+            native_module = case_dir / f"source-{ordinal:03d}.native.ll"
+            clear_artifacts(native_module)
+            failure = run_step(
+                native_compile_command(
+                    toolchain, suite_flags, source, native_module
+                ),
+                case_dir / f"source-{ordinal:03d}.native-compile.log",
+                deadline,
+                CATEGORY_NATIVE_COMPILE,
+            )
+            if failure is not None:
+                return StepFailure(
+                    failure.category, f"{repo_relative}: {failure.detail}"
+                )
+            defect = native_llvm_ir_defect(native_module)
+            if defect is not None:
+                return StepFailure(
+                    CATEGORY_NATIVE_LLVM_ARTIFACT,
+                    f"{repo_relative}: {defect}",
+                )
+            native_modules.append(native_module)
+
+    executable = case_dir / "program.elf"
+    resolution = Path(f"{executable}.resolution.txt")
+    precodegen = Path(f"{executable}.0.5.precodegen.bc")
+    clear_artifacts(executable, resolution, precodegen)
+    failure = run_step(
+        final_link_command(
+            toolchain, sources, target_objects, case.link_flags, executable
+        ),
+        case_dir / "final-link.log",
+        deadline,
+        CATEGORY_FINAL_LINK,
+    )
+    if failure is not None:
+        return failure
+    for path, role in (
+        (executable, "linked executable"),
+        (resolution, "LLD resolution report"),
+        (precodegen, "LLD pre-code-generation bitcode"),
+    ):
+        defect = binary_artifact_defect(path, role)
+        if defect is not None:
+            return StepFailure(CATEGORY_FINAL_LINK_ARTIFACT, defect)
+
+    linked_bitcode = case_dir / "program.bc"
+    clear_artifacts(linked_bitcode)
+    failure = run_step(
+        payload_import_command(toolchain, executable, linked_bitcode),
+        case_dir / "payload-import.log",
+        deadline,
+        CATEGORY_PAYLOAD_IMPORT,
+    )
+    if failure is not None:
+        return failure
+    defect = binary_artifact_defect(linked_bitcode, "validated linked bitcode")
+    if defect is not None:
+        return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
+
+    linked_llvm_ir = case_dir / "program.ll"
+    clear_artifacts(linked_llvm_ir)
+    failure = run_step(
+        disassemble_command(toolchain, linked_bitcode, linked_llvm_ir),
+        case_dir / "llvm-dis.log",
+        deadline,
+        CATEGORY_LINKED_LLVM_ARTIFACT,
+    )
+    if failure is not None:
+        return failure
+    defect = llvm_ir_defect(linked_llvm_ir)
+    if defect is not None:
+        return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
+
+    native_llvm_ir: Path | None = None
+    if need_native:
+        native_llvm_ir = case_dir / "program.native.ll"
+        clear_artifacts(native_llvm_ir)
+        failure = run_step(
+            native_link_command(toolchain, native_modules, native_llvm_ir),
+            case_dir / "native-link.log",
+            deadline,
+            CATEGORY_NATIVE_LINK,
+        )
+        if failure is not None:
+            return failure
+        defect = native_llvm_ir_defect(native_llvm_ir)
+        if defect is not None:
+            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
+
+    return LinkedWorkloadModules(linked_llvm_ir, native_llvm_ir)
+
+
 def run_case(
     case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload,
     stage: str,
@@ -835,135 +1114,134 @@ def run_case(
         store_dir = case_dir / "artifact-store"
         if stage in {"d0", "dfg-sim"}:
             store_dir.mkdir(parents=True, exist_ok=True)
-        suite_flags = suite_compile_flags(case.suite, external_root)
-        if isinstance(case, corpus_inventory.ProgramWorkload):
-            if case.target_profile != TARGET_PROFILE:
-                raise GateConfigError(
-                    f"unsupported workload target profile: {case.target_profile}"
-                )
-            suite_flags.extend(case.compiler_flags)
-        for repo_relative in case.sources:
-            source = resolve_source(repo_relative, external_root)
-            stem = source.stem
-            llvm_ir = case_dir / f"{stem}.ll"
-            failure = run_step(
-                compile_command(toolchain, suite_flags, source, llvm_ir),
-                case_dir / f"{stem}.compile.log",
-                deadline,
-                CATEGORY_COMPILE,
-            )
-            if failure is not None:
-                return finish(failure.category, f"{repo_relative}: {failure.detail}")
-            defect = llvm_ir_defect(llvm_ir)
-            if defect is not None:
-                return finish(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
-            if stage == "llvm":
-                continue
-            if stage == "dfg-sim":
-                native_llvm_ir = case_dir / f"{stem}.native.ll"
-                failure = run_step(
-                    native_compile_command(
-                        toolchain, suite_flags, source, native_llvm_ir
-                    ),
-                    case_dir / f"{stem}.native-compile.log",
-                    deadline,
-                    CATEGORY_NATIVE_COMPILE,
-                )
-                if failure is not None:
-                    return finish(
-                        failure.category, f"{repo_relative}: {failure.detail}"
-                    )
-                defect = native_llvm_ir_defect(native_llvm_ir)
-                if defect is not None:
-                    return finish(
-                        CATEGORY_NATIVE_LLVM_ARTIFACT,
-                        f"{repo_relative}: {defect}",
-                    )
 
-                d0_module = case_dir / f"{stem}.dfg.mlir"
-                report_path = case_dir / f"{stem}.dfg-sim.json"
+        if stage == "llvm":
+            suite_flags = suite_compile_flags(case.suite, external_root)
+            for ordinal, repo_relative in enumerate(case.sources):
+                source = resolve_source(repo_relative, external_root)
+                llvm_ir = case_dir / f"source-{ordinal:03d}-{source.stem}.ll"
+                clear_artifacts(llvm_ir)
                 failure = run_step(
-                    dfg_sim_command(
-                        toolchain,
-                        llvm_ir,
-                        native_llvm_ir,
-                        store_dir,
-                        d0_module,
-                        report_path,
-                        candidate_jobs,
-                    ),
-                    case_dir / f"{stem}.dfg-sim.log",
+                    compile_command(toolchain, suite_flags, source, llvm_ir),
+                    case_dir / f"source-{ordinal:03d}.compile.log",
                     deadline,
-                    CATEGORY_DFG_SIM,
+                    CATEGORY_COMPILE,
                 )
                 if failure is not None:
                     return finish(
                         failure.category, f"{repo_relative}: {failure.detail}"
                     )
-                defect = d0_module_defect(d0_module)
-                if defect is not None:
-                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
-                report, defect = parse_dfg_simulation_report(report_path)
+                defect = llvm_ir_defect(llvm_ir)
                 if defect is not None:
                     return finish(
-                        CATEGORY_DFG_SIM_ARTIFACT,
-                        f"{repo_relative}: {defect}",
+                        CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}"
                     )
-                assert report is not None
-                graphs += report.graphs
-                actors += report.actors
-                dfg_totals = dfg_totals.combine(report)
-                continue
-            if stage == "d0":
-                d0_module = case_dir / f"{stem}.dfg.mlir"
-                counts_path = case_dir / f"{stem}.counts.json"
-                failure = run_step(
-                    pre_mapping_command(
-                        toolchain,
-                        llvm_ir,
-                        store_dir,
-                        d0_module,
-                        counts_path,
-                        candidate_jobs,
-                    ),
-                    case_dir / f"{stem}.pre-mapping.log",
-                    deadline,
-                    CATEGORY_PRE_MAPPING,
+            return finish(None, None)
+
+        assert isinstance(case, corpus_inventory.ProgramWorkload)
+        if case.target_profile != TARGET_PROFILE:
+            raise GateConfigError(
+                f"unsupported workload target profile: {case.target_profile}"
+            )
+        prepared = prepare_linked_workload(
+            case,
+            toolchain,
+            external_root,
+            case_dir,
+            deadline,
+            need_native=stage == "dfg-sim",
+        )
+        if isinstance(prepared, StepFailure):
+            return finish(prepared.category, prepared.detail)
+
+        if stage == "dfg-sim":
+            if prepared.native is None:
+                return finish(
+                    CATEGORY_INTERNAL,
+                    "DFG simulation received no native-oracle module",
                 )
-                if failure is not None:
-                    return finish(
-                        failure.category, f"{repo_relative}: {failure.detail}"
-                    )
-                defect = d0_module_defect(d0_module)
-                if defect is not None:
-                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
-                counts, defect = parse_d0_counts(counts_path)
-                if defect is not None:
-                    return finish(CATEGORY_D0_ARTIFACT, f"{repo_relative}: {defect}")
-                assert counts is not None
-                graphs += counts["graphs"]
-                actors += counts["actors"]
-                continue
-            s0_module = case_dir / f"{stem}.scf.mlir"
+            d0_module = case_dir / "program.dfg.mlir"
+            report_path = case_dir / "program.dfg-sim.json"
+            clear_artifacts(d0_module, report_path)
             failure = run_step(
-                raise_command(toolchain, llvm_ir, s0_module),
-                case_dir / f"{stem}.raise.log",
+                dfg_sim_command(
+                    toolchain,
+                    prepared.target,
+                    prepared.native,
+                    store_dir,
+                    d0_module,
+                    report_path,
+                    candidate_jobs,
+                ),
+                case_dir / "dfg-sim.log",
                 deadline,
-                CATEGORY_RAISE,
+                CATEGORY_DFG_SIM,
             )
             if failure is not None:
-                return finish(failure.category, f"{repo_relative}: {failure.detail}")
-            defect = s0_module_defect(s0_module)
+                return finish(failure.category, failure.detail)
+            defect = d0_module_defect(d0_module)
             if defect is not None:
-                return finish(CATEGORY_S0_ARTIFACT, f"{repo_relative}: {defect}")
+                return finish(CATEGORY_D0_ARTIFACT, defect)
+            report, defect = parse_dfg_simulation_report(report_path)
+            if defect is not None:
+                return finish(CATEGORY_DFG_SIM_ARTIFACT, defect)
+            assert report is not None
+            graphs = report.graphs
+            actors = report.actors
+            dfg_totals = report
+            return finish(None, None)
+
+        if stage == "d0":
+            d0_module = case_dir / "program.dfg.mlir"
+            counts_path = case_dir / "program.counts.json"
+            clear_artifacts(d0_module, counts_path)
             failure = run_step(
-                verify_command(toolchain, s0_module),
-                case_dir / f"{stem}.verify.log",
+                pre_mapping_command(
+                    toolchain,
+                    prepared.target,
+                    store_dir,
+                    d0_module,
+                    counts_path,
+                    candidate_jobs,
+                ),
+                case_dir / "pre-mapping.log",
                 deadline,
-                CATEGORY_VERIFY,
+                CATEGORY_PRE_MAPPING,
             )
             if failure is not None:
-                return finish(failure.category, f"{repo_relative}: {failure.detail}")
+                return finish(failure.category, failure.detail)
+            defect = d0_module_defect(d0_module)
+            if defect is not None:
+                return finish(CATEGORY_D0_ARTIFACT, defect)
+            counts, defect = parse_d0_counts(counts_path)
+            if defect is not None:
+                return finish(CATEGORY_D0_ARTIFACT, defect)
+            assert counts is not None
+            graphs = counts["graphs"]
+            actors = counts["actors"]
+            return finish(None, None)
+
+        s0_module = case_dir / "program.scf.mlir"
+        clear_artifacts(s0_module)
+        failure = run_step(
+            raise_command(toolchain, prepared.target, s0_module),
+            case_dir / "raise.log",
+            deadline,
+            CATEGORY_RAISE,
+        )
+        if failure is not None:
+            return finish(failure.category, failure.detail)
+        defect = s0_module_defect(s0_module)
+        if defect is not None:
+            return finish(CATEGORY_S0_ARTIFACT, defect)
+        failure = run_step(
+            verify_command(toolchain, s0_module),
+            case_dir / "verify.log",
+            deadline,
+            CATEGORY_VERIFY,
+        )
+        if failure is not None:
+            return finish(failure.category, failure.detail)
         return finish(None, None)
     except (GateConfigError, OSError) as exc:
         return finish(CATEGORY_INTERNAL, f"gate error: {exc}")
@@ -1182,6 +1460,10 @@ def render_json(
             "cc": toolchain.cc,
             "cxx": toolchain.cxx,
             "dfg_run": toolchain.dfg_run,
+            "lld": toolchain.lld,
+            "llvm_dis": toolchain.llvm_dis,
+            "llvm_link": toolchain.llvm_link,
+            "payload": toolchain.payload,
             "pre_mapping": toolchain.pre_mapping,
             "raise": toolchain.raise_tool,
             "raise_opt": toolchain.raise_opt,

@@ -87,6 +87,10 @@ report = next(
     (arg.split("=", 1)[1] for arg in args if arg.startswith("--output=")),
     None,
 )
+bitcode_output = next(
+    (arg.split("=", 1)[1] for arg in args if arg.startswith("--bitcode-output=")),
+    None,
+)
 
 fail_suffix = os.environ.get("STUB_FAIL_SUFFIX")
 if fail_suffix and out and out.endswith(fail_suffix):
@@ -118,6 +122,14 @@ if out and not out.endswith(os.devnull):
         content = "garbage\\n"
     with open(out, "w") as handle:
         handle.write(content)
+    if any("save-temps=resolution" in arg for arg in args):
+        with open(out + ".resolution.txt", "w") as handle:
+            handle.write("selected-input.o\\n")
+        with open(out + ".0.5.precodegen.bc", "wb") as handle:
+            handle.write(b"stub bitcode")
+if bitcode_output:
+    with open(bitcode_output, "wb") as handle:
+        handle.write(b"stub bitcode")
 if counts:
     content = (
         "garbage\\n"
@@ -140,8 +152,18 @@ if report:
 sys.exit(0)
 """
 
-TOOL_ENV = ("LOOM_CC", "LOOM_CXX", "LOOM_RAISE", "LOOM_RAISE_OPT",
-            "LOOM_PRE_MAPPING", "LOOM_DFG_RUN")
+TOOL_ENV = (
+    "LOOM_CC",
+    "LOOM_CXX",
+    "LOOM_RAISE",
+    "LOOM_RAISE_OPT",
+    "LOOM_PRE_MAPPING",
+    "LOOM_DFG_RUN",
+    "LOOM_LLD",
+    "LOOM_PAYLOAD",
+    "LOOM_LLVM_DIS",
+    "LOOM_LLVM_LINK",
+)
 SYSROOT_ENV = (
     corpus_gate.ENV_SYSROOT,
     corpus_gate.ENV_GCC_TOOLCHAIN,
@@ -175,6 +197,10 @@ class CorpusGateTestBase(unittest.TestCase):
             ("opt", "stub-opt"),
             ("pre_mapping", "stub-pre-mapping"),
             ("dfg_run", "stub-dfg-run"),
+            ("lld", "stub-lld"),
+            ("payload", "stub-payload"),
+            ("llvm_dis", "stub-llvm-dis"),
+            ("llvm_link", "stub-llvm-link"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -196,6 +222,10 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_RAISE_OPT": self.tool_paths["opt"],
             "LOOM_PRE_MAPPING": self.tool_paths["pre_mapping"],
             "LOOM_DFG_RUN": self.tool_paths["dfg_run"],
+            "LOOM_LLD": self.tool_paths["lld"],
+            "LOOM_PAYLOAD": self.tool_paths["payload"],
+            "LOOM_LLVM_DIS": self.tool_paths["llvm_dis"],
+            "LOOM_LLVM_LINK": self.tool_paths["llvm_link"],
             "STUB_LOG": str(self.log),
         }
         for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
@@ -244,6 +274,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["case_count"], 1)
         self.assertEqual(summary["target"]["code_model"], "medany")
+        self.assertEqual(summary["tools"]["lld"], self.tool_paths["lld"])
+        self.assertEqual(summary["tools"]["payload"], self.tool_paths["payload"])
         result = summary["cases"][0]
         self.assertEqual(result["identity"], "loombench:axpy/axpy_func")
         self.assertEqual(result["sources"], 1)
@@ -337,16 +369,24 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         invocations = self.invocation_lines()
         compiled = [line for line in invocations if "-emit-llvm" in line]
+        linked = [line for line in invocations if "save-temps=resolution" in line]
+        imported = [line for line in invocations if "stub-payload " in line]
+        disassembled = [line for line in invocations if "stub-llvm-dis " in line]
         pre_mapped = [
             line for line in invocations if "stub-pre-mapping " in line
         ]
-        self.assertEqual(len(compiled), 1)
+        self.assertEqual(len(compiled), 0)
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(len(disassembled), 1)
         self.assertEqual(len(pre_mapped), 1)
+        self.assertIn(f"-fuse-ld={self.tool_paths['lld']}", linked[0])
+        self.assertIn("-ffat-lto-objects", invocations[0])
         for line in pre_mapped:
             self.assertIn("--builtin=small", line)
             self.assertIn("--artifact-store=", line)
             self.assertIn("--counts=", line)
-            self.assertRegex(line, r"\S+\.ll ")
+            self.assertRegex(line, r"\S+/program\.ll ")
         # The d0 stage replaces the raise/verify chain with the single
         # production pre-Mapping path.
         self.assertFalse(any("stub-raise " in line for line in invocations))
@@ -374,8 +414,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         invocations = self.invocation_lines()
         compiled = [line for line in invocations if "-emit-llvm" in line]
+        linked = [line for line in invocations if "save-temps=resolution" in line]
         simulated = [line for line in invocations if "stub-dfg-run " in line]
-        self.assertEqual(len(compiled), 2)
+        self.assertEqual(len(compiled), 1)
+        self.assertEqual(len(linked), 1)
         self.assertEqual(len(simulated), 1)
         for line in simulated:
             self.assertIn("--builtin=small", line)
@@ -394,6 +436,10 @@ class CommandConstructionTest(CorpusGateTestBase):
             raise_opt=self.tool_paths["opt"],
             pre_mapping=self.tool_paths["pre_mapping"],
             dfg_run=self.tool_paths["dfg_run"],
+            lld=self.tool_paths["lld"],
+            payload=self.tool_paths["payload"],
+            llvm_dis=self.tool_paths["llvm_dis"],
+            llvm_link=self.tool_paths["llvm_link"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -690,7 +736,7 @@ class NoFailureAsPassTest(CorpusGateTestBase):
             self.assertIsInstance(case["detail"], str)
 
     def test_compile_failure_fails_the_gate(self) -> None:
-        os.environ["STUB_FAIL_SUFFIX"] = ".ll"
+        os.environ["STUB_FAIL_SUFFIX"] = ".o"
         exit_code, human, summary = self.run_gate(
             "--case", "loombench:axpy/axpy_func", "--stage", "s0"
         )
