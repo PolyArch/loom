@@ -755,7 +755,7 @@ DictionaryAttr floatBehaviorAttr(OpBuilder &builder,
                                        signedZeroSpelling)),
       builder.getNamedAttr("fastmath",
                            builder.getStringAttr(arith::stringifyFastMathFlags(
-                               behavior.admittedFastMath))),
+                               behavior.requiredFastMath))),
   });
 }
 

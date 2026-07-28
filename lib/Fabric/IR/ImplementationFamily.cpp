@@ -1461,10 +1461,10 @@ llvm::Error validateFloatBehavior(const FloatBehaviorProfile &behavior) {
     return reject("non-empty signed-zero behavior domain required");
 
   using FastMathBits = std::underlying_type_t<::mlir::arith::FastMathFlags>;
-  FastMathBits admitted = static_cast<FastMathBits>(behavior.admittedFastMath);
+  FastMathBits required = static_cast<FastMathBits>(behavior.requiredFastMath);
   FastMathBits known =
       static_cast<FastMathBits>(::mlir::arith::FastMathFlags::fast);
-  if ((admitted & ~known) != 0)
+  if ((required & ~known) != 0)
     return reject("invalid fast-math behavior mask");
   return llvm::Error::success();
 }
@@ -1576,9 +1576,9 @@ admitFloatBehavior(const FloatBehaviorProfile &behavior,
 
   using Bits = std::underlying_type_t<::mlir::arith::FastMathFlags>;
   Bits actor = static_cast<Bits>(actorFlags);
-  Bits admitted = static_cast<Bits>(behavior.admittedFastMath);
-  if ((actor & ~admitted) != 0)
-    return reject("fast-math behavior is not admitted");
+  Bits required = static_cast<Bits>(behavior.requiredFastMath);
+  if ((required & ~actor) != 0)
+    return reject("actor does not permit the required fast-math behavior");
   if (rounding && !behavior.roundingModes.contains(*rounding))
     return reject("rounding behavior is not admitted");
   if (!hasFastMathFlag(actorFlags, ::mlir::arith::FastMathFlags::nnan) &&

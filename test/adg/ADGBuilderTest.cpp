@@ -1389,6 +1389,16 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
   require(test, !index.admittingOperationResources(actor, 64).empty(),
           "builtin Fabric rejected its 64-bit resolved index cast");
 
+  mlir::Type f32 = mlir::Float32Type::get(&context);
+  const auto floatMultiply = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::ArithMulF,
+      mlir::FunctionType::get(&context, {f32, f32}, {f32}),
+      ::dataflow::FloatingPointPayload{mlir::arith::FastMathFlags::nnan,
+                                       std::nullopt}};
+  require(test,
+          !index.admittingOperationResources(floatMultiply, 32).empty(),
+          "strict builtin Fabric did not refine relaxed scalar f32 multiply");
+
   const auto saturatingAdd = ::dataflow::CanonicalActorSchemaProjection{
       ::dataflow::OperationSchemaId::LLVMSAddSat,
       mlir::FunctionType::get(&context,

@@ -264,7 +264,11 @@ struct FloatBehaviorProfile {
   FloatNaNBehaviorSet nanBehaviors;
   FloatSubnormalBehaviorSet subnormalBehaviors;
   FloatSignedZeroBehaviorSet signedZeroBehaviors;
-  ::mlir::arith::FastMathFlags admittedFastMath =
+  /// Fast-math permissions the physical implementation requires from an
+  /// actor. Admission requires this mask to be a subset of the actor's mask;
+  /// an empty mask therefore denotes a strict implementation that refines
+  /// every relaxed actor.
+  ::mlir::arith::FastMathFlags requiredFastMath =
       ::mlir::arith::FastMathFlags::none;
 
   static FloatBehaviorProfile strictIEEE() {

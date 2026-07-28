@@ -177,6 +177,17 @@ explicit in the concrete relation. A strict implementation may satisfy a
 relaxed actor only when the registered operation schema proves that refinement;
 the backend cannot infer it.
 
+`FloatBehaviorProfile.fastmath` is the permission mask required by the
+physical implementation, not a list of actor spellings it recognizes. The
+registered floating admission relation requires
+`hardware_required_fastmath` to be a subset of the actor's fast-math mask. A
+strict implementation therefore has an empty requirement and refines an actor
+that permits `nnan`, `ninf`, `nsz`, reassociation, contraction, reciprocal, or
+approximate functions. An implementation that relies on one of those
+permissions rejects an actor that does not grant it. This subset proof is
+owned by the registered typed admission provider and is never inferred by a
+backend.
+
 Physical ports own transport kind and payload capacity. `!fabric.bits<N>`
 does not identify a software type: the same width may carry multiple vector,
 scalar, integer, or floating-point representations. Exact software type comes

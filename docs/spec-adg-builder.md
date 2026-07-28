@@ -720,8 +720,11 @@ subnormals and signed zero, and performs no implicit flush-to-zero or
 fast-math transformation. Conversions follow their exact registered rounding
 and exceptional-value semantics rather than inheriting an arithmetic rounding
 rule. A strict implementation may realize a relaxed actor only through a proof
-supplied by the registered operation schema. Operation identity continues to
-distinguish the different floating min/max NaN contracts.
+supplied by the registered operation schema. The profile's `fastmath` mask is
+the set of actor permissions required by the implementation, so the builtin
+strict profile uses the empty mask and refines every actor relaxation. Operation
+identity continues to distinguish the different floating min/max NaN
+contracts.
 
 Each concrete operation uses 64-bit untagged scalar data ports. Conditions are
 one-bit ports. A comparison result occupies the low bit of a 64-bit physical

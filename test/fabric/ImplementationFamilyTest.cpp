@@ -413,7 +413,7 @@ bool checkFloatingAdmission(MLIRContext &context) {
 
   FloatBehaviorProfile strict = FloatBehaviorProfile::strictIEEE();
   FloatBehaviorProfile relaxed = strict;
-  relaxed.admittedFastMath = arith::FastMathFlags::nnan;
+  relaxed.requiredFastMath = arith::FastMathFlags::nnan;
   FloatBehaviorProfile rounded = strict;
   rounded.roundingModes = RoundingModeSet::get(
       {arith::RoundingMode::to_nearest_even, arith::RoundingMode::downward});
@@ -447,7 +447,9 @@ bool checkFloatingAdmission(MLIRContext &context) {
         {});
   check(wide, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, false,
         "floating format");
-  check(noNaNs, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, false,
+  check(noNaNs, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, true,
+        {});
+  check(plain, ImplementationFamilyId::ScalarFloatAddSub, relaxedFloat, false,
         "fast-math behavior");
   check(noNaNs, ImplementationFamilyId::ScalarFloatAddSub, relaxedFloat, true,
         {});
