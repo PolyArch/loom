@@ -397,7 +397,11 @@ module {
 )mlir";
 }
 
-enum class ExposureLaunchKind { FreshAllocation, ImportedMemory, DerivedMemory };
+enum class ExposureLaunchKind {
+  FreshAllocation,
+  ImportedMemory,
+  DerivedMemory
+};
 
 RootedGraphLaunchRef launchOf(const char *test,
                               const CanonicalDataflowProgramView &view,
@@ -409,9 +413,9 @@ RootedGraphLaunchRef launchOf(const char *test,
     auto launch = llvm::cast<GraphLaunchOp>(site.op);
     bool hasAllocation = false;
     graph.walk([&](mlir::memref::AllocOp) { hasAllocation = true; });
-    bool importedMemory = !launch.getMemoryInputs().empty() &&
-                          llvm::isa<mlir::BlockArgument>(
-                              launch.getMemoryInputs().front());
+    bool importedMemory =
+        !launch.getMemoryInputs().empty() &&
+        llvm::isa<mlir::BlockArgument>(launch.getMemoryInputs().front());
     bool selected =
         (kind == ExposureLaunchKind::FreshAllocation && hasAllocation) ||
         (kind == ExposureLaunchKind::ImportedMemory && !hasAllocation &&
@@ -428,9 +432,9 @@ RootedGraphLaunchRef launchOf(const char *test,
   fail(test, "no static launch matching semantic selector");
 }
 
-RootedGraphLaunchRef launchAtThreadOrder(
-    const char *test, const CanonicalDataflowProgramView &view,
-    unsigned ordinal) {
+RootedGraphLaunchRef
+launchAtThreadOrder(const char *test, const CanonicalDataflowProgramView &view,
+                    unsigned ordinal) {
   require(test, view.rootThreadLaunches().size() == 1,
           "fixture has one root launch");
   llvm::SmallVector<mlir::Operation *> launches;
@@ -494,49 +498,105 @@ void typedDfgExecution() {
   const char *test = "typedDfgExecution";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
+  LogicalMemoryRootRef rootA = rootByFormal(test, view, 0);
+  LogicalMemoryRootRef rootB = rootByFormal(test, view, 1);
+  LogicalMemoryRootRef rootC = rootByFormal(test, view, 2);
+  SpatialSimulationWorkload workloadModel = makeVecaddWorkload(view);
+  workloadModel.observableContract.memories.push_back(SpatialMemoryObservable{
+      LogicalMemoryRootOrViewRef{rootA}, MemoryObservationForm::FullState});
+  workloadModel.observableContract.memories.push_back(SpatialMemoryObservable{
+      LogicalMemoryRootOrViewRef{rootB}, MemoryObservationForm::FullState});
+  std::sort(workloadModel.observableContract.memories.begin(),
+            workloadModel.observableContract.memories.end(),
+            [](const SpatialMemoryObservable &lhs,
+               const SpatialMemoryObservable &rhs) {
+              return std::get<LogicalMemoryRootRef>(
+                         std::get<LogicalMemoryRootOrViewRef>(lhs.target))
+                         .entity.value() <
+                     std::get<LogicalMemoryRootRef>(
+                         std::get<LogicalMemoryRootOrViewRef>(rhs.target))
+                         .entity.value();
+            });
   llvm::Expected<CanonicalSimulationWorkload> workload =
-      finalizeSimulationWorkload(makeVecaddWorkload(view), view);
+      finalizeSimulationWorkload(workloadModel, view);
   if (!workload)
     fail(test, "workload finalization failed: " +
                    llvm::toString(workload.takeError()));
 
   SpatialSimulationRuntimeInputDraft draft{workload->identity()};
-  draft.memoryObjects = {littleEndianF32(1024, 0x3f800000U),
+  draft.memoryObjects = {littleEndianF32(1025, 0x3f800000U),
                          littleEndianF32(1024, 0)};
   draft.memoryRootBindings = {
-      RuntimeMemoryBindingDraft{rootByFormal(test, view, 0), 0, 0},
-      RuntimeMemoryBindingDraft{rootByFormal(test, view, 1), 0, 0},
-      RuntimeMemoryBindingDraft{rootByFormal(test, view, 2), 1, 0}};
+      RuntimeMemoryBindingDraft{rootA, 0, 0},
+      RuntimeMemoryBindingDraft{rootB, 0, sizeof(float)},
+      RuntimeMemoryBindingDraft{rootC, 1, 0}};
   llvm::Expected<CanonicalSimulationRuntimeInput> input =
       finalizeSimulationRuntimeInput(draft, *workload, view);
   if (!input)
     fail(test, "runtime-input finalization failed: " +
                    llvm::toString(input.takeError()));
 
-  llvm::Expected<DFGSimulationReport> report =
-      simulateDfgWorkload(artifact, *workload, *input);
-  if (!report)
-    fail(test,
-         "typed DFG execution failed: " + llvm::toString(report.takeError()));
+  llvm::Expected<RetiredDFGSimulation> execution =
+      simulateRetiredDfgWorkload(artifact, *workload, *input);
+  if (!execution)
+    fail(test, "typed DFG execution failed: " +
+                   llvm::toString(execution.takeError()));
+  DFGSimulationReport &report = execution->report;
   require(test,
-          report->workload == formatArtifactIdentityHex(workload->identity()),
+          report.workload == formatArtifactIdentityHex(workload->identity()),
           "typed report does not identify its exact workload");
-  require(test, report->status == "pass", "typed run did not retire");
+  require(test, report.status == "pass", "typed run did not retire");
   require(test,
-          report->operationFireCounts[OperationSchemaId::DataflowLoad] == 2,
+          report.operationFireCounts[OperationSchemaId::DataflowLoad] == 2,
           "typed run did not execute both loads");
   require(test,
-          report->operationFireCounts[OperationSchemaId::DataflowStore] == 1,
+          report.operationFireCounts[OperationSchemaId::DataflowStore] == 1,
           "typed run did not execute the store");
-  require(test, report->operationFireCounts[OperationSchemaId::ArithAddF] == 1,
+  require(test, report.operationFireCounts[OperationSchemaId::ArithAddF] == 1,
           "typed run did not execute the add");
-  auto output = report->finalMemoryState.find("arg3");
+  auto output = report.finalMemoryState.find("arg3");
   require(test,
-          output != report->finalMemoryState.end() &&
+          output != report.finalMemoryState.end() &&
               output->second.size() == 1024 &&
               output->second.front() == "f32:2" &&
               output->second.back() == "f32:0",
           "typed aliased execution produced the wrong destination state");
+  require(test, execution->observations.memories.size() == 3,
+          "typed execution did not project its selected memories");
+  const DiffMemoryObservation *diff = nullptr;
+  const FullMemoryObservation *rootAState = nullptr;
+  const FullMemoryObservation *rootBState = nullptr;
+  for (std::size_t index = 0;
+       index < workload->model().observableContract.memories.size(); ++index) {
+    const SpatialMemoryObservable &observable =
+        workload->model().observableContract.memories[index];
+    const LogicalMemoryRootRef root = std::get<LogicalMemoryRootRef>(
+        std::get<LogicalMemoryRootOrViewRef>(observable.target));
+    if (root == rootA)
+      rootAState = std::get_if<FullMemoryObservation>(
+          &execution->observations.memories[index]);
+    else if (root == rootB)
+      rootBState = std::get_if<FullMemoryObservation>(
+          &execution->observations.memories[index]);
+    else if (root == rootC)
+      diff = std::get_if<DiffMemoryObservation>(
+          &execution->observations.memories[index]);
+  }
+  require(test,
+          rootAState && rootAState->bytes.size() == 1025 * sizeof(float) &&
+              rootBState && rootBState->bytes.size() == 1024 * sizeof(float),
+          "typed alias projections did not preserve root-relative offsets");
+  require(test,
+          diff && diff->byteCount == 1024 * sizeof(float) &&
+              diff->runs.size() == 1,
+          "typed execution did not produce the canonical sparse diff");
+  require(test,
+          diff->runs.front().byteOffset == 3 &&
+              diff->runs.front().changedBytes.size() == 1 &&
+              diff->runs.front().changedBytes.front().state ==
+                  SemanticState::Defined &&
+              diff->runs.front().changedBytes.front().value == 0x40,
+          "typed execution emitted a non-maximal or incorrect diff run");
 }
 
 // (b) Total Fixed/Runtime classification and exact lane-state validation.
@@ -630,6 +690,32 @@ void valueClassificationAndLanes() {
               draftFor({RuntimeValueEntry{2, oneToken({definedLane(32, 7)})}}),
               *finalized, view)),
           "the exact runtime complement finalizes");
+  llvm::Expected<CanonicalSimulationRuntimeInput> executionInput =
+      finalizeSimulationRuntimeInput(
+          draftFor({RuntimeValueEntry{2, oneToken({definedLane(32, 7)})}}),
+          *finalized, view);
+  if (!executionInput)
+    fail(test, "value-result runtime input finalization failed");
+  llvm::Expected<RetiredDFGSimulation> execution =
+      simulateRetiredDfgWorkload(artifact, *finalized, *executionInput);
+  if (!execution)
+    fail(test, "value-result DFG execution failed: " +
+                   llvm::toString(execution.takeError()));
+  require(test, execution->observations.valueResults.size() == 2,
+          "typed execution did not project both selected value results");
+  const auto *vectorResult = std::get_if<PublishedValueResult>(
+      &execution->observations.valueResults[0]);
+  const auto *floatResult = std::get_if<PublishedValueResult>(
+      &execution->observations.valueResults[1]);
+  require(test,
+          vectorResult && vectorResult->value.tokenCount == 1 &&
+              vectorResult->value.lanes.size() == 4 &&
+              vectorResult->value.lanes[0].bits == llvm::APInt(32, 1) &&
+              vectorResult->value.lanes[3].bits == llvm::APInt(32, 4) &&
+              floatResult && floatResult->value.tokenCount == 1 &&
+              floatResult->value.lanes.size() == 1 &&
+              floatResult->value.lanes.front().bits == llvm::APInt(32, 7),
+          "typed execution changed value-result lane order or bits");
   require(test,
           isRejected(
               finalizeSimulationRuntimeInput(draftFor({}), *finalized, view)),

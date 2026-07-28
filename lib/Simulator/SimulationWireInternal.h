@@ -157,6 +157,8 @@ struct ResolvedLaunchContext {
   unsigned threadRank = 0;
   std::vector<LaneShape> valueInputShapes = {};
   std::vector<LaneShape> streamInputShapes = {};
+  std::vector<LaneShape> valueResultShapes = {};
+  std::vector<LaneShape> streamOutputShapes = {};
   // Graph memory-input ordinal -> imported runtime root. A missing entry is a
   // fresh allocation or exposure owned by another graph activation and cannot
   // be seeded from SimulationRuntimeInput.

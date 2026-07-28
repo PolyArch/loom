@@ -692,6 +692,11 @@ bool admitReadyPlainMemoryActions(SimulatorState &state);
 bool applyRunFailureTerminal(const SimulatorState &state,
                              DFGSimulationReport &report);
 
+/// Resolve the execution view currently associated with one memory SSA value,
+/// peeling only the root-preserving cast forms admitted by Canonical Dataflow.
+std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
+                                            mlir::Value value);
+
 /// Records the graph memory a finished run may still export.
 llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
                                     SimulatorState &state,
@@ -710,6 +715,14 @@ memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values);
 /// report. Performance estimates are Evaluation results, not simulator-local
 /// report fields.
 void projectRunObservations(SimulatorState &state, DFGSimulationReport &report);
+
+llvm::Expected<SpatialFunctionalObservations>
+projectRetiredFunctionalObservations(
+    dataflow::GraphOp graph, SimulatorState &state,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context,
+    const dataflow::CanonicalDataflowProgramView &program);
 
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
                                                        mlir::Type type,

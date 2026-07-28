@@ -282,6 +282,21 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
       return shape.takeError();
     context.streamInputShapes.push_back(*shape);
   }
+  mlir::TypeRange results = context.graphOp.getFunctionType().getResults();
+  for (std::uint64_t i = 0; i < context.numValueResults; ++i) {
+    llvm::Expected<LaneShape> shape =
+        laneShapeOf(results[i], context.graphOp.getOperation());
+    if (!shape)
+      return shape.takeError();
+    context.valueResultShapes.push_back(*shape);
+  }
+  for (std::uint64_t k = 0; k < context.numStreamOutputs; ++k) {
+    llvm::Expected<LaneShape> shape = laneShapeOf(
+        results[context.numValueResults + k], context.graphOp.getOperation());
+    if (!shape)
+      return shape.takeError();
+    context.streamOutputShapes.push_back(*shape);
+  }
 
   // Enumerate the imported roots reachable through the graph memory-input
   // bindings, composing only public view resolutions.

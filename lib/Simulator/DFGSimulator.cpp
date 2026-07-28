@@ -661,7 +661,9 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     dataflow::GraphOp admittedGraph,
     const CanonicalSimulationWorkload *typedWorkload,
     const CanonicalSimulationRuntimeInput *typedRuntimeInput,
-    const ResolvedLaunchContext *typedContext) {
+    const ResolvedLaunchContext *typedContext,
+    const dataflow::CanonicalDataflowProgramView *typedProgramView,
+    SpatialFunctionalObservations *retiredObservations) {
   DFGSimulationReport report;
   report.graph = options.graphName;
   report.workload =
@@ -1071,12 +1073,11 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
         break;
       if (retired && outcome != FireOutcome::NotReady) {
         report.status = "invalid";
-        report.diagnostics.push_back(
-            ("actor '" + op->getName().getStringRef() +
-             (outcome == FireOutcome::Fired
-                  ? "' fired after graph retirement"
-                  : "' failed after graph retirement"))
-                .str());
+        report.diagnostics.push_back(("actor '" + op->getName().getStringRef() +
+                                      (outcome == FireOutcome::Fired
+                                           ? "' fired after graph retirement"
+                                           : "' failed after graph retirement"))
+                                         .str());
         break;
       }
       fired |= outcome == FireOutcome::Fired;
@@ -1159,6 +1160,20 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
                 : "graph stopped before retirement outputs were complete");
   }
   projectRunObservations(state, report);
+  if (retiredObservations && report.status == "pass") {
+    if (!typedWorkload || !typedRuntimeInput || !typedContext ||
+        !typedProgramView)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "typed DFG observation projection has no admitted owner context");
+    llvm::Expected<SpatialFunctionalObservations> observations =
+        projectRetiredFunctionalObservations(graph, state, *typedWorkload,
+                                             *typedRuntimeInput, *typedContext,
+                                             *typedProgramView);
+    if (!observations)
+      return observations.takeError();
+    *retiredObservations = std::move(*observations);
+  }
   return report;
 }
 
@@ -1166,14 +1181,15 @@ llvm::Expected<DFGSimulationReport>
 loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                  const DFGSimulationOptions &options) {
   return simulateDataflowGraphImpl(module, options, {}, nullptr, nullptr,
-                                   nullptr);
+                                   nullptr, nullptr, nullptr);
 }
 
-llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
-    const dataflow::CanonicalDataflowArtifact &program,
-    const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps) {
+static llvm::Expected<DFGSimulationReport>
+simulateTypedDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
+                         const CanonicalSimulationWorkload &workload,
+                         const CanonicalSimulationRuntimeInput &runtimeInput,
+                         std::uint64_t maxEventSteps,
+                         SpatialFunctionalObservations *retiredObservations) {
   llvm::Expected<dataflow::CanonicalDataflowProgramView> view = program.view();
   if (!view)
     return view.takeError();
@@ -1203,7 +1219,38 @@ llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
     report.diagnostics.push_back(std::move(*reason));
     return report;
   }
-  return simulateDataflowGraphImpl(program.module(), options,
-                                   mlir::cast<dataflow::GraphOp>(graph->op),
-                                   &workload, &runtimeInput, &*context);
+  return simulateDataflowGraphImpl(
+      program.module(), options, mlir::cast<dataflow::GraphOp>(graph->op),
+      &workload, &runtimeInput, &*context, &*view, retiredObservations);
+}
+
+llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
+    const dataflow::CanonicalDataflowArtifact &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps) {
+  return simulateTypedDfgWorkload(program, workload, runtimeInput,
+                                  maxEventSteps, nullptr);
+}
+
+llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
+    const dataflow::CanonicalDataflowArtifact &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps) {
+  SpatialFunctionalObservations observations;
+  llvm::Expected<DFGSimulationReport> report = simulateTypedDfgWorkload(
+      program, workload, runtimeInput, maxEventSteps, &observations);
+  if (!report)
+    return report.takeError();
+  if (report->status != "pass") {
+    std::string message = "DFG execution did not retire: " + report->status;
+    if (!report->diagnostics.empty())
+      message += ": " + report->diagnostics.front();
+    const std::errc code = report->status == "unsupported"
+                               ? std::errc::not_supported
+                               : std::errc::state_not_recoverable;
+    return llvm::createStringError(code, "%s", message.c_str());
+  }
+  return RetiredDFGSimulation{std::move(*report), std::move(observations)};
 }

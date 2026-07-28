@@ -54,8 +54,8 @@ bool applyRunFailureTerminal(const SimulatorState &state,
   llvm_unreachable("the run failure kind is closed");
 }
 
-static std::optional<MemoryView> memoryForValue(SimulatorState &state,
-                                                mlir::Value value) {
+std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
+                                            mlir::Value value) {
   llvm::DenseSet<mlir::Value> visited;
   while (value && visited.insert(value).second) {
     auto view = state.memoryViews.find(value);
@@ -182,7 +182,7 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
   for (unsigned index = 0, end = graph.getFunctionType().getNumInputs();
        index < end; ++index) {
     mlir::BlockArgument arg = entry.getArgument(index + 1);
-    std::optional<MemoryView> memory = memoryForValue(state, arg);
+    std::optional<MemoryView> memory = resolveMemoryView(state, arg);
     std::string port = llvm::formatv("arg{0}", index).str();
     if (memory) {
       auto values = serializeMemoryValue(*memory, state, graph);
@@ -196,7 +196,7 @@ llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
   }
   auto ret = mlir::cast<dataflow::GraphReturnOp>(entry.getTerminator());
   for (auto [index, memoryResult] : llvm::enumerate(ret.getMemories())) {
-    std::optional<MemoryView> memory = memoryForValue(state, memoryResult);
+    std::optional<MemoryView> memory = resolveMemoryView(state, memoryResult);
     std::string port = llvm::formatv("memory_result{0}", index).str();
     if (memory) {
       auto values = serializeMemoryValue(*memory, state, graph);

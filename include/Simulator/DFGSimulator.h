@@ -2,6 +2,7 @@
 #define LOOM_SIMULATOR_DFG_SIMULATOR_H
 
 #include "Simulator/OperationSemantics.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -19,9 +20,6 @@ class CanonicalDataflowArtifact;
 
 namespace loom {
 namespace sim {
-
-class CanonicalSimulationRuntimeInput;
-class CanonicalSimulationWorkload;
 
 struct DFGRuntimeArg {
   unsigned index = 0;
@@ -62,6 +60,14 @@ struct DFGSimulationReport {
   llvm::SmallVector<std::string> diagnostics;
 };
 
+/// One successfully retired DFG execution. Non-retired and rejected runs are
+/// available through simulateDfgWorkload; this exact API returns observations
+/// only when the graph has satisfied its retirement contract.
+struct RetiredDFGSimulation {
+  DFGSimulationReport report;
+  SpatialFunctionalObservations observations;
+};
+
 llvm::Expected<DFGSimulationReport>
 simulateDataflowGraph(::mlir::ModuleOp module,
                       const DFGSimulationOptions &options);
@@ -74,6 +80,12 @@ simulateDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
                     const CanonicalSimulationWorkload &workload,
                     const CanonicalSimulationRuntimeInput &runtimeInput,
                     std::uint64_t maxEventSteps = 100000);
+
+llvm::Expected<RetiredDFGSimulation>
+simulateRetiredDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
+                           const CanonicalSimulationWorkload &workload,
+                           const CanonicalSimulationRuntimeInput &runtimeInput,
+                           std::uint64_t maxEventSteps = 100000);
 
 llvm::Error writeDFGSimulationReportJson(llvm::StringRef outputPath,
                                          const DFGSimulationReport &report);

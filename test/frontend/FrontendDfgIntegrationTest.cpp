@@ -245,6 +245,43 @@ definedByteObject(llvm::ArrayRef<std::uint8_t> bytes) {
   return object;
 }
 
+std::vector<loom::sim::SemanticMemoryByte>
+applyMemoryDiff(const char *test,
+                llvm::ArrayRef<loom::sim::SemanticMemoryByte> baseline,
+                const loom::sim::DiffMemoryObservation &diff) {
+  if (diff.byteCount != baseline.size())
+    fail(test, "typed memory diff has the wrong byte count");
+  std::vector<loom::sim::SemanticMemoryByte> result(baseline.begin(),
+                                                    baseline.end());
+  std::uint64_t previousEnd = 0;
+  for (const loom::sim::MemoryDiffRun &run : diff.runs) {
+    if (run.changedBytes.empty() || run.byteOffset < previousEnd ||
+        run.byteOffset + run.changedBytes.size() > result.size())
+      fail(test, "typed memory diff has a malformed run");
+    if (previousEnd != 0 && run.byteOffset == previousEnd)
+      fail(test, "typed memory diff has adjacent non-maximal runs");
+    std::copy(run.changedBytes.begin(), run.changedBytes.end(),
+              result.begin() + run.byteOffset);
+    previousEnd = run.byteOffset + run.changedBytes.size();
+  }
+  return result;
+}
+
+std::vector<loom::sim::SemanticMemoryByte> expectedVecaddBytes() {
+  loom::sim::RuntimeMemoryObject expected;
+  expected.initialBytes.reserve(64 * sizeof(float));
+  for (std::uint32_t index = 0; index < 64; ++index) {
+    const float value = static_cast<float>(index) * 1.5F;
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (unsigned byte = 0; byte < sizeof(bits); ++byte)
+      expected.initialBytes.push_back(loom::sim::SemanticMemoryByte{
+          loom::sim::SemanticState::Defined,
+          static_cast<std::uint8_t>(bits >> (byte * 8))});
+  }
+  return expected.initialBytes;
+}
+
 void sourceCandidateExecutesThroughTypedDfgInput() {
   const char *test = "sourceCandidateExecutesThroughTypedDfgInput";
   llvm::SmallString<128> directory;
@@ -326,9 +363,11 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
   auto finalizedInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
                                        input, finalizedWorkload, view));
 
-  loom::sim::DFGSimulationReport report = take(
-      test, loom::sim::simulateDfgWorkload(candidate.canonicalDataflow,
-                                           finalizedWorkload, finalizedInput));
+  loom::sim::RetiredDFGSimulation execution =
+      take(test,
+           loom::sim::simulateRetiredDfgWorkload(
+               candidate.canonicalDataflow, finalizedWorkload, finalizedInput));
+  loom::sim::DFGSimulationReport &report = execution.report;
   if (report.status != "pass")
     fail(test, "typed DFG execution did not retire: " + report.status);
   if (report.operationFireCounts[dataflow::OperationSchemaId::ArithAddF] !=
@@ -352,6 +391,37 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
       destination->second[2] != "f32:3" ||
       destination->second.back() != "f32:94.500000")
     fail(test, "typed DFG execution produced the wrong destination state");
+
+  if (execution.observations.valueResults.size() != 0 ||
+      execution.observations.streamOutputs.size() != 0 ||
+      execution.observations.memories.size() != 1)
+    fail(test, "typed DFG observations do not match the workload contract");
+  const auto *diff = std::get_if<loom::sim::DiffMemoryObservation>(
+      &execution.observations.memories.front());
+  if (!diff)
+    fail(test, "typed DFG execution did not preserve the requested diff form");
+  const dataflow::LogicalMemoryRootRef destinationRoot =
+      memoryRoot(test, view, 2);
+  const loom::sim::MemoryRootBindingEntry *destinationBinding = nullptr;
+  for (const loom::sim::MemoryRootBindingEntry &binding :
+       finalizedInput.model().memoryRootBindings)
+    if (binding.root == destinationRoot)
+      destinationBinding = &binding;
+  if (!destinationBinding)
+    fail(test, "typed runtime input lost the destination root binding");
+  std::vector<loom::sim::SemanticMemoryByte> reconstructed = applyMemoryDiff(
+      test,
+      finalizedInput.model()
+          .memoryObjects[destinationBinding->binding.objectOrdinal]
+          .initialBytes,
+      *diff);
+  const auto expected = expectedVecaddBytes();
+  if (reconstructed.size() != expected.size())
+    fail(test, "typed DFG memory result has the wrong extent");
+  for (std::size_t index = 0; index < expected.size(); ++index)
+    if (reconstructed[index].state != expected[index].state ||
+        reconstructed[index].value != expected[index].value)
+      fail(test, "typed DFG memory diff reconstructs the wrong result");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

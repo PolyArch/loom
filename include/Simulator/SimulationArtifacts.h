@@ -77,7 +77,8 @@ enum class StreamTermination : std::uint32_t {
   OpenAfterLast = 1,
 };
 
-/// The shared stream sequence reused by the future execution schema.
+/// The shared stream sequence used by runtime inputs and execution
+/// observations.
 struct CanonicalStreamSequence {
   CanonicalValueSequence values;
   StreamTermination termination = StreamTermination::ClosedAfterLast;
@@ -87,6 +88,44 @@ struct CanonicalStreamSequence {
 struct SemanticMemoryByte {
   SemanticState state = SemanticState::Undef;
   std::uint8_t value = 0; // meaningful only when state == Defined
+};
+
+//===----------------------------------------------------------------------===//
+// Spatial functional observations
+//===----------------------------------------------------------------------===//
+
+struct PublishedValueResult {
+  CanonicalValueSequence value;
+};
+struct NotPublishedValueResult {};
+using ValueResultObservation =
+    std::variant<PublishedValueResult, NotPublishedValueResult>;
+
+struct FullMemoryObservation {
+  // The vector length is the canonical byte_count field.
+  std::vector<SemanticMemoryByte> bytes;
+};
+
+struct MemoryDiffRun {
+  std::uint64_t byteOffset = 0;
+  std::vector<SemanticMemoryByte> changedBytes; // nonempty
+};
+
+struct DiffMemoryObservation {
+  std::uint64_t byteCount = 0;
+  std::vector<MemoryDiffRun> runs;
+};
+
+using MemoryObservationPayload =
+    std::variant<FullMemoryObservation, DiffMemoryObservation>;
+
+/// Exact positional observations selected by SpatialObservableContract. The
+/// contract remains the sole owner of target identity, order, and memory form;
+/// these arrays therefore carry payloads only.
+struct SpatialFunctionalObservations {
+  std::vector<ValueResultObservation> valueResults;
+  std::vector<CanonicalStreamSequence> streamOutputs;
+  std::vector<MemoryObservationPayload> memories;
 };
 
 //===----------------------------------------------------------------------===//
