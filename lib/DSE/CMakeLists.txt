@@ -1,5 +1,6 @@
 add_library(LoomDSE
   Promotion.cpp
+  StructuredOwnership.cpp
 )
 
 target_include_directories(LoomDSE PUBLIC
@@ -9,5 +10,7 @@ target_include_directories(LoomDSE PUBLIC
 target_link_libraries(LoomDSE PUBLIC
   LoomCommon
   LoomEvaluation
+  LoomFrontendCompilation
+  LoomStructuredFabricAnalyticModel
   LLVMSupport
 )

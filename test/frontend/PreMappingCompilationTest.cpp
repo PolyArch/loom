@@ -4,6 +4,7 @@
 #include "Common/IndexWidth.h"
 #include "Common/ResolvedConfig.h"
 #include "DSE/Promotion.h"
+#include "DSE/StructuredOwnership.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -1349,6 +1350,23 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
   if (!selection || selection->selected.size() != 1 ||
       selection->selected.front() != spatialRef)
     fail(test, "central DSE TopK did not promote the best exact candidate");
+
+  loom::dse::StructuredOwnershipExplorationOptions exploration{
+      {},
+      {loom::evaluation::MetricRequestOrdinal(0),
+       loom::dse::ObjectiveDirection::Minimize, 1}};
+  auto explored =
+      take(test, loom::dse::generateAndPromoteStructuredOwnership(
+                     compiled.structuredProgram, design.roots().front(),
+                     loom::defaultResolvedConfig(), exploration, store));
+  const auto *exploredSelection =
+      std::get_if<loom::dse::CompletedStructuredOwnershipSelection>(&explored);
+  if (!exploredSelection || exploredSelection->selected.size() != 1)
+    fail(test, "central ownership exploration did not select one survivor");
+  auto exploredView =
+      take(test, exploredSelection->selected.front().canonicalDataflow.view());
+  if (exploredView.actors().empty())
+    fail(test, "central ownership exploration selected no Spatial workload");
   const loom::evaluation::DecimalValue dataflowRuntime =
       evaluateCanonicalDataflowRuntime(
           test, dataflowRef, design.roots().front().reference(), store);

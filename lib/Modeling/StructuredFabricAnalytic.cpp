@@ -252,8 +252,8 @@ prepareStructuredFabricRuntimeEvaluation(
   auto published = publishEvaluationRequest(*request, artifactStore);
   if (!published)
     return published.takeError();
-  return PreparedStructuredFabricEvaluation{std::move(*request),
-                                            std::move(*resolution)};
+  return PreparedStructuredFabricEvaluation{
+      std::move(*request), std::move(*resolution), kStructuredProgramRole};
 }
 
 } // namespace loom::evaluation::models

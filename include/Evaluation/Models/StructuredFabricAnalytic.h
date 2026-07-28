@@ -17,6 +17,7 @@ namespace loom::evaluation::models {
 struct PreparedStructuredFabricEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
+  CaseSubjectRoleRef candidateRole;
 };
 
 /// Registers the exact low-fidelity StructuredProgram/Fabric analytic model.
