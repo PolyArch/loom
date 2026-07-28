@@ -25,6 +25,7 @@ add_executable(loom-pre-mapping-compilation-test
 target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LoomADGBuilder
   LoomCommon
+  LoomDSE
   LoomFrontendCompilation
   LoomStructuredFabricAnalyticModel
   LLVMCore

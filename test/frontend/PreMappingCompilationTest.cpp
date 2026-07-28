@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
 #include "Common/ResolvedConfig.h"
+#include "DSE/Promotion.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -1240,7 +1241,13 @@ runtimeResult(const char *test,
   return *runtime;
 }
 
-loom::evaluation::DecimalValue
+struct EvaluatedRuntime final {
+  loom::evaluation::DecimalValue value;
+  loom::evaluation::EvaluationRequest request;
+  loom::evaluation::EvaluationEvidence evidence;
+};
+
+EvaluatedRuntime
 evaluateStructuredRuntime(const char *test,
                           const loom::ArtifactRootReference &structuredProgram,
                           const loom::ArtifactRootReference &fabric,
@@ -1251,7 +1258,8 @@ evaluateStructuredRuntime(const char *test,
           structuredProgram, fabric, loom::defaultResolvedConfig(), store));
   auto evidence = take(test, loom::evaluation::evaluateRequest(
                                  prepared.request, prepared.resolution, store));
-  return runtimeResult(test, evidence);
+  return EvaluatedRuntime{runtimeResult(test, evidence),
+                          std::move(prepared.request), std::move(evidence)};
 }
 
 loom::evaluation::DecimalValue
@@ -1300,16 +1308,47 @@ void structuredFabricEvaluationRanksMaterializedOwnership() {
   const loom::ArtifactRootReference dataflowRef =
       take(test, dataflow::publishCanonicalDataflow(spatial.canonicalDataflow,
                                                     store));
-  const loom::evaluation::DecimalValue baselineRuntime =
-      evaluateStructuredRuntime(test, baselineRef,
-                                design.roots().front().reference(), store);
-  const loom::evaluation::DecimalValue spatialRuntime =
-      evaluateStructuredRuntime(test, spatialRef,
-                                design.roots().front().reference(), store);
-  if (loom::evaluation::compareDecimalValue(spatialRuntime, baselineRuntime) >=
-      0)
+  EvaluatedRuntime baseline = evaluateStructuredRuntime(
+      test, baselineRef, design.roots().front().reference(), store);
+  EvaluatedRuntime spatialEvaluation = evaluateStructuredRuntime(
+      test, spatialRef, design.roots().front().reference(), store);
+  if (loom::evaluation::compareDecimalValue(spatialEvaluation.value,
+                                            baseline.value) >= 0)
     fail(test, "Fabric-aware Evaluation did not prefer materialized Spatial "
                "ownership");
+
+  auto candidates =
+      take(test, loom::dse::CandidateSet::get(
+                     loom::frontend::structuredProgramArtifactSchema,
+                     {baselineRef, spatialRef}));
+  const auto incomplete =
+      take(test, loom::dse::promoteMetricTopK(
+                     candidates, loom::evaluation::CaseSubjectRoleRef(0),
+                     {{baseline.request, baseline.evidence}},
+                     {loom::evaluation::MetricRequestOrdinal(0),
+                      loom::dse::ObjectiveDirection::Minimize, 1},
+                     store));
+  const auto *missing =
+      std::get_if<loom::dse::IncompleteSelection>(&incomplete);
+  if (!missing ||
+      missing->reason != loom::dse::IncompleteSelectionReason::MissingEvidence)
+    fail(test, "central DSE treated missing Evidence as a ranking value");
+
+  std::vector<loom::dse::PromotionEvidence> evidence;
+  evidence.push_back({std::move(spatialEvaluation.request),
+                      std::move(spatialEvaluation.evidence)});
+  evidence.push_back(
+      {std::move(baseline.request), std::move(baseline.evidence)});
+  auto promoted = take(
+      test, loom::dse::promoteMetricTopK(
+                candidates, loom::evaluation::CaseSubjectRoleRef(0), evidence,
+                {loom::evaluation::MetricRequestOrdinal(0),
+                 loom::dse::ObjectiveDirection::Minimize, 1},
+                store));
+  const auto *selection = std::get_if<loom::dse::CompletedSelection>(&promoted);
+  if (!selection || selection->selected.size() != 1 ||
+      selection->selected.front() != spatialRef)
+    fail(test, "central DSE TopK did not promote the best exact candidate");
   const loom::evaluation::DecimalValue dataflowRuntime =
       evaluateCanonicalDataflowRuntime(
           test, dataflowRef, design.roots().front().reference(), store);
