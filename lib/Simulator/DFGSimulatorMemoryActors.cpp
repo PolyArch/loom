@@ -41,15 +41,16 @@ namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 // other input.
 static std::optional<MemoryView>
 peekMemoryView(SimulatorState &state, mlir::Value mem,
-               mlir::OpOperand &memOperand,
+               unsigned memoryOperandOrdinal,
                llvm::SmallVectorImpl<std::string> &diagnostics) {
-  if (hasToken(state, memOperand)) {
-    Token token = peekToken(state, memOperand);
-    if (token.kind != TokenKind::Pointer || !token.pointer.memory) {
+  if (hasInputToken(state, memoryOperandOrdinal)) {
+    Token token = peekInputToken(state, memoryOperandOrdinal);
+    const MemoryView *view = token.memoryView();
+    if (token.kind != TokenKind::Pointer || !view || !view->memory) {
       diagnostics.push_back("dataflow memory operand is not a memory view");
       return std::nullopt;
     }
-    return token.pointer;
+    return *view;
   }
   auto viewIt = state.memoryViews.find(mem);
   if (viewIt != state.memoryViews.end())
@@ -65,9 +66,9 @@ peekMemoryView(SimulatorState &state, mlir::Value mem,
 }
 
 static void consumeMemoryView(SimulatorState &state,
-                              mlir::OpOperand &memOperand) {
-  if (hasToken(state, memOperand))
-    (void)popToken(state, memOperand);
+                              unsigned memoryOperandOrdinal) {
+  if (hasInputToken(state, memoryOperandOrdinal))
+    (void)popInputToken(state, memoryOperandOrdinal);
 }
 
 static llvm::Expected<MemoryByteOrder> memoryByteOrder(mlir::Operation *scope) {
@@ -87,6 +88,24 @@ static llvm::Expected<MemoryByteOrder> memoryByteOrder(mlir::Operation *scope) {
                                  spelling.getValue().str().c_str());
 }
 
+llvm::Expected<ResolvedMemoryElementLayout>
+resolveMemoryElementLayout(mlir::Type type, mlir::Operation *scope) {
+  auto byteCount = byteSizeOfType(type, scope);
+  if (!byteCount)
+    return byteCount.takeError();
+  if (*byteCount <= 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory element has zero storage size");
+  auto bitWidth = resolvedTokenTypeBitWidth(type, scope);
+  if (!bitWidth)
+    return bitWidth.takeError();
+  auto order = memoryByteOrder(scope);
+  if (!order)
+    return order.takeError();
+  return ResolvedMemoryElementLayout{static_cast<std::size_t>(*byteCount),
+                                     *bitWidth, *order};
+}
+
 llvm::Expected<MemoryActorExecutionPlan>
 memoryActorExecutionPlan(mlir::Operation *operation,
                          mlir::Operation *graphScope) {
@@ -94,21 +113,35 @@ memoryActorExecutionPlan(mlir::Operation *operation,
   mlir::Value address;
   mlir::Type dataType;
   mlir::Value mask;
+  unsigned memoryOperandOrdinal = 0;
+  unsigned addressOperandOrdinal = 0;
+  std::optional<unsigned> dataOperandOrdinal;
+  unsigned controlOperandOrdinal = 0;
+  std::optional<unsigned> maskOperandOrdinal;
   if (auto load = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
     memory = load.getMem();
     address = load.getAddr();
     dataType = load.getData().getType();
     mask = load.getMask();
+    memoryOperandOrdinal = load.getMemMutable().getOperandNumber();
+    addressOperandOrdinal = load.getAddrMutable().getOperandNumber();
+    controlOperandOrdinal = load.getCtrlMutable().getOperandNumber();
   } else if (auto store = mlir::dyn_cast<dataflow::StoreOp>(operation)) {
     memory = store.getMem();
     address = store.getAddr();
     dataType = store.getData().getType();
     mask = store.getMask();
+    memoryOperandOrdinal = store.getMemMutable().getOperandNumber();
+    addressOperandOrdinal = store.getAddrMutable().getOperandNumber();
+    dataOperandOrdinal = store.getDataMutable().getOperandNumber();
+    controlOperandOrdinal = store.getCtrlMutable().getOperandNumber();
   } else {
     return llvm::createStringError(
         std::errc::invalid_argument,
         "memory execution plan requires dataflow.load or dataflow.store");
   }
+  if (mask)
+    maskOperandOrdinal = operation->getNumOperands() - 1;
 
   auto access = dataflow::semantics::analyzeMemoryAccessType(
       mlir::cast<mlir::MemRefType>(memory.getType()), dataType,
@@ -118,32 +151,21 @@ memoryActorExecutionPlan(mlir::Operation *operation,
   auto indexWidth = loom::getIndexBitWidth(graphScope);
   if (!indexWidth)
     return indexWidth.takeError();
-  auto elementWidth =
-      resolvedTokenTypeBitWidth(access->elementType, graphScope);
-  if (!elementWidth)
-    return elementWidth.takeError();
+  auto elementLayout =
+      resolveMemoryElementLayout(access->elementType, graphScope);
+  if (!elementLayout)
+    return elementLayout.takeError();
   auto addressWidth = resolvedTokenTypeBitWidth(address.getType(), graphScope);
   if (!addressWidth)
     return addressWidth.takeError();
   auto dataWidth = resolvedTokenTypeBitWidth(dataType, graphScope);
   if (!dataWidth)
     return dataWidth.takeError();
-  auto elementBytes = byteSizeOfType(access->elementType, graphScope);
-  if (!elementBytes)
-    return elementBytes.takeError();
-  if (*elementBytes <= 0)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "memory element has zero storage size");
-  auto order = memoryByteOrder(graphScope);
-  if (!order)
-    return order.takeError();
-  return MemoryActorExecutionPlan{std::move(*access),
-                                  *indexWidth,
-                                  *elementWidth,
-                                  *addressWidth,
-                                  *dataWidth,
-                                  static_cast<std::size_t>(*elementBytes),
-                                  *order};
+  return MemoryActorExecutionPlan{
+      std::move(*access), memoryOperandOrdinal,  addressOperandOrdinal,
+      dataOperandOrdinal, controlOperandOrdinal, maskOperandOrdinal,
+      *indexWidth,        *addressWidth,         *dataWidth,
+      *elementLayout};
 }
 
 static std::optional<std::size_t>
@@ -213,7 +235,7 @@ static llvm::Expected<Token> tokenFromMemoryBits(const llvm::APInt &bits,
     if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
       Token token;
       token.kind = TokenKind::Vector;
-      token.bitPattern = bits;
+      token.setExactBitPattern(bits);
       return token;
     }
   }
@@ -227,21 +249,24 @@ memoryTokenBits(const Token &token, mlir::Type type, unsigned bitWidth) {
   if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
     if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
       if (token.valueState != PrimitiveValueState::Defined ||
-          token.kind != TokenKind::Vector || !token.bitPattern ||
-          token.bitPattern->getBitWidth() != bitWidth)
+          token.kind != TokenKind::Vector || !token.hasExactBitPattern() ||
+          token.exactBitWidth() != bitWidth)
         return llvm::createStringError(
             std::errc::invalid_argument,
             "index-vector memory token does not match its resolved width");
-      return *token.bitPattern;
+      return token.exactBitPattern();
     }
   }
   return tokenBitPattern(token, type);
 }
 
-static std::optional<Token> readMemoryElementResolved(
+std::optional<Token> readMemoryElementResolved(
     const MemoryView &view, std::size_t byteOffset, mlir::Type elementType,
-    std::size_t byteCount, unsigned bitWidth, MemoryByteOrder order,
-    SimulatorState &state, llvm::StringRef diagnosticLabel) {
+    const ResolvedMemoryElementLayout &layout, SimulatorState &state,
+    llvm::StringRef diagnosticLabel) {
+  const std::size_t byteCount = layout.byteCount;
+  const unsigned bitWidth = layout.bitWidth;
+  const MemoryByteOrder order = layout.byteOrder;
   bool poison = false;
   bool undef = false;
   llvm::APInt bits(bitWidth, 0);
@@ -287,21 +312,13 @@ std::optional<Token>
 readMemoryElement(const MemoryView &view, std::size_t byteOffset,
                   mlir::Type elementType, SimulatorState &state,
                   mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
-  auto byteCount = byteSizeOfType(elementType, scope);
-  auto bitWidth = resolvedTokenTypeBitWidth(elementType, scope);
-  auto order = memoryByteOrder(scope);
-  if (!byteCount || !bitWidth || !order) {
-    if (!byteCount)
-      state.diagnostics.push_back(llvm::toString(byteCount.takeError()));
-    if (!bitWidth)
-      state.diagnostics.push_back(llvm::toString(bitWidth.takeError()));
-    if (!order)
-      state.diagnostics.push_back(llvm::toString(order.takeError()));
+  auto layout = resolveMemoryElementLayout(elementType, scope);
+  if (!layout) {
+    state.diagnostics.push_back(llvm::toString(layout.takeError()));
     return std::nullopt;
   }
-  return readMemoryElementResolved(view, byteOffset, elementType,
-                                   static_cast<std::size_t>(*byteCount),
-                                   *bitWidth, *order, state, diagnosticLabel);
+  return readMemoryElementResolved(view, byteOffset, elementType, *layout,
+                                   state, diagnosticLabel);
 }
 
 static llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
@@ -425,8 +442,9 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
         access.isGather() ? addressBits->extractBits(width, width * lane)
                           : base + llvm::APInt(width, lane, /*isSigned=*/false,
                                                /*implicitTrunc=*/true);
-    auto slot = resolveElementByteOffset(
-        view, laneAddress, plan.elementByteCount, diagnostics, diagnosticLabel);
+    auto slot = resolveElementByteOffset(view, laneAddress,
+                                         plan.elementLayout.byteCount,
+                                         diagnostics, diagnosticLabel);
     if (!slot)
       return std::nullopt;
     slots.push_back(*slot);
@@ -467,9 +485,9 @@ static std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
   // An element access is one complete memref element, even when that element
   // is itself a vector: one lane, one address, and no mask.
   if (!access.isVector()) {
-    auto value = readMemoryElementResolved(
-        view, slots.front(), access.elementType, plan.elementByteCount,
-        plan.elementBitWidth, plan.byteOrder, state, "dataflow.load");
+    auto value =
+        readMemoryElementResolved(view, slots.front(), access.elementType,
+                                  plan.elementLayout, state, "dataflow.load");
     if (!value)
       return std::nullopt;
     return DataflowMemoryRead{*value, true};
@@ -481,18 +499,18 @@ static std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
   for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
     if (!activeLanes[lane])
       continue;
-    auto element = readMemoryElementResolved(
-        view, slots[active++], access.elementType, plan.elementByteCount,
-        plan.elementBitWidth, plan.byteOrder, state, "dataflow.load");
+    auto element =
+        readMemoryElementResolved(view, slots[active++], access.elementType,
+                                  plan.elementLayout, state, "dataflow.load");
     if (!element)
       return std::nullopt;
-    auto elementBits =
-        memoryTokenBits(*element, access.elementType, plan.elementBitWidth);
+    auto elementBits = memoryTokenBits(*element, access.elementType,
+                                       plan.elementLayout.bitWidth);
     if (!elementBits) {
       state.diagnostics.push_back(llvm::toString(elementBits.takeError()));
       return std::nullopt;
     }
-    resultBits.insertBits(*elementBits, plan.elementBitWidth * lane);
+    resultBits.insertBits(*elementBits, plan.elementLayout.bitWidth * lane);
   }
 
   auto result = tokenFromMemoryBits(resultBits, access.vectorType);
@@ -511,8 +529,8 @@ prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
   const auto &access = plan.access;
   if (!access.isVector()) {
     auto bytes = encodeMemoryElementResolved(
-        data, access.elementType, plan.elementByteCount, plan.elementBitWidth,
-        plan.byteOrder);
+        data, access.elementType, plan.elementLayout.byteCount,
+        plan.elementLayout.bitWidth, plan.elementLayout.byteOrder);
     if (!bytes) {
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
       return std::nullopt;
@@ -561,15 +579,15 @@ prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
     if (!activeLanes[lane])
       continue;
     llvm::APInt elementBits = dataBits->extractBits(
-        plan.elementBitWidth, plan.elementBitWidth * lane);
+        plan.elementLayout.bitWidth, plan.elementLayout.bitWidth * lane);
     auto element = tokenFromMemoryBits(elementBits, access.elementType);
     if (!element) {
       state.diagnostics.push_back(llvm::toString(element.takeError()));
       return std::nullopt;
     }
     auto bytes = encodeMemoryElementResolved(
-        *element, access.elementType, plan.elementByteCount,
-        plan.elementBitWidth, plan.byteOrder);
+        *element, access.elementType, plan.elementLayout.byteCount,
+        plan.elementLayout.bitWidth, plan.elementLayout.byteOrder);
     if (!bytes) {
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
       return std::nullopt;
@@ -621,11 +639,11 @@ static MemorySynchronization &memorySynchronization(SimulatorState &state) {
 // memory, address, data, and mask dependencies remain actor operands but do not
 // create sequenced-before facts.
 static llvm::SmallVector<SyncEffectId, 2>
-peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
+peekMemoryOrderFrontier(SimulatorState &state, unsigned controlOperandOrdinal) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
-  if (hasToken(state, ctrl))
+  if (hasInputToken(state, controlOperandOrdinal))
     frontier.assign(state.memoryOrderFrontiers.elements(
-        peekToken(state, ctrl).memoryOrder));
+        peekInputToken(state, controlOperandOrdinal).memoryOrder));
   return frontier;
 }
 
@@ -653,78 +671,74 @@ issueMemoryAction(const MemoryActionRecord &action,
   return state.memoryOrderFrontiers.internCanonical(*effect);
 }
 
-static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
-                                               mlir::Value mask) {
-  if (!mask)
-    return nullptr;
-  return &op->getOpOperand(op->getNumOperands() - 1);
-}
-
 struct ProjectedMemoryFiring {
   MemoryView view;
   ProjectedDataflowMemoryAccess access;
-  mlir::OpOperand *maskOperand = nullptr;
+  std::optional<unsigned> maskOperandOrdinal;
 };
 
 static std::optional<ProjectedMemoryFiring>
 projectLoadFiring(dataflow::LoadOp op, SimulatorState &state,
                   llvm::SmallVectorImpl<std::string> &diagnostics) {
-  mlir::OpOperand *maskOperand =
-      getOptionalMaskOperand(op.getOperation(), op.getMask());
-  if (!hasToken(state, op.getAddrMutable()) ||
-      !hasToken(state, op.getCtrlMutable()) ||
-      (maskOperand && !hasToken(state, *maskOperand)))
+  assert(state.currentActorPlan && state.currentActorPlan->memory &&
+         "admitted load has no execution plan");
+  const MemoryActorExecutionPlan &plan = *state.currentActorPlan->memory;
+  if (!hasInputToken(state, plan.addressOperandOrdinal) ||
+      !hasInputToken(state, plan.controlOperandOrdinal) ||
+      (plan.maskOperandOrdinal &&
+       !hasInputToken(state, *plan.maskOperandOrdinal)))
     return std::nullopt;
-  std::optional<MemoryView> view =
-      peekMemoryView(state, op.getMem(), op.getMemMutable(), diagnostics);
+  std::optional<MemoryView> view = peekMemoryView(
+      state, op.getMem(), plan.memoryOperandOrdinal, diagnostics);
   if (!view)
     return std::nullopt;
-  Token addr = peekToken(state, op.getAddrMutable());
+  Token addr = peekInputToken(state, plan.addressOperandOrdinal);
   std::optional<Token> mask;
-  if (maskOperand)
-    mask = peekToken(state, *maskOperand);
-  auto plan = state.memoryActorPlans.find(op.getOperation());
-  assert(plan != state.memoryActorPlans.end() &&
-         "admitted load has no execution plan");
+  if (plan.maskOperandOrdinal)
+    mask = peekInputToken(state, *plan.maskOperandOrdinal);
+  assert(state.currentActorPlan->operation == op.getOperation() &&
+         "active load plan does not match the operation");
   auto access = projectDataflowMemoryAccess(
-      *view, addr, plan->second, mask ? &*mask : nullptr,
+      *view, addr, plan, mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, diagnostics,
       "dataflow.load");
   if (!access)
     return std::nullopt;
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
-                               maskOperand};
+                               plan.maskOperandOrdinal};
 }
 
 static std::optional<ProjectedMemoryFiring>
 projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
                    llvm::SmallVectorImpl<std::string> &diagnostics) {
-  mlir::OpOperand *maskOperand =
-      getOptionalMaskOperand(op.getOperation(), op.getMask());
-  if (!hasToken(state, op.getAddrMutable()) ||
-      !hasToken(state, op.getDataMutable()) ||
-      !hasToken(state, op.getCtrlMutable()) ||
-      (maskOperand && !hasToken(state, *maskOperand)))
+  assert(state.currentActorPlan && state.currentActorPlan->memory &&
+         state.currentActorPlan->memory->dataOperandOrdinal &&
+         "admitted store has no execution plan");
+  const MemoryActorExecutionPlan &plan = *state.currentActorPlan->memory;
+  if (!hasInputToken(state, plan.addressOperandOrdinal) ||
+      !hasInputToken(state, *plan.dataOperandOrdinal) ||
+      !hasInputToken(state, plan.controlOperandOrdinal) ||
+      (plan.maskOperandOrdinal &&
+       !hasInputToken(state, *plan.maskOperandOrdinal)))
     return std::nullopt;
-  std::optional<MemoryView> view =
-      peekMemoryView(state, op.getMem(), op.getMemMutable(), diagnostics);
+  std::optional<MemoryView> view = peekMemoryView(
+      state, op.getMem(), plan.memoryOperandOrdinal, diagnostics);
   if (!view)
     return std::nullopt;
-  Token addr = peekToken(state, op.getAddrMutable());
+  Token addr = peekInputToken(state, plan.addressOperandOrdinal);
   std::optional<Token> mask;
-  if (maskOperand)
-    mask = peekToken(state, *maskOperand);
-  auto plan = state.memoryActorPlans.find(op.getOperation());
-  assert(plan != state.memoryActorPlans.end() &&
-         "admitted store has no execution plan");
+  if (plan.maskOperandOrdinal)
+    mask = peekInputToken(state, *plan.maskOperandOrdinal);
+  assert(state.currentActorPlan->operation == op.getOperation() &&
+         "active store plan does not match the operation");
   auto access = projectDataflowMemoryAccess(
-      *view, addr, plan->second, mask ? &*mask : nullptr,
+      *view, addr, plan, mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, diagnostics,
       "dataflow.store");
   if (!access)
     return std::nullopt;
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
-                               maskOperand};
+                               plan.maskOperandOrdinal};
 }
 
 PlainMemoryActionProjection
@@ -735,17 +749,17 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
     auto projected = projectLoadFiring(op, state, result.diagnostics);
     if (!projected)
       return result;
-    const auto &plan = state.memoryActorPlans.find(operation)->second;
+    const auto &plan = *state.currentActorPlan->memory;
     MemoryActionRecord action = projectMemoryAction(
-        projected->view, projected->access.slots, plan.elementByteCount,
+        projected->view, projected->access.slots, plan.elementLayout.byteCount,
         /*isWrite=*/false);
     result.ready = ReadyPlainMemoryAction{
         std::move(action),
-        peekMemoryOrderFrontier(state, op.getCtrlMutable()),
+        peekMemoryOrderFrontier(state, plan.controlOperandOrdinal),
         std::move(projected->view),
         std::move(projected->access.activeLanes),
         std::move(projected->access.slots),
-        projected->maskOperand};
+        projected->maskOperandOrdinal};
     return result;
   }
 
@@ -755,17 +769,17 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
   auto projected = projectStoreFiring(op, state, result.diagnostics);
   if (!projected)
     return result;
-  const auto &plan = state.memoryActorPlans.find(operation)->second;
+  const auto &plan = *state.currentActorPlan->memory;
   MemoryActionRecord action = projectMemoryAction(
-      projected->view, projected->access.slots, plan.elementByteCount,
+      projected->view, projected->access.slots, plan.elementLayout.byteCount,
       /*isWrite=*/true);
   result.ready = ReadyPlainMemoryAction{
       std::move(action),
-      peekMemoryOrderFrontier(state, op.getCtrlMutable()),
+      peekMemoryOrderFrontier(state, plan.controlOperandOrdinal),
       std::move(projected->view),
       std::move(projected->access.activeLanes),
       std::move(projected->access.slots),
-      projected->maskOperand};
+      projected->maskOperandOrdinal};
   return result;
 }
 
@@ -774,7 +788,7 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
   ReadyPlainMemoryAction &ready = admitted->second;
-  const auto &plan = state.memoryActorPlans.find(op.getOperation())->second;
+  const auto &plan = *state.currentActorPlan->memory;
   auto read = prepareDataflowMemoryRead(ready.view, ready.activeLanes,
                                         ready.slots, plan, state);
   if (!read)
@@ -782,17 +796,16 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   auto publication = issueMemoryAction(ready.action, ready.ctrlFrontier, state);
   if (!publication)
     return false;
-  mlir::OpOperand *maskOperand = ready.maskOperand;
+  std::optional<unsigned> maskOperandOrdinal = ready.maskOperandOrdinal;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumeMemoryView(state, op.getMemMutable());
-  popToken(state, op.getAddrMutable());
-  popToken(state, op.getCtrlMutable());
-  if (maskOperand)
-    popToken(state, *maskOperand);
-  emitTokenWithMemoryOrder(state, op.getData(), read->data,
-                           MemoryOrderFrontierId());
-  emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
+  consumeMemoryView(state, plan.memoryOperandOrdinal);
+  (void)popInputToken(state, plan.addressOperandOrdinal);
+  (void)popInputToken(state, plan.controlOperandOrdinal);
+  if (maskOperandOrdinal)
+    (void)popInputToken(state, *maskOperandOrdinal);
+  emitResultTokenWithMemoryOrder(state, 0, read->data, MemoryOrderFrontierId());
+  emitResultTokenWithMemoryOrder(state, 1, noneToken(), *publication);
   return true;
 }
 
@@ -801,8 +814,9 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
   ReadyPlainMemoryAction &ready = admitted->second;
-  const auto &plan = state.memoryActorPlans.find(op.getOperation())->second;
-  Token data = peekToken(state, op.getDataMutable());
+  const auto &plan = *state.currentActorPlan->memory;
+  assert(plan.dataOperandOrdinal && "store plan has no data operand");
+  Token data = peekInputToken(state, *plan.dataOperandOrdinal);
   auto write = prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots,
                                           plan, state);
   if (!write)
@@ -811,17 +825,17 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (!publication)
     return false;
   MemoryView view = ready.view;
-  mlir::OpOperand *maskOperand = ready.maskOperand;
+  std::optional<unsigned> maskOperandOrdinal = ready.maskOperandOrdinal;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
-  consumeMemoryView(state, op.getMemMutable());
-  popToken(state, op.getAddrMutable());
-  popToken(state, op.getDataMutable());
-  popToken(state, op.getCtrlMutable());
-  if (maskOperand)
-    popToken(state, *maskOperand);
+  consumeMemoryView(state, plan.memoryOperandOrdinal);
+  (void)popInputToken(state, plan.addressOperandOrdinal);
+  (void)popInputToken(state, *plan.dataOperandOrdinal);
+  (void)popInputToken(state, plan.controlOperandOrdinal);
+  if (maskOperandOrdinal)
+    (void)popInputToken(state, *maskOperandOrdinal);
   commitDataflowMemoryWrite(view, *write);
-  emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
+  emitResultTokenWithMemoryOrder(state, 0, noneToken(), *publication);
   return true;
 }
 

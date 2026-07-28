@@ -125,15 +125,15 @@ serializeMemoryValue(const MemoryView &view, SimulatorState &state,
     return llvm::createStringError(
         std::errc::invalid_argument,
         "memory observation has no exact element type");
-  auto byteCount = byteSizeOfType(view.elementType, scope);
-  if (!byteCount)
-    return byteCount.takeError();
+  auto layout = resolveMemoryElementLayout(view.elementType, scope);
+  if (!layout)
+    return layout.takeError();
   llvm::SmallVector<std::string> values;
   // finalMemoryRoots names the complete backing object. A graph argument may
   // be a view into that object, but this legacy report projection must not
   // silently discard bytes before the view.
   const std::size_t begin = 0;
-  const std::size_t stride = static_cast<std::size_t>(*byteCount);
+  const std::size_t stride = layout->byteCount;
   for (std::size_t offset = begin; offset + stride <= view.memory->bytes.size();
        offset += stride) {
     bool initialized = true;
@@ -143,8 +143,8 @@ serializeMemoryValue(const MemoryView &view, SimulatorState &state,
       values.push_back("uninitialized");
       continue;
     }
-    auto token = readMemoryElement(view, offset, view.elementType, state, scope,
-                                   "memory observation");
+    auto token = readMemoryElementResolved(
+        view, offset, view.elementType, *layout, state, "memory observation");
     if (!token)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "memory observation decode failed");

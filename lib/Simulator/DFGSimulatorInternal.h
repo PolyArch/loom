@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace loom::sim {
@@ -36,6 +37,7 @@ namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
 struct ResolvedLaunchContext;
 struct MemoryValue;
+struct SimulatorState;
 
 struct MemoryView {
   std::shared_ptr<MemoryValue> memory;
@@ -43,6 +45,8 @@ struct MemoryView {
   std::int64_t byteOffset = 0;
   mlir::Type elementType;
 };
+
+using ExtendedTokenPayload = std::variant<llvm::APInt, MemoryView>;
 
 enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
 
@@ -102,7 +106,18 @@ public:
 
   /// Interns the frontier of one effect.
   MemoryOrderFrontierId internCanonical(SyncEffectId effect) {
-    return internCanonical(llvm::ArrayRef<SyncEffectId>(effect));
+    if (effect.value() >= std::numeric_limits<std::uint32_t>::max())
+      llvm::report_fatal_error(
+          "a memory effect cannot be represented by the simulator frontier "
+          "handle domain");
+    const std::size_t ordinal = static_cast<std::size_t>(effect.value());
+    if (ordinal >= singletonFrontiers_.size())
+      singletonFrontiers_.resize(ordinal + 1);
+    MemoryOrderFrontierId &cached = singletonFrontiers_[ordinal];
+    if (!cached.empty())
+      return cached;
+    cached = storeFrontier(llvm::ArrayRef<SyncEffectId>(effect));
+    return cached;
   }
 
   /// Interns one frontier that is already ascending and free of repeats.
@@ -114,18 +129,15 @@ public:
            "a canonical frontier is ascending and free of repeats");
     if (elements.empty())
       return MemoryOrderFrontierId();
+    if (elements.size() == 1)
+      return internCanonical(elements.front());
     const std::uint64_t key = hashOf(elements);
     llvm::SmallVector<MemoryOrderFrontierId, 1> &bucket = interned_[key];
     for (MemoryOrderFrontierId candidate : bucket)
       if (this->elements(candidate) == elements)
         return candidate;
 
-    if (entries_.size() >= std::numeric_limits<std::uint32_t>::max())
-      llvm::report_fatal_error(
-          "the simulator retained more than 2^32 distinct memory-order "
-          "frontiers in one run; the frontier handle space is exhausted");
-    const MemoryOrderFrontierId id(static_cast<std::uint32_t>(entries_.size()));
-    entries_.push_back(Entry{store(elements), elements.size()});
+    const MemoryOrderFrontierId id = storeFrontier(elements);
     bucket.push_back(id);
     return id;
   }
@@ -177,8 +189,19 @@ private:
     return begin;
   }
 
+  MemoryOrderFrontierId storeFrontier(llvm::ArrayRef<SyncEffectId> elements) {
+    if (entries_.size() >= std::numeric_limits<std::uint32_t>::max())
+      llvm::report_fatal_error(
+          "the simulator retained more than 2^32 distinct memory-order "
+          "frontiers in one run; the frontier handle space is exhausted");
+    const MemoryOrderFrontierId id(static_cast<std::uint32_t>(entries_.size()));
+    entries_.push_back(Entry{store(elements), elements.size()});
+    return id;
+  }
+
   std::vector<Entry> entries_;
   std::vector<Chunk> chunks_;
+  std::vector<MemoryOrderFrontierId> singletonFrontiers_;
   llvm::DenseMap<std::uint64_t, llvm::SmallVector<MemoryOrderFrontierId, 1>>
       interned_;
 };
@@ -263,7 +286,16 @@ public:
   /// against the memo without reading the frontier at all.
   void absorb(llvm::ArrayRef<SyncEffectId> effects,
               MemoryOrderFrontierId frontier) {
-    if (!frontier.empty() && insertAbsorbed(frontier.value()))
+    if (frontier.empty())
+      return;
+    if (elements_.empty() && absorbed_.empty() && effects.size() == 1) {
+      elements_.push_back(effects.front());
+      absorbed_.push_back(frontier.value());
+      reduced_ = true;
+      published_ = frontier;
+      return;
+    }
+    if (insertAbsorbed(frontier.value()))
       append(effects);
   }
 
@@ -390,17 +422,58 @@ private:
 struct Token {
   TokenKind kind = TokenKind::None;
   PrimitiveValueState valueState = PrimitiveValueState::Defined;
-  // Index storage and the schema 2.2 projection for integers up to 64 bits.
-  std::int64_t intValue = 0;
-  double floatValue = 0.0;
-  bool boolValue = false;
-  std::optional<llvm::APInt> bitPattern;
-  MemoryView pointer;
+  // An exact bit pattern up to 64 bits stays inline. A zero width means that
+  // the scalar union holds a host value or that an extended payload owns the
+  // exact wide pattern. Wide patterns and memory views are mutually exclusive.
+  unsigned inlineBitWidth = 0;
+  std::uint64_t scalarValue = 0;
   // Memory-order witnesses enter token flow only through canonical done
   // publication. Generic actor firing may propagate them from that explicit
   // path, but plain memory data publication never injects its action effect.
   // This state is execution-local and never serialized.
   MemoryOrderFrontierId memoryOrder;
+  std::shared_ptr<const ExtendedTokenPayload> extended;
+
+  bool hasExactBitPattern() const {
+    return inlineBitWidth != 0 ||
+           (extended && std::holds_alternative<llvm::APInt>(*extended));
+  }
+
+  unsigned exactBitWidth() const {
+    if (inlineBitWidth != 0)
+      return inlineBitWidth;
+    const auto *bits =
+        extended ? std::get_if<llvm::APInt>(extended.get()) : nullptr;
+    return bits ? bits->getBitWidth() : 0;
+  }
+
+  llvm::APInt exactBitPattern() const {
+    assert(hasExactBitPattern() && "token has no exact bit pattern");
+    if (inlineBitWidth != 0)
+      return llvm::APInt(inlineBitWidth, scalarValue,
+                         /*isSigned=*/false, /*implicitTrunc=*/true);
+    return *std::get_if<llvm::APInt>(extended.get());
+  }
+
+  void setExactBitPattern(llvm::APInt bits) {
+    if (bits.getBitWidth() <= 64) {
+      inlineBitWidth = bits.getBitWidth();
+      scalarValue = bits.getZExtValue();
+      extended.reset();
+      return;
+    }
+    inlineBitWidth = 0;
+    extended = std::make_shared<ExtendedTokenPayload>(std::move(bits));
+  }
+
+  const MemoryView *memoryView() const {
+    return extended ? std::get_if<MemoryView>(extended.get()) : nullptr;
+  }
+
+  void setMemoryView(MemoryView view) {
+    inlineBitWidth = 0;
+    extended = std::make_shared<ExtendedTokenPayload>(std::move(view));
+  }
 };
 
 struct DataflowMemoryRead {
@@ -462,6 +535,27 @@ public:
     head_ = 0;
   }
 
+  void appendFrom(TokenQueue &source) {
+    if (source.empty())
+      return;
+    if (empty()) {
+      tokens_.swap(source.tokens_);
+      std::swap(head_, source.head_);
+      source.clear();
+      return;
+    }
+    if (source.size() == 1) {
+      tokens_.push_back(std::move(source.front()));
+      source.clear();
+      return;
+    }
+    tokens_.insert(
+        tokens_.end(),
+        std::make_move_iterator(source.tokens_.begin() + source.head_),
+        std::make_move_iterator(source.tokens_.end()));
+    source.clear();
+  }
+
   auto begin() { return tokens_.begin() + static_cast<std::ptrdiff_t>(head_); }
   auto end() { return tokens_.end(); }
   auto begin() const {
@@ -475,12 +569,15 @@ private:
 };
 
 using ChannelOrdinal = std::uint32_t;
+inline constexpr unsigned InvalidActorOrdinal =
+    std::numeric_limits<unsigned>::max();
 
 /// Run-local storage for one canonical software edge. The graph's OpOperand
 /// remains the semantic owner; the ordinal and colocated queues are a dense
 /// execution cache derived before firing begins.
 struct ChannelSlot {
   const mlir::OpOperand *operand = nullptr;
+  unsigned ownerActorOrdinal = InvalidActorOrdinal;
   TokenQueue ready;
   TokenQueue pending;
 };
@@ -528,17 +625,53 @@ struct MemoryActionRecord {
 
 enum class MemoryByteOrder { Little, Big };
 
+struct ResolvedMemoryElementLayout {
+  std::size_t byteCount = 0;
+  unsigned bitWidth = 0;
+  MemoryByteOrder byteOrder = MemoryByteOrder::Little;
+};
+
 /// Immutable execution projection of one finalized load or store. Every field
 /// is derived once from the actor types and the graph DataLayout; dynamic
 /// addresses, masks, aliasing, and ordering remain firing-time state.
 struct MemoryActorExecutionPlan {
   dataflow::semantics::MemoryAccessType access;
+  unsigned memoryOperandOrdinal = 0;
+  unsigned addressOperandOrdinal = 0;
+  std::optional<unsigned> dataOperandOrdinal;
+  unsigned controlOperandOrdinal = 0;
+  std::optional<unsigned> maskOperandOrdinal;
   unsigned indexBitWidth = 0;
-  unsigned elementBitWidth = 0;
   unsigned addressBitWidth = 0;
   unsigned dataBitWidth = 0;
-  std::size_t elementByteCount = 0;
-  MemoryByteOrder byteOrder = MemoryByteOrder::Little;
+  ResolvedMemoryElementLayout elementLayout;
+};
+
+using ActorProvider = bool (*)(mlir::Operation *,
+                               const dataflow::CanonicalActorSchemaProjection &,
+                               SimulatorState &);
+
+/// Immutable, admission-derived execution cache for one canonical actor.
+/// Persistent identity and semantics remain owned by Canonical Dataflow and
+/// OperationSchema; this record only removes MLIR pointer-map reconstruction
+/// from the firing loop.
+struct ActorExecutionPlan {
+  struct Output {
+    mlir::Value value;
+    llvm::SmallVector<ChannelOrdinal, 2> channels;
+    bool observed = false;
+  };
+
+  mlir::Operation *operation = nullptr;
+  dataflow::CanonicalActorSchemaProjection projection;
+  ActorProvider provider = nullptr;
+  ChannelOrdinal firstInputChannel = 0;
+  std::uint32_t inputChannelCount = 0;
+  llvm::SmallVector<Output, 2> outputs;
+  std::optional<PrimitiveOperationDescriptor> primitive;
+  std::optional<MemoryActorExecutionPlan> memory;
+
+  bool isPlainMemory() const { return memory.has_value(); }
 };
 
 /// Merges the ranges into the ascending, non-touching cover of the same bytes.
@@ -551,7 +684,7 @@ struct ReadyPlainMemoryAction {
   MemoryView view;
   llvm::APInt activeLanes = llvm::APInt();
   llvm::SmallVector<std::size_t> slots;
-  mlir::OpOperand *maskOperand = nullptr;
+  std::optional<unsigned> maskOperandOrdinal;
 };
 
 // Exact byte-interval cache of the maximal issued hazards. It stores effect
@@ -636,26 +769,18 @@ enum class RunFailure {
 };
 
 struct SimulatorState {
-  llvm::DenseMap<mlir::Operation *, dataflow::CanonicalActorSchemaProjection>
-      actorProjections;
-  // Primitive semantics and resolved scalar widths depend only on the
-  // finalized actor and its graph DataLayout. Admission resolves them once;
-  // the firing loop consumes this immutable projection instead of rebuilding
-  // it for every token.
-  llvm::DenseMap<mlir::Operation *, PrimitiveOperationDescriptor>
-      primitiveDescriptors;
-  llvm::DenseMap<mlir::Operation *, MemoryActorExecutionPlan> memoryActorPlans;
   // Dense canonical actor order and the candidates whose readiness may have
   // changed for the next wave. This is a derived execution cache: token
   // arrival schedules only the consuming actor, while a firing schedules
   // itself in case another transition is already buffered. The bitset keeps
   // equal-wave evaluation in structural order without rescanning the graph.
-  llvm::SmallVector<mlir::Operation *> actorOperations;
+  std::vector<ActorExecutionPlan> actorPlans;
   llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
   llvm::SmallBitVector nextActorCandidates;
   llvm::DenseMap<const mlir::OpOperand *, ChannelOrdinal> channelOrdinals;
   std::vector<ChannelSlot> channelSlots;
   llvm::SmallVector<ChannelOrdinal, 16> pendingChannelOrdinals;
+  const ActorExecutionPlan *currentActorPlan = nullptr;
   // Values whose complete publication sequence is an explicit graph
   // observation. Internal SSA token history is represented by the edge
   // queues alone and is not retained as an implicit trace.
@@ -710,11 +835,11 @@ struct SimulatorState {
   // The one owner of every frontier this run publishes. Tokens and retained
   // actor state reference it by handle.
   MemoryOrderFrontierArena memoryOrderFrontiers;
-  // Static operation ordinals and the subset whose token queues changed or
-  // may still contain another firing. This limits pure admission projection to
-  // memory actors whose readiness can have changed.
-  llvm::DenseMap<mlir::Operation *, std::uint64_t> plainMemoryOperationOrder;
-  std::map<std::uint64_t, mlir::Operation *> plainMemoryCandidates;
+  // The structural actor-order mask for plain memory actors and the subset
+  // whose token queues changed or may still contain another firing. Admission
+  // walks the dense mask in actor order, avoiding an allocated ordered node
+  // for every candidate transition.
+  llvm::SmallBitVector plainMemoryCandidates;
   // Execution-local cache of the plain actions and ctrl-derived order
   // frontiers admitted for the current scheduler decision. The scheduler
   // clears and derives it again before every wave.
@@ -814,18 +939,19 @@ void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
 
 TokenQueue &channelQueue(SimulatorState &state, mlir::OpOperand &operand);
 bool hasToken(const SimulatorState &state, mlir::OpOperand &operand);
-void scheduleActor(SimulatorState &state, mlir::Operation *actor);
-Token popToken(SimulatorState &state, mlir::OpOperand &operand);
-const Token &peekToken(const SimulatorState &state, mlir::OpOperand &operand);
-void emitToken(SimulatorState &state, mlir::Value value, Token token);
-void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
-                              Token token, MemoryOrderFrontierId memoryOrder);
+bool hasInputToken(const SimulatorState &state, unsigned operandOrdinal);
+Token popInputToken(SimulatorState &state, unsigned operandOrdinal);
+const Token &peekInputToken(const SimulatorState &state,
+                            unsigned operandOrdinal);
+void emitResultToken(SimulatorState &state, unsigned resultOrdinal,
+                     Token token);
+void emitResultTokenWithMemoryOrder(SimulatorState &state,
+                                    unsigned resultOrdinal, Token token,
+                                    MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
 void flushPendingTokens(SimulatorState &state);
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
                        const Token &token);
-const dataflow::CanonicalActorSchemaProjection &
-actorProjection(const SimulatorState &state, mlir::Operation *op);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
@@ -839,6 +965,8 @@ llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
 Token indexToken(const llvm::APInt &value);
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope);
+llvm::Expected<ResolvedMemoryElementLayout>
+resolveMemoryElementLayout(mlir::Type type, mlir::Operation *scope);
 
 // The host element slot one semantic address names. `address` is exact at its
 // own width and becomes a host index only after the sign and range checks.
@@ -856,6 +984,10 @@ std::optional<Token>
 readMemoryElement(const MemoryView &view, std::size_t byteOffset,
                   mlir::Type elementType, SimulatorState &state,
                   mlir::Operation *scope, llvm::StringRef diagnosticLabel);
+std::optional<Token> readMemoryElementResolved(
+    const MemoryView &view, std::size_t byteOffset, mlir::Type elementType,
+    const ResolvedMemoryElementLayout &layout, SimulatorState &state,
+    llvm::StringRef diagnosticLabel);
 llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
 encodeMemoryElement(const Token &value, mlir::Type elementType,
                     mlir::Operation *scope);
@@ -939,7 +1071,8 @@ evaluatePrimitiveToken(mlir::Operation *op,
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);
-bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
+ActorProvider actorProvider(dataflow::OperationSchemaId schema);
+bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state);
 std::optional<UnsupportedOperation> unsupportedActorProvider(
     mlir::Operation *op,
     const dataflow::CanonicalActorSchemaProjection &projection);

@@ -50,29 +50,6 @@ Graph reverseGraph(const Graph &graph) {
   return reversed;
 }
 
-bool reaches(const Graph &graph, SyncEffectId start, SyncEffectId target) {
-  if (start == target)
-    return false;
-  if (llvm::is_contained(graph[start.value()], target))
-    return true;
-
-  std::vector<bool> seen(graph.size(), false);
-  llvm::SmallVector<SyncEffectId> worklist{start};
-  seen[start.value()] = true;
-  while (!worklist.empty()) {
-    const SyncEffectId node = worklist.pop_back_val();
-    for (const SyncEffectId next : graph[node.value()]) {
-      if (next == target)
-        return true;
-      if (seen[next.value()])
-        continue;
-      seen[next.value()] = true;
-      worklist.push_back(next);
-    }
-  }
-  return false;
-}
-
 /// The only traversal primitive: everything reachable from one effect, in
 /// canonical order. Sequenced-before reachability, happens-before, and every
 /// visibility summary are the same walk over a different graph.
@@ -163,15 +140,6 @@ maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
   return accepted;
 }
 
-void reduceMaximalPair(llvm::SmallVectorImpl<SyncEffectId> &accepted,
-                       const Graph &successors) {
-  assert(accepted.size() == 2 && "pair reduction requires two effects");
-  if (reaches(successors, accepted[0], accepted[1]))
-    accepted.erase(accepted.begin());
-  else if (reaches(successors, accepted[1], accepted[0]))
-    accepted.pop_back();
-}
-
 Graph transitivelyReduced(const Graph &graph) {
   const Graph predecessors = reverseGraph(graph);
   Graph reduced(graph.size());
@@ -225,6 +193,50 @@ bool MemorySynchronization::sequencedReaches(const Facts &facts,
                                              SyncEffectId from,
                                              SyncEffectId to) const {
   return reaches(facts.sequenced, from, to);
+}
+
+void MemorySynchronization::beginTraversal(std::size_t effectCount) const {
+  if (traversalMarks_.size() < effectCount)
+    traversalMarks_.resize(effectCount, 0);
+  ++traversalGeneration_;
+  if (traversalGeneration_ == 0) {
+    std::fill(traversalMarks_.begin(), traversalMarks_.end(), 0);
+    traversalGeneration_ = 1;
+  }
+  traversalWorklist_.clear();
+}
+
+bool MemorySynchronization::markVisited(SyncEffectId effect) const {
+  std::uint32_t &mark = traversalMarks_[effect.value()];
+  if (mark == traversalGeneration_)
+    return false;
+  mark = traversalGeneration_;
+  return true;
+}
+
+bool MemorySynchronization::reaches(const Graph &graph, SyncEffectId start,
+                                    SyncEffectId target) const {
+  if (start == target)
+    return false;
+  if (llvm::is_contained(graph[start.value()], target))
+    return true;
+
+  beginTraversal(graph.size());
+  markVisited(start);
+  traversalWorklist_.push_back(start);
+  while (!traversalWorklist_.empty()) {
+    const SyncEffectId node = traversalWorklist_.pop_back_val();
+    for (const SyncEffectId next : graph[node.value()]) {
+      if (next == target) {
+        traversalWorklist_.clear();
+        return true;
+      }
+      if (!markVisited(next))
+        continue;
+      traversalWorklist_.push_back(next);
+    }
+  }
+  return false;
 }
 
 llvm::SmallVector<SyncEffectId>
@@ -389,14 +401,21 @@ llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
                   "effect " + llvm::Twine(duplicate->value()) +
                       " occurs more than once in an incoming frontier");
 
-  if (accepted.size() == 2)
-    reduceMaximalPair(accepted, facts_.sequenced);
-  else if (accepted.size() > 2)
+  if (accepted.size() == 2) {
+    if (reaches(facts_.sequenced, accepted[0], accepted[1]))
+      accepted.erase(accepted.begin());
+    else if (reaches(facts_.sequenced, accepted[1], accepted[0]))
+      accepted.pop_back();
+  } else if (accepted.size() > 2)
     accepted = maximalCandidates(accepted, sequencedPredecessors_);
   llvm::SmallVector<SyncEffectId, 2> relationPredecessors(accepted);
-  if (relationPredecessors.size() == 2)
-    reduceMaximalPair(relationPredecessors, relation_);
-  else if (relationPredecessors.size() > 2)
+  if (relationPredecessors.size() == 2) {
+    if (reaches(relation_, relationPredecessors[0], relationPredecessors[1]))
+      relationPredecessors.erase(relationPredecessors.begin());
+    else if (reaches(relation_, relationPredecessors[1],
+                     relationPredecessors[0]))
+      relationPredecessors.pop_back();
+  } else if (relationPredecessors.size() > 2)
     relationPredecessors =
         maximalCandidates(relationPredecessors, predecessors_);
 
@@ -623,23 +642,22 @@ bool MemorySynchronization::areCoveredByHappensBefore(
 
   // Whatever one edge did not settle needs the frontier's full predecessor
   // closure, which stays the authority's answer for a distant predecessor.
-  std::vector<bool> covered(facts_.effects, false);
-  llvm::SmallVector<SyncEffectId> worklist;
+  beginTraversal(facts_.effects);
   for (SyncEffectId effect : seeds) {
-    covered[effect.value()] = true;
-    worklist.push_back(effect);
+    if (markVisited(effect))
+      traversalWorklist_.push_back(effect);
   }
-  while (!worklist.empty()) {
-    SyncEffectId effect = worklist.pop_back_val();
+  while (!traversalWorklist_.empty()) {
+    SyncEffectId effect = traversalWorklist_.pop_back_val();
     for (SyncEffectId predecessor : predecessors_[effect.value()]) {
-      if (covered[predecessor.value()])
+      if (!markVisited(predecessor))
         continue;
-      covered[predecessor.value()] = true;
-      worklist.push_back(predecessor);
+      traversalWorklist_.push_back(predecessor);
     }
   }
-  return llvm::all_of(
-      undecided, [&](SyncEffectId effect) { return covered[effect.value()]; });
+  return llvm::all_of(undecided, [&](SyncEffectId effect) {
+    return traversalMarks_[effect.value()] == traversalGeneration_;
+  });
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>

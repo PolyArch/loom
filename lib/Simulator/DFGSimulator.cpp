@@ -125,7 +125,8 @@ Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory,
                    std::int64_t byteOffset, mlir::Type elementType) {
   Token token;
   token.kind = TokenKind::Pointer;
-  token.pointer = MemoryView{std::move(memory), root, byteOffset, elementType};
+  token.setMemoryView(
+      MemoryView{std::move(memory), root, byteOffset, elementType});
   return token;
 }
 
@@ -174,7 +175,8 @@ static ChannelSlot &getOrCreateChannelSlot(SimulatorState &state,
   ChannelOrdinal ordinal =
       static_cast<ChannelOrdinal>(state.channelSlots.size());
   state.channelOrdinals.try_emplace(&operand, ordinal);
-  state.channelSlots.push_back(ChannelSlot{&operand, {}, {}});
+  state.channelSlots.push_back(
+      ChannelSlot{&operand, InvalidActorOrdinal, {}, {}});
   return state.channelSlots.back();
 }
 
@@ -187,63 +189,95 @@ bool hasToken(const SimulatorState &state, mlir::OpOperand &operand) {
   return slot && !slot->ready.empty();
 }
 
-void scheduleActor(SimulatorState &state, mlir::Operation *actor) {
-  auto ordinal = state.actorOrdinals.find(actor);
-  if (ordinal != state.actorOrdinals.end())
-    state.nextActorCandidates.set(ordinal->second);
+static const ChannelSlot &inputChannelSlot(const SimulatorState &state,
+                                           unsigned operandOrdinal) {
+  assert(state.currentActorPlan &&
+         operandOrdinal < state.currentActorPlan->inputChannelCount &&
+         "input operand is outside the active actor plan");
+  return state
+      .channelSlots[state.currentActorPlan->firstInputChannel + operandOrdinal];
 }
 
-Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
-  ChannelSlot *slot = findChannelSlot(state, operand);
-  assert(slot && !slot->ready.empty() &&
-         "pop requires an existing nonempty token channel");
-  TokenQueue &queue = slot->ready;
+static ChannelSlot &inputChannelSlot(SimulatorState &state,
+                                     unsigned operandOrdinal) {
+  return const_cast<ChannelSlot &>(inputChannelSlot(
+      static_cast<const SimulatorState &>(state), operandOrdinal));
+}
+
+bool hasInputToken(const SimulatorState &state, unsigned operandOrdinal) {
+  return !inputChannelSlot(state, operandOrdinal).ready.empty();
+}
+
+static void scheduleActor(SimulatorState &state, unsigned ordinal) {
+  if (ordinal == InvalidActorOrdinal)
+    return;
+  state.nextActorCandidates.set(ordinal);
+  if (state.actorPlans[ordinal].isPlainMemory())
+    state.plainMemoryCandidates.set(ordinal);
+}
+
+Token popInputToken(SimulatorState &state, unsigned operandOrdinal) {
+  TokenQueue &queue = inputChannelSlot(state, operandOrdinal).ready;
+  assert(!queue.empty() && "pop requires a nonempty actor input channel");
   Token token = std::move(queue.front());
   queue.pop_front();
-  state.firingMemoryOrderFrontier.absorb(
-      state.memoryOrderFrontiers.elements(token.memoryOrder),
-      token.memoryOrder);
+  if (!token.memoryOrder.empty())
+    state.firingMemoryOrderFrontier.absorb(
+        state.memoryOrderFrontiers.elements(token.memoryOrder),
+        token.memoryOrder);
   ++state.actorMutationEpoch;
   return token;
 }
 
-const Token &peekToken(const SimulatorState &state, mlir::OpOperand &operand) {
-  const ChannelSlot *slot = findChannelSlot(state, operand);
-  assert(slot && !slot->ready.empty() &&
-         "peek requires an existing nonempty token channel");
-  return slot->ready.front();
+const Token &peekInputToken(const SimulatorState &state,
+                            unsigned operandOrdinal) {
+  const TokenQueue &queue = inputChannelSlot(state, operandOrdinal).ready;
+  assert(!queue.empty() && "peek requires a nonempty actor input channel");
+  return queue.front();
 }
 
-static void publishToken(SimulatorState &state, mlir::Value value,
-                         const Token &token) {
-  for (mlir::OpOperand &use : value.getUses()) {
-    ChannelSlot &slot = getOrCreateChannelSlot(state, use);
-    TokenQueue &pending = slot.pending;
-    if (pending.empty()) {
-      auto ordinal =
-          static_cast<ChannelOrdinal>(&slot - state.channelSlots.data());
-      state.pendingChannelOrdinals.push_back(ordinal);
-    }
-    pending.push_back(token);
-  }
-  if (state.observedValues.contains(value)) {
-    auto &pending = state.pendingObservedOutputs[value];
+static void publishToken(SimulatorState &state, unsigned resultOrdinal,
+                         Token token) {
+  assert(state.currentActorPlan &&
+         "token publication requires an active execution plan");
+  assert(resultOrdinal < state.currentActorPlan->outputs.size() &&
+         "token publication does not match the active actor result");
+  const ActorExecutionPlan::Output &output =
+      state.currentActorPlan->outputs[resultOrdinal];
+  if (output.observed) {
+    auto &pending = state.pendingObservedOutputs[output.value];
     if (pending.empty())
-      state.pendingObservedValues.push_back(value);
-    pending.push_back(token);
+      state.pendingObservedValues.push_back(output.value);
+    if (output.channels.empty())
+      pending.push_back(std::move(token));
+    else
+      pending.push_back(token);
+  }
+  for (auto [index, ordinal] : llvm::enumerate(output.channels)) {
+    ChannelSlot &slot = state.channelSlots[ordinal];
+    TokenQueue &pending = slot.pending;
+    if (pending.empty())
+      state.pendingChannelOrdinals.push_back(ordinal);
+    if (index + 1 == output.channels.size())
+      pending.push_back(std::move(token));
+    else
+      pending.push_back(token);
   }
   ++state.actorMutationEpoch;
 }
 
-void emitToken(SimulatorState &state, mlir::Value value, Token token) {
-  token.memoryOrder = publishFiredMemoryOrder(state, token.memoryOrder);
-  publishToken(state, value, token);
+void emitResultToken(SimulatorState &state, unsigned resultOrdinal,
+                     Token token) {
+  if (!state.firingMemoryOrderFrontier.empty() || !token.memoryOrder.empty())
+    token.memoryOrder = publishFiredMemoryOrder(state, token.memoryOrder);
+  publishToken(state, resultOrdinal, std::move(token));
 }
 
-void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
-                              Token token, MemoryOrderFrontierId memoryOrder) {
+void emitResultTokenWithMemoryOrder(SimulatorState &state,
+                                    unsigned resultOrdinal, Token token,
+                                    MemoryOrderFrontierId memoryOrder) {
   token.memoryOrder = memoryOrder;
-  publishToken(state, value, token);
+  publishToken(state, resultOrdinal, std::move(token));
 }
 
 bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema) {
@@ -255,31 +289,15 @@ bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema) {
   return true;
 }
 
-const dataflow::CanonicalActorSchemaProjection &
-actorProjection(const SimulatorState &state, mlir::Operation *op) {
-  auto found = state.actorProjections.find(op);
-  assert(found != state.actorProjections.end() &&
-         "admitted actor has no cached schema projection");
-  return found->second;
-}
-
 void flushPendingTokens(SimulatorState &state) {
   for (ChannelOrdinal ordinal : state.pendingChannelOrdinals) {
     ChannelSlot &slot = state.channelSlots[ordinal];
     assert(slot.operand && !slot.pending.empty() &&
            "a scheduled pending channel must exist and contain a token");
     TokenQueue &pending = slot.pending;
-    const mlir::OpOperand *operand = slot.operand;
-    mlir::Operation *owner = operand->getOwner();
-    scheduleActor(state, owner);
-    auto memoryOrder = state.plainMemoryOperationOrder.find(owner);
-    if (memoryOrder != state.plainMemoryOperationOrder.end())
-      state.plainMemoryCandidates.try_emplace(memoryOrder->second, owner);
+    scheduleActor(state, slot.ownerActorOrdinal);
     TokenQueue &target = slot.ready;
-    while (!pending.empty()) {
-      target.push_back(std::move(pending.front()));
-      pending.pop_front();
-    }
+    target.appendFrom(pending);
   }
   state.pendingChannelOrdinals.clear();
   for (mlir::Value value : state.pendingObservedValues) {
@@ -293,19 +311,19 @@ void flushPendingTokens(SimulatorState &state) {
 }
 
 std::int64_t integerToken(const Token &token) {
+  if (token.hasExactBitPattern())
+    return token.exactBitPattern().sextOrTrunc(64).getSExtValue();
   if (token.kind == TokenKind::Bool)
-    return token.boolValue ? 1 : 0;
-  if (token.bitPattern)
-    return token.bitPattern->sextOrTrunc(64).getSExtValue();
-  return token.intValue;
+    return token.scalarValue != 0 ? 1 : 0;
+  return static_cast<std::int64_t>(token.scalarValue);
 }
 
 bool boolToken(const Token &token) {
+  if (token.hasExactBitPattern())
+    return !token.exactBitPattern().isZero();
   if (token.kind == TokenKind::Bool)
-    return token.boolValue;
-  if (token.bitPattern)
-    return !token.bitPattern->isZero();
-  return token.intValue != 0;
+    return token.scalarValue != 0;
+  return static_cast<std::int64_t>(token.scalarValue) != 0;
 }
 
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
@@ -358,7 +376,8 @@ llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
     if (!token)
       return token.takeError();
     if (intType.getWidth() >= 2 && intType.getWidth() <= 64)
-      token->intValue = value.bits->getSExtValue();
+      token->scalarValue =
+          static_cast<std::uint64_t>(value.bits->getSExtValue());
     return *token;
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
@@ -417,13 +436,16 @@ enum class FireOutcome {
   Failed,
 };
 
-static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
+static FireOutcome fireOperation(const ActorExecutionPlan &plan,
+                                 SimulatorState &state) {
   const std::uint64_t mutationEpoch = state.actorMutationEpoch;
   const std::size_t diagnosticCount = state.diagnostics.size();
   // One attempt owns one frontier. Clearing it here keeps a NotReady or Failed
   // attempt from lending its consumed order to the next actor.
   state.firingMemoryOrderFrontier.clear();
-  bool fired = fireActorOperation(op, state);
+  state.currentActorPlan = &plan;
+  bool fired = fireActorOperation(plan, state);
+  state.currentActorPlan = nullptr;
   if (fired)
     return FireOutcome::Fired;
   if (state.actorMutationEpoch != mutationEpoch ||
@@ -514,9 +536,11 @@ static void initializeChannelStorage(SimulatorState &state,
     channelCount += op.getNumOperands();
   state.channelOrdinals.reserve(channelCount);
   state.channelSlots.reserve(channelCount);
-  for (mlir::Operation &op : entry.getOperations())
-    for (mlir::OpOperand &operand : op.getOpOperands())
-      (void)channelQueue(state, operand);
+  for (mlir::Operation &op : entry.getOperations()) {
+    for (mlir::OpOperand &operand : op.getOpOperands()) {
+      (void)getOrCreateChannelSlot(state, operand);
+    }
+  }
 }
 
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
@@ -969,31 +993,22 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     return std::move(err);
 
   std::set<std::pair<std::string, std::string>> unsupported;
-  std::uint64_t operationOrdinal = 0;
   for (mlir::Operation &op : entry.getOperations()) {
-    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
-      state.plainMemoryOperationOrder.try_emplace(&op, operationOrdinal);
-      state.plainMemoryCandidates.try_emplace(operationOrdinal, &op);
-    }
     if (isSupportedNonEvent(&op)) {
-      ++operationOrdinal;
       continue;
     }
     if (!dataflow::operationSchemaOf(&op)) {
       unsupported.emplace(unsupportedOperationLabel(&op), "");
-      ++operationOrdinal;
       continue;
     }
     auto projection = dataflow::projectRegisteredActorSchemaProjection(&op);
     if (!projection) {
       unsupported.emplace(unsupportedOperationLabel(&op),
                           llvm::toString(projection.takeError()));
-      ++operationOrdinal;
       continue;
     }
     if (auto diagnostic = unsupportedActorProvider(&op, *projection)) {
       unsupported.emplace(diagnostic->label, diagnostic->reason);
-      ++operationOrdinal;
       continue;
     }
     std::optional<MemoryActorExecutionPlan> memoryActor;
@@ -1013,20 +1028,43 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
       if (!descriptor) {
         unsupported.emplace(unsupportedOperationLabel(&op),
                             llvm::toString(descriptor.takeError()));
-        ++operationOrdinal;
         continue;
       }
       primitive = std::move(*descriptor);
     }
-    state.actorProjections.try_emplace(&op, std::move(*projection));
-    if (primitive)
-      state.primitiveDescriptors.try_emplace(&op, std::move(*primitive));
-    if (memoryActor)
-      state.memoryActorPlans.try_emplace(&op, std::move(*memoryActor));
-    state.actorOrdinals.try_emplace(
-        &op, static_cast<unsigned>(state.actorOperations.size()));
-    state.actorOperations.push_back(&op);
-    ++operationOrdinal;
+    ChannelOrdinal firstInput = 0;
+    if (op.getNumOperands() != 0) {
+      auto channel = state.channelOrdinals.find(&op.getOpOperand(0));
+      assert(channel != state.channelOrdinals.end() &&
+             "admitted actor input channel was not initialized");
+      firstInput = channel->second;
+      for (auto [inputOrdinal, operand] : llvm::enumerate(op.getOpOperands()))
+        assert(state.channelOrdinals.find(&operand)->second ==
+                   firstInput + inputOrdinal &&
+               "actor input channels are not contiguous");
+    }
+    const ActorProvider provider = actorProvider(projection->schema);
+    assert(provider && "admitted actor has no simulator provider");
+    llvm::SmallVector<ActorExecutionPlan::Output, 2> outputs;
+    outputs.reserve(op.getNumResults());
+    for (mlir::Value result : op.getResults()) {
+      ActorExecutionPlan::Output output;
+      output.value = result;
+      output.observed = state.observedValues.contains(result);
+      for (mlir::OpOperand &use : result.getUses()) {
+        auto channel = state.channelOrdinals.find(&use);
+        assert(channel != state.channelOrdinals.end() &&
+               "admitted actor output channel was not initialized");
+        output.channels.push_back(channel->second);
+      }
+      outputs.push_back(std::move(output));
+    }
+    const unsigned actorOrdinal = state.actorPlans.size();
+    state.actorOrdinals.try_emplace(&op, actorOrdinal);
+    state.actorPlans.push_back(ActorExecutionPlan{
+        &op, std::move(*projection), provider, firstInput,
+        static_cast<std::uint32_t>(op.getNumOperands()), std::move(outputs),
+        std::move(primitive), std::move(memoryActor)});
   }
   if (!unsupported.empty()) {
     report.status = "unsupported";
@@ -1038,7 +1076,16 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     }
     return report;
   }
-  state.nextActorCandidates.resize(state.actorOperations.size(), true);
+  state.nextActorCandidates.resize(state.actorPlans.size(), true);
+  state.plainMemoryCandidates.resize(state.actorPlans.size(), false);
+  for (auto [ordinal, plan] : llvm::enumerate(state.actorPlans))
+    if (plan.isPlainMemory())
+      state.plainMemoryCandidates.set(ordinal);
+  for (ChannelSlot &slot : state.channelSlots) {
+    auto owner = state.actorOrdinals.find(slot.operand->getOwner());
+    if (owner != state.actorOrdinals.end())
+      slot.ownerActorOrdinal = owner->second;
+  }
 
   auto outputCount = [&](mlir::Value value) -> size_t {
     auto it = state.observedOutputs.find(value);
@@ -1135,7 +1182,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   };
   observeRetirement();
 
-  llvm::SmallBitVector candidates(state.actorOperations.size(), false);
+  llvm::SmallBitVector candidates(state.actorPlans.size(), false);
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
     if (!admitReadyPlainMemoryActions(state))
@@ -1145,10 +1192,11 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     bool fired = false;
     for (int ordinal = candidates.find_first(); ordinal >= 0;
          ordinal = candidates.find_next(ordinal)) {
-      mlir::Operation *op = state.actorOperations[ordinal];
-      FireOutcome outcome = fireOperation(op, state);
+      const ActorExecutionPlan &plan = state.actorPlans[ordinal];
+      mlir::Operation *op = plan.operation;
+      FireOutcome outcome = fireOperation(plan, state);
       if (outcome == FireOutcome::Fired)
-        scheduleActor(state, op);
+        scheduleActor(state, static_cast<unsigned>(ordinal));
       // The run has already failed at runtime, so it leaves the wave here,
       // before any later actor observes or mutates state and before this wave
       // publishes anything. The retained failure overrides the lifecycle

@@ -64,7 +64,7 @@ llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
     if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
       Token token;
       token.kind = TokenKind::Vector;
-      token.bitPattern = std::move(bits);
+      token.setExactBitPattern(std::move(bits));
       return token;
     }
   }

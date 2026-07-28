@@ -224,22 +224,27 @@ bool admitReadyPlainMemoryActions(SimulatorState &state) {
   state.admittedPlainMemoryActions.clear();
   llvm::SmallVector<mlir::Operation *> readyOperations;
   llvm::SmallVector<ReadyPlainMemoryAction> ready;
-  llvm::SmallVector<std::uint64_t> inactiveCandidates;
+  llvm::SmallVector<unsigned, 8> inactiveCandidates;
   llvm::SmallVector<std::string> projectionDiagnostics;
-  for (const auto &[ordinal, operation] : state.plainMemoryCandidates) {
+  for (int ordinal = state.plainMemoryCandidates.find_first(); ordinal >= 0;
+       ordinal = state.plainMemoryCandidates.find_next(ordinal)) {
+    const ActorExecutionPlan &plan = state.actorPlans[ordinal];
+    mlir::Operation *operation = plan.operation;
+    state.currentActorPlan = &plan;
     PlainMemoryActionProjection projection =
         projectReadyPlainMemoryAction(operation, state);
+    state.currentActorPlan = nullptr;
     for (std::string &diagnostic : projection.diagnostics)
       projectionDiagnostics.push_back(std::move(diagnostic));
     if (!projection.ready) {
-      inactiveCandidates.push_back(ordinal);
+      inactiveCandidates.push_back(static_cast<unsigned>(ordinal));
       continue;
     }
     readyOperations.push_back(operation);
     ready.push_back(std::move(*projection.ready));
   }
-  for (std::uint64_t ordinal : inactiveCandidates)
-    state.plainMemoryCandidates.erase(ordinal);
+  for (unsigned ordinal : inactiveCandidates)
+    state.plainMemoryCandidates.reset(ordinal);
 
   if (readyPlainMemoryActionsConflict(ready))
     return rejectPlainMemoryConflict(state);

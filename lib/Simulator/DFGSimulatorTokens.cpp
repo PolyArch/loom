@@ -7,6 +7,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -23,21 +24,21 @@ Token noneToken() { return Token{}; }
 Token integerValueToken(std::int64_t value) {
   Token token;
   token.kind = TokenKind::Integer;
-  token.intValue = value;
+  token.scalarValue = static_cast<std::uint64_t>(value);
   return token;
 }
 
 Token floatValueToken(double value) {
   Token token;
   token.kind = TokenKind::Float;
-  token.floatValue = value;
+  token.scalarValue = llvm::bit_cast<std::uint64_t>(value);
   return token;
 }
 
 Token boolValueToken(bool value) {
   Token token;
   token.kind = TokenKind::Bool;
-  token.boolValue = value;
+  token.scalarValue = value ? 1 : 0;
   return token;
 }
 
@@ -113,7 +114,7 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
   if (token.kind == TokenKind::None)
     return "none";
   if (token.kind == TokenKind::Bool)
-    return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
+    return typePrefix(type) + ":" + (boolToken(token) ? "true" : "false");
   if (token.kind == TokenKind::Integer) {
     if (mlir::isa<mlir::IndexType>(type)) {
       auto width = loom::getIndexBitWidth(scope);
@@ -128,7 +129,8 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
     }
     auto integer = mlir::cast<mlir::IntegerType>(type);
     if (integer.getWidth() <= 64)
-      return typePrefix(type) + ":" + std::to_string(token.intValue);
+      return typePrefix(type) + ":" +
+             std::to_string(static_cast<std::int64_t>(token.scalarValue));
     auto bits = tokenBitPattern(token, integer);
     if (!bits)
       return bits.takeError();
@@ -157,16 +159,26 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
   }
   if (token.kind == TokenKind::Pointer)
     return typePrefix(type) + ":ptr+" +
-           std::to_string(token.pointer.byteOffset);
+           std::to_string(token.memoryView()->byteOffset);
+  double floatValue = llvm::bit_cast<double>(token.scalarValue);
+  if (token.hasExactBitPattern()) {
+    auto bits = tokenBitPattern(token, type);
+    if (!bits)
+      return bits.takeError();
+    floatValue =
+        llvm::APFloat(mlir::cast<mlir::FloatType>(type).getFloatSemantics(),
+                      *bits)
+            .convertToDouble();
+  }
   std::string storage;
   llvm::raw_string_ostream os(storage);
   os << typePrefix(type) << ':';
-  if (token.floatValue == 0.0 && std::signbit(token.floatValue))
+  if (floatValue == 0.0 && std::signbit(floatValue))
     os << "-0";
-  else if (std::floor(token.floatValue) == token.floatValue)
-    os << static_cast<std::int64_t>(token.floatValue);
+  else if (std::floor(floatValue) == floatValue)
+    os << static_cast<std::int64_t>(floatValue);
   else
-    os << llvm::formatv("{0:f6}", token.floatValue);
+    os << llvm::formatv("{0:f6}", floatValue);
   return os.str();
 }
 
@@ -211,26 +223,26 @@ llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
   auto width = tokenTypeBitWidth(type);
   if (!width)
     return width.takeError();
-  if (token.bitPattern) {
-    if (token.bitPattern->getBitWidth() != *width)
+  if (token.hasExactBitPattern()) {
+    if (token.exactBitWidth() != *width)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "token bit pattern width does not match its MLIR type");
-    return *token.bitPattern;
+    return token.exactBitPattern();
   }
 
   if (mlir::isa<mlir::IntegerType>(type)) {
     if (token.kind == TokenKind::Bool)
-      return llvm::APInt(*width, token.boolValue ? 1 : 0);
+      return llvm::APInt(*width, token.scalarValue != 0 ? 1 : 0);
     if (token.kind == TokenKind::Integer)
-      return llvm::APInt(*width, static_cast<uint64_t>(token.intValue),
+      return llvm::APInt(*width, token.scalarValue,
                          /*isSigned=*/false, /*implicitTrunc=*/true);
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
     if (token.kind != TokenKind::Float)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "floating-point token kind mismatch");
-    llvm::APFloat value(token.floatValue);
+    llvm::APFloat value(llvm::bit_cast<double>(token.scalarValue));
     bool losesInfo = false;
     (void)value.convert(floating.getFloatSemantics(),
                         llvm::APFloat::rmNearestTiesToEven, &losesInfo);
@@ -251,26 +263,22 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
         "bit pattern width does not match destination MLIR type");
 
   Token token;
-  token.bitPattern = bits;
+  token.setExactBitPattern(bits);
   if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
     if (integer.getWidth() == 1) {
       token.kind = TokenKind::Bool;
-      token.boolValue = bits.isOne();
       return token;
     }
     token.kind = TokenKind::Integer;
     if (integer.getWidth() < 64)
-      token.intValue = static_cast<std::int64_t>(bits.getZExtValue());
+      token.scalarValue = bits.getZExtValue();
     else if (integer.getWidth() == 64)
-      token.intValue = bits.getSExtValue();
+      token.scalarValue = static_cast<std::uint64_t>(bits.getSExtValue());
     return token;
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
     token.kind = TokenKind::Float;
-    if (usesDoubleFloatText(floating)) {
-      token.floatValue =
-          llvm::APFloat(floating.getFloatSemantics(), bits).convertToDouble();
-    }
+    (void)floating;
     return token;
   }
   if (mlir::isa<mlir::VectorType>(type)) {
@@ -290,7 +298,8 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
       if (!token)
         return token.takeError();
       if (intType.getWidth() <= 64)
-        token->intValue = intAttr.getValue().getSExtValue();
+        token->scalarValue =
+            static_cast<std::uint64_t>(intAttr.getValue().getSExtValue());
       return *token;
     }
     return integerValueToken(intAttr.getValue().getSExtValue());
@@ -423,7 +432,7 @@ static llvm::Expected<Token> parseNonIndexRuntimeToken(llvm::StringRef raw,
     if (!token)
       return token.takeError();
     if (intType.getWidth() <= 64 && raw.starts_with("-"))
-      token->intValue = bits->getSExtValue();
+      token->scalarValue = static_cast<std::uint64_t>(bits->getSExtValue());
     return *token;
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
@@ -485,11 +494,11 @@ llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
   auto width = indexVectorTokenBitWidth(type, scope);
   if (!width)
     return width.takeError();
-  if (!token.bitPattern || token.bitPattern->getBitWidth() != *width)
+  if (!token.hasExactBitPattern() || token.exactBitWidth() != *width)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "vector index token bit pattern width does not match its MLIR type");
-  return *token.bitPattern;
+  return token.exactBitPattern();
 }
 
 llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
@@ -498,13 +507,13 @@ llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
     return llvm::createStringError(
         std::errc::invalid_argument,
         "exceptional index token has no defined bit pattern");
-  if (token.bitPattern) {
-    if (token.bitPattern->getBitWidth() != width)
+  if (token.hasExactBitPattern()) {
+    if (token.exactBitWidth() != width)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "index token bit pattern width does not match the resolved index "
           "width");
-    return *token.bitPattern;
+    return token.exactBitPattern();
   }
   if (token.kind != TokenKind::Integer)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -512,7 +521,7 @@ llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
   // A token that carries only a host integer holds the complete semantic
   // value, so widening it is exact and narrowing it wraps like the declared
   // index type does.
-  return llvm::APInt(64, static_cast<std::uint64_t>(token.intValue),
+  return llvm::APInt(64, token.scalarValue,
                      /*isSigned=*/true)
       .sextOrTrunc(width);
 }
@@ -520,9 +529,9 @@ llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
 Token indexToken(const llvm::APInt &value) {
   Token token;
   token.kind = TokenKind::Integer;
-  token.bitPattern = value;
+  token.setExactBitPattern(value);
   if (value.getBitWidth() <= 64)
-    token.intValue = value.getSExtValue();
+    token.scalarValue = static_cast<std::uint64_t>(value.getSExtValue());
   return token;
 }
 
@@ -566,7 +575,7 @@ llvm::Expected<Token> tokenFromResolvedBitPattern(const llvm::APInt &bits,
             "width");
       Token token;
       token.kind = TokenKind::Vector;
-      token.bitPattern = bits;
+      token.setExactBitPattern(bits);
       return token;
     }
   }
@@ -602,7 +611,7 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
     return bits.takeError();
   Token token;
   token.kind = TokenKind::Vector;
-  token.bitPattern = *bits;
+  token.setExactBitPattern(*bits);
   return token;
 }
 

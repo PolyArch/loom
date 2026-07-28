@@ -306,22 +306,85 @@ template <typename T> T takeExpected(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+ActorExecutionPlan &installActorPlan(SimulatorState &state,
+                                     mlir::Operation *operation) {
+  for (ActorExecutionPlan &plan : state.actorPlans)
+    if (plan.operation == operation)
+      return plan;
+
+  auto projection = dataflow::projectRegisteredActorSchemaProjection(operation);
+  if (!projection)
+    fail("actor admission failed: " + llvm::toString(projection.takeError()));
+  if (auto unsupported = unsupportedActorProvider(operation, *projection))
+    fail("actor provider admission failed: " + unsupported->label +
+         (unsupported->reason.empty() ? "" : ": " + unsupported->reason));
+
+  ChannelOrdinal firstInput = 0;
+  if (operation->getNumOperands() != 0) {
+    firstInput = state.channelSlots.size();
+    for (mlir::OpOperand &operand : operation->getOpOperands()) {
+      TokenQueue ready;
+      TokenQueue pending;
+      auto prior = state.channelOrdinals.find(&operand);
+      if (prior != state.channelOrdinals.end()) {
+        const ChannelOrdinal oldOrdinal = prior->second;
+        ready = std::move(state.channelSlots[oldOrdinal].ready);
+        pending = std::move(state.channelSlots[oldOrdinal].pending);
+        for (ActorExecutionPlan &plan : state.actorPlans)
+          for (ActorExecutionPlan::Output &output : plan.outputs)
+            for (ChannelOrdinal &channel : output.channels)
+              if (channel == oldOrdinal)
+                channel = state.channelSlots.size();
+        for (ChannelOrdinal &channel : state.pendingChannelOrdinals)
+          if (channel == oldOrdinal)
+            channel = state.channelSlots.size();
+      }
+      const ChannelOrdinal ordinal = state.channelSlots.size();
+      state.channelOrdinals[&operand] = ordinal;
+      state.channelSlots.push_back(ChannelSlot{
+          &operand, InvalidActorOrdinal, std::move(ready), std::move(pending)});
+    }
+  }
+
+  llvm::SmallVector<ActorExecutionPlan::Output, 2> outputs;
+  for (mlir::Value result : operation->getResults()) {
+    ActorExecutionPlan::Output output;
+    output.value = result;
+    output.observed = true;
+    for (mlir::OpOperand &use : result.getUses()) {
+      (void)channelQueue(state, use);
+      output.channels.push_back(state.channelOrdinals.find(&use)->second);
+    }
+    outputs.push_back(std::move(output));
+  }
+
+  std::optional<loom::sim::PrimitiveOperationDescriptor> primitive;
+  if (loom::sim::isSupportedPrimitiveOperation(projection->schema))
+    primitive =
+        takeExpected(primitiveDescriptorForActor(*projection, operation));
+  std::optional<MemoryActorExecutionPlan> memory;
+  if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(operation))
+    memory =
+        takeExpected(memoryActorExecutionPlan(operation, state.graphScope));
+  ActorProvider provider = actorProvider(projection->schema);
+  state.actorPlans.push_back(ActorExecutionPlan{
+      operation, std::move(*projection), provider, firstInput,
+      static_cast<std::uint32_t>(operation->getNumOperands()),
+      std::move(outputs), std::move(primitive), std::move(memory)});
+  return state.actorPlans.back();
+}
+
 template <typename Op>
 bool fireAdmittedActorOperation(Op op, SimulatorState &state) {
   mlir::Operation *operation = op.getOperation();
   for (mlir::Value result : operation->getResults())
     state.observedValues.insert(result);
-  if (!state.actorProjections.contains(operation)) {
-    auto projection =
-        dataflow::projectRegisteredActorSchemaProjection(operation);
-    if (!projection)
-      fail("actor admission failed: " + llvm::toString(projection.takeError()));
-    if (auto unsupported = unsupportedActorProvider(operation, *projection))
-      fail("actor provider admission failed: " + unsupported->label +
-           (unsupported->reason.empty() ? "" : ": " + unsupported->reason));
-    state.actorProjections.try_emplace(operation, std::move(*projection));
-  }
-  return loom::sim::detail::fireActorOperation(operation, state);
+  ActorExecutionPlan &plan = installActorPlan(state, operation);
+  const ActorExecutionPlan *prior = state.currentActorPlan;
+  state.currentActorPlan = &plan;
+  bool fired = loom::sim::detail::fireActorOperation(plan, state);
+  state.currentActorPlan = prior;
+  return fired;
 }
 
 Token tokenWithBits(mlir::Type type, uint64_t value) {
@@ -332,7 +395,7 @@ Token tokenWithBits(mlir::Type type, uint64_t value) {
 Token malformedToken(TokenKind kind, unsigned width) {
   Token token;
   token.kind = kind;
-  token.bitPattern = llvm::APInt(width, 0);
+  token.setExactBitPattern(llvm::APInt(width, 0));
   return token;
 }
 
@@ -493,7 +556,7 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
     const ParallelizeState &preserved =
         state.parallelizeStates.find(op.getOperation())->second;
     require(preserved.semanticState.pendingItems == 1 && preserved.slots[0] &&
-                preserved.slots[0]->bitPattern->getBitWidth() == 16,
+                preserved.slots[0]->exactBitWidth() == 16,
             "parallelize changed pending state on group construction failure");
     require(channelQueue(state, op.getScalarPhaseMutable()).size() == 1,
             "parallelize consumed phase on group construction failure");
@@ -630,8 +693,7 @@ unsigned resolvedIndexBits(mlir::Operation *scope) {
 
 void installMemoryActorPlan(SimulatorState &state, mlir::Operation *op) {
   state.graphScope = op;
-  state.memoryActorPlans.try_emplace(
-      op, takeExpected(memoryActorExecutionPlan(op, state.graphScope)));
+  state.currentActorPlan = &installActorPlan(state, op);
 }
 
 Token indexVectorToken(unsigned indexBits,
@@ -642,7 +704,7 @@ Token indexVectorToken(unsigned indexBits,
     bits.insertBits(llvm::APInt(indexBits, value), indexBits * lane++);
   Token token;
   token.kind = TokenKind::Vector;
-  token.bitPattern = bits;
+  token.setExactBitPattern(bits);
   return token;
 }
 

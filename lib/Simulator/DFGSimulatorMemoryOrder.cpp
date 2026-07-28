@@ -71,10 +71,14 @@ MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
 
 MemoryOrderFrontierId publishFiredMemoryOrder(SimulatorState &state,
                                               MemoryOrderFrontierId carried) {
+  if (state.firingMemoryOrderFrontier.empty())
+    return carried;
   // Every result of one firing observes the firing's order, so the firing
   // reduces and interns once and each further result copies only the handle.
   const MemoryOrderFrontierId fired =
       publishMemoryOrder(state, state.firingMemoryOrderFrontier);
+  if (carried.empty())
+    return fired;
   // A token the firing consumed already contributed its order through
   // popToken, so the firing frontier covers it. Order the firing never
   // consumed does not: a value read out of memory carries a witness of its

@@ -21,16 +21,16 @@ static unsigned streamIntegerBitWidth(mlir::Type type) {
 }
 
 static std::optional<bool> peekBoolToken(const SimulatorState &state,
-                                         mlir::OpOperand &operand) {
-  if (!hasToken(state, operand))
+                                         unsigned operandOrdinal) {
+  if (!hasInputToken(state, operandOrdinal))
     return std::nullopt;
-  return boolToken(peekToken(state, operand));
+  return boolToken(peekInputToken(state, operandOrdinal));
 }
 
 static std::optional<llvm::APInt> streamOperandBits(SimulatorState &state,
-                                                    mlir::OpOperand &operand) {
-  auto bits =
-      tokenBitPattern(peekToken(state, operand), operand.get().getType());
+                                                    unsigned operandOrdinal,
+                                                    mlir::Type type) {
+  auto bits = tokenBitPattern(peekInputToken(state, operandOrdinal), type);
   if (!bits) {
     state.diagnostics.push_back(llvm::toString(bits.takeError()));
     return std::nullopt;
@@ -48,7 +48,7 @@ static llvm::Expected<Token> streamIvToken(const llvm::APInt &bits,
   // from the exact bit pattern.
   auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
   if (integer && integer.getWidth() >= 2 && integer.getWidth() <= 64)
-    token->intValue = bits.getSExtValue();
+    token->scalarValue = static_cast<std::uint64_t>(bits.getSExtValue());
   return token;
 }
 
@@ -64,12 +64,11 @@ fireStream(dataflow::StreamOp op,
 
   StreamSemanticState &stream = state.streamStates[op.getOperation()];
   std::optional<StreamActivation> activation;
-  if (stream.mode == StreamMode::Idle && hasToken(state, op->getOpOperand(0)) &&
-      hasToken(state, op->getOpOperand(1)) &&
-      hasToken(state, op->getOpOperand(2))) {
-    auto init = streamOperandBits(state, op->getOpOperand(0));
-    auto limit = streamOperandBits(state, op->getOpOperand(1));
-    auto step = streamOperandBits(state, op->getOpOperand(2));
+  if (stream.mode == StreamMode::Idle && hasInputToken(state, 0) &&
+      hasInputToken(state, 1) && hasInputToken(state, 2)) {
+    auto init = streamOperandBits(state, 0, op.getInit().getType());
+    auto limit = streamOperandBits(state, 1, op.getLimit().getType());
+    auto step = streamOperandBits(state, 2, op.getStep().getType());
     if (!init || !limit || !step) {
       state.failedStreamOps.insert(op.getOperation());
       return false;
@@ -104,21 +103,21 @@ fireStream(dataflow::StreamOp op,
 
   if (selectsSemanticInput(transition->firing.consumedInputs,
                            StreamInput::Init))
-    (void)popToken(state, op->getOpOperand(0));
+    (void)popInputToken(state, 0);
   if (selectsSemanticInput(transition->firing.consumedInputs,
                            StreamInput::Limit))
-    (void)popToken(state, op->getOpOperand(1));
+    (void)popInputToken(state, 1);
   if (selectsSemanticInput(transition->firing.consumedInputs,
                            StreamInput::Step))
-    (void)popToken(state, op->getOpOperand(2));
+    (void)popInputToken(state, 2);
 
   retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (iv) {
-    emitToken(state, op.getIv(), std::move(*iv));
+    emitResultToken(state, 0, std::move(*iv));
     ++state.streamTrueEmissionCounts[op.getOperation()];
   }
   if (transition->emitPhase)
-    emitToken(state, op.getPhase(), boolValueToken(transition->phase));
+    emitResultToken(state, 1, boolValueToken(transition->phase));
   stream = transition->nextState;
   releaseActivationMemoryOrder(state, op.getOperation(),
                                stream.mode == StreamMode::Idle);
@@ -129,7 +128,7 @@ static bool
 fireConstant(dataflow::ConstantOp op,
              const dataflow::CanonicalActorSchemaProjection &projection,
              SimulatorState &state) {
-  if (!hasToken(state, op->getOpOperand(0)))
+  if (!hasInputToken(state, 0))
     return false;
   const auto *payload =
       std::get_if<dataflow::ConstantValuePayload>(&projection.payload);
@@ -139,38 +138,37 @@ fireConstant(dataflow::ConstantOp op,
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
   }
-  popToken(state, op->getOpOperand(0));
-  emitToken(state, op.getValue(), *tokenOrErr);
+  popInputToken(state, 0);
+  emitResultToken(state, 0, *tokenOrErr);
   return true;
 }
 
 static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   LoopState &carry = state.carryStates[op.getOperation()];
-  auto transition = evaluateCarryTransition(
-      carry.semanticState, peekBoolToken(state, op->getOpOperand(0)),
-      hasToken(state, op->getOpOperand(1)),
-      hasToken(state, op->getOpOperand(2)));
+  auto transition =
+      evaluateCarryTransition(carry.semanticState, peekBoolToken(state, 0),
+                              hasInputToken(state, 1), hasInputToken(state, 2));
   if (!transition.firing.ready)
     return false;
 
   std::optional<Token> forwarded;
   if (selectsSemanticInput(transition.firing.consumedInputs, CarryInput::Phase))
-    (void)popToken(state, op->getOpOperand(0));
+    (void)popInputToken(state, 0);
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            CarryInput::Init)) {
-    Token value = popToken(state, op->getOpOperand(1));
+    Token value = popInputToken(state, 1);
     if (transition.forwardedInput == CarryInput::Init)
       forwarded = value;
   }
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            CarryInput::Next)) {
-    Token value = popToken(state, op->getOpOperand(2));
+    Token value = popInputToken(state, 2);
     if (transition.forwardedInput == CarryInput::Next)
       forwarded = value;
   }
   retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (forwarded)
-    emitToken(state, op.getOutput(), *forwarded);
+    emitResultToken(state, 0, *forwarded);
   carry.semanticState = transition.nextState;
   releaseActivationMemoryOrder(state, op.getOperation(),
                                carry.semanticState ==
@@ -180,27 +178,27 @@ static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
 
 static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   LoopState &invariant = state.invariantStates[op.getOperation()];
-  auto transition = evaluateInvariantTransition(
-      invariant.semanticState, peekBoolToken(state, op->getOpOperand(0)),
-      hasToken(state, op->getOpOperand(1)));
+  auto transition = evaluateInvariantTransition(invariant.semanticState,
+                                                peekBoolToken(state, 0),
+                                                hasInputToken(state, 1));
   if (!transition.firing.ready)
     return false;
 
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            InvariantInput::Phase))
-    (void)popToken(state, op->getOpOperand(0));
+    (void)popInputToken(state, 0);
   std::optional<Token> init;
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            InvariantInput::Init))
-    init = popToken(state, op->getOpOperand(1));
+    init = popInputToken(state, 1);
   if (transition.latchInput == InvariantInput::Init)
     invariant.latched = *init;
 
   retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (transition.output == InvariantOutputSource::InitInput)
-    emitToken(state, op.getOutput(), *init);
+    emitResultToken(state, 0, *init);
   else if (transition.output == InvariantOutputSource::Latched)
-    emitToken(state, op.getOutput(), *invariant.latched);
+    emitResultToken(state, 0, *invariant.latched);
   if (transition.clearLatch)
     invariant.latched.reset();
   invariant.semanticState = transition.nextState;
@@ -215,22 +213,21 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
       state.gateContinueStates.contains(op.getOperation())
           ? GateSemanticState::Open
           : GateSemanticState::Closed;
-  auto transition = evaluateGateTransition(
-      gate, peekBoolToken(state, op.getBeforeCondMutable()),
-      hasToken(state, op.getBeforeValueMutable()));
+  auto transition = evaluateGateTransition(gate, peekBoolToken(state, 0),
+                                           hasInputToken(state, 1));
   if (!transition.firing.ready)
     return false;
 
   if (selectsSemanticInput(transition.firing.consumedInputs, GateInput::Phase))
-    (void)popToken(state, op.getBeforeCondMutable());
+    (void)popInputToken(state, 0);
   std::optional<Token> value;
   if (selectsSemanticInput(transition.firing.consumedInputs, GateInput::Value))
-    value = popToken(state, op.getBeforeValueMutable());
+    value = popInputToken(state, 1);
   retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (transition.emitPhase)
-    emitToken(state, op.getAfterCond(), boolValueToken(transition.phase));
+    emitResultToken(state, 0, boolValueToken(transition.phase));
   if (transition.forwardedInput == GateInput::Value)
-    emitToken(state, op.getAfterValue(), *value);
+    emitResultToken(state, 1, *value);
   if (transition.nextState == GateSemanticState::Open)
     state.gateContinueStates.insert(op.getOperation());
   else
@@ -242,67 +239,63 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
 }
 
 static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
-  for (mlir::OpOperand &operand : op->getOpOperands()) {
-    if (!hasToken(state, operand))
+  for (unsigned operand = 0; operand < op->getNumOperands(); ++operand) {
+    if (!hasInputToken(state, operand))
       return false;
   }
 
-  llvm::SmallVector<Token> consumed;
+  llvm::SmallVector<Token, 4> consumed;
   consumed.reserve(op->getNumOperands());
-  for (mlir::OpOperand &operand : op->getOpOperands())
-    consumed.push_back(popToken(state, operand));
+  for (unsigned operand = 0; operand < op->getNumOperands(); ++operand)
+    consumed.push_back(popInputToken(state, operand));
 
-  for (auto [result, token] : llvm::zip_equal(op->getResults(), consumed))
-    emitToken(state, result, token);
+  for (auto [resultOrdinal, token] : llvm::enumerate(consumed))
+    emitResultToken(state, resultOrdinal, token);
   return true;
 }
 
 static bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
-  mlir::OpOperand &selOperand = op->getOpOperand(0);
-  if (!hasToken(state, selOperand))
+  if (!hasInputToken(state, 0))
     return false;
 
-  const Token &sel = peekToken(state, selOperand);
+  const Token &sel = peekInputToken(state, 0);
   const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
                                 ? boolToken(sel)
                                 : integerToken(sel);
   if (lane < 0 || static_cast<std::size_t>(lane) >= op.getInputs().size()) {
-    (void)popToken(state, selOperand);
+    (void)popInputToken(state, 0);
     state.diagnostics.push_back("dataflow.mux selector is out of range");
     return false;
   }
 
-  mlir::OpOperand &selectedOperand =
-      op->getOpOperand(static_cast<unsigned>(lane) + 1);
-  if (!hasToken(state, selectedOperand))
+  const unsigned selectedOperand = static_cast<unsigned>(lane) + 1;
+  if (!hasInputToken(state, selectedOperand))
     return false;
 
-  (void)popToken(state, selOperand);
-  Token value = popToken(state, selectedOperand);
-  emitToken(state, op.getOutput(), value);
+  (void)popInputToken(state, 0);
+  Token value = popInputToken(state, selectedOperand);
+  emitResultToken(state, 0, value);
   return true;
 }
 
 static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
-  mlir::OpOperand &selOperand = op->getOpOperand(0);
-  mlir::OpOperand &inputOperand = op->getOpOperand(1);
-  if (!hasToken(state, selOperand) || !hasToken(state, inputOperand))
+  if (!hasInputToken(state, 0) || !hasInputToken(state, 1))
     return false;
 
-  const Token &sel = peekToken(state, selOperand);
+  const Token &sel = peekInputToken(state, 0);
   const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
                                 ? boolToken(sel)
                                 : integerToken(sel);
   if (lane < 0 || static_cast<std::size_t>(lane) >= op.getOutputs().size()) {
-    (void)popToken(state, selOperand);
-    (void)popToken(state, inputOperand);
+    (void)popInputToken(state, 0);
+    (void)popInputToken(state, 1);
     state.diagnostics.push_back("dataflow.demux selector is out of range");
     return false;
   }
 
-  (void)popToken(state, selOperand);
-  Token value = popToken(state, inputOperand);
-  emitToken(state, op.getOutputs()[static_cast<unsigned>(lane)], value);
+  (void)popInputToken(state, 0);
+  Token value = popInputToken(state, 1);
+  emitResultToken(state, static_cast<unsigned>(lane), value);
   return true;
 }
 
@@ -378,9 +371,8 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   }
 
   auto transition = evaluateParallelizeTransition(
-      next.semanticState, vectorLength,
-      peekBoolToken(state, op.getScalarPhaseMutable()),
-      hasToken(state, op.getDataMutable()));
+      next.semanticState, vectorLength, peekBoolToken(state, 1),
+      hasInputToken(state, 0));
   if (!transition.firing.ready)
     return false;
 
@@ -389,12 +381,12 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
     next.phaseFrontier.append(state.memoryOrderFrontiers.elements(
-        peekToken(state, op.getScalarPhaseMutable()).memoryOrder));
+        peekInputToken(state, 1).memoryOrder));
 
   std::optional<ParallelizeGroup> group;
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Data)) {
-    const Token data = peekToken(state, op.getDataMutable());
+    const Token data = peekInputToken(state, 0);
     auto laneBits = tokenBitPattern(data, vectorType.getElementType());
     if (!laneBits) {
       state.diagnostics.push_back(llvm::toString(laneBits.takeError()));
@@ -427,27 +419,27 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
 
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
-    (void)popToken(state, op.getScalarPhaseMutable());
+    (void)popInputToken(state, 1);
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Data))
-    (void)popToken(state, op.getDataMutable());
+    (void)popInputToken(state, 0);
   state.parallelizeStates[op.getOperation()] = std::move(next);
   if (group) {
     state.firingMemoryOrderFrontier.append(group->frontier);
-    emitToken(state, op.getVector(), group->vector);
-    emitToken(state, op.getMask(), group->mask);
+    emitResultToken(state, 0, group->vector);
+    emitResultToken(state, 1, group->mask);
   }
   if (transition.emitTruePhase)
-    emitToken(state, op.getGroupPhase(), boolValueToken(true));
+    emitResultToken(state, 2, boolValueToken(true));
   if (transition.emitFalsePhase)
-    emitToken(state, op.getGroupPhase(), boolValueToken(false));
+    emitResultToken(state, 2, boolValueToken(false));
   return true;
 }
 
 static bool firePack(dataflow::PackOp op, SimulatorState &state) {
-  if (!hasToken(state, op.getVectorMutable()))
+  if (!hasInputToken(state, 0))
     return false;
-  Token vector = peekToken(state, op.getVectorMutable());
+  Token vector = peekInputToken(state, 0);
   auto bits = tokenBitPattern(vector, op.getVector().getType());
   if (!bits) {
     state.diagnostics.push_back(llvm::toString(bits.takeError()));
@@ -458,15 +450,15 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
     state.diagnostics.push_back(llvm::toString(packed.takeError()));
     return false;
   }
-  (void)popToken(state, op.getVectorMutable());
-  emitToken(state, op.getPacked(), *packed);
+  (void)popInputToken(state, 0);
+  emitResultToken(state, 0, *packed);
   return true;
 }
 
 static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
-  if (!hasToken(state, op.getPackedMutable()))
+  if (!hasInputToken(state, 0))
     return false;
-  Token packedToken = peekToken(state, op.getPackedMutable());
+  Token packedToken = peekInputToken(state, 0);
   auto bits = tokenBitPattern(packedToken, op.getPacked().getType());
   if (!bits) {
     state.diagnostics.push_back(llvm::toString(bits.takeError()));
@@ -477,23 +469,22 @@ static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
     state.diagnostics.push_back(llvm::toString(vector.takeError()));
     return false;
   }
-  (void)popToken(state, op.getPackedMutable());
-  emitToken(state, op.getVector(), *vector);
+  (void)popInputToken(state, 0);
+  emitResultToken(state, 0, *vector);
   return true;
 }
 
 static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
-  auto transition = evaluateSerializeTransition(
-      peekBoolToken(state, op.getGroupPhaseMutable()),
-      hasToken(state, op.getVectorMutable()),
-      hasToken(state, op.getMaskMutable()));
+  auto transition = evaluateSerializeTransition(peekBoolToken(state, 2),
+                                                hasInputToken(state, 0),
+                                                hasInputToken(state, 1));
   if (!transition.firing.ready)
     return false;
 
-  llvm::SmallVector<Token> activeLanes;
+  llvm::SmallVector<Token, 8> activeLanes;
   if (transition.emitActiveItems) {
-    Token vectorToken = peekToken(state, op.getVectorMutable());
-    Token maskToken = peekToken(state, op.getMaskMutable());
+    Token vectorToken = peekInputToken(state, 0);
+    Token maskToken = peekInputToken(state, 1);
     mlir::VectorType vectorType = op.getVector().getType();
     auto vectorBits = tokenBitPattern(vectorToken, vectorType);
     auto maskBits = tokenBitPattern(maskToken, op.getMask().getType());
@@ -527,19 +518,19 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
 
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            SerializeInput::Phase))
-    (void)popToken(state, op.getGroupPhaseMutable());
+    (void)popInputToken(state, 2);
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            SerializeInput::Vector))
-    (void)popToken(state, op.getVectorMutable());
+    (void)popInputToken(state, 0);
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            SerializeInput::Mask))
-    (void)popToken(state, op.getMaskMutable());
+    (void)popInputToken(state, 1);
   for (const Token &lane : activeLanes) {
-    emitToken(state, op.getData(), lane);
-    emitToken(state, op.getScalarPhase(), boolValueToken(true));
+    emitResultToken(state, 0, lane);
+    emitResultToken(state, 1, boolValueToken(true));
   }
   if (transition.emitFalsePhase)
-    emitToken(state, op.getScalarPhase(), boolValueToken(false));
+    emitResultToken(state, 1, boolValueToken(false));
   return true;
 }
 
@@ -645,8 +636,8 @@ static llvm::Expected<Token> evaluateElementwiseVectorPrimitive(
     mlir::Value result, llvm::ArrayRef<Token> inputTokens) {
   mlir::VectorType resultType = mlir::cast<mlir::VectorType>(result.getType());
 
-  llvm::SmallVector<llvm::APInt> operandBits;
-  llvm::SmallVector<unsigned> operandWidths;
+  llvm::SmallVector<llvm::APInt, 4> operandBits;
+  llvm::SmallVector<unsigned, 4> operandWidths;
   operandBits.reserve(inputTokens.size());
   operandWidths.reserve(inputTokens.size());
   for (auto [operand, token] :
@@ -673,7 +664,7 @@ static llvm::Expected<Token> evaluateElementwiseVectorPrimitive(
   // the same logical element in each of them. The canonical row-major order
   // comes from that shared bit layout rather than from per-axis strides.
   for (unsigned lane = 0; lane < resultType.getNumElements(); ++lane) {
-    llvm::SmallVector<PrimitiveValue> laneOperands;
+    llvm::SmallVector<PrimitiveValue, 4> laneOperands;
     laneOperands.reserve(inputTokens.size());
     for (auto [operand, bits, width] :
          llvm::zip_equal(op->getOpOperands(), operandBits, operandWidths)) {
@@ -723,7 +714,7 @@ evaluatePrimitiveToken(mlir::Operation *op,
   if (hasVectorPrimitiveType(op))
     return evaluateElementwiseVectorPrimitive(op, descriptor, result,
                                               inputTokens);
-  llvm::SmallVector<PrimitiveValue> operands;
+  llvm::SmallVector<PrimitiveValue, 4> operands;
   operands.reserve(inputTokens.size());
   for (auto [operand, token] :
        llvm::zip_equal(op->getOpOperands(), inputTokens)) {
@@ -745,28 +736,28 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     return false;
   if (op->getNumOperands() == 0 && state.oneShotOps.contains(op))
     return false;
-  for (mlir::OpOperand &operand : op->getOpOperands()) {
-    if (!hasToken(state, operand))
+  for (unsigned operand = 0; operand < op->getNumOperands(); ++operand) {
+    if (!hasInputToken(state, operand))
       return false;
   }
 
-  llvm::SmallVector<Token> operands;
+  llvm::SmallVector<Token, 4> operands;
   operands.reserve(op->getNumOperands());
-  for (mlir::OpOperand &operand : op->getOpOperands())
-    operands.push_back(peekToken(state, operand));
-  auto descriptor = state.primitiveDescriptors.find(op);
-  assert(descriptor != state.primitiveDescriptors.end() &&
+  for (unsigned operand = 0; operand < op->getNumOperands(); ++operand)
+    operands.push_back(peekInputToken(state, operand));
+  assert(state.currentActorPlan && state.currentActorPlan->operation == op &&
+         state.currentActorPlan->primitive &&
          "admitted primitive actor has no execution descriptor");
-  auto resultToken =
-      evaluatePrimitiveToken(op, descriptor->second, result, operands);
+  auto resultToken = evaluatePrimitiveToken(
+      op, *state.currentActorPlan->primitive, result, operands);
   if (!resultToken) {
     state.diagnostics.push_back(llvm::toString(resultToken.takeError()));
     state.terminalPrimitiveOps.insert(op);
     return false;
   }
-  for (mlir::OpOperand &operand : op->getOpOperands())
-    (void)popToken(state, operand);
-  emitToken(state, result, *resultToken);
+  for (unsigned operand = 0; operand < op->getNumOperands(); ++operand)
+    (void)popInputToken(state, operand);
+  emitResultToken(state, 0, *resultToken);
   if (op->getNumOperands() == 0)
     state.oneShotOps.insert(op);
   return true;
@@ -786,14 +777,10 @@ fireArithConstant(mlir::arith::ConstantOp op,
     state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
   }
-  emitToken(state, op.getResult(), *tokenOrErr);
+  emitResultToken(state, 0, *tokenOrErr);
   state.oneShotOps.insert(op.getOperation());
   return true;
 }
-
-using ActorProvider = bool (*)(mlir::Operation *,
-                               const dataflow::CanonicalActorSchemaProjection &,
-                               SimulatorState &);
 
 template <typename OpT, bool (*Fire)(OpT, SimulatorState &)>
 static bool
@@ -834,7 +821,7 @@ firePrimitiveActor(mlir::Operation *op,
   return firePrimitiveOperation(op, op->getResult(0), state);
 }
 
-static ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
+ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
   if (isSupportedPrimitiveOperation(schema))
     return firePrimitiveActor;
 
@@ -885,13 +872,11 @@ static bool hasUnsupportedMemoryContract(
   return !plain || plain->isVolatile;
 }
 
-bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
-  const auto &projection = actorProjection(state, op);
-  ActorProvider provider = actorProvider(projection.schema);
-  assert(provider && "admitted actor has no simulator provider");
-  if (!provider(op, projection, state))
+bool fireActorOperation(const ActorExecutionPlan &plan, SimulatorState &state) {
+  assert(plan.provider && "admitted actor has no simulator provider");
+  if (!plan.provider(plan.operation, plan.projection, state))
     return false;
-  return recordEvent(state, projection.schema);
+  return recordEvent(state, plan.projection.schema);
 }
 
 std::optional<UnsupportedOperation> unsupportedActorProvider(

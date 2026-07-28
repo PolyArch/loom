@@ -256,6 +256,9 @@ private:
                                        SyncEffectId effect) const;
   bool sequencedReaches(const Facts &facts, SyncEffectId from,
                         SyncEffectId to) const;
+  bool reaches(const Graph &graph, SyncEffectId from, SyncEffectId to) const;
+  void beginTraversal(std::size_t effectCount) const;
+  bool markVisited(SyncEffectId effect) const;
 
   llvm::SmallVector<SyncEffectId> collectOrigins(const Facts &facts,
                                                  AtomicVersionId version) const;
@@ -272,6 +275,12 @@ private:
   Graph sequencedPredecessors_;
   Graph relation_;
   Graph predecessors_;
+  // Traversals reuse one generation-marked workspace. This stores no relation
+  // result and therefore needs no semantic invalidation when accepted facts
+  // change; MemorySynchronization remains execution-local and single-threaded.
+  mutable std::vector<std::uint32_t> traversalMarks_;
+  mutable std::uint32_t traversalGeneration_ = 0;
+  mutable llvm::SmallVector<SyncEffectId, 16> traversalWorklist_;
 };
 
 } // namespace sim
