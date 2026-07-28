@@ -54,6 +54,11 @@ void reduceMemoryOrder(SimulatorState &state,
 
 MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
                                          MemoryOrderAccumulator &accumulator) {
+  // The arena reserves handle zero for the empty frontier. Leaving an empty
+  // accumulator pristine makes the overwhelmingly common no-memory firing
+  // and every subsequent not-ready scheduler probe allocation-free.
+  if (accumulator.empty())
+    return MemoryOrderFrontierId{};
   if (std::optional<MemoryOrderFrontierId> published = accumulator.published())
     return *published;
   // Reduction leaves the elements canonical, so interning never sorts again.

@@ -190,10 +190,11 @@ private:
 /// union out of the arena, so a group that absorbs k effects one firing at a
 /// time costs one growing buffer instead of k retained frontiers.
 ///
-/// A frontier is a set of effects, so the elements hold each one once and
-/// `members_` indexes exactly them. Merging content the accumulator already
-/// holds therefore costs a lookup instead of a copy, and reconverging one
-/// frontier through k inputs retains it once rather than k times.
+/// A frontier is a set of effects, so the elements hold each one once. Small
+/// frontiers use those elements directly for membership; a derived hash index
+/// appears only after the linear representation would become expensive.
+/// Reconverging one frontier through k inputs therefore retains it once rather
+/// than k times without charging the common singleton path for hash storage.
 ///
 /// The reduced flag and the optional published handle are memos of exactly
 /// this content, both dropped whenever the elements grow, so they can never
@@ -201,13 +202,41 @@ private:
 /// none is an authority: MemorySynchronization alone reduces a frontier.
 class MemoryOrderAccumulator {
 public:
+  MemoryOrderAccumulator() = default;
+
+  MemoryOrderAccumulator(const MemoryOrderAccumulator &other)
+      : elements_(other.elements_), absorbed_(other.absorbed_),
+        reduced_(other.reduced_), published_(other.published_) {
+    rebuildMemberIndex();
+    rebuildAbsorbedIndex();
+  }
+
+  MemoryOrderAccumulator &operator=(const MemoryOrderAccumulator &other) {
+    if (this == &other)
+      return *this;
+    elements_ = other.elements_;
+    absorbed_ = other.absorbed_;
+    reduced_ = other.reduced_;
+    published_ = other.published_;
+    rebuildMemberIndex();
+    rebuildAbsorbedIndex();
+    return *this;
+  }
+
+  MemoryOrderAccumulator(MemoryOrderAccumulator &&) = default;
+  MemoryOrderAccumulator &operator=(MemoryOrderAccumulator &&) = default;
+
   llvm::ArrayRef<SyncEffectId> elements() const { return elements_; }
   bool empty() const { return elements_.empty(); }
 
   void clear() {
+    if (elements_.empty() && absorbed_.empty() && !reduced_ && !published_) {
+      return;
+    }
     elements_.clear();
-    members_.clear();
+    memberIndex_.reset();
     absorbed_.clear();
+    absorbedIndex_.reset();
     reduced_ = false;
     published_.reset();
   }
@@ -218,7 +247,7 @@ public:
   void append(llvm::ArrayRef<SyncEffectId> effects) {
     bool grew = false;
     for (SyncEffectId effect : effects)
-      if (members_.insert(effect.value()).second) {
+      if (insertMember(effect)) {
         elements_.push_back(effect);
         grew = true;
       }
@@ -234,7 +263,7 @@ public:
   /// against the memo without reading the frontier at all.
   void absorb(llvm::ArrayRef<SyncEffectId> effects,
               MemoryOrderFrontierId frontier) {
-    if (absorbed_.insert(frontier.value()).second)
+    if (!frontier.empty() && insertAbsorbed(frontier.value()))
       append(effects);
   }
 
@@ -242,7 +271,7 @@ public:
   /// would add nothing. Reduction only drops effects that a retained maximal
   /// member happens-after, so an absorbed frontier stays covered.
   bool hasAbsorbed(MemoryOrderFrontierId frontier) const {
-    return frontier.empty() || absorbed_.contains(frontier.value());
+    return frontier.empty() || containsAbsorbed(frontier.value());
   }
 
   /// Folds another accumulator's elements and absorbed handles into this one.
@@ -250,7 +279,10 @@ public:
   /// a fully or partially overlapping other costs no duplicate storage, and
   /// one that adds no member leaves this accumulator's memos untouched.
   void absorbAll(const MemoryOrderAccumulator &other) {
-    absorbed_.insert(other.absorbed_.begin(), other.absorbed_.end());
+    if (this == &other)
+      return;
+    for (std::uint32_t frontier : other.absorbed_)
+      (void)insertAbsorbed(frontier);
     append(other.elements_);
   }
 
@@ -261,16 +293,14 @@ public:
   /// Replaces the elements with the reduced shape the authority returned.
   void adoptReduced(llvm::ArrayRef<SyncEffectId> effects) {
     elements_.assign(effects.begin(), effects.end());
-    members_.clear();
-    for (SyncEffectId effect : elements_)
-      members_.insert(effect.value());
+    rebuildMemberIndex();
     reduced_ = true;
   }
 
   /// Records the handle interned for exactly the current reduced elements.
   void markPublished(MemoryOrderFrontierId frontier) {
     assert(reduced_ && "only a reduced frontier is interned");
-    absorbed_.insert(frontier.value());
+    (void)insertAbsorbed(frontier.value());
     published_ = frontier;
   }
 
@@ -278,17 +308,81 @@ public:
   std::optional<MemoryOrderFrontierId> published() const { return published_; }
 
 private:
+  static constexpr std::size_t kLinearMembershipLimit = 8;
+
+  bool insertMember(SyncEffectId effect) {
+    const std::uint64_t value = effect.value();
+    if (memberIndex_)
+      return memberIndex_->insert(value).second;
+    if (std::find(elements_.begin(), elements_.end(), effect) !=
+        elements_.end())
+      return false;
+    if (elements_.size() == kLinearMembershipLimit) {
+      memberIndex_ = std::make_unique<llvm::DenseSet<std::uint64_t>>();
+      memberIndex_->reserve(elements_.size() * 2);
+      for (SyncEffectId existing : elements_)
+        memberIndex_->insert(existing.value());
+      memberIndex_->insert(value);
+    }
+    return true;
+  }
+
+  bool insertAbsorbed(std::uint32_t frontier) {
+    if (absorbedIndex_)
+      return absorbedIndex_->insert(frontier).second;
+    if (std::find(absorbed_.begin(), absorbed_.end(), frontier) !=
+        absorbed_.end())
+      return false;
+    if (absorbed_.size() == kLinearMembershipLimit) {
+      absorbedIndex_ = std::make_unique<llvm::DenseSet<std::uint32_t>>();
+      absorbedIndex_->reserve(absorbed_.size() * 2);
+      absorbedIndex_->insert(absorbed_.begin(), absorbed_.end());
+      absorbedIndex_->insert(frontier);
+    }
+    absorbed_.push_back(frontier);
+    return true;
+  }
+
+  bool containsAbsorbed(std::uint32_t frontier) const {
+    if (absorbedIndex_)
+      return absorbedIndex_->contains(frontier);
+    return std::find(absorbed_.begin(), absorbed_.end(), frontier) !=
+           absorbed_.end();
+  }
+
+  void rebuildMemberIndex() {
+    memberIndex_.reset();
+    if (elements_.size() <= kLinearMembershipLimit)
+      return;
+    memberIndex_ = std::make_unique<llvm::DenseSet<std::uint64_t>>();
+    memberIndex_->reserve(elements_.size() * 2);
+    for (SyncEffectId effect : elements_)
+      memberIndex_->insert(effect.value());
+  }
+
+  void rebuildAbsorbedIndex() {
+    absorbedIndex_.reset();
+    if (absorbed_.size() <= kLinearMembershipLimit)
+      return;
+    absorbedIndex_ = std::make_unique<llvm::DenseSet<std::uint32_t>>();
+    absorbedIndex_->reserve(absorbed_.size() * 2);
+    absorbedIndex_->insert(absorbed_.begin(), absorbed_.end());
+  }
+
   llvm::SmallVector<SyncEffectId, 4> elements_;
-  // Membership index of exactly `elements_`, derived from them and rebuilt
-  // with them. It keeps the elements a set and relates nothing.
-  llvm::SmallDenseSet<std::uint64_t, 4> members_;
+  // Frontiers are normally singleton or empty. Membership remains a linear
+  // scan through eight effects; only a larger frontier pays for a derived
+  // hash index, preventing quadratic behavior without burdening the common
+  // path with inline hash buckets.
+  std::unique_ptr<llvm::DenseSet<std::uint64_t>> memberIndex_;
   // Handles this accumulator already merged. A later reduction may drop a
   // dominated effect from `elements_`, so the invariant is coverage rather
   // than literal presence: what the handle contributed is still a member or
   // is happens-before one, which is why re-merging it cannot change the
   // reduced result. A memo of merged content, cleared with the elements, and
   // never a relation of its own.
-  llvm::SmallDenseSet<std::uint32_t, 4> absorbed_;
+  llvm::SmallVector<std::uint32_t, 4> absorbed_;
+  std::unique_ptr<llvm::DenseSet<std::uint32_t>> absorbedIndex_;
   bool reduced_ = false;
   std::optional<MemoryOrderFrontierId> published_;
 };
