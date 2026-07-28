@@ -93,7 +93,8 @@ int main(int argc, char **argv) {
       "upstream LLVMIR-import path, and runs the standard Loom raising "
       "pipeline (loom-llvm-cf-to-cf, loom-lift-cf-to-scf, "
       "loom-llvm-arith-to-arith, loom-normalize-lifted-scf-exit, "
-      "loom-scf-while-to-for) to produce initial SCF MLIR. "
+      "loom-deduplicate-scf-while-state, loom-scf-while-to-for) to produce "
+      "initial SCF MLIR. "
       "Selected SCF optimization decisions are outside this mechanical "
       "pipeline.\n");
 

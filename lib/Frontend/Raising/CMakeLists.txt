@@ -1,4 +1,5 @@
 add_mlir_library(LoomFrontendRaising
+  DeduplicateSCFWhileStatePass.cpp
   LiftCFToSCFPass.cpp
   LLVMArithToArithPass.cpp
   LLVMCfToCfPass.cpp

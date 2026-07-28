@@ -65,6 +65,12 @@ std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 // structure are unchanged.
 std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
 
+// Remove duplicate scf.while state lanes only when they have the same initial
+// value, publish the same condition value and return it through their
+// respective identity yields. The rewrite is a mechanical quotient of two
+// semantically identical PHIs, not an SCF optimization decision.
+std::unique_ptr<::mlir::Pass> createDeduplicateSCFWhileStatePass();
+
 // Uplift a counted scf.while loop inside a callable region into scf.for with
 // the upstream counted-loop utility, keeping the loop's imported annotation on
 // the uplifted loop. The utility recognizes the pre-tested counted shape,
@@ -132,6 +138,7 @@ void registerRaisingPasses();
 //   loom-lift-cf-to-scf
 //   loom-llvm-arith-to-arith
 //   loom-normalize-lifted-scf-exit
+//   loom-deduplicate-scf-while-state
 //   loom-scf-while-to-for
 // Selected SCF optimization decisions are outside this pipeline.
 void buildRaisingPipeline(::mlir::PassManager &pm);

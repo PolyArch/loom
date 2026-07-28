@@ -22,6 +22,14 @@ target features, and floating environment. Reconstructing those facts in
 `func.func` or a Loom contract would create a second LLVM ABI schema. Region-
 level CFG structurization can still introduce SCF inside that envelope.
 
+Region structuring can retain two PHIs that are the same recurrence under
+different source SSA names. Keeping both creates fictitious loop state and can
+hide that a raw pointer is only an invariant capability plus an offset. Loom
+therefore quotients only the exact same-initial-value, same-next-value,
+identity-feedback shape. This narrow rule removes accidental CFG structure
+without introducing a general equivalence engine or turning canonicalization
+into an optimization decision.
+
 LLVM operations are normalized to registered canonical compute schemas only
 when exact semantics are preserved. A familiar symbol name is not sufficient.
 In particular, `fmuladd` cannot be assumed to be fused; poison, undef, freeze,

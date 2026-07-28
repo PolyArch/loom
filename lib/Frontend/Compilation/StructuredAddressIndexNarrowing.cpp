@@ -325,7 +325,7 @@ bool collectPointerAccessElementType(mlir::Value pointer,
   for (mlir::OpOperand &use : pointer.getUses()) {
     if (use.getOwner() == ignored)
       continue;
-    if (use.getOwner()->getParentRegion() != region)
+    if (!region->isAncestor(use.getOwner()->getParentRegion()))
       return false;
     mlir::Type current;
     if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(use.getOwner())) {
@@ -337,8 +337,7 @@ bool collectPointerAccessElementType(mlir::Value pointer,
       if (store.getAddr() != pointer)
         return false;
       current = store.getValue().getType();
-    } else if (auto gep =
-                   llvm::dyn_cast<mlir::LLVM::GEPOp>(use.getOwner())) {
+    } else if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(use.getOwner())) {
       if (gep.getBase() != pointer ||
           !collectPointerAccessElementType(gep.getResult(), ignored, region,
                                            accessType, foundAccess))
@@ -704,13 +703,19 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     use.operation.getDynamicIndicesMutable().assign(indices);
   }
 
-  for (PointerInductionLoop &loop : pointerLoops) {
+  while (!pointerLoops.empty()) {
+    PointerInductionLoop &loop = pointerLoops.front();
     const bool replacesSelection =
         selectedOperation == loop.operation.getOperation();
     mlir::scf::WhileOp replacement =
         rewritePointerInductionLoop(loop, *effectiveWidth);
     if (replacesSelection)
       selectedOperation = replacement.getOperation();
+    pointerLoops = collectPointerInductionLoops(selectedOperation);
+    for (const PointerInductionLoop &loop : pointerLoops)
+      if (!pointerOffsetsFit(loop, *effectiveWidth))
+        return invalid("cannot prove a pointer induction offset fits the "
+                       "selected signed width");
   }
   if (mlir::failed(mlir::verify(module)))
     return invalid("produced an invalid pointer-induction normalization");

@@ -60,6 +60,14 @@ pipeline operate on `FunctionOpInterface`, a callable region, or the upstream
 region utility. They must not copy a function into another dialect to obtain a
 particular pass wrapper.
 
+CFG structuring may preserve multiple PHI lanes for one recurrence. Mechanical
+raising removes a duplicate `scf.while` lane only when it has the same SSA
+initial value and the same SSA `scf.condition` value as an earlier lane, and
+both lanes feed those values back through their respective identity
+`scf.yield` operands. The surviving lane replaces both loop arguments and both
+results. No value numbering, pointer-alias assumption, or performance choice
+participates in this exact quotient.
+
 ### Mechanical Disposition
 
 Every input construct has exactly one mechanical disposition:

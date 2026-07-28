@@ -286,9 +286,10 @@ entry:
 loop:
   %remaining = phi i32 [ %count, %entry ], [ %next_remaining, %loop ]
   %pa = phi ptr [ %a, %entry ], [ %next_a, %loop ]
+  %pa_alias = phi ptr [ %a, %entry ], [ %next_a, %loop ]
   %pb = phi ptr [ %b, %entry ], [ %next_b, %loop ]
   %pc = phi ptr [ %c, %entry ], [ %next_c, %loop ]
-  %current_a = getelementptr inbounds i8, ptr %pa, i64 4
+  %current_a = getelementptr inbounds i8, ptr %pa_alias, i64 4
   %lhs = load float, ptr %current_a, align 4
   %rhs = load float, ptr %pb, align 4
   %sum = fadd float %lhs, %rhs
@@ -324,8 +325,8 @@ parseNestedPointerInductionModule(const char *test,
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
 target triple = "riscv64-unknown-unknown-elf"
 
-define void @nested_pointer_induction(ptr %outer_base, ptr %inner_base,
-                                      i32 %rows, i32 %columns) {
+define void @nested_pointer_induction(ptr %outer_base, i32 %rows,
+                                      i32 %columns) {
 entry:
   %empty_rows = icmp eq i32 %rows, 0
   %empty_columns = icmp eq i32 %columns, 0
@@ -341,7 +342,7 @@ outer:
 
 inner:
   %columns_left = phi i32 [ %columns, %outer ], [ %next_columns, %inner ]
-  %element = phi ptr [ %inner_base, %outer ], [ %next_element, %inner ]
+  %element = phi ptr [ %row, %outer ], [ %next_element, %inner ]
   %value = load i32, ptr %element, align 4
   store i32 %value, ptr %element, align 4
   %next_element = getelementptr inbounds i8, ptr %element, i64 4
@@ -921,10 +922,10 @@ void wholeCallableNormalizesNestedPointerInduction() {
                                store, loom::adg::BuiltinTargetPreset::Small));
 
   llvm::LLVMContext context;
-  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
-                                 parseNestedPointerInductionModule(test,
-                                                                   context),
-                                 design.roots().front().reference(), store));
+  auto compiled =
+      take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                     parseNestedPointerInductionModule(test, context),
+                     design.roots().front().reference(), store));
   loom::frontend::WholeCallableSpatialOwnershipOptions options;
   options.canonicalIndexWidth = 64;
   auto selected =
@@ -1446,8 +1447,7 @@ metricResult(const char *test,
                    loom::evaluation::toString(kind).str());
   const loom::evaluation::MetricResult &result =
       completed->metricResults[*ordinal];
-  if (result.uncertainty !=
-      loom::evaluation::UncertaintyKind::Unquantified)
+  if (result.uncertainty != loom::evaluation::UncertaintyKind::Unquantified)
     fail(test, "analytic model presented its estimate as ground truth");
   const auto *point =
       std::get_if<loom::evaluation::PointObservation>(&result.observation);

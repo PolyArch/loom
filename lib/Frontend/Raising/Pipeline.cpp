@@ -5,6 +5,7 @@
 //     loom-lift-cf-to-scf
 //     loom-llvm-arith-to-arith
 //     loom-normalize-lifted-scf-exit
+//     loom-deduplicate-scf-while-state
 //     loom-scf-while-to-for
 //
 // Every pass walks callable regions in place. An imported llvm.func stays
@@ -35,6 +36,7 @@ void registerLLVMCfToCfPass();
 void registerLiftCFToSCFPass();
 void registerLLVMArithToArithPass();
 void registerNormalizeLiftedSCFExitPass();
+void registerDeduplicateSCFWhileStatePass();
 void registerSCFWhileToForPass();
 void registerSCFForToForallPass();
 void registerMaterializeFMulAddPass();
@@ -44,6 +46,7 @@ void registerRaisingPasses() {
   registerLiftCFToSCFPass();
   registerLLVMArithToArithPass();
   registerNormalizeLiftedSCFExitPass();
+  registerDeduplicateSCFWhileStatePass();
   registerSCFWhileToForPass();
   registerSCFForToForallPass();
   registerMaterializeFMulAddPass();
@@ -55,6 +58,7 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   pm.addPass(createLLVMArithToArithPass());
   // Canonicalize the lifted exit scaffold to its exact arith.cmpi condition.
   pm.addPass(createNormalizeLiftedSCFExitPass());
+  pm.addPass(createDeduplicateSCFWhileStatePass());
   pm.addPass(createSCFWhileToForPass());
 }
 
