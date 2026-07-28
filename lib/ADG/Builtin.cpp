@@ -273,10 +273,10 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return spatial.takeError();
 
   auto spatialMemory =
-      makeHybrid32LocalMemory({scale.memoryCapacityBytes, std::nullopt, true});
+      makeGeneral64LocalMemory({scale.memoryCapacityBytes, std::nullopt, true});
   if (!spatialMemory)
     return spatialMemory.takeError();
-  auto temporalMemory = makeHybrid32LocalMemory(
+  auto temporalMemory = makeGeneral64LocalMemory(
       {scale.memoryCapacityBytes,
        TemporalMemoryParameters{scale.temporalResidentContexts,
                                 scale.temporalResidentContexts},
@@ -697,8 +697,8 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
   if (!systemMemoryCapacity)
     return invalid("builtin System memory capacity overflows u64");
-  auto systemMemory = makeHybrid32SystemMemory({0, *systemMemoryCapacity},
-                                               std::move(*serviceRate));
+  auto systemMemory = makeGeneral64SystemMemory({0, *systemMemoryCapacity},
+                                                std::move(*serviceRate));
   if (!systemMemory)
     return systemMemory.takeError();
   auto memoryService = system->addMemoryService(systemMemory->contract);

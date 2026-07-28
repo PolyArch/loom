@@ -39,6 +39,13 @@ InstructionCore, clocks, resets, and semantic capabilities must be
 deterministic so the same public API can reproduce and teach the exact
 hardware.
 
+The general builtin memory is broader than the initial Hybrid32 convenience
+recipe because a preset-wide scalar type floor is meaningful only when both
+compute and memory resources admit it. Reusing Hybrid32 made a 64-bit ALU
+result computable but impossible to store. A second persistent memory kind was
+rejected: both recipes construct the same canonical Fabric memory contracts,
+and differ only in the exact typed access domain authored into those records.
+
 Builtin extension is split at the same publication boundary as custom
 hardware. An open SpatialCore recipe is extended and finalized first; only its
 durably published Module can then be imported by an open System recipe. A

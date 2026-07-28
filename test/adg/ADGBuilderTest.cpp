@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -95,7 +96,7 @@ using loom::adg::FuConfigurationMode;
 using loom::adg::FuRouteSelection;
 using loom::adg::FuSpec;
 using loom::adg::FuValue;
-using loom::adg::Hybrid32LocalMemoryParameters;
+using loom::adg::LocalMemoryParameters;
 using loom::adg::LocalMemoryServiceSpec;
 using loom::adg::MemoryConnectivitySpec;
 using loom::adg::MemoryEngineSpec;
@@ -848,7 +849,7 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
               "32-bit address capacity");
 
   auto addMemoryRoot = [&](llvm::StringRef name,
-                           Hybrid32LocalMemoryParameters parameters) {
+                           LocalMemoryParameters parameters) {
     MemorySpec memory =
         take(test, loom::adg::makeHybrid32LocalMemory(parameters));
     require(test,
@@ -1042,6 +1043,37 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     loom::fabric::FabricEntityKind::FabricMemoryOccurrence) ==
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
+    std::size_t wideScalarPorts = 0;
+    for (std::uint64_t id = 0;; ++id) {
+      const auto kind = module.view().entityKind(id);
+      if (!kind)
+        break;
+      if (*kind !=
+          loom::fabric::FabricEntityKind::FabricMemoryOccurrence)
+        continue;
+      const loom::fabric::FabricMemoryOccurrenceRef memory(id);
+      for (const loom::fabric::FabricMemoryOperationPortRef port :
+           module.view().memoryOperationPorts(memory)) {
+        const auto *alternative =
+            module.view().memoryCapabilityAlternative({port, 0});
+        require(test, alternative && alternative->accessDomain,
+                "builtin memory lost its typed access domain");
+        const auto element = llvm::find_if(
+            alternative->accessDomain->accessClasses(), [](const auto &access) {
+              return access.accessForm() ==
+                     ::dataflow::semantics::MemoryAccessForm::Element;
+            });
+        require(test,
+                element != alternative->accessDomain->accessClasses().end() &&
+                    element->elementWidths().contains(64),
+                "builtin memory does not cover the common 64-bit scalar floor");
+        ++wideScalarPorts;
+      }
+    }
+    require(test,
+            wideScalarPorts ==
+                2 * (expected.spatialMemories + expected.temporalMemories),
+            "builtin memory operation-port inventory changed unexpectedly");
     require(
         test,
         module.view().moduleBoundaryEndpointCount(

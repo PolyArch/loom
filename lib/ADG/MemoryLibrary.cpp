@@ -26,6 +26,8 @@ using ::dataflow::semantics::MemoryAccessForm;
 using ::dataflow::semantics::MemoryMaskForm;
 using ::dataflow::semantics::ServiceValueRole;
 
+enum class CatalogMemoryDomain { Hybrid32, General64 };
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "adg_memory_library_invalid: " + message);
@@ -35,8 +37,13 @@ llvm::Expected<::fabric::UnsignedDomain> singleton(std::uint64_t value) {
   return ::fabric::UnsignedDomain::fromCanonical({{value, value}});
 }
 
-llvm::Expected<::fabric::UnsignedDomain> scalarElementWidths() {
-  return ::fabric::UnsignedDomain::fromCanonical({{8, 8}, {16, 16}, {32, 32}});
+llvm::Expected<::fabric::UnsignedDomain>
+scalarElementWidths(CatalogMemoryDomain domain) {
+  if (domain == CatalogMemoryDomain::General64)
+    return ::fabric::UnsignedDomain::fromCanonical(
+        {{8, 8}, {16, 16}, {32, 32}, {64, 64}});
+  return ::fabric::UnsignedDomain::fromCanonical(
+      {{8, 8}, {16, 16}, {32, 32}});
 }
 
 llvm::Expected<::fabric::AlignmentDomain> allAlignments() {
@@ -52,8 +59,9 @@ enumDomain(std::initializer_list<Enum> values) {
   return ::fabric::ClosedEnumDomain<Enum>::fromCanonical(values);
 }
 
-llvm::Expected<::fabric::MemoryAccessClass> elementAccess(bool reads) {
-  auto widths = scalarElementWidths();
+llvm::Expected<::fabric::MemoryAccessClass>
+elementAccess(bool reads, CatalogMemoryDomain domain) {
+  auto widths = scalarElementWidths(domain);
   if (!widths)
     return widths.takeError();
   auto lanes = singleton(1);
@@ -109,8 +117,8 @@ llvm::Expected<::fabric::MemoryAccessClass> vectorAccess(bool reads) {
 }
 
 llvm::Expected<::fabric::ParameterizedMemoryAccessDomain>
-accessDomain(bool reads) {
-  auto element = elementAccess(reads);
+accessDomain(bool reads, CatalogMemoryDomain domain) {
+  auto element = elementAccess(reads, domain);
   if (!element)
     return element.takeError();
   auto vector = vectorAccess(reads);
@@ -195,14 +203,14 @@ endpointInventory(std::optional<std::uint32_t> tagWidth) {
 llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
     mlir::MLIRContext &context, ::fabric::Schedule schedule,
     llvm::ArrayRef<::fabric::MemoryTransportEndpointDescriptor> endpoints,
-    bool reads) {
+    bool reads, CatalogMemoryDomain domain) {
   auto resources = operationPortResourceContract();
   if (!resources)
     return resources.takeError();
   auto actors = actorDomain(reads);
   if (!actors)
     return actors.takeError();
-  auto accesses = accessDomain(reads);
+  auto accesses = accessDomain(reads, domain);
   if (!accesses)
     return accesses.takeError();
 
@@ -256,7 +264,8 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
 }
 
 llvm::Expected<::fabric::MemoryServiceContractRecord>
-localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes) {
+localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes,
+                     CatalogMemoryDomain domain) {
   auto resources = memoryServiceResourceContract();
   if (!resources)
     return resources.takeError();
@@ -265,7 +274,7 @@ localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes) {
     auto actors = actorDomain(reads);
     if (!actors)
       return actors.takeError();
-    auto accesses = accessDomain(reads);
+    auto accesses = accessDomain(reads, domain);
     if (!accesses)
       return accesses.takeError();
     capabilities.push_back({std::move(*actors),
@@ -291,8 +300,10 @@ llvm::Expected<PortType> channelPort(std::uint32_t width,
 
 } // namespace
 
+namespace {
+
 llvm::Expected<MemorySpec>
-makeHybrid32LocalMemory(Hybrid32LocalMemoryParameters parameters) {
+makeLocalMemory(LocalMemoryParameters parameters, CatalogMemoryDomain domain) {
   if (parameters.capacityBytes == 0)
     return invalid("local memory capacity must be positive");
   if (parameters.capacityBytes > (std::uint64_t(1) << 32))
@@ -341,13 +352,13 @@ makeHybrid32LocalMemory(Hybrid32LocalMemoryParameters parameters) {
   const auto endpoints = endpointInventory(tagWidth);
   std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts;
   for (bool reads : {true, false}) {
-    auto port = operationPort(context, schedule, endpoints, reads);
+    auto port = operationPort(context, schedule, endpoints, reads, domain);
     if (!port)
       return port.takeError();
     operationPorts.push_back(std::move(*port));
   }
   auto serviceContract =
-      localServiceContract(context, parameters.capacityBytes);
+      localServiceContract(context, parameters.capacityBytes, domain);
   if (!serviceContract)
     return serviceContract.takeError();
   auto service = LocalMemoryServiceSpec::create(parameters.capacityBytes,
@@ -383,9 +394,10 @@ makeHybrid32LocalMemory(Hybrid32LocalMemoryParameters parameters) {
       std::move(engine), std::move(*service), std::move(*connectivity));
 }
 
-llvm::Expected<Hybrid32SystemMemorySpec>
-makeHybrid32SystemMemory(Hybrid32SystemMemoryParameters parameters,
-                         loom::fabric::ServiceRateContractRecord serviceRate) {
+llvm::Expected<SystemMemorySpec>
+makeSystemMemory(SystemMemoryParameters parameters,
+                 loom::fabric::ServiceRateContractRecord serviceRate,
+                 CatalogMemoryDomain domain) {
   if (parameters.capacityBytes == 0)
     return invalid("System memory capacity must be positive");
   auto endAddress = llvm::checkedAddUnsigned(parameters.addressBaseBytes,
@@ -404,7 +416,7 @@ makeHybrid32SystemMemory(Hybrid32SystemMemoryParameters parameters,
     auto serviceActors = actorDomain(reads);
     if (!serviceActors)
       return serviceActors.takeError();
-    auto serviceAccesses = accessDomain(reads);
+    auto serviceAccesses = accessDomain(reads, domain);
     if (!serviceAccesses)
       return serviceAccesses.takeError();
     serviceCapabilities.push_back({std::move(*serviceActors),
@@ -417,7 +429,7 @@ makeHybrid32SystemMemory(Hybrid32SystemMemoryParameters parameters,
     auto endpointActors = actorDomain(reads);
     if (!endpointActors)
       return endpointActors.takeError();
-    auto endpointAccesses = accessDomain(reads);
+    auto endpointAccesses = accessDomain(reads, domain);
     if (!endpointAccesses)
       return endpointAccesses.takeError();
     auto addressDomain = ::fabric::UnsignedDomain::fromCanonical(
@@ -452,8 +464,35 @@ makeHybrid32SystemMemory(Hybrid32SystemMemoryParameters parameters,
       std::move(endpointCapabilities));
   if (!capabilities)
     return capabilities.takeError();
-  return Hybrid32SystemMemorySpec{std::move(*contract),
-                                  std::move(*capabilities)};
+  return SystemMemorySpec{std::move(*contract), std::move(*capabilities)};
+}
+
+} // namespace
+
+llvm::Expected<MemorySpec>
+makeHybrid32LocalMemory(LocalMemoryParameters parameters) {
+  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::Hybrid32);
+}
+
+llvm::Expected<MemorySpec>
+makeGeneral64LocalMemory(LocalMemoryParameters parameters) {
+  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::General64);
+}
+
+llvm::Expected<SystemMemorySpec>
+makeHybrid32SystemMemory(
+    SystemMemoryParameters parameters,
+    loom::fabric::ServiceRateContractRecord serviceRate) {
+  return makeSystemMemory(std::move(parameters), std::move(serviceRate),
+                          CatalogMemoryDomain::Hybrid32);
+}
+
+llvm::Expected<SystemMemorySpec>
+makeGeneral64SystemMemory(
+    SystemMemoryParameters parameters,
+    loom::fabric::ServiceRateContractRecord serviceRate) {
+  return makeSystemMemory(std::move(parameters), std::move(serviceRate),
+                          CatalogMemoryDomain::General64);
 }
 
 } // namespace loom::adg

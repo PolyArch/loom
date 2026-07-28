@@ -410,7 +410,7 @@ dispatch keys, or define backend modes.
 
 Each preset also owns one System memory service at base address zero. Its
 capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
-admits the `Hybrid32SystemMemorySpec` read/write domain, and it exposes one
+admits the `makeGeneral64SystemMemory` read/write domain, and it exposes one
 Serve endpoint in the System clock domain. Its service rate is one operation
 per System clock tick, with `temporalResidentContexts` outstanding operations
 and fair-eventual progress. These are expanded Fabric facts, not additional
@@ -491,7 +491,7 @@ contract construct the same public `MemorySpec`, operation-port, service, and
 connectivity types directly; there is no parallel recipe schema.
 
 `makeHybrid32SystemMemory` is the matching System-level convenience recipe.
-It returns one `Hybrid32SystemMemorySpec` containing the exact System
+It returns one `SystemMemorySpec` containing the exact System
 `MemoryServiceContractRecord` and its matching Serve endpoint capability set.
 It admits the same scalar 8-, 16-, and 32-bit and contiguous four-lane 32-bit
 plain read/write domain with a 128-bit service beat. The caller supplies one
@@ -499,6 +499,24 @@ absolute address range and one domain-owned `ServiceRateContractRecord`, then
 passes the two returned records to `SystemBuilder::addMemoryService` and
 `SystemBuilder::addServiceEndpoint`. The pair is ordinary Fabric data; the
 helper owns no persistent memory kind, endpoint inventory, or identity.
+
+#### General64 Memory Recipe
+
+`makeGeneral64LocalMemory` and `makeGeneral64SystemMemory` use the same public
+parameter and result records as the Hybrid32 recipes. They retain the exact
+128-bit physical data endpoint and contiguous four-lane 32-bit vector domain,
+and extend only the scalar element-width domain to include 64 bits. Scalar
+64-bit reads and writes therefore use the same declared zero-extension and
+byte-enable guarantees as narrower scalar accesses. This does not admit
+`vector<2xf64>`: vector element width and lane geometry remain separate typed
+facts from total payload width.
+
+Small, Default, and Large use the General64 recipes for every local and System
+memory. This makes the preset-wide common scalar type floor truthful for
+memory actors as well as FU actors. Hybrid32 remains available when a hardware
+author intends the narrower exact memory contract. Both helpers construct the
+same ordinary `MemorySpec` and `MemoryServiceContractRecord`; helper selection
+is not persisted as a Fabric classification or capability authority.
 
 #### CoreAluFu Resource Inventory
 
