@@ -114,20 +114,14 @@
 
 // An all-zero mask evaluates no address, but the access still has a structural
 // index width, so an unusable declaration is reported rather than skipped.
-// ZERO-WIDTH-DAG: "status": "blocked"
-// ZERO-WIDTH-DAG: "index bit width must be nonzero"
+// ZERO-WIDTH-DAG: "invalid memory actor execution plan: index bit width must be nonzero"
+// ZERO-WIDTH-DAG: "status": "invalid"
 
 // A store takes the same structural width, so it cannot retire an all-zero
 // mask that a load refuses.
-// ZERO-WIDTH-STORE: "index bit width must be nonzero"
-// ZERO-WIDTH-STORE: "arg2": [
-// ZERO-WIDTH-STORE-NEXT: "i8:1",
-// ZERO-WIDTH-STORE-NEXT: "i8:2",
-// ZERO-WIDTH-STORE-NEXT: "i8:3",
-// ZERO-WIDTH-STORE-NEXT: "i8:4",
-// ZERO-WIDTH-STORE-NEXT: "i8:5"
+// ZERO-WIDTH-STORE: "invalid memory actor execution plan: index bit width must be nonzero"
 // ZERO-WIDTH-STORE-NOT: "dataflow.store"
-// ZERO-WIDTH-STORE: "status": "blocked"
+// ZERO-WIDTH-STORE: "status": "invalid"
 
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>

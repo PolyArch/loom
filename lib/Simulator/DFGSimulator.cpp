@@ -935,7 +935,33 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
       ++operationOrdinal;
       continue;
     }
+    std::optional<MemoryActorExecutionPlan> memoryActor;
+    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
+      auto plan = memoryActorExecutionPlan(&op, graph);
+      if (!plan) {
+        report.status = "invalid";
+        report.diagnostics.push_back("invalid memory actor execution plan: " +
+                                     llvm::toString(plan.takeError()));
+        return report;
+      }
+      memoryActor = std::move(*plan);
+    }
+    std::optional<PrimitiveOperationDescriptor> primitive;
+    if (isSupportedPrimitiveOperation(projection->schema)) {
+      auto descriptor = primitiveDescriptorForActor(*projection, &op);
+      if (!descriptor) {
+        unsupported.emplace(unsupportedOperationLabel(&op),
+                            llvm::toString(descriptor.takeError()));
+        ++operationOrdinal;
+        continue;
+      }
+      primitive = std::move(*descriptor);
+    }
     state.actorProjections.try_emplace(&op, std::move(*projection));
+    if (primitive)
+      state.primitiveDescriptors.try_emplace(&op, std::move(*primitive));
+    if (memoryActor)
+      state.memoryActorPlans.try_emplace(&op, std::move(*memoryActor));
     state.actorOrdinals.try_emplace(
         &op, static_cast<unsigned>(state.actorOperations.size()));
     state.actorOperations.push_back(&op);

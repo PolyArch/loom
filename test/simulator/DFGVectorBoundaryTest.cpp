@@ -630,6 +630,12 @@ unsigned resolvedIndexBits(mlir::Operation *scope) {
   return takeExpected(loom::getIndexBitWidth(scope));
 }
 
+void installMemoryActorPlan(SimulatorState &state, mlir::Operation *op) {
+  state.graphScope = op;
+  state.memoryActorPlans.try_emplace(
+      op, takeExpected(memoryActorExecutionPlan(op, state.graphScope)));
+}
+
 Token indexVectorToken(unsigned indexBits,
                        std::initializer_list<uint64_t> lanes) {
   llvm::APInt bits(indexBits * lanes.size(), 0);
@@ -666,6 +672,7 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
 
 void loadRejectionIsAtomic(dataflow::LoadOp op) {
   SimulatorState state;
+  installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
@@ -674,15 +681,14 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
   state.channels[&op.getAddrMutable()].push_back(
       indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
   state.channels[&op.getCtrlMutable()].push_back(noneToken());
-  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
-                                               ReadyPlainMemoryAction{});
 
-  require(!fireAdmittedActorOperation(op, state),
-          "load accepted an out-of-range address");
-  require(state.diagnostics.size() == 1, "load recorded no rejection reason");
-  require(!fireAdmittedActorOperation(op, state),
-          "load accepted an out-of-range address when re-polled");
-  require(state.diagnostics.size() == 2,
+  PlainMemoryActionProjection first =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(!first.ready && first.diagnostics.size() == 1,
+          "load admission accepted an out-of-range address");
+  PlainMemoryActionProjection second =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(!second.ready && second.diagnostics.size() == 1,
           "a re-polled load rejection is not detectable as a failed attempt");
   require(state.channels[&op.getMemMutable()].size() == 1 &&
               state.channels[&op.getAddrMutable()].size() == 1 &&
@@ -695,6 +701,7 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
 
 void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   SimulatorState state;
+  installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
@@ -744,6 +751,7 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
 // and the refused firing consumes, retains, and publishes nothing.
 void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
   SimulatorState state;
+  installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
@@ -817,8 +825,7 @@ int main() {
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
-  mlir::MLIRContext context(registry,
-                            mlir::MLIRContext::Threading::DISABLED);
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(fixture, &context);

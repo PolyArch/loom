@@ -52,10 +52,10 @@ static llvm::Expected<Token> streamIvToken(const llvm::APInt &bits,
   return token;
 }
 
-static bool fireStream(
-    dataflow::StreamOp op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
+static bool
+fireStream(dataflow::StreamOp op,
+           const dataflow::CanonicalActorSchemaProjection &projection,
+           SimulatorState &state) {
   const auto *payload =
       std::get_if<dataflow::StreamRecurrencePayload>(&projection.payload);
   assert(payload && "stream provider received the wrong semantic payload");
@@ -126,10 +126,10 @@ static bool fireStream(
   return recordActorEvent(state, op.getOperation());
 }
 
-static bool fireConstant(
-    dataflow::ConstantOp op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
+static bool
+fireConstant(dataflow::ConstantOp op,
+             const dataflow::CanonicalActorSchemaProjection &projection,
+             SimulatorState &state) {
   if (!hasToken(state.channels, op->getOpOperand(0)))
     return false;
   const auto *payload =
@@ -621,6 +621,18 @@ validateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result) {
   return resultType;
 }
 
+llvm::Expected<PrimitiveOperationDescriptor> primitiveDescriptorForActor(
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    mlir::Operation *op) {
+  if (!hasVectorPrimitiveType(op))
+    return primitiveDescriptor(projection, op, op->getResult(0));
+
+  auto resultType = mlir::cast<mlir::VectorType>(op->getResult(0).getType());
+  auto operandType = mlir::cast<mlir::VectorType>(op->getOperand(0).getType());
+  return primitiveDescriptor(projection, op, resultType.getElementType(),
+                             operandType.getElementType());
+}
+
 llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
                                         mlir::Value result) {
   if (!hasVectorPrimitiveType(op))
@@ -631,23 +643,10 @@ llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
   return llvm::Error::success();
 }
 
-static llvm::Expected<Token>
-evaluateElementwiseVectorPrimitive(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    mlir::Value result,
-                                   llvm::ArrayRef<Token> inputTokens) {
-  auto resultTypeOrErr = validateElementwiseVectorPrimitive(op, result);
-  if (!resultTypeOrErr)
-    return resultTypeOrErr.takeError();
-  mlir::VectorType resultType = *resultTypeOrErr;
-  auto firstOperandType =
-      mlir::cast<mlir::VectorType>(op->getOperand(0).getType());
-  auto descriptor = primitiveDescriptor(projection, op,
-                                        resultType.getElementType(),
-                                        firstOperandType.getElementType());
-  if (!descriptor)
-    return descriptor.takeError();
+static llvm::Expected<Token> evaluateElementwiseVectorPrimitive(
+    mlir::Operation *op, const PrimitiveOperationDescriptor &descriptor,
+    mlir::Value result, llvm::ArrayRef<Token> inputTokens) {
+  mlir::VectorType resultType = mlir::cast<mlir::VectorType>(result.getType());
 
   llvm::SmallVector<llvm::APInt> operandBits;
   llvm::SmallVector<unsigned> operandWidths;
@@ -687,20 +686,19 @@ evaluateElementwiseVectorPrimitive(
           tokenFromBitPattern(laneBits, vectorType.getElementType());
       if (!laneToken)
         return laneToken.takeError();
-      auto laneValue =
-          primitiveValueFromToken(*laneToken, vectorType.getElementType(),
-                                  descriptor->operandBitWidth);
+      auto laneValue = primitiveValueFromToken(
+          *laneToken, vectorType.getElementType(), descriptor.operandBitWidth);
       if (!laneValue)
         return laneValue.takeError();
       laneOperands.push_back(*laneValue);
     }
 
-    auto laneResult = evaluatePrimitiveOperation(*descriptor, laneOperands);
+    auto laneResult = evaluatePrimitiveOperation(descriptor, laneOperands);
     if (!laneResult)
       return llvm::joinErrors(
           llvm::createStringError(
               std::errc::invalid_argument, "%s failed for vector lane %u",
-              dataflow::operationSchemaSpelling(descriptor->actor.schema)
+              dataflow::operationSchemaSpelling(descriptor.actor.schema)
                   .str()
                   .c_str(),
               lane),
@@ -718,41 +716,33 @@ evaluateElementwiseVectorPrimitive(
 }
 
 llvm::Expected<Token>
-evaluatePrimitiveToken(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    mlir::Value result,
-                       llvm::ArrayRef<Token> inputTokens) {
+evaluatePrimitiveToken(mlir::Operation *op,
+                       const PrimitiveOperationDescriptor &descriptor,
+                       mlir::Value result, llvm::ArrayRef<Token> inputTokens) {
   if (inputTokens.size() != op->getNumOperands())
     return llvm::createStringError(
         std::errc::invalid_argument,
         "primitive token count does not match operation operands");
   if (hasVectorPrimitiveType(op))
-    return evaluateElementwiseVectorPrimitive(op, projection, result,
+    return evaluateElementwiseVectorPrimitive(op, descriptor, result,
                                               inputTokens);
-
-  auto descriptor = primitiveDescriptor(projection, op, result);
-  if (!descriptor)
-    return descriptor.takeError();
   llvm::SmallVector<PrimitiveValue> operands;
   operands.reserve(inputTokens.size());
   for (auto [operand, token] :
        llvm::zip_equal(op->getOpOperands(), inputTokens)) {
     auto value = primitiveValueFromToken(token, operand.get().getType(),
-                                         descriptor->operandBitWidth);
+                                         descriptor.operandBitWidth);
     if (!value)
       return value.takeError();
     operands.push_back(*value);
   }
-  auto value = evaluatePrimitiveOperation(*descriptor, operands);
+  auto value = evaluatePrimitiveOperation(descriptor, operands);
   if (!value)
     return value.takeError();
   return tokenFromPrimitiveValue(*value, result.getType());
 }
 
 static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
-                                   const dataflow::CanonicalActorSchemaProjection
-                                       &projection,
                                    SimulatorState &state) {
   if (state.terminalPrimitiveOps.contains(op))
     return false;
@@ -767,7 +757,11 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   operands.reserve(op->getNumOperands());
   for (mlir::OpOperand &operand : op->getOpOperands())
     operands.push_back(peekToken(state.channels, operand));
-  auto resultToken = evaluatePrimitiveToken(op, projection, result, operands);
+  auto descriptor = state.primitiveDescriptors.find(op);
+  assert(descriptor != state.primitiveDescriptors.end() &&
+         "admitted primitive actor has no execution descriptor");
+  auto resultToken =
+      evaluatePrimitiveToken(op, descriptor->second, result, operands);
   if (!resultToken) {
     state.diagnostics.push_back(llvm::toString(resultToken.takeError()));
     state.terminalPrimitiveOps.insert(op);
@@ -781,10 +775,10 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   return recordActorEvent(state, op);
 }
 
-static bool fireArithConstant(
-    mlir::arith::ConstantOp op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
+static bool
+fireArithConstant(mlir::arith::ConstantOp op,
+                  const dataflow::CanonicalActorSchemaProjection &projection,
+                  SimulatorState &state) {
   if (state.oneShotOps.contains(op.getOperation()))
     return false;
   const auto *payload =
@@ -800,23 +794,23 @@ static bool fireArithConstant(
   return recordActorEvent(state, op.getOperation());
 }
 
-using ActorProvider = bool (*)(
-    mlir::Operation *, const dataflow::CanonicalActorSchemaProjection &,
-    SimulatorState &);
+using ActorProvider = bool (*)(mlir::Operation *,
+                               const dataflow::CanonicalActorSchemaProjection &,
+                               SimulatorState &);
 
 template <typename OpT, bool (*Fire)(OpT, SimulatorState &)>
-static bool fireTypedActor(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
+static bool
+fireTypedActor(mlir::Operation *op,
+               const dataflow::CanonicalActorSchemaProjection &projection,
+               SimulatorState &state) {
   (void)projection;
   return Fire(mlir::cast<OpT>(op), state);
 }
 
-static bool fireStreamActor(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
+static bool
+fireStreamActor(mlir::Operation *op,
+                const dataflow::CanonicalActorSchemaProjection &projection,
+                SimulatorState &state) {
   return fireStream(mlir::cast<dataflow::StreamOp>(op), projection, state);
 }
 
@@ -835,11 +829,12 @@ static bool fireArithConstantActor(
                            state);
 }
 
-static bool firePrimitiveActor(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    SimulatorState &state) {
-  return firePrimitiveOperation(op, op->getResult(0), projection, state);
+static bool
+firePrimitiveActor(mlir::Operation *op,
+                   const dataflow::CanonicalActorSchemaProjection &projection,
+                   SimulatorState &state) {
+  (void)projection;
+  return firePrimitiveOperation(op, op->getResult(0), state);
 }
 
 static ActorProvider actorProvider(dataflow::OperationSchemaId schema) {

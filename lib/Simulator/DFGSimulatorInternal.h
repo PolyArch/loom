@@ -368,6 +368,21 @@ struct MemoryActionRecord {
   bool isWrite = false;
 };
 
+enum class MemoryByteOrder { Little, Big };
+
+/// Immutable execution projection of one finalized load or store. Every field
+/// is derived once from the actor types and the graph DataLayout; dynamic
+/// addresses, masks, aliasing, and ordering remain firing-time state.
+struct MemoryActorExecutionPlan {
+  dataflow::semantics::MemoryAccessType access;
+  unsigned indexBitWidth = 0;
+  unsigned elementBitWidth = 0;
+  unsigned addressBitWidth = 0;
+  unsigned dataBitWidth = 0;
+  std::size_t elementByteCount = 0;
+  MemoryByteOrder byteOrder = MemoryByteOrder::Little;
+};
+
 /// Merges the ranges into the ascending, non-touching cover of the same bytes.
 void canonicalizeMemoryActionRanges(
     llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges);
@@ -375,6 +390,10 @@ void canonicalizeMemoryActionRanges(
 struct ReadyPlainMemoryAction {
   MemoryActionRecord action;
   llvm::SmallVector<SyncEffectId, 2> ctrlFrontier;
+  MemoryView view;
+  llvm::APInt activeLanes = llvm::APInt();
+  llvm::SmallVector<std::size_t> slots;
+  mlir::OpOperand *maskOperand = nullptr;
 };
 
 // Exact byte-interval cache of the maximal issued hazards. It stores effect
@@ -461,6 +480,13 @@ enum class RunFailure {
 struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, dataflow::CanonicalActorSchemaProjection>
       actorProjections;
+  // Primitive semantics and resolved scalar widths depend only on the
+  // finalized actor and its graph DataLayout. Admission resolves them once;
+  // the firing loop consumes this immutable projection instead of rebuilding
+  // it for every token.
+  llvm::DenseMap<mlir::Operation *, PrimitiveOperationDescriptor>
+      primitiveDescriptors;
+  llvm::DenseMap<mlir::Operation *, MemoryActorExecutionPlan> memoryActorPlans;
   // Dense canonical actor order and the candidates whose readiness may have
   // changed for the next wave. This is a derived execution cache: token
   // arrival schedules only the consuming actor, while a firing schedules
@@ -736,12 +762,17 @@ llvm::Expected<PrimitiveOperationDescriptor>
 primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
                     mlir::Operation *op, mlir::Type resultType,
                     mlir::Type operandType);
+llvm::Expected<PrimitiveOperationDescriptor> primitiveDescriptorForActor(
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    mlir::Operation *op);
+llvm::Expected<MemoryActorExecutionPlan>
+memoryActorExecutionPlan(mlir::Operation *op, mlir::Operation *graphScope);
 llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
                                         mlir::Value result);
-llvm::Expected<Token> evaluatePrimitiveToken(
-    mlir::Operation *op,
-    const dataflow::CanonicalActorSchemaProjection &projection,
-    mlir::Value result, llvm::ArrayRef<Token> inputTokens);
+llvm::Expected<Token>
+evaluatePrimitiveToken(mlir::Operation *op,
+                       const PrimitiveOperationDescriptor &descriptor,
+                       mlir::Value result, llvm::ArrayRef<Token> inputTokens);
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
 bool fireStore(dataflow::StoreOp op, SimulatorState &state);

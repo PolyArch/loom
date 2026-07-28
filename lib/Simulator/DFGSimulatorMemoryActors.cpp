@@ -70,8 +70,6 @@ static void consumeMemoryView(SimulatorState &state,
     (void)popToken(state, memOperand);
 }
 
-enum class MemoryByteOrder { Little, Big };
-
 static llvm::Expected<MemoryByteOrder> memoryByteOrder(mlir::Operation *scope) {
   mlir::Attribute endianness = mlir::DataLayout::closest(scope).getEndianness();
   if (!endianness)
@@ -89,20 +87,76 @@ static llvm::Expected<MemoryByteOrder> memoryByteOrder(mlir::Operation *scope) {
                                  spelling.getValue().str().c_str());
 }
 
-static std::optional<std::size_t> resolveElementByteOffset(
-    const MemoryView &view, const llvm::APInt &address, mlir::Type elementType,
-    llvm::SmallVectorImpl<std::string> &diagnostics, mlir::Operation *scope,
-    llvm::StringRef diagnosticLabel) {
-  auto elementSizeOrErr = byteSizeOfType(elementType, scope);
-  if (!elementSizeOrErr) {
-    diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
-    return std::nullopt;
+llvm::Expected<MemoryActorExecutionPlan>
+memoryActorExecutionPlan(mlir::Operation *operation,
+                         mlir::Operation *graphScope) {
+  mlir::Value memory;
+  mlir::Value address;
+  mlir::Type dataType;
+  mlir::Value mask;
+  if (auto load = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
+    memory = load.getMem();
+    address = load.getAddr();
+    dataType = load.getData().getType();
+    mask = load.getMask();
+  } else if (auto store = mlir::dyn_cast<dataflow::StoreOp>(operation)) {
+    memory = store.getMem();
+    address = store.getAddr();
+    dataType = store.getData().getType();
+    mask = store.getMask();
+  } else {
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "memory execution plan requires dataflow.load or dataflow.store");
   }
-  if (*elementSizeOrErr == 0) {
+
+  auto access = dataflow::semantics::analyzeMemoryAccessType(
+      mlir::cast<mlir::MemRefType>(memory.getType()), dataType,
+      address.getType(), mask ? mask.getType() : mlir::Type{});
+  if (!access)
+    return access.takeError();
+  auto indexWidth = loom::getIndexBitWidth(graphScope);
+  if (!indexWidth)
+    return indexWidth.takeError();
+  auto elementWidth =
+      resolvedTokenTypeBitWidth(access->elementType, graphScope);
+  if (!elementWidth)
+    return elementWidth.takeError();
+  auto addressWidth = resolvedTokenTypeBitWidth(address.getType(), graphScope);
+  if (!addressWidth)
+    return addressWidth.takeError();
+  auto dataWidth = resolvedTokenTypeBitWidth(dataType, graphScope);
+  if (!dataWidth)
+    return dataWidth.takeError();
+  auto elementBytes = byteSizeOfType(access->elementType, graphScope);
+  if (!elementBytes)
+    return elementBytes.takeError();
+  if (*elementBytes <= 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory element has zero storage size");
+  auto order = memoryByteOrder(graphScope);
+  if (!order)
+    return order.takeError();
+  return MemoryActorExecutionPlan{std::move(*access),
+                                  *indexWidth,
+                                  *elementWidth,
+                                  *addressWidth,
+                                  *dataWidth,
+                                  static_cast<std::size_t>(*elementBytes),
+                                  *order};
+}
+
+static std::optional<std::size_t>
+resolveElementByteOffset(const MemoryView &view, const llvm::APInt &address,
+                         std::size_t elementByteCount,
+                         llvm::SmallVectorImpl<std::string> &diagnostics,
+                         llvm::StringRef diagnosticLabel) {
+  if (elementByteCount == 0) {
     diagnostics.push_back("memory element has zero storage size");
     return std::nullopt;
   }
-  if (view.byteOffset < 0 || view.byteOffset % *elementSizeOrErr != 0) {
+  if (view.byteOffset < 0 ||
+      view.byteOffset % static_cast<std::int64_t>(elementByteCount) != 0) {
     diagnostics.push_back("memory view byte offset is not element-aligned");
     return std::nullopt;
   }
@@ -111,11 +165,11 @@ static std::optional<std::size_t> resolveElementByteOffset(
   const unsigned width = std::max(address.getBitWidth(), 64u) + 1;
   const llvm::APInt byteOffset =
       address.sext(width) *
-          llvm::APInt(width, static_cast<std::uint64_t>(*elementSizeOrErr)) +
+          llvm::APInt(width, static_cast<std::uint64_t>(elementByteCount)) +
       llvm::APInt(width, static_cast<std::uint64_t>(view.byteOffset));
   const llvm::APInt end =
       byteOffset +
-      llvm::APInt(width, static_cast<std::uint64_t>(*elementSizeOrErr));
+      llvm::APInt(width, static_cast<std::uint64_t>(elementByteCount));
   const llvm::APInt limit(width, view.memory->bytes.size());
   if (byteOffset.isNegative() || end.ugt(limit)) {
     diagnostics.push_back((diagnosticLabel + " address is out of range").str());
@@ -129,8 +183,14 @@ resolveElementByteOffset(const MemoryView &view, const llvm::APInt &address,
                          mlir::Type elementType, SimulatorState &state,
                          mlir::Operation *scope,
                          llvm::StringRef diagnosticLabel) {
-  return resolveElementByteOffset(view, address, elementType, state.diagnostics,
-                                  scope, diagnosticLabel);
+  auto elementByteCount = byteSizeOfType(elementType, scope);
+  if (!elementByteCount) {
+    state.diagnostics.push_back(llvm::toString(elementByteCount.takeError()));
+    return std::nullopt;
+  }
+  return resolveElementByteOffset(view, address,
+                                  static_cast<std::size_t>(*elementByteCount),
+                                  state.diagnostics, diagnosticLabel);
 }
 
 std::optional<std::size_t>
@@ -143,6 +203,84 @@ resolveElementByteOffset(const MemoryView &view, const Token &addr,
       llvm::APInt(64, static_cast<std::uint64_t>(integerToken(addr)),
                   /*isSigned=*/true),
       elementType, state, scope, diagnosticLabel);
+}
+
+static llvm::Expected<Token> tokenFromMemoryBits(const llvm::APInt &bits,
+                                                 mlir::Type type) {
+  if (mlir::isa<mlir::IndexType>(type))
+    return indexToken(bits);
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
+      Token token;
+      token.kind = TokenKind::Vector;
+      token.bitPattern = bits;
+      return token;
+    }
+  }
+  return tokenFromBitPattern(bits, type);
+}
+
+static llvm::Expected<llvm::APInt>
+memoryTokenBits(const Token &token, mlir::Type type, unsigned bitWidth) {
+  if (mlir::isa<mlir::IndexType>(type))
+    return indexTokenBitPattern(token, bitWidth);
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    if (mlir::isa<mlir::IndexType>(vector.getElementType())) {
+      if (token.valueState != PrimitiveValueState::Defined ||
+          token.kind != TokenKind::Vector || !token.bitPattern ||
+          token.bitPattern->getBitWidth() != bitWidth)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "index-vector memory token does not match its resolved width");
+      return *token.bitPattern;
+    }
+  }
+  return tokenBitPattern(token, type);
+}
+
+static std::optional<Token> readMemoryElementResolved(
+    const MemoryView &view, std::size_t byteOffset, mlir::Type elementType,
+    std::size_t byteCount, unsigned bitWidth, MemoryByteOrder order,
+    SimulatorState &state, llvm::StringRef diagnosticLabel) {
+  bool poison = false;
+  bool undef = false;
+  llvm::APInt bits(bitWidth, 0);
+  for (std::size_t index = 0; index < byteCount; ++index) {
+    const std::size_t position = byteOffset + index;
+    if (!view.memory->initialized[position]) {
+      state.diagnostics.push_back(
+          (diagnosticLabel + " reads uninitialized memory").str());
+      return std::nullopt;
+    }
+    const SemanticMemoryByte &byte = view.memory->bytes[position];
+    poison |= byte.state == SemanticState::Poison;
+    undef |= byte.state == SemanticState::Undef;
+    if (byte.state != SemanticState::Defined)
+      continue;
+    const std::size_t semanticByte =
+        order == MemoryByteOrder::Little ? index : byteCount - 1 - index;
+    const unsigned low = static_cast<unsigned>(semanticByte * 8);
+    if (low >= bitWidth)
+      continue;
+    const unsigned width = std::min(8u, bitWidth - low);
+    bits.insertBits(llvm::APInt(width, byte.value), low);
+  }
+  if (poison || undef) {
+    auto token = exceptionalValueToken(poison ? PrimitiveValueState::Poison
+                                              : PrimitiveValueState::Undef,
+                                       elementType);
+    if (!token) {
+      state.diagnostics.push_back(llvm::toString(token.takeError()));
+      return std::nullopt;
+    }
+    return *token;
+  }
+  auto token = tokenFromMemoryBits(bits, elementType);
+  if (!token) {
+    state.diagnostics.push_back(llvm::toString(token.takeError()));
+    return std::nullopt;
+  }
+  return *token;
 }
 
 std::optional<Token>
@@ -161,48 +299,38 @@ readMemoryElement(const MemoryView &view, std::size_t byteOffset,
       state.diagnostics.push_back(llvm::toString(order.takeError()));
     return std::nullopt;
   }
-  bool poison = false;
-  bool undef = false;
-  llvm::APInt bits(*bitWidth, 0);
-  for (std::size_t index = 0; index < static_cast<std::size_t>(*byteCount);
-       ++index) {
-    const std::size_t position = byteOffset + index;
-    if (!view.memory->initialized[position]) {
-      state.diagnostics.push_back(
-          (diagnosticLabel + " reads uninitialized memory").str());
-      return std::nullopt;
-    }
-    const SemanticMemoryByte &byte = view.memory->bytes[position];
-    poison |= byte.state == SemanticState::Poison;
-    undef |= byte.state == SemanticState::Undef;
-    if (byte.state != SemanticState::Defined)
-      continue;
+  return readMemoryElementResolved(view, byteOffset, elementType,
+                                   static_cast<std::size_t>(*byteCount),
+                                   *bitWidth, *order, state, diagnosticLabel);
+}
+
+static llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
+encodeMemoryElementResolved(const Token &value, mlir::Type elementType,
+                            std::size_t byteCount, unsigned bitWidth,
+                            MemoryByteOrder order) {
+  llvm::SmallVector<SemanticMemoryByte, 8> bytes(byteCount);
+  if (value.valueState != PrimitiveValueState::Defined) {
+    const SemanticState state = value.valueState == PrimitiveValueState::Poison
+                                    ? SemanticState::Poison
+                                    : SemanticState::Undef;
+    std::fill(bytes.begin(), bytes.end(), SemanticMemoryByte{state, 0});
+    return bytes;
+  }
+  auto bits = memoryTokenBits(value, elementType, bitWidth);
+  if (!bits)
+    return bits.takeError();
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
     const std::size_t semanticByte =
-        *order == MemoryByteOrder::Little
-            ? index
-            : static_cast<std::size_t>(*byteCount) - 1 - index;
+        order == MemoryByteOrder::Little ? index : bytes.size() - 1 - index;
     const unsigned low = static_cast<unsigned>(semanticByte * 8);
-    if (low >= *bitWidth)
-      continue;
-    const unsigned width = std::min(8u, *bitWidth - low);
-    bits.insertBits(llvm::APInt(width, byte.value), low);
+    const unsigned width = low >= bitWidth ? 0 : std::min(8u, bitWidth - low);
+    bytes[index] = SemanticMemoryByte{
+        SemanticState::Defined,
+        width == 0 ? std::uint8_t{0}
+                   : static_cast<std::uint8_t>(
+                         bits->extractBitsAsZExtValue(width, low))};
   }
-  if (poison || undef) {
-    auto token = exceptionalValueToken(poison ? PrimitiveValueState::Poison
-                                              : PrimitiveValueState::Undef,
-                                       elementType);
-    if (!token) {
-      state.diagnostics.push_back(llvm::toString(token.takeError()));
-      return std::nullopt;
-    }
-    return *token;
-  }
-  auto token = tokenFromResolvedBitPattern(bits, elementType, scope);
-  if (!token) {
-    state.diagnostics.push_back(llvm::toString(token.takeError()));
-    return std::nullopt;
-  }
-  return *token;
+  return bytes;
 }
 
 llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
@@ -217,30 +345,9 @@ encodeMemoryElement(const Token &value, mlir::Type elementType,
   auto order = memoryByteOrder(scope);
   if (!order)
     return order.takeError();
-  llvm::SmallVector<SemanticMemoryByte, 8> bytes(
-      static_cast<std::size_t>(*byteCount));
-  if (value.valueState != PrimitiveValueState::Defined) {
-    const SemanticState state = value.valueState == PrimitiveValueState::Poison
-                                    ? SemanticState::Poison
-                                    : SemanticState::Undef;
-    std::fill(bytes.begin(), bytes.end(), SemanticMemoryByte{state, 0});
-    return bytes;
-  }
-  auto bits = resolvedTokenBitPattern(value, elementType, scope);
-  if (!bits)
-    return bits.takeError();
-  for (std::size_t index = 0; index < bytes.size(); ++index) {
-    const std::size_t semanticByte =
-        *order == MemoryByteOrder::Little ? index : bytes.size() - 1 - index;
-    const unsigned low = static_cast<unsigned>(semanticByte * 8);
-    const unsigned width = low >= *bitWidth ? 0 : std::min(8u, *bitWidth - low);
-    bytes[index] = SemanticMemoryByte{
-        SemanticState::Defined,
-        width == 0 ? std::uint8_t{0}
-                   : static_cast<std::uint8_t>(
-                         bits->extractBitsAsZExtValue(width, low))};
-  }
-  return bytes;
+  return encodeMemoryElementResolved(value, elementType,
+                                     static_cast<std::size_t>(*byteCount),
+                                     *bitWidth, *order);
 }
 
 void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
@@ -278,19 +385,15 @@ getActiveMemoryLanes(const dataflow::semantics::MemoryAccessType &access,
 // entirely, so their addresses are never evaluated.
 static std::optional<llvm::SmallVector<std::size_t>>
 resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
-                       const dataflow::semantics::MemoryAccessType &access,
+                       const MemoryActorExecutionPlan &plan,
                        const llvm::APInt &activeLanes,
                        llvm::SmallVectorImpl<std::string> &diagnostics,
-                       mlir::Operation *scope,
                        llvm::StringRef diagnosticLabel) {
   // The index width is structural: every access has one whether or not a lane
   // is active, so it is resolved before the inactive shortcut. No address is
   // parsed or evaluated for an inactive lane.
-  auto width = loom::getIndexBitWidth(scope);
-  if (!width) {
-    diagnostics.push_back(llvm::toString(width.takeError()));
-    return std::nullopt;
-  }
+  const auto &access = plan.access;
+  const unsigned width = plan.indexBitWidth;
   llvm::SmallVector<std::size_t> slots;
   if (activeLanes.isZero())
     return slots;
@@ -299,14 +402,14 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
   std::optional<llvm::APInt> addressBits;
   if (access.isGather()) {
     auto bits =
-        vectorIndexTokenBitPattern(addr, access.addressVectorType, scope);
+        memoryTokenBits(addr, access.addressVectorType, plan.addressBitWidth);
     if (!bits) {
       diagnostics.push_back(llvm::toString(bits.takeError()));
       return std::nullopt;
     }
     addressBits = *bits;
   } else {
-    auto bits = indexTokenBitPattern(addr, *width);
+    auto bits = indexTokenBitPattern(addr, width);
     if (!bits) {
       diagnostics.push_back(llvm::toString(bits.takeError()));
       return std::nullopt;
@@ -319,11 +422,11 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
     if (!activeLanes[lane])
       continue;
     llvm::APInt laneAddress =
-        access.isGather() ? addressBits->extractBits(*width, *width * lane)
-                          : base + llvm::APInt(*width, lane, /*isSigned=*/false,
+        access.isGather() ? addressBits->extractBits(width, width * lane)
+                          : base + llvm::APInt(width, lane, /*isSigned=*/false,
                                                /*implicitTrunc=*/true);
-    auto slot = resolveElementByteOffset(view, laneAddress, access.elementType,
-                                         diagnostics, scope, diagnosticLabel);
+    auto slot = resolveElementByteOffset(
+        view, laneAddress, plan.elementByteCount, diagnostics, diagnosticLabel);
     if (!slot)
       return std::nullopt;
     slots.push_back(*slot);
@@ -332,83 +435,67 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
 }
 
 struct ProjectedDataflowMemoryAccess {
-  dataflow::semantics::MemoryAccessType type;
   llvm::APInt activeLanes;
   llvm::SmallVector<std::size_t> slots;
 };
 
-static std::optional<ProjectedDataflowMemoryAccess> projectDataflowMemoryAccess(
-    const MemoryView &view, const Token &addr, mlir::MemRefType memoryType,
-    mlir::Type addressType, mlir::Type dataType, const Token *mask,
-    mlir::Type maskType, llvm::SmallVectorImpl<std::string> &diagnostics,
-    mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
-  auto access = dataflow::semantics::analyzeMemoryAccessType(
-      memoryType, dataType, addressType, maskType);
-  if (!access) {
-    diagnostics.push_back(llvm::toString(access.takeError()));
-    return std::nullopt;
-  }
-  const bool vectorAccess = access->isVector();
+static std::optional<ProjectedDataflowMemoryAccess>
+projectDataflowMemoryAccess(const MemoryView &view, const Token &addr,
+                            const MemoryActorExecutionPlan &plan,
+                            const Token *mask, mlir::Type maskType,
+                            llvm::SmallVectorImpl<std::string> &diagnostics,
+                            llvm::StringRef diagnosticLabel) {
+  const bool vectorAccess = plan.access.isVector();
   auto activeLanes =
-      getActiveMemoryLanes(*access, vectorAccess ? mask : nullptr,
+      getActiveMemoryLanes(plan.access, vectorAccess ? mask : nullptr,
                            vectorAccess ? maskType : mlir::Type{}, diagnostics);
   auto slots = activeLanes
-                   ? resolveActiveLaneSlots(view, addr, *access, *activeLanes,
-                                            diagnostics, scope, diagnosticLabel)
+                   ? resolveActiveLaneSlots(view, addr, plan, *activeLanes,
+                                            diagnostics, diagnosticLabel)
                    : std::nullopt;
   if (!activeLanes || !slots)
     return std::nullopt;
-  return ProjectedDataflowMemoryAccess{
-      std::move(*access), std::move(*activeLanes), std::move(*slots)};
+  return ProjectedDataflowMemoryAccess{std::move(*activeLanes),
+                                       std::move(*slots)};
 }
 
-static std::optional<DataflowMemoryRead>
-prepareDataflowMemoryRead(const MemoryView &view,
-                          const ProjectedDataflowMemoryAccess &projection,
-                          SimulatorState &state) {
-  const auto &access = projection.type;
+static std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
+    const MemoryView &view, const llvm::APInt &activeLanes,
+    llvm::ArrayRef<std::size_t> slots, const MemoryActorExecutionPlan &plan,
+    SimulatorState &state) {
+  const auto &access = plan.access;
   // An element access is one complete memref element, even when that element
   // is itself a vector: one lane, one address, and no mask.
   if (!access.isVector()) {
-    auto value =
-        readMemoryElement(view, projection.slots.front(), access.elementType,
-                          state, state.graphScope, "dataflow.load");
+    auto value = readMemoryElementResolved(
+        view, slots.front(), access.elementType, plan.elementByteCount,
+        plan.elementBitWidth, plan.byteOrder, state, "dataflow.load");
     if (!value)
       return std::nullopt;
     return DataflowMemoryRead{*value, true};
   }
 
-  const llvm::APInt &activeLanes = projection.activeLanes;
-  auto elementWidth = tokenTypeBitWidth(access.elementType);
-  auto vectorWidth = tokenTypeBitWidth(access.vectorType);
-  if (!elementWidth || !vectorWidth) {
-    if (!elementWidth)
-      state.diagnostics.push_back(llvm::toString(elementWidth.takeError()));
-    if (!vectorWidth)
-      state.diagnostics.push_back(llvm::toString(vectorWidth.takeError()));
-    return std::nullopt;
-  }
-
   // Inactive lanes keep the element type's all-zero bit representation.
-  llvm::APInt resultBits(*vectorWidth, 0);
+  llvm::APInt resultBits(plan.dataBitWidth, 0);
   unsigned active = 0;
   for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
     if (!activeLanes[lane])
       continue;
-    auto element =
-        readMemoryElement(view, projection.slots[active++], access.elementType,
-                          state, state.graphScope, "dataflow.load");
+    auto element = readMemoryElementResolved(
+        view, slots[active++], access.elementType, plan.elementByteCount,
+        plan.elementBitWidth, plan.byteOrder, state, "dataflow.load");
     if (!element)
       return std::nullopt;
-    auto elementBits = tokenBitPattern(*element, access.elementType);
+    auto elementBits =
+        memoryTokenBits(*element, access.elementType, plan.elementBitWidth);
     if (!elementBits) {
       state.diagnostics.push_back(llvm::toString(elementBits.takeError()));
       return std::nullopt;
     }
-    resultBits.insertBits(*elementBits, *elementWidth * lane);
+    resultBits.insertBits(*elementBits, plan.elementBitWidth * lane);
   }
 
-  auto result = tokenFromBitPattern(resultBits, access.vectorType);
+  auto result = tokenFromMemoryBits(resultBits, access.vectorType);
   if (!result) {
     state.diagnostics.push_back(llvm::toString(result.takeError()));
     return std::nullopt;
@@ -417,35 +504,32 @@ prepareDataflowMemoryRead(const MemoryView &view,
 }
 
 static std::optional<DataflowMemoryWrite>
-prepareDataflowMemoryWrite(const Token &data,
-                           const ProjectedDataflowMemoryAccess &projection,
+prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
+                           llvm::ArrayRef<std::size_t> slots,
+                           const MemoryActorExecutionPlan &plan,
                            SimulatorState &state) {
-  const auto &access = projection.type;
+  const auto &access = plan.access;
   if (!access.isVector()) {
-    auto bytes =
-        encodeMemoryElement(data, access.elementType, state.graphScope);
+    auto bytes = encodeMemoryElementResolved(
+        data, access.elementType, plan.elementByteCount, plan.elementBitWidth,
+        plan.byteOrder);
     if (!bytes) {
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
       return std::nullopt;
     }
     DataflowMemoryWrite write;
     write.accessedMemory = true;
-    write.elements.push_back(DataflowMemoryWrite::Element{
-        projection.slots.front(), std::move(*bytes)});
+    write.elements.push_back(
+        DataflowMemoryWrite::Element{slots.front(), std::move(*bytes)});
     return write;
   }
 
-  const llvm::APInt &activeLanes = projection.activeLanes;
   if (activeLanes.isZero())
     return DataflowMemoryWrite{};
 
-  auto elementWidth = tokenTypeBitWidth(access.elementType);
-  auto dataBits = tokenBitPattern(data, access.vectorType);
-  if (!elementWidth || !dataBits) {
-    if (!elementWidth)
-      state.diagnostics.push_back(llvm::toString(elementWidth.takeError()));
-    if (!dataBits)
-      state.diagnostics.push_back(llvm::toString(dataBits.takeError()));
+  auto dataBits = memoryTokenBits(data, access.vectorType, plan.dataBitWidth);
+  if (!dataBits) {
+    state.diagnostics.push_back(llvm::toString(dataBits.takeError()));
     return std::nullopt;
   }
 
@@ -459,7 +543,7 @@ prepareDataflowMemoryWrite(const Token &data,
   // atomic: no input is consumed, no memory changes, and nothing is published.
   if (access.isGather()) {
     llvm::SmallDenseSet<std::size_t, 8> destinations;
-    for (std::size_t slot : projection.slots) {
+    for (std::size_t slot : slots) {
       if (destinations.insert(slot).second)
         continue;
       state.diagnostics.push_back(
@@ -471,26 +555,27 @@ prepareDataflowMemoryWrite(const Token &data,
 
   DataflowMemoryWrite write;
   write.accessedMemory = true;
-  write.elements.reserve(projection.slots.size());
+  write.elements.reserve(slots.size());
   unsigned active = 0;
   for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
     if (!activeLanes[lane])
       continue;
-    llvm::APInt elementBits =
-        dataBits->extractBits(*elementWidth, *elementWidth * lane);
-    auto element = tokenFromBitPattern(elementBits, access.elementType);
+    llvm::APInt elementBits = dataBits->extractBits(
+        plan.elementBitWidth, plan.elementBitWidth * lane);
+    auto element = tokenFromMemoryBits(elementBits, access.elementType);
     if (!element) {
       state.diagnostics.push_back(llvm::toString(element.takeError()));
       return std::nullopt;
     }
-    auto bytes =
-        encodeMemoryElement(*element, access.elementType, state.graphScope);
+    auto bytes = encodeMemoryElementResolved(
+        *element, access.elementType, plan.elementByteCount,
+        plan.elementBitWidth, plan.byteOrder);
     if (!bytes) {
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
       return std::nullopt;
     }
-    write.elements.push_back(DataflowMemoryWrite::Element{
-        projection.slots[active++], std::move(*bytes)});
+    write.elements.push_back(
+        DataflowMemoryWrite::Element{slots[active++], std::move(*bytes)});
   }
   return write;
 }
@@ -504,25 +589,20 @@ void commitDataflowMemoryWrite(const MemoryView &view,
 // The byte ranges one issued access covers, derived from the active element
 // slots it already resolved. An inactive lane resolves no slot, so it
 // contributes no range and derives no access.
-static std::optional<MemoryActionRecord>
-projectMemoryAction(const MemoryView &view, llvm::ArrayRef<std::size_t> slots,
-                    mlir::Type elementType, bool isWrite,
-                    llvm::SmallVectorImpl<std::string> &diagnostics,
-                    mlir::Operation *scope) {
+static MemoryActionRecord projectMemoryAction(const MemoryView &view,
+                                              llvm::ArrayRef<std::size_t> slots,
+                                              std::size_t elementByteCount,
+                                              bool isWrite) {
   MemoryActionRecord action;
   action.rootId = view.memory->logicalRootId;
   action.isWrite = isWrite;
   if (slots.empty())
     return action;
-  auto elementSize = byteSizeOfType(elementType, scope);
-  if (!elementSize) {
-    diagnostics.push_back(llvm::toString(elementSize.takeError()));
-    return std::nullopt;
-  }
   action.byteRanges.reserve(slots.size());
   for (std::size_t slot : slots) {
     const std::int64_t begin = static_cast<std::int64_t>(slot);
-    action.byteRanges.emplace_back(begin, begin + *elementSize);
+    action.byteRanges.emplace_back(
+        begin, begin + static_cast<std::int64_t>(elementByteCount));
   }
   canonicalizeMemoryActionRanges(action.byteRanges);
   return action;
@@ -580,12 +660,6 @@ static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
   return &op->getOpOperand(op->getNumOperands() - 1);
 }
 
-struct PreparedLoadFiring {
-  MemoryView view;
-  DataflowMemoryRead read;
-  mlir::OpOperand *maskOperand = nullptr;
-};
-
 struct ProjectedMemoryFiring {
   MemoryView view;
   ProjectedDataflowMemoryAccess access;
@@ -609,35 +683,18 @@ projectLoadFiring(dataflow::LoadOp op, SimulatorState &state,
   std::optional<Token> mask;
   if (maskOperand)
     mask = peekToken(state.channels, *maskOperand);
+  auto plan = state.memoryActorPlans.find(op.getOperation());
+  assert(plan != state.memoryActorPlans.end() &&
+         "admitted load has no execution plan");
   auto access = projectDataflowMemoryAccess(
-      *view, addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
+      *view, addr, plan->second, mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, diagnostics,
-      op.getOperation(), "dataflow.load");
+      "dataflow.load");
   if (!access)
     return std::nullopt;
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
                                maskOperand};
 }
-
-static std::optional<PreparedLoadFiring>
-prepareLoadFiring(dataflow::LoadOp op, SimulatorState &state) {
-  auto projected = projectLoadFiring(op, state, state.diagnostics);
-  if (!projected)
-    return std::nullopt;
-  auto read =
-      prepareDataflowMemoryRead(projected->view, projected->access, state);
-  if (!read)
-    return std::nullopt;
-  return PreparedLoadFiring{std::move(projected->view), std::move(*read),
-                            projected->maskOperand};
-}
-
-struct PreparedStoreFiring {
-  MemoryView view;
-  DataflowMemoryWrite write;
-  mlir::OpOperand *maskOperand = nullptr;
-};
 
 static std::optional<ProjectedMemoryFiring>
 projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
@@ -657,28 +714,17 @@ projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
   std::optional<Token> mask;
   if (maskOperand)
     mask = peekToken(state.channels, *maskOperand);
+  auto plan = state.memoryActorPlans.find(op.getOperation());
+  assert(plan != state.memoryActorPlans.end() &&
+         "admitted store has no execution plan");
   auto access = projectDataflowMemoryAccess(
-      *view, addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
+      *view, addr, plan->second, mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, diagnostics,
-      op.getOperation(), "dataflow.store");
+      "dataflow.store");
   if (!access)
     return std::nullopt;
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
                                maskOperand};
-}
-
-static std::optional<PreparedStoreFiring>
-prepareStoreFiring(dataflow::StoreOp op, SimulatorState &state) {
-  auto projected = projectStoreFiring(op, state, state.diagnostics);
-  if (!projected)
-    return std::nullopt;
-  Token data = peekToken(state.channels, op.getDataMutable());
-  auto write = prepareDataflowMemoryWrite(data, projected->access, state);
-  if (!write)
-    return std::nullopt;
-  return PreparedStoreFiring{std::move(projected->view), std::move(*write),
-                             projected->maskOperand};
 }
 
 PlainMemoryActionProjection
@@ -689,15 +735,17 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
     auto projected = projectLoadFiring(op, state, result.diagnostics);
     if (!projected)
       return result;
-    auto action =
-        projectMemoryAction(projected->view, projected->access.slots,
-                            projected->access.type.elementType,
-                            /*isWrite=*/false, result.diagnostics, operation);
-    if (!action)
-      return result;
+    const auto &plan = state.memoryActorPlans.find(operation)->second;
+    MemoryActionRecord action = projectMemoryAction(
+        projected->view, projected->access.slots, plan.elementByteCount,
+        /*isWrite=*/false);
     result.ready = ReadyPlainMemoryAction{
-        std::move(*action),
-        peekMemoryOrderFrontier(state, op.getCtrlMutable())};
+        std::move(action),
+        peekMemoryOrderFrontier(state, op.getCtrlMutable()),
+        std::move(projected->view),
+        std::move(projected->access.activeLanes),
+        std::move(projected->access.slots),
+        projected->maskOperand};
     return result;
   }
 
@@ -707,14 +755,17 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
   auto projected = projectStoreFiring(op, state, result.diagnostics);
   if (!projected)
     return result;
-  auto action =
-      projectMemoryAction(projected->view, projected->access.slots,
-                          projected->access.type.elementType,
-                          /*isWrite=*/true, result.diagnostics, operation);
-  if (!action)
-    return result;
+  const auto &plan = state.memoryActorPlans.find(operation)->second;
+  MemoryActionRecord action = projectMemoryAction(
+      projected->view, projected->access.slots, plan.elementByteCount,
+      /*isWrite=*/true);
   result.ready = ReadyPlainMemoryAction{
-      std::move(*action), peekMemoryOrderFrontier(state, op.getCtrlMutable())};
+      std::move(action),
+      peekMemoryOrderFrontier(state, op.getCtrlMutable()),
+      std::move(projected->view),
+      std::move(projected->access.activeLanes),
+      std::move(projected->access.slots),
+      projected->maskOperand};
   return result;
 }
 
@@ -722,21 +773,24 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  auto prepared = prepareLoadFiring(op, state);
-  if (!prepared)
+  ReadyPlainMemoryAction &ready = admitted->second;
+  const auto &plan = state.memoryActorPlans.find(op.getOperation())->second;
+  auto read = prepareDataflowMemoryRead(ready.view, ready.activeLanes,
+                                        ready.slots, plan, state);
+  if (!read)
     return false;
-  auto publication = issueMemoryAction(admitted->second.action,
-                                       admitted->second.ctrlFrontier, state);
+  auto publication = issueMemoryAction(ready.action, ready.ctrlFrontier, state);
   if (!publication)
     return false;
+  mlir::OpOperand *maskOperand = ready.maskOperand;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
   consumeMemoryView(state, op.getMemMutable());
   popToken(state, op.getAddrMutable());
   popToken(state, op.getCtrlMutable());
-  if (prepared->maskOperand)
-    popToken(state, *prepared->maskOperand);
-  emitTokenWithMemoryOrder(state, op.getData(), prepared->read.data,
+  if (maskOperand)
+    popToken(state, *maskOperand);
+  emitTokenWithMemoryOrder(state, op.getData(), read->data,
                            MemoryOrderFrontierId());
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   return recordActorEvent(state, op.getOperation());
@@ -746,22 +800,27 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  auto prepared = prepareStoreFiring(op, state);
-  if (!prepared)
+  ReadyPlainMemoryAction &ready = admitted->second;
+  const auto &plan = state.memoryActorPlans.find(op.getOperation())->second;
+  Token data = peekToken(state.channels, op.getDataMutable());
+  auto write = prepareDataflowMemoryWrite(data, ready.activeLanes, ready.slots,
+                                          plan, state);
+  if (!write)
     return false;
-  auto publication = issueMemoryAction(admitted->second.action,
-                                       admitted->second.ctrlFrontier, state);
+  auto publication = issueMemoryAction(ready.action, ready.ctrlFrontier, state);
   if (!publication)
     return false;
+  MemoryView view = ready.view;
+  mlir::OpOperand *maskOperand = ready.maskOperand;
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
   consumeMemoryView(state, op.getMemMutable());
   popToken(state, op.getAddrMutable());
   popToken(state, op.getDataMutable());
   popToken(state, op.getCtrlMutable());
-  if (prepared->maskOperand)
-    popToken(state, *prepared->maskOperand);
-  commitDataflowMemoryWrite(prepared->view, prepared->write);
+  if (maskOperand)
+    popToken(state, *maskOperand);
+  commitDataflowMemoryWrite(view, *write);
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   return recordActorEvent(state, op.getOperation());
 }
