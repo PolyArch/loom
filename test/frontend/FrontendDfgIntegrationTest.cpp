@@ -589,6 +589,61 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
     fail(test, "cannot remove artifact store: " + cleanup.message());
 }
 
+void wholeCallableScalarResultUsesCallerStorage() {
+  const char *test = "wholeCallableScalarResultUsesCallerStorage";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-whole-callable-result", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseScalarReduction(test, context),
+                                 design.roots().front().reference(), store));
+  auto candidate =
+      take(test, loom::frontend::materializeWholeCallableSpatialOwnership(
+                     compiled.structuredProgram,
+                     findCallable(test, compiled.structuredProgram, "accum"),
+                     design.roots().front()));
+
+  auto callable =
+      candidate.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "accum");
+  if (!callable || callable.getBody().getBlocks().size() != 1 ||
+      !llvm::isa<mlir::IntegerType>(callable.getFunctionType().getReturnType()))
+    fail(test, "whole-callable ownership changed the LLVM ABI authority");
+  dataflow::ThreadLaunchOp launch;
+  dataflow::ThreadWaitOp wait;
+  mlir::LLVM::ReturnOp returnOp;
+  callable.getBody().walk([&](mlir::Operation *operation) {
+    if (auto candidate = llvm::dyn_cast<dataflow::ThreadLaunchOp>(operation))
+      launch = candidate;
+    else if (auto candidate = llvm::dyn_cast<dataflow::ThreadWaitOp>(operation))
+      wait = candidate;
+    else if (auto candidate = llvm::dyn_cast<mlir::LLVM::ReturnOp>(operation))
+      returnOp = candidate;
+  });
+  if (!launch || !wait || !returnOp || returnOp.getNumOperands() != 1 ||
+      !returnOp.getOperand(0).getDefiningOp<mlir::LLVM::LoadOp>())
+    fail(test, "whole-callable result did not cross caller-owned storage");
+
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef rooted = onlyLaunch(test, view);
+  auto graphLaunch = take(test, view.resolve(rooted.staticGraphLaunch));
+  auto graphView = take(test, view.resolve(graphLaunch.callee));
+  auto graph = llvm::dyn_cast_or_null<dataflow::GraphOp>(graphView.op);
+  if (!graph || graph.getFunctionType().getNumResults() != 1)
+    fail(test, "whole-callable graph lost its scalar value result");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
 void sourceCandidateExecutesThroughTypedDfgInput() {
   const char *test = "sourceCandidateExecutesThroughTypedDfgInput";
   llvm::SmallString<128> directory;
@@ -913,10 +968,10 @@ void staticTableExecutesThroughTypedDfgInput() {
   if (!outputObject)
     fail(test, "finalized runtime input lost the output root binding");
 
-  loom::sim::RetiredDFGSimulation execution = take(
-      test, loom::sim::simulateRetiredDfgWorkload(
-                candidate.canonicalDataflow, finalizedWorkload,
-                finalizedInput));
+  loom::sim::RetiredDFGSimulation execution =
+      take(test,
+           loom::sim::simulateRetiredDfgWorkload(
+               candidate.canonicalDataflow, finalizedWorkload, finalizedInput));
   loom::sim::DFGSimulationReport &report = execution.report;
   if (report.status != "pass" ||
       report.operationFireCounts[dataflow::OperationSchemaId::DataflowLoad] !=
@@ -951,6 +1006,7 @@ void staticTableExecutesThroughTypedDfgInput() {
 int main() {
   selectedFmuladdShapesRemainObservable();
   scalarLiveOutExecutesWithoutMemoryObjects();
+  wholeCallableScalarResultUsesCallerStorage();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();
   llvm::outs() << "frontend to typed DFG integration anchor passed\n";
