@@ -41,10 +41,8 @@ target_link_libraries(loom-frontend-dfg-integration-test PRIVATE
   LoomADGBuilder
   LoomCommon
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
   LoomSimulator
-  LLVMCore
-  LLVMIRReader
-  LLVMSupport
 )
 
 add_executable(loom-static-global-memory-test

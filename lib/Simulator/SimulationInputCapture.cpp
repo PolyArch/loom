@@ -155,6 +155,26 @@ enclosingCallableArgument(mlir::Value value, mlir::LLVM::LLVMFuncOp function) {
   return argument.getArgNumber();
 }
 
+llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
+                                                mlir::LLVM::CallOp target,
+                                                llvm::StringRef callee) {
+  std::uint64_t ordinal = 0;
+  bool found = false;
+  caller.walk([&](mlir::LLVM::CallOp call) {
+    if (found || !call.getCalleeAttr() ||
+        call.getCalleeAttr().getValue() != callee)
+      return;
+    if (call.getOperation() == target.getOperation()) {
+      found = true;
+      return;
+    }
+    ++ordinal;
+  });
+  if (!found)
+    return invalid("host call is not owned by its enclosing callable");
+  return ordinal;
+}
+
 } // namespace
 
 llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
@@ -178,7 +198,21 @@ llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
   if (!called || called != enclosingCallable)
     return invalid("host call does not target the rooted launch callable");
 
-  SimulationMemoryCapturePlan plan{launch, hostCall, {}, {}};
+  auto hostCaller = hostCall->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!hostCaller)
+    return invalid("host call is not enclosed by an LLVM callable");
+  llvm::Expected<std::uint64_t> callOrdinal = directCallOrdinal(
+      hostCaller, hostCall, hostCall.getCalleeAttr().getValue());
+  if (!callOrdinal)
+    return callOrdinal.takeError();
+
+  SimulationMemoryCapturePlan plan{launch,
+                                   hostCall,
+                                   hostCaller.getSymName().str(),
+                                   hostCall.getCalleeAttr().getValue().str(),
+                                   *callOrdinal,
+                                   {},
+                                   {}};
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
         program.resolve(root);
@@ -206,10 +240,14 @@ llvm::Expected<SimulationMemoryCapturePlan> deriveSimulationMemoryCapturePlan(
     while (objectIndex < plan.objects.size() &&
            plan.objects[objectIndex].base != object->base)
       ++objectIndex;
-    if (objectIndex == plan.objects.size())
-      plan.objects.push_back(
-          SimulationMemoryCaptureObject{object->base, object->byteCount});
-    else if (plan.objects[objectIndex].byteCount != object->byteCount)
+    if (objectIndex == plan.objects.size()) {
+      SimulationMemoryCaptureObject capture;
+      capture.base = object->base;
+      capture.byteCount = object->byteCount;
+      capture.callOperandOrdinal = *callableArgument;
+      capture.operandByteOffset = object->byteOffset;
+      plan.objects.push_back(capture);
+    } else if (plan.objects[objectIndex].byteCount != object->byteCount)
       return invalid("one host allocation resolved to inconsistent extents");
     if (object->byteOffset >= object->byteCount)
       return invalid("logical root offset is outside its host allocation");

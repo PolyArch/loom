@@ -4,6 +4,7 @@
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
 #include "Simulator/DFGSimulator.h"
+#include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationInputCapture.h"
 
@@ -11,6 +12,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -23,7 +25,6 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,11 +45,9 @@ template <typename T> T take(const char *test, llvm::Expected<T> value) {
 }
 
 std::unique_ptr<llvm::Module> parseVecadd(const char *test,
-                                          llvm::LLVMContext &context) {
+                                          llvm::LLVMContext &context,
+                                          bool riscvTarget = true) {
   constexpr llvm::StringLiteral source = R"llvm(
-target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
-target triple = "riscv64-unknown-unknown-elf"
-
 define void @vecadd(ptr %a, ptr %b, ptr %c) {
 entry:
   br label %loop
@@ -75,6 +74,23 @@ entry:
   %a = alloca [64 x float], align 4
   %b = alloca [64 x float], align 4
   %c = alloca [64 x float], align 4
+  br label %init
+
+init:
+  %j = phi i64 [ 0, %entry ], [ %jnext, %init ]
+  %fa = uitofp i64 %j to float
+  %fb = fmul float %fa, 5.000000e-01
+  %pa.init = getelementptr [64 x float], ptr %a, i64 0, i64 %j
+  %pb.init = getelementptr [64 x float], ptr %b, i64 0, i64 %j
+  %pc.init = getelementptr [64 x float], ptr %c, i64 0, i64 %j
+  store float %fa, ptr %pa.init, align 4
+  store float %fb, ptr %pb.init, align 4
+  store float 0.000000e+00, ptr %pc.init, align 4
+  %jnext = add nuw nsw i64 %j, 1
+  %jdone = icmp eq i64 %jnext, 64
+  br i1 %jdone, label %invoke, label %init
+
+invoke:
   call void @vecadd(ptr %a, ptr %b, ptr %c)
   ret i32 0
 }
@@ -96,6 +112,10 @@ entry:
     llvm::raw_string_ostream stream(message);
     diagnostic.print(test, stream);
     fail(test, stream.str());
+  }
+  if (riscvTarget) {
+    module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
+    module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
   }
   return module;
 }
@@ -220,22 +240,6 @@ findCallable(const char *test,
   fail(test, "structured callable does not resolve");
 }
 
-loom::sim::RuntimeMemoryObject floatObject(float scale) {
-  loom::sim::RuntimeMemoryObject object;
-  object.initialBytes.reserve(64 * sizeof(float));
-  for (std::uint32_t index = 0; index < 64; ++index) {
-    const float value = static_cast<float>(index) * scale;
-    std::uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value));
-    std::memcpy(&bits, &value, sizeof(bits));
-    for (unsigned byte = 0; byte < sizeof(bits); ++byte)
-      object.initialBytes.push_back(loom::sim::SemanticMemoryByte{
-          loom::sim::SemanticState::Defined,
-          static_cast<std::uint8_t>(bits >> (byte * 8))});
-  }
-  return object;
-}
-
 loom::sim::RuntimeMemoryObject
 definedByteObject(llvm::ArrayRef<std::uint8_t> bytes) {
   loom::sim::RuntimeMemoryObject object;
@@ -267,21 +271,6 @@ applyMemoryDiff(const char *test,
   return result;
 }
 
-std::vector<loom::sim::SemanticMemoryByte> expectedVecaddBytes() {
-  loom::sim::RuntimeMemoryObject expected;
-  expected.initialBytes.reserve(64 * sizeof(float));
-  for (std::uint32_t index = 0; index < 64; ++index) {
-    const float value = static_cast<float>(index) * 1.5F;
-    std::uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    for (unsigned byte = 0; byte < sizeof(bits); ++byte)
-      expected.initialBytes.push_back(loom::sim::SemanticMemoryByte{
-          loom::sim::SemanticState::Defined,
-          static_cast<std::uint8_t>(bits >> (byte * 8))});
-  }
-  return expected.initialBytes;
-}
-
 void sourceCandidateExecutesThroughTypedDfgInput() {
   const char *test = "sourceCandidateExecutesThroughTypedDfgInput";
   llvm::SmallString<128> directory;
@@ -293,6 +282,8 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   auto design = take(test, loom::adg::buildBuiltinTarget(
                                store, loom::adg::BuiltinTargetPreset::Small));
+  auto nativeContext = std::make_unique<llvm::LLVMContext>();
+  auto nativeModule = parseVecadd(test, *nativeContext, false);
   llvm::LLVMContext context;
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseVecadd(test, context),
@@ -326,6 +317,15 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     if (binding.byteOffset != 0 || binding.objectIndex >= 3)
       fail(test, "vecadd capture binding has the wrong object projection");
 
+  loom::sim::NativeSimulationMemoryCapture nativeCapture =
+      take(test, loom::sim::executeNativeSimulationMemoryCapture(
+                     llvm::orc::ThreadSafeModule(std::move(nativeModule),
+                                                 std::move(nativeContext)),
+                     capturePlan));
+  if (nativeCapture.entryResult != 0 || nativeCapture.calls.size() != 1 ||
+      nativeCapture.calls.front().objects.size() != 3)
+    fail(test, "native vecadd oracle did not capture one complete call");
+
   auto slicePlan = take(
       test,
       loom::sim::deriveSimulationMemoryCapturePlan(
@@ -354,12 +354,13 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
 
   loom::sim::SpatialSimulationRuntimeInputDraft input{
       finalizedWorkload.identity()};
-  input.memoryObjects = {floatObject(1.0F), floatObject(0.5F),
-                         floatObject(0.0F)};
-  input.memoryRootBindings = {
-      loom::sim::RuntimeMemoryBindingDraft{memoryRoot(test, view, 0), 0, 0},
-      loom::sim::RuntimeMemoryBindingDraft{memoryRoot(test, view, 1), 1, 0},
-      loom::sim::RuntimeMemoryBindingDraft{memoryRoot(test, view, 2), 2, 0}};
+  for (const loom::sim::NativeCapturedMemoryObject &object :
+       nativeCapture.calls.front().objects)
+    input.memoryObjects.push_back(definedByteObject(object.initialBytes));
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       capturePlan.memoryRootBindings)
+    input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
+        binding.root, binding.objectIndex, binding.byteOffset});
   auto finalizedInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
                                        input, finalizedWorkload, view));
 
@@ -386,11 +387,8 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     }
   auto destination = report.finalMemoryState.find(destinationPort);
   if (destination == report.finalMemoryState.end() ||
-      destination->second.size() != 64 ||
-      destination->second.front() != "f32:0" ||
-      destination->second[2] != "f32:3" ||
-      destination->second.back() != "f32:94.500000")
-    fail(test, "typed DFG execution produced the wrong destination state");
+      destination->second.size() != 64)
+    fail(test, "typed DFG execution lost the destination state");
 
   if (execution.observations.valueResults.size() != 0 ||
       execution.observations.streamOutputs.size() != 0 ||
@@ -415,12 +413,18 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
           .memoryObjects[destinationBinding->binding.objectOrdinal]
           .initialBytes,
       *diff);
-  const auto expected = expectedVecaddBytes();
+  const loom::sim::SimulationMemoryRootCapture &capturedDestination =
+      captureBinding(test, capturePlan, destinationRoot);
+  llvm::ArrayRef<std::uint8_t> expected(
+      nativeCapture.calls.front()
+          .objects[capturedDestination.objectIndex]
+          .finalBytes);
+  expected = expected.drop_front(capturedDestination.byteOffset);
   if (reconstructed.size() != expected.size())
     fail(test, "typed DFG memory result has the wrong extent");
   for (std::size_t index = 0; index < expected.size(); ++index)
-    if (reconstructed[index].state != expected[index].state ||
-        reconstructed[index].value != expected[index].value)
+    if (reconstructed[index].state != loom::sim::SemanticState::Defined ||
+        reconstructed[index].value != expected[index])
       fail(test, "typed DFG memory diff reconstructs the wrong result");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);

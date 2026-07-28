@@ -18,6 +18,8 @@ add_mlir_library(LoomSimulator
   SimulationWireSupport.cpp
   SimulationWorkload.cpp
 
+  PARTIAL_SOURCES_INTENDED
+
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Simulator
 
@@ -32,4 +34,28 @@ add_mlir_library(LoomSimulator
   MLIRParser
   MLIRSupport
   LLVMSupport
+)
+
+if(LLVM_LINK_LLVM_DYLIB AND TARGET LLVM)
+  set(loom_native_oracle_llvm_libs LLVM)
+else()
+  llvm_map_components_to_libnames(loom_native_oracle_llvm_libs
+    Core
+    OrcJIT
+    Support
+    nativecodegen
+  )
+endif()
+
+add_mlir_library(LoomNativeSimulationOracle
+  NativeSimulationOracle.cpp
+
+  PARTIAL_SOURCES_INTENDED
+
+  ADDITIONAL_HEADER_DIRS
+  ${LOOM_SOURCE_DIR}/include/Simulator
+
+  LINK_LIBS PUBLIC
+  LoomSimulator
+  ${loom_native_oracle_llvm_libs}
 )

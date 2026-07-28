@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace loom::sim {
@@ -18,6 +19,8 @@ namespace loom::sim {
 struct SimulationMemoryCaptureObject {
   mlir::Value base;
   std::uint64_t byteCount = 0;
+  std::uint64_t callOperandOrdinal = 0;
+  std::uint64_t operandByteOffset = 0;
 };
 
 /// The exact projection from a Dataflow-owned logical root into one ephemeral
@@ -34,6 +37,9 @@ struct SimulationMemoryRootCapture {
 struct SimulationMemoryCapturePlan {
   dataflow::RootedGraphLaunchRef launch;
   mlir::LLVM::CallOp hostCall;
+  std::string hostCallerSymbol;
+  std::string hostCalleeSymbol;
+  std::uint64_t hostCallOrdinal = 0;
   std::vector<SimulationMemoryCaptureObject> objects;
   std::vector<SimulationMemoryRootCapture> memoryRootBindings;
 };
