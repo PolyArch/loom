@@ -7,6 +7,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -160,6 +161,15 @@ maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
   llvm::erase_if(
       accepted, [&](SyncEffectId effect) { return dominated[effect.value()]; });
   return accepted;
+}
+
+void reduceMaximalPair(llvm::SmallVectorImpl<SyncEffectId> &accepted,
+                       const Graph &successors) {
+  assert(accepted.size() == 2 && "pair reduction requires two effects");
+  if (reaches(successors, accepted[0], accepted[1]))
+    accepted.erase(accepted.begin());
+  else if (reaches(successors, accepted[1], accepted[0]))
+    accepted.pop_back();
 }
 
 Graph transitivelyReduced(const Graph &graph) {
@@ -379,11 +389,16 @@ llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
                   "effect " + llvm::Twine(duplicate->value()) +
                       " occurs more than once in an incoming frontier");
 
-  if (accepted.size() > 1)
+  if (accepted.size() == 2)
+    reduceMaximalPair(accepted, facts_.sequenced);
+  else if (accepted.size() > 2)
     accepted = maximalCandidates(accepted, sequencedPredecessors_);
-  llvm::SmallVector<SyncEffectId, 2> relationPredecessors =
-      accepted.size() > 1 ? maximalCandidates(accepted, predecessors_)
-                          : accepted;
+  llvm::SmallVector<SyncEffectId, 2> relationPredecessors(accepted);
+  if (relationPredecessors.size() == 2)
+    reduceMaximalPair(relationPredecessors, relation_);
+  else if (relationPredecessors.size() > 2)
+    relationPredecessors =
+        maximalCandidates(relationPredecessors, predecessors_);
 
   const SyncEffectId effect(facts_.effects);
   ++facts_.effects;
