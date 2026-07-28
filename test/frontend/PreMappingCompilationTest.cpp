@@ -285,7 +285,7 @@ entry:
 
 loop:
   %remaining = phi i32 [ %count, %entry ], [ %next_remaining, %loop ]
-  %pa = phi ptr [ %a, %entry ], [ %current_a, %loop ]
+  %pa = phi ptr [ %a, %entry ], [ %next_a, %loop ]
   %pb = phi ptr [ %b, %entry ], [ %next_b, %loop ]
   %pc = phi ptr [ %c, %entry ], [ %next_c, %loop ]
   %current_a = getelementptr inbounds i8, ptr %pa, i64 4
@@ -293,6 +293,7 @@ loop:
   %rhs = load float, ptr %pb, align 4
   %sum = fadd float %lhs, %rhs
   store float %sum, ptr %pc, align 4
+  %next_a = getelementptr inbounds i8, ptr %pa, i64 8
   %next_b = getelementptr inbounds i8, ptr %pb, i64 4
   %next_c = getelementptr inbounds i8, ptr %pc, i64 4
   %next_remaining = add i32 %remaining, -1

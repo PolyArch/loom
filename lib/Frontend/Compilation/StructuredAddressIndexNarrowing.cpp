@@ -337,6 +337,13 @@ bool collectPointerAccessElementType(mlir::Value pointer,
       if (store.getAddr() != pointer)
         return false;
       current = store.getValue().getType();
+    } else if (auto gep =
+                   llvm::dyn_cast<mlir::LLVM::GEPOp>(use.getOwner())) {
+      if (gep.getBase() != pointer ||
+          !collectPointerAccessElementType(gep.getResult(), ignored, region,
+                                           accessType, foundAccess))
+        return false;
+      continue;
     } else {
       return false;
     }
