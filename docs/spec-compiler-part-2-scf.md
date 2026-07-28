@@ -580,6 +580,19 @@ Sn uses two ownership carriers:
   `loom.spatial_yield`, marks one selected SpatialCore boundary inside a
   thread. It is semantically transparent to inlining.
 
+Every ownership cut is the smallest structured scope closed over the data,
+control, memory, channel, and ownership dependences changed by the decision.
+Its dynamic live-ins are explicit `loom.spatial_region` inputs and its value
+live-outs are explicit region results. When materialization introduces a new
+rank-zero thread launch inside an existing LLVM callable, an ordinary value
+live-out crosses that thread boundary through caller-owned result storage: the
+caller allocates the slot, passes it as a thread-only input, waits for thread
+completion, and then loads the value. The selected graph returns the value to
+InstructionCore code inside the thread, which stores it into that slot. The
+slot is not a Spatial-region memory input, and `dataflow.thread` gains no data
+result. Memory capabilities and channels continue to use their existing typed
+boundary relations and are never encoded as ordinary result-slot values.
+
 `loom.spatial_region` has no launch, firing, Mapping, runtime-state, or
 hardware-configuration semantics. Mechanical Part 3 lowering consumes Sn
 without changing any structured choice, atomically publishes D0, and removes

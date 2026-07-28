@@ -188,6 +188,14 @@ hardware identity and cannot hide effects. Reusing canonical `dataflow.graph`
 would pollute Dataflow with residual SCF; using an attribute on a generic
 region would not enforce explicit capture and boundary semantics.
 
+`dataflow.thread` deliberately has no data-result ABI. A rank-zero extracted
+region may nevertheless produce ordinary values: its graph returns them to
+the thread's InstructionCore continuation, which writes caller-owned result
+storage before completing. Extending thread launch with scalar results would
+look simpler for one launch, but would introduce a second aggregation contract
+for multi-instance thread domains. Reusing the ordinary stored-program memory
+boundary keeps one thread completion model and leaves aggregation explicit.
+
 Finalization is whole-program and failure-atomic. Unsupported selected regions
 do not silently fall back to the InstructionCore during lowering. The DSE must
 select a different Structured Program Candidate if it wants a different

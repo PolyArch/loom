@@ -114,13 +114,17 @@ llvm::Error verifyEligibleCallable(mlir::LLVM::LLVMFuncOp function) {
 /// into the region's ordinary values and memory capabilities.
 struct SpatialThreadBoundary {
   dataflow::ThreadOp thread;
+  loom::SpatialRegionOp spatial;
   mlir::Block *spatialEntry;
   llvm::SmallVector<mlir::Value> captureArguments;
+  llvm::SmallVector<mlir::Value> threadOnlyArguments;
 };
 
 llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
     mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp sourceCallable,
-    mlir::ValueRange captures, mlir::Location location) {
+    mlir::ValueRange captures, mlir::ValueRange threadOnlyCaptures,
+    mlir::TypeRange valueResultTypes, mlir::TypeRange memoryResultTypes,
+    mlir::Location location) {
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder builder(context);
   const std::string threadName =
@@ -129,14 +133,16 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
       uniqueSymbol(module, "__loom_graph_", sourceCallable.getSymName());
 
   builder.setInsertionPointToEnd(module.getBody());
+  llvm::SmallVector<mlir::Type, 8> threadInputTypes(captures.getTypes());
+  llvm::append_range(threadInputTypes, threadOnlyCaptures.getTypes());
   auto thread = dataflow::ThreadOp::create(
       builder, location, threadName,
-      builder.getFunctionType(captures.getTypes(), mlir::TypeRange{}),
+      builder.getFunctionType(threadInputTypes, mlir::TypeRange{}),
       dataflow::ThreadDomainAttr::get(context));
   thread.setSymVisibilityAttr(builder.getStringAttr("private"));
 
   llvm::SmallVector<mlir::DictionaryAttr, 8> argumentAttrs;
-  argumentAttrs.reserve(captures.size());
+  argumentAttrs.reserve(captures.size() + threadOnlyCaptures.size());
   for (mlir::Value capture : captures) {
     mlir::DictionaryAttr attrs = mlir::DictionaryAttr::get(context);
     if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(capture))
@@ -145,10 +151,12 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
             sourceCallable, argument.getArgNumber());
     argumentAttrs.push_back(attrs);
   }
+  for ([[maybe_unused]] mlir::Value capture : threadOnlyCaptures)
+    argumentAttrs.push_back(mlir::DictionaryAttr::get(context));
   mlir::function_interface_impl::setAllArgAttrDicts(thread, argumentAttrs);
 
   mlir::Block *threadEntry = builder.createBlock(&thread.getBody());
-  for (mlir::Type type : captures.getTypes())
+  for (mlir::Type type : threadInputTypes)
     threadEntry->addArgument(type, location);
   threadEntry->addArgument(builder.getNoneType(), location);
 
@@ -176,7 +184,7 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
   builder.setInsertionPointToStart(threadEntry);
   auto spatial = loom::SpatialRegionOp::create(
       builder, location, values, mlir::ValueRange{}, memories,
-      mlir::ValueRange{}, mlir::TypeRange{}, mlir::TypeRange{},
+      mlir::ValueRange{}, valueResultTypes, memoryResultTypes,
       builder.getArrayAttr({}), builder.getStringAttr(graphName));
   mlir::Block *spatialEntry = builder.createBlock(&spatial.getBody());
   for (mlir::Type type : spatial.getOperandTypes())
@@ -190,8 +198,14 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
   for (std::size_t index = 0; index < captures.size(); ++index)
     captureArguments.push_back(
         spatialEntry->getArgument(spatialArgument[index]));
-  return SpatialThreadBoundary{thread, spatialEntry,
-                               std::move(captureArguments)};
+  llvm::SmallVector<mlir::Value, 4> threadOnlyArguments;
+  threadOnlyArguments.reserve(threadOnlyCaptures.size());
+  for (std::size_t index = 0; index < threadOnlyCaptures.size(); ++index)
+    threadOnlyArguments.push_back(
+        threadEntry->getArgument(captures.size() + index));
+  return SpatialThreadBoundary{thread, spatial, spatialEntry,
+                               std::move(captureArguments),
+                               std::move(threadOnlyArguments)};
 }
 
 llvm::Error materializeThread(mlir::ModuleOp module,
@@ -230,8 +244,9 @@ llvm::Error materializeThread(mlir::ModuleOp module,
     captures.push_back(address.getRes());
   for (mlir::LLVM::UndefOp undef : undefCaptures)
     captures.push_back(undef.getRes());
-  auto boundary =
-      createSpatialThreadBoundary(module, function, captures, location);
+  auto boundary = createSpatialThreadBoundary(
+      module, function, captures, mlir::ValueRange{}, mlir::TypeRange{},
+      mlir::TypeRange{}, location);
   if (!boundary)
     return boundary.takeError();
 
@@ -301,9 +316,8 @@ OwnershipScopeAnalysis analyzeOwnershipScope(mlir::Operation *operation) {
   return {callable, OwnershipScopeRejection::None};
 }
 
-/// Returns the ordinary LLVM callable that owns the selected operation, after
-/// proving the operation is an ownership-free structured entity with no SSA
-/// result used outside itself.
+/// Returns the ordinary LLVM callable that owns the selected operation after
+/// proving that the operation is an ownership-free structured entity.
 llvm::Expected<mlir::LLVM::LLVMFuncOp>
 eligibleOwningCallable(mlir::Operation *operation) {
   OwnershipScopeAnalysis analysis = analyzeOwnershipScope(operation);
@@ -318,16 +332,12 @@ eligibleOwningCallable(mlir::Operation *operation) {
   case OwnershipScopeRejection::NoRegion:
     return invalid("selected operation owns no region");
   }
-  for (mlir::OpResult result : operation->getResults())
-    for (mlir::Operation *user : result.getUsers())
-      if (!operation->isProperAncestor(user))
-        return invalid(
-            "selected operation has an SSA result used outside itself");
   return analysis.callable;
 }
 
 struct OperationClosure {
   llvm::SmallVector<mlir::Value> liveIns;
+  llvm::SmallVector<mlir::Value> liveOuts;
   llvm::SmallVector<mlir::arith::ConstantOp> constants;
 };
 
@@ -355,6 +365,9 @@ OperationClosure deriveOperationClosure(mlir::Operation *operation) {
     }
     return mlir::WalkResult::advance();
   });
+  for (mlir::OpResult result : operation->getResults())
+    if (!result.use_empty())
+      closure.liveOuts.push_back(result);
   return closure;
 }
 
@@ -363,15 +376,41 @@ llvm::Error materializePreparedOperation(mlir::ModuleOp module,
   auto callable = eligibleOwningCallable(operation);
   if (!callable)
     return callable.takeError();
-  const OperationClosure closure = deriveOperationClosure(operation);
+  OperationClosure closure = deriveOperationClosure(operation);
   mlir::Location location = operation->getLoc();
-  auto boundary =
-      createSpatialThreadBoundary(module, *callable, closure.liveIns, location);
+  mlir::MLIRContext *context = module.getContext();
+  mlir::OpBuilder builder(context);
+
+  llvm::SmallVector<mlir::Value, 4> resultSlots;
+  if (!closure.liveOuts.empty()) {
+    builder.setInsertionPointToStart(&callable->getBody().front());
+    mlir::Value one = mlir::LLVM::ConstantOp::create(
+        builder, location, builder.getI64Type(), builder.getI64IntegerAttr(1));
+    mlir::Type pointerType = mlir::LLVM::LLVMPointerType::get(context);
+    resultSlots.reserve(closure.liveOuts.size());
+    for (mlir::Value liveOut : closure.liveOuts) {
+      if (dataflow::DataflowDialect::containsMemoryCapability(
+              liveOut.getType()))
+        return invalid("selected operation has an externally used memory "
+                       "capability result that cannot cross a thread as data");
+      if (!mlir::LLVM::isLoadableType(liveOut.getType()))
+        return invalid("selected operation has an externally used result "
+                       "that cannot be materialized in caller-owned storage");
+      resultSlots.push_back(mlir::LLVM::AllocaOp::create(
+          builder, location, pointerType, liveOut.getType(), one));
+    }
+  }
+
+  llvm::SmallVector<mlir::Type, 4> valueResultTypes;
+  valueResultTypes.reserve(closure.liveOuts.size());
+  for (mlir::Value liveOut : closure.liveOuts)
+    valueResultTypes.push_back(liveOut.getType());
+  auto boundary = createSpatialThreadBoundary(
+      module, *callable, closure.liveIns, resultSlots, valueResultTypes,
+      mlir::TypeRange{}, location);
   if (!boundary)
     return boundary.takeError();
 
-  mlir::MLIRContext *context = module.getContext();
-  mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
   for (auto [index, liveIn] : llvm::enumerate(closure.liveIns))
     mapping.map(liveIn, boundary->captureArguments[index]);
@@ -379,17 +418,34 @@ llvm::Error materializePreparedOperation(mlir::ModuleOp module,
   for (mlir::arith::ConstantOp constant : closure.constants)
     builder.clone(*constant, mapping);
   builder.clone(*operation, mapping);
-  loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
+  llvm::SmallVector<mlir::Value, 4> yieldedValues;
+  yieldedValues.reserve(closure.liveOuts.size());
+  for (mlir::Value liveOut : closure.liveOuts)
+    yieldedValues.push_back(mapping.lookup(liveOut));
+  loom::SpatialYieldOp::create(builder, location, yieldedValues,
                                mlir::ValueRange{});
+
+  builder.setInsertionPoint(boundary->thread.getBody().front().getTerminator());
+  for (auto [value, slot] : llvm::zip_equal(boundary->spatial.getValueResults(),
+                                            boundary->threadOnlyArguments))
+    mlir::LLVM::StoreOp::create(builder, location, value, slot);
 
   builder.setInsertionPoint(operation);
   mlir::FlatSymbolRefAttr callee =
       mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
+  llvm::SmallVector<mlir::Value, 8> launchOperands(closure.liveIns.begin(),
+                                                   closure.liveIns.end());
+  llvm::append_range(launchOperands, resultSlots);
   auto launch = dataflow::ThreadLaunchOp::create(
-      builder, location, callee, closure.liveIns, mlir::ValueRange{},
+      builder, location, callee, launchOperands, mlir::ValueRange{},
       mlir::ValueRange{});
   dataflow::ThreadWaitOp::create(builder, location,
                                  mlir::ValueRange{launch.getAsyncToken()});
+  for (auto [liveOut, slot] : llvm::zip_equal(closure.liveOuts, resultSlots)) {
+    mlir::Value loaded =
+        mlir::LLVM::LoadOp::create(builder, location, liveOut.getType(), slot);
+    liveOut.replaceAllUsesWith(loaded);
+  }
   operation->erase();
   return llvm::Error::success();
 }

@@ -183,12 +183,15 @@ materializeWholeCallableSpatialOwnership(
 /// Materializes the explicit SpatialCore ownership choice for one exact
 /// structured operation inside an ordinary LLVM callable. The operation must
 /// sit outside any dataflow.thread, dataflow.graph, or loom.spatial_region,
-/// own at least one region, and have no SSA result used outside itself. Every
-/// external SSA live-in becomes an explicit input of one new private rank-zero
-/// dataflow.thread holding one loom.spatial_region; the original LLVM callable
-/// remains the ABI authority and launches that thread at the operation's exact
-/// position. Fabric is used only for hard-negative actor-capability pruning;
-/// this function performs no Mapping or QoR choice.
+/// and own at least one region. Every external SSA live-in becomes an explicit
+/// input of one new private rank-zero dataflow.thread holding one
+/// loom.spatial_region. Value live-outs are graph results consumed by
+/// InstructionCore code in that thread and cross the thread boundary through
+/// caller-owned result storage; dataflow.thread itself has no data results.
+/// The original LLVM callable remains the ABI authority and launches that
+/// thread at the operation's exact position. Fabric is used only for
+/// hard-negative actor-capability pruning; this function performs no Mapping
+/// or QoR choice.
 llvm::Expected<MaterializedOwnershipCandidate>
 materializeOperationSpatialOwnership(
     const StructuredProgramCandidate &parent,

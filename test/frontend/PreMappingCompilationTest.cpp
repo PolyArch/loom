@@ -1529,11 +1529,11 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
 }
 
-void operationSpatialOwnershipRejectsEscapedResult() {
-  const char *test = "operationSpatialOwnershipRejectsEscapedResult";
+void operationSpatialOwnershipExternalizesEscapedResult() {
+  const char *test = "operationSpatialOwnershipExternalizesEscapedResult";
   llvm::SmallString<128> directory;
   std::error_code error =
-      llvm::sys::fs::createUniqueDirectory("loom-operation-reject", directory);
+      llvm::sys::fs::createUniqueDirectory("loom-operation-liveout", directory);
   if (error)
     fail(test, "cannot create artifact store directory: " + error.message());
   loom::ArtifactStore store(directory);
@@ -1544,15 +1544,60 @@ void operationSpatialOwnershipRejectsEscapedResult() {
   auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
                                  parseEscapedLoopModule(test, context),
                                  design.roots().front().reference(), store));
-  auto selected = loom::frontend::materializeOperationSpatialOwnership(
-      compiled.structuredProgram,
-      findStructuredLoop(test, compiled.structuredProgram, "accum"),
-      design.roots().front());
-  if (selected)
-    fail(test, "operation with an externally used result was materialized");
-  std::string message = llvm::toString(selected.takeError());
-  if (message.find("used outside") == std::string::npos)
-    fail(test, "rejection did not name the escaped SSA result: " + message);
+  loom::frontend::OperationSpatialOwnershipOptions options;
+  options.canonicalIndexWidth = 32;
+  auto selected = take(
+      test, loom::frontend::materializeOperationSpatialOwnership(
+                compiled.structuredProgram,
+                findStructuredLoop(test, compiled.structuredProgram, "accum"),
+                design.roots().front(), options));
+
+  auto wrapper =
+      selected.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "accum");
+  if (!wrapper || wrapper.getFunctionType().getReturnType() !=
+                      mlir::IntegerType::get(wrapper.getContext(), 32))
+    fail(test, "ownership materialization changed the LLVM result ABI");
+
+  dataflow::ThreadLaunchOp launch;
+  dataflow::ThreadWaitOp wait;
+  mlir::LLVM::LoadOp resultLoad;
+  mlir::LLVM::ReturnOp resultReturn;
+  wrapper.walk([&](mlir::Operation *operation) {
+    if (auto candidate = llvm::dyn_cast<dataflow::ThreadLaunchOp>(operation))
+      launch = candidate;
+    else if (auto candidate = llvm::dyn_cast<dataflow::ThreadWaitOp>(operation))
+      wait = candidate;
+    else if (auto candidate = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation))
+      resultLoad = candidate;
+    else if (auto candidate = llvm::dyn_cast<mlir::LLVM::ReturnOp>(operation))
+      resultReturn = candidate;
+  });
+  if (!launch || !wait || !resultLoad || !resultReturn ||
+      resultReturn.getNumOperands() != 1 ||
+      resultReturn.getOperand(0) != resultLoad.getResult())
+    fail(test, "escaped result was not loaded after thread completion");
+
+  dataflow::ThreadOp thread;
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ThreadOp candidate) { thread = candidate; });
+  if (!thread || !thread.getFunctionType().getResults().empty())
+    fail(test, "escaped result invented a thread data result");
+  bool storedResult = false;
+  thread.walk([&](mlir::LLVM::StoreOp store) {
+    storedResult |= store.getValue().getType().isInteger(32);
+  });
+  if (!storedResult)
+    fail(test,
+         "thread did not publish the escaped value through its result slot");
+
+  auto view = take(test, selected.canonicalDataflow.view());
+  auto graph = view.graphs().size() == 1
+                   ? llvm::dyn_cast<dataflow::GraphOp>(view.graphs().front().op)
+                   : dataflow::GraphOp{};
+  if (!graph || graph.getFunctionType().getNumResults() != 1 ||
+      !graph.getFunctionType().getResult(0).isInteger(32))
+    fail(test, "canonical graph did not retain the selected i32 result");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1809,7 +1854,7 @@ int main() {
   operationFmulAddDecisionIsCandidateLocal();
   ownershipDecisionDomainIsScopeLocalAndTyped();
   unifiedOwnershipDomainMaterializesExplicitDecision();
-  operationSpatialOwnershipRejectsEscapedResult();
+  operationSpatialOwnershipExternalizesEscapedResult();
   structuredFabricEvaluationRanksMaterializedOwnership();
   llvm::outs() << "pre-Mapping compilation anchor passed\n";
   return EXIT_SUCCESS;
