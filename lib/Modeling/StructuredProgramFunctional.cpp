@@ -118,6 +118,42 @@ std::optional<SourceObservationCacheEntry> &sourceObservationCache() {
   return cache;
 }
 
+bool haveEquivalentSourceObservations(
+    const sim::NativeStructuredProgramObservations &lhs,
+    const sim::NativeStructuredProgramObservations &rhs) {
+  if (!sim::haveEquivalentFunctionalObservations(lhs, rhs) ||
+      lhs.blockActivations.size() != rhs.blockActivations.size())
+    return false;
+  return llvm::equal(
+      lhs.blockActivations, rhs.blockActivations,
+      [](const sim::NativeStructuredBlockActivation &lhsActivation,
+         const sim::NativeStructuredBlockActivation &rhsActivation) {
+        return lhsActivation.block == rhsActivation.block &&
+               lhsActivation.activations == rhsActivation.activations;
+      });
+}
+
+llvm::Error primeSourceObservationCache(
+    const ArtifactRootReference &source,
+    const ArtifactRootReference &workloadReference,
+    const ArtifactRootReference &runtimeInputReference,
+    const sim::NativeStructuredProgramObservations &observations) {
+  std::optional<SourceObservationCacheEntry> &cache = sourceObservationCache();
+  if (cache && cache->source == source &&
+      cache->workload == workloadReference &&
+      cache->runtimeInput == runtimeInputReference) {
+    if (!haveEquivalentSourceObservations(cache->observations, observations))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_functional_model_invalid: nondeterministic source "
+          "observations");
+    return llvm::Error::success();
+  }
+  cache.emplace(SourceObservationCacheEntry{
+      source, workloadReference, runtimeInputReference, observations});
+  return llvm::Error::success();
+}
+
 enum class ReplayResultKind : std::uint8_t {
   Equivalent,
   Mismatch,
@@ -312,13 +348,12 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       frontend::structuredProgramArtifactSchema.identity.str(),
       frontend::structuredProgramArtifactSchema.version,
       inputs->structuredProgram.identity()};
-  auto sourceObservations = sourceObservationsFor(
-      source, *request.workload(), *request.runtimeInput(), *inputs);
-  if (!sourceObservations)
-    return classifyNativeFailure(sourceObservations.takeError());
-
   bool mismatch = false;
   if (candidate->identity() != inputs->structuredProgram.identity()) {
+    auto sourceObservations = sourceObservationsFor(
+        source, *request.workload(), *request.runtimeInput(), *inputs);
+    if (!sourceObservations)
+      return classifyNativeFailure(sourceObservations.takeError());
     auto selectedObservations = sim::executeSelectedStructuredProgram(
         *candidate, inputs->structuredProgram, inputs->workload,
         inputs->runtimeInput);
@@ -441,6 +476,15 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: replay invocation mismatch");
+
+  const ArtifactRootReference sourceReference{
+      frontend::structuredProgramArtifactSchema.identity.str(),
+      frontend::structuredProgramArtifactSchema.version,
+      invocation.sourceProgram.identity()};
+  if (llvm::Error error = primeSourceObservationCache(
+          sourceReference, invocation.workload, invocation.runtimeInput,
+          invocation.sourceObservations))
+    return error;
 
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.scope, invocation.decision,

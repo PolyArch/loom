@@ -3,6 +3,7 @@
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/Promotion.h"
+#include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -32,6 +33,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -296,6 +298,79 @@ evaluateCanonicalDataflowRuntime(const loom::ArtifactRootReference &program,
                       loom::evaluation::MetricKind::Runtime);
 }
 
+void verifyStagedOwnershipEvidence(
+    const loom::dse::CompletedPreMappingSelection &selection,
+    const loom::ArtifactRootReference &source,
+    const loom::ArtifactRootReference &profitableCandidate,
+    const loom::ArtifactRootReference &unprofitableCandidate,
+    const loom::ArtifactRootReference &fabric,
+    const loom::ArtifactRootReference &workload,
+    const loom::ArtifactRootReference &runtimeInput,
+    const loom::ArtifactStore &store) {
+  std::map<loom::ArtifactRootReference,
+           std::vector<loom::ArtifactRootReference>,
+           decltype(&loom::artifactRootReferenceLess)>
+      closures(&loom::artifactRootReferenceLess);
+  closures[source];
+  closures[fabric];
+  closures[workload] = {source};
+  closures[runtimeInput] = {source, workload};
+  for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
+       selection.dispositions)
+    if (const auto *candidate =
+            std::get_if<loom::ArtifactRootReference>(&disposition.result))
+      closures[*candidate];
+
+  std::vector<loom::evaluation::CaseArtifactResolution::Entry> entries;
+  entries.reserve(closures.size());
+  for (auto &[reference, closure] : closures)
+    entries.push_back({reference, std::move(closure)});
+  const loom::evaluation::CaseArtifactResolution resolution =
+      take(loom::evaluation::CaseArtifactResolution::get(std::move(entries)));
+
+  struct EvidenceCounts final {
+    std::size_t cost = 0;
+    std::size_t functional = 0;
+  };
+  std::map<loom::ArtifactRootReference, EvidenceCounts,
+           decltype(&loom::artifactRootReferenceLess)>
+      counts(&loom::artifactRootReferenceLess);
+  for (const loom::ArtifactRootReference &evidenceReference :
+       selection.satisfiedEvidence) {
+    const loom::evaluation::EvaluationEvidence evidence =
+        take(loom::evaluation::importEvaluationEvidence(evidenceReference,
+                                                        resolution, store));
+    const loom::evaluation::EvaluationRequest request =
+        take(loom::evaluation::importEvaluationRequest(evidence.requestRef(),
+                                                       resolution, store));
+    llvm::ArrayRef<loom::ArtifactRootReference> candidates =
+        request.subjectBindings().subjects(
+            loom::evaluation::CaseSubjectRoleRef(0));
+    if (candidates.size() != 1)
+      fail("ownership Evidence lost its singular candidate binding");
+    EvidenceCounts &candidateCounts = counts[candidates.front()];
+    if (!request.metricRequests().empty() &&
+        request.findingRequests().empty()) {
+      ++candidateCounts.cost;
+      continue;
+    }
+    if (request.metricRequests().empty() &&
+        request.findingRequests().size() == 1) {
+      ++candidateCounts.functional;
+      continue;
+    }
+    fail("ownership Evidence has an unexpected obligation shape");
+  }
+
+  if (counts[source].cost != 1 || counts[source].functional != 1 ||
+      counts[profitableCandidate].cost != 1 ||
+      counts[profitableCandidate].functional != 1 ||
+      counts[unprofitableCandidate].cost != 1 ||
+      counts[unprofitableCandidate].functional != 0)
+    fail("ownership DSE acquired expensive functional Evidence before the "
+         "resolved benefit gate");
+}
+
 void runEvaluationAnchor() {
   llvm::SmallString<128> directory;
   std::error_code error = llvm::sys::fs::createUniqueDirectory(
@@ -371,7 +446,8 @@ void runEvaluationAnchor() {
               spatialRef,
               {inputs.workloadReference, inputs.runtimeInputReference,
                compiled.structuredProgram, spatialScope, spatialDecision,
-               spatial, inputs.workload, inputs.runtimeInput},
+               spatial, inputs.workload, inputs.runtimeInput,
+               inputs.observations},
               store))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
@@ -379,7 +455,7 @@ void runEvaluationAnchor() {
               coldRef,
               {inputs.workloadReference, inputs.runtimeInputReference,
                compiled.structuredProgram, coldScope, coldDecision, cold,
-               inputs.workload, inputs.runtimeInput},
+               inputs.workload, inputs.runtimeInput, inputs.observations},
               store))
     fail(llvm::toString(std::move(error)));
   const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{
@@ -553,19 +629,10 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
-  const std::size_t materializedCandidates =
-      1 + static_cast<std::size_t>(llvm::count_if(
-              exploredSelection->dispositions,
-              [](const loom::dse::StructuredOwnershipCandidateDisposition
-                     &disposition) {
-                return std::holds_alternative<loom::ArtifactRootReference>(
-                    disposition.result);
-              }));
-  if (materializedCandidates == 0 ||
-      exploredSelection->satisfiedEvidence.size() !=
-          materializedCandidates * 2 - 1)
-    fail("central ownership exploration did not retain functional Evidence "
-         "while withholding cost Evidence from the inapplicable candidate");
+  verifyStagedOwnershipEvidence(*exploredSelection, baselineRef, spatialRef,
+                                coldRef, design.roots().front().reference(),
+                                inputs.workloadReference,
+                                inputs.runtimeInputReference, store);
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||

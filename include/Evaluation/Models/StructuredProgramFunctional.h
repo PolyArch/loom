@@ -22,6 +22,7 @@ class StructuredProgramCandidate;
 namespace loom::sim {
 class CanonicalSimulationRuntimeInput;
 class CanonicalSimulationWorkload;
+struct NativeStructuredProgramObservations;
 } // namespace loom::sim
 
 namespace loom::evaluation::models {
@@ -46,6 +47,7 @@ struct StructuredProgramFunctionalReplayInvocation final {
   const ::loom::frontend::MaterializedOwnershipCandidate &candidate;
   const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
   const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;
+  const ::loom::sim::NativeStructuredProgramObservations &sourceObservations;
 };
 
 /// Registers the exact source-versus-selected Structured functional model.
