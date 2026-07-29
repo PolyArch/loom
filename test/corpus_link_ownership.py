@@ -24,6 +24,12 @@ class LinkedWorkloadModules:
     object_sources: tuple[tuple[Path, Path], ...]
 
 
+@dataclass(frozen=True)
+class LinkSelection:
+    prevailing_definitions: tuple[tuple[str, str], ...]
+    selected_owners: tuple[str, ...]
+
+
 def load_compilation_owners(
     path: Path,
 ) -> tuple[tuple[tuple[Path, Path], ...] | None, str | None]:
@@ -63,16 +69,19 @@ def load_compilation_owners(
     return tuple(sorted(owners.items(), key=lambda item: str(item[0]))), None
 
 
-def _parse_prevailing_definitions(
+def _parse_link_selection(
     path: Path,
-) -> tuple[dict[str, str] | None, str | None]:
+) -> tuple[LinkSelection | None, str | None]:
     try:
         lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
     except (OSError, UnicodeError) as exc:
         return None, f"cannot read LLD resolution report {path}: {exc}"
     definitions: dict[str, str] = {}
+    selected_owners: list[str] = []
     for line in lines:
         if not line.startswith("-r="):
+            if line:
+                selected_owners.append(line)
             continue
         fields = line[3:].rsplit(",", 2)
         if len(fields) != 3 or not fields[0] or not fields[1]:
@@ -86,7 +95,13 @@ def _parse_prevailing_definitions(
                 f"symbol {symbol!r} has multiple prevailing owners in {path}"
             )
         definitions[symbol] = owner
-    return definitions, None
+    return (
+        LinkSelection(
+            prevailing_definitions=tuple(sorted(definitions.items())),
+            selected_owners=tuple(dict.fromkeys(selected_owners)),
+        ),
+        None,
+    )
 
 
 _ARCHIVE_OWNER = re.compile(r"^(?P<archive>.+\.a)\((?P<member>.+) at (?P<offset>[0-9]+)\)$")
@@ -210,6 +225,78 @@ def _resolve_archive_member_object(
     return None, f"archive owner offset is absent from {archive}: {requested_offset}"
 
 
+_TEXT_DEFINITION_KINDS = frozenset({"T", "t", "W"})
+
+
+def _read_text_definitions(
+    object_path: Path, llvm_nm: Path
+) -> tuple[frozenset[str] | None, str | None]:
+    try:
+        output = _run_quiet([str(llvm_nm), "-a", "--format=posix", str(object_path)])
+    except LinkOwnershipError as exc:
+        return None, str(exc)
+    definitions: set[str] = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            return None, f"malformed llvm-nm POSIX record for {object_path}: {line!r}"
+        if fields[1] in _TEXT_DEFINITION_KINDS:
+            definitions.add(fields[0])
+    return frozenset(definitions), None
+
+
+def _resolve_selected_internal_owners(
+    callable_names: frozenset[str],
+    selected_owners: Sequence[str],
+    linked: LinkedWorkloadModules,
+    llvm_ar: Path,
+) -> tuple[dict[str, str] | None, str | None]:
+    llvm_nm = llvm_ar.with_name("llvm-nm")
+    definitions_by_object: dict[Path, frozenset[str]] = {}
+    owners_by_object: dict[Path, str] = {}
+    matches: dict[str, list[str]] = {name: [] for name in callable_names}
+    for owner in selected_owners:
+        if _ARCHIVE_OWNER.fullmatch(owner) is None:
+            object_path = _normalize_link_path(owner, linked.link_root)
+        else:
+            object_path, defect = _resolve_archive_member_object(
+                owner, linked, llvm_ar
+            )
+            if defect is not None:
+                return None, defect
+            assert object_path is not None
+        previous_owner = owners_by_object.get(object_path)
+        if previous_owner is not None and previous_owner != owner:
+            return None, (
+                f"selected object has multiple linker owner records: {object_path}"
+            )
+        owners_by_object[object_path] = owner
+        definitions = definitions_by_object.get(object_path)
+        if definitions is None:
+            definitions, defect = _read_text_definitions(object_path, llvm_nm)
+            if defect is not None:
+                return None, defect
+            assert definitions is not None
+            definitions_by_object[object_path] = definitions
+        for callable_name in definitions.intersection(callable_names):
+            matches[callable_name].append(owner)
+    resolved: dict[str, str] = {}
+    for callable_name in sorted(callable_names):
+        owners = matches[callable_name]
+        if not owners:
+            return None, (
+                f"selected callable {callable_name!r} has no exact definition in the "
+                "linker-selected object set"
+            )
+        if len(owners) != 1:
+            return None, (
+                f"selected callable {callable_name!r} has multiple definitions in the "
+                "linker-selected object set"
+            )
+        resolved[callable_name] = owners[0]
+    return resolved, None
+
+
 def _canonical_corpus_source(
     source: Path, external_root: Path, repo_root: Path
 ) -> str | None:
@@ -232,21 +319,33 @@ def resolve_selected_corpus_sources(
     repo_root: Path,
     allowed_sources: frozenset[str],
 ) -> tuple[tuple[str, ...] | None, str | None]:
-    definitions, defect = _parse_prevailing_definitions(linked.resolution)
+    selection, defect = _parse_link_selection(linked.resolution)
     if defect is not None:
         return None, defect
-    assert definitions is not None
+    assert selection is not None
+    definitions = dict(selection.prevailing_definitions)
+    missing_callables = frozenset(
+        callable_name
+        for callable_name in selected_callables
+        if callable_name not in definitions
+    )
+    if missing_callables:
+        internal_definitions, defect = _resolve_selected_internal_owners(
+            missing_callables,
+            selection.selected_owners,
+            linked,
+            llvm_ar,
+        )
+        if defect is not None:
+            return None, defect
+        assert internal_definitions is not None
+        definitions.update(internal_definitions)
     object_sources = {
         output.resolve(): source.resolve() for output, source in linked.object_sources
     }
     selected_sources: set[str] = set()
     for callable_name in selected_callables:
-        owner = definitions.get(callable_name)
-        if owner is None:
-            return None, (
-                f"selected callable {callable_name!r} has no exact prevailing "
-                f"definition in {linked.resolution}"
-            )
+        owner = definitions[callable_name]
         if _ARCHIVE_OWNER.fullmatch(owner) is None:
             object_path = _normalize_link_path(owner, linked.link_root)
         else:

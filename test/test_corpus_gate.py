@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -492,6 +493,66 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 "externals/cmsis-nn/Source/BasicMathFunctions/"
                 "arm_elementwise_add_s8.c",
             ),
+        )
+
+    def test_selected_source_projection_resolves_selected_internal_symbol(self) -> None:
+        build = self.work / "build"
+        archive = build / "libkernels.a"
+        archive.parent.mkdir()
+        archive.write_bytes(b"archive")
+        obj = build / "obj" / "kernel.c.obj"
+        source = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Source"
+            / "TransposeFunctions"
+            / "arm_transpose_s8.c"
+        )
+        resolution = build / "program.resolution.txt"
+        resolution.write_text("libkernels.a(kernel.c.obj at 64)\n")
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=build / "program.ll",
+            resolution=resolution,
+            link_root=build,
+            object_sources=((obj, source),),
+        )
+        query = (
+            "libkernels.a:\n"
+            "  input: C_STATIC_LIBRARY_LINKER\n"
+            "    obj/kernel.c.obj\n"
+            "  outputs:\n"
+        )
+        nm = "local_kernel t ---------------- 0\n"
+
+        def run_tool(command: Sequence[str]) -> str:
+            if command[0].endswith("llvm-ar"):
+                return "kernel.c.obj 0x7c\n"
+            if command[0].endswith("llvm-nm"):
+                return nm
+            if command[0] == "ninja":
+                return query
+            self.fail(f"unexpected ownership tool invocation: {command}")
+
+        with mock.patch.object(
+            corpus_link_ownership,
+            "_run_quiet",
+            side_effect=run_tool,
+        ):
+            selected, defect = corpus_gate.resolve_selected_corpus_sources(
+                linked,
+                ("local_kernel",),
+                Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+                corpus_inventory.resolve_externals_root(ROOT),
+                ROOT,
+                frozenset(
+                    {"externals/cmsis-nn/Source/TransposeFunctions/arm_transpose_s8.c"}
+                ),
+            )
+
+        self.assertIsNone(defect)
+        self.assertEqual(
+            selected,
+            ("externals/cmsis-nn/Source/TransposeFunctions/arm_transpose_s8.c",),
         )
 
     def test_selected_source_projection_rejects_harness_owner(self) -> None:
