@@ -30,6 +30,10 @@ const ResolvedModelConfigViewContract &emptyLowConfidenceConfigView();
 struct AnalyticWorkloadEstimate final {
   std::uint64_t schedulingPressure = 0;
   std::uint64_t activityUnits = 0;
+  std::uint64_t graphActivations = 0;
+  std::uint64_t boundaryPayloadBytes = 0;
+  std::uint64_t memoryBoundaryBindings = 0;
+  std::uint64_t memoryTransactions = 0;
 };
 
 struct LowConfidenceMetricSet final {

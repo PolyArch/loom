@@ -5,6 +5,7 @@
 #include "Common/ResolvedConfig.h"
 #include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Evaluation/NumericValue.h"
@@ -35,6 +36,11 @@ namespace {
 // measured Fabric timing or physical implementation facts.
 constexpr std::uint64_t kInstructionLeafEstimatePicoseconds = 1000;
 constexpr std::uint64_t kSpatialPressureEstimatePicoseconds = 250;
+constexpr std::uint64_t kGraphLaunchEstimatePicoseconds = 700;
+constexpr std::uint64_t kGraphSynchronizationEstimatePicoseconds = 500;
+constexpr std::uint64_t kBoundaryByteEstimatePicoseconds = 20;
+constexpr std::uint64_t kMemoryBindingEstimatePicoseconds = 100;
+constexpr std::uint64_t kMemoryTransactionEstimatePicoseconds = 150;
 constexpr std::uint64_t kPicosecondsPerSecond = 1000000000000ULL;
 
 struct EmptyConfigView {};
@@ -548,18 +554,35 @@ llvm::Expected<LowConfidenceMetricSet>
 estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
                              AnalyticWorkloadEstimate workload,
                              const fabric::FinalizedFabricRoot &fabricRoot) {
-  const std::optional<std::uint64_t> instructionTime = llvm::checkedMulUnsigned(
-      instructionLeaves, kInstructionLeafEstimatePicoseconds);
-  const std::optional<std::uint64_t> spatialTime = llvm::checkedMulUnsigned(
-      workload.schedulingPressure, kSpatialPressureEstimatePicoseconds);
-  if (!instructionTime || !spatialTime)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "low_confidence_model_overflow: pressure product");
-  const std::optional<std::uint64_t> total =
-      llvm::checkedAddUnsigned(*instructionTime, *spatialTime);
-  if (!total || *total > static_cast<std::uint64_t>(
-                             std::numeric_limits<std::int64_t>::max()))
+  std::uint64_t runtime = 0;
+  if (llvm::Error error = accumulateScaled(runtime, instructionLeaves,
+                                           kInstructionLeafEstimatePicoseconds,
+                                           "InstructionCore Runtime"))
+    return std::move(error);
+  if (llvm::Error error = accumulateScaled(runtime, workload.schedulingPressure,
+                                           kSpatialPressureEstimatePicoseconds,
+                                           "Spatial scheduling Runtime"))
+    return std::move(error);
+  if (llvm::Error error =
+          accumulateScaled(runtime, workload.graphActivations,
+                           kGraphLaunchEstimatePicoseconds +
+                               kGraphSynchronizationEstimatePicoseconds,
+                           "graph launch and synchronization Runtime"))
+    return std::move(error);
+  if (llvm::Error error = accumulateScaled(
+          runtime, workload.boundaryPayloadBytes,
+          kBoundaryByteEstimatePicoseconds, "boundary transfer Runtime"))
+    return std::move(error);
+  if (llvm::Error error = accumulateScaled(
+          runtime, workload.memoryBoundaryBindings,
+          kMemoryBindingEstimatePicoseconds, "memory binding Runtime"))
+    return std::move(error);
+  if (llvm::Error error = accumulateScaled(
+          runtime, workload.memoryTransactions,
+          kMemoryTransactionEstimatePicoseconds, "memory transaction Runtime"))
+    return std::move(error);
+  if (runtime >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_overflow: Runtime estimate");
@@ -576,14 +599,23 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_invalid: critical delay exceeds one second");
+  std::uint64_t dynamicActivity = workload.activityUnits;
+  if (llvm::Error error =
+          accumulateScaled(dynamicActivity, workload.boundaryPayloadBytes, 1,
+                           "boundary dynamic activity"))
+    return std::move(error);
+  if (llvm::Error error =
+          accumulateScaled(dynamicActivity, workload.memoryTransactions, 4,
+                           "memory dynamic activity"))
+    return std::move(error);
   const std::optional<std::uint64_t> dynamicPower =
-      llvm::checkedMulUnsigned(workload.activityUnits, std::uint64_t{2});
+      llvm::checkedMulUnsigned(dynamicActivity, std::uint64_t{2});
   if (!dynamicPower)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_overflow: dynamic power estimate");
   return LowConfidenceMetricSet{
-      *total, frequency,
+      runtime, frequency,
       std::max<std::uint64_t>(physical->areaSquareMicrometers, 1),
       *dynamicPower, std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
 }
@@ -631,6 +663,57 @@ projectCanonicalDataflowWorkload(
             accumulateScaled(workload.activityUnits, *activity, demand.count,
                              "Canonical Dataflow activity"))
       return std::move(error);
+    if (dataflow::isCanonicalDataflowActor(
+            demand.representative,
+            dataflow::CanonicalDataflowActorKind::Memory))
+      if (llvm::Error error =
+              accumulateScaled(workload.memoryTransactions, 1, demand.count,
+                               "Canonical Dataflow memory transactions"))
+        return std::move(error);
+  }
+
+  workload.graphActivations = program.staticGraphLaunches().size();
+  for (const dataflow::CanonicalGraphView &graphView : program.graphs()) {
+    auto graph = llvm::dyn_cast_or_null<dataflow::GraphOp>(graphView.op);
+    if (!graph)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "low_confidence_model_invalid: graph view has the wrong owner");
+    mlir::FunctionType type = graph.getFunctionType();
+    for (auto [ordinal, portType] : llvm::enumerate(type.getInputs())) {
+      if (graph.getInputPortKind(ordinal) == dataflow::GraphPortKind::Memory) {
+        if (llvm::Error error =
+                accumulateScaled(workload.memoryBoundaryBindings, 1, 1,
+                                 "graph memory input binding"))
+          return std::move(error);
+        continue;
+      }
+      auto width = typeBitWidth(portType, graph);
+      if (!width)
+        return width.takeError();
+      const std::uint64_t bytes = *width / 8 + (*width % 8 != 0 ? 1 : 0);
+      if (llvm::Error error =
+              accumulateScaled(workload.boundaryPayloadBytes, bytes, 1,
+                               "graph input boundary bytes"))
+        return std::move(error);
+    }
+    for (auto [ordinal, portType] : llvm::enumerate(type.getResults())) {
+      if (graph.getResultPortKind(ordinal) == dataflow::GraphPortKind::Memory) {
+        if (llvm::Error error =
+                accumulateScaled(workload.memoryBoundaryBindings, 1, 1,
+                                 "graph memory result binding"))
+          return std::move(error);
+        continue;
+      }
+      auto width = typeBitWidth(portType, graph);
+      if (!width)
+        return width.takeError();
+      const std::uint64_t bytes = *width / 8 + (*width % 8 != 0 ? 1 : 0);
+      if (llvm::Error error =
+              accumulateScaled(workload.boundaryPayloadBytes, bytes, 1,
+                               "graph result boundary bytes"))
+        return std::move(error);
+    }
   }
   return std::optional<AnalyticWorkloadEstimate>(workload);
 }

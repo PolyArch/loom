@@ -75,9 +75,15 @@ entry:
   ret void
 }
 
+define i32 @tiny() {
+entry:
+  ret i32 7
+}
+
 define i32 @main(ptr %a, ptr %b, ptr %c) {
 entry:
   call void @kernel(ptr %a, ptr %b, ptr %c)
+  %ignored = call i32 @tiny()
   ret i32 0
 }
 )llvm";
@@ -302,7 +308,7 @@ void verifyStagedOwnershipEvidence(
     const loom::dse::CompletedPreMappingSelection &selection,
     const loom::ArtifactRootReference &source,
     const loom::ArtifactRootReference &profitableCandidate,
-    const loom::ArtifactRootReference &unprofitableCandidate,
+    llvm::ArrayRef<loom::ArtifactRootReference> unprofitableCandidates,
     const loom::ArtifactRootReference &fabric,
     const loom::ArtifactRootReference &workload,
     const loom::ArtifactRootReference &runtimeInput,
@@ -364,11 +370,13 @@ void verifyStagedOwnershipEvidence(
 
   if (counts[source].cost != 1 || counts[source].functional != 1 ||
       counts[profitableCandidate].cost != 1 ||
-      counts[profitableCandidate].functional != 1 ||
-      counts[unprofitableCandidate].cost != 1 ||
-      counts[unprofitableCandidate].functional != 0)
+      counts[profitableCandidate].functional != 1)
     fail("ownership DSE acquired expensive functional Evidence before the "
          "resolved benefit gate");
+  for (const loom::ArtifactRootReference &candidate : unprofitableCandidates)
+    if (counts[candidate].cost != 1 || counts[candidate].functional != 0)
+      fail("ownership DSE acquired expensive functional Evidence before the "
+           "resolved benefit gate");
 }
 
 void runEvaluationAnchor() {
@@ -390,23 +398,34 @@ void runEvaluationAnchor() {
       findCallable(compiled.structuredProgram, "kernel")};
   const loom::frontend::SpatialOwnershipScope coldScope{
       findCallable(compiled.structuredProgram, "cold")};
+  const loom::frontend::SpatialOwnershipScope tinyScope{
+      findCallable(compiled.structuredProgram, "tiny")};
   auto spatialDecisions =
       take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
           compiled.structuredProgram, spatialScope.selection));
   auto coldDecisions =
       take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
           compiled.structuredProgram, coldScope.selection));
-  if (spatialDecisions.size() != 1 || coldDecisions.size() != 1)
+  auto tinyDecisions =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          compiled.structuredProgram, tinyScope.selection));
+  if (spatialDecisions.size() != 1 || coldDecisions.size() != 1 ||
+      tinyDecisions.size() != 1)
     fail("functional replay anchor has a non-singleton decision domain");
   const loom::frontend::SpatialOwnershipDecisionPoint spatialDecision =
       spatialDecisions.front();
   const loom::frontend::SpatialOwnershipDecisionPoint coldDecision =
       coldDecisions.front();
+  const loom::frontend::SpatialOwnershipDecisionPoint tinyDecision =
+      tinyDecisions.front();
   auto spatial = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, spatialScope, spatialDecision,
       design.roots().front()));
   auto cold = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, coldScope, coldDecision,
+      design.roots().front()));
+  auto tiny = take(loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, tinyScope, tinyDecision,
       design.roots().front()));
   auto incorrect = take(loom::frontend::raiseLlvmModuleToStructured(
       parseFunctionallyIncorrectModule(context),
@@ -420,6 +439,8 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference coldRef = take(
       loom::frontend::publishStructuredProgram(cold.structuredProgram, store));
+  const loom::ArtifactRootReference tinyRef = take(
+      loom::frontend::publishStructuredProgram(tiny.structuredProgram, store));
   const loom::ArtifactRootReference incorrectRef =
       take(loom::frontend::publishStructuredProgram(incorrect.structuredProgram,
                                                     store));
@@ -452,6 +473,14 @@ void runEvaluationAnchor() {
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredProgramFunctionalReplay(
+              tinyRef,
+              {inputs.workloadReference, inputs.runtimeInputReference,
+               compiled.structuredProgram, tinyScope, tinyDecision, tiny,
+               inputs.workload, inputs.runtimeInput, inputs.observations},
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredProgramFunctionalReplay(
               coldRef,
               {inputs.workloadReference, inputs.runtimeInputReference,
                compiled.structuredProgram, coldScope, coldDecision, cold,
@@ -477,6 +506,14 @@ void runEvaluationAnchor() {
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
+              tinyRef,
+              {tiny.structuredProgram, &tiny.canonicalDataflow,
+               findCallable(compiled.structuredProgram, "tiny")},
+              invocation, design.roots().front(), loom::defaultResolvedConfig(),
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredFabricAnalyticResult(
               spatialRef,
               {spatial.structuredProgram, &spatial.canonicalDataflow,
                findCallable(compiled.structuredProgram, "kernel")},
@@ -491,6 +528,9 @@ void runEvaluationAnchor() {
       inputs.runtimeInputReference, store);
   EvaluatedRuntime coldEvaluation = evaluateStructuredRuntime(
       coldRef, design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
+  EvaluatedRuntime tinyEvaluation = evaluateStructuredRuntime(
+      tinyRef, design.roots().front().reference(), inputs.workloadReference,
       inputs.runtimeInputReference, store);
   EvaluatedFunctional baselineFunctional =
       evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
@@ -517,6 +557,9 @@ void runEvaluationAnchor() {
     fail("Fabric-aware Evaluation did not prefer Spatial ownership");
   if (coldEvaluation.value != baseline.value)
     fail("an unexecuted candidate changed whole-workload Runtime");
+  if (loom::evaluation::compareDecimalValue(tinyEvaluation.value,
+                                            baseline.value) < 0)
+    fail("launch overhead did not reject a trivial executed candidate");
   if (functionalMismatchResult(baselineFunctional.request,
                                baselineFunctional.evidence) !=
           loom::evaluation::FindingResultForm::Absent ||
@@ -629,10 +672,10 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
-  verifyStagedOwnershipEvidence(*exploredSelection, baselineRef, spatialRef,
-                                coldRef, design.roots().front().reference(),
-                                inputs.workloadReference,
-                                inputs.runtimeInputReference, store);
+  verifyStagedOwnershipEvidence(
+      *exploredSelection, baselineRef, spatialRef, {coldRef, tinyRef},
+      design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||

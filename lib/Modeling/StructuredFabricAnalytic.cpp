@@ -123,7 +123,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     kModelKind,
     "structured_fabric_low_confidence",
-    "loom.structured_fabric.low_confidence.v1",
+    "loom.structured_fabric.low_confidence.v2",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -369,6 +369,30 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
       return activityUnits.takeError();
     pressure.schedulingPressure = *schedulingPressure;
     pressure.activityUnits = *activityUnits;
+    llvm::Expected<std::uint64_t> graphActivations =
+        checkedScaledCount(pressure.graphActivations,
+                           workload->spatialActivations, "graph activations");
+    if (!graphActivations)
+      return graphActivations.takeError();
+    llvm::Expected<std::uint64_t> boundaryPayloadBytes = checkedScaledCount(
+        pressure.boundaryPayloadBytes, workload->spatialActivations,
+        "boundary payload bytes");
+    if (!boundaryPayloadBytes)
+      return boundaryPayloadBytes.takeError();
+    llvm::Expected<std::uint64_t> memoryBoundaryBindings = checkedScaledCount(
+        pressure.memoryBoundaryBindings, workload->spatialActivations,
+        "memory boundary bindings");
+    if (!memoryBoundaryBindings)
+      return memoryBoundaryBindings.takeError();
+    llvm::Expected<std::uint64_t> memoryTransactions =
+        checkedScaledCount(pressure.memoryTransactions,
+                           workload->spatialActivations, "memory transactions");
+    if (!memoryTransactions)
+      return memoryTransactions.takeError();
+    pressure.graphActivations = *graphActivations;
+    pressure.boundaryPayloadBytes = *boundaryPayloadBytes;
+    pressure.memoryBoundaryBindings = *memoryBoundaryBindings;
+    pressure.memoryTransactions = *memoryTransactions;
   }
 
   auto metrics = detail::estimateLowConfidenceMetrics(

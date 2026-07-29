@@ -68,7 +68,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     kModelKind,
     "canonical_dataflow_fabric_low_confidence",
-    "loom.canonical_dataflow_fabric.low_confidence.v1",
+    "loom.canonical_dataflow_fabric.low_confidence.v2",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
