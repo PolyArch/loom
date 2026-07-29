@@ -55,6 +55,10 @@ struct SimulationMemoryRootCapture {
   // type means the root is read-only or does not have one uniform floating
   // lane semantics, so source-backed validation compares its bytes exactly.
   mlir::FloatType floatingWriteLaneType;
+  // The exact invocation-local view pointer for operation-owned capture.
+  // This is an ephemeral instrumentation handle. Direct-call plans leave it
+  // absent because their offsets are statically resolved at the call site.
+  mlir::Value boundaryPointer;
 };
 
 /// One exact graph value-input source at an execution boundary. Fixed values

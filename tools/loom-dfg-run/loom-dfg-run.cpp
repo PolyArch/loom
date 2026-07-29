@@ -300,14 +300,13 @@ capturedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
   return object;
 }
 
-const loom::sim::SimulationMemoryRootCapture *
-findCaptureBinding(const loom::sim::SimulationInputCapturePlan &plan,
-                   dataflow::LogicalMemoryRootRef root) {
-  for (const loom::sim::SimulationMemoryRootCapture &binding :
-       plan.memoryRootBindings)
+std::optional<std::size_t>
+findCaptureBindingOrdinal(const loom::sim::SimulationInputCapturePlan &plan,
+                          dataflow::LogicalMemoryRootRef root) {
+  for (auto [ordinal, binding] : llvm::enumerate(plan.memoryRootBindings))
     if (binding.root == root)
-      return &binding;
-  return nullptr;
+      return ordinal;
+  return std::nullopt;
 }
 
 struct ExecutionTotals {
@@ -362,6 +361,8 @@ bool equalNativeCapture(const loom::sim::NativeSimulationInputCapture &lhs,
     return false;
   for (auto [leftCall, rightCall] : llvm::zip_equal(lhs.calls, rhs.calls)) {
     if (!equalRuntimeValues(leftCall.runtimeValues, rightCall.runtimeValues) ||
+        leftCall.memoryRootByteOffsets !=
+            rightCall.memoryRootByteOffsets ||
         leftCall.objects.size() != rightCall.objects.size())
       return false;
     for (auto [objectOrdinal, objects] : llvm::enumerate(
@@ -433,17 +434,24 @@ llvm::Error compareMemoryObservations(
     const auto *full = std::get_if<loom::sim::FullMemoryObservation>(&payload);
     if (!root || !full)
       return invalid("native comparison requires full logical-root state");
-    const loom::sim::SimulationMemoryRootCapture *binding =
-        findCaptureBinding(plan, *root);
-    if (!binding || binding->objectIndex >= selectedNative.objects.size())
+    std::optional<std::size_t> bindingOrdinal =
+        findCaptureBindingOrdinal(plan, *root);
+    if (!bindingOrdinal ||
+        *bindingOrdinal >= selectedNative.memoryRootByteOffsets.size())
       return invalid("memory observation has no native capture binding");
+    const loom::sim::SimulationMemoryRootCapture &binding =
+        plan.memoryRootBindings[*bindingOrdinal];
+    if (binding.objectIndex >= selectedNative.objects.size())
+      return invalid("memory observation references an absent native object");
+    const std::uint64_t byteOffset =
+        selectedNative.memoryRootByteOffsets[*bindingOrdinal];
     const std::vector<std::uint8_t> &expected =
-        selectedNative.objects[binding->objectIndex].finalBytes;
-    if (binding->byteOffset > expected.size() ||
-        full->bytes.size() > expected.size() - binding->byteOffset)
+        selectedNative.objects[binding.objectIndex].finalBytes;
+    if (byteOffset > expected.size() ||
+        full->bytes.size() > expected.size() - byteOffset)
       return invalid("memory observation exceeds its native captured object");
     llvm::ArrayRef<std::uint8_t> expectedRoot(expected);
-    expectedRoot = expectedRoot.slice(binding->byteOffset, full->bytes.size());
+    expectedRoot = expectedRoot.slice(byteOffset, full->bytes.size());
     for (auto [ordinal, actualByte] : llvm::enumerate(full->bytes)) {
       if (actualByte.state == loom::sim::SemanticState::Defined &&
           actualByte.value == expectedRoot[ordinal])
@@ -453,14 +461,14 @@ llvm::Error compareMemoryObservations(
           "execution at "
           "capture object {0}, root-relative byte {1}, object byte {2}: "
           "state={3}, actual={4:X2}, expected={5:X2}",
-          binding->objectIndex, ordinal, binding->byteOffset + ordinal,
+          binding.objectIndex, ordinal, byteOffset + ordinal,
           static_cast<std::uint32_t>(actualByte.state), actualByte.value,
           expectedRoot[ordinal]));
     }
-    if (binding->floatingWriteLaneType) {
-      std::vector<bool> &coverage = floatingCoverage[binding->objectIndex];
+    if (binding.floatingWriteLaneType) {
+      std::vector<bool> &coverage = floatingCoverage[binding.objectIndex];
       for (std::uint64_t ordinal = 0; ordinal < full->bytes.size(); ++ordinal)
-        coverage[binding->byteOffset + ordinal] = true;
+        coverage[byteOffset + ordinal] = true;
     }
     totals.memoryBytesCompared += full->bytes.size();
   }
@@ -575,7 +583,9 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
     return finalizedWorkload.takeError();
 
   for (auto [callOrdinal, dynamicCall] : llvm::enumerate(capture.calls)) {
-    if (dynamicCall.objects.size() != plan.objects.size())
+    if (dynamicCall.objects.size() != plan.objects.size() ||
+        dynamicCall.memoryRootByteOffsets.size() !=
+            plan.memoryRootBindings.size())
       return invalid("native capture object count changed during execution");
     loom::sim::SpatialSimulationRuntimeInputDraft input{
         finalizedWorkload->identity()};
@@ -583,10 +593,11 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
     for (const loom::sim::NativeCapturedMemoryObject &object :
          dynamicCall.objects)
       input.memoryObjects.push_back(capturedMemoryObject(object.initialBytes));
-    for (const loom::sim::SimulationMemoryRootCapture &binding :
-         plan.memoryRootBindings)
+    for (auto [bindingOrdinal, binding] :
+         llvm::enumerate(plan.memoryRootBindings))
       input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
-          binding.root, binding.objectIndex, binding.byteOffset});
+          binding.root, binding.objectIndex,
+          dynamicCall.memoryRootByteOffsets[bindingOrdinal]});
     llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> finalizedInput =
         loom::sim::finalizeSimulationRuntimeInput(input, *finalizedWorkload,
                                                   view);

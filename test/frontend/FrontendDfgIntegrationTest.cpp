@@ -305,6 +305,60 @@ entry:
   return module;
 }
 
+std::unique_ptr<llvm::Module>
+parseNestedMemoryViews(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define void @increment_rows(ptr %base) {
+entry:
+  br label %outer
+
+outer:
+  %row = phi i64 [ 0, %entry ], [ %next.row, %inner.exit ]
+  %row.base = getelementptr [4 x i32], ptr %base, i64 %row, i64 0
+  br label %inner
+
+inner:
+  %column = phi i64 [ 0, %outer ], [ %next.column, %inner ]
+  %element = getelementptr i32, ptr %row.base, i64 %column
+  %value = load i32, ptr %element, align 4
+  %incremented = add i32 %value, 1
+  store i32 %incremented, ptr %element, align 4
+  %next.column = add nuw nsw i64 %column, 1
+  %inner.done = icmp eq i64 %next.column, 4
+  br i1 %inner.done, label %inner.exit, label %inner
+
+inner.exit:
+  %next.row = add nuw nsw i64 %row, 1
+  %outer.done = icmp eq i64 %next.row, 2
+  br i1 %outer.done, label %exit, label %outer
+
+exit:
+  ret void
+}
+
+define i32 @main() {
+entry:
+  %storage = alloca [2 x [4 x i32]], align 16
+  call void @increment_rows(ptr %storage)
+  ret i32 0
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<nested-memory-views>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
 void configureHostModule(const char *test, llvm::Module &module) {
   static const bool initializationFailed = [] {
     return llvm::InitializeNativeTarget() ||
@@ -361,6 +415,30 @@ findStructuredLoop(const char *test,
       return scope->selection;
   }
   fail(test, "raised Structured Program has no requested loop");
+}
+
+loom::frontend::StructuredEntityRef
+findNestedStructuredLoop(
+    const char *test,
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef callableName) {
+  auto view = take(test, candidate.view());
+  auto domain = take(
+      test, loom::frontend::enumerateSpatialOwnershipScopeDomain(candidate));
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto entity = take(test, view.resolve(scope->selection));
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
+    if (!loop || !loop->getParentOfType<mlir::scf::WhileOp>())
+      continue;
+    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (callable && callable.getSymName() == callableName)
+      return scope->selection;
+  }
+  fail(test, "raised Structured Program has no requested nested loop");
 }
 
 dataflow::RootedGraphLaunchRef
@@ -735,6 +813,63 @@ void nestedOperationCandidateUsesExactCallPath() {
   if (capture.entryResult != 0 || capture.calls.size() != 1 ||
       capture.calls.front().objects.size() != 2)
     fail(test, "nested operation capture conflated static call paths");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
+void operationCandidateCapturesInvocationLocalMemoryViews() {
+  const char *test = "operationCandidateCapturesInvocationLocalMemoryViews";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-operation-memory-views", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseNestedMemoryViews(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::SpatialOwnershipScope scope{findNestedStructuredLoop(
+      test, compiled.structuredProgram, "increment_rows")};
+  auto decisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, scope.selection));
+  if (decisions.empty())
+    fail(test, "nested row loop has no ownership decision");
+  auto candidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, scope, decisions.front(),
+                     design.roots().front()));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto prepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, scope, decisions.front()));
+  mlir::LLVM::CallOp invocation =
+      findHostCall(test, *prepared.module, "main", "increment_rows");
+  auto plan = take(
+      test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                view, launch, prepared.liveIns, prepared.liveOuts, invocation));
+  if (plan.input.objects.size() != 1 ||
+      plan.input.memoryRootBindings.size() != 1 ||
+      plan.input.objects.front().byteCount != 8 * sizeof(std::int32_t))
+    fail(test, "nested row capture lost its finite backing object");
+
+  loom::sim::NativeSimulationInputCapture capture =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(prepared.module), prepared.operation, plan));
+  if (capture.entryResult != 0 || capture.calls.size() != 2 ||
+      capture.calls.front().memoryRootByteOffsets.size() != 1 ||
+      capture.calls.back().memoryRootByteOffsets.size() != 1 ||
+      capture.calls.front().memoryRootByteOffsets.front() != 0 ||
+      capture.calls.back().memoryRootByteOffsets.front() !=
+          4 * sizeof(std::int32_t))
+    fail(test, "dynamic row views did not retain invocation-local offsets");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1263,6 +1398,7 @@ int main() {
   scalarLiveOutExecutesWithoutMemoryObjects();
   operationCandidateCapturesCallerOwnedMemory();
   nestedOperationCandidateUsesExactCallPath();
+  operationCandidateCapturesInvocationLocalMemoryViews();
   wholeCallableScalarResultUsesCallerStorage();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();

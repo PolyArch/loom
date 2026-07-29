@@ -91,6 +91,12 @@ graph ABI order. Memory roots are projected onto finite byte-addressed backing
 objects, and roots that share one object ordinal preserve aliasing. Unknown
 extent, stream input capture, ambiguous ownership lineage, or an unsafe native
 execution target is typed `Unsupported`, not repaired with fabricated input.
+When an operation-owned root is a region-carried or dynamically indexed view,
+the static derivation must prove one unique finite backing object. The oracle
+then derives that root's exact byte offset from the concrete boundary pointer
+for every dynamic invocation. A static offset may not stand in for this
+invocation-local binding, and the ephemeral pointer does not enter either
+persistent Simulation schema.
 The canonical memory-actor relation also determines whether independent
 native replays must agree on an imported object's pre-activation bytes. If any
 aliasing root loads, performs RMW, or otherwise may read initial state, those

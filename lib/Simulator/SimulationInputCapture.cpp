@@ -9,7 +9,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include <limits>
 #include <optional>
 #include <system_error>
@@ -373,6 +376,147 @@ llvm::Expected<ResolvedObject> resolveObjectThroughCallPath(
                                         pathIndex - 1);
   }
   return resolveObject(pointer);
+}
+
+struct RegionValueSource {
+  mlir::RegionBranchOpInterface branch;
+  mlir::RegionSuccessor successor;
+  unsigned inputIndex = 0;
+};
+
+std::optional<RegionValueSource> getRegionValueSource(mlir::Value value) {
+  if (auto result = llvm::dyn_cast<mlir::OpResult>(value)) {
+    auto branch =
+        llvm::dyn_cast<mlir::RegionBranchOpInterface>(result.getOwner());
+    if (!branch)
+      return std::nullopt;
+    mlir::RegionSuccessor successor(result.getOwner());
+    mlir::ValueRange inputs = branch.getSuccessorInputs(successor);
+    auto position = llvm::find(inputs, value);
+    if (position == inputs.end())
+      return std::nullopt;
+    return RegionValueSource{
+        branch, successor,
+        static_cast<unsigned>(std::distance(inputs.begin(), position))};
+  }
+
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!argument)
+    return std::nullopt;
+  auto branch = llvm::dyn_cast_or_null<mlir::RegionBranchOpInterface>(
+      argument.getOwner()->getParentOp());
+  if (!branch)
+    return std::nullopt;
+  mlir::RegionSuccessor successor(argument.getOwner()->getParent());
+  mlir::ValueRange inputs = branch.getSuccessorInputs(successor);
+  auto position = llvm::find(inputs, value);
+  if (position == inputs.end())
+    return std::nullopt;
+  return RegionValueSource{
+      branch, successor,
+      static_cast<unsigned>(std::distance(inputs.begin(), position))};
+}
+
+llvm::Error collectOperationPointerRoots(
+    mlir::Value pointer, llvm::DenseSet<mlir::Value> &visited,
+    llvm::SmallVectorImpl<mlir::Value> &roots) {
+  if (!pointer)
+    return invalid("operation memory boundary contains an absent pointer");
+  if (!visited.insert(pointer).second)
+    return llvm::Error::success();
+
+  auto collect = [&](mlir::Value source) {
+    return collectOperationPointerRoots(source, visited, roots);
+  };
+  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
+    return collect(gep.getBase());
+  if (auto cast = pointer.getDefiningOp<mlir::LLVM::BitcastOp>())
+    return collect(cast.getArg());
+  if (auto cast = pointer.getDefiningOp<mlir::LLVM::AddrSpaceCastOp>())
+    return collect(cast.getArg());
+  if (auto cast =
+          pointer.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() != 1)
+      return unsupported(
+          "operation memory boundary has a non-unary pointer cast");
+    return collect(cast.getInputs().front());
+  }
+  if (auto select = pointer.getDefiningOp<mlir::arith::SelectOp>()) {
+    if (llvm::Error error = collect(select.getTrueValue()))
+      return error;
+    return collect(select.getFalseValue());
+  }
+  if (auto select = pointer.getDefiningOp<mlir::LLVM::SelectOp>()) {
+    if (llvm::Error error = collect(select.getTrueValue()))
+      return error;
+    return collect(select.getFalseValue());
+  }
+
+  if (std::optional<RegionValueSource> source = getRegionValueSource(pointer)) {
+    llvm::SmallVector<mlir::RegionBranchPoint, 4> predecessors;
+    llvm::SmallVector<mlir::Value, 4> values;
+    source->branch.getPredecessors(source->successor, predecessors);
+    source->branch.getPredecessorValues(source->successor, source->inputIndex,
+                                        values);
+    if (predecessors.size() != values.size())
+      return invalid("region pointer predecessor table is malformed");
+    for (mlir::Value predecessor : values)
+      if (llvm::Error error = collect(predecessor))
+        return error;
+    return llvm::Error::success();
+  }
+
+  if (pointer.getDefiningOp<mlir::LLVM::AllocaOp>() ||
+      pointer.getDefiningOp<mlir::LLVM::AddressOfOp>() ||
+      llvm::isa<mlir::BlockArgument>(pointer)) {
+    if (!llvm::is_contained(roots, pointer))
+      roots.push_back(pointer);
+    return llvm::Error::success();
+  }
+  if (pointer.getDefiningOp<mlir::LLVM::ZeroOp>() ||
+      pointer.getDefiningOp<mlir::LLVM::UndefOp>() ||
+      pointer.getDefiningOp<mlir::LLVM::PoisonOp>())
+    return llvm::Error::success();
+  return unsupported(
+      "operation memory boundary has no closed pointer-origin projection");
+}
+
+struct ResolvedOperationObject {
+  ResolvedObject object;
+  mlir::Value captureBase;
+};
+
+llvm::Expected<ResolvedOperationObject> resolveOperationObject(
+    mlir::Value pointer, mlir::LLVM::LLVMFuncOp enclosingCallable,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  llvm::DenseSet<mlir::Value> visited;
+  llvm::SmallVector<mlir::Value, 4> roots;
+  if (llvm::Error error = collectOperationPointerRoots(pointer, visited, roots))
+    return std::move(error);
+  if (roots.empty())
+    return unsupported(
+        "operation memory boundary has no concrete finite pointer origin");
+
+  std::optional<ResolvedOperationObject> result;
+  for (mlir::Value root : roots) {
+    llvm::Expected<ResolvedObject> object =
+        invocationPath.empty()
+            ? resolveObject(root)
+            : resolveObjectThroughCallPath(root, enclosingCallable,
+                                           invocationPath,
+                                           invocationPath.size() - 1);
+    if (!object)
+      return object.takeError();
+    if (!result) {
+      result = ResolvedOperationObject{*object, root};
+      continue;
+    }
+    if (result->object.owner != object->owner ||
+        result->object.byteCount != object->byteCount)
+      return unsupported(
+          "operation memory boundary may select distinct backing objects");
+  }
+  return *result;
 }
 
 CanonicalValueSequence exceptionalValue(const detail::LaneShape &shape,
@@ -912,7 +1056,7 @@ deriveSimulationInputCapturePlan(
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
         root, objectIndex, object.byteOffset,
         memoryRequiresInitialState(*context, root),
-        uniformFloatingWriteLaneType(*context, root)});
+        uniformFloatingWriteLaneType(*context, root), {}});
   }
   return plan;
 }
@@ -982,31 +1126,28 @@ deriveOperationSimulationInputCapturePlanImpl(
       return invalid("thread memory formal exceeds source boundary inputs");
 
     mlir::Value pointer = boundaryInputs[boundaryOrdinal];
-    llvm::Expected<ResolvedObject> object =
-        invocationPath.empty()
-            ? resolveObject(pointer)
-            : resolveObjectThroughCallPath(pointer, enclosingCallable,
-                                           invocationPath,
-                                           invocationPath.size() - 1);
-    if (!object)
-      return object.takeError();
+    llvm::Expected<ResolvedOperationObject> resolved =
+        resolveOperationObject(pointer, enclosingCallable, invocationPath);
+    if (!resolved)
+      return resolved.takeError();
+    ResolvedObject &object = resolved->object;
     std::uint64_t objectIndex = 0;
     while (objectIndex < objectOwners.size()) {
-      if (objectOwners[objectIndex] == object->owner)
+      if (objectOwners[objectIndex] == object.owner)
         break;
       ++objectIndex;
     }
     if (objectIndex == plan.input.objects.size()) {
       plan.input.objects.push_back(SimulationMemoryCaptureObject{
-          pointer, object->byteCount, object->byteOffset});
-      objectOwners.push_back(object->owner);
-    } else if (plan.input.objects[objectIndex].byteCount != object->byteCount) {
+          resolved->captureBase, object.byteCount, object.byteOffset});
+      objectOwners.push_back(object.owner);
+    } else if (plan.input.objects[objectIndex].byteCount != object.byteCount) {
       return invalid("one source allocation resolved to inconsistent extents");
     }
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
-        root, objectIndex, object->byteOffset,
+        root, objectIndex, object.byteOffset,
         memoryRequiresInitialState(*context, root),
-        uniformFloatingWriteLaneType(*context, root)});
+        uniformFloatingWriteLaneType(*context, root), pointer});
   }
   return plan;
 }

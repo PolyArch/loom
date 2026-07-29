@@ -24,6 +24,7 @@ struct NativeSimulationCallCapture {
   std::vector<RuntimeValueEntry> runtimeValues;
   std::vector<CanonicalValueSequence> valueResults;
   std::vector<NativeCapturedMemoryObject> objects;
+  std::vector<std::uint64_t> memoryRootByteOffsets;
 };
 
 struct NativeSimulationInputCapture {

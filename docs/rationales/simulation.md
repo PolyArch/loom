@@ -157,6 +157,13 @@ and introduces no persistent schema. Requiring effective execution-layout
 equivalence before host JIT execution prevents the oracle from becoming a
 silent cross-target emulator.
 
+A selected inner region may repeatedly receive different views into one
+caller-owned object, such as one row pointer per outer-loop iteration. The
+backing object and alias class are static facts, while the view offset is a
+dynamic invocation fact. Keeping the former in the capture plan and deriving
+the latter at the observed boundary avoids both a shadow memory identity and
+the incorrect assumption that every graph activation sees one fixed slice.
+
 A direct leaf call alone is insufficient when its arguments are forwarded
 through intermediate callables or when the same leaf call site is reached from
 multiple outer call sites. Source-backed validation therefore derives an
