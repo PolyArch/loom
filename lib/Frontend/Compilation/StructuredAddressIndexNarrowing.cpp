@@ -471,6 +471,37 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
         comparisonValue && isDefinedOutsideLoop(comparisonValue, loop))
       return integer.getWidth();
 
+    if (delta.getValue().isOne() && comparisonValue &&
+        isDefinedOutsideLoop(comparisonValue, loop)) {
+      const bool updateOnLeft = compare.getLhs() == update.getResult();
+      const bool updateOnRight = compare.getRhs() == update.getResult();
+      const auto flags = update.getOverflowFlags();
+      switch (compare.getPredicate()) {
+      case mlir::arith::CmpIPredicate::slt:
+        if (updateOnLeft && mlir::arith::bitEnumContainsAny(
+                                flags, mlir::arith::IntegerOverflowFlags::nsw))
+          return integer.getWidth();
+        break;
+      case mlir::arith::CmpIPredicate::sgt:
+        if (updateOnRight && mlir::arith::bitEnumContainsAny(
+                                 flags, mlir::arith::IntegerOverflowFlags::nsw))
+          return integer.getWidth();
+        break;
+      case mlir::arith::CmpIPredicate::ult:
+        if (updateOnLeft && mlir::arith::bitEnumContainsAny(
+                                flags, mlir::arith::IntegerOverflowFlags::nuw))
+          return integer.getWidth();
+        break;
+      case mlir::arith::CmpIPredicate::ugt:
+        if (updateOnRight && mlir::arith::bitEnumContainsAny(
+                                 flags, mlir::arith::IntegerOverflowFlags::nuw))
+          return integer.getWidth();
+        break;
+      default:
+        break;
+      }
+    }
+
     if (!delta.getValue().isAllOnes())
       continue;
     mlir::Value boundValue;

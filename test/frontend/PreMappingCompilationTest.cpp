@@ -422,6 +422,27 @@ loop:
 exit:
   ret void
 }
+
+define void @ordered_pointer_induction(ptr %input, ptr %output, i32 %count) {
+entry:
+  %has_work = icmp sgt i32 %count, 0
+  br i1 %has_work, label %loop, label %exit
+
+loop:
+  %index = phi i32 [ 0, %entry ], [ %next_index, %loop ]
+  %input_cursor = phi ptr [ %input, %entry ], [ %next_input, %loop ]
+  %output_cursor = phi ptr [ %output, %entry ], [ %next_output, %loop ]
+  %value = load i16, ptr %input_cursor, align 2
+  store i16 %value, ptr %output_cursor, align 2
+  %next_input = getelementptr inbounds i8, ptr %input_cursor, i64 2
+  %next_output = getelementptr inbounds i8, ptr %output_cursor, i64 2
+  %next_index = add nuw nsw i32 %index, 1
+  %more = icmp slt i32 %next_index, %count
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer =
@@ -1119,6 +1140,20 @@ void wholeCallableNormalizesPointerInduction() {
       if (dataflow::DataflowDialect::containsMemoryCapability(
               carry.getOutput().getType()))
         fail(test, "runtime-bounded pointer induction retained pointer state");
+
+  auto ordered = take(test, loom::frontend::materializeSpatialOwnership(
+                                compiled.structuredProgram,
+                                findCallable(test, compiled.structuredProgram,
+                                             "ordered_pointer_induction"),
+                                design.roots().front(), options));
+  auto orderedView = take(test, ordered.canonicalDataflow.view());
+  if (orderedView.graphs().size() != 1 || orderedView.actors().empty())
+    fail(test, "ordered pointer induction did not publish its graph");
+  for (const dataflow::CanonicalActorView &actor : orderedView.actors())
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(actor.op))
+      if (dataflow::DataflowDialect::containsMemoryCapability(
+              carry.getOutput().getType()))
+        fail(test, "ordered pointer induction retained pointer state");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
