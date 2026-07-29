@@ -98,8 +98,8 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
     registry.insert<::fabric::FabricDialect>();
-    auto *result = new mlir::MLIRContext(
-        registry, mlir::MLIRContext::Threading::DISABLED);
+    auto *result =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
     return result;
   }();
@@ -860,12 +860,24 @@ void systemPublicationUsesExactImportedModule() {
       take(test, loom::fabric::requireSystemRoot(system.view()));
   require(test, view.spatialAttachments().empty(),
           "zero-port SpatialCore gained an attachment");
+  const auto spatialTarget =
+      view.spatialCoreTarget(loom::fabric::AccCoreOccurrenceRef(0));
+  require(test,
+          spatialTarget && *spatialTarget ==
+                               loom::fabric::FabricImportedModuleTargetRef{
+                                   0, moduleTemplate},
+          "zero-port AccCore lost its exact imported SpatialCore target");
 
   FinalizedFabricRoot imported = take(
       test, loom::fabric::importEntireFabricRoot(system.reference(), store));
   require(test, imported.reference().artifact == system.reference().artifact,
           "strict System import changed artifact identity");
-  take(test, loom::fabric::requireSystemRoot(imported.view()));
+  loom::fabric::FabricSystemRootView importedView =
+      take(test, loom::fabric::requireSystemRoot(imported.view()));
+  require(test,
+          importedView.spatialCoreTarget(
+              loom::fabric::AccCoreOccurrenceRef(0)) == spatialTarget,
+          "strict System import changed its AccCore SpatialCore target");
 }
 
 void systemPublishesCompleteSpatialAttachments() {

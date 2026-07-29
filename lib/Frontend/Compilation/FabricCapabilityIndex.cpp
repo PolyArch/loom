@@ -10,7 +10,6 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
-#include <set>
 #include <utility>
 
 using namespace loom;
@@ -32,34 +31,17 @@ frontend::FabricCapabilityIndex::FabricCapabilityIndex(
     llvm_unreachable("a finalized System Fabric must admit its typed view");
   std::vector<std::uint64_t> moduleOccurrences(fabric_.importedModules().size(),
                                                0);
-  std::set<std::pair<std::uint64_t, fabric::FabricEntityId>> seenOccurrences;
-  for (const fabric::FabricSpatialAttachmentRecordView &attachment :
-       system->spatialAttachments()) {
-    const fabric::SpatialCoreOccurrenceRef *spatial = nullptr;
-    if (const fabric::FabricTransportEndpointRef *endpoint =
-            attachment.spatialEndpoint.transport()) {
-      if (endpoint->owner.kind() !=
-          fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
-        llvm_unreachable("a finalized Spatial attachment has the wrong owner");
-      spatial =
-          &std::get<fabric::SpatialCoreOccurrenceRef>(endpoint->owner.payload);
-    } else if (const fabric::FabricMemoryEndpointRef *endpoint =
-                   attachment.spatialEndpoint.memory()) {
-      if (endpoint->owner.kind() !=
-          fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
-        llvm_unreachable("a finalized Spatial attachment has the wrong owner");
-      spatial =
-          &std::get<fabric::SpatialCoreOccurrenceRef>(endpoint->owner.payload);
-    }
-    if (!spatial)
-      llvm_unreachable("a finalized Spatial attachment has no endpoint");
-
-    const std::uint64_t dependencyOrdinal =
-        attachment.moduleEndpoint.dependencyOrdinal;
-    if (dependencyOrdinal >= moduleOccurrences.size())
-      llvm_unreachable("a finalized Spatial attachment has no module owner");
-    if (seenOccurrences.emplace(dependencyOrdinal, spatial->core.id()).second)
-      ++moduleOccurrences[dependencyOrdinal];
+  for (fabric::FabricEntityId id = 0;; ++id) {
+    const std::optional<fabric::FabricEntityKind> kind = fabric_.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != fabric::FabricEntityKind::AccCoreOccurrence)
+      continue;
+    const std::optional<fabric::FabricImportedModuleTargetRef> target =
+        system->spatialCoreTarget(fabric::AccCoreOccurrenceRef(id));
+    if (!target || target->dependencyOrdinal >= moduleOccurrences.size())
+      llvm_unreachable("a finalized AccCore has no imported SpatialCore");
+    ++moduleOccurrences[target->dependencyOrdinal];
   }
 
   for (std::size_t ordinal = 0; ordinal < fabric_.importedModules().size();

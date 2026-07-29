@@ -66,6 +66,7 @@ struct FabricEntityViewData {
   std::vector<FabricTransferPatternRef> transferPatternRefs;
   std::vector<SystemTransferPatternRecord> transferPatternRecords;
   std::optional<FabricNestedOwnerViewData> spatialCore;
+  std::optional<FabricImportedModuleTargetRef> spatialCoreTarget;
   std::optional<FabricNestedOwnerViewData> instructionCore;
   std::optional<FabricNestedOwnerViewData> localMemoryService;
   std::optional<FabricFuTemplateRef> fuTemplate;

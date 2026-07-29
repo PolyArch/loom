@@ -24,6 +24,12 @@ class FabricSystemRootView final {
 public:
   const FabricArtifactView &artifact() const { return artifact_; }
 
+  /// Exact imported Module target selected by one AccCore's SpatialCore field.
+  /// This is a sealed projection of the owner field, not an attachment-derived
+  /// inference. A wrong-kind or unknown occurrence has no target.
+  std::optional<FabricImportedModuleTargetRef>
+  spatialCoreTarget(AccCoreOccurrenceRef core) const;
+
   llvm::ArrayRef<FabricSpatialAttachmentRecordView> spatialAttachments() const;
   llvm::ArrayRef<HardwareDomainRef> hardwareDomains() const;
   const HardwareDomainContractRecord *

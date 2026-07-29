@@ -981,10 +981,10 @@ llvm::Error validateServiceCapabilityReferences(
   return llvm::Error::success();
 }
 
-llvm::Error validateSystemRelations(
-    ::fabric::SystemOp root, const FabricSystemRootView &systemView,
-    llvm::ArrayRef<StrictImportResult> importedModules,
-    llvm::ArrayRef<FabricImportedModuleTargetRef> coreTargets) {
+llvm::Error
+validateSystemRelations(::fabric::SystemOp root,
+                        const FabricSystemRootView &systemView,
+                        llvm::ArrayRef<StrictImportResult> importedModules) {
   const FabricArtifactView &view = systemView.artifact();
   const FabricImportBinding binding{view.identity(), FabricRootKind::System};
   std::set<FabricEntityId> externalBoundariesWithEndpoints;
@@ -1179,11 +1179,12 @@ llvm::Error validateSystemRelations(
           return error;
         occurrenceType = view.memoryEndpointType(memory);
       }
-      if (core.id() >= coreTargets.size())
+      std::optional<FabricImportedModuleTargetRef> target =
+          systemView.spatialCoreTarget(core);
+      if (!target)
         return invalid("attachment names an unknown AccCore SpatialCore");
-      const FabricImportedModuleTargetRef &target = coreTargets[core.id()];
-      if (target.dependencyOrdinal != moduleEndpoint->dependencyOrdinal ||
-          target.target != moduleEndpoint->target.module)
+      if (target->dependencyOrdinal != moduleEndpoint->dependencyOrdinal ||
+          target->target != moduleEndpoint->target.module)
         return invalid("attachment module endpoint disagrees with its AccCore");
       if ((*moduleRecord)->plane != spatialEndpoint->plane() ||
           (*moduleRecord)->occurrenceOrdinal != occurrenceOrdinal ||
@@ -1198,21 +1199,32 @@ llvm::Error validateSystemRelations(
     }
   }
 
-  for (FabricEntityId id = 0; id < coreTargets.size(); ++id) {
-    if (view.entityKind(id) != FabricEntityKind::AccCoreOccurrence)
+  for (FabricEntityId id = 0;; ++id) {
+    const std::optional<FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != FabricEntityKind::AccCoreOccurrence)
       continue;
+    std::optional<FabricImportedModuleTargetRef> target =
+        systemView.spatialCoreTarget(AccCoreOccurrenceRef(id));
+    if (!target || target->dependencyOrdinal >= importedModules.size())
+      return invalid("AccCore has no valid imported SpatialCore target");
     const StrictImportResult &module =
-        importedModules[coreTargets[id].dependencyOrdinal];
+        importedModules[target->dependencyOrdinal];
     const std::size_t expected = module.moduleBoundaryInputs.size() +
                                  module.moduleBoundaryOutputs.size();
     if (attachmentCoverage[id].size() != expected)
       return invalid("an AccCore does not attach every module boundary "
                      "endpoint exactly once");
   }
-  for (FabricEntityId id = 0; id < coreTargets.size(); ++id)
-    if (view.entityKind(id) == FabricEntityKind::ExternalBoundary &&
+  for (FabricEntityId id = 0;; ++id) {
+    const std::optional<FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind == FabricEntityKind::ExternalBoundary &&
         !externalBoundariesWithEndpoints.count(id))
       return invalid("external boundary has no owned service endpoint");
+  }
   return llvm::Error::success();
 }
 
@@ -1228,8 +1240,6 @@ buildSystemView(::fabric::SystemOp root,
   for (const StrictImportResult &module : importedModules)
     data.importedModules.push_back(module.view);
 
-  std::vector<FabricImportedModuleTargetRef> coreTargets(
-      labeling.carriers.size());
   std::vector<bool> dependencyUsed(importedModules.size(), false);
 
   for (const detail::FabricSystemEntityCarrier &carrier : labeling.carriers) {
@@ -1256,7 +1266,7 @@ buildSystemView(::fabric::SystemOp root,
       if (!module)
         return module.takeError();
       dependencyUsed[target->dependencyOrdinal] = true;
-      coreTargets[carrier.id] = *target;
+      entity.spatialCoreTarget = *target;
       auto instruction = instructionCoreView(core.getMicroarchitectureAttr());
       if (!instruction)
         return instruction.takeError();
@@ -1434,8 +1444,8 @@ buildSystemView(::fabric::SystemOp root,
   auto systemView = requireSystemRoot(*view);
   if (!systemView)
     return systemView.takeError();
-  if (llvm::Error error = validateSystemRelations(root, *systemView,
-                                                  importedModules, coreTargets))
+  if (llvm::Error error =
+          validateSystemRelations(root, *systemView, importedModules))
     return std::move(error);
   auto clockReset = validateClockReset(*systemView);
   if (!clockReset)

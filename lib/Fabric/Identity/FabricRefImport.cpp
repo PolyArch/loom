@@ -820,6 +820,12 @@ FabricSystemRootView::spatialAttachments() const {
   return artifact_.storage_->data.spatialAttachments;
 }
 
+std::optional<FabricImportedModuleTargetRef>
+FabricSystemRootView::spatialCoreTarget(AccCoreOccurrenceRef core) const {
+  const detail::FabricEntityViewData *entity = artifact_.storage_->entity(core);
+  return entity ? entity->spatialCoreTarget : std::nullopt;
+}
+
 llvm::ArrayRef<HardwareDomainRef>
 FabricSystemRootView::hardwareDomains() const {
   return artifact_.storage_->data.hardwareDomains;
@@ -1076,6 +1082,25 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       if (llvm::Error error =
               validateNestedOwner(*entity.spatialCore, "spatial core"))
         return std::move(error);
+    if (entity.spatialCoreTarget) {
+      if (entity.kind != FabricEntityKind::AccCoreOccurrence ||
+          !entity.spatialCore)
+        return invalidView(
+            "only an AccCore SpatialCore may select an imported Module");
+      if (entity.spatialCoreTarget->dependencyOrdinal >=
+          data.importedModules.size())
+        return invalidView(
+            "AccCore SpatialCore target has no imported Module dependency");
+      const FabricArtifactView &module =
+          data.importedModules[entity.spatialCoreTarget->dependencyOrdinal];
+      if (module.rootKind() != FabricRootKind::Module ||
+          module.entityKind(entity.spatialCoreTarget->target.id()) !=
+              FabricEntityKind::FabricModuleTemplate)
+        return invalidView(
+            "AccCore SpatialCore target is not an imported Module template");
+    } else if (entity.kind == FabricEntityKind::AccCoreOccurrence) {
+      return invalidView("AccCore has no imported SpatialCore target");
+    }
     if (entity.instructionCore)
       if (llvm::Error error =
               validateNestedOwner(*entity.instructionCore, "instruction core"))

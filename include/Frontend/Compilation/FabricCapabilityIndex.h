@@ -33,8 +33,8 @@ public:
 
   /// Counts the concrete operation occurrences represented by the admitted
   /// capability templates. For a System root this expands both module-local
-  /// FU occurrences and SpatialCore attachment multiplicity. The count is a
-  /// removable Evaluation projection, not a placement or routing proof.
+  /// FU occurrences and AccCore SpatialCore occurrence multiplicity. The count
+  /// is a removable Evaluation projection, not a placement or routing proof.
   llvm::Expected<std::uint64_t> admittingOperationResourceCount(
       const ::dataflow::CanonicalActorSchemaProjection &actor,
       unsigned indexBitWidth) const;
