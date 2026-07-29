@@ -12,6 +12,18 @@ class ArtifactStore;
 struct ResolvedConfig;
 } // namespace loom
 
+namespace loom::frontend {
+struct MaterializedOwnershipCandidate;
+struct SpatialOwnershipDecisionPoint;
+struct SpatialOwnershipScope;
+class StructuredProgramCandidate;
+} // namespace loom::frontend
+
+namespace loom::sim {
+class CanonicalSimulationRuntimeInput;
+class CanonicalSimulationWorkload;
+} // namespace loom::sim
+
 namespace loom::evaluation::models {
 
 struct PreparedStructuredProgramFunctionalEvaluation final {
@@ -21,9 +33,32 @@ struct PreparedStructuredProgramFunctionalEvaluation final {
   FindingRequestOrdinal functionalMismatchRequest;
 };
 
+/// Exact invocation-local inputs needed to prove the selected Structured
+/// candidate and every dynamically executed graph activation against the one
+/// source workload. These owner views prime a removable provider cache; only
+/// the resulting EvaluationEvidence is persistent.
+struct StructuredProgramFunctionalReplayInvocation final {
+  const ::loom::ArtifactRootReference &workload;
+  const ::loom::ArtifactRootReference &runtimeInput;
+  const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
+  const ::loom::frontend::SpatialOwnershipScope &scope;
+  const ::loom::frontend::SpatialOwnershipDecisionPoint &decision;
+  const ::loom::frontend::MaterializedOwnershipCandidate &candidate;
+  const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
+  const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;
+};
+
 /// Registers the exact source-versus-selected Structured functional model.
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredProgramFunctionalModel();
+
+/// Execute and cache the exact source-backed DFG replay for one finalized
+/// ownership candidate. Repeated priming for the same candidate/workload pair
+/// must produce an identical result.
+llvm::Error primeStructuredProgramFunctionalReplay(
+    const ::loom::ArtifactRootReference &candidate,
+    const StructuredProgramFunctionalReplayInvocation &invocation,
+    const ::loom::ArtifactStore &artifactStore);
 
 /// Constructs the finding-only request comparing one exact Structured
 /// candidate with the source program owned by the exact workload/runtime pair.

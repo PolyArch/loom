@@ -25,6 +25,11 @@ struct NativeSimulationCallCapture {
   std::vector<RuntimeValueEntry> runtimeValues;
   std::vector<CanonicalValueSequence> valueResults;
   std::vector<NativeCapturedMemoryObject> objects;
+  /// Per logical-memory-root capture binding, the invocation-local object in
+  /// `objects`. Static developer-tool capture and workload-backed production
+  /// capture both populate this projection; raw native addresses never leave
+  /// the execution provider.
+  std::vector<std::uint64_t> memoryRootObjectOrdinals;
   std::vector<std::uint64_t> memoryRootByteOffsets;
 };
 
@@ -50,6 +55,25 @@ struct NativeStructuredProgramObservations {
   std::vector<NativeStructuredBlockActivation> blockActivations;
 };
 
+/// One Dataflow logical root and the exact Structured pointer value presented
+/// at a selected region boundary. The pointer is an ephemeral instrumentation
+/// handle. Workload-backed execution resolves it through the one runtime
+/// object registry and records only object ordinals, bytes, and offsets.
+struct WorkloadBackedMemoryRootCapture final {
+  dataflow::LogicalMemoryRootRef root;
+  mlir::Value boundaryPointer;
+};
+
+/// The exact finite graph boundary instrumented during one selected
+/// Structured execution. This is a removable native-execution plan, not a
+/// persistent Simulation schema or a second graph ABI authority.
+struct WorkloadBackedSimulationInputCapturePlan final {
+  dataflow::RootedGraphLaunchRef launch;
+  std::vector<SimulationValueInputCapture> valueInputs;
+  std::vector<SimulationValueResultCapture> valueResults;
+  std::vector<WorkloadBackedMemoryRootCapture> memoryRoots;
+};
+
 /// Execute the exact workload entry from an immutable Structured Program.
 /// Runtime objects are finite byte-addressed storage, and shared object
 /// ordinals preserve pointer aliasing. This native provider accepts only
@@ -69,6 +93,20 @@ executeNativeStructuredProgram(
 llvm::Expected<NativeStructuredProgramObservations>
 executeSelectedStructuredProgram(
     const frontend::StructuredProgramCandidate &selectedProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
+
+/// Execute one prepared selected Structured Program from the exact production
+/// workload/runtime pair and capture every dynamic invocation of its selected
+/// boundary. Memory pointers must resolve through the invocation's runtime
+/// object registry; an unregistered allocation is typed Unsupported rather
+/// than inferred from static reaching stores.
+llvm::Expected<NativeSimulationInputCapture>
+executeWorkloadBackedSimulationInputCapture(
+    mlir::OwningOpRef<mlir::ModuleOp> preparedModule,
+    mlir::Operation *selectedOperation,
+    const WorkloadBackedSimulationInputCapturePlan &plan,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput);

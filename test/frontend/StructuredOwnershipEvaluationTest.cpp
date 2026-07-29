@@ -12,6 +12,7 @@
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/APFloat.h"
@@ -310,13 +311,27 @@ void runEvaluationAnchor() {
       parseModule(context), design.roots().front().reference(), store));
   SourceSimulationInputs inputs =
       makeSourceSimulationInputs(compiled.structuredProgram, store);
-  auto spatial = take(loom::frontend::materializeSpatialOwnership(
-      compiled.structuredProgram,
-      findCallable(compiled.structuredProgram, "kernel"),
+  const loom::frontend::SpatialOwnershipScope spatialScope{
+      findCallable(compiled.structuredProgram, "kernel")};
+  const loom::frontend::SpatialOwnershipScope coldScope{
+      findCallable(compiled.structuredProgram, "cold")};
+  auto spatialDecisions =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          compiled.structuredProgram, spatialScope.selection));
+  auto coldDecisions =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          compiled.structuredProgram, coldScope.selection));
+  if (spatialDecisions.size() != 1 || coldDecisions.size() != 1)
+    fail("functional replay anchor has a non-singleton decision domain");
+  const loom::frontend::SpatialOwnershipDecisionPoint spatialDecision =
+      spatialDecisions.front();
+  const loom::frontend::SpatialOwnershipDecisionPoint coldDecision =
+      coldDecisions.front();
+  auto spatial = take(loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, spatialScope, spatialDecision,
       design.roots().front()));
-  auto cold = take(loom::frontend::materializeSpatialOwnership(
-      compiled.structuredProgram,
-      findCallable(compiled.structuredProgram, "cold"),
+  auto cold = take(loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, coldScope, coldDecision,
       design.roots().front()));
   auto incorrect = take(loom::frontend::raiseLlvmModuleToStructured(
       parseFunctionallyIncorrectModule(context),
@@ -335,6 +350,38 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
+  auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
+      compiled.structuredProgram, spatialScope, spatialDecision, spatial,
+      inputs.workload, inputs.runtimeInput));
+  if (spatialReplay.status !=
+          loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
+      spatialReplay.dynamicActivations != 1 ||
+      spatialReplay.wavefrontSteps == 0 || spatialReplay.eventCount == 0)
+    fail("functional replay did not execute the selected graph activation");
+  auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
+      compiled.structuredProgram, coldScope, coldDecision, cold,
+      inputs.workload, inputs.runtimeInput));
+  if (coldReplay.status !=
+          loom::sim::SourceBackedDfgValidationStatus::Inapplicable ||
+      coldReplay.dynamicActivations != 0 || coldReplay.wavefrontSteps != 0 ||
+      coldReplay.eventCount != 0)
+    fail("functional replay treated an unexecuted graph as passing");
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredProgramFunctionalReplay(
+              spatialRef,
+              {inputs.workloadReference, inputs.runtimeInputReference,
+               compiled.structuredProgram, spatialScope, spatialDecision,
+               spatial, inputs.workload, inputs.runtimeInput},
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredProgramFunctionalReplay(
+              coldRef,
+              {inputs.workloadReference, inputs.runtimeInputReference,
+               compiled.structuredProgram, coldScope, coldDecision, cold,
+               inputs.workload, inputs.runtimeInput},
+              store))
+    fail(llvm::toString(std::move(error)));
   const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{
       inputs.workloadReference, inputs.runtimeInputReference,
       compiled.structuredProgram, inputs.observations};
@@ -375,6 +422,8 @@ void runEvaluationAnchor() {
   EvaluatedFunctional spatialFunctional =
       evaluateStructuredFunctional(spatialRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store);
+  EvaluatedFunctional coldFunctional = evaluateStructuredFunctional(
+      coldRef, inputs.workloadReference, inputs.runtimeInputReference, store);
   EvaluatedFunctional incorrectFunctional =
       evaluateStructuredFunctional(incorrectRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store);
@@ -398,6 +447,9 @@ void runEvaluationAnchor() {
       functionalMismatchResult(spatialFunctional.request,
                                spatialFunctional.evidence) !=
           loom::evaluation::FindingResultForm::Absent ||
+      functionalMismatchResult(coldFunctional.request,
+                               coldFunctional.evidence) !=
+          loom::evaluation::FindingResultForm::NotApplicable ||
       functionalMismatchResult(incorrectFunctional.request,
                                incorrectFunctional.evidence) !=
           loom::evaluation::FindingResultForm::Present)
@@ -509,9 +561,11 @@ void runEvaluationAnchor() {
                 return std::holds_alternative<loom::ArtifactRootReference>(
                     disposition.result);
               }));
-  if (exploredSelection->satisfiedEvidence.size() != materializedCandidates * 2)
-    fail("central ownership exploration did not retain distinct functional "
-         "and cost Evidence for every materialized candidate");
+  if (materializedCandidates == 0 ||
+      exploredSelection->satisfiedEvidence.size() !=
+          materializedCandidates * 2 - 1)
+    fail("central ownership exploration did not retain functional Evidence "
+         "while withholding cost Evidence from the inapplicable candidate");
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||

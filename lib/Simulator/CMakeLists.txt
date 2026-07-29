@@ -54,6 +54,7 @@ endif()
 add_mlir_library(LoomNativeSimulationOracle
   NativeExecutionSupport.cpp
   NativeSimulationOracle.cpp
+  SourceBackedDfgValidation.cpp
   StructuredProgramNativeExecution.cpp
 
   PARTIAL_SOURCES_INTENDED
@@ -62,6 +63,7 @@ add_mlir_library(LoomNativeSimulationOracle
   ${LOOM_SOURCE_DIR}/include/Simulator
 
   LINK_LIBS PUBLIC
+  LoomFrontendCompilation
   LoomSimulator
   ${loom_native_oracle_llvm_libs}
 )

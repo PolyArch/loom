@@ -247,6 +247,37 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
                                std::move(threadOnlyArguments)};
 }
 
+struct CallableOwnershipBoundary final {
+  llvm::SmallVector<mlir::LLVM::AddressOfOp, 4> addresses;
+  llvm::SmallVector<mlir::LLVM::UndefOp, 4> undefs;
+  llvm::SmallVector<mlir::Value, 8> inputs;
+  llvm::SmallVector<mlir::Value, 1> outputs;
+};
+
+CallableOwnershipBoundary
+deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
+  CallableOwnershipBoundary boundary;
+  function.walk([&](mlir::LLVM::AddressOfOp address) {
+    if (!address.getRes().use_empty())
+      boundary.addresses.push_back(address);
+  });
+  function.walk([&](mlir::LLVM::UndefOp undef) {
+    if (!undef.getRes().use_empty())
+      boundary.undefs.push_back(undef);
+  });
+  mlir::Block &entry = function.getBody().front();
+  boundary.inputs.append(entry.getArguments().begin(),
+                         entry.getArguments().end());
+  for (mlir::LLVM::AddressOfOp address : boundary.addresses)
+    boundary.inputs.push_back(address.getRes());
+  for (mlir::LLVM::UndefOp undef : boundary.undefs)
+    boundary.inputs.push_back(undef.getRes());
+  auto returnOp = llvm::cast<mlir::LLVM::ReturnOp>(entry.getTerminator());
+  boundary.outputs.append(returnOp.getOperands().begin(),
+                          returnOp.getOperands().end());
+  return boundary;
+}
+
 llvm::Error materializeThread(mlir::ModuleOp module,
                               mlir::LLVM::LLVMFuncOp function) {
   if (llvm::Error error = verifyEligibleCallable(function))
@@ -261,20 +292,13 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   // actor. Hoist nested address leaves to the wrapper entry so every retained
   // leaf has one explicit launch binding and can be removed from the cloned
   // graph body.
-  llvm::SmallVector<mlir::LLVM::AddressOfOp, 4> addressCaptures;
-  llvm::SmallVector<mlir::LLVM::UndefOp, 4> undefCaptures;
-  function.walk([&](mlir::LLVM::AddressOfOp address) {
-    if (!address.getRes().use_empty())
-      addressCaptures.push_back(address);
-  });
-  function.walk([&](mlir::LLVM::UndefOp undef) {
-    if (!undef.getRes().use_empty())
-      undefCaptures.push_back(undef);
-  });
-  for (mlir::LLVM::AddressOfOp address : llvm::reverse(addressCaptures))
+  CallableOwnershipBoundary callableBoundary =
+      deriveCallableOwnershipBoundary(function);
+  for (mlir::LLVM::AddressOfOp address :
+       llvm::reverse(callableBoundary.addresses))
     if (&source.front() != address.getOperation())
       address->moveBefore(&source, source.begin());
-  for (mlir::LLVM::UndefOp undef : llvm::reverse(undefCaptures))
+  for (mlir::LLVM::UndefOp undef : llvm::reverse(callableBoundary.undefs))
     if (&source.front() != undef.getOperation())
       undef->moveBefore(&source, source.begin());
 
@@ -282,7 +306,8 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   for (mlir::Operation &operation : source.without_terminator())
     if (!llvm::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
       selectedBody.push_back(&operation);
-  llvm::SmallVector<mlir::Value, 1> yieldedValues(sourceReturn.getOperands());
+  llvm::SmallVector<mlir::Value, 1> yieldedValues(
+      callableBoundary.outputs.begin(), callableBoundary.outputs.end());
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   for (mlir::Value value : yieldedValues)
     resultTypes.push_back(value.getType());
@@ -291,12 +316,8 @@ llvm::Error materializeThread(mlir::ModuleOp module,
   if (!resultSlots)
     return resultSlots.takeError();
 
-  llvm::SmallVector<mlir::Value, 8> captures(source.getArguments().begin(),
-                                             source.getArguments().end());
-  for (mlir::LLVM::AddressOfOp address : addressCaptures)
-    captures.push_back(address.getRes());
-  for (mlir::LLVM::UndefOp undef : undefCaptures)
-    captures.push_back(undef.getRes());
+  llvm::SmallVector<mlir::Value, 8> captures(callableBoundary.inputs.begin(),
+                                             callableBoundary.inputs.end());
   auto boundary =
       createSpatialThreadBoundary(module, function, captures, *resultSlots,
                                   resultTypes, mlir::TypeRange{}, location);
@@ -749,7 +770,12 @@ prepareSpatialOwnershipSelection(
     return invalid("prepared ownership selection does not verify");
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
-  if (!llvm::isa<mlir::LLVM::LLVMFuncOp>(operation)) {
+  if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
+    CallableOwnershipBoundary boundary =
+        deriveCallableOwnershipBoundary(function);
+    liveIns.assign(boundary.inputs.begin(), boundary.inputs.end());
+    liveOuts.assign(boundary.outputs.begin(), boundary.outputs.end());
+  } else {
     OperationClosure closure = deriveOperationClosure(operation);
     liveIns.assign(closure.liveIns.begin(), closure.liveIns.end());
     liveOuts.assign(closure.liveOuts.begin(), closure.liveOuts.end());

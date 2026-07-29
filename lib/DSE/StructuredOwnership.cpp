@@ -54,8 +54,10 @@ void mergeEvidenceReferences(std::vector<ArtifactRootReference> &destination,
 
 llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const frontend::StructuredProgramCandidate &parent,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput,
+    const sim::CanonicalSimulationWorkload &workload,
+    const ArtifactRootReference &workloadReference,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const ArtifactRootReference &runtimeInputReference,
     const sim::NativeStructuredProgramObservations &sourceObservations,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
@@ -82,13 +84,20 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
   if (!reference)
     return reference.takeError();
   const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      workload, runtimeInput, parent, sourceObservations};
+      workloadReference, runtimeInputReference, parent, sourceObservations};
   if (llvm::Error error =
           evaluation::models::primeStructuredFabricAnalyticResult(
               *reference,
               {candidate->structuredProgram, &candidate->canonicalDataflow,
                workItem.scope.selection},
               invocation, fabric, config, artifactStore))
+    return std::move(error);
+  if (llvm::Error error =
+          evaluation::models::primeStructuredProgramFunctionalReplay(
+              *reference,
+              {workloadReference, runtimeInputReference, parent, workItem.scope,
+               workItem.decision, *candidate, workload, runtimeInput},
+              artifactStore))
     return std::move(error);
   return OwnershipAttemptResult{
       MaterializedOwnershipWorkItem{std::move(*reference)}};
@@ -182,9 +191,9 @@ generateAndPromoteStructuredOwnership(
   auto execute = [&](const frontend::StructuredProgramCandidate &workerParent,
                      std::size_t index) {
     auto result = materializeOwnershipWorkItem(
-        workerParent, *workloadReference, *runtimeInputReference,
-        *sourceObservations, fabric, config, options, artifactStore,
-        workItems[index]);
+        workerParent, workload, *workloadReference, runtimeInput,
+        *runtimeInputReference, *sourceObservations, fabric, config, options,
+        artifactStore, workItems[index]);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;

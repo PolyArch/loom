@@ -108,7 +108,9 @@ using SpatialOwnershipScopeDomainEntry =
 
 /// A private clone in which one exact ownership scope has had all selected
 /// semantic decisions materialized, but no execution owner has yet replaced
-/// the selected operation. The parent candidate owns the MLIRContext and must
+/// the selected operation. `liveIns` and `liveOuts` are the exact ordered
+/// selected boundary used by ownership materialization for both callable and
+/// nested-operation scopes. The parent candidate owns the MLIRContext and must
 /// outlive this ephemeral projection.
 struct PreparedSpatialOwnershipSelection final {
   mlir::OwningOpRef<mlir::ModuleOp> module;

@@ -1,5 +1,6 @@
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 
+#include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
@@ -7,6 +8,7 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -14,6 +16,7 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -96,7 +99,8 @@ const ScopeFormRef kWholeCaseScopeForms[] = {kWholeExactCaseScope};
 const FindingCapability kFindingCapabilities[] = {
     {standard_findings::FunctionalMismatch, kWholeCaseScopeForms,
      findingResultFormMask(FindingResultForm::Absent) |
-         findingResultFormMask(FindingResultForm::Present)}};
+         findingResultFormMask(FindingResultForm::Present) |
+         findingResultFormMask(FindingResultForm::NotApplicable)}};
 const ModeledPhenomenon kModeledPhenomena[] = {
     ModeledPhenomenon::StructuredProgram};
 
@@ -112,6 +116,87 @@ struct SourceObservationCacheEntry final {
 std::optional<SourceObservationCacheEntry> &sourceObservationCache() {
   thread_local std::optional<SourceObservationCacheEntry> cache;
   return cache;
+}
+
+enum class ReplayResultKind : std::uint8_t {
+  Equivalent,
+  Mismatch,
+  Inapplicable,
+  Unsupported,
+  ExecutionFailed,
+};
+
+struct CachedReplayResult final {
+  ReplayResultKind kind = ReplayResultKind::Unsupported;
+  std::uint64_t dynamicActivations = 0;
+  std::uint64_t wavefrontSteps = 0;
+  std::uint64_t eventCount = 0;
+
+  friend bool operator==(const CachedReplayResult &lhs,
+                         const CachedReplayResult &rhs) {
+    return lhs.kind == rhs.kind &&
+           lhs.dynamicActivations == rhs.dynamicActivations &&
+           lhs.wavefrontSteps == rhs.wavefrontSteps &&
+           lhs.eventCount == rhs.eventCount;
+  }
+};
+
+std::map<std::vector<std::uint8_t>, CachedReplayResult> &replayCache() {
+  static std::map<std::vector<std::uint8_t>, CachedReplayResult> cache;
+  return cache;
+}
+
+std::mutex &replayCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::vector<std::uint8_t>
+replayCacheKey(const ArtifactRootReference &candidate,
+               const ArtifactRootReference &workload,
+               const ArtifactRootReference &runtimeInput) {
+  std::vector<std::uint8_t> key = encodeArtifactRootReference(candidate);
+  for (const ArtifactRootReference *reference : {&workload, &runtimeInput}) {
+    std::vector<std::uint8_t> bytes = encodeArtifactRootReference(*reference);
+    key.insert(key.end(), bytes.begin(), bytes.end());
+  }
+  return key;
+}
+
+llvm::Expected<CachedReplayResult> classifyReplayResult(
+    llvm::Expected<sim::SourceBackedDfgValidationResult> replay) {
+  if (replay) {
+    ReplayResultKind kind = ReplayResultKind::Unsupported;
+    switch (replay->status) {
+    case sim::SourceBackedDfgValidationStatus::Equivalent:
+      kind = ReplayResultKind::Equivalent;
+      break;
+    case sim::SourceBackedDfgValidationStatus::Mismatch:
+      kind = ReplayResultKind::Mismatch;
+      break;
+    case sim::SourceBackedDfgValidationStatus::Inapplicable:
+      kind = ReplayResultKind::Inapplicable;
+      break;
+    }
+    return CachedReplayResult{kind, replay->dynamicActivations,
+                              replay->wavefrontSteps, replay->eventCount};
+  }
+
+  std::error_code code;
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  llvm::handleAllErrors(std::move(replay).takeError(),
+                        [&](const llvm::ErrorInfoBase &failure) {
+                          code = failure.convertToErrorCode();
+                          failure.log(stream);
+                        });
+  stream.flush();
+  if (code == std::make_error_code(std::errc::not_supported))
+    return CachedReplayResult{ReplayResultKind::Unsupported};
+  if (code == std::make_error_code(std::errc::io_error))
+    return CachedReplayResult{ReplayResultKind::ExecutionFailed};
+  return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
+                                 "%s", message.c_str());
 }
 
 llvm::ArrayRef<std::uint8_t> configSchemaBytes() {
@@ -243,6 +328,26 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         **sourceObservations, *selectedObservations);
   }
 
+  std::optional<CachedReplayResult> replay;
+  if (!mismatch &&
+      candidate->identity() != inputs->structuredProgram.identity()) {
+    const std::vector<std::uint8_t> key = replayCacheKey(
+        candidates.front(), *request.workload(), *request.runtimeInput());
+    std::lock_guard<std::mutex> lock(replayCacheMutex());
+    auto found = replayCache().find(key);
+    if (found == replayCache().end())
+      return EvaluationModelResult{
+          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    replay = found->second;
+    if (replay->kind == ReplayResultKind::Unsupported)
+      return EvaluationModelResult{
+          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    if (replay->kind == ReplayResultKind::ExecutionFailed)
+      return EvaluationModelResult{
+          {}, ExecutionFailedEvidence{OutcomeReason::ToolFailure}};
+    mismatch = replay->kind == ReplayResultKind::Mismatch;
+  }
+
   std::vector<FindingResult> findings;
   findings.reserve(request.findingRequests().size());
   for (const FindingRequest &finding : request.findingRequests()) {
@@ -253,6 +358,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     if (mismatch) {
       findings.push_back(FindingResult{PresentFinding{{FindingOccurrence::get(
           standard_findings::FunctionalMismatchOccurrence{})}}});
+    } else if (replay && replay->kind == ReplayResultKind::Inapplicable) {
+      findings.push_back(FindingResult{
+          NotApplicableFinding{NotApplicableReason::UndefinedForSubject}});
     } else {
       findings.push_back(FindingResult{AbsentFinding{}});
     }
@@ -298,6 +406,57 @@ llvm::Error registerStructuredProgramFunctionalModel() {
   if (llvm::Error error = registerEvaluationModelDescriptor(kModelDescriptor))
     return error;
   return registerEvaluationModelProvider(kProvider);
+}
+
+llvm::Error primeStructuredProgramFunctionalReplay(
+    const ArtifactRootReference &candidateReference,
+    const StructuredProgramFunctionalReplayInvocation &invocation,
+    const ArtifactStore &artifactStore) {
+  if (llvm::Error error = registerStructuredProgramFunctionalModel())
+    return error;
+  if (candidateReference.schemaIdentity !=
+          frontend::structuredProgramArtifactSchema.identity ||
+      candidateReference.schemaVersion !=
+          frontend::structuredProgramArtifactSchema.version ||
+      candidateReference.artifact !=
+          invocation.candidate.structuredProgram.identity())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay candidate mismatch");
+  if (auto stored = artifactStore.get(candidateReference); !stored)
+    return stored.takeError();
+  auto inputs = sim::importStructuredProgramSimulationInputs(
+      invocation.workload, invocation.runtimeInput, artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  if (inputs->structuredProgram.identity() !=
+          invocation.sourceProgram.identity() ||
+      inputs->workload.identity() != invocation.simulationWorkload.identity() ||
+      inputs->runtimeInput.identity() !=
+          invocation.simulationRuntimeInput.identity() ||
+      invocation.workload.artifact !=
+          invocation.simulationWorkload.identity() ||
+      invocation.runtimeInput.artifact !=
+          invocation.simulationRuntimeInput.identity())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay invocation mismatch");
+
+  auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
+      invocation.sourceProgram, invocation.scope, invocation.decision,
+      invocation.candidate, invocation.simulationWorkload,
+      invocation.simulationRuntimeInput));
+  if (!classified)
+    return classified.takeError();
+  const std::vector<std::uint8_t> key = replayCacheKey(
+      candidateReference, invocation.workload, invocation.runtimeInput);
+  std::lock_guard<std::mutex> lock(replayCacheMutex());
+  auto [found, inserted] = replayCache().try_emplace(key, *classified);
+  if (!inserted && !(found->second == *classified))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: nondeterministic replay");
+  return llvm::Error::success();
 }
 
 llvm::Expected<PreparedStructuredProgramFunctionalEvaluation>

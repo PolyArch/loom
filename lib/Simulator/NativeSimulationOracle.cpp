@@ -219,6 +219,7 @@ void captureBegin() {
   context.result.calls.emplace_back();
   NativeSimulationCallCapture &capture = context.result.calls.back();
   capture.objects.resize(context.byteCounts.size());
+  capture.memoryRootObjectOrdinals = context.rootObjectOrdinals;
   capture.memoryRootByteOffsets = context.staticRootByteOffsets;
   context.activeCalls.push_back(ActiveCall{
       context.result.calls.size() - 1, 0,
