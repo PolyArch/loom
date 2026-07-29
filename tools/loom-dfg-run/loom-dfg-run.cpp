@@ -128,21 +128,72 @@ readNativeModule(llvm::StringRef path) {
   return llvm::orc::ThreadSafeModule(std::move(*module), std::move(context));
 }
 
+struct NullaryProgramInputs final {
+  loom::sim::CanonicalSimulationWorkload workload;
+  loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
+};
+
+llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef symbol) {
+  auto view = candidate.view();
+  if (!view)
+    return view.takeError();
+  std::optional<loom::frontend::StructuredEntityRef> entry;
+  mlir::LLVM::LLVMFuncOp entryOp;
+  for (const loom::frontend::StructuredEntity &entity :
+       view->entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (!function || function.getSymName() != symbol)
+      continue;
+    if (entry)
+      return invalid("program entry symbol is not unique");
+    entry = entity.reference;
+    entryOp = function;
+  }
+  if (!entry)
+    return invalid("program entry symbol does not resolve");
+  if (entryOp.isVarArg() || entryOp.getFunctionType().getNumParams() != 0)
+    return unsupported("focused DFG runner requires a nullary program entry");
+
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{*entry};
+  workloadDraft.observableContract.returnValue =
+      !llvm::isa<mlir::LLVM::LLVMVoidType>(
+          entryOp.getFunctionType().getReturnType());
+  auto workload = loom::sim::finalizeSimulationWorkload(workloadDraft, *view);
+  if (!workload)
+    return workload.takeError();
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload->identity()};
+  auto runtimeInput =
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, *workload, *view);
+  if (!runtimeInput)
+    return runtimeInput.takeError();
+  return NullaryProgramInputs{std::move(*workload), std::move(*runtimeInput)};
+}
+
 llvm::Expected<loom::dse::SelectedPreMappingCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
               const loom::ArtifactStore &store) {
   loom::frontend::PreMappingCompilationOptions compilation;
+  auto source = loom::frontend::raiseLlvmModuleToStructured(
+      std::move(module), fabric, compilation.raising);
+  if (!source)
+    return source.takeError();
+  auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
+  if (!inputs)
+    return inputs.takeError();
   loom::dse::PreMappingExplorationOptions exploration{
-      compilation.raising,
       {compilation.lowering,
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1},
        candidateJobs}};
   llvm::Expected<loom::dse::PreMappingExplorationOutcome> outcome =
-      loom::dse::exploreLlvmModuleToPreMapping(std::move(module), fabric,
-                                               loom::defaultResolvedConfig(),
-                                               exploration, store);
+      loom::dse::exploreStructuredCompilationToPreMapping(
+          std::move(*source), inputs->workload, inputs->runtimeInput, fabric,
+          loom::defaultResolvedConfig(), exploration, store);
   if (!outcome)
     return outcome.takeError();
   if (const auto *incomplete =

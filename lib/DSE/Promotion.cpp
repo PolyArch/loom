@@ -138,15 +138,18 @@ CandidateSet::get(const ArtifactSchemaDescriptor &schema,
 }
 
 llvm::Expected<PromotionOutcome>
-promoteMetricTopK(const CandidateSet &candidateSet,
-                  evaluation::CaseSubjectRoleRef candidateRole,
-                  llvm::ArrayRef<PromotionEvidence> evidence,
-                  const PointMetricTopKSelection &selection,
-                  const ArtifactStore &artifactStore) {
+promoteMetricTopKImpl(const CandidateSet &candidateSet,
+                      evaluation::CaseSubjectRoleRef candidateRole,
+                      std::optional<ArtifactRootReference> baseline,
+                      llvm::ArrayRef<PromotionEvidence> evidence,
+                      const PointMetricTopKSelection &selection,
+                      const ArtifactStore &artifactStore) {
   if (selection.k == 0)
     return invalid("TopK requires positive k");
   if (candidateSet.candidates().empty())
     return PromotionOutcome{CompletedNoFeasibleCandidate{}};
+  if (baseline && !containsCandidate(candidateSet, *baseline))
+    return invalid("benefit baseline is outside the input candidate set");
 
   std::map<ArtifactRootReference, RankedCandidate,
            decltype(&artifactRootReferenceLess)>
@@ -245,6 +248,31 @@ promoteMetricTopK(const CandidateSet &candidateSet,
         incomplete->first, incomplete->second, std::move(retainedEvidence)}};
   }
 
+  if (baseline) {
+    auto baselineIt = ranked.find(*baseline);
+    if (baselineIt == ranked.end())
+      return invalid("benefit baseline has no comparable metric result");
+    const evaluation::MetricValue &baselineValue = baselineIt->second.value;
+    for (auto candidate = ranked.begin(); candidate != ranked.end();) {
+      if (candidate->first == *baseline) {
+        candidate = ranked.erase(candidate);
+        continue;
+      }
+      const int comparison =
+          compareMetricValue(candidate->second.value, baselineValue);
+      const bool improves = selection.direction == ObjectiveDirection::Minimize
+                                ? comparison < 0
+                                : comparison > 0;
+      if (!improves)
+        candidate = ranked.erase(candidate);
+      else
+        ++candidate;
+    }
+    if (ranked.empty())
+      return PromotionOutcome{
+          CompletedSelection{{*baseline}, std::move(retainedEvidence)}};
+  }
+
   std::vector<RankedCandidate> ordered;
   ordered.reserve(ranked.size());
   for (const auto &[candidate, record] : ranked) {
@@ -273,3 +301,25 @@ promoteMetricTopK(const CandidateSet &candidateSet,
 }
 
 } // namespace loom::dse
+
+llvm::Expected<loom::dse::PromotionOutcome>
+loom::dse::promoteMetricTopK(const CandidateSet &candidateSet,
+                             evaluation::CaseSubjectRoleRef candidateRole,
+                             llvm::ArrayRef<PromotionEvidence> evidence,
+                             const PointMetricTopKSelection &selection,
+                             const ArtifactStore &artifactStore) {
+  return promoteMetricTopKImpl(candidateSet, candidateRole, std::nullopt,
+                               evidence, selection, artifactStore);
+}
+
+llvm::Expected<loom::dse::PromotionOutcome>
+loom::dse::promoteMetricTopKAgainstBaseline(
+    const CandidateSet &candidateSet,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    const ArtifactRootReference &baseline,
+    llvm::ArrayRef<PromotionEvidence> evidence,
+    const PointMetricTopKSelection &selection,
+    const ArtifactStore &artifactStore) {
+  return promoteMetricTopKImpl(candidateSet, candidateRole, baseline, evidence,
+                               selection, artifactStore);
+}

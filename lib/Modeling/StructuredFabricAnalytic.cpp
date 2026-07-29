@@ -11,11 +11,15 @@
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
+#include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -42,6 +46,10 @@ const ArtifactSchemaDescriptor *const kStructuredSchemas[] = {
     &frontend::structuredProgramArtifactSchema};
 const ArtifactSchemaDescriptor *const kFabricSchemas[] = {
     &fabric::fabricArtifactSchema};
+const ArtifactSchemaDescriptor *const kWorkloadSchemas[] = {
+    &sim::simulationWorkloadSchema};
+const ArtifactSchemaDescriptor *const kRuntimeInputSchemas[] = {
+    &sim::simulationRuntimeInputSchema};
 
 const CaseSubjectRoleDescriptor kSubjectRoles[] = {
     {kStructuredProgramRole, "structured_program",
@@ -50,16 +58,51 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      nullptr},
 };
 
+llvm::Error verifyWorkloadCompatibility(
+    const EvaluationSubjectBindings &,
+    const std::optional<ArtifactRootReference> &workload,
+    const std::optional<ArtifactRootReference> &runtimeInput,
+    const CaseArtifactResolution &resolution) {
+  if (!workload || !runtimeInput)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: workload inputs are not total");
+  const CaseArtifactResolution::Entry *workloadEntry =
+      resolution.find(*workload);
+  const CaseArtifactResolution::Entry *runtimeEntry =
+      resolution.find(*runtimeInput);
+  if (!workloadEntry || !runtimeEntry ||
+      !CaseArtifactResolution::reaches(*runtimeEntry, *workload))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: runtime input does not reach its "
+        "exact workload");
+  bool hasStructuredOwner = false;
+  for (const ArtifactRootReference &dependency :
+       workloadEntry->dependencyClosure)
+    hasStructuredOwner |=
+        dependency.schemaIdentity ==
+            frontend::structuredProgramArtifactSchema.identity &&
+        dependency.schemaVersion ==
+            frontend::structuredProgramArtifactSchema.version;
+  if (!hasStructuredOwner)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: workload has no exact Structured "
+        "Program owner");
+  return llvm::Error::success();
+}
+
 const EvaluationCaseSignatureDescriptor kCaseSignature{
     kCaseKind,
     "structured_program_with_fabric",
     "One exact Structured Program evaluated against one exact Fabric.",
     kSubjectRoles,
-    ArtifactRequirement::Forbidden,
-    {},
-    ArtifactRequirement::Forbidden,
-    {},
-    nullptr,
+    ArtifactRequirement::Required,
+    kWorkloadSchemas,
+    ArtifactRequirement::Required,
+    kRuntimeInputSchemas,
+    &verifyWorkloadCompatibility,
     AbsentReferenceCycle{},
     {}};
 
@@ -94,10 +137,6 @@ const EvaluationModelDescriptor kModelDescriptor{
     DeterminismContract::Deterministic,
     {}};
 
-bool isInsideSpatialRegion(mlir::Operation *operation) {
-  return static_cast<bool>(operation->getParentOfType<loom::SpatialRegionOp>());
-}
-
 bool isInsideGlobal(mlir::Operation *operation) {
   return static_cast<bool>(operation->getParentOfType<mlir::LLVM::GlobalOp>());
 }
@@ -111,9 +150,9 @@ bool isExecutableLeaf(mlir::Operation *operation) {
   return true;
 }
 
-struct StaticWorkload final {
-  std::uint64_t instructionLeaves = 0;
-  bool hasSpatialRegion = false;
+struct DynamicWorkload final {
+  std::uint64_t instructionLeafExecutions = 0;
+  std::uint64_t spatialActivations = 0;
 };
 
 using CachedMetrics = std::optional<detail::LowConfidenceMetricSet>;
@@ -131,40 +170,171 @@ std::mutex &metricCacheMutex() {
 std::vector<std::uint8_t>
 metricCacheKey(const ArtifactRootReference &structuredProgram,
                const ArtifactRootReference &fabricReference,
+               const ArtifactRootReference &workload,
+               const ArtifactRootReference &runtimeInput,
                const ComponentViewDigest &configDigest) {
   std::vector<std::uint8_t> key =
       encodeArtifactRootReference(structuredProgram);
   std::vector<std::uint8_t> fabricBytes =
       encodeArtifactRootReference(fabricReference);
   key.insert(key.end(), fabricBytes.begin(), fabricBytes.end());
+  std::vector<std::uint8_t> workloadBytes =
+      encodeArtifactRootReference(workload);
+  key.insert(key.end(), workloadBytes.begin(), workloadBytes.end());
+  std::vector<std::uint8_t> runtimeInputBytes =
+      encodeArtifactRootReference(runtimeInput);
+  key.insert(key.end(), runtimeInputBytes.begin(), runtimeInputBytes.end());
   key.insert(key.end(), configDigest.bytes().begin(),
              configDigest.bytes().end());
   return key;
 }
 
-StaticWorkload projectStaticWorkload(mlir::ModuleOp module) {
-  StaticWorkload workload;
-  module.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<loom::SpatialRegionOp>(operation)) {
-      workload.hasSpatialRegion = true;
-      return;
-    }
+mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
+  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
+  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
+  if (!function && owner)
+    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  return function && !function.getBody().empty() ? function
+                                                 : mlir::LLVM::LLVMFuncOp{};
+}
+
+llvm::Expected<std::uint64_t> checkedScaledCount(std::uint64_t count,
+                                                 std::uint64_t activations,
+                                                 llvm::StringRef context) {
+  const std::optional<std::uint64_t> result =
+      llvm::checkedMulUnsigned(count, activations);
+  if (!result)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "structured_fabric_model_overflow: %s",
+                                   context.str().c_str());
+  return *result;
+}
+
+llvm::Expected<DynamicWorkload> projectDynamicWorkload(
+    const frontend::StructuredProgramCandidate &source,
+    const sim::NativeStructuredProgramObservations &observations,
+    const std::optional<frontend::StructuredEntityRef> &sourceScope) {
+  llvm::Expected<frontend::StructuredProgramCandidateView> view = source.view();
+  if (!view)
+    return view.takeError();
+
+  std::vector<const frontend::StructuredEntity *> expectedBlocks;
+  for (const frontend::StructuredEntity &entity :
+       view->entities(frontend::StructuredEntityKind::Block))
+    if (enclosingDefinedLlvmFunction(entity.block))
+      expectedBlocks.push_back(&entity);
+  if (expectedBlocks.size() != observations.blockActivations.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: block activation projection is not "
+        "total");
+
+  llvm::DenseMap<mlir::Block *, std::uint64_t> activations;
+  std::uint64_t totalLeaves = 0;
+  for (std::size_t ordinal = 0; ordinal < expectedBlocks.size(); ++ordinal) {
+    const sim::NativeStructuredBlockActivation &observed =
+        observations.blockActivations[ordinal];
+    if (observed.block != expectedBlocks[ordinal]->reference)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: block activation order differs "
+          "from the exact Structured owner");
+    mlir::Block *block = expectedBlocks[ordinal]->block;
+    activations[block] = observed.activations;
+    const std::uint64_t leaves =
+        llvm::count_if(*block, [](mlir::Operation &operation) {
+          return isExecutableLeaf(&operation);
+        });
+    llvm::Expected<std::uint64_t> dynamicLeaves = checkedScaledCount(
+        leaves, observed.activations, "source instruction executions");
+    if (!dynamicLeaves)
+      return dynamicLeaves.takeError();
+    const std::optional<std::uint64_t> updated =
+        llvm::checkedAddUnsigned(totalLeaves, *dynamicLeaves);
+    if (!updated)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: source instruction total");
+    totalLeaves = *updated;
+  }
+
+  if (!sourceScope)
+    return DynamicWorkload{totalLeaves, 0};
+  llvm::Expected<frontend::StructuredEntity> selected =
+      view->resolve(*sourceScope);
+  if (!selected)
+    return selected.takeError();
+  if (!selected->operation)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: source scope is not an operation");
+
+  mlir::Block *activationBlock = nullptr;
+  if (auto function =
+          llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(selected->operation))
+    activationBlock =
+        function.getBody().empty() ? nullptr : &function.getBody().front();
+  else
+    activationBlock = selected->operation->getBlock();
+  auto foundActivation = activations.find(activationBlock);
+  if (!activationBlock || foundActivation == activations.end())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: source scope has no activation "
+        "projection");
+
+  std::uint64_t coveredLeaves = 0;
+  llvm::Error failure = llvm::Error::success();
+  selected->operation->walk([&](mlir::Operation *operation) {
+    if (failure)
+      return mlir::WalkResult::interrupt();
+    if (operation != selected->operation &&
+        llvm::isa<mlir::FunctionOpInterface>(operation))
+      return mlir::WalkResult::skip();
     if (!isExecutableLeaf(operation))
-      return;
-    if (!isInsideSpatialRegion(operation))
-      ++workload.instructionLeaves;
+      return mlir::WalkResult::advance();
+    auto found = activations.find(operation->getBlock());
+    if (found == activations.end()) {
+      failure = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: selected leaf has no block "
+          "activation");
+      return mlir::WalkResult::interrupt();
+    }
+    const std::optional<std::uint64_t> updated =
+        llvm::checkedAddUnsigned(coveredLeaves, found->second);
+    if (!updated) {
+      failure = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: selected instruction total");
+      return mlir::WalkResult::interrupt();
+    }
+    coveredLeaves = *updated;
+    return mlir::WalkResult::advance();
   });
-  return workload;
+  if (failure)
+    return std::move(failure);
+  if (coveredLeaves > totalLeaves)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: selected work exceeds source work");
+  return DynamicWorkload{totalLeaves - coveredLeaves, foundActivation->second};
 }
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
     const frontend::StructuredProgramCandidate &program,
+    const frontend::StructuredProgramCandidate &source,
+    const sim::NativeStructuredProgramObservations &sourceObservations,
+    const std::optional<frontend::StructuredEntityRef> &sourceScope,
     const fabric::FinalizedFabricRoot &fabricRoot,
     const dataflow::CanonicalDataflowProgramView *projectedDataflow = nullptr) {
-  const StaticWorkload workload = projectStaticWorkload(program.module());
+  llvm::Expected<DynamicWorkload> workload =
+      projectDynamicWorkload(source, sourceObservations, sourceScope);
+  if (!workload)
+    return workload.takeError();
 
   detail::AnalyticWorkloadEstimate pressure;
-  if (workload.hasSpatialRegion) {
+  if (sourceScope) {
     std::optional<dataflow::CanonicalDataflowArtifact> lowered;
     std::optional<dataflow::CanonicalDataflowProgramView> loweredView;
     if (!projectedDataflow) {
@@ -187,10 +357,22 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
     if (!*projected)
       return std::optional<detail::LowConfidenceMetricSet>{};
     pressure = **projected;
+    llvm::Expected<std::uint64_t> schedulingPressure = checkedScaledCount(
+        pressure.schedulingPressure, workload->spatialActivations,
+        "Spatial scheduling pressure");
+    if (!schedulingPressure)
+      return schedulingPressure.takeError();
+    llvm::Expected<std::uint64_t> activityUnits =
+        checkedScaledCount(pressure.activityUnits, workload->spatialActivations,
+                           "Spatial activity");
+    if (!activityUnits)
+      return activityUnits.takeError();
+    pressure.schedulingPressure = *schedulingPressure;
+    pressure.activityUnits = *activityUnits;
   }
 
   auto metrics = detail::estimateLowConfidenceMetrics(
-      workload.instructionLeaves, pressure, fabricRoot);
+      workload->instructionLeafExecutions, pressure, fabricRoot);
   if (!metrics)
     return metrics.takeError();
   return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));
@@ -203,13 +385,15 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       request.subjectBindings().subjects(kStructuredProgramRole);
   llvm::ArrayRef<ArtifactRootReference> fabric =
       request.subjectBindings().subjects(kFabricRole);
-  if (structured.size() != 1 || fabric.size() != 1)
+  if (structured.size() != 1 || fabric.size() != 1 || !request.workload() ||
+      !request.runtimeInput())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "structured_fabric_model_invalid: exact subjects are not total");
+        "structured_fabric_model_invalid: exact case inputs are not total");
 
   const std::vector<std::uint8_t> cacheKey =
-      metricCacheKey(structured.front(), fabric.front(),
+      metricCacheKey(structured.front(), fabric.front(), *request.workload(),
+                     *request.runtimeInput(),
                      request.modelBinding().resolvedModelConfig().digest());
   bool cacheHit = false;
   CachedMetrics cachedMetrics;
@@ -228,6 +412,10 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       return stored.takeError();
     if (auto stored = artifactStore.get(fabric.front()); !stored)
       return stored.takeError();
+    if (auto stored = artifactStore.get(*request.workload()); !stored)
+      return stored.takeError();
+    if (auto stored = artifactStore.get(*request.runtimeInput()); !stored)
+      return stored.takeError();
     metrics = std::move(cachedMetrics);
   } else {
     auto program =
@@ -238,7 +426,37 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         fabric::importEntireFabricRoot(fabric.front(), artifactStore);
     if (!fabricRoot)
       return fabricRoot.takeError();
-    auto computed = estimateMetrics(*program, *fabricRoot);
+    auto inputs = sim::importStructuredProgramSimulationInputs(
+        *request.workload(), *request.runtimeInput(), artifactStore);
+    if (!inputs)
+      return inputs.takeError();
+    if (program->identity() != inputs->structuredProgram.identity())
+      return EvaluationModelResult{
+          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    auto observations = sim::executeNativeStructuredProgram(
+        inputs->structuredProgram, inputs->workload, inputs->runtimeInput);
+    if (!observations) {
+      std::error_code code;
+      std::string message;
+      llvm::raw_string_ostream stream(message);
+      llvm::handleAllErrors(observations.takeError(),
+                            [&](const llvm::ErrorInfoBase &error) {
+                              code = error.convertToErrorCode();
+                              error.log(stream);
+                            });
+      stream.flush();
+      if (code == std::make_error_code(std::errc::not_supported))
+        return EvaluationModelResult{
+            {},
+            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+      if (code == std::make_error_code(std::errc::io_error))
+        return EvaluationModelResult{
+            {}, ExecutionFailedEvidence{OutcomeReason::ToolFailure}};
+      return llvm::createStringError(
+          code ? code : llvm::inconvertibleErrorCode(), "%s", message.c_str());
+    }
+    auto computed = estimateMetrics(*program, inputs->structuredProgram,
+                                    *observations, std::nullopt, *fabricRoot);
     if (!computed)
       return computed.takeError();
     metrics = std::move(*computed);
@@ -277,7 +495,9 @@ llvm::Error registerStructuredFabricAnalyticModel() {
 llvm::Expected<PreparedStructuredFabricEvaluation>
 prepareStructuredFabricEvaluation(
     const ArtifactRootReference &structuredProgram,
-    const ArtifactRootReference &fabricReference, const ResolvedConfig &config,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
     const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerStructuredFabricAnalyticModel())
     return std::move(error);
@@ -286,26 +506,24 @@ prepareStructuredFabricEvaluation(
       ResolvedModelBinding::project(kModelDescriptor.reference(), {}, config);
   if (!modelBinding)
     return modelBinding.takeError();
-  const std::vector<std::uint8_t> cacheKey =
-      metricCacheKey(structuredProgram, fabricReference,
-                     modelBinding->resolvedModelConfig().digest());
-  bool cached = false;
-  {
-    std::lock_guard<std::mutex> lock(metricCacheMutex());
-    cached = metricCache().count(cacheKey) != 0;
-  }
-  if (cached) {
-    if (auto stored = artifactStore.get(structuredProgram); !stored)
-      return stored.takeError();
-  } else {
-    auto program =
-        frontend::importStructuredProgram(structuredProgram, artifactStore);
-    if (!program)
-      return program.takeError();
-  }
+  auto program =
+      frontend::importStructuredProgram(structuredProgram, artifactStore);
+  if (!program)
+    return program.takeError();
+  auto inputs = sim::importStructuredProgramSimulationInputs(
+      workload, runtimeInput, artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  const ArtifactRootReference sourceReference{
+      frontend::structuredProgramArtifactSchema.identity.str(),
+      frontend::structuredProgramArtifactSchema.version,
+      inputs->structuredProgram.identity()};
 
   auto resolution = detail::resolveSingleSubjectFabricCase(
-      structuredProgram, fabricReference, artifactStore);
+      structuredProgram, fabricReference, artifactStore,
+      {{sourceReference, {}},
+       {workload, {sourceReference}},
+       {runtimeInput, {sourceReference, workload}}});
   if (!resolution)
     return resolution.takeError();
 
@@ -314,9 +532,9 @@ prepareStructuredFabricEvaluation(
        {kFabricRole, {fabricReference}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase = EvaluationCase::get(
-      caseSignatureRef(), std::move(*bindings), std::nullopt, std::nullopt, {},
-      *resolution, artifactStore);
+  auto evaluationCase =
+      EvaluationCase::get(caseSignatureRef(), std::move(*bindings), workload,
+                          runtimeInput, {}, *resolution, artifactStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   std::vector<MetricRequest> metrics;
@@ -343,8 +561,8 @@ prepareStructuredFabricEvaluation(
 
 llvm::Error primeStructuredFabricAnalyticResult(
     const ArtifactRootReference &structuredProgramReference,
-    const frontend::StructuredProgramCandidate &structuredProgram,
-    const dataflow::CanonicalDataflowArtifact &canonicalDataflow,
+    const StructuredFabricAnalyticCandidateProjection &candidate,
+    const StructuredFabricAnalyticInvocation &invocation,
     const fabric::FinalizedFabricRoot &fabricRoot, const ResolvedConfig &config,
     const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerStructuredFabricAnalyticModel())
@@ -353,7 +571,7 @@ llvm::Error primeStructuredFabricAnalyticResult(
           frontend::structuredProgramArtifactSchema.identity ||
       structuredProgramReference.schemaVersion !=
           frontend::structuredProgramArtifactSchema.version ||
-      structuredProgramReference.artifact != structuredProgram.identity())
+      structuredProgramReference.artifact != candidate.candidate.identity())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: cache subject mismatch");
@@ -361,20 +579,50 @@ llvm::Error primeStructuredFabricAnalyticResult(
     return stored.takeError();
   if (auto stored = artifactStore.get(fabricRoot.reference()); !stored)
     return stored.takeError();
+  auto inputs = sim::importStructuredProgramSimulationInputs(
+      invocation.workload, invocation.runtimeInput, artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  if (inputs->structuredProgram.identity() !=
+          invocation.sourceProgram.identity() ||
+      inputs->workload.identity() != invocation.workload.artifact ||
+      inputs->runtimeInput.identity() != invocation.runtimeInput.artifact)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: invocation input mismatch");
+  if (candidate.sourceScope.has_value() !=
+      (candidate.canonicalDataflow != nullptr))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: candidate projection is partial");
+  if (!candidate.sourceScope &&
+      candidate.candidate.identity() != invocation.sourceProgram.identity())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: baseline is not the source "
+        "program");
 
   auto configView =
       ResolvedModelConfigView::project(kModelDescriptor.reference(), config);
   if (!configView)
     return configView.takeError();
-  auto dataflowView = canonicalDataflow.view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  auto metrics = estimateMetrics(structuredProgram, fabricRoot, &*dataflowView);
+  std::optional<dataflow::CanonicalDataflowProgramView> dataflowView;
+  if (candidate.canonicalDataflow) {
+    auto view = candidate.canonicalDataflow->view();
+    if (!view)
+      return view.takeError();
+    dataflowView.emplace(std::move(*view));
+  }
+  auto metrics =
+      estimateMetrics(candidate.candidate, invocation.sourceProgram,
+                      invocation.sourceObservations, candidate.sourceScope,
+                      fabricRoot, dataflowView ? &*dataflowView : nullptr);
   if (!metrics)
     return metrics.takeError();
 
   const std::vector<std::uint8_t> key = metricCacheKey(
-      structuredProgramReference, fabricRoot.reference(), configView->digest());
+      structuredProgramReference, fabricRoot.reference(), invocation.workload,
+      invocation.runtimeInput, configView->digest());
   std::lock_guard<std::mutex> lock(metricCacheMutex());
   auto [found, inserted] = metricCache().try_emplace(key, *metrics);
   if (!inserted && found->second != *metrics)

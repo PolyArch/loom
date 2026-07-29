@@ -6,18 +6,12 @@
 
 #include "llvm/Support/Error.h"
 
-#include <memory>
 #include <variant>
 #include <vector>
-
-namespace llvm {
-class Module;
-}
 
 namespace loom::dse {
 
 struct PreMappingExplorationOptions final {
-  raising::StructuredRaisingOptions raising;
   StructuredOwnershipExplorationOptions ownership;
 };
 
@@ -37,11 +31,13 @@ using PreMappingExplorationOutcome =
                  IncompleteSelection>;
 
 llvm::Expected<PreMappingExplorationOutcome>
-exploreLlvmModuleToPreMapping(std::unique_ptr<llvm::Module> module,
-                              const fabric::FinalizedFabricRoot &fabric,
-                              const ResolvedConfig &config,
-                              const PreMappingExplorationOptions &options,
-                              const ArtifactStore &artifactStore);
+exploreStructuredCompilationToPreMapping(
+    frontend::StructuredCompilation compilation,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
+    const PreMappingExplorationOptions &options,
+    const ArtifactStore &artifactStore);
 
 } // namespace loom::dse
 

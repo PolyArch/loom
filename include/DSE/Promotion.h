@@ -90,6 +90,17 @@ promoteMetricTopK(const CandidateSet &candidateSet,
                   const PointMetricTopKSelection &selection,
                   const ArtifactStore &artifactStore);
 
+/// Applies the same exact TopK gate, but admits only candidates whose selected
+/// metric is strictly better than the exact stored-program baseline. If none
+/// improves on the baseline, the baseline is the sole selected fallback.
+llvm::Expected<PromotionOutcome>
+promoteMetricTopKAgainstBaseline(const CandidateSet &candidateSet,
+                                 evaluation::CaseSubjectRoleRef candidateRole,
+                                 const ArtifactRootReference &baseline,
+                                 llvm::ArrayRef<PromotionEvidence> evidence,
+                                 const PointMetricTopKSelection &selection,
+                                 const ArtifactStore &artifactStore);
+
 } // namespace loom::dse
 
 #endif // LOOM_DSE_PROMOTION_H

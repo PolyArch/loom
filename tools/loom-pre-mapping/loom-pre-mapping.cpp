@@ -30,6 +30,7 @@
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
@@ -50,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 
 namespace {
 
@@ -150,6 +152,47 @@ resolveCallable(const loom::frontend::StructuredProgramCandidate &candidate,
     return ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
                                      "callable symbol does not resolve");
   return *resolved;
+}
+
+struct NullaryProgramInputs final {
+  loom::sim::CanonicalSimulationWorkload workload;
+  loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
+};
+
+::llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    ::llvm::StringRef symbol) {
+  auto entry = resolveCallable(candidate, symbol);
+  if (!entry)
+    return entry.takeError();
+  auto view = candidate.view();
+  if (!view)
+    return view.takeError();
+  auto entity = view->resolve(*entry);
+  if (!entity)
+    return entity.takeError();
+  auto function =
+      ::llvm::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(entity->operation);
+  if (!function || function.isVarArg() ||
+      function.getFunctionType().getNumParams() != 0)
+    return ::llvm::createStringError(
+        std::make_error_code(std::errc::not_supported),
+        "focused pre-Mapping DSE requires a nullary program entry");
+
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{*entry};
+  workloadDraft.observableContract.returnValue =
+      !::llvm::isa<::mlir::LLVM::LLVMVoidType>(
+          function.getFunctionType().getReturnType());
+  auto workload = loom::sim::finalizeSimulationWorkload(workloadDraft, *view);
+  if (!workload)
+    return workload.takeError();
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload->identity()};
+  auto runtimeInput =
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, *workload, *view);
+  if (!runtimeInput)
+    return runtimeInput.takeError();
+  return NullaryProgramInputs{std::move(*workload), std::move(*runtimeInput)};
 }
 
 ::llvm::Expected<loom::frontend::StructuredEntityRef>
@@ -298,15 +341,23 @@ int main(int argc, char **argv) {
   std::optional<loom::frontend::StructuredCompilation> explicitInput;
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!hasExplicitSelection) {
+    auto source = loom::frontend::raiseLlvmModuleToStructured(
+        std::move(llvmModule), design->roots().front(),
+        compilationOptions.raising);
+    if (!source)
+      return reportError(source.takeError());
+    auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
+    if (!inputs)
+      return reportError(inputs.takeError());
     loom::dse::PreMappingExplorationOptions exploration{
-        compilationOptions.raising,
         {compilationOptions.lowering,
          {loom::evaluation::MetricRequestOrdinal(0),
           loom::dse::ObjectiveDirection::Minimize, 1},
          candidateJobs}};
-    auto outcome = loom::dse::exploreLlvmModuleToPreMapping(
-        std::move(llvmModule), design->roots().front(),
-        loom::defaultResolvedConfig(), exploration, store);
+    auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
+        std::move(*source), inputs->workload, inputs->runtimeInput,
+        design->roots().front(), loom::defaultResolvedConfig(), exploration,
+        store);
     if (!outcome)
       return reportError(outcome.takeError());
     if (const auto *incomplete =

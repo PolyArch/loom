@@ -12,6 +12,8 @@ target_link_libraries(LoomDSE PUBLIC
   LoomCommon
   LoomEvaluation
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
   LoomStructuredFabricAnalyticModel
   LLVMSupport
 )

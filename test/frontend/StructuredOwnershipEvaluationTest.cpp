@@ -8,9 +8,12 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
+#include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -18,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -44,10 +48,16 @@ template <typename T> T take(llvm::Expected<T> value) {
 
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
-target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
-target triple = "riscv32-unknown-unknown"
-
 define void @kernel(ptr %a, ptr %b, ptr %c) {
+entry:
+  %lhs = load float, ptr %a, align 4
+  %rhs = load float, ptr %b, align 4
+  %sum = fadd float %lhs, %rhs
+  store float %sum, ptr %c, align 4
+  ret void
+}
+
+define void @cold(ptr %a, ptr %b, ptr %c) {
 entry:
   %lhs = load float, ptr %a, align 4
   %rhs = load float, ptr %b, align 4
@@ -71,20 +81,73 @@ entry:
     diagnostic.print("structuredOwnershipEvaluation", stream);
     fail(stream.str());
   }
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail("cannot initialize the native target");
+  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+  module->setDataLayout(take(target.getDefaultDataLayoutForTarget()));
+  module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
   return module;
 }
 
 loom::frontend::StructuredEntityRef
-findKernel(const loom::frontend::StructuredProgramCandidate &candidate) {
+findCallable(const loom::frontend::StructuredProgramCandidate &candidate,
+             llvm::StringRef name) {
   auto view = take(candidate.view());
   for (const loom::frontend::StructuredEntity &entity :
        view.entities(loom::frontend::StructuredEntityKind::Operation)) {
     auto function =
         llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
-    if (function && function.getSymName() == "kernel")
+    if (function && function.getSymName() == name)
       return entity.reference;
   }
-  fail("kernel callable is absent from the Structured Program");
+  fail("callable is absent from the Structured Program: " + name.str());
+}
+
+loom::sim::RuntimeMemoryObject zeroedMemory(std::size_t byteCount) {
+  return loom::sim::RuntimeMemoryObject{
+      std::vector<loom::sim::SemanticMemoryByte>(
+          byteCount, {loom::sim::SemanticState::Defined, std::uint8_t{0}})};
+}
+
+struct SourceSimulationInputs final {
+  loom::sim::CanonicalSimulationWorkload workload;
+  loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
+  loom::ArtifactRootReference workloadReference;
+  loom::ArtifactRootReference runtimeInputReference;
+  loom::sim::NativeStructuredProgramObservations observations;
+};
+
+SourceSimulationInputs makeSourceSimulationInputs(
+    const loom::frontend::StructuredProgramCandidate &source,
+    const loom::ArtifactStore &store) {
+  auto view = take(source.view());
+  loom::sim::StructuredProgramSimulationWorkload draft{
+      findCallable(source, "main")};
+  draft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{},
+                        loom::sim::StructuredRuntimeMemoryInput{},
+                        loom::sim::StructuredRuntimeMemoryInput{}};
+  draft.observableContract.returnValue = true;
+  draft.observableContract.memories.push_back(
+      {loom::sim::EntryPointerArgumentTarget{2},
+       loom::sim::MemoryObservationForm::FullState});
+  auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
+
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtime{
+      workload.identity()};
+  runtime.memoryObjects = {zeroedMemory(4), zeroedMemory(4), zeroedMemory(4)};
+  runtime.pointerBindings = {{0, 0, 0}, {1, 1, 0}, {2, 2, 0}};
+  auto runtimeInput =
+      take(loom::sim::finalizeSimulationRuntimeInput(runtime, workload, view));
+  auto workloadReference =
+      take(loom::sim::publishSimulationWorkload(workload, store));
+  auto runtimeInputReference =
+      take(loom::sim::publishSimulationRuntimeInput(runtimeInput, store));
+  auto observations = take(loom::sim::executeNativeStructuredProgram(
+      source, workload, runtimeInput));
+  return {std::move(workload), std::move(runtimeInput),
+          std::move(workloadReference), std::move(runtimeInputReference),
+          std::move(observations)};
 }
 
 loom::evaluation::DecimalValue
@@ -129,10 +192,13 @@ struct EvaluatedRuntime final {
 EvaluatedRuntime
 evaluateStructuredRuntime(const loom::ArtifactRootReference &structuredProgram,
                           const loom::ArtifactRootReference &fabric,
+                          const loom::ArtifactRootReference &workload,
+                          const loom::ArtifactRootReference &runtimeInput,
                           const loom::ArtifactStore &store) {
   auto prepared =
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
-          structuredProgram, fabric, loom::defaultResolvedConfig(), store));
+          structuredProgram, fabric, workload, runtimeInput,
+          loom::defaultResolvedConfig(), store));
   auto evidence = take(loom::evaluation::evaluateRequest(
       prepared.request, prepared.resolution, store));
   return EvaluatedRuntime{metricResult(prepared.request, evidence,
@@ -164,10 +230,17 @@ void runEvaluationAnchor() {
       store, loom::adg::BuiltinTargetPreset::Small));
 
   llvm::LLVMContext context;
-  auto compiled = take(loom::frontend::compileLlvmModuleToPreMapping(
+  auto compiled = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front().reference(), store));
+  SourceSimulationInputs inputs =
+      makeSourceSimulationInputs(compiled.structuredProgram, store);
   auto spatial = take(loom::frontend::materializeSpatialOwnership(
-      compiled.structuredProgram, findKernel(compiled.structuredProgram),
+      compiled.structuredProgram,
+      findCallable(compiled.structuredProgram, "kernel"),
+      design.roots().front()));
+  auto cold = take(loom::frontend::materializeSpatialOwnership(
+      compiled.structuredProgram,
+      findCallable(compiled.structuredProgram, "cold"),
       design.roots().front()));
 
   const loom::ArtifactRootReference baselineRef =
@@ -176,18 +249,71 @@ void runEvaluationAnchor() {
   const loom::ArtifactRootReference spatialRef =
       take(loom::frontend::publishStructuredProgram(spatial.structuredProgram,
                                                     store));
+  const loom::ArtifactRootReference coldRef = take(
+      loom::frontend::publishStructuredProgram(cold.structuredProgram, store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
+  const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{
+      inputs.workloadReference, inputs.runtimeInputReference,
+      compiled.structuredProgram, inputs.observations};
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredFabricAnalyticResult(
+              baselineRef, {compiled.structuredProgram, nullptr, std::nullopt},
+              invocation, design.roots().front(), loom::defaultResolvedConfig(),
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredFabricAnalyticResult(
+              coldRef,
+              {cold.structuredProgram, &cold.canonicalDataflow,
+               findCallable(compiled.structuredProgram, "cold")},
+              invocation, design.roots().front(), loom::defaultResolvedConfig(),
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredFabricAnalyticResult(
+              spatialRef,
+              {spatial.structuredProgram, &spatial.canonicalDataflow,
+               findCallable(compiled.structuredProgram, "kernel")},
+              invocation, design.roots().front(), loom::defaultResolvedConfig(),
+              store))
+    fail(llvm::toString(std::move(error)));
   EvaluatedRuntime baseline = evaluateStructuredRuntime(
-      baselineRef, design.roots().front().reference(), store);
+      baselineRef, design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
   EvaluatedRuntime spatialEvaluation = evaluateStructuredRuntime(
-      spatialRef, design.roots().front().reference(), store);
+      spatialRef, design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
+  EvaluatedRuntime coldEvaluation = evaluateStructuredRuntime(
+      coldRef, design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
+  if (baseline.request.workload() != inputs.workloadReference ||
+      baseline.request.runtimeInput() != inputs.runtimeInputReference)
+    fail("Structured Evaluation Request lost its exact source inputs");
   if (baseline.request.metricRequests().size() != 5 ||
       spatialEvaluation.request.metricRequests().size() != 5)
     fail("low-confidence model did not expose the complete metric set");
   if (loom::evaluation::compareDecimalValue(spatialEvaluation.value,
                                             baseline.value) >= 0)
     fail("Fabric-aware Evaluation did not prefer Spatial ownership");
+  if (coldEvaluation.value != baseline.value)
+    fail("an unexecuted candidate changed whole-workload Runtime");
+
+  auto coldCandidateSet = take(loom::dse::CandidateSet::get(
+      loom::frontend::structuredProgramArtifactSchema, {baselineRef, coldRef}));
+  auto coldPromotion = take(loom::dse::promoteMetricTopKAgainstBaseline(
+      coldCandidateSet, loom::evaluation::CaseSubjectRoleRef(0), baselineRef,
+      {{baseline.request, baseline.evidence},
+       {coldEvaluation.request, coldEvaluation.evidence}},
+      {loom::evaluation::MetricRequestOrdinal(0),
+       loom::dse::ObjectiveDirection::Minimize, 1},
+      store));
+  const auto *coldSelection =
+      std::get_if<loom::dse::CompletedSelection>(&coldPromotion);
+  if (!coldSelection ||
+      coldSelection->selected !=
+          std::vector<loom::ArtifactRootReference>{baselineRef})
+    fail("an unexecuted candidate satisfied the accelerator benefit gate");
 
   for (loom::evaluation::MetricKind metric :
        {loom::evaluation::MetricKind::LimitingClockFrequency,
@@ -240,13 +366,15 @@ void runEvaluationAnchor() {
     fail("central DSE TopK did not promote the best exact candidate");
 
   loom::dse::PreMappingExplorationOptions exploration{
-      {},
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1}}};
-  auto explored = take(loom::dse::exploreLlvmModuleToPreMapping(
-      parseModule(context), design.roots().front(),
-      loom::defaultResolvedConfig(), exploration, store));
+  auto exploredSource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(exploredSource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(), exploration,
+      store));
   const auto *exploredSelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
@@ -259,9 +387,12 @@ void runEvaluationAnchor() {
 
   auto parallelExploration = exploration;
   parallelExploration.ownership.candidateWorkerCount = 2;
-  auto parallel = take(loom::dse::exploreLlvmModuleToPreMapping(
-      parseModule(context), design.roots().front(),
-      loom::defaultResolvedConfig(), parallelExploration, store));
+  auto parallelSource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto parallel = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(parallelSource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(),
+      parallelExploration, store));
   const auto *parallelSelection =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&parallel);
   if (!parallelSelection || parallelSelection->selected.size() != 1)

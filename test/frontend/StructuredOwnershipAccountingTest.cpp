@@ -3,7 +3,9 @@
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Simulator/SimulationArtifacts.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -67,7 +69,8 @@ entry:
   return module;
 }
 
-std::unique_ptr<llvm::Module> parseEmptyScopeModule(llvm::LLVMContext &context) {
+std::unique_ptr<llvm::Module>
+parseEmptyScopeModule(llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
 target triple = "riscv64-unknown-unknown"
@@ -97,15 +100,47 @@ loom::dse::CompletedPreMappingSelection
 explore(const loom::fabric::FinalizedFabricRoot &fabric,
         const loom::ArtifactStore &store, std::uint32_t workers) {
   llvm::LLVMContext context;
+  auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), fabric));
+  auto view = take(structured.structuredProgram.view());
+  std::optional<loom::frontend::StructuredEntityRef> main;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function && function.getSymName() == "main")
+      main = entity.reference;
+  }
+  if (!main)
+    fail("Structured Program has no main entry");
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{*main};
+  loom::sim::CanonicalValueSequence zero;
+  zero.tokenCount = 1;
+  zero.lanes.push_back(loom::sim::SemanticLane::defined(llvm::APInt(64, 0)));
+  workloadDraft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{},
+                                std::move(zero)};
+  workloadDraft.observableContract.returnValue = true;
+  workloadDraft.observableContract.memories.push_back(
+      {loom::sim::EntryPointerArgumentTarget{0},
+       loom::sim::MemoryObservationForm::FullState});
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  inputDraft.memoryObjects.push_back(
+      loom::sim::RuntimeMemoryObject{std::vector<loom::sim::SemanticMemoryByte>(
+          4, {loom::sim::SemanticState::Defined, 0})});
+  inputDraft.pointerBindings.push_back({0, 0, 0});
+  auto input = take(
+      loom::sim::finalizeSimulationRuntimeInput(inputDraft, workload, view));
   loom::dse::PreMappingExplorationOptions options{
-      {},
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1},
        workers}};
-  auto outcome = take(loom::dse::exploreLlvmModuleToPreMapping(
-      parseModule(context), fabric, loom::defaultResolvedConfig(), options,
-      store));
+  auto outcome = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(structured), workload, input, fabric,
+      loom::defaultResolvedConfig(), options, store));
   auto *completed =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&outcome);
   if (!completed)
@@ -172,8 +207,8 @@ void requireEmptyScopeIsCandidateRejection(
         std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
     if (!scope)
       continue;
-    auto decisions = take(
-        loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+    auto decisions =
+        take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
             structured.structuredProgram, scope->selection));
     for (const loom::frontend::SpatialOwnershipDecisionPoint &decision :
          decisions) {

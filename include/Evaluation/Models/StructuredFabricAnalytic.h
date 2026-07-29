@@ -4,8 +4,11 @@
 #include "Common/Artifact.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Request.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "llvm/Support/Error.h"
+
+#include <optional>
 
 namespace loom {
 class ArtifactStore;
@@ -22,6 +25,10 @@ class FinalizedFabricRoot;
 
 namespace loom::frontend {
 class StructuredProgramCandidate;
+}
+
+namespace loom::sim {
+struct NativeStructuredProgramObservations;
 }
 
 namespace loom::evaluation::models {
@@ -43,8 +50,28 @@ llvm::Expected<PreparedStructuredFabricEvaluation>
 prepareStructuredFabricEvaluation(
     const ::loom::ArtifactRootReference &structuredProgram,
     const ::loom::ArtifactRootReference &fabric,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);
+
+/// Invocation-local typed input used to derive workload-aware metrics without
+/// adding a profile Artifact or copying source coverage into a candidate.
+struct StructuredFabricAnalyticInvocation final {
+  const ::loom::ArtifactRootReference &workload;
+  const ::loom::ArtifactRootReference &runtimeInput;
+  const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
+  const ::loom::sim::NativeStructuredProgramObservations &sourceObservations;
+};
+
+/// One exact candidate projection within the invocation. `sourceScope` and
+/// `canonicalDataflow` are both absent only for the unmodified source
+/// baseline; a Spatial candidate requires both.
+struct StructuredFabricAnalyticCandidateProjection final {
+  const ::loom::frontend::StructuredProgramCandidate &candidate;
+  const ::dataflow::CanonicalDataflowArtifact *canonicalDataflow = nullptr;
+  std::optional<::loom::frontend::StructuredEntityRef> sourceScope;
+};
 
 /// Primes the removable model-result cache from already finalized owner views.
 /// The full provider remains the oracle on a miss; this function only avoids
@@ -52,8 +79,8 @@ prepareStructuredFabricEvaluation(
 /// caller has just finalized.
 llvm::Error primeStructuredFabricAnalyticResult(
     const ::loom::ArtifactRootReference &structuredProgramReference,
-    const ::loom::frontend::StructuredProgramCandidate &structuredProgram,
-    const ::dataflow::CanonicalDataflowArtifact &canonicalDataflow,
+    const StructuredFabricAnalyticCandidateProjection &candidate,
+    const StructuredFabricAnalyticInvocation &invocation,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);

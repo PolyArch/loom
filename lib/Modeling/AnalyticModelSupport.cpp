@@ -392,8 +392,8 @@ llvm::Expected<std::uint64_t> actorActivityUnits(mlir::Operation *actor) {
       return std::move(error);
     floating |= containsFloat(type);
   }
-  const std::uint64_t payloadBytes = std::max<std::uint64_t>(
-      1, bits / 8 + (bits % 8 != 0 ? 1 : 0));
+  const std::uint64_t payloadBytes =
+      std::max<std::uint64_t>(1, bits / 8 + (bits % 8 != 0 ? 1 : 0));
   std::uint64_t factor = floating ? 5 : 2;
   switch (dataflow::actorKind(dataflow::requireOperationSchema(actor))) {
   case dataflow::CanonicalDataflowActorKind::Compute:
@@ -467,10 +467,11 @@ const ResolvedModelConfigViewContract &emptyLowConfidenceConfigView() {
   return contract;
 }
 
-llvm::Expected<CaseArtifactResolution>
-resolveSingleSubjectFabricCase(const ArtifactRootReference &subject,
-                               const ArtifactRootReference &fabricReference,
-                               const ArtifactStore &artifactStore) {
+llvm::Expected<CaseArtifactResolution> resolveSingleSubjectFabricCase(
+    const ArtifactRootReference &subject,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<CaseArtifactResolution::Entry> additionalEntries) {
   std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
            decltype(&artifactRootReferenceLess)>
       resolved(&artifactRootReferenceLess);
@@ -499,11 +500,24 @@ resolveSingleSubjectFabricCase(const ArtifactRootReference &subject,
 
   if (llvm::Error error = visit(fabricReference))
     return std::move(error);
+  auto mergeEntry = [&](const CaseArtifactResolution::Entry &entry) {
+    std::vector<ArtifactRootReference> &closure = resolved[entry.artifact];
+    closure.insert(closure.end(), entry.dependencyClosure.begin(),
+                   entry.dependencyClosure.end());
+    std::sort(closure.begin(), closure.end(), artifactRootReferenceLess);
+    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+  };
+  mergeEntry({subject, {}});
+  for (const CaseArtifactResolution::Entry &entry : additionalEntries) {
+    if (auto bytes = artifactStore.get(entry.artifact); !bytes)
+      return bytes.takeError();
+    mergeEntry(entry);
+  }
+
   std::vector<CaseArtifactResolution::Entry> entries;
-  entries.reserve(resolved.size() + 1);
+  entries.reserve(resolved.size());
   for (auto &[artifact, closure] : resolved)
     entries.push_back({artifact, std::move(closure)});
-  entries.push_back({subject, {}});
   return CaseArtifactResolution::get(std::move(entries));
 }
 

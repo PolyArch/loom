@@ -5,6 +5,7 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -54,10 +55,10 @@ struct LowConfidenceMetricSet final {
   llvm::Expected<MetricResult> result(MetricKind metric) const;
 };
 
-llvm::Expected<CaseArtifactResolution>
-resolveSingleSubjectFabricCase(const ArtifactRootReference &subject,
-                               const ArtifactRootReference &fabric,
-                               const ArtifactStore &artifactStore);
+llvm::Expected<CaseArtifactResolution> resolveSingleSubjectFabricCase(
+    const ArtifactRootReference &subject, const ArtifactRootReference &fabric,
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<CaseArtifactResolution::Entry> additionalEntries = {});
 
 llvm::Expected<LowConfidenceMetricSet>
 estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,

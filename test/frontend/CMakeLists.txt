@@ -51,10 +51,9 @@ target_link_libraries(loom-structured-ownership-accounting-test PRIVATE
   LoomCommon
   LoomDSE
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
   LoomStructuredFabricAnalyticModel
-  LLVMCore
-  LLVMIRReader
-  LLVMSupport
 )
 
 add_executable(loom-structured-ownership-evaluation-test
@@ -66,10 +65,9 @@ target_link_libraries(loom-structured-ownership-evaluation-test PRIVATE
   LoomCommon
   LoomDSE
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
   LoomStructuredFabricAnalyticModel
-  LLVMCore
-  LLVMIRReader
-  LLVMSupport
 )
 
 add_executable(loom-frontend-dfg-integration-test

@@ -3,6 +3,7 @@
 
 #include "DSE/Promotion.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/Support/Error.h"
 
@@ -99,6 +100,8 @@ using StructuredOwnershipExplorationOutcome =
 llvm::Expected<StructuredOwnershipExplorationOutcome>
 generateAndPromoteStructuredOwnership(
     const frontend::StructuredProgramCandidate &parent,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
     const ArtifactStore &artifactStore);

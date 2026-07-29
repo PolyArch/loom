@@ -6,6 +6,8 @@
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ThreadPool.h"
@@ -42,6 +44,9 @@ using OwnershipAttemptResult =
 
 llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const frontend::StructuredProgramCandidate &parent,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput,
+    const sim::NativeStructuredProgramObservations &sourceObservations,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
     const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem) {
@@ -66,10 +71,14 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
       candidate->structuredProgram, artifactStore);
   if (!reference)
     return reference.takeError();
+  const evaluation::models::StructuredFabricAnalyticInvocation invocation{
+      workload, runtimeInput, parent, sourceObservations};
   if (llvm::Error error =
           evaluation::models::primeStructuredFabricAnalyticResult(
-              *reference, candidate->structuredProgram,
-              candidate->canonicalDataflow, fabric, config, artifactStore))
+              *reference,
+              {candidate->structuredProgram, &candidate->canonicalDataflow,
+               workItem.scope.selection},
+              invocation, fabric, config, artifactStore))
     return std::move(error);
   return OwnershipAttemptResult{
       MaterializedOwnershipWorkItem{std::move(*reference)}};
@@ -80,6 +89,8 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
 llvm::Expected<StructuredOwnershipExplorationOutcome>
 generateAndPromoteStructuredOwnership(
     const frontend::StructuredProgramCandidate &parent,
+    const sim::CanonicalSimulationWorkload &workload,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
     const ArtifactStore &artifactStore) {
@@ -94,6 +105,27 @@ generateAndPromoteStructuredOwnership(
       frontend::publishStructuredProgram(parent, artifactStore);
   if (!parentReference)
     return parentReference.takeError();
+  auto workloadReference =
+      sim::publishSimulationWorkload(workload, artifactStore);
+  if (!workloadReference)
+    return workloadReference.takeError();
+  auto runtimeInputReference =
+      sim::publishSimulationRuntimeInput(runtimeInput, artifactStore);
+  if (!runtimeInputReference)
+    return runtimeInputReference.takeError();
+  auto sourceObservations =
+      sim::executeNativeStructuredProgram(parent, workload, runtimeInput);
+  if (!sourceObservations)
+    return sourceObservations.takeError();
+  const evaluation::models::StructuredFabricAnalyticInvocation invocation{
+      *workloadReference, *runtimeInputReference, parent, *sourceObservations};
+  if (llvm::Error error =
+          evaluation::models::primeStructuredFabricAnalyticResult(
+              *parentReference,
+              evaluation::models::StructuredFabricAnalyticCandidateProjection{
+                  parent, nullptr, std::nullopt},
+              invocation, fabric, config, artifactStore))
+    return std::move(error);
   candidateReferences.push_back(*parentReference);
 
   auto domain = frontend::enumerateSpatialOwnershipScopeDomain(parent);
@@ -137,7 +169,9 @@ generateAndPromoteStructuredOwnership(
   auto execute = [&](const frontend::StructuredProgramCandidate &workerParent,
                      std::size_t index) {
     auto result = materializeOwnershipWorkItem(
-        workerParent, fabric, config, options, artifactStore, workItems[index]);
+        workerParent, *workloadReference, *runtimeInputReference,
+        *sourceObservations, fabric, config, options, artifactStore,
+        workItems[index]);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;
@@ -224,7 +258,8 @@ generateAndPromoteStructuredOwnership(
   std::optional<evaluation::CaseSubjectRoleRef> candidateRole;
   for (const ArtifactRootReference &candidate : candidateSet->candidates()) {
     auto prepared = evaluation::models::prepareStructuredFabricEvaluation(
-        candidate, fabric.reference(), config, artifactStore);
+        candidate, fabric.reference(), *workloadReference,
+        *runtimeInputReference, config, artifactStore);
     if (!prepared)
       return prepared.takeError();
     if (candidateRole && *candidateRole != prepared->candidateRole)
@@ -239,8 +274,9 @@ generateAndPromoteStructuredOwnership(
   if (!candidateRole)
     return invalid("nonempty candidate set produced no Evidence obligations");
 
-  auto promoted = promoteMetricTopK(*candidateSet, *candidateRole, evidence,
-                                    options.selection, artifactStore);
+  auto promoted = promoteMetricTopKAgainstBaseline(
+      *candidateSet, *candidateRole, *parentReference, evidence,
+      options.selection, artifactStore);
   if (!promoted)
     return promoted.takeError();
   if (const auto *incomplete = std::get_if<IncompleteSelection>(&*promoted))

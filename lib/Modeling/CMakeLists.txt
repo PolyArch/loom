@@ -12,6 +12,8 @@ target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
   MLIRDataflow
   MLIRLoom
   MLIRIR
