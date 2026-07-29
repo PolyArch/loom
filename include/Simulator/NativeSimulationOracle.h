@@ -63,7 +63,8 @@ executeStructuredDirectCallSimulationInputCapture(
 llvm::Expected<NativeSimulationInputCapture>
 executeStructuredSimulationInputCapture(
     mlir::OwningOpRef<mlir::ModuleOp> module,
-    mlir::Operation *selectedOperation, const SimulationInputCapturePlan &plan,
+    mlir::Operation *selectedOperation,
+    const OperationSimulationInputCapturePlan &plan,
     llvm::StringRef entrySymbol = "main");
 
 } // namespace loom::sim

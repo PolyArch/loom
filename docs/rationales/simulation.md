@@ -157,6 +157,14 @@ and introduces no persistent schema. Requiring effective execution-layout
 equivalence before host JIT execution prevents the oracle from becoming a
 silent cross-target emulator.
 
+A direct leaf call alone is insufficient when its arguments are forwarded
+through intermediate callables or when the same leaf call site is reached from
+multiple outer call sites. Source-backed validation therefore derives an
+ephemeral, finite root-to-leaf direct-call path. The leaf remains the only
+value sampling boundary; outer path edges only prove finite object lineage and
+gate the selected dynamic context. This preserves one program identity model
+while preventing unrelated invocations from being conflated.
+
 Target-triple spelling alone is not execution compatibility. Two triples may
 name different targets while the exact selected region uses only types,
 address spaces, and layouts whose effective projections are identical. A

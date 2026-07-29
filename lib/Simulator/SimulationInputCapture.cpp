@@ -248,6 +248,7 @@ struct ResolvedObject {
 struct ResolvedDirectCallObject {
   ResolvedObject object;
   DirectCallMemorySource source;
+  mlir::Value pointer;
 };
 
 llvm::Expected<std::uint64_t> constantGepByteOffset(mlir::LLVM::GEPOp gep) {
@@ -329,6 +330,49 @@ llvm::Expected<ResolvedObject> resolveObject(mlir::Value pointer) {
                           *byteCount, 0};
   }
   return unsupported("call operand does not resolve to a finite LLVM object");
+}
+
+llvm::Expected<ResolvedObject> resolveObjectThroughCallPath(
+    mlir::Value pointer, mlir::LLVM::LLVMFuncOp enclosingCallable,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath, std::size_t pathIndex) {
+  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>()) {
+    llvm::Expected<ResolvedObject> base = resolveObjectThroughCallPath(
+        gep.getBase(), enclosingCallable, invocationPath, pathIndex);
+    if (!base)
+      return base.takeError();
+    llvm::Expected<std::uint64_t> offset = constantGepByteOffset(gep);
+    if (!offset)
+      return offset.takeError();
+    if (base->byteOffset > std::numeric_limits<std::uint64_t>::max() - *offset)
+      return unsupported("LLVM GEP chain byte offset overflows uint64");
+    base->byteOffset += *offset;
+    if (base->byteOffset >= base->byteCount)
+      return invalid("LLVM GEP points outside its finite allocation");
+    return *base;
+  }
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
+    if (argument.getOwner() != &enclosingCallable.getBody().front())
+      return unsupported(
+          "memory boundary is not owned by its enclosing callable");
+    if (pathIndex >= invocationPath.size())
+      return invalid("operation invocation path is incomplete");
+    mlir::LLVM::CallOp hostCall = invocationPath[pathIndex];
+    if (!hostCall.getCalleeAttr() ||
+        hostCall.getCalleeAttr().getValue() != enclosingCallable.getSymName())
+      return invalid("operation invocation path has a broken callee edge");
+    const unsigned ordinal = argument.getArgNumber();
+    if (ordinal >= hostCall.getCalleeOperands().size())
+      return invalid("callable argument exceeds host call operands");
+    mlir::Value callerValue = hostCall.getCalleeOperands()[ordinal];
+    if (pathIndex == 0)
+      return resolveObject(callerValue);
+    auto caller = hostCall->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!caller)
+      return invalid("operation invocation path call has no caller");
+    return resolveObjectThroughCallPath(callerValue, caller, invocationPath,
+                                        pathIndex - 1);
+  }
+  return resolveObject(pointer);
 }
 
 CanonicalValueSequence exceptionalValue(const detail::LaneShape &shape,
@@ -665,7 +709,10 @@ llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(
 llvm::Expected<ResolvedDirectCallObject>
 directCallMemoryObject(mlir::Value callableSource,
                        mlir::LLVM::LLVMFuncOp enclosingCallable,
-                       mlir::LLVM::CallOp hostCall) {
+                       llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  if (invocationPath.empty())
+    return invalid("direct-call memory capture has no invocation path");
+  mlir::LLVM::CallOp hostCall = invocationPath.back();
   if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(callableSource)) {
     if (argument.getOwner() != &enclosingCallable.getBody().front())
       return unsupported("root launch memory is not owned by its callable");
@@ -673,11 +720,13 @@ directCallMemoryObject(mlir::Value callableSource,
     if (ordinal >= hostCall.getCalleeOperands().size())
       return invalid("callable argument exceeds host call operands");
     llvm::Expected<ResolvedObject> object =
-        resolveObject(hostCall.getCalleeOperands()[ordinal]);
+        resolveObjectThroughCallPath(callableSource, enclosingCallable,
+                                     invocationPath, invocationPath.size() - 1);
     if (!object)
       return object.takeError();
     return ResolvedDirectCallObject{std::move(*object),
-                                    DirectCallOperandMemorySource{ordinal}};
+                                    DirectCallOperandMemorySource{ordinal},
+                                    hostCall.getCalleeOperands()[ordinal]};
   }
 
   llvm::Expected<ResolvedObject> object = resolveObject(callableSource);
@@ -689,7 +738,8 @@ directCallMemoryObject(mlir::Value callableSource,
         "root launch memory is neither a callable argument nor a global");
   return ResolvedDirectCallObject{
       std::move(*object),
-      DirectCallGlobalMemorySource{address.getGlobalName().str()}};
+      DirectCallGlobalMemorySource{address.getGlobalName().str()},
+      callableSource};
 }
 
 llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
@@ -712,12 +762,80 @@ llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
   return ordinal;
 }
 
+llvm::Expected<DirectCallCaptureSite>
+directCallCaptureSite(mlir::LLVM::CallOp hostCall,
+                      mlir::LLVM::LLVMFuncOp expectedCallee) {
+  if (!hostCall.getCalleeAttr())
+    return unsupported("indirect host call has no exact callable relation");
+  auto called =
+      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+          hostCall, hostCall.getCalleeAttr());
+  if (!called || called != expectedCallee)
+    return invalid("host call does not target the selected callable");
+  auto caller = hostCall->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!caller)
+    return invalid("host call is not enclosed by an LLVM callable");
+  llvm::Expected<std::uint64_t> ordinal =
+      directCallOrdinal(caller, hostCall, hostCall.getCalleeAttr().getValue());
+  if (!ordinal)
+    return ordinal.takeError();
+  return DirectCallCaptureSite{hostCall, caller.getSymName().str(),
+                               expectedCallee.getSymName().str(), *ordinal};
+}
+
+llvm::Expected<std::vector<DirectCallCaptureSite>>
+directCallCapturePath(llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath,
+                      mlir::LLVM::LLVMFuncOp expectedLeaf = {}) {
+  if (invocationPath.empty())
+    return unsupported("source-backed capture has no direct invocation path");
+
+  std::vector<DirectCallCaptureSite> sites;
+  sites.reserve(invocationPath.size());
+  for (mlir::LLVM::CallOp hostCall : invocationPath) {
+    if (!hostCall.getCalleeAttr())
+      return unsupported("indirect host call has no exact callable relation");
+    auto callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+            hostCall, hostCall.getCalleeAttr());
+    if (!callee)
+      return invalid("invocation path callee does not resolve");
+    llvm::Expected<DirectCallCaptureSite> site =
+        directCallCaptureSite(hostCall, callee);
+    if (!site)
+      return site.takeError();
+    if (!sites.empty() &&
+        sites.back().hostCalleeSymbol != site->hostCallerSymbol)
+      return invalid("invocation path is not caller-callee contiguous");
+    if (site->hostCallerSymbol == site->hostCalleeSymbol ||
+        (!sites.empty() &&
+         sites.front().hostCallerSymbol == site->hostCalleeSymbol) ||
+        llvm::any_of(sites, [&](const DirectCallCaptureSite &prior) {
+          return prior.hostCalleeSymbol == site->hostCalleeSymbol;
+        }))
+      return unsupported("recursive source-backed invocation is unsupported");
+    sites.push_back(std::move(*site));
+  }
+  if (expectedLeaf &&
+      sites.back().hostCalleeSymbol != expectedLeaf.getSymName())
+    return invalid("invocation path does not reach the selected callable");
+  return sites;
+}
+
 } // namespace
 
 llvm::Expected<DirectCallSimulationInputCapturePlan>
 deriveSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
     dataflow::RootedGraphLaunchRef launch, mlir::LLVM::CallOp hostCall) {
+  return deriveSimulationInputCapturePlan(
+      program, launch, llvm::ArrayRef<mlir::LLVM::CallOp>(hostCall));
+}
+
+llvm::Expected<DirectCallSimulationInputCapturePlan>
+deriveSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
   llvm::Expected<detail::ResolvedLaunchContext> context =
       detail::resolveLaunchContext(program, launch);
   if (!context)
@@ -728,29 +846,16 @@ deriveSimulationInputCapturePlan(
   if (!enclosingCallable)
     return unsupported("root thread launch is not enclosed by an LLVM "
                        "callable");
-  if (!hostCall.getCalleeAttr())
-    return unsupported("indirect host call has no exact callable relation");
-  auto called =
-      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
-          hostCall, hostCall.getCalleeAttr());
-  if (!called || called != enclosingCallable)
-    return invalid("host call does not target the rooted launch callable");
-
-  auto hostCaller = hostCall->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  if (!hostCaller)
-    return invalid("host call is not enclosed by an LLVM callable");
-  llvm::Expected<std::uint64_t> callOrdinal = directCallOrdinal(
-      hostCaller, hostCall, hostCall.getCalleeAttr().getValue());
-  if (!callOrdinal)
-    return callOrdinal.takeError();
+  llvm::Expected<std::vector<DirectCallCaptureSite>> invocationSites =
+      directCallCapturePath(invocationPath, enclosingCallable);
+  if (!invocationSites)
+    return invocationSites.takeError();
+  mlir::LLVM::CallOp hostCall = invocationPath.back();
 
   DirectCallSimulationInputCapturePlan plan{
       SimulationInputCapturePlan{launch, {}, {}, {}, {}},
       {},
-      hostCall,
-      hostCaller.getSymName().str(),
-      hostCall.getCalleeAttr().getValue().str(),
-      *callOrdinal};
+      std::move(*invocationSites)};
   plan.input.valueInputs.reserve(context->numValueInputs);
   for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
        ++ordinal) {
@@ -771,6 +876,7 @@ deriveSimulationInputCapturePlan(
       return value.takeError();
     plan.input.valueResults.push_back(std::move(*value));
   }
+  std::vector<mlir::Operation *> objectOwners;
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
         program.resolve(root);
@@ -784,24 +890,21 @@ deriveSimulationInputCapturePlan(
       return invalid("thread memory formal exceeds root launch operands");
     llvm::Expected<ResolvedDirectCallObject> resolved = directCallMemoryObject(
         context->rootLaunchOp.getBodyOperands()[threadFormal],
-        enclosingCallable, hostCall);
+        enclosingCallable, invocationPath);
     if (!resolved)
       return resolved.takeError();
     ResolvedObject &object = resolved->object;
     std::uint64_t objectIndex = 0;
-    while (objectIndex < plan.input.objects.size()) {
-      llvm::Expected<ResolvedObject> existing =
-          resolveObject(plan.input.objects[objectIndex].base);
-      if (!existing)
-        return existing.takeError();
-      if (existing->owner == object.owner)
+    while (objectIndex < objectOwners.size()) {
+      if (objectOwners[objectIndex] == object.owner)
         break;
       ++objectIndex;
     }
     if (objectIndex == plan.input.objects.size()) {
       plan.input.objects.push_back(SimulationMemoryCaptureObject{
-          object.base, object.byteCount, object.byteOffset});
+          resolved->pointer, object.byteCount, object.byteOffset});
       plan.memoryObjectSources.push_back(std::move(resolved->source));
+      objectOwners.push_back(object.owner);
     } else if (plan.input.objects[objectIndex].byteCount != object.byteCount)
       return invalid("one host allocation resolved to inconsistent extents");
     if (object.byteOffset >= object.byteCount)
@@ -814,38 +917,58 @@ deriveSimulationInputCapturePlan(
   return plan;
 }
 
-llvm::Expected<SimulationInputCapturePlan>
-deriveOperationSimulationInputCapturePlan(
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlanImpl(
     const dataflow::CanonicalDataflowProgramView &program,
     dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
-    mlir::ValueRange boundaryResults) {
+    mlir::ValueRange boundaryResults,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
   llvm::Expected<detail::ResolvedLaunchContext> context =
       detail::resolveLaunchContext(program, launch);
   if (!context)
     return context.takeError();
 
+  mlir::LLVM::LLVMFuncOp enclosingCallable;
+  std::vector<DirectCallCaptureSite> invocationSites;
+  if (!invocationPath.empty()) {
+    llvm::Expected<std::vector<DirectCallCaptureSite>> resolvedPath =
+        directCallCapturePath(invocationPath);
+    if (!resolvedPath)
+      return resolvedPath.takeError();
+    invocationSites = std::move(*resolvedPath);
+    mlir::LLVM::CallOp leafCall = invocationPath.back();
+    enclosingCallable =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+            leafCall, leafCall.getCalleeAttr());
+    if (!enclosingCallable)
+      return invalid("operation invocation leaf does not resolve");
+  }
+
   if (boundaryResults.size() != context->numValueResults)
     return invalid(
         "Structured live-out count differs from graph value results");
-  SimulationInputCapturePlan plan{launch, {}, {}, {}, {}};
-  plan.valueInputs.reserve(context->numValueInputs);
+  OperationSimulationInputCapturePlan plan{
+      SimulationInputCapturePlan{launch, {}, {}, {}, {}},
+      std::move(invocationSites)};
+  plan.input.valueInputs.reserve(context->numValueInputs);
   for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
        ++ordinal) {
     llvm::Expected<SimulationValueInputCapture> value =
         operationValueInputCapture(*context, ordinal, boundaryInputs);
     if (!value)
       return value.takeError();
-    plan.valueInputs.push_back(std::move(*value));
+    plan.input.valueInputs.push_back(std::move(*value));
   }
-  plan.valueResults.reserve(context->numValueResults);
+  plan.input.valueResults.reserve(context->numValueResults);
   for (std::uint64_t ordinal = 0; ordinal < context->numValueResults;
        ++ordinal) {
     llvm::Expected<SimulationValueResultCapture> value =
         operationValueResultCapture(*context, ordinal, boundaryResults);
     if (!value)
       return value.takeError();
-    plan.valueResults.push_back(std::move(*value));
+    plan.input.valueResults.push_back(std::move(*value));
   }
+  std::vector<mlir::Operation *> objectOwners;
   for (const dataflow::LogicalMemoryRootRef &root : context->importedRoots) {
     llvm::Expected<dataflow::CanonicalLogicalMemoryRootView> resolvedRoot =
         program.resolve(root);
@@ -858,32 +981,63 @@ deriveOperationSimulationInputCapturePlan(
     if (boundaryOrdinal >= boundaryInputs.size())
       return invalid("thread memory formal exceeds source boundary inputs");
 
+    mlir::Value pointer = boundaryInputs[boundaryOrdinal];
     llvm::Expected<ResolvedObject> object =
-        resolveObject(boundaryInputs[boundaryOrdinal]);
+        invocationPath.empty()
+            ? resolveObject(pointer)
+            : resolveObjectThroughCallPath(pointer, enclosingCallable,
+                                           invocationPath,
+                                           invocationPath.size() - 1);
     if (!object)
       return object.takeError();
     std::uint64_t objectIndex = 0;
-    while (objectIndex < plan.objects.size()) {
-      llvm::Expected<ResolvedObject> existing =
-          resolveObject(plan.objects[objectIndex].base);
-      if (!existing)
-        return existing.takeError();
-      if (existing->owner == object->owner)
+    while (objectIndex < objectOwners.size()) {
+      if (objectOwners[objectIndex] == object->owner)
         break;
       ++objectIndex;
     }
-    if (objectIndex == plan.objects.size()) {
-      plan.objects.push_back(SimulationMemoryCaptureObject{
-          object->base, object->byteCount, object->byteOffset});
-    } else if (plan.objects[objectIndex].byteCount != object->byteCount) {
+    if (objectIndex == plan.input.objects.size()) {
+      plan.input.objects.push_back(SimulationMemoryCaptureObject{
+          pointer, object->byteCount, object->byteOffset});
+      objectOwners.push_back(object->owner);
+    } else if (plan.input.objects[objectIndex].byteCount != object->byteCount) {
       return invalid("one source allocation resolved to inconsistent extents");
     }
-    plan.memoryRootBindings.push_back(SimulationMemoryRootCapture{
+    plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
         root, objectIndex, object->byteOffset,
         memoryRequiresInitialState(*context, root),
         uniformFloatingWriteLaneType(*context, root)});
   }
   return plan;
+}
+
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults) {
+  return deriveOperationSimulationInputCapturePlanImpl(
+      program, launch, boundaryInputs, boundaryResults, {});
+}
+
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults, mlir::LLVM::CallOp invocation) {
+  return deriveOperationSimulationInputCapturePlanImpl(
+      program, launch, boundaryInputs, boundaryResults,
+      llvm::ArrayRef<mlir::LLVM::CallOp>(invocation));
+}
+
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  return deriveOperationSimulationInputCapturePlanImpl(
+      program, launch, boundaryInputs, boundaryResults, invocationPath);
 }
 
 } // namespace loom::sim

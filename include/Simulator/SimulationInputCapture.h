@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -92,32 +93,73 @@ struct SimulationInputCapturePlan {
   std::vector<SimulationMemoryRootCapture> memoryRootBindings;
 };
 
-struct DirectCallSimulationInputCapturePlan final {
-  SimulationInputCapturePlan input;
-  std::vector<DirectCallMemorySource> memoryObjectSources;
+/// One exact direct-call invocation selected for source-backed capture. The
+/// operation handle and locator are ephemeral instrumentation state and never
+/// enter SimulationWorkload or SimulationRuntimeInput.
+struct DirectCallCaptureSite final {
   mlir::LLVM::CallOp hostCall;
   std::string hostCallerSymbol;
   std::string hostCalleeSymbol;
   std::uint64_t hostCallOrdinal = 0;
 };
 
-/// Derive the finite host-memory capture relation for one exact call site.
-/// Every imported graph root must trace through the root thread launch and its
-/// enclosing LLVM callable to a call operand with a statically proven finite
-/// allocation. Unknown extents fail closed with not_supported.
+struct DirectCallSimulationInputCapturePlan final {
+  SimulationInputCapturePlan input;
+  std::vector<DirectCallMemorySource> memoryObjectSources;
+  /// Root-to-leaf exact direct calls from the execution entry to the selected
+  /// callable. Runtime values are observed at the leaf call while the complete
+  /// path proves finite backing objects and selects one dynamic invocation.
+  std::vector<DirectCallCaptureSite> invocationPath;
+};
+
+struct OperationSimulationInputCapturePlan final {
+  SimulationInputCapturePlan input;
+  /// Root-to-leaf exact direct calls from the execution entry to the selected
+  /// operation's enclosing callable. An empty path denotes an entry-owned
+  /// operation.
+  std::vector<DirectCallCaptureSite> invocationPath;
+};
+
+/// Derive the finite host-memory capture relation for one exact direct-call
+/// path. Every imported graph root must trace through the root thread launch
+/// and its enclosing LLVM callable to a call operand with a statically proven
+/// finite allocation. Unknown extents fail closed with not_supported.
 llvm::Expected<DirectCallSimulationInputCapturePlan>
 deriveSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
     dataflow::RootedGraphLaunchRef launch, mlir::LLVM::CallOp hostCall);
 
+llvm::Expected<DirectCallSimulationInputCapturePlan>
+deriveSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath);
+
 /// Derive the same finite memory relation for an operation-owned Spatial
 /// boundary. `boundaryInputs` is the exact ordered live-in projection produced
 /// by the Structured ownership owner before thread materialization.
-llvm::Expected<SimulationInputCapturePlan>
+llvm::Expected<OperationSimulationInputCapturePlan>
 deriveOperationSimulationInputCapturePlan(
     const dataflow::CanonicalDataflowProgramView &program,
     dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
     mlir::ValueRange boundaryResults);
+
+/// Derive an operation-owned capture at one exact direct call of the selected
+/// operation's enclosing callable. Finite backing extents and aliasing are
+/// resolved through that call's operands while runtime bytes remain observed
+/// at the selected operation boundary.
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults, mlir::LLVM::CallOp invocation);
+
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath);
 
 } // namespace loom::sim
 

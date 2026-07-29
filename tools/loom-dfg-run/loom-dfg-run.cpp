@@ -12,8 +12,10 @@
 #include "Simulator/SimulationInputCapture.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -238,14 +240,49 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
   return callable;
 }
 
-std::vector<mlir::LLVM::CallOp> findHostCalls(mlir::ModuleOp module,
-                                              llvm::StringRef callee) {
-  std::vector<mlir::LLVM::CallOp> calls;
-  module.walk([&](mlir::LLVM::CallOp call) {
-    if (call.getCalleeAttr() && call.getCalleeAttr().getValue() == callee)
-      calls.push_back(call);
+using DirectCallPath = std::vector<mlir::LLVM::CallOp>;
+
+void collectDirectCallPaths(
+    mlir::LLVM::LLVMFuncOp caller, llvm::StringRef target,
+    DirectCallPath &activePath,
+    llvm::SmallPtrSetImpl<mlir::Operation *> &activeCallables,
+    std::vector<DirectCallPath> &paths) {
+  if (!activeCallables.insert(caller.getOperation()).second)
+    return;
+  caller.walk([&](mlir::LLVM::CallOp call) {
+    if (call->getParentOfType<mlir::LLVM::LLVMFuncOp>() != caller ||
+        !call.getCalleeAttr())
+      return;
+    auto callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+            call, call.getCalleeAttr());
+    if (!callee || callee.isExternal())
+      return;
+    activePath.push_back(call);
+    if (callee.getSymName() == target) {
+      paths.push_back(activePath);
+    } else {
+      collectDirectCallPaths(callee, target, activePath, activeCallables,
+                             paths);
+    }
+    activePath.pop_back();
   });
-  return calls;
+  activeCallables.erase(caller.getOperation());
+}
+
+std::vector<DirectCallPath> findHostCallPaths(mlir::ModuleOp module,
+                                              llvm::StringRef entry,
+                                              llvm::StringRef target) {
+  auto entryFunction = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
+      mlir::SymbolTable::lookupSymbolIn(module, entry));
+  if (!entryFunction || entryFunction.isExternal())
+    return {};
+  DirectCallPath activePath;
+  llvm::SmallPtrSet<mlir::Operation *, 8> activeCallables;
+  std::vector<DirectCallPath> paths;
+  collectDirectCallPaths(entryFunction, target, activePath, activeCallables,
+                         paths);
+  return paths;
 }
 
 loom::sim::RuntimeMemoryObject
@@ -601,7 +638,8 @@ executeSelectedDirectCallCapture(
        hostView->entities(loom::frontend::StructuredEntityKind::Operation)) {
     auto function =
         llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
-    if (!function || function.getSymName() != plan.hostCalleeSymbol)
+    if (!function || plan.invocationPath.empty() ||
+        function.getSymName() != plan.invocationPath.back().hostCalleeSymbol)
       continue;
     if (callable)
       return invalid("native module has duplicate selected callable symbols");
@@ -634,14 +672,16 @@ llvm::Error executeDirectCallLaunch(
   if (!callable)
     return callable.takeError();
 
-  std::vector<mlir::LLVM::CallOp> calls = findHostCalls(
-      compiled.canonicalDataflow.module(), callable->getSymName());
-  if (calls.empty())
-    return unsupported("isolated Spatial callable has no direct host call");
+  std::vector<DirectCallPath> invocationPaths = findHostCallPaths(
+      compiled.canonicalDataflow.module(), "main", callable->getSymName());
+  if (invocationPaths.empty())
+    return unsupported(
+        "isolated Spatial callable has no direct path from main");
 
-  for (mlir::LLVM::CallOp call : calls) {
+  for (const DirectCallPath &invocationPath : invocationPaths) {
     llvm::Expected<loom::sim::DirectCallSimulationInputCapturePlan> plan =
-        loom::sim::deriveSimulationInputCapturePlan(view, launch, call);
+        loom::sim::deriveSimulationInputCapturePlan(view, launch,
+                                                    invocationPath);
     if (!plan)
       return plan.takeError();
     llvm::Expected<llvm::orc::ThreadSafeModule> nativeModule =
@@ -679,18 +719,67 @@ llvm::Error executeOperationLaunch(
                                                        derivation.decision);
   if (!prepared)
     return prepared.takeError();
-  llvm::Expected<loom::sim::SimulationInputCapturePlan> plan =
-      loom::sim::deriveOperationSimulationInputCapturePlan(
-          view, launch, prepared->liveIns, prepared->liveOuts);
-  if (!plan)
-    return plan.takeError();
-  llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
-      loom::sim::executeStructuredSimulationInputCapture(
-          std::move(prepared->module), prepared->operation, *plan);
-  if (!capture)
-    return capture.takeError();
-  return executeCapturedInputPlan(compiled, view, launch, *plan, *capture,
-                                  nullptr, false, totals);
+  auto callable =
+      prepared->operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!callable)
+    return invalid("selected operation has no enclosing LLVM callable");
+
+  if (callable.getSymName() == "main") {
+    llvm::Expected<loom::sim::OperationSimulationInputCapturePlan> plan =
+        loom::sim::deriveOperationSimulationInputCapturePlan(
+            view, launch, prepared->liveIns, prepared->liveOuts);
+    if (!plan)
+      return plan.takeError();
+    llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
+        loom::sim::executeStructuredSimulationInputCapture(
+            std::move(prepared->module), prepared->operation, *plan);
+    if (!capture)
+      return capture.takeError();
+    return executeCapturedInputPlan(compiled, view, launch, plan->input,
+                                    *capture, nullptr, false, totals);
+  }
+
+  std::vector<DirectCallPath> invocationPaths =
+      findHostCallPaths(*prepared->module, "main", callable.getSymName());
+  if (invocationPaths.empty())
+    return unsupported(
+        "operation-owned Spatial callable has no direct path from main");
+
+  for (const DirectCallPath &invocationPath : invocationPaths) {
+    mlir::IRMapping mapping;
+    mlir::OwningOpRef<mlir::ModuleOp> clone(llvm::cast<mlir::ModuleOp>(
+        prepared->module->getOperation()->clone(mapping)));
+    mlir::Operation *operation = mapping.lookup(prepared->operation);
+    std::vector<mlir::Value> liveIns;
+    liveIns.reserve(prepared->liveIns.size());
+    for (mlir::Value value : prepared->liveIns)
+      liveIns.push_back(mapping.lookup(value));
+    std::vector<mlir::Value> liveOuts;
+    liveOuts.reserve(prepared->liveOuts.size());
+    for (mlir::Value value : prepared->liveOuts)
+      liveOuts.push_back(mapping.lookup(value));
+    DirectCallPath clonedPath;
+    clonedPath.reserve(invocationPath.size());
+    for (mlir::LLVM::CallOp call : invocationPath)
+      clonedPath.push_back(
+          llvm::cast<mlir::LLVM::CallOp>(mapping.lookup(call.getOperation())));
+
+    llvm::Expected<loom::sim::OperationSimulationInputCapturePlan> plan =
+        loom::sim::deriveOperationSimulationInputCapturePlan(
+            view, launch, liveIns, liveOuts, clonedPath);
+    if (!plan)
+      return plan.takeError();
+    llvm::Expected<loom::sim::NativeSimulationInputCapture> capture =
+        loom::sim::executeStructuredSimulationInputCapture(std::move(clone),
+                                                           operation, *plan);
+    if (!capture)
+      return capture.takeError();
+    if (llvm::Error error =
+            executeCapturedInputPlan(compiled, view, launch, plan->input,
+                                     *capture, nullptr, false, totals))
+      return llvm::Error(std::move(error));
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error

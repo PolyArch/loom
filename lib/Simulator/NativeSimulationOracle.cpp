@@ -82,25 +82,30 @@ struct ResolvedNativeObject {
 };
 
 llvm::Expected<ResolvedNativeObject>
+applyNativeGepOffset(const llvm::GEPOperator &gep, ResolvedNativeObject base,
+                     const llvm::DataLayout &layout) {
+  llvm::APInt offset(layout.getIndexSizeInBits(gep.getPointerAddressSpace()), 0,
+                     true);
+  if (!gep.accumulateConstantOffset(layout, offset) || offset.isNegative() ||
+      offset.getActiveBits() > 64)
+    return invalid("native call operand has no nonnegative constant offset");
+  const std::uint64_t increment = offset.getZExtValue();
+  if (base.byteOffset > std::numeric_limits<std::uint64_t>::max() - increment)
+    return invalid("native call operand byte offset overflows uint64");
+  base.byteOffset += increment;
+  if (base.byteOffset >= base.byteCount)
+    return invalid("native call operand points outside its allocation");
+  return base;
+}
+
+llvm::Expected<ResolvedNativeObject>
 resolveNativeObject(llvm::Value *pointer, const llvm::DataLayout &layout) {
   if (auto *gep = llvm::dyn_cast<llvm::GEPOperator>(pointer)) {
     llvm::Expected<ResolvedNativeObject> base =
         resolveNativeObject(gep->getPointerOperand(), layout);
     if (!base)
       return base.takeError();
-    llvm::APInt offset(layout.getIndexSizeInBits(gep->getPointerAddressSpace()),
-                       0, true);
-    if (!gep->accumulateConstantOffset(layout, offset) || offset.isNegative() ||
-        offset.getActiveBits() > 64)
-      return invalid("native call operand has no nonnegative constant offset");
-    const std::uint64_t increment = offset.getZExtValue();
-    if (base->byteOffset >
-        std::numeric_limits<std::uint64_t>::max() - increment)
-      return invalid("native call operand byte offset overflows uint64");
-    base->byteOffset += increment;
-    if (base->byteOffset >= base->byteCount)
-      return invalid("native call operand points outside its allocation");
-    return *base;
+    return applyNativeGepOffset(*gep, std::move(*base), layout);
   }
   auto *allocation = llvm::dyn_cast<llvm::AllocaInst>(pointer);
   llvm::Type *elementType = nullptr;
@@ -123,6 +128,39 @@ resolveNativeObject(llvm::Value *pointer, const llvm::DataLayout &layout) {
       std::numeric_limits<std::uint64_t>::max() / elementBytes.getFixedValue())
     return invalid("native object byte count overflows uint64");
   return ResolvedNativeObject{arrayCount * elementBytes.getFixedValue(), 0};
+}
+
+llvm::Expected<ResolvedNativeObject> resolveNativeObjectThroughCallPath(
+    llvm::Value *pointer, llvm::Function &enclosingCallable,
+    llvm::ArrayRef<llvm::CallInst *> invocationPath, std::size_t pathIndex,
+    const llvm::DataLayout &layout) {
+  if (auto *gep = llvm::dyn_cast<llvm::GEPOperator>(pointer)) {
+    llvm::Expected<ResolvedNativeObject> base =
+        resolveNativeObjectThroughCallPath(gep->getPointerOperand(),
+                                           enclosingCallable, invocationPath,
+                                           pathIndex, layout);
+    if (!base)
+      return base.takeError();
+    return applyNativeGepOffset(*gep, std::move(*base), layout);
+  }
+  if (auto *argument = llvm::dyn_cast<llvm::Argument>(pointer)) {
+    if (argument->getParent() != &enclosingCallable)
+      return invalid("native memory operand has the wrong callable owner");
+    if (pathIndex >= invocationPath.size())
+      return invalid("native invocation path is incomplete");
+    llvm::CallInst *hostCall = invocationPath[pathIndex];
+    if (!hostCall || hostCall->getCalledFunction() != &enclosingCallable)
+      return invalid("native invocation path has a broken callee edge");
+    if (argument->getArgNo() >= hostCall->arg_size())
+      return invalid("native callable argument exceeds host call operands");
+    llvm::Value *callerValue = hostCall->getArgOperand(argument->getArgNo());
+    if (pathIndex == 0)
+      return resolveNativeObject(callerValue, layout);
+    return resolveNativeObjectThroughCallPath(
+        callerValue, *hostCall->getFunction(), invocationPath, pathIndex - 1,
+        layout);
+  }
+  return resolveNativeObject(pointer, layout);
 }
 
 llvm::Expected<llvm::Value *>
@@ -149,10 +187,20 @@ struct CaptureContext {
   std::vector<ValueResultCaptureShape> valueResultShapes;
   bool littleEndian = true;
   std::vector<ActiveCall> activeCalls;
+  std::uint64_t requiredGateDepth = 0;
+  std::uint64_t gateDepth = 0;
   std::optional<std::string> error;
 };
 
 thread_local CaptureContext *activeCapture = nullptr;
+
+CaptureContext *enabledCapture() {
+  if (!activeCapture ||
+      (activeCapture->requiredGateDepth != 0 &&
+       activeCapture->gateDepth != activeCapture->requiredGateDepth))
+    return nullptr;
+  return activeCapture;
+}
 
 void recordCaptureError(llvm::StringRef message) {
   if (activeCapture && !activeCapture->error)
@@ -167,9 +215,10 @@ void copyBytes(std::vector<std::uint8_t> &destination, void *base,
 }
 
 void captureBegin() {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   context.result.calls.emplace_back();
@@ -181,9 +230,10 @@ void captureBegin() {
 
 void captureBefore(std::uint64_t objectOrdinal, void *base,
                    std::uint64_t byteCount) {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   if (objectOrdinal >= context.byteCounts.size() || !base ||
@@ -206,9 +256,10 @@ void captureBefore(std::uint64_t objectOrdinal, void *base,
 
 void captureAfter(std::uint64_t objectOrdinal, void *base,
                   std::uint64_t byteCount) {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   if (objectOrdinal >= context.byteCounts.size() || !base ||
@@ -265,9 +316,10 @@ CanonicalValueSequence readCapturedValue(void *base, std::uint64_t byteCount,
 
 void captureValue(std::uint64_t valueOrdinal, void *base,
                   std::uint64_t byteCount) {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   if (valueOrdinal >= context.runtimeValueShapes.size() || !base ||
@@ -295,9 +347,10 @@ void captureValue(std::uint64_t valueOrdinal, void *base,
 
 void captureResult(std::uint64_t resultOrdinal, void *base,
                    std::uint64_t byteCount) {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   if (resultOrdinal >= context.valueResultShapes.size() || !base ||
@@ -326,9 +379,10 @@ void captureResult(std::uint64_t resultOrdinal, void *base,
 }
 
 void captureEnd() {
-  if (!activeCapture)
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
     return;
-  CaptureContext &context = *activeCapture;
+  CaptureContext &context = *enabled;
   if (context.error)
     return;
   if (context.activeCalls.empty()) {
@@ -346,6 +400,26 @@ void captureEnd() {
   context.activeCalls.pop_back();
 }
 
+void captureGateEnter() {
+  if (!activeCapture)
+    return;
+  if (activeCapture->gateDepth >= activeCapture->requiredGateDepth) {
+    recordCaptureError("capture invocation gate exceeded its exact path");
+    return;
+  }
+  ++activeCapture->gateDepth;
+}
+
+void captureGateExit() {
+  if (!activeCapture)
+    return;
+  if (activeCapture->gateDepth == 0) {
+    recordCaptureError("capture invocation gate exited without entry");
+    return;
+  }
+  --activeCapture->gateDepth;
+}
+
 struct CaptureCallbackNames {
   std::string begin;
   std::string end;
@@ -353,6 +427,9 @@ struct CaptureCallbackNames {
   std::string after;
   std::optional<std::string> value;
   std::optional<std::string> result;
+  std::optional<std::string> gateEnter;
+  std::optional<std::string> gateExit;
+  std::uint64_t requiredGateDepth = 0;
 };
 
 std::string uniqueCallbackName(llvm::Module &module, llvm::StringRef prefix) {
@@ -363,11 +440,10 @@ std::string uniqueCallbackName(llvm::Module &module, llvm::StringRef prefix) {
   return name;
 }
 
-llvm::CallInst *
-findSelectedCall(llvm::Module &module,
-                 const DirectCallSimulationInputCapturePlan &plan) {
-  llvm::Function *caller = module.getFunction(plan.hostCallerSymbol);
-  llvm::Function *callee = module.getFunction(plan.hostCalleeSymbol);
+llvm::CallInst *findSelectedCall(llvm::Module &module,
+                                 const DirectCallCaptureSite &site) {
+  llvm::Function *caller = module.getFunction(site.hostCallerSymbol);
+  llvm::Function *callee = module.getFunction(site.hostCalleeSymbol);
   if (!caller || caller->isDeclaration() || !callee)
     return nullptr;
   std::uint64_t ordinal = 0;
@@ -376,7 +452,7 @@ findSelectedCall(llvm::Module &module,
       auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
       if (!call || call->getCalledFunction() != callee)
         continue;
-      if (ordinal++ == plan.hostCallOrdinal)
+      if (ordinal++ == site.hostCallOrdinal)
         return call;
     }
   return nullptr;
@@ -386,18 +462,31 @@ llvm::Expected<CaptureCallbackNames>
 instrumentCapture(llvm::Module &module,
                   const DirectCallSimulationInputCapturePlan &plan,
                   llvm::StringRef entrySymbol) {
-  if (plan.hostCallerSymbol.empty() || plan.hostCalleeSymbol.empty())
-    return invalid("capture plan has no exact call-site locator");
+  if (plan.invocationPath.empty())
+    return invalid("capture plan has no exact invocation path");
+  if (plan.invocationPath.front().hostCallerSymbol != entrySymbol)
+    return invalid("capture invocation path does not start at the entry");
 
   llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration() || entry->arg_size() != 0 ||
       !entry->getReturnType()->isIntegerTy(32))
     return invalid("entry must be a defined i32 () function");
 
-  llvm::CallInst *selected = findSelectedCall(module, plan);
-  if (!selected || selected->isMustTailCall())
-    return invalid("selected direct host call is absent or musttail");
-  selected->setTailCallKind(llvm::CallInst::TCK_None);
+  llvm::SmallVector<llvm::CallInst *, 4> invocationPath;
+  invocationPath.reserve(plan.invocationPath.size());
+  for (auto [ordinal, site] : llvm::enumerate(plan.invocationPath)) {
+    if (site.hostCallerSymbol.empty() || site.hostCalleeSymbol.empty())
+      return invalid("capture invocation path has an empty locator");
+    if (ordinal != 0 && plan.invocationPath[ordinal - 1].hostCalleeSymbol !=
+                            site.hostCallerSymbol)
+      return invalid("capture invocation path is not contiguous");
+    llvm::CallInst *call = findSelectedCall(module, site);
+    if (!call || call->isMustTailCall())
+      return invalid("selected direct host call is absent or musttail");
+    call->setTailCallKind(llvm::CallInst::TCK_None);
+    invocationPath.push_back(call);
+  }
+  llvm::CallInst *selected = invocationPath.back();
 
   if (plan.memoryObjectSources.size() != plan.input.objects.size())
     return invalid("direct-call memory source table is not total");
@@ -409,7 +498,11 @@ instrumentCapture(llvm::Module &module,
     if (!pointer)
       return pointer.takeError();
     llvm::Expected<ResolvedNativeObject> resolved =
-        resolveNativeObject(*pointer, module.getDataLayout());
+        invocationPath.size() == 1
+            ? resolveNativeObject(*pointer, module.getDataLayout())
+            : resolveNativeObjectThroughCallPath(
+                  *pointer, *selected->getFunction(), invocationPath,
+                  invocationPath.size() - 2, module.getDataLayout());
     if (!resolved)
       return resolved.takeError();
     if (resolved->byteCount != object.byteCount ||
@@ -453,6 +546,27 @@ instrumentCapture(llvm::Module &module,
       return invalid("direct call has no exact scalar result projection");
     resultName = uniqueCallbackName(module, "__loom_native_capture_result");
     resultCallback = module.getOrInsertFunction(*resultName, callbackType);
+  }
+  std::optional<std::string> gateEnterName;
+  std::optional<std::string> gateExitName;
+  std::optional<llvm::FunctionCallee> gateEnter;
+  std::optional<llvm::FunctionCallee> gateExit;
+  if (invocationPath.size() > 1) {
+    gateEnterName =
+        uniqueCallbackName(module, "__loom_native_capture_gate_enter");
+    gateExitName =
+        uniqueCallbackName(module, "__loom_native_capture_gate_exit");
+    gateEnter = module.getOrInsertFunction(*gateEnterName, lifecycleType);
+    gateExit = module.getOrInsertFunction(*gateExitName, lifecycleType);
+    for (llvm::CallInst *call : llvm::drop_end(invocationPath)) {
+      llvm::IRBuilder<> gateBefore(call);
+      llvm::Instruction *continuation = call->getNextNode();
+      if (!continuation)
+        return invalid("capture invocation gate has no continuation");
+      llvm::IRBuilder<> gateAfter(continuation);
+      gateBefore.CreateCall(*gateEnter);
+      gateAfter.CreateCall(*gateExit);
+    }
   }
 
   llvm::IRBuilder<> beforeBuilder(selected);
@@ -547,9 +661,11 @@ instrumentCapture(llvm::Module &module,
   afterBuilder.CreateCall(end);
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");
-  return CaptureCallbackNames{std::move(beginName),  std::move(endName),
-                              std::move(beforeName), std::move(afterName),
-                              std::move(valueName),  std::move(resultName)};
+  return CaptureCallbackNames{std::move(beginName),     std::move(endName),
+                              std::move(beforeName),    std::move(afterName),
+                              std::move(valueName),     std::move(resultName),
+                              std::move(gateEnterName), std::move(gateExitName),
+                              invocationPath.size() - 1};
 }
 
 std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {
@@ -563,13 +679,32 @@ std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {
 llvm::Expected<CaptureCallbackNames>
 instrumentStructuredCapture(mlir::ModuleOp module,
                             mlir::Operation *selectedOperation,
-                            const SimulationInputCapturePlan &plan) {
+                            const OperationSimulationInputCapturePlan &plan) {
   if (!selectedOperation ||
       selectedOperation->getParentOfType<mlir::ModuleOp>() != module)
     return invalid("selected operation is not owned by the prepared module");
   auto callable = selectedOperation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
   if (!callable || callable.getBody().empty())
     return invalid("selected operation is not enclosed by an LLVM callable");
+  for (auto [ordinal, site] : llvm::enumerate(plan.invocationPath)) {
+    mlir::LLVM::CallOp hostCall = site.hostCall;
+    if (!hostCall || hostCall->getParentOfType<mlir::ModuleOp>() != module ||
+        !hostCall.getCalleeAttr() ||
+        hostCall.getCalleeAttr().getValue() != site.hostCalleeSymbol)
+      return invalid("operation capture invocation path has a malformed "
+                     "call site");
+    auto caller = hostCall->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!caller || caller.getSymName() != site.hostCallerSymbol)
+      return invalid("operation capture invocation path has the wrong caller");
+    if (ordinal != 0 && plan.invocationPath[ordinal - 1].hostCalleeSymbol !=
+                            site.hostCallerSymbol)
+      return invalid("operation capture invocation path is not contiguous");
+  }
+  if (!plan.invocationPath.empty() &&
+      plan.invocationPath.back().hostCalleeSymbol != callable.getSymName())
+    return invalid("operation capture invocation path does not reach the "
+                   "selected callable");
+  const SimulationInputCapturePlan &inputPlan = plan.input;
 
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder declarations(context);
@@ -589,13 +724,21 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   std::string afterName =
       uniqueCallbackName(module, "__loom_native_capture_after");
   std::optional<std::string> valueName;
-  if (llvm::any_of(plan.valueInputs, [](const auto &input) {
+  if (llvm::any_of(inputPlan.valueInputs, [](const auto &input) {
         return !input.fixedValue.has_value();
       }))
     valueName = uniqueCallbackName(module, "__loom_native_capture_value");
   std::optional<std::string> resultName;
-  if (!plan.valueResults.empty())
+  if (!inputPlan.valueResults.empty())
     resultName = uniqueCallbackName(module, "__loom_native_capture_result");
+  std::optional<std::string> gateEnterName;
+  std::optional<std::string> gateExitName;
+  if (!plan.invocationPath.empty()) {
+    gateEnterName =
+        uniqueCallbackName(module, "__loom_native_capture_gate_enter");
+    gateExitName =
+        uniqueCallbackName(module, "__loom_native_capture_gate_exit");
+  }
   mlir::LLVM::LLVMFuncOp::create(declarations, location, beginName,
                                  lifecycleType);
   mlir::LLVM::LLVMFuncOp::create(declarations, location, endName,
@@ -610,19 +753,51 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   if (resultName)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *resultName,
                                    callbackType);
+  if (gateEnterName) {
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *gateEnterName,
+                                   lifecycleType);
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *gateExitName,
+                                   lifecycleType);
+    for (const DirectCallCaptureSite &site : plan.invocationPath) {
+      mlir::OpBuilder gateBefore(site.hostCall);
+      mlir::OpBuilder gateAfter(site.hostCall);
+      gateAfter.setInsertionPointAfter(site.hostCall);
+      mlir::LLVM::CallOp::create(gateBefore, location, mlir::TypeRange{},
+                                 *gateEnterName, mlir::ValueRange{});
+      mlir::LLVM::CallOp::create(gateAfter, location, mlir::TypeRange{},
+                                 *gateExitName, mlir::ValueRange{});
+    }
+  }
 
   mlir::OpBuilder before(selectedOperation);
   mlir::OpBuilder after(selectedOperation);
   after.setInsertionPointAfter(selectedOperation);
   mlir::LLVM::CallOp::create(before, location, mlir::TypeRange{}, beginName,
                              mlir::ValueRange{});
-  for (auto [ordinal, object] : llvm::enumerate(plan.objects)) {
+  llvm::SmallVector<mlir::Value, 4> objectBases;
+  objectBases.reserve(inputPlan.objects.size());
+  for (auto [ordinal, object] : llvm::enumerate(inputPlan.objects)) {
     if (!object.base ||
         !llvm::isa<mlir::LLVM::LLVMPointerType>(object.base.getType()) ||
         object.byteCount == 0 ||
         object.byteCount > std::numeric_limits<std::size_t>::max() ||
-        object.operandByteOffset >= object.byteCount)
+        object.operandByteOffset >= object.byteCount ||
+        object.operandByteOffset >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()))
       return invalid("capture object has an invalid finite projection");
+    mlir::Value base = object.base;
+    if (object.operandByteOffset != 0) {
+      mlir::Value negativeOffset = mlir::LLVM::ConstantOp::create(
+          before, location, i64,
+          before.getI64IntegerAttr(
+              -static_cast<std::int64_t>(object.operandByteOffset)));
+      base = mlir::LLVM::GEPOp::create(before, location, pointer,
+                                       before.getI8Type(), object.base,
+                                       mlir::ValueRange{negativeOffset})
+                 .getResult();
+    }
+    objectBases.push_back(base);
     auto ordinalAttr = before.getI64IntegerAttr(ordinal);
     auto byteCountAttr = before.getI64IntegerAttr(object.byteCount);
     mlir::Value beforeOrdinal =
@@ -631,7 +806,7 @@ instrumentStructuredCapture(mlir::ModuleOp module,
         mlir::LLVM::ConstantOp::create(before, location, i64, byteCountAttr);
     mlir::LLVM::CallOp::create(
         before, location, mlir::TypeRange{}, beforeName,
-        mlir::ValueRange{beforeOrdinal, object.base, beforeByteCount});
+        mlir::ValueRange{beforeOrdinal, base, beforeByteCount});
   }
   mlir::OpBuilder storage(context);
   storage.setInsertionPointToStart(&callable.getBody().front());
@@ -644,7 +819,7 @@ instrumentStructuredCapture(mlir::ModuleOp module,
         .getRes();
   };
   std::uint64_t runtimeOrdinal = 0;
-  for (const SimulationValueInputCapture &input : plan.valueInputs) {
+  for (const SimulationValueInputCapture &input : inputPlan.valueInputs) {
     if (input.fixedValue)
       continue;
     if (!valueName || !input.boundaryValue || !input.boundaryOperandOrdinal ||
@@ -661,7 +836,7 @@ instrumentStructuredCapture(mlir::ModuleOp module,
                                mlir::ValueRange{ordinalValue, slot, byteCount});
     ++runtimeOrdinal;
   }
-  for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
+  for (auto [ordinal, result] : llvm::enumerate(inputPlan.valueResults)) {
     if (!resultName || result.valueResultOrdinal != ordinal ||
         !result.boundaryValue ||
         result.boundaryValue.getDefiningOp() != selectedOperation ||
@@ -677,22 +852,25 @@ instrumentStructuredCapture(mlir::ModuleOp module,
     mlir::LLVM::CallOp::create(after, location, mlir::TypeRange{}, *resultName,
                                mlir::ValueRange{ordinalValue, slot, byteCount});
   }
-  for (auto [ordinal, object] : llvm::enumerate(plan.objects)) {
+  for (auto [ordinal, object] : llvm::enumerate(inputPlan.objects)) {
     mlir::Value afterOrdinal = mlir::LLVM::ConstantOp::create(
         after, location, i64, after.getI64IntegerAttr(ordinal));
     mlir::Value afterByteCount = mlir::LLVM::ConstantOp::create(
         after, location, i64, after.getI64IntegerAttr(object.byteCount));
     mlir::LLVM::CallOp::create(
         after, location, mlir::TypeRange{}, afterName,
-        mlir::ValueRange{afterOrdinal, object.base, afterByteCount});
+        mlir::ValueRange{afterOrdinal, objectBases[ordinal], afterByteCount});
   }
   mlir::LLVM::CallOp::create(after, location, mlir::TypeRange{}, endName,
                              mlir::ValueRange{});
   if (mlir::failed(mlir::verify(module)))
     return invalid("instrumented Structured Program does not verify");
-  return CaptureCallbackNames{std::move(beginName),  std::move(endName),
-                              std::move(beforeName), std::move(afterName),
-                              std::move(valueName),  std::move(resultName)};
+  return CaptureCallbackNames{
+      std::move(beginName),      std::move(endName),
+      std::move(beforeName),     std::move(afterName),
+      std::move(valueName),      std::move(resultName),
+      std::move(gateEnterName),  std::move(gateExitName),
+      plan.invocationPath.size()};
 }
 
 llvm::Error lowerStructuredOracleToLlvmDialect(mlir::ModuleOp module) {
@@ -998,6 +1176,16 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     callbacks[jit->mangleAndIntern(*callbackNames.result)] = {
         llvm::orc::ExecutorAddr::fromPtr(&captureResult),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (callbackNames.gateEnter.has_value() != callbackNames.gateExit.has_value())
+    return invalid("capture invocation gate callback table is incomplete");
+  if (callbackNames.gateEnter) {
+    callbacks[jit->mangleAndIntern(*callbackNames.gateEnter)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&captureGateEnter),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    callbacks[jit->mangleAndIntern(*callbackNames.gateExit)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&captureGateExit),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  }
   if (llvm::Error error =
           dylib.define(llvm::orc::absoluteSymbols(std::move(callbacks))))
     return std::move(error);
@@ -1011,6 +1199,9 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     return entry.takeError();
 
   CaptureContext capture;
+  capture.requiredGateDepth = callbackNames.requiredGateDepth;
+  if ((capture.requiredGateDepth == 0) != !callbackNames.gateEnter.has_value())
+    return invalid("capture invocation gate depth is inconsistent");
   capture.byteCounts.reserve(plan.objects.size());
   for (const SimulationMemoryCaptureObject &object : plan.objects)
     capture.byteCounts.push_back(object.byteCount);
@@ -1036,6 +1227,8 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     return std::move(error);
   if (capture.error)
     return executionFailed(*capture.error);
+  if (capture.gateDepth != 0)
+    return executionFailed("native execution left an open invocation gate");
   if (!capture.activeCalls.empty())
     return executionFailed("native execution left an incomplete call capture");
   return std::move(capture.result);
@@ -1066,6 +1259,8 @@ executeStructuredDirectCallSimulationInputCapture(
     llvm::StringRef entrySymbol) {
   if (!module)
     return invalid("prepared Structured Program module is absent");
+  if (plan.invocationPath.empty())
+    return invalid("direct-call capture has no exact invocation path");
   if (llvm::Error error = lowerStructuredOracleToLlvmDialect(*module))
     return std::move(error);
   return runNativeCapture(
@@ -1074,8 +1269,8 @@ executeStructuredDirectCallSimulationInputCapture(
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
         if (llvm::Error error = admitNativeHostModule(target, jit))
           return std::move(error);
-        if (llvm::Error error =
-                replaceCallableBody(target, *module, plan.hostCalleeSymbol))
+        if (llvm::Error error = replaceCallableBody(
+                target, *module, plan.invocationPath.back().hostCalleeSymbol))
           return std::move(error);
         return instrumentCapture(target, plan, entrySymbol);
       });
@@ -1084,10 +1279,18 @@ executeStructuredDirectCallSimulationInputCapture(
 llvm::Expected<NativeSimulationInputCapture>
 executeStructuredSimulationInputCapture(
     mlir::OwningOpRef<mlir::ModuleOp> module,
-    mlir::Operation *selectedOperation, const SimulationInputCapturePlan &plan,
+    mlir::Operation *selectedOperation,
+    const OperationSimulationInputCapturePlan &plan,
     llvm::StringRef entrySymbol) {
   if (!module)
     return invalid("prepared Structured Program module is absent");
+  auto callable =
+      selectedOperation
+          ? selectedOperation->getParentOfType<mlir::LLVM::LLVMFuncOp>()
+          : mlir::LLVM::LLVMFuncOp{};
+  if (callable && callable.getSymName() != entrySymbol &&
+      plan.invocationPath.empty())
+    return invalid("nested operation capture has no exact invocation path");
   llvm::Expected<CaptureCallbackNames> callbackNames =
       instrumentStructuredCapture(*module, selectedOperation, plan);
   if (!callbackNames)
@@ -1098,7 +1301,7 @@ executeStructuredSimulationInputCapture(
     return native.takeError();
 
   return runNativeCapture(
-      std::move(*native), plan, entrySymbol,
+      std::move(*native), plan.input, entrySymbol,
       [&](llvm::Module &target,
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
         if (llvm::Error error = retargetStructuredOracle(target, jit))

@@ -173,6 +173,12 @@ exit:
   ret void
 }
 
+define void @table_lookup_wrapper(ptr %table, ptr %output) {
+entry:
+  call void @table_lookup_arg(ptr %table, ptr %output)
+  ret void
+}
+
 define i32 @main() {
 entry:
   %output = alloca [4 x i32], align 16
@@ -184,6 +190,15 @@ define i32 @direct_main() {
 entry:
   %output = alloca [4 x i32], align 16
   call void @table_lookup(ptr %output)
+  ret i32 0
+}
+
+define i32 @nested_main() {
+entry:
+  %first = alloca [4 x i32], align 16
+  %second = alloca [4 x i32], align 16
+  call void @table_lookup_wrapper(ptr @lookup, ptr %first)
+  call void @table_lookup_wrapper(ptr @lookup, ptr %second)
   ret i32 0
 }
 )llvm";
@@ -368,20 +383,28 @@ memoryRoot(const char *test, const dataflow::CanonicalDataflowProgramView &view,
   fail(test, "materialized vecadd is missing an imported memory root");
 }
 
-mlir::LLVM::CallOp
-findHostCall(const char *test,
-             const dataflow::CanonicalDataflowArtifact &artifact,
-             llvm::StringRef caller, llvm::StringRef callee) {
+mlir::LLVM::CallOp findHostCall(const char *test, mlir::ModuleOp module,
+                                llvm::StringRef caller, llvm::StringRef callee,
+                                std::uint64_t requestedOrdinal = 0) {
   mlir::LLVM::CallOp result;
-  artifact.module().walk([&](mlir::LLVM::CallOp call) {
+  std::uint64_t ordinal = 0;
+  module.walk([&](mlir::LLVM::CallOp call) {
     auto function = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (function && function.getSymName() == caller && call.getCalleeAttr() &&
-        call.getCalleeAttr().getValue() == callee)
+        call.getCalleeAttr().getValue() == callee &&
+        ordinal++ == requestedOrdinal)
       result = call;
   });
   if (!result)
     fail(test, "materialized candidate has no requested host call site");
   return result;
+}
+
+mlir::LLVM::CallOp
+findHostCall(const char *test,
+             const dataflow::CanonicalDataflowArtifact &artifact,
+             llvm::StringRef caller, llvm::StringRef callee) {
+  return findHostCall(test, artifact.module(), caller, callee);
 }
 
 const loom::sim::SimulationMemoryRootCapture &
@@ -535,9 +558,8 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
   std::unique_ptr<llvm::Module> source = parseScalarReduction(test, context);
   configureHostModule(test, *source);
   llvm::Triple foreignTarget(source->getTargetTriple());
-  foreignTarget.setVendorName(foreignTarget.getVendorName() == "unknown"
-                                  ? "pc"
-                                  : "unknown");
+  foreignTarget.setVendorName(
+      foreignTarget.getVendorName() == "unknown" ? "pc" : "unknown");
   source->setTargetTriple(foreignTarget);
   auto compiled = take(
       test, loom::frontend::compileLlvmModuleToPreMapping(
@@ -559,12 +581,14 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
                      compiled.structuredProgram, scope, domain.front()));
-  auto plan =
-      take(test, loom::sim::deriveOperationSimulationInputCapturePlan(
-                     view, launch, prepared.liveIns, prepared.liveOuts));
-  if (!plan.objects.empty() || !plan.memoryRootBindings.empty() ||
-      plan.valueResults.size() != 1 ||
-      plan.valueResults.front().valueResultOrdinal != 0)
+  mlir::LLVM::CallOp invocation =
+      findHostCall(test, *prepared.module, "main", "accum");
+  auto plan = take(
+      test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                view, launch, prepared.liveIns, prepared.liveOuts, invocation));
+  if (!plan.input.objects.empty() || !plan.input.memoryRootBindings.empty() ||
+      plan.input.valueResults.size() != 1 ||
+      plan.input.valueResults.front().valueResultOrdinal != 0)
     fail(test, "scalar result capture invented memory or lost its output");
 
   loom::sim::NativeSimulationInputCapture native =
@@ -599,6 +623,118 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
       native.calls.front().valueResults.front().lanes.front().bits !=
           published->value.lanes.front().bits)
     fail(test, "native and DFG scalar result observations differ");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
+void operationCandidateCapturesCallerOwnedMemory() {
+  const char *test = "operationCandidateCapturesCallerOwnedMemory";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-operation-memory-capture", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseVecadd(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::SpatialOwnershipScope scope{
+      findVecaddLoop(test, compiled.structuredProgram)};
+  auto decisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, scope.selection));
+  if (decisions.empty())
+    fail(test, "vecadd loop has no ownership decision");
+  auto candidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, scope, decisions.front(),
+                     design.roots().front()));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto prepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, scope, decisions.front()));
+  mlir::LLVM::CallOp invocation =
+      findHostCall(test, *prepared.module, "main", "vecadd");
+  auto plan = take(
+      test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                view, launch, prepared.liveIns, prepared.liveOuts, invocation));
+  if (plan.input.objects.size() != 3 ||
+      plan.input.memoryRootBindings.size() != 3)
+    fail(test, "operation capture did not recover caller-owned memory");
+  for (const loom::sim::SimulationMemoryCaptureObject &object :
+       plan.input.objects)
+    if (object.byteCount != 64 * sizeof(float) || object.operandByteOffset != 0)
+      fail(test, "operation capture has the wrong backing-object extent");
+
+  loom::sim::NativeSimulationInputCapture capture =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(prepared.module), prepared.operation, plan));
+  if (capture.entryResult != 0 || capture.calls.size() != 1 ||
+      capture.calls.front().objects.size() != 3)
+    fail(test, "operation oracle did not capture the exact host invocation");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
+void nestedOperationCandidateUsesExactCallPath() {
+  const char *test = "nestedOperationCandidateUsesExactCallPath";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-nested-operation-capture", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseTableLookup(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::SpatialOwnershipScope scope{
+      findStructuredLoop(test, compiled.structuredProgram, "table_lookup_arg")};
+  auto decisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, scope.selection));
+  if (decisions.empty())
+    fail(test, "table lookup loop has no ownership decision");
+  auto candidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, scope, decisions.front(),
+                     design.roots().front()));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto prepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, scope, decisions.front()));
+  llvm::SmallVector<mlir::LLVM::CallOp, 2> path{
+      findHostCall(test, *prepared.module, "nested_main",
+                   "table_lookup_wrapper", 0),
+      findHostCall(test, *prepared.module, "table_lookup_wrapper",
+                   "table_lookup_arg")};
+  auto plan =
+      take(test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                     view, launch, prepared.liveIns, prepared.liveOuts, path));
+  if (plan.input.objects.size() != 2 ||
+      plan.input.memoryRootBindings.size() != 2)
+    fail(test, "nested operation capture lost a finite backing object");
+
+  loom::sim::NativeSimulationInputCapture capture =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(prepared.module), prepared.operation, plan,
+                     "nested_main"));
+  if (capture.entryResult != 0 || capture.calls.size() != 1 ||
+      capture.calls.front().objects.size() != 2)
+    fail(test, "nested operation capture conflated static call paths");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1026,6 +1162,25 @@ void staticTableExecutesThroughTypedDfgInput() {
   if (nativeCapture.entryResult != 0 || nativeCapture.calls.size() != 1 ||
       nativeCapture.calls.front().objects.size() != 2)
     fail(test, "native table oracle did not capture one complete call");
+
+  llvm::SmallVector<mlir::LLVM::CallOp, 2> nestedPath{
+      findHostCall(test, captureCandidate.canonicalDataflow.module(),
+                   "nested_main", "table_lookup_wrapper", 0),
+      findHostCall(test, captureCandidate.canonicalDataflow.module(),
+                   "table_lookup_wrapper", "table_lookup_arg")};
+  auto nestedPlan = take(test, loom::sim::deriveSimulationInputCapturePlan(
+                                   captureView, captureLaunch, nestedPath));
+  auto nestedContext = std::make_unique<llvm::LLVMContext>();
+  auto nestedModule = parseTableLookup(test, *nestedContext, false);
+  loom::sim::NativeSimulationInputCapture nestedCapture =
+      take(test, loom::sim::executeNativeSimulationInputCapture(
+                     llvm::orc::ThreadSafeModule(std::move(nestedModule),
+                                                 std::move(nestedContext)),
+                     nestedPlan, "nested_main"));
+  if (nestedCapture.entryResult != 0 || nestedCapture.calls.size() != 1 ||
+      nestedCapture.calls.front().objects.size() != 2)
+    fail(test, "whole-callable oracle conflated nested call paths");
+
   const auto &capturedTable =
       nativeCapture.calls.front()
           .objects[captureBinding(test, capturePlan.input,
@@ -1106,6 +1261,8 @@ void staticTableExecutesThroughTypedDfgInput() {
 int main() {
   selectedFmuladdShapesRemainObservable();
   scalarLiveOutExecutesWithoutMemoryObjects();
+  operationCandidateCapturesCallerOwnedMemory();
+  nestedOperationCandidateUsesExactCallPath();
   wholeCallableScalarResultUsesCallerStorage();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();

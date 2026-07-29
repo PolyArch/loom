@@ -72,14 +72,18 @@ A developer validation invocation may derive a `SimulationWorkload` and
 This derivation is ephemeral and does not add fields to the persistent
 Simulation schemas.
 
-For whole-callable Spatial ownership, the oracle resolves the exact direct
-LLVM call site retained by the selected candidate. For operation-owned Spatial
-ownership, it consumes the exact invocation-local ownership derivation,
-reimports that derivation's parent Structured Program, reapplies the selected
-typed decision without changing ownership, and observes the selected operation
-at its explicit value and memory boundary. Source locations, symbol position,
-operation position, and printer order are never persistent identity or
-ownership authority.
+For whole-callable Spatial ownership, the oracle resolves each exact finite,
+acyclic direct-call path from the execution entry to the selected callable.
+For operation-owned Spatial ownership, it consumes the exact invocation-local
+ownership derivation, reimports that derivation's parent Structured Program,
+reapplies the selected typed decision without changing ownership, and observes
+the selected operation at its explicit value and memory boundary. The leaf
+call supplies runtime values; the complete path traces callable arguments to
+finite backing objects and gates observation to that exact dynamic invocation
+context. Distinct static paths are replayed independently. Indirect,
+recursive, noncontiguous, or unbounded invocation lineage is typed
+`Unsupported`. Source locations, symbol position, operation position, and
+printer order are never persistent identity or ownership authority.
 
 Graph value inputs are classified totally as `Fixed` or `Runtime`. Fixed
 inputs preserve defined, poison, or undef state; runtime inputs are captured in
