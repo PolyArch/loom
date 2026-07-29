@@ -500,7 +500,8 @@ llvm::Error requireExactFabricCapabilities(
   if (!view)
     return view.takeError();
   if (view->graphs().empty() || view->actors().empty())
-    return invalid("materialized candidate has no SpatialCore workload");
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  "materialized candidate has no SpatialCore workload");
 
   FabricCapabilityIndex capabilities(fabric.view());
   for (const dataflow::CanonicalActorView &actor : view->actors()) {

@@ -2,6 +2,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
@@ -56,6 +57,32 @@ entry:
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<accounting>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipAccounting", stream);
+    fail(stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module> parseEmptyScopeModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown"
+
+define i32 @main(i1 %condition) {
+entry:
+  br i1 %condition, label %empty, label %merge
+empty:
+  br label %merge
+merge:
+  ret i32 0
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<empty-scope>");
   auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
   if (!module) {
     std::string message;
@@ -131,6 +158,52 @@ void requireCompleteAccounting(
     fail("candidate domain accounting was incomplete");
 }
 
+void requireEmptyScopeIsCandidateRejection(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  llvm::LLVMContext context;
+  auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseEmptyScopeModule(context), fabric));
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
+      structured.structuredProgram));
+
+  bool sawEmptyScope = false;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    if (!scope)
+      continue;
+    auto decisions = take(
+        loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+            structured.structuredProgram, scope->selection));
+    for (const loom::frontend::SpatialOwnershipDecisionPoint &decision :
+         decisions) {
+      auto candidate = loom::frontend::materializeSpatialOwnershipDecision(
+          structured.structuredProgram, *scope, decision, fabric);
+      if (candidate)
+        continue;
+      bool classified = false;
+      llvm::Error unhandled = llvm::handleErrors(
+          candidate.takeError(),
+          [&](const loom::frontend::SpatialOwnershipCandidateRejection &error) {
+            classified = true;
+            if (error.kind() ==
+                    loom::frontend::SpatialOwnershipCandidateRejectionKind::
+                        NonFinalizable &&
+                error.message().find("no SpatialCore workload") !=
+                    std::string::npos)
+              sawEmptyScope = true;
+          });
+      if (unhandled)
+        fail("empty Spatial scope escaped candidate rejection: " +
+             llvm::toString(std::move(unhandled)));
+      if (!classified)
+        fail("empty Spatial scope failed without a typed rejection");
+    }
+  }
+  if (!sawEmptyScope)
+    fail("empty Spatial scope did not produce a NonFinalizable disposition");
+}
+
 } // namespace
 
 int main() {
@@ -142,6 +215,8 @@ int main() {
   loom::ArtifactStore store(directory);
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
+
+  requireEmptyScopeIsCandidateRejection(design.roots().front());
 
   auto serial = explore(design.roots().front(), store, 1);
   requireCompleteAccounting(serial);
