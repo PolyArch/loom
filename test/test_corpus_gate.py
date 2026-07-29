@@ -80,6 +80,10 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
             corpus_gate.parse_args(["--stage", "d0"]).case_timeout,
             120.0,
         )
+        dfg_args = corpus_gate.parse_args(["--stage", "dfg-sim"])
+        self.assertEqual(dfg_args.dfg_max_wavefront_steps, 1_000_000)
+        self.assertEqual(dfg_args.dfg_max_event_count, 10_000_000)
+        self.assertEqual(dfg_args.dfg_max_capture_bytes, 256 * 1024 * 1024)
 
 STUB = """#!/usr/bin/env python3
 import os
@@ -591,6 +595,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "program.dfg.mlir",
             self.out_dir / "simulation.json",
             3,
+            corpus_gate.DfgExecutionLimits(400, 500, 600),
             config,
         )
         self.assertEqual(
@@ -603,6 +608,9 @@ class CommandConstructionTest(CorpusGateTestBase):
                 f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",
                 f"--output={self.out_dir / 'simulation.json'}",
                 "--candidate-jobs=3",
+                "--max-event-steps=400",
+                "--max-event-count=500",
+                "--max-capture-bytes=600",
                 str(self.out_dir / "target.ll"),
             ],
         )

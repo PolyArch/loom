@@ -71,6 +71,16 @@ llvm::cl::opt<std::uint64_t>
                   llvm::cl::desc("maximum aggregate DFG event wavefronts"),
                   llvm::cl::init(100000));
 
+llvm::cl::opt<std::uint64_t>
+    maxEventCount("max-event-count",
+                  llvm::cl::desc("maximum aggregate DFG event count"),
+                  llvm::cl::init(1000000));
+
+llvm::cl::opt<std::uint64_t>
+    maxCaptureBytes("max-capture-bytes",
+                    llvm::cl::desc("maximum retained capture bytes"),
+                    llvm::cl::init(256ULL * 1024ULL * 1024ULL));
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -166,6 +176,9 @@ compileTarget(std::unique_ptr<llvm::Module> module,
        candidateJobs}};
   exploration.ownership.functionalReplayLimits.maxWavefrontSteps =
       maxEventSteps;
+  exploration.ownership.functionalReplayLimits.maxEventCount = maxEventCount;
+  exploration.ownership.functionalReplayLimits.maxRetainedCaptureBytes =
+      maxCaptureBytes;
   auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(*source), inputs->workload, inputs->runtimeInput, fabric,
       config, exploration, store);
@@ -259,6 +272,10 @@ int main(int argc, char **argv) {
     return reportError(invalid("candidate-jobs must be positive"));
   if (maxEventSteps == 0)
     return reportError(invalid("max-event-steps must be positive"));
+  if (maxEventCount == 0)
+    return reportError(invalid("max-event-count must be positive"));
+  if (maxCaptureBytes == 0)
+    return reportError(invalid("max-capture-bytes must be positive"));
 
   auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
   if (!preset)

@@ -166,6 +166,9 @@ LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 15.0
 DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = 120.0
+DEFAULT_DFG_MAX_WAVEFRONT_STEPS = 1_000_000
+DEFAULT_DFG_MAX_EVENT_COUNT = 10_000_000
+DEFAULT_DFG_MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 RESERVED_DEVELOPMENT_CPUS = 4
 MAX_CASE_WORKERS = 128
 
@@ -187,6 +190,20 @@ class Toolchain:
     llvm_dis: str
     sysroot: Path
     gcc_toolchain: Path
+
+
+@dataclass(frozen=True)
+class DfgExecutionLimits:
+    max_wavefront_steps: int
+    max_event_count: int
+    max_capture_bytes: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "max_capture_bytes": self.max_capture_bytes,
+            "max_event_count": self.max_event_count,
+            "max_wavefront_steps": self.max_wavefront_steps,
+        }
 
 
 @dataclass(frozen=True)
@@ -532,6 +549,7 @@ def dfg_sim_command(
     d0_module: Path,
     report: Path,
     candidate_jobs: int,
+    limits: DfgExecutionLimits,
     config_path: Path | None = None,
 ) -> list[str]:
     command = [
@@ -541,6 +559,9 @@ def dfg_sim_command(
         f"--canonical-output={d0_module}",
         f"--output={report}",
         f"--candidate-jobs={candidate_jobs}",
+        f"--max-event-steps={limits.max_wavefront_steps}",
+        f"--max-event-count={limits.max_event_count}",
+        f"--max-capture-bytes={limits.max_capture_bytes}",
         str(target_llvm_ir),
     ]
     if config_path is not None:
@@ -951,6 +972,7 @@ def run_case(
     case_timeout: float,
     candidate_jobs: int,
     config_path: Path | None,
+    dfg_limits: DfgExecutionLimits,
     provider_results: dict[str, ProducedWorkload | StepFailure],
 ) -> CaseResult:
     started = time.monotonic()
@@ -1054,6 +1076,7 @@ def run_case(
                     d0_module,
                     report_path,
                     candidate_jobs,
+                    dfg_limits,
                     config_path,
                 ),
                 case_dir / "dfg-sim.log",
@@ -1145,6 +1168,7 @@ def run_cases(
     case_timeout: float,
     candidate_jobs: int,
     config_path: Path | None,
+    dfg_limits: DfgExecutionLimits,
 ) -> list[CaseResult]:
     workload_cases = [
         case for case in cases if isinstance(case, corpus_inventory.ProgramWorkload)
@@ -1170,6 +1194,7 @@ def run_cases(
                 case_timeout,
                 candidate_jobs,
                 config_path,
+                dfg_limits,
                 provider_results,
             ): index
             for index, case in enumerate(cases)
@@ -1239,6 +1264,27 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "(default: %(default)s)",
     )
     parser.add_argument(
+        "--dfg-max-wavefront-steps",
+        type=int,
+        default=DEFAULT_DFG_MAX_WAVEFRONT_STEPS,
+        help="maximum aggregate DFG wavefront steps before an incomplete "
+        "execution (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--dfg-max-event-count",
+        type=int,
+        default=DEFAULT_DFG_MAX_EVENT_COUNT,
+        help="maximum aggregate DFG events before an incomplete execution "
+        "(default: %(default)s)",
+    )
+    parser.add_argument(
+        "--dfg-max-capture-bytes",
+        type=int,
+        default=DEFAULT_DFG_MAX_CAPTURE_BYTES,
+        help="maximum retained source-backed capture bytes before an "
+        "incomplete execution (default: %(default)s)",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         help="resolved semantic configuration forwarded to pre-Mapping tools",
@@ -1282,6 +1328,7 @@ def render_human(
     jobs: int,
     candidate_jobs: int,
     config_path: Path | None,
+    dfg_limits: DfgExecutionLimits,
     duration_seconds: float,
 ) -> str:
     lines = [
@@ -1290,6 +1337,8 @@ def render_human(
         f"code-model={TARGET_CODE_MODEL} "
         f"builtin={BUILTIN_TARGET_PRESET} "
         f"candidate-jobs={candidate_jobs} "
+        f"dfg-limits={dfg_limits.max_wavefront_steps}/"
+        f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
         f"config={config_path if config_path is not None else '<default>'} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
     ]
@@ -1339,6 +1388,7 @@ def render_json(
     jobs: int,
     candidate_jobs: int,
     config_path: Path | None,
+    dfg_limits: DfgExecutionLimits,
     case_timeout: float,
     duration_seconds: float,
 ) -> str:
@@ -1355,6 +1405,7 @@ def render_json(
         "case_timeout_seconds": case_timeout,
         "candidate_jobs": candidate_jobs,
         "config": str(config_path) if config_path is not None else None,
+        "dfg_execution_limits": dfg_limits.as_dict(),
         "cases": [result.as_dict() for result in results],
         "duration_seconds": round(duration_seconds, 3),
         "failed": len(results) - passed,
@@ -1413,6 +1464,22 @@ def main(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    if (
+        args.dfg_max_wavefront_steps < 1
+        or args.dfg_max_event_count < 1
+        or args.dfg_max_capture_bytes < 1
+    ):
+        print(
+            "[corpus-gate] configuration error: DFG execution limits must be "
+            "positive",
+            file=sys.stderr,
+        )
+        return 2
+    dfg_limits = DfgExecutionLimits(
+        args.dfg_max_wavefront_steps,
+        args.dfg_max_event_count,
+        args.dfg_max_capture_bytes,
+    )
     try:
         inventory = (
             corpus_inventory.load_workload_inventory(ROOT)
@@ -1459,6 +1526,7 @@ def main(argv: Sequence[str]) -> int:
         args.case_timeout,
         args.candidate_jobs,
         config_path,
+        dfg_limits,
     )
     duration = time.monotonic() - started
 
@@ -1470,6 +1538,7 @@ def main(argv: Sequence[str]) -> int:
             args.jobs,
             args.candidate_jobs,
             config_path,
+            dfg_limits,
             duration,
         )
     )
@@ -1483,6 +1552,7 @@ def main(argv: Sequence[str]) -> int:
                 args.jobs,
                 args.candidate_jobs,
                 config_path,
+                dfg_limits,
                 args.case_timeout,
                 duration,
             )
