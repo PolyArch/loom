@@ -346,35 +346,39 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       frontend::structuredProgramArtifactSchema.version,
       inputs->structuredProgram.identity()};
   bool mismatch = false;
-  if (candidate->identity() != inputs->structuredProgram.identity()) {
-    auto sourceObservations = sourceObservationsFor(
-        source, *request.workload(), *request.runtimeInput(), *inputs);
-    if (!sourceObservations)
-      return classifyNativeFailure(sourceObservations.takeError());
-    auto selectedObservations = sim::executeSelectedStructuredProgram(
-        *candidate, inputs->structuredProgram, inputs->workload,
-        inputs->runtimeInput);
-    if (!selectedObservations)
-      return classifyNativeFailure(selectedObservations.takeError());
-    mismatch = !sim::haveEquivalentFunctionalObservations(
-        **sourceObservations, *selectedObservations);
-  }
-
   std::optional<CachedReplayResult> replay;
-  if (!mismatch &&
-      candidate->identity() != inputs->structuredProgram.identity()) {
+  if (candidate->identity() != inputs->structuredProgram.identity()) {
     const std::vector<std::uint8_t> key = replayCacheKey(
         candidates.front(), *request.workload(), *request.runtimeInput());
-    std::lock_guard<std::mutex> lock(replayCacheMutex());
-    auto found = replayCache().find(key);
-    if (found == replayCache().end())
-      return EvaluationModelResult{
-          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    replay = found->second;
-    if (replay->kind == ReplayResultKind::Unsupported)
-      return EvaluationModelResult{
-          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    mismatch = replay->kind == ReplayResultKind::Mismatch;
+    {
+      std::lock_guard<std::mutex> lock(replayCacheMutex());
+      auto found = replayCache().find(key);
+      if (found != replayCache().end())
+        replay = found->second;
+    }
+    if (replay) {
+      if (replay->kind == ReplayResultKind::Unsupported)
+        return EvaluationModelResult{
+            {},
+            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+      mismatch = replay->kind == ReplayResultKind::Mismatch;
+    } else {
+      auto sourceObservations = sourceObservationsFor(
+          source, *request.workload(), *request.runtimeInput(), *inputs);
+      if (!sourceObservations)
+        return classifyNativeFailure(sourceObservations.takeError());
+      auto selectedObservations = sim::executeSelectedStructuredProgram(
+          *candidate, inputs->structuredProgram, inputs->workload,
+          inputs->runtimeInput);
+      if (!selectedObservations)
+        return classifyNativeFailure(selectedObservations.takeError());
+      mismatch = !sim::haveEquivalentFunctionalObservations(
+          **sourceObservations, *selectedObservations);
+      if (!mismatch)
+        return EvaluationModelResult{
+            {},
+            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    }
   }
 
   std::vector<FindingResult> findings;
@@ -483,7 +487,8 @@ llvm::Error primeStructuredProgramFunctionalReplay(
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.scope, invocation.decision,
       invocation.candidate, invocation.simulationWorkload,
-      invocation.simulationRuntimeInput, invocation.limits));
+      invocation.simulationRuntimeInput, invocation.limits,
+      &invocation.sourceObservations));
   if (!classified)
     return classified.takeError();
   const std::vector<std::uint8_t> key = replayCacheKey(

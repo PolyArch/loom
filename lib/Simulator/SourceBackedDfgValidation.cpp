@@ -533,7 +533,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    SourceBackedDfgValidationLimits limits) {
+    SourceBackedDfgValidationLimits limits,
+    const NativeStructuredProgramObservations *sourceObservations) {
   if (limits.maxWavefrontSteps == 0 || limits.maxEventCount == 0 ||
       limits.maxRetainedCaptureBytes == 0)
     return invalid("execution limits must be positive");
@@ -589,65 +590,16 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     ++found->second;
     return llvm::Error::success();
   };
-  if (llvm::Error error =
-          native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
-              std::move(selected->module), selected->spatial, selected->plan,
-              sourceProgram, workload, runtimeInput,
-              limits.maxRetainedCaptureBytes, recordSelectedActivation))
-    return std::move(error);
+  auto selectedObservations =
+      native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+          std::move(selected->module), selected->spatial, selected->plan,
+          sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
+          recordSelectedActivation);
+  if (!selectedObservations)
+    return selectedObservations.takeError();
 
-  mlir::IRMapping censusMapping;
-  mlir::OwningOpRef<mlir::ModuleOp> censusModule(llvm::cast<mlir::ModuleOp>(
-      prepared->module.get().getOperation()->clone(censusMapping)));
-  mlir::Operation *censusOperation =
-      censusMapping.lookupOrNull(prepared->operation);
-  if (!censusOperation)
-    return executionFailed(
-        "source activation census lost the selected operation");
-  WorkloadBackedSimulationInputCapturePlan censusPlan{
-      plan->launch, {}, {}, {}, {}};
-  censusPlan.denseCoordinates.reserve(plan->denseCoordinates.size());
-  for (const WorkloadBackedDenseCoordinateCapture &coordinate :
-       plan->denseCoordinates) {
-    mlir::Value mapped = censusMapping.lookupOrNull(coordinate.boundaryValue);
-    if (!mapped)
-      return executionFailed(
-          "source activation census lost a coordinate boundary");
-    censusPlan.denseCoordinates.push_back(
-        {coordinate.dimension, mapped, coordinate.byteCount});
-  }
   std::uint64_t sourceActivationCount = 0;
   bool activationMismatch = false;
-  auto censusSourceActivation =
-      [&](NativeSimulationCallCapture &&call) -> llvm::Error {
-    if (!call.runtimeValues.empty() || !call.valueResults.empty() ||
-        !call.objects.empty() || !call.memoryRootObjectOrdinals.empty() ||
-        !call.memoryRootByteOffsets.empty())
-      return executionFailed(
-          "source activation census contains non-coordinate state");
-    if (sourceActivationCount == std::numeric_limits<std::uint64_t>::max())
-      return executionFailed("source activation count overflowed");
-    ++sourceActivationCount;
-    auto selectedActivation = selectedActivations.find(call.denseCoordinates);
-    if (selectedActivation == selectedActivations.end() ||
-        selectedActivation->second == 0) {
-      activationMismatch = true;
-      return llvm::Error::success();
-    }
-    --selectedActivation->second;
-    return llvm::Error::success();
-  };
-  if (llvm::Error error = visitWorkloadBackedSimulationInputCaptures(
-          std::move(censusModule), censusOperation, censusPlan, sourceProgram,
-          workload, runtimeInput, limits.maxRetainedCaptureBytes,
-          censusSourceActivation))
-    return std::move(error);
-  activationMismatch |= llvm::any_of(
-      selectedActivations, [](const auto &entry) { return entry.second != 0; });
-  if (activationMismatch)
-    return SourceBackedDfgValidationResult{
-        SourceBackedDfgValidationStatus::Mismatch, sourceActivationCount, 0, 0};
-
   SourceBackedDfgValidationResult result{
       SourceBackedDfgValidationStatus::Equivalent};
   auto replayActivation =
@@ -699,11 +651,47 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     result.eventCount += execution->report.eventCount;
     return llvm::Error::success();
   };
+  std::optional<llvm::Error> deferredReplayFailure;
+  auto censusAndReplay =
+      [&](NativeSimulationCallCapture &&call) -> llvm::Error {
+    if (sourceActivationCount == std::numeric_limits<std::uint64_t>::max())
+      return executionFailed("source activation count overflowed");
+    ++sourceActivationCount;
+    auto selectedActivation = selectedActivations.find(call.denseCoordinates);
+    if (selectedActivation == selectedActivations.end() ||
+        selectedActivation->second == 0) {
+      activationMismatch = true;
+      return llvm::Error::success();
+    }
+    --selectedActivation->second;
+    if (deferredReplayFailure)
+      return llvm::Error::success();
+    if (llvm::Error error = replayActivation(std::move(call)))
+      deferredReplayFailure.emplace(std::move(error));
+    return llvm::Error::success();
+  };
   if (llvm::Error error = visitWorkloadBackedSimulationInputCaptures(
           std::move(prepared->module), prepared->operation, *plan,
           sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
-          replayActivation))
+          censusAndReplay)) {
+    if (deferredReplayFailure)
+      return llvm::joinErrors(std::move(error),
+                              std::move(*deferredReplayFailure));
     return std::move(error);
+  }
+  activationMismatch |= llvm::any_of(
+      selectedActivations, [](const auto &entry) { return entry.second != 0; });
+  const bool wholeProgramMismatch =
+      sourceObservations && !haveEquivalentFunctionalObservations(
+                                *sourceObservations, *selectedObservations);
+  if (activationMismatch || wholeProgramMismatch) {
+    if (deferredReplayFailure)
+      llvm::consumeError(std::move(*deferredReplayFailure));
+    return SourceBackedDfgValidationResult{
+        SourceBackedDfgValidationStatus::Mismatch, sourceActivationCount, 0, 0};
+  }
+  if (deferredReplayFailure)
+    return std::move(*deferredReplayFailure);
   if (result.dynamicActivations == 0 &&
       result.status == SourceBackedDfgValidationStatus::Equivalent)
     result.status = SourceBackedDfgValidationStatus::Inapplicable;

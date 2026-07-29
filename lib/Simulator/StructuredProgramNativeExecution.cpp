@@ -1689,7 +1689,7 @@ llvm::Error visitWorkloadBackedSimulationInputCaptures(
 
 } // namespace loom::sim
 
-llvm::Error
+llvm::Expected<loom::sim::NativeStructuredProgramObservations>
 loom::sim::native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
     mlir::OwningOpRef<mlir::ModuleOp> selectedModule,
     mlir::Operation *selectedOperation,
@@ -1704,5 +1704,5 @@ loom::sim::native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
       true, selectedOperation, &plan, &visitor, maxRetainedCaptureBytes);
   if (!result)
     return result.takeError();
-  return llvm::Error::success();
+  return std::move(result->observations);
 }

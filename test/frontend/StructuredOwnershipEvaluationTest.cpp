@@ -453,7 +453,7 @@ void runEvaluationAnchor() {
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, spatialScope, spatialDecision, spatial,
       inputs.workload, inputs.runtimeInput,
-      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}));
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (spatialReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       spatialReplay.dynamicActivations != 1 ||
@@ -462,7 +462,7 @@ void runEvaluationAnchor() {
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, coldScope, coldDecision, cold,
       inputs.workload, inputs.runtimeInput,
-      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}));
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (coldReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Inapplicable ||
       coldReplay.dynamicActivations != 0 || coldReplay.wavefrontSteps != 0 ||

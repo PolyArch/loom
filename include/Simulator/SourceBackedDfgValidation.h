@@ -10,6 +10,8 @@
 
 namespace loom::sim {
 
+struct NativeStructuredProgramObservations;
+
 enum class SourceBackedDfgValidationStatus : std::uint8_t {
   Equivalent,
   Mismatch,
@@ -38,7 +40,9 @@ struct SourceBackedDfgValidationLimits final {
 /// mechanically derived Canonical Dataflow graph, and compare value, memory,
 /// and retirement semantics. The source workload/runtime pair remains the
 /// sole persistent input identity; activation-specific Spatial inputs are
-/// derived transiently.
+/// derived transiently. A production semantic gate may provide its already
+/// computed source observation so the selected execution also proves the
+/// whole-program transformation without executing the candidate twice.
 llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::StructuredProgramCandidate &sourceProgram,
     const frontend::SpatialOwnershipScope &scope,
@@ -46,7 +50,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    SourceBackedDfgValidationLimits limits);
+    SourceBackedDfgValidationLimits limits,
+    const NativeStructuredProgramObservations *sourceObservations = nullptr);
 
 } // namespace loom::sim
 

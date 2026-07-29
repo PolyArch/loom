@@ -82,7 +82,8 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
 llvm::Expected<std::optional<std::string>>
 projectSelectedWholeProgram(mlir::ModuleOp module);
 
-llvm::Error visitProjectedWorkloadBackedSimulationInputCaptures(
+llvm::Expected<NativeStructuredProgramObservations>
+visitProjectedWorkloadBackedSimulationInputCaptures(
     mlir::OwningOpRef<mlir::ModuleOp> selectedModule,
     mlir::Operation *selectedOperation,
     const WorkloadBackedSimulationInputCapturePlan &plan,
