@@ -26,6 +26,12 @@ struct StructuredRaisingOptions {
 /// discarded, so this remains a mechanical LLVM normalization.
 llvm::Error normalizeProvenConstantCallbacks(llvm::Module &module);
 
+/// Clones a defined dispatcher for each distinct set of exact function
+/// constants passed to callback formals that are used directly as callees.
+/// Each clone replaces only those formal uses, and each original call site is
+/// redirected to the matching clone. Unknown callback values remain indirect.
+llvm::Error specializeExactConstantCallbackCallSites(llvm::Module &module);
+
 /// Imports one verified LLVM module, performs the exact mechanical raising
 /// pipeline, and publishes the resulting immutable Structured Program view.
 llvm::Expected<frontend::StructuredProgramCandidate>

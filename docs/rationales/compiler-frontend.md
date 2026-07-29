@@ -63,6 +63,17 @@ and imports only exact, signature-preserving callee resolution. This reuses
 LLVM as the proof authority without copying its analysis or admitting its
 unrelated rewrites into the mechanical program boundary.
 
+A dispatcher used by several call sites may have no single module-global
+callback even though each site passes an exact function constant. Choosing one
+target would be wrong, while extending source validation with a second
+indirect-call identity model would duplicate call authority. Loom instead
+creates one internal dispatcher specialization per distinct exact binding.
+Each original call keeps the dispatcher control semantics but reaches a clone
+whose callback edge is direct; unknown calls continue to use the original
+dispatcher. Applying the same deterministic transform to target and native
+oracle modules preserves one direct-call lineage model without a harness-name
+special case.
+
 The LLVM importer uses one `passthrough` array for every function attribute it
 does not expose as a typed LLVMFuncOp field. Treating that storage container as
 the floating environment blocks ordinary Clang programs for unrelated facts

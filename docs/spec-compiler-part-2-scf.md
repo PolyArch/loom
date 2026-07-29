@@ -169,6 +169,20 @@ escaped, type-adjusted, or path-dependent callees remain indirect calls. This
 is call-kind canonicalization, not library modeling, inlining, ownership, or a
 performance decision.
 
+When one defined dispatcher is called at different sites with different exact
+function constants, no module-global target exists. A separate deterministic
+call-site canonicalization may clone that dispatcher once per distinct exact
+callback binding and redirect only the matching direct call sites. A binding
+is admitted only when the actual value is an exact defined `Function`, the
+corresponding formal is used directly as an indirect callee, and the target
+function type and calling convention equal every such call. The clone replaces
+only the bound formal uses; the original dispatcher remains the authority for
+unknown or escaped callback values. This canonicalization neither picks one
+target globally nor inlines the callback body, chooses Spatial ownership, or
+creates a library model. Target compilation and a source-backed native oracle
+must consume the same production canonicalizer so their finite direct-call
+lineage cannot diverge.
+
 LLVM leading- and trailing-zero count intrinsics with
 `is_zero_poison = false` normalize mechanically to `math.ctlz` and
 `math.cttz`. The poison-flagged forms retain their LLVM spelling and project

@@ -84,6 +84,7 @@ tools = [
     "loom-fabric-system-service-contract-test",
     "loom-fabric-temporal-operand-buffer-test",
     "loom-fabric-temporal-switch-resource-contract-test",
+    "loom-constant-callback-specialization-test",
     "loom-frontend-dfg-integration-test",
     "loom-static-global-memory-test",
     "loom-lower",

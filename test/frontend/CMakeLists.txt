@@ -31,6 +31,17 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-constant-callback-specialization-test
+  ConstantCallbackSpecializationTest.cpp
+)
+
+target_link_libraries(loom-constant-callback-specialization-test PRIVATE
+  LoomFrontendCompilation
+  LLVMCore
+  LLVMIRReader
+  LLVMSupport
+)
+
 add_executable(loom-structured-ownership-accounting-test
   StructuredOwnershipAccountingTest.cpp
 )

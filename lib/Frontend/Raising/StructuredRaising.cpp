@@ -165,6 +165,8 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
     return invalid("missing LLVM module");
   if (llvm::Error error = normalizeProvenConstantCallbacks(*module))
     return std::move(error);
+  if (llvm::Error error = specializeExactConstantCallbackCallSites(*module))
+    return std::move(error);
 
   normalizeBulkMemoryIntrinsics(*module);
   if (llvm::verifyModule(*module))

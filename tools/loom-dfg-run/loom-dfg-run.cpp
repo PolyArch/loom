@@ -122,6 +122,9 @@ readNativeModule(llvm::StringRef path) {
   if (llvm::Error error =
           loom::raising::normalizeProvenConstantCallbacks(**module))
     return std::move(error);
+  if (llvm::Error error =
+          loom::raising::specializeExactConstantCallbackCallSites(**module))
+    return std::move(error);
   return llvm::orc::ThreadSafeModule(std::move(*module), std::move(context));
 }
 
