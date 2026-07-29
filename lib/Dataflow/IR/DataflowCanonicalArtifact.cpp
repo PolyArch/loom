@@ -167,12 +167,13 @@ finalizeCanonicalDataflow(ModuleOp source) {
   // reusing the labeling already computed rather than recomputing it. Any
   // unresolved memory root, exposure, or owner relation fails finalization here
   // so a defective artifact is never published.
-  if (llvm::Error error = CanonicalDataflowProgramView::buildView(
-                              clone.get(), identity, *labeling)
-                              .takeError())
-    return std::move(error);
+  auto view = CanonicalDataflowProgramView::buildView(clone.get(), identity,
+                                                       *labeling);
+  if (!view)
+    return view.takeError();
 
-  return importCanonicalDataflow(identity, bytes);
+  return CanonicalDataflowArtifact(identity, std::move(clone), std::move(bytes),
+                                   std::move(*view));
 }
 
 //===----------------------------------------------------------------------===//
@@ -425,8 +426,9 @@ importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
       detail::frameCanonicalDataflowBytes(*rewritten);
   if (!reencoded.bytes().equals(canonicalBytes.bytes()))
     return invalid("canonical dataflow: stored bytes are noncanonical");
-  return CanonicalDataflowArtifact(identity, std::move(parsed->module),
-                                   canonicalBytes, std::move(parsed->context));
+  return CanonicalDataflowArtifact(
+      identity, std::move(parsed->module), canonicalBytes, std::move(*view),
+      std::move(parsed->context));
 }
 
 llvm::Expected<::loom::ArtifactRootReference>

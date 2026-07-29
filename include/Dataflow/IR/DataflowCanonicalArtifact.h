@@ -345,11 +345,11 @@ public:
     return bytes_;
   }
 
-  /// Reconstruct the read-only view from the canonical module. The view is the
-  /// single source of truth for the projection, so it is imported rather than
-  /// cached alongside the artifact.
+  /// Returns the read-only projection sealed by finalization or strict import.
+  /// This disposable native cache is derived from the canonical bytes and may
+  /// never replace them as the persistent authority.
   llvm::Expected<CanonicalDataflowProgramView> view() const {
-    return CanonicalDataflowProgramView::import(module(), identity_, bytes_);
+    return view_;
   }
 
 private:
@@ -365,15 +365,18 @@ private:
   CanonicalDataflowArtifact(::loom::ArtifactIdentity identity,
                             mlir::OwningOpRef<mlir::ModuleOp> module,
                             ::loom::CanonicalSemanticBytes bytes,
+                            CanonicalDataflowProgramView view,
                             std::unique_ptr<mlir::MLIRContext> context = nullptr)
       : identity_(identity), context_(std::move(context)),
-        module_(std::move(module)), bytes_(std::move(bytes)) {}
+        module_(std::move(module)), bytes_(std::move(bytes)),
+        view_(std::move(view)) {}
 
   ::loom::ArtifactIdentity identity_;
   // Declaration order makes the module release before its owning context.
   std::unique_ptr<mlir::MLIRContext> context_;
   mlir::OwningOpRef<mlir::ModuleOp> module_;
   ::loom::CanonicalSemanticBytes bytes_;
+  CanonicalDataflowProgramView view_;
 };
 
 /// Failure-atomic finalization. Operates on a private clone of `source`, strips
