@@ -4,6 +4,9 @@
 #include "SimulationWireInternal.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -142,6 +145,8 @@ struct NativeExecutionContext {
   std::vector<std::vector<std::uint8_t>> globalAfter;
   std::vector<bool> sawGlobalBefore;
   std::vector<bool> sawGlobalAfter;
+  std::vector<frontend::StructuredEntityRef> profileBlocks;
+  std::vector<std::uint64_t> blockActivationCounts;
   std::optional<std::string> error;
 };
 
@@ -209,12 +214,94 @@ void nativeGlobalAfter(std::uint64_t targetOrdinal, void *base,
   activeExecution->sawGlobalAfter[targetOrdinal] = true;
 }
 
+void nativeBlockActivation(std::uint64_t ordinal) {
+  if (!activeExecution ||
+      ordinal >= activeExecution->blockActivationCounts.size()) {
+    recordExecutionError("block activation callback has an invalid ordinal");
+    return;
+  }
+  std::uint64_t &count = activeExecution->blockActivationCounts[ordinal];
+  if (count == std::numeric_limits<std::uint64_t>::max()) {
+    recordExecutionError("block activation count overflowed");
+    return;
+  }
+  ++count;
+}
+
 std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
   std::string candidate = prefix.str();
   std::uint64_t suffix = 0;
   while (module.getNamedValue(candidate))
     candidate = (prefix + "." + llvm::Twine(++suffix)).str();
   return candidate;
+}
+
+std::string uniqueMlirSymbolName(mlir::ModuleOp module,
+                                 llvm::StringRef prefix) {
+  std::string candidate = prefix.str();
+  std::uint64_t suffix = 0;
+  while (mlir::SymbolTable::lookupSymbolIn(module, candidate))
+    candidate = (prefix + "." + llvm::Twine(++suffix)).str();
+  return candidate;
+}
+
+mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
+  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
+  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
+  if (!function && owner)
+    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  return function && !function.getBody().empty() ? function
+                                                 : mlir::LLVM::LLVMFuncOp{};
+}
+
+llvm::Expected<std::string>
+instrumentBlockActivations(mlir::ModuleOp module,
+                           const ArtifactIdentity &identity,
+                           NativeExecutionContext &capture) {
+  llvm::Expected<frontend::StructuredProgramCandidateView> view =
+      frontend::buildStructuredProgramCandidateView(module, identity);
+  if (!view)
+    return view.takeError();
+
+  struct ProfileSite {
+    frontend::StructuredEntityRef reference;
+    mlir::Block *block = nullptr;
+  };
+  std::vector<ProfileSite> sites;
+  for (const frontend::StructuredEntity &entity :
+       view->entities(frontend::StructuredEntityKind::Block)) {
+    if (enclosingDefinedLlvmFunction(entity.block))
+      sites.push_back({entity.reference, entity.block});
+  }
+
+  const std::string callbackName =
+      uniqueMlirSymbolName(module, "__loom_structured_block_activation");
+  mlir::OpBuilder declarations(module.getContext());
+  declarations.setInsertionPointToStart(module.getBody());
+  const mlir::Type i64 = declarations.getI64Type();
+  const mlir::Type callbackType = mlir::LLVM::LLVMFunctionType::get(
+      mlir::LLVM::LLVMVoidType::get(module.getContext()), {i64});
+  mlir::LLVM::LLVMFuncOp::create(declarations, module.getLoc(), callbackName,
+                                 callbackType);
+
+  capture.profileBlocks.reserve(sites.size());
+  capture.blockActivationCounts.assign(sites.size(), 0);
+  for (auto [ordinal, site] : llvm::enumerate(sites)) {
+    capture.profileBlocks.push_back(site.reference);
+    mlir::OpBuilder builder(module.getContext());
+    builder.setInsertionPointToStart(site.block);
+    const mlir::Location location =
+        site.block->empty() ? module.getLoc() : site.block->front().getLoc();
+    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+        builder, location, i64, builder.getI64IntegerAttr(ordinal));
+    mlir::LLVM::CallOp::create(builder, location, mlir::TypeRange{},
+                               callbackName, mlir::ValueRange{ordinalValue});
+  }
+  if (mlir::failed(mlir::verify(module)))
+    return unsupported(
+        "native block activation provider cannot instrument this Structured "
+        "control form");
+  return callbackName;
 }
 
 llvm::Align requiredRuntimeObjectAlignment(const llvm::Module &module) {
@@ -457,6 +544,7 @@ buildMemoryPlans(const StructuredProgramSimulationWorkload &workload,
 struct CallbackNames {
   std::string wrapper;
   std::string runtimeObject;
+  std::optional<std::string> blockActivation;
   std::optional<std::string> returnValue;
   std::optional<std::string> globalBefore;
   std::optional<std::string> globalAfter;
@@ -641,6 +729,10 @@ llvm::Error runInstrumentedExecution(llvm::orc::ThreadSafeModule module,
   callbacks[jit->mangleAndIntern(names.runtimeObject)] = {
       llvm::orc::ExecutorAddr::fromPtr(&nativeRuntimeObject),
       llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.blockActivation)
+    callbacks[jit->mangleAndIntern(*names.blockActivation)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeBlockActivation),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   if (names.returnValue)
     callbacks[jit->mangleAndIntern(*names.returnValue)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeReturnValue),
@@ -711,6 +803,13 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
     result.memories.push_back(makeMemoryObservation(
         plan.form, baseline, capture.globalAfter[ordinal]));
   }
+  if (capture.profileBlocks.size() != capture.blockActivationCounts.size())
+    return executionFailed("block activation projection is inconsistent");
+  result.blockActivations.reserve(capture.profileBlocks.size());
+  for (std::size_t ordinal = 0; ordinal < capture.profileBlocks.size();
+       ++ordinal)
+    result.blockActivations.push_back({capture.profileBlocks[ordinal],
+                                       capture.blockActivationCounts[ordinal]});
   return result;
 }
 
@@ -756,6 +855,11 @@ executeNativeStructuredProgram(
 
   mlir::OwningOpRef<mlir::ModuleOp> cloned(
       llvm::cast<mlir::ModuleOp>(program.module()->clone()));
+  NativeExecutionContext capture;
+  llvm::Expected<std::string> blockActivation =
+      instrumentBlockActivations(*cloned, program.identity(), capture);
+  if (!blockActivation)
+    return blockActivation.takeError();
   llvm::Expected<llvm::orc::ThreadSafeModule> native =
       detail::lowerStructuredModuleToLlvm(std::move(cloned));
   if (!native)
@@ -769,7 +873,6 @@ executeNativeStructuredProgram(
                             "cannot create host JIT");
   std::unique_ptr<llvm::orc::LLJIT> targetJit = std::move(*targetJitOrError);
 
-  NativeExecutionContext capture;
   CallbackNames callbackNames;
   llvm::Error preparation =
       native->withModuleDo([&](llvm::Module &module) -> llvm::Error {
@@ -782,6 +885,7 @@ executeNativeStructuredProgram(
         if (!names)
           return names.takeError();
         callbackNames = std::move(*names);
+        callbackNames.blockActivation = std::move(*blockActivation);
         return llvm::Error::success();
       });
   if (preparation)

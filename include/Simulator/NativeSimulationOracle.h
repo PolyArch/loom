@@ -33,12 +33,21 @@ struct NativeSimulationInputCapture {
   std::vector<NativeSimulationCallCapture> calls;
 };
 
+struct NativeStructuredBlockActivation {
+  frontend::StructuredEntityRef block;
+  std::uint64_t activations = 0;
+};
+
 /// Transient functional observations from executing one exact Structured
 /// Program workload. The workload remains the sole owner of selected targets
 /// and order; this provider result is not a persistent wire or workload key.
 struct NativeStructuredProgramObservations {
   std::optional<CanonicalValueSequence> returnValue;
   std::vector<MemoryObservationPayload> memories;
+  /// Total canonical block-order projection over blocks owned by defined
+  /// llvm.func operations. Counts, including zero, are invocation-local and
+  /// all coarser dynamic coverage is derived from this one projection.
+  std::vector<NativeStructuredBlockActivation> blockActivations;
 };
 
 /// Execute the exact workload entry from an immutable Structured Program.

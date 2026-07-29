@@ -64,8 +64,16 @@ SourceProgram sourceProgram(llvm::StringRef test) {
 module {
   llvm.func @kernel(%value: i32, %written: !llvm.ptr, %observed: !llvm.ptr) -> i32 {
     llvm.store %value, %written : i32, !llvm.ptr
-    %result = llvm.load %observed : !llvm.ptr -> i32
-    llvm.return %result : i32
+    %zero = llvm.mlir.constant(0 : i32) : i32
+    %nonzero = llvm.icmp "ne" %value, %zero : i32
+    llvm.cond_br %nonzero, ^load, ^empty
+  ^load:
+    %loaded = llvm.load %observed : !llvm.ptr -> i32
+    llvm.br ^exit(%loaded : i32)
+  ^empty:
+    llvm.br ^exit(%zero : i32)
+  ^exit(%returned: i32):
+    llvm.return %returned : i32
   }
 }
 )mlir",
@@ -174,6 +182,21 @@ void exactEntryPreservesAliasingAndObservations() {
           "the aliased read did not observe the preceding write");
   require(test, execution.memories.size() == 2,
           "memory observations do not align with the workload contract");
+  require(test, execution.blockActivations.size() == 4,
+          "block activation projection is not total");
+  std::size_t activeBlocks = 0;
+  std::size_t inactiveBlocks = 0;
+  for (const auto &activation : execution.blockActivations) {
+    require(test,
+            activation.block.parent == source.candidate.identity() &&
+                activation.block.kind ==
+                    loom::frontend::StructuredEntityKind::Block,
+            "block activation has a foreign or mistyped reference");
+    activeBlocks += activation.activations == 1;
+    inactiveBlocks += activation.activations == 0;
+  }
+  require(test, activeBlocks == 3 && inactiveBlocks == 1,
+          "block activation counts do not preserve the executed path");
 
   const auto expected = bytesOf(0x12345678, source.layout.isLittleEndian());
   const auto *diff =
