@@ -6,9 +6,12 @@
 #include "Evaluation/Request.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -72,6 +75,24 @@ struct StructuredFabricAnalyticCandidateProjection final {
   const ::dataflow::CanonicalDataflowArtifact *canonicalDataflow = nullptr;
   std::optional<::loom::frontend::StructuredEntityRef> sourceScope;
 };
+
+/// One descriptor-owned, invocation-local applicability projection for an
+/// exact Structured ownership scope. This is derived from the source program
+/// and its exact native workload observations; it is neither persistent nor a
+/// second source-profile authority.
+struct StructuredScopeActivityProjection final {
+  ::loom::frontend::StructuredEntityRef scope;
+  std::uint64_t dynamicActivations = 0;
+};
+
+/// Projects dynamic activation counts for exact source scopes in caller order.
+/// The projection validates the complete block-observation correspondence once
+/// and performs no candidate materialization, ranking, or target admission.
+llvm::Expected<std::vector<StructuredScopeActivityProjection>>
+projectStructuredScopeActivity(
+    const ::loom::frontend::StructuredProgramCandidate &sourceProgram,
+    const ::loom::sim::NativeStructuredProgramObservations &sourceObservations,
+    llvm::ArrayRef<::loom::frontend::StructuredEntityRef> scopes);
 
 /// Primes the removable model-result cache from already finalized owner views.
 /// The full provider remains the oracle on a miss; this function only avoids

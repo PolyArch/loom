@@ -599,6 +599,12 @@ helper therefore receives credit only for the dynamic work it actually covers.
 There is no function-name classification, benchmark-specific preference, or
 fixed hot-region percentage. A candidate with zero dynamic activations is
 inapplicable to that workload and cannot satisfy an accelerator promotion gate.
+The descriptor-owned source-activity projection resolves this condition before
+ownership candidate cloning or publication. Such a scope is outside that exact
+workload-specific Generate domain: it receives no candidate disposition and no
+candidate cost or functional Evidence. This is an applicability projection of
+the existing source workload, not a semantic rejection, hidden wall-time limit,
+or second profile authority.
 
 An ownership decision is one dependency-closed structured-region decision,
 not separate whole-callable and single-operation semantics. Callable, loop,
@@ -621,7 +627,8 @@ binding.
 
 An Ownership Generate invocation enumerates one finite scope-local domain in
 canonical Structured operation order. Every maximal dependency-closed
-structured scope considered for ownership appears exactly once. A scope that
+structured scope with positive activation under the exact source workload and
+considered for ownership appears exactly once. A scope that
 cannot yet be materialized records one coordinate with no decision and a typed
 `NonFinalizable` disposition. External declarations and operations that are
 not ownership scopes are not candidate attempts. Every accepted scope then

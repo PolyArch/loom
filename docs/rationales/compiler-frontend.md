@@ -265,6 +265,14 @@ boundary cost. The profile is not a second program or workload Artifact, and
 the selected schedule and thread domain remain materialized only in the child
 Structured Program.
 
+The same projection excludes a scope with zero dynamic activations before the
+compiler clones or publishes a candidate. Materializing it first would consume
+artifact I/O and lowering work only to prove an already known applicability
+fact. Treating it as a candidate rejection would also be misleading: the scope
+may be legal and profitable for a different workload. Keeping it outside the
+exact workload-specific Generate domain preserves total accounting without
+inventing a cold-scope status or a second profile record.
+
 The common workload is rooted in the source Structured Program rather than in
 any candidate graph. Otherwise each ownership candidate would change both the
 program and the workload key, making source equivalence and whole-workload

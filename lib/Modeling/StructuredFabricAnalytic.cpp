@@ -155,6 +155,22 @@ struct DynamicWorkload final {
   std::uint64_t spatialActivations = 0;
 };
 
+struct BlockActivityProjection final {
+  frontend::StructuredProgramCandidateView view;
+  llvm::DenseMap<mlir::Block *, std::uint64_t> activations;
+  std::uint64_t totalInstructionLeafExecutions = 0;
+};
+
+struct ScopeDynamicWork final {
+  std::uint64_t instructionLeafExecutions = 0;
+  std::uint64_t dynamicActivations = 0;
+};
+
+struct ResolvedScopeActivity final {
+  frontend::StructuredEntity selected;
+  std::uint64_t dynamicActivations = 0;
+};
+
 using CachedMetrics = std::optional<detail::LowConfidenceMetricSet>;
 
 std::map<std::vector<std::uint8_t>, CachedMetrics> &metricCache() {
@@ -210,10 +226,9 @@ llvm::Expected<std::uint64_t> checkedScaledCount(std::uint64_t count,
   return *result;
 }
 
-llvm::Expected<DynamicWorkload> projectDynamicWorkload(
+llvm::Expected<BlockActivityProjection> projectBlockActivity(
     const frontend::StructuredProgramCandidate &source,
-    const sim::NativeStructuredProgramObservations &observations,
-    const std::optional<frontend::StructuredEntityRef> &sourceScope) {
+    const sim::NativeStructuredProgramObservations &observations) {
   llvm::Expected<frontend::StructuredProgramCandidateView> view = source.view();
   if (!view)
     return view.takeError();
@@ -229,8 +244,8 @@ llvm::Expected<DynamicWorkload> projectDynamicWorkload(
         "structured_fabric_model_invalid: block activation projection is not "
         "total");
 
-  llvm::DenseMap<mlir::Block *, std::uint64_t> activations;
-  std::uint64_t totalLeaves = 0;
+  BlockActivityProjection projection{
+      std::move(*view), llvm::DenseMap<mlir::Block *, std::uint64_t>(), 0};
   for (std::size_t ordinal = 0; ordinal < expectedBlocks.size(); ++ordinal) {
     const sim::NativeStructuredBlockActivation &observed =
         observations.blockActivations[ordinal];
@@ -240,7 +255,7 @@ llvm::Expected<DynamicWorkload> projectDynamicWorkload(
           "structured_fabric_model_invalid: block activation order differs "
           "from the exact Structured owner");
     mlir::Block *block = expectedBlocks[ordinal]->block;
-    activations[block] = observed.activations;
+    projection.activations[block] = observed.activations;
     const std::uint64_t leaves =
         llvm::count_if(*block, [](mlir::Operation &operation) {
           return isExecutableLeaf(&operation);
@@ -249,19 +264,22 @@ llvm::Expected<DynamicWorkload> projectDynamicWorkload(
         leaves, observed.activations, "source instruction executions");
     if (!dynamicLeaves)
       return dynamicLeaves.takeError();
-    const std::optional<std::uint64_t> updated =
-        llvm::checkedAddUnsigned(totalLeaves, *dynamicLeaves);
+    const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(
+        projection.totalInstructionLeafExecutions, *dynamicLeaves);
     if (!updated)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_overflow: source instruction total");
-    totalLeaves = *updated;
+    projection.totalInstructionLeafExecutions = *updated;
   }
+  return projection;
+}
 
-  if (!sourceScope)
-    return DynamicWorkload{totalLeaves, 0};
+llvm::Expected<ResolvedScopeActivity>
+resolveScopeActivity(const BlockActivityProjection &projection,
+                     const frontend::StructuredEntityRef &sourceScope) {
   llvm::Expected<frontend::StructuredEntity> selected =
-      view->resolve(*sourceScope);
+      projection.view.resolve(sourceScope);
   if (!selected)
     return selected.takeError();
   if (!selected->operation)
@@ -276,25 +294,34 @@ llvm::Expected<DynamicWorkload> projectDynamicWorkload(
         function.getBody().empty() ? nullptr : &function.getBody().front();
   else
     activationBlock = selected->operation->getBlock();
-  auto foundActivation = activations.find(activationBlock);
-  if (!activationBlock || foundActivation == activations.end())
+  auto foundActivation = projection.activations.find(activationBlock);
+  if (!activationBlock || foundActivation == projection.activations.end())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: source scope has no activation "
         "projection");
+  return ResolvedScopeActivity{std::move(*selected), foundActivation->second};
+}
+
+llvm::Expected<ScopeDynamicWork>
+projectScopeDynamicWork(const BlockActivityProjection &projection,
+                        const frontend::StructuredEntityRef &sourceScope) {
+  auto activity = resolveScopeActivity(projection, sourceScope);
+  if (!activity)
+    return activity.takeError();
 
   std::uint64_t coveredLeaves = 0;
   llvm::Error failure = llvm::Error::success();
-  selected->operation->walk([&](mlir::Operation *operation) {
+  activity->selected.operation->walk([&](mlir::Operation *operation) {
     if (failure)
       return mlir::WalkResult::interrupt();
-    if (operation != selected->operation &&
+    if (operation != activity->selected.operation &&
         llvm::isa<mlir::FunctionOpInterface>(operation))
       return mlir::WalkResult::skip();
     if (!isExecutableLeaf(operation))
       return mlir::WalkResult::advance();
-    auto found = activations.find(operation->getBlock());
-    if (found == activations.end()) {
+    auto found = projection.activations.find(operation->getBlock());
+    if (found == projection.activations.end()) {
       failure = llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_invalid: selected leaf has no block "
@@ -314,11 +341,28 @@ llvm::Expected<DynamicWorkload> projectDynamicWorkload(
   });
   if (failure)
     return std::move(failure);
-  if (coveredLeaves > totalLeaves)
+  if (coveredLeaves > projection.totalInstructionLeafExecutions)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: selected work exceeds source work");
-  return DynamicWorkload{totalLeaves - coveredLeaves, foundActivation->second};
+  return ScopeDynamicWork{coveredLeaves, activity->dynamicActivations};
+}
+
+llvm::Expected<DynamicWorkload> projectDynamicWorkload(
+    const frontend::StructuredProgramCandidate &source,
+    const sim::NativeStructuredProgramObservations &observations,
+    const std::optional<frontend::StructuredEntityRef> &sourceScope) {
+  auto projection = projectBlockActivity(source, observations);
+  if (!projection)
+    return projection.takeError();
+  if (!sourceScope)
+    return DynamicWorkload{projection->totalInstructionLeafExecutions, 0};
+  auto selected = projectScopeDynamicWork(*projection, *sourceScope);
+  if (!selected)
+    return selected.takeError();
+  return DynamicWorkload{projection->totalInstructionLeafExecutions -
+                             selected->instructionLeafExecutions,
+                         selected->dynamicActivations};
 }
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
@@ -507,6 +551,25 @@ const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
                                         &evaluate};
 
 } // namespace
+
+llvm::Expected<std::vector<StructuredScopeActivityProjection>>
+projectStructuredScopeActivity(
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const sim::NativeStructuredProgramObservations &sourceObservations,
+    llvm::ArrayRef<frontend::StructuredEntityRef> scopes) {
+  auto projection = projectBlockActivity(sourceProgram, sourceObservations);
+  if (!projection)
+    return projection.takeError();
+  std::vector<StructuredScopeActivityProjection> result;
+  result.reserve(scopes.size());
+  for (const frontend::StructuredEntityRef &scope : scopes) {
+    auto activity = resolveScopeActivity(*projection, scope);
+    if (!activity)
+      return activity.takeError();
+    result.push_back({scope, activity->dynamicActivations});
+  }
+  return result;
+}
 
 llvm::Error registerStructuredFabricAnalyticModel() {
   if (llvm::Error error = registerEvaluationCaseSignature(kCaseSignature))

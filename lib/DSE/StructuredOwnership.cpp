@@ -146,6 +146,21 @@ generateAndPromoteStructuredOwnership(
   auto domain = frontend::enumerateSpatialOwnershipScopeDomain(parent);
   if (!domain)
     return domain.takeError();
+  std::vector<frontend::StructuredEntityRef> scopeReferences;
+  scopeReferences.reserve(domain->size());
+  for (const frontend::SpatialOwnershipScopeDomainEntry &entry : *domain) {
+    const auto &scope =
+        std::holds_alternative<frontend::SpatialOwnershipScope>(entry)
+            ? std::get<frontend::SpatialOwnershipScope>(entry)
+            : std::get<frontend::RejectedSpatialOwnershipScope>(entry).scope;
+    scopeReferences.push_back(scope.selection);
+  }
+  auto scopeActivity = evaluation::models::projectStructuredScopeActivity(
+      parent, *sourceObservations, scopeReferences);
+  if (!scopeActivity)
+    return scopeActivity.takeError();
+  if (scopeActivity->size() != domain->size())
+    return invalid("scope activity projection is not total");
   std::vector<OwnershipWorkItem> workItems;
   struct PlannedDisposition final {
     StructuredOwnershipCandidateCoordinate coordinate;
@@ -153,7 +168,11 @@ generateAndPromoteStructuredOwnership(
         source;
   };
   std::vector<PlannedDisposition> plannedDispositions;
-  for (const frontend::SpatialOwnershipScopeDomainEntry &entry : *domain) {
+  for (auto [domainOrdinal, entry] : llvm::enumerate(*domain)) {
+    if ((*scopeActivity)[domainOrdinal].scope != scopeReferences[domainOrdinal])
+      return invalid("scope activity projection changed canonical order");
+    if ((*scopeActivity)[domainOrdinal].dynamicActivations == 0)
+      continue;
     if (const auto *rejected =
             std::get_if<frontend::RejectedSpatialOwnershipScope>(&entry)) {
       plannedDispositions.push_back(

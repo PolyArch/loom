@@ -309,6 +309,7 @@ void verifyStagedOwnershipEvidence(
     const loom::ArtifactRootReference &source,
     const loom::ArtifactRootReference &profitableCandidate,
     llvm::ArrayRef<loom::ArtifactRootReference> unprofitableCandidates,
+    llvm::ArrayRef<loom::ArtifactRootReference> inapplicableCandidates,
     const loom::ArtifactRootReference &fabric,
     const loom::ArtifactRootReference &workload,
     const loom::ArtifactRootReference &runtimeInput,
@@ -377,6 +378,9 @@ void verifyStagedOwnershipEvidence(
     if (counts[candidate].cost != 1 || counts[candidate].functional != 0)
       fail("ownership DSE acquired expensive functional Evidence before the "
            "resolved benefit gate");
+  for (const loom::ArtifactRootReference &candidate : inapplicableCandidates)
+    if (counts[candidate].cost != 0 || counts[candidate].functional != 0)
+      fail("ownership DSE materialized a workload-inapplicable scope");
 }
 
 void runEvaluationAnchor() {
@@ -672,8 +676,14 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
+  if (llvm::any_of(exploredSelection->dispositions,
+                   [&](const loom::dse::StructuredOwnershipCandidateDisposition
+                           &disposition) {
+                     return disposition.coordinate.scope == coldScope;
+                   }))
+    fail("ownership DSE attempted a workload-inapplicable scope");
   verifyStagedOwnershipEvidence(
-      *exploredSelection, baselineRef, spatialRef, {coldRef, tinyRef},
+      *exploredSelection, baselineRef, spatialRef, {tinyRef}, {coldRef},
       design.roots().front().reference(), inputs.workloadReference,
       inputs.runtimeInputReference, store);
   auto exploredView = take(
