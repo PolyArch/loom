@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <system_error>
 
 namespace dataflow {
 class CanonicalDataflowArtifact;
@@ -58,6 +59,26 @@ struct DFGSimulationReport {
   std::map<std::string, llvm::SmallVector<std::string>> finalMemoryState;
   std::map<std::string, std::string> finalMemoryRoots;
   llvm::SmallVector<std::string> diagnostics;
+};
+
+/// A run accepted by the typed DFG provider but unable to satisfy its graph
+/// retirement contract. The report remains transient execution evidence. A
+/// source-backed semantic gate may classify this exact outcome as a candidate
+/// mismatch without relabeling execution limits or provider failures.
+class NonRetiredDFGExecutionError final
+    : public llvm::ErrorInfo<NonRetiredDFGExecutionError> {
+public:
+  static char ID;
+
+  explicit NonRetiredDFGExecutionError(DFGSimulationReport report);
+
+  const DFGSimulationReport &report() const { return report_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  DFGSimulationReport report_;
 };
 
 /// One successfully retired DFG execution. Non-retired and rejected runs are

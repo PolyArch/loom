@@ -324,6 +324,36 @@ void requireThreadDomainChoice(
         replay.eventCount == 0)
       fail("logical thread-domain DFG replay did not prove all activations");
     if (width == 64) {
+      auto nonRetiring =
+          take(loom::frontend::materializeSpatialOwnershipDecision(
+              source, {selected}, threadDecision, fabric));
+      auto nonRetiringModule =
+          mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(
+              nonRetiring.canonicalDataflow.module()->clone()));
+      dataflow::StoreOp selectedStore;
+      nonRetiringModule->walk([&](dataflow::StoreOp store) {
+        if (selectedStore)
+          fail("non-retiring replay fixture has multiple stores");
+        selectedStore = store;
+      });
+      if (!selectedStore)
+        fail("non-retiring replay fixture has no store");
+      mlir::OpBuilder storeBuilder(selectedStore);
+      mlir::Value outOfRange = mlir::arith::ConstantIndexOp::create(
+          storeBuilder, selectedStore.getLoc(), 1000);
+      selectedStore.getAddrMutable().set(outOfRange);
+      auto nonRetiringDataflow =
+          take(dataflow::finalizeCanonicalDataflow(nonRetiringModule.get()));
+      loom::frontend::MaterializedOwnershipCandidate nonRetiringCandidate{
+          std::move(nonRetiring.structuredProgram),
+          std::move(nonRetiringDataflow)};
+      auto nonRetiringReplay = take(loom::sim::validateSourceBackedDfgReplay(
+          source, {selected}, threadDecision, nonRetiringCandidate, workload,
+          input, {10000, 1000000, 1024 * 1024}));
+      if (nonRetiringReplay.status !=
+          loom::sim::SourceBackedDfgValidationStatus::Mismatch)
+        fail("non-retiring candidate was not classified as a mismatch");
+
       auto withExtent = [&](std::uint64_t value) {
         auto selectedModule =
             mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(

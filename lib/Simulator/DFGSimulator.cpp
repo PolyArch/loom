@@ -36,6 +36,23 @@ using namespace loom::sim;
 using namespace loom::sim::detail;
 
 namespace loom::sim {
+
+char NonRetiredDFGExecutionError::ID;
+
+NonRetiredDFGExecutionError::NonRetiredDFGExecutionError(
+    DFGSimulationReport report)
+    : report_(std::move(report)) {}
+
+void NonRetiredDFGExecutionError::log(llvm::raw_ostream &stream) const {
+  stream << "DFG execution did not retire: " << report_.status;
+  if (!report_.diagnostics.empty())
+    stream << ": " << report_.diagnostics.front();
+}
+
+std::error_code NonRetiredDFGExecutionError::convertToErrorCode() const {
+  return std::make_error_code(std::errc::state_not_recoverable);
+}
+
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
 // A memory fixture is an operand of the graph that owns it, so its element
@@ -1383,15 +1400,18 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     std::string message = "DFG execution did not retire: " + report->status;
     if (!report->diagnostics.empty())
       message += ": " + report->diagnostics.front();
-    std::errc code = std::errc::state_not_recoverable;
     if (report->status == "unsupported")
-      code = std::errc::not_supported;
-    else if (report->status == "blocked" &&
-             report->wavefrontSteps == maxEventSteps &&
-             llvm::is_contained(report->diagnostics,
-                                "maximum event steps reached"))
-      code = std::errc::timed_out;
-    return llvm::createStringError(code, "%s", message.c_str());
+      return llvm::createStringError(std::errc::not_supported, "%s",
+                                     message.c_str());
+    if (report->status == "blocked" &&
+        report->wavefrontSteps == maxEventSteps &&
+        llvm::is_contained(report->diagnostics, "maximum event steps reached"))
+      return llvm::createStringError(std::errc::timed_out, "%s",
+                                     message.c_str());
+    if (report->status == "blocked")
+      return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
+    return llvm::createStringError(std::errc::state_not_recoverable, "%s",
+                                   message.c_str());
   }
   return RetiredDFGSimulation{std::move(*report), std::move(observations)};
 }

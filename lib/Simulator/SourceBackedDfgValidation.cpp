@@ -629,27 +629,42 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     auto execution = simulateRetiredDfgWorkload(
         candidate.canonicalDataflow, *replayWorkload, *replayInput,
         limits.maxWavefrontSteps - result.wavefrontSteps);
-    if (!execution)
-      return execution.takeError();
-    if (execution->report.eventCount > limits.maxEventCount - result.eventCount)
-      return executionLimit("aggregate event budget exhausted");
+    auto accountExecution = [&](std::uint64_t wavefrontSteps,
+                                std::uint64_t eventCount) -> llvm::Error {
+      if (eventCount > limits.maxEventCount - result.eventCount)
+        return executionLimit("aggregate event budget exhausted");
+      if (result.dynamicActivations ==
+              std::numeric_limits<std::uint64_t>::max() ||
+          result.wavefrontSteps >
+              std::numeric_limits<std::uint64_t>::max() - wavefrontSteps ||
+          result.eventCount >
+              std::numeric_limits<std::uint64_t>::max() - eventCount)
+        return executionFailed("source-backed replay accounting overflowed");
+      ++result.dynamicActivations;
+      result.wavefrontSteps += wavefrontSteps;
+      result.eventCount += eventCount;
+      return llvm::Error::success();
+    };
+    if (!execution) {
+      return llvm::handleErrors(
+          execution.takeError(),
+          [&](const NonRetiredDFGExecutionError &failure) -> llvm::Error {
+            if (llvm::Error error =
+                    accountExecution(failure.report().wavefrontSteps,
+                                     failure.report().eventCount))
+              return error;
+            result.status = SourceBackedDfgValidationStatus::Mismatch;
+            return llvm::Error::success();
+          });
+    }
     auto equivalent = compareObservations(*replayWorkload->spatial(),
                                           execution->observations, *plan, call);
     if (!equivalent)
       return equivalent.takeError();
     if (!*equivalent)
       result.status = SourceBackedDfgValidationStatus::Mismatch;
-    if (result.dynamicActivations ==
-            std::numeric_limits<std::uint64_t>::max() ||
-        result.wavefrontSteps > std::numeric_limits<std::uint64_t>::max() -
-                                    execution->report.wavefrontSteps ||
-        result.eventCount > std::numeric_limits<std::uint64_t>::max() -
-                                execution->report.eventCount)
-      return executionFailed("source-backed replay accounting overflowed");
-    ++result.dynamicActivations;
-    result.wavefrontSteps += execution->report.wavefrontSteps;
-    result.eventCount += execution->report.eventCount;
-    return llvm::Error::success();
+    return accountExecution(execution->report.wavefrontSteps,
+                            execution->report.eventCount);
   };
   std::optional<llvm::Error> deferredReplayFailure;
   auto censusAndReplay =
