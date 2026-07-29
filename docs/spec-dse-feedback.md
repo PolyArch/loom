@@ -281,13 +281,18 @@ potentially expensive branch for a selected survivor set rather than an
 implicit action performed by frontend passes.
 
 Workload-aware compilation uses the same mechanism. An exact source-program
-Request binds its `SimulationWorkload` and `SimulationRuntimeInput`; its
+Request binds the `StructuredProgram` roots of `SimulationWorkload` and
+`SimulationRuntimeInput` defined by the Simulation Artifact owner; its
+`StructuredEntityRef` entry already binds the exact source Structured Program.
 Evidence owns normalized dynamic observations. A compiler generator may
 consume only the model descriptor's typed projection of those observations.
 Fine-grained counters or traces needed while evaluating one invocation remain
 removable execution state and do not create a profile Artifact, candidate
 identity field, or alternate workload authority. The workload reference and
-runtime-input reference in the Evaluation case are the sole input identity.
+runtime-input reference in the Evaluation case are the sole input identity
+shared by the source baseline and every Structured candidate. Candidate-
+specific Spatial workload/input pairs are derived only for graph replay and
+cannot become the promotion key.
 
 Promotion of a Spatial ownership candidate has two independent gates. The
 semantic gate requires source-program equivalence, selected Structured-program

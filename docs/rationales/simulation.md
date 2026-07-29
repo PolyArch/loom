@@ -157,6 +157,27 @@ or findings instead of coercing unlike executions into one score.
 
 ## Why Source-Backed Validation Uses Ownership Lineage
 
+Pre-Mapping DSE needs one concrete workload before any Dataflow graph exists.
+Reusing only the Spatial workload would force a candidate graph to become the
+input identity, so two Structured candidates could no longer be compared on
+the same source execution. A test-only workload record would create the same
+split between production compilation and corpus validation.
+
+The Simulation families therefore append one Structured Program root. Its
+entry reference already identifies the exact source program, while its
+argument plan and observable contract describe only workload choices. LLVM ABI
+facts remain in the Structured Program; concrete runtime values and backing
+objects remain in RuntimeInput. Candidate-specific Spatial inputs are derived
+for graph replay, not promoted into a second whole-program workload authority.
+
+Direct pointer arguments are represented as bindings into the existing
+byte-addressed runtime-object algebra. This preserves finite extent and
+aliasing without serializing native addresses. Mutable global input was not
+added: the exact program initializer remains authoritative, and a workload
+that needs different setup can express it in the entry program. This keeps the
+first source root complete for ordinary linked kernels without introducing a
+general process image or host-environment model.
+
 An operation-owned Spatial graph is only one region of a complete stored
 program. Executing the graph alone cannot recover the values and aliased memory
 state produced by residual host code, while moving that residual code into the

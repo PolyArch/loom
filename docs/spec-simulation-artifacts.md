@@ -10,8 +10,8 @@ own execution semantics and time authorities.
 The fixed schema descriptors are:
 
 ```text
-loom.simulation_workload      1.0
-loom.simulation_runtime_input 1.0
+loom.simulation_workload      1.1
+loom.simulation_runtime_input 1.1
 loom.simulation_execution     1.0
 ```
 
@@ -28,10 +28,12 @@ or report Artifact families are forbidden.
 SimulationWorkload =
     Spatial(SpatialSimulationWorkload)
   | System(SystemSimulationWorkload)
+  | StructuredProgram(StructuredProgramSimulationWorkload)
 ```
 
-The root discriminants are zero and one in declaration order. The spatial
-root is:
+The root discriminants are zero, one, and two in declaration order. Version
+1.1 appends `StructuredProgram`; it does not renumber either version-1.0 root.
+The spatial root is:
 
 ```text
 SpatialSimulationWorkload {
@@ -135,6 +137,65 @@ Input or inout stream and memory interfaces are always supplied by
 SimulationRuntimeInput. Fixed or runtime value selection follows the same
 single-token rule as the spatial root. This schema does not copy Deployment
 entry or interface fields.
+
+The Structured Program root supplies the source-program workload used by
+pre-Mapping Evaluation and compilation DSE:
+
+```text
+StructuredProgramSimulationWorkload {
+  entry_ref: StructuredEntityRef
+  argument_plan:
+    total table<entry ABI argument ordinal,
+                StructuredProgramArgumentSource>
+  observable_contract: StructuredProgramObservableContract
+}
+
+StructuredProgramArgumentSource =
+    FixedValue(CanonicalValueSequence)
+  | RuntimeValue
+  | RuntimeMemory
+
+StructuredProgramObservableContract {
+  return_value: bool
+  memories:
+    canonical table<StructuredProgramMemoryTarget, MemoryObservationForm>
+}
+
+StructuredProgramMemoryTarget =
+    EntryPointerArgument(entry ABI argument ordinal)
+  | GlobalObject(StructuredEntityRef)
+```
+
+`entry_ref` must resolve through one exact `StructuredProgramCandidateView` to
+a defined `llvm.func`. Its parent identity is the sole source-program identity;
+the workload must not add a `structured_program_ref`, function symbol, module
+path, or operation position. Argument order, argument and return types,
+DataLayout, global definitions, and initial global state are recovered from
+that exact Structured Program and are never copied into the workload.
+
+The argument plan is exactly total in LLVM ABI order. `FixedValue` and
+`RuntimeValue` are legal only for values with a canonical scalar or fixed
+vector semantic shape. `FixedValue` contains exactly one token.
+`RuntimeMemory` is legal only for an LLVM pointer argument and delegates its
+concrete backing object and byte offset to the exact runtime input. Raw pointer
+bits are never a value source. Unsupported aggregate ABI values, function
+pointers, or other interfaces that lack an exact provider fail closed rather
+than acquiring an opaque byte or property-map representation.
+
+`return_value` may be selected only for a non-void return with a canonical
+semantic shape. An entry-pointer target must name a `RuntimeMemory` argument.
+A global target must resolve to an exact LLVM global object in the same
+Structured Program. Memory targets are sorted by their typed key, contain no
+duplicates, and use the shared memory observation forms. A global object uses
+its exact Structured Program initializer as the runtime baseline; version 1.1
+does not add a second mutable-global input authority. A workload that needs a
+different initial global state must express that initialization in its exact
+entry program.
+
+Entry retirement is mandatory and mechanically derived. It is not an optional
+observable field. The Structured Program root is not a test fixture: test
+harnesses, command-line tools, and production invocations are merely providers
+of concrete instances of this same Artifact contract.
 
 Workloads own fixed problem shape, fixed launch values, and requested
 observables. They do not own concrete runtime values, stream contents, memory
@@ -276,6 +337,38 @@ aliasing, baseline, and range rules are the same as spatial memory objects.
 A producer must not substitute argv arrays, device names, string-key maps, or
 simulator-private event records for these typed interfaces.
 
+The Structured Program runtime root is:
+
+```text
+StructuredProgramSimulationRuntimeInput {
+  workload_ref: exact Structured Program SimulationWorkload reference
+  runtime_values:
+    total table<runtime-value entry argument ordinal,
+                CanonicalValueSequence>
+  memory_objects: canonical array<RuntimeMemoryObject>
+  pointer_bindings:
+    total table<runtime-memory entry argument ordinal,
+                RuntimeMemoryRootBinding>
+}
+```
+
+Every runtime value contains exactly one token of the type recovered from the
+entry ABI. Every `RuntimeMemory` argument has exactly one pointer binding and
+no other argument may have one. Sharing one object ordinal expresses aliasing
+between entry pointers. Objects are ordered by their sorted nonempty
+`(argument ordinal, byte_offset)` binding keys, exactly as spatial objects are
+ordered by their logical-root binding keys. Missing, duplicate, out-of-range,
+empty, unreferenced, or noncanonical objects and bindings are invalid. The
+object byte count is the finite runtime extent of that pointer input; typed
+accesses outside it fail execution rather than extending storage or wrapping.
+
+The Structured Program runtime root contains no native address, argv
+projection, process-global state, call-path identity, profile counters, or
+candidate-specific graph input. Candidate-specific Spatial workloads and
+runtime inputs are derived only after a Canonical Dataflow Program exists and
+are used for exact graph replay; they do not replace this source workload in a
+whole-program Evaluation case.
+
 Runtime input does not contain model timing, trace-capture policy, execution
 limits, Mapping repairs, physical addresses used only by a simulator, or
 presentation options.
@@ -295,6 +388,15 @@ keys. Parsers reject duplicate or unsorted keys, unknown variants, missing or
 extra fields, noncanonical bytes, unresolved references, and any cardinality
 or owner mismatch. JSON, MLIR text, CLI syntax, and visualization files are
 derived projections and cannot be accepted as identity bytes.
+
+The version-1.1 Structured Program workload encodes root discriminant two,
+followed by the production `StructuredEntityRef` encoding, the dense argument
+plan, the return selector, and the canonical memory-observable table. Its
+runtime input encodes root discriminant two, the exact workload identity,
+runtime values, canonical memory objects, and pointer bindings in declaration
+order. The owner codecs for `StructuredEntityRef`, semantic values, memory
+bytes, and Artifact identities are reused directly; this family must not copy
+their formulas.
 
 ## Spatial Vecadd Example
 

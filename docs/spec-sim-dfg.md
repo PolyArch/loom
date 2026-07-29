@@ -67,10 +67,14 @@ be approximated, skipped, or interpreted through a compatibility path.
 
 ### Source-Backed Validation
 
-A developer validation invocation may derive a `SimulationWorkload` and
-`SimulationRuntimeInput` from an independently executed source-backed program.
-This derivation is ephemeral and does not add fields to the persistent
-Simulation schemas.
+Source-backed validation starts from the exact `StructuredProgram` roots of
+`SimulationWorkload` and `SimulationRuntimeInput`. These are production
+persistent inputs shared by source execution and Structured DSE, not a
+developer-only fixture schema. After a selected Structured candidate lowers to
+Canonical Dataflow, the validator may mechanically derive candidate-specific
+Spatial workload/input pairs for each observed graph activation. That
+derivation is ephemeral and does not add source ABI, native pointers, call
+paths, or candidate fields to either persistent Simulation family.
 
 For whole-callable Spatial ownership, the oracle resolves each exact finite,
 acyclic direct-call path from the execution entry to the selected callable.

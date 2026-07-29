@@ -578,7 +578,12 @@ backend advice.
 
 Ownership promotion is a whole-workload decision. Before a promotion gate
 ranks ownership candidates, an Evaluation model executes the exact source
-program with the exact `SimulationWorkload` and `SimulationRuntimeInput`. Its
+program with the exact `StructuredProgram` SimulationWorkload and
+SimulationRuntimeInput defined by the Simulation Artifact owner. The same
+source workload/input pair remains fixed while S0 produces alternative Sn
+candidates and while those candidates are ranked against the exact Fabric.
+Candidate-specific Spatial workload/input pairs exist only after D0 and serve
+the graph-replay semantic gate; they are not an alternative source workload.
 `EvaluationEvidence` is the sole persistent owner of normalized observations.
 Dynamic callable invocation counts, structured-scope activation counts, loop
 trip counts, path coverage, and memory traffic may be exposed to generators as

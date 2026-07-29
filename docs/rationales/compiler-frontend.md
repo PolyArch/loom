@@ -265,6 +265,14 @@ boundary cost. The profile is not a second program or workload Artifact, and
 the selected schedule and thread domain remain materialized only in the child
 Structured Program.
 
+The common workload is rooted in the source Structured Program rather than in
+any candidate graph. Otherwise each ownership candidate would change both the
+program and the workload key, making source equivalence and whole-workload
+ranking circular. One source workload/runtime-input pair can instead feed the
+unmodified baseline and every Sn candidate; only exact graph-replay inputs are
+derived after lowering. This is also why corpus harnesses are workload
+providers, not a separate testing semantics.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering
