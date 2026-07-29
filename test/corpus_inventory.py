@@ -28,6 +28,10 @@ CMSIS_SUBMODULES = {
     "cmsis-nn": Path("externals/cmsis-nn"),
 }
 CMSIS_SUPPORT_SUBMODULES = (Path("externals/cmsis-core"),)
+CMSIS_WORKLOAD_SUPPORT_SUBMODULES = (
+    *CMSIS_SUPPORT_SUBMODULES,
+    Path("externals/unity"),
+)
 
 
 class InventoryError(ValueError):
@@ -351,7 +355,10 @@ def load_source_inventory(
 def load_workload_inventory(repo_root: Path = ROOT) -> tuple[ProgramWorkload, ...]:
     root = repo_root.resolve()
     external_root = resolve_externals_root(root)
-    for relative_path in (*CMSIS_SUPPORT_SUBMODULES, *CMSIS_SUBMODULES.values()):
+    for relative_path in (
+        *CMSIS_WORKLOAD_SUPPORT_SUBMODULES,
+        *CMSIS_SUBMODULES.values(),
+    ):
         require_pinned_submodule(root, external_root, relative_path)
 
     workloads = load_loombench_workloads(root)

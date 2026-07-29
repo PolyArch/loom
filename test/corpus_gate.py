@@ -40,7 +40,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
-import math
 import os
 import shlex
 import shutil
@@ -59,6 +58,18 @@ TEST_ROOT = ROOT / "test"
 sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_inventory  # noqa: E402
+from corpus_simulation_report import (  # noqa: E402
+    DfgSimulationMetrics,
+    parse_dfg_simulation_report,
+)
+from corpus_workload_provider import (  # noqa: E402
+    CmakeToolchain,
+    ProducedWorkload,
+    WorkloadProviderError,
+    cmake_build_command,
+    cmake_configure_command,
+    materialize_cmsis_nn_harness,
+)
 
 
 # The exact builtin Fabric InstructionCore target profile. Every corpus
@@ -190,71 +201,6 @@ class StepFailure:
 class LinkedWorkloadModules:
     target: Path
     native: Path | None
-
-
-@dataclass(frozen=True)
-class DfgSimulationMetrics:
-    graphs: int
-    actors: int
-    dynamic_calls: int
-    value_lanes_compared: int
-    memory_bytes_compared: int
-    floating_variance_bytes: int
-    wavefront_steps: int
-    event_count: int
-    simulation_seconds: float
-    operation_firings: dict[str, int]
-
-    @staticmethod
-    def zero() -> "DfgSimulationMetrics":
-        return DfgSimulationMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0.0, {})
-
-    @property
-    def wavefront_steps_per_second(self) -> float:
-        if self.simulation_seconds == 0.0:
-            return 0.0
-        return self.wavefront_steps / self.simulation_seconds
-
-    def combine(self, other: "DfgSimulationMetrics") -> "DfgSimulationMetrics":
-        firings = dict(self.operation_firings)
-        for operation, count in other.operation_firings.items():
-            firings[operation] = firings.get(operation, 0) + count
-        return DfgSimulationMetrics(
-            graphs=self.graphs + other.graphs,
-            actors=self.actors + other.actors,
-            dynamic_calls=self.dynamic_calls + other.dynamic_calls,
-            value_lanes_compared=(
-                self.value_lanes_compared + other.value_lanes_compared
-            ),
-            memory_bytes_compared=(
-                self.memory_bytes_compared + other.memory_bytes_compared
-            ),
-            floating_variance_bytes=(
-                self.floating_variance_bytes + other.floating_variance_bytes
-            ),
-            wavefront_steps=self.wavefront_steps + other.wavefront_steps,
-            event_count=self.event_count + other.event_count,
-            simulation_seconds=self.simulation_seconds + other.simulation_seconds,
-            operation_firings=firings,
-        )
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "dynamic_calls": self.dynamic_calls,
-            "event_count": self.event_count,
-            "floating_variance_bytes": self.floating_variance_bytes,
-            "floating_variance_kind": (
-                "selected_decision_replay"
-                if self.floating_variance_bytes
-                else "none"
-            ),
-            "value_lanes_compared": self.value_lanes_compared,
-            "memory_bytes_compared": self.memory_bytes_compared,
-            "operation_firings": dict(sorted(self.operation_firings.items())),
-            "simulation_seconds": self.simulation_seconds,
-            "wavefront_steps": self.wavefront_steps,
-            "wavefront_steps_per_second": self.wavefront_steps_per_second,
-        }
 
 
 @dataclass(frozen=True)
@@ -720,148 +666,13 @@ def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
     return counts, None
 
 
-def parse_dfg_simulation_report(
-    path: Path,
-) -> tuple[DfgSimulationMetrics | None, str | None]:
-    """Parse the exact substantive projection emitted by loom-dfg-run."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError as exc:
-        return None, f"cannot read DFG simulation report {path}: {exc}"
-    except json.JSONDecodeError as exc:
-        return None, f"malformed DFG simulation report {path}: {exc}"
-    if not isinstance(payload, dict):
-        return None, f"DFG simulation report is not a JSON object: {path}"
-    expected_fields = {
-        "actors",
-        "dynamic_calls",
-        "event_count",
-        "floating_variance_bytes",
-        "floating_variance_kind",
-        "graphs",
-        "kind",
-        "memory_bytes_compared",
-        "operation_firings",
-        "simulation_seconds",
-        "status",
-        "value_lanes_compared",
-        "wavefront_steps",
-        "wavefront_steps_per_second",
-    }
-    if set(payload) != expected_fields:
-        return None, (
-            "DFG simulation report contains missing or unexpected fields "
-            f"(expected {sorted(expected_fields)}): {path}"
-        )
-    if payload["kind"] != "source_backed_dfg_comparison" or payload["status"] != "pass":
-        return None, f"DFG simulation report has invalid kind or status: {path}"
-
-    integers: dict[str, int] = {}
-    for field in (
-        "actors",
-        "dynamic_calls",
-        "event_count",
-        "graphs",
-        "wavefront_steps",
-    ):
-        value = payload[field]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            return None, (
-                "DFG simulation report is not a substantive execution: "
-                f"{field} must be a positive integer: {path}"
-            )
-        integers[field] = value
-
-    for field in ("value_lanes_compared", "memory_bytes_compared"):
-        value = payload[field]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return None, (
-                "DFG simulation report has an invalid observable count: "
-                f"{field}: {path}"
-            )
-        integers[field] = value
-    if (
-        integers["value_lanes_compared"] == 0
-        and integers["memory_bytes_compared"] == 0
-    ):
-        return None, (
-            "DFG simulation report is not a substantive execution: no value "
-            f"or memory observation was compared: {path}"
-        )
-
-    variance_bytes = payload["floating_variance_bytes"]
-    variance_kind = payload["floating_variance_kind"]
-    if (
-        isinstance(variance_bytes, bool)
-        or not isinstance(variance_bytes, int)
-        or variance_bytes < 0
-    ):
-        return None, f"DFG simulation report has invalid floating variance: {path}"
-    expected_variance_kind = (
-        "selected_decision_replay" if variance_bytes else "none"
-    )
-    if variance_kind != expected_variance_kind:
-        return None, f"DFG simulation report has inconsistent floating variance: {path}"
-
-    seconds = payload["simulation_seconds"]
-    rate = payload["wavefront_steps_per_second"]
-    if (
-        isinstance(seconds, bool)
-        or not isinstance(seconds, (int, float))
-        or not math.isfinite(seconds)
-        or seconds <= 0.0
-    ):
-        return None, f"DFG simulation report has invalid simulation_seconds: {path}"
-    if (
-        isinstance(rate, bool)
-        or not isinstance(rate, (int, float))
-        or not math.isfinite(rate)
-        or rate <= 0.0
-    ):
-        return None, (
-            "DFG simulation report has invalid wavefront_steps_per_second: "
-            f"{path}"
-        )
-    derived_rate = integers["wavefront_steps"] / float(seconds)
-    if not math.isclose(float(rate), derived_rate, rel_tol=1e-12, abs_tol=1e-9):
-        return None, f"DFG simulation report rate is not derived from totals: {path}"
-
-    raw_firings = payload["operation_firings"]
-    if not isinstance(raw_firings, dict) or not raw_firings:
-        return None, f"DFG simulation report has no operation firings: {path}"
-    firings: dict[str, int] = {}
-    for operation, count in raw_firings.items():
-        if not isinstance(operation, str) or not operation:
-            return None, f"DFG simulation report has an invalid operation key: {path}"
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-            return None, (
-                "DFG simulation report has a non-positive operation firing "
-                f"count for {operation!r}: {path}"
-            )
-        firings[operation] = count
-
-    return (
-        DfgSimulationMetrics(
-            graphs=integers["graphs"],
-            actors=integers["actors"],
-            dynamic_calls=integers["dynamic_calls"],
-            value_lanes_compared=integers["value_lanes_compared"],
-            memory_bytes_compared=integers["memory_bytes_compared"],
-            floating_variance_bytes=variance_bytes,
-            wavefront_steps=integers["wavefront_steps"],
-            event_count=integers["event_count"],
-            simulation_seconds=float(seconds),
-            operation_firings=firings,
-        ),
-        None,
-    )
-
-
 def run_step(
     command: Sequence[str],
     log_path: Path,
     deadline: float,
     category: str,
+    *,
+    cwd: Path | None = None,
 ) -> StepFailure | None:
     """Run one pipeline step in its own process group under a deadline."""
     remaining = deadline - time.monotonic()
@@ -879,6 +690,7 @@ def run_step(
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     env={**os.environ, "LC_ALL": "C"},
+                    cwd=cwd,
                 )
             except OSError as exc:
                 return StepFailure(
@@ -1066,6 +878,229 @@ def prepare_linked_workload(
     return LinkedWorkloadModules(linked_llvm_ir, native_llvm_ir)
 
 
+def import_produced_workload(
+    produced: ProducedWorkload,
+    toolchain: Toolchain,
+    case_dir: Path,
+    deadline: float,
+    need_native: bool,
+) -> LinkedWorkloadModules | StepFailure:
+    try:
+        relative_executable = produced.target_executable.relative_to(
+            produced.target_build_dir
+        )
+    except ValueError:
+        return StepFailure(
+            CATEGORY_FINAL_LINK_ARTIFACT,
+            "produced executable is outside its owning build directory",
+        )
+    resolution = Path(f"{produced.target_executable}.resolution.txt")
+    precodegen = Path(f"{produced.target_executable}.0.5.precodegen.bc")
+    for path, role in (
+        (produced.target_executable, "linked executable"),
+        (resolution, "LLD resolution report"),
+        (precodegen, "LLD pre-code-generation bitcode"),
+    ):
+        defect = binary_artifact_defect(path, role)
+        if defect is not None:
+            return StepFailure(CATEGORY_FINAL_LINK_ARTIFACT, defect)
+
+    linked_bitcode = case_dir / "program.bc"
+    clear_artifacts(linked_bitcode)
+    failure = run_step(
+        payload_import_command(toolchain, relative_executable, linked_bitcode),
+        case_dir / "payload-import.log",
+        deadline,
+        CATEGORY_PAYLOAD_IMPORT,
+        cwd=produced.target_build_dir,
+    )
+    if failure is not None:
+        return failure
+    defect = binary_artifact_defect(linked_bitcode, "validated linked bitcode")
+    if defect is not None:
+        return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
+
+    linked_llvm_ir = case_dir / "program.ll"
+    clear_artifacts(linked_llvm_ir)
+    failure = run_step(
+        disassemble_command(toolchain, linked_bitcode, linked_llvm_ir),
+        case_dir / "llvm-dis.log",
+        deadline,
+        CATEGORY_LINKED_LLVM_ARTIFACT,
+    )
+    if failure is not None:
+        return failure
+    defect = llvm_ir_defect(linked_llvm_ir)
+    if defect is not None:
+        return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
+
+    native_llvm_ir: Path | None = None
+    if need_native:
+        if produced.native_bitcode is None:
+            return StepFailure(
+                CATEGORY_NATIVE_LLVM_ARTIFACT,
+                "produced workload has no native pre-code-generation bitcode",
+            )
+        defect = binary_artifact_defect(
+            produced.native_bitcode, "native pre-code-generation bitcode"
+        )
+        if defect is not None:
+            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
+        native_llvm_ir = case_dir / "program.native.ll"
+        clear_artifacts(native_llvm_ir)
+        failure = run_step(
+            disassemble_command(toolchain, produced.native_bitcode, native_llvm_ir),
+            case_dir / "native-llvm-dis.log",
+            deadline,
+            CATEGORY_NATIVE_LLVM_ARTIFACT,
+        )
+        if failure is not None:
+            return failure
+        defect = native_llvm_ir_defect(native_llvm_ir)
+        if defect is not None:
+            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
+
+    return LinkedWorkloadModules(linked_llvm_ir, native_llvm_ir)
+
+
+def _cmsis_nn_cmake_toolchain(
+    toolchain: Toolchain, *, target: bool
+) -> CmakeToolchain:
+    llvm_bin = Path(toolchain.llvm_dis).parent
+    compiler_flags = ["-flto=full"]
+    linker_flags = [
+        f"-fuse-ld={toolchain.lld}",
+        "-flto=full",
+        "-Wl,--save-temps=precodegen",
+        "-Wl,--lto-O1",
+    ]
+    system_name: str | None = None
+    if target:
+        compiler_flags = [
+            *target_flags(toolchain),
+            *compiler_flags,
+            "-ffat-lto-objects",
+        ]
+        linker_flags.extend(
+            [
+                "-Wl,--fat-lto-objects",
+                "-Wl,--save-temps=resolution",
+                "-Xlinker",
+                f"--plugin-opt=-mattr={TARGET_LTO_MATTR}",
+            ]
+        )
+        system_name = "Generic"
+    return CmakeToolchain(
+        c_compiler=toolchain.cc,
+        cxx_compiler=toolchain.cxx,
+        archiver=llvm_bin / "llvm-ar",
+        ranlib=llvm_bin / "llvm-ranlib",
+        compiler_flags=tuple(compiler_flags),
+        linker_flags=tuple(linker_flags),
+        system_name=system_name,
+    )
+
+
+def prepare_workload_providers(
+    cases: Sequence[corpus_inventory.ProgramWorkload],
+    stage: str,
+    toolchain: Toolchain,
+    external_root: Path,
+    out_root: Path,
+    jobs: int,
+    timeout: float,
+) -> dict[str, ProducedWorkload | StepFailure]:
+    results: dict[str, ProducedWorkload | StepFailure] = {}
+    cmsis_nn = [
+        case for case in cases if case.producer.kind == "cmsis-nn-unit-test"
+    ]
+    for case in cases:
+        if case.producer.kind not in {"direct-source", "cmsis-nn-unit-test"}:
+            results[case.identity] = StepFailure(
+                CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+                "no linked-workload builder is available for producer kind "
+                f"{case.producer.kind}",
+            )
+    if not cmsis_nn:
+        return results
+
+    provider_root = out_root / "_providers" / "cmsis-nn"
+
+    def fail_all(failure: StepFailure) -> dict[str, ProducedWorkload | StepFailure]:
+        results.update({case.identity: failure for case in cmsis_nn})
+        return results
+
+    try:
+        if provider_root.exists():
+            shutil.rmtree(provider_root)
+        provider_root.mkdir(parents=True)
+        harness = materialize_cmsis_nn_harness(
+            cmsis_nn, external_root, provider_root / "harness"
+        )
+    except (OSError, WorkloadProviderError) as exc:
+        return fail_all(StepFailure(CATEGORY_FINAL_LINK, str(exc)))
+
+    target_build = provider_root / "target"
+    failure = run_step(
+        cmake_configure_command(
+            harness,
+            external_root / "cmsis-nn",
+            target_build,
+            _cmsis_nn_cmake_toolchain(toolchain, target=True),
+        ),
+        provider_root / "target-configure.log",
+        time.monotonic() + timeout,
+        CATEGORY_FINAL_LINK,
+    )
+    if failure is not None:
+        return fail_all(failure)
+    failure = run_step(
+        cmake_build_command(target_build, harness.targets, jobs),
+        provider_root / "target-build.log",
+        time.monotonic() + timeout,
+        CATEGORY_FINAL_LINK,
+    )
+    if failure is not None:
+        return fail_all(failure)
+
+    native_build: Path | None = None
+    if stage == "dfg-sim":
+        native_build = provider_root / "native"
+        failure = run_step(
+            cmake_configure_command(
+                harness,
+                external_root / "cmsis-nn",
+                native_build,
+                _cmsis_nn_cmake_toolchain(toolchain, target=False),
+            ),
+            provider_root / "native-configure.log",
+            time.monotonic() + timeout,
+            CATEGORY_NATIVE_LINK,
+        )
+        if failure is not None:
+            return fail_all(failure)
+        failure = run_step(
+            cmake_build_command(native_build, harness.targets, jobs),
+            provider_root / "native-build.log",
+            time.monotonic() + timeout,
+            CATEGORY_NATIVE_LINK,
+        )
+        if failure is not None:
+            return fail_all(failure)
+
+    for case in cmsis_nn:
+        target_executable = harness.executable(target_build, case.executable)
+        native_bitcode = (
+            Path(f"{harness.executable(native_build, case.executable)}.0.5.precodegen.bc")
+            if native_build is not None
+            else None
+        )
+        results[case.identity] = ProducedWorkload(
+            target_build, target_executable, native_bitcode
+        )
+    return results
+
+
 def run_case(
     case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload,
     stage: str,
@@ -1074,6 +1109,7 @@ def run_case(
     out_root: Path,
     case_timeout: float,
     candidate_jobs: int,
+    provider_results: dict[str, ProducedWorkload | StepFailure],
 ) -> CaseResult:
     started = time.monotonic()
     deadline = started + case_timeout
@@ -1102,12 +1138,6 @@ def run_case(
                 return finish(
                     CATEGORY_INTERNAL,
                     "whole-program stage received a source translation-unit row",
-                )
-            if case.producer.kind != "direct-source":
-                return finish(
-                    CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
-                    "no linked-workload builder is available for producer kind "
-                    f"{case.producer.kind}",
                 )
         case_dir = case_out_dir(out_root, case)
         case_dir.mkdir(parents=True, exist_ok=True)
@@ -1143,14 +1173,32 @@ def run_case(
             raise GateConfigError(
                 f"unsupported workload target profile: {case.target_profile}"
             )
-        prepared = prepare_linked_workload(
-            case,
-            toolchain,
-            external_root,
-            case_dir,
-            deadline,
-            need_native=stage == "dfg-sim",
-        )
+        if case.producer.kind == "direct-source":
+            prepared = prepare_linked_workload(
+                case,
+                toolchain,
+                external_root,
+                case_dir,
+                deadline,
+                need_native=stage == "dfg-sim",
+            )
+        else:
+            produced = provider_results.get(case.identity)
+            if produced is None:
+                return finish(
+                    CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+                    "no linked-workload builder is available for producer kind "
+                    f"{case.producer.kind}",
+                )
+            if isinstance(produced, StepFailure):
+                return finish(produced.category, produced.detail)
+            prepared = import_produced_workload(
+                produced,
+                toolchain,
+                case_dir,
+                deadline,
+                need_native=stage == "dfg-sim",
+            )
         if isinstance(prepared, StepFailure):
             return finish(prepared.category, prepared.detail)
 
@@ -1261,6 +1309,18 @@ def run_cases(
     case_timeout: float,
     candidate_jobs: int,
 ) -> list[CaseResult]:
+    workload_cases = [
+        case for case in cases if isinstance(case, corpus_inventory.ProgramWorkload)
+    ]
+    provider_results = prepare_workload_providers(
+        workload_cases,
+        stage,
+        toolchain,
+        external_root,
+        out_root,
+        jobs,
+        case_timeout,
+    )
     results: list[CaseResult | None] = [None] * len(cases)
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
@@ -1273,6 +1333,7 @@ def run_cases(
                 out_root,
                 case_timeout,
                 candidate_jobs,
+                provider_results,
             ): index
             for index, case in enumerate(cases)
         }
@@ -1285,7 +1346,7 @@ def run_cases(
 
 
 def default_jobs() -> int:
-    return max(1, min(8, os.cpu_count() or 1))
+    return max(1, min(24, os.cpu_count() or 1))
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:

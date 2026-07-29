@@ -262,6 +262,48 @@ class CorpusGateTestBase(unittest.TestCase):
 
 
 class InventoryAggregationTest(CorpusGateTestBase):
+    def test_cmsis_nn_harness_preserves_owned_target_and_test_order(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity
+            == "cmsis-nn:test_arm_avgpool_s8/test_arm_avgpool_s8"
+        )
+        harness = corpus_gate.materialize_cmsis_nn_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-nn-harness",
+        )
+
+        self.assertEqual(harness.targets, ("test_arm_avgpool_s8",))
+        self.assertEqual(
+            harness.unity_source,
+            corpus_inventory.resolve_externals_root(ROOT) / "unity",
+        )
+        runner = (
+            harness.source_dir
+            / "TestCases"
+            / "test_arm_avgpool_s8"
+            / "Unity"
+            / "TestRunner"
+            / "unity_test_arm_avgpool_s8_runner.c"
+        ).read_text()
+        calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
+        self.assertEqual(
+            calls,
+            [
+                "test_avgpooling_arm_avgpool_s8",
+                "test_avgpooling_1_arm_avgpool_s8",
+                "test_avgpooling_2_arm_avgpool_s8",
+                "test_avgpooling_3_arm_avgpool_s8",
+                "test_avgpooling_4_arm_avgpool_s8",
+                "test_avgpooling_5_arm_avgpool_s8",
+                "test_buffer_size_mve_arm_avgpool_s8",
+                "test_buffer_size_dsp_arm_avgpool_s8",
+                "test_avgpooling_param_fail_arm_avgpool_s8",
+            ],
+        )
+
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
             "--case",
@@ -289,7 +331,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
     def test_unimplemented_workload_producer_fails_closed(self) -> None:
         exit_code, _, summary = self.run_gate(
             "--case",
-            "cmsis-nn:test_arm_avgpool_s8/test_arm_avgpool_s8",
+            "cmsis-dsp:official-tests/scalar",
             "--stage",
             "d0",
             "--jobs",
@@ -299,7 +341,49 @@ class InventoryAggregationTest(CorpusGateTestBase):
         result = summary["cases"][0]
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["category"], "workload-provider-unavailable")
-        self.assertIn("cmsis-nn-unit-test", result["detail"])
+        self.assertIn("cmsis-dsp-test-framework", result["detail"])
+
+    def test_produced_workload_import_uses_build_relative_link_records(self) -> None:
+        toolchain = corpus_gate.Toolchain(
+            cc=self.tool_paths["cc"],
+            cxx=self.tool_paths["cxx"],
+            raise_tool=self.tool_paths["raise"],
+            raise_opt=self.tool_paths["opt"],
+            pre_mapping=self.tool_paths["pre_mapping"],
+            dfg_run=self.tool_paths["dfg_run"],
+            lld=self.tool_paths["lld"],
+            payload=self.tool_paths["payload"],
+            llvm_dis=self.tool_paths["llvm_dis"],
+            llvm_link=self.tool_paths["llvm_link"],
+            sysroot=self.sysroot,
+            gcc_toolchain=self.gcc_toolchain,
+        )
+        build_dir = self.work / "target-build"
+        executable = build_dir / "workloads" / "test_arm_avgpool_s8"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"elf")
+        Path(f"{executable}.resolution.txt").write_text("selected.o\n")
+        Path(f"{executable}.0.5.precodegen.bc").write_bytes(b"bitcode")
+        case_dir = self.work / "case"
+        case_dir.mkdir()
+
+        prepared = corpus_gate.import_produced_workload(
+            corpus_gate.ProducedWorkload(build_dir, executable, None),
+            toolchain,
+            case_dir,
+            time.monotonic() + 5.0,
+            need_native=False,
+        )
+
+        self.assertIsInstance(prepared, corpus_gate.LinkedWorkloadModules)
+        invocation = next(
+            line for line in self.invocation_lines() if "stub-payload " in line
+        )
+        self.assertIn(
+            "--resolution=workloads/test_arm_avgpool_s8.resolution.txt",
+            invocation,
+        )
+        self.assertNotIn(str(build_dir), invocation)
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
