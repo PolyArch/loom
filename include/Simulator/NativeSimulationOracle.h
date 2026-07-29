@@ -61,6 +61,25 @@ executeNativeStructuredProgram(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput);
 
+/// Execute one finalized ownership-selected Structured Program against the
+/// immutable workload owned by its exact source program. The native oracle
+/// mechanically projects supported thread/spatial ownership carriers back to
+/// their sequential whole-program semantics; it does not reselect ownership
+/// or execute the Canonical Dataflow projection in place of the candidate.
+llvm::Expected<NativeStructuredProgramObservations>
+executeSelectedStructuredProgram(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
+
+/// Exact comparison of whole-program return and memory observations. Dynamic
+/// source coverage is intentionally excluded because it profiles the source
+/// workload rather than the selected candidate.
+bool haveEquivalentFunctionalObservations(
+    const NativeStructuredProgramObservations &reference,
+    const NativeStructuredProgramObservations &candidate);
+
 /// Execute one native LLVM module and capture the finite graph inputs around
 /// every dynamic execution of the exact statically selected host call. This is
 /// an ephemeral independent oracle; its values and bytes may initialize a

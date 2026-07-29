@@ -1,4 +1,6 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/IR/LoomDialect.h"
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -40,7 +42,8 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *result = [] {
     mlir::DialectRegistry registry;
-    registry.insert<mlir::LLVM::LLVMDialect>();
+    registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
+                    mlir::LLVM::LLVMDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -88,6 +91,46 @@ module {
       mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
   return {take(test, loom::frontend::finalizeStructuredProgram(module.get())),
           std::move(layout)};
+}
+
+loom::frontend::StructuredProgramCandidate
+selectedProgram(llvm::StringRef test, const llvm::DataLayout &layout) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.thread private @selected domain(#dataflow.thread_domain<dense>)(
+      %value: i32, %written: !llvm.ptr) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%value, %written)
+        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%payload: i32, %target: !llvm.ptr):
+        llvm.store %payload, %target : i32, !llvm.ptr
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "selected_graph", source_maps = []} :
+        (i32, !llvm.ptr) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel(%value: i32, %written: !llvm.ptr,
+                    %observed: !llvm.ptr) -> i32 {
+    %token = dataflow.thread.launch @selected(%value, %written) :
+        (i32, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    %loaded = llvm.load %observed : !llvm.ptr -> i32
+    llvm.return %loaded : i32
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail(test, "cannot parse the selected Structured Program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+  return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
 loom::frontend::StructuredEntityRef
@@ -242,11 +285,39 @@ void nonDefinedInputsFailClosed() {
           "unsupported semantic input used the wrong failure class");
 }
 
+void selectedOwnershipCarriersExecuteAsWholeProgram() {
+  const char *test = __func__;
+  SourceProgram source = sourceProgram(test);
+  auto sourceView = take(test, source.candidate.view());
+  auto workload = take(
+      test, loom::sim::finalizeSimulationWorkload(
+                makeWorkload(entryRef(test, sourceView), definedI32(0x12345678)),
+                sourceView));
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              makeRuntimeInput(workload.identity()), workload,
+                              sourceView));
+  auto selected = selectedProgram(test, source.layout);
+
+  const auto reference = take(
+      test, loom::sim::executeNativeStructuredProgram(source.candidate,
+                                                       workload, input));
+  const auto candidate = take(
+      test, loom::sim::executeSelectedStructuredProgram(
+                selected, source.candidate, workload, input));
+  require(test,
+          loom::sim::haveEquivalentFunctionalObservations(reference,
+                                                          candidate),
+          "selected ownership carriers changed whole-program semantics");
+  require(test, candidate.blockActivations.empty(),
+          "selected candidate execution invented a source coverage profile");
+}
+
 } // namespace
 
 int main() {
   exactEntryPreservesAliasingAndObservations();
   nonDefinedInputsFailClosed();
+  selectedOwnershipCarriersExecuteAsWholeProgram();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;
 }

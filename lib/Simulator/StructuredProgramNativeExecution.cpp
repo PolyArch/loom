@@ -3,8 +3,12 @@
 #include "NativeExecutionSupport.h"
 #include "SimulationWireInternal.h"
 
+#include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/IR/LoomOps.h"
+
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 
@@ -813,13 +817,180 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
   return result;
 }
 
-} // namespace
+llvm::Error inlineSpatialOwnershipCarriers(mlir::ModuleOp module) {
+  llvm::SmallVector<loom::SpatialRegionOp> regions;
+  module.walk([&](loom::SpatialRegionOp region) { regions.push_back(region); });
+  for (loom::SpatialRegionOp region : llvm::reverse(regions)) {
+    if (!region.getStreamInputs().empty() ||
+        !region.getStreamOutputs().empty())
+      return unsupported(
+          "native selected execution does not support stream ownership "
+          "carriers");
+    if (!region.getBody().hasOneBlock())
+      return invalid("selected spatial ownership carrier is not single-block");
+    mlir::Block &body = region.getBody().front();
+    auto yield = llvm::dyn_cast<loom::SpatialYieldOp>(body.getTerminator());
+    if (!yield)
+      return invalid("selected spatial ownership carrier has no typed yield");
+    if (body.getNumArguments() != region->getNumOperands() ||
+        yield->getNumOperands() != region->getNumResults())
+      return invalid("selected spatial ownership carrier boundary is not "
+                     "positional");
 
-llvm::Expected<NativeStructuredProgramObservations>
-executeNativeStructuredProgram(
+    mlir::IRMapping mapping;
+    for (auto [argument, operand] :
+         llvm::zip_equal(body.getArguments(), region->getOperands()))
+      mapping.map(argument, operand);
+    mlir::OpBuilder builder(region);
+    for (mlir::Operation &operation : body.without_terminator())
+      builder.clone(operation, mapping);
+
+    llvm::SmallVector<mlir::Value> results;
+    results.reserve(yield->getNumOperands());
+    for (mlir::Value value : yield->getOperands())
+      results.push_back(mapping.lookupOrDefault(value));
+    region->replaceAllUsesWith(results);
+    region.erase();
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error inlineRankZeroThreadOwnershipCarriers(mlir::ModuleOp module) {
+  llvm::SmallVector<dataflow::ThreadLaunchOp> launches;
+  module.walk(
+      [&](dataflow::ThreadLaunchOp launch) { launches.push_back(launch); });
+  for (dataflow::ThreadLaunchOp launch : launches) {
+    if (!launch.getGridUpperBounds().empty())
+      return unsupported(
+          "native selected execution does not yet project a dense thread "
+          "domain");
+    if (!launch.getAsyncDependencies().empty())
+      return unsupported(
+          "native selected execution does not project asynchronous thread "
+          "dependencies");
+    if (!launch.getAsyncToken().hasOneUse())
+      return unsupported(
+          "native selected execution requires one exact thread wait");
+    auto wait = llvm::dyn_cast<dataflow::ThreadWaitOp>(
+        *launch.getAsyncToken().getUsers().begin());
+    if (!wait || wait->getNumOperands() != 1 ||
+        launch->getNextNode() != wait.getOperation())
+      return unsupported(
+          "native selected execution requires an immediately joined thread "
+          "launch");
+
+    auto thread = mlir::SymbolTable::lookupNearestSymbolFrom<
+        dataflow::ThreadOp>(launch, launch.getCalleeAttr());
+    if (!thread || thread.isExternal())
+      return invalid("selected thread launch has no exact definition");
+    if (thread.getDomain().getKind() !=
+        dataflow::ThreadDomainKind::DenseRectangular)
+      return unsupported(
+          "native selected execution does not support dynamic-work threads");
+    mlir::Block &body = thread.getBody().front();
+    const std::size_t inputCount = thread.getFunctionType().getNumInputs();
+    if (body.getNumArguments() != inputCount + 1 ||
+        launch.getBodyOperands().size() != inputCount)
+      return invalid("selected rank-zero thread boundary is malformed");
+    if (!body.getArgument(inputCount).use_empty())
+      return unsupported(
+          "native selected execution cannot erase a used thread control "
+          "token");
+    auto yield = llvm::dyn_cast<dataflow::ThreadYieldOp>(body.getTerminator());
+    if (!yield || !yield.getCompletionFrontier().empty())
+      return unsupported(
+          "native selected execution cannot erase a completion frontier");
+
+    mlir::IRMapping mapping;
+    for (auto [argument, operand] : llvm::zip_equal(
+             body.getArguments().take_front(inputCount),
+             launch.getBodyOperands()))
+      mapping.map(argument, operand);
+    mlir::OpBuilder builder(launch);
+    for (mlir::Operation &operation : body.without_terminator())
+      builder.clone(operation, mapping);
+    wait.erase();
+    launch.erase();
+  }
+
+  bool residualLaunch = false;
+  module.walk([&](dataflow::ThreadLaunchOp) { residualLaunch = true; });
+  if (residualLaunch)
+    return invalid("selected thread projection left a residual launch");
+  llvm::SmallVector<dataflow::ThreadOp> threads;
+  module.walk([&](dataflow::ThreadOp thread) { threads.push_back(thread); });
+  for (dataflow::ThreadOp thread : threads)
+    thread.erase();
+  return llvm::Error::success();
+}
+
+llvm::Error projectSelectedWholeProgram(mlir::ModuleOp module) {
+  if (llvm::Error error = inlineSpatialOwnershipCarriers(module))
+    return error;
+  if (llvm::Error error = inlineRankZeroThreadOwnershipCarriers(module))
+    return error;
+  bool residualCarrier = false;
+  module.walk([&](mlir::Operation *operation) {
+    residualCarrier |= llvm::isa<loom::SpatialRegionOp, loom::SpatialYieldOp,
+                                 dataflow::ThreadOp,
+                                 dataflow::ThreadLaunchOp,
+                                 dataflow::ThreadWaitOp,
+                                 dataflow::ThreadYieldOp>(operation);
+  });
+  if (residualCarrier)
+    return invalid("selected whole-program projection left an ownership "
+                   "carrier");
+  if (mlir::failed(mlir::verify(module)))
+    return invalid("selected whole-program projection does not verify");
+  return llvm::Error::success();
+}
+
+bool sameLane(const SemanticLane &lhs, const SemanticLane &rhs) {
+  return lhs.state == rhs.state &&
+         (lhs.state != SemanticState::Defined || lhs.bits == rhs.bits);
+}
+
+bool sameValueSequence(const CanonicalValueSequence &lhs,
+                       const CanonicalValueSequence &rhs) {
+  return lhs.tokenCount == rhs.tokenCount &&
+         lhs.lanes.size() == rhs.lanes.size() &&
+         llvm::equal(lhs.lanes, rhs.lanes, sameLane);
+}
+
+bool sameMemoryByte(const SemanticMemoryByte &lhs,
+                    const SemanticMemoryByte &rhs) {
+  return lhs.state == rhs.state &&
+         (lhs.state != SemanticState::Defined || lhs.value == rhs.value);
+}
+
+bool sameMemoryObservation(const MemoryObservationPayload &lhs,
+                           const MemoryObservationPayload &rhs) {
+  if (lhs.index() != rhs.index())
+    return false;
+  if (const auto *lhsFull = std::get_if<FullMemoryObservation>(&lhs)) {
+    const auto &rhsFull = std::get<FullMemoryObservation>(rhs);
+    return lhsFull->bytes.size() == rhsFull.bytes.size() &&
+           llvm::equal(lhsFull->bytes, rhsFull.bytes, sameMemoryByte);
+  }
+  const auto &lhsDiff = std::get<DiffMemoryObservation>(lhs);
+  const auto &rhsDiff = std::get<DiffMemoryObservation>(rhs);
+  if (lhsDiff.byteCount != rhsDiff.byteCount ||
+      lhsDiff.runs.size() != rhsDiff.runs.size())
+    return false;
+  for (auto [left, right] : llvm::zip_equal(lhsDiff.runs, rhsDiff.runs))
+    if (left.byteOffset != right.byteOffset ||
+        left.changedBytes.size() != right.changedBytes.size() ||
+        !llvm::equal(left.changedBytes, right.changedBytes, sameMemoryByte))
+      return false;
+  return true;
+}
+
+llvm::Expected<NativeStructuredProgramObservations> executeProgramModule(
     const frontend::StructuredProgramCandidate &program,
+    const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput) {
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    bool profileSourceBlocks, bool projectOwnership) {
   const StructuredProgramSimulationWorkload *structured =
       workload.structuredProgram();
   const StructuredProgramSimulationRuntimeInput *input =
@@ -827,51 +998,60 @@ executeNativeStructuredProgram(
   if (!structured || !input)
     return invalid("native execution requires Structured workload roots");
 
-  llvm::Expected<frontend::StructuredProgramCandidateView> view =
-      program.view();
-  if (!view)
-    return view.takeError();
-  llvm::Expected<CanonicalSimulationWorkload> verifiedWorkload =
-      importSimulationWorkload(workload.canonicalBytes().bytes(), *view,
-                               workload.identity());
+  auto sourceView = sourceProgram.view();
+  if (!sourceView)
+    return sourceView.takeError();
+  if (program.identity() != sourceProgram.identity()) {
+    auto selectedView = program.view();
+    if (!selectedView)
+      return selectedView.takeError();
+  }
+  auto verifiedWorkload = importSimulationWorkload(
+      workload.canonicalBytes().bytes(), *sourceView, workload.identity());
   if (!verifiedWorkload)
     return verifiedWorkload.takeError();
-  llvm::Expected<CanonicalSimulationRuntimeInput> verifiedInput =
-      importSimulationRuntimeInput(runtimeInput.canonicalBytes().bytes(),
-                                   workload, *view, runtimeInput.identity());
+  auto verifiedInput = importSimulationRuntimeInput(
+      runtimeInput.canonicalBytes().bytes(), workload, *sourceView,
+      runtimeInput.identity());
   if (!verifiedInput)
     return verifiedInput.takeError();
-  llvm::Expected<detail::ResolvedStructuredProgramContext> sourceContext =
-      detail::resolveStructuredProgramContext(*view, structured->entryRef);
+  auto sourceContext = detail::resolveStructuredProgramContext(
+      *sourceView, structured->entryRef);
   if (!sourceContext)
     return sourceContext.takeError();
-  auto entry = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(sourceContext->entryOp);
+  auto entry =
+      llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(sourceContext->entryOp);
   if (!entry)
     return invalid("exact workload entry is not llvm.func");
-  llvm::Expected<std::vector<MemoryTargetPlan>> plans =
-      buildMemoryPlans(*structured, *input, *view);
+  auto plans = buildMemoryPlans(*structured, *input, *sourceView);
   if (!plans)
     return plans.takeError();
 
   mlir::OwningOpRef<mlir::ModuleOp> cloned(
       llvm::cast<mlir::ModuleOp>(program.module()->clone()));
+  if (projectOwnership)
+    if (llvm::Error error = projectSelectedWholeProgram(*cloned))
+      return std::move(error);
   NativeExecutionContext capture;
-  llvm::Expected<std::string> blockActivation =
-      instrumentBlockActivations(*cloned, program.identity(), capture);
-  if (!blockActivation)
-    return blockActivation.takeError();
-  llvm::Expected<llvm::orc::ThreadSafeModule> native =
-      detail::lowerStructuredModuleToLlvm(std::move(cloned));
+  std::optional<std::string> blockActivation;
+  if (profileSourceBlocks) {
+    auto callback =
+        instrumentBlockActivations(*cloned, sourceProgram.identity(), capture);
+    if (!callback)
+      return callback.takeError();
+    blockActivation = std::move(*callback);
+  }
+  auto native = detail::lowerStructuredModuleToLlvm(std::move(cloned));
   if (!native)
     return native.takeError();
   if (llvm::Error error = detail::initializeNativeTarget())
     return std::move(error);
-  llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> targetJitOrError =
-      llvm::orc::LLJITBuilder().create();
+  auto targetJitOrError = llvm::orc::LLJITBuilder().create();
   if (!targetJitOrError)
     return classifyJitError(targetJitOrError.takeError(),
                             "cannot create host JIT");
-  std::unique_ptr<llvm::orc::LLJIT> targetJit = std::move(*targetJitOrError);
+  std::unique_ptr<llvm::orc::LLJIT> targetJit =
+      std::move(*targetJitOrError);
 
   CallbackNames callbackNames;
   llvm::Error preparation =
@@ -879,13 +1059,13 @@ executeNativeStructuredProgram(
         if (llvm::Error error =
                 detail::retargetStructuredOracle(module, *targetJit))
           return error;
-        llvm::Expected<CallbackNames> names =
-            instrumentExecution(module, entry.getSymName(), *structured, *input,
-                                *sourceContext, *plans, capture);
+        auto names = instrumentExecution(module, entry.getSymName(),
+                                         *structured, *input, *sourceContext,
+                                         *plans, capture);
         if (!names)
           return names.takeError();
         callbackNames = std::move(*names);
-        callbackNames.blockActivation = std::move(*blockActivation);
+        callbackNames.blockActivation = std::move(blockActivation);
         return llvm::Error::success();
       });
   if (preparation)
@@ -894,6 +1074,44 @@ executeNativeStructuredProgram(
           std::move(*native), callbackNames, capture, std::move(targetJit)))
     return std::move(error);
   return buildObservations(*structured, *input, *plans, capture);
+}
+
+} // namespace
+
+llvm::Expected<NativeStructuredProgramObservations>
+executeNativeStructuredProgram(
+    const frontend::StructuredProgramCandidate &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  return executeProgramModule(program, program, workload, runtimeInput, true,
+                              false);
+}
+
+llvm::Expected<NativeStructuredProgramObservations>
+executeSelectedStructuredProgram(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  return executeProgramModule(selectedProgram, sourceProgram, workload,
+                              runtimeInput, false, true);
+}
+
+bool haveEquivalentFunctionalObservations(
+    const NativeStructuredProgramObservations &reference,
+    const NativeStructuredProgramObservations &candidate) {
+  if (reference.returnValue.has_value() != candidate.returnValue.has_value())
+    return false;
+  if (reference.returnValue &&
+      !sameValueSequence(*reference.returnValue, *candidate.returnValue))
+    return false;
+  if (reference.memories.size() != candidate.memories.size())
+    return false;
+  for (auto [left, right] :
+       llvm::zip_equal(reference.memories, candidate.memories))
+    if (!sameMemoryObservation(left, right))
+      return false;
+  return true;
 }
 
 } // namespace loom::sim
