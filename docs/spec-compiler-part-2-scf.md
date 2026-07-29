@@ -606,6 +606,16 @@ candidate cost or functional Evidence. This is an applicability projection of
 the existing source workload, not a semantic rejection, hidden wall-time limit,
 or second profile authority.
 
+The remaining active scopes form one ownership hierarchy derived from the
+Structured Program's exact operation ownership. A callable is a root; a nested
+loop, selection, or other structured region names its nearest enclosing
+ownership scope. This parent relation is an ephemeral generator view, not a
+new persistent program reference. The resolved Structured ownership policy
+expands this hierarchy through the workload-prioritized finite frontier defined
+by the central DSE specification. Every expanded scope retains its complete
+scope-local decision domain. Descendants beyond the resolved semantic expansion
+limit are outside the finite Generate domain rather than rejected candidates.
+
 An ownership decision is one dependency-closed structured-region decision,
 not separate whole-callable and single-operation semantics. Callable, loop,
 selection, and nested-region roots differ only in how their common data,

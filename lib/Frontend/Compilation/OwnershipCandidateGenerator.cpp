@@ -16,6 +16,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -604,13 +605,14 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
 
 } // namespace
 
-llvm::Expected<std::vector<SpatialOwnershipScopeDomainEntry>>
+llvm::Expected<SpatialOwnershipScopeDomain>
 enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
   auto view = parent.view();
   if (!view)
     return view.takeError();
 
-  std::vector<SpatialOwnershipScopeDomainEntry> domain;
+  SpatialOwnershipScopeDomain domain;
+  std::vector<mlir::Operation *> scopeOperations;
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     if (!entity.operation)
@@ -622,17 +624,36 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
       SpatialOwnershipScope scope{entity.reference};
       if (std::optional<std::string> rejection =
               callableOwnershipRejection(callable)) {
-        domain.push_back(
+        domain.entries_.push_back(
             RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
       } else {
-        domain.push_back(scope);
+        domain.entries_.push_back(scope);
       }
+      scopeOperations.push_back(entity.operation);
       continue;
     }
     if (analyzeOwnershipScope(entity.operation).rejection !=
         OwnershipScopeRejection::None)
       continue;
-    domain.push_back(SpatialOwnershipScope{entity.reference});
+    domain.entries_.push_back(SpatialOwnershipScope{entity.reference});
+    scopeOperations.push_back(entity.operation);
+  }
+
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> ordinalByOperation;
+  for (auto [ordinal, operation] : llvm::enumerate(scopeOperations))
+    ordinalByOperation.try_emplace(operation, ordinal);
+  domain.parentScopeOrdinals_.reserve(scopeOperations.size());
+  for (mlir::Operation *operation : scopeOperations) {
+    std::optional<std::uint64_t> parent;
+    for (mlir::Operation *ancestor = operation->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp()) {
+      auto found = ordinalByOperation.find(ancestor);
+      if (found == ordinalByOperation.end())
+        continue;
+      parent = found->second;
+      break;
+    }
+    domain.parentScopeOrdinals_.push_back(parent);
   }
   return domain;
 }

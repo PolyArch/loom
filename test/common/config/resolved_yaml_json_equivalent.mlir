@@ -11,6 +11,7 @@
 // CHECK-DAG: "addr_bits": 40
 // CHECK-DAG: "index_width": 64
 // CHECK-DAG: "mem_bus_width": 1024
+// CHECK-DAG: "scope_expansion_limit": 17
 // CHECK-DAG: "objective_id": "minimize_runtime"
 // CHECK-DAG: "objective_id": "minimize_area"
 // NO-TECHMAP-NOT: "fabric_techmap"

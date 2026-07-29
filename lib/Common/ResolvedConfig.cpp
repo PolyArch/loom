@@ -134,6 +134,7 @@ struct ConfigPatch {
   std::optional<unsigned> indexWidth;
   std::optional<unsigned> memBusWidth;
   std::optional<std::string> rankingPolicy;
+  std::optional<std::uint32_t> ownershipScopeExpansionLimit;
   std::optional<std::vector<loom::ResolvedDseObjective>> objectives;
   std::set<std::string> touchedKeys;
 };
@@ -171,6 +172,8 @@ llvm::Error mergeSiblingPatch(ConfigPatch &dst, const ConfigPatch &src) {
     dst.memBusWidth = src.memBusWidth;
   if (src.rankingPolicy)
     dst.rankingPolicy = src.rankingPolicy;
+  if (src.ownershipScopeExpansionLimit)
+    dst.ownershipScopeExpansionLimit = src.ownershipScopeExpansionLimit;
   if (src.objectives)
     dst.objectives = src.objectives;
   dst.touchedKeys.insert(src.touchedKeys.begin(), src.touchedKeys.end());
@@ -188,6 +191,9 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
     config.global.memBusWidth = *patch.memBusWidth;
   if (patch.rankingPolicy)
     config.dse.rankingPolicy = *patch.rankingPolicy;
+  if (patch.ownershipScopeExpansionLimit)
+    config.dse.structuredOwnership.scopeExpansionLimit =
+        *patch.ownershipScopeExpansionLimit;
   if (patch.objectives)
     config.dse.objectives = *patch.objectives;
 }
@@ -277,6 +283,29 @@ parseDseObjectives(ConfigPatch &patch, llvm::yaml::Node *node,
   return touch(patch, canonicalKey);
 }
 
+llvm::Error parseStructuredOwnership(ConfigPatch &patch,
+                                     llvm::yaml::MappingNode &map) {
+  llvm::StringSet<> seen;
+  for (auto &kv : map) {
+    llvm::SmallString<64> keyStorage;
+    StringRef key = scalarValue(kv.getKey(), keyStorage);
+    if (llvm::Error err =
+            checkDuplicateKey(seen, "dse.structured_ownership", key))
+      return err;
+    const std::string canonicalKey = ("dse.structured_ownership." + key).str();
+    if (key != "scope_expansion_limit")
+      return diagnostic("config_unknown_key", canonicalKey);
+    auto valueOrErr = requireUnsigned(kv.getValue(), canonicalKey);
+    if (!valueOrErr)
+      return valueOrErr.takeError();
+    patch.ownershipScopeExpansionLimit =
+        static_cast<std::uint32_t>(*valueOrErr);
+    if (llvm::Error err = touch(patch, canonicalKey))
+      return err;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error parseDse(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
   llvm::StringSet<> seen;
   for (auto &kv : map) {
@@ -296,6 +325,15 @@ llvm::Error parseDse(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
         return err;
     } else if (key == "objectives") {
       if (llvm::Error err = parseDseObjectives(patch, kv.getValue()))
+        return err;
+    } else if (key == "structured_ownership") {
+      auto *structuredOwnership =
+          llvm::dyn_cast_or_null<llvm::yaml::MappingNode>(kv.getValue());
+      if (!structuredOwnership)
+        return diagnostic("config_type_mismatch", canonicalKey,
+                          "expected mapping");
+      if (llvm::Error err =
+              parseStructuredOwnership(patch, *structuredOwnership))
         return err;
     } else {
       return diagnostic("config_unknown_key", canonicalKey);
@@ -445,6 +483,8 @@ parseConfigPatchFromMapping(llvm::yaml::MappingNode &topMap,
     merged.memBusWidth = local.memBusWidth;
   if (local.rankingPolicy)
     merged.rankingPolicy = local.rankingPolicy;
+  if (local.ownershipScopeExpansionLimit)
+    merged.ownershipScopeExpansionLimit = local.ownershipScopeExpansionLimit;
   if (local.objectives)
     merged.objectives = local.objectives;
   (void)sourceName;
@@ -475,6 +515,12 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
       {"dse",
        llvm::json::Object{
            {"ranking_policy", config.dse.rankingPolicy},
+           {"structured_ownership",
+            llvm::json::Object{
+                {"scope_expansion_limit",
+                 static_cast<int64_t>(
+                     config.dse.structuredOwnership.scopeExpansionLimit)},
+            }},
            {"objectives", objectivesJson(config)},
        }},
   };

@@ -98,7 +98,8 @@ merge:
 
 loom::dse::CompletedPreMappingSelection
 explore(const loom::fabric::FinalizedFabricRoot &fabric,
-        const loom::ArtifactStore &store, std::uint32_t workers) {
+        const loom::ArtifactStore &store, std::uint32_t workers,
+        std::optional<std::uint32_t> scopeExpansionLimit = std::nullopt) {
   llvm::LLVMContext context;
   auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), fabric));
@@ -138,9 +139,11 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1},
        workers}};
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  if (scopeExpansionLimit)
+    config.dse.structuredOwnership.scopeExpansionLimit = *scopeExpansionLimit;
   auto outcome = take(loom::dse::exploreStructuredCompilationToPreMapping(
-      std::move(structured), workload, input, fabric,
-      loom::defaultResolvedConfig(), options, store));
+      std::move(structured), workload, input, fabric, config, options, store));
   auto *completed =
       std::get_if<loom::dse::CompletedPreMappingSelection>(&outcome);
   if (!completed)
@@ -191,6 +194,17 @@ void requireCompleteAccounting(
   }
   if (!sawScopeRejection || !sawDecisionRejection || !sawSuccessfulDecision)
     fail("candidate domain accounting was incomplete");
+}
+
+void requireDeterministicScopeExpansionBudget(
+    const loom::dse::CompletedPreMappingSelection &selection) {
+  if (selection.dispositions.size() != 2)
+    fail("scope expansion budget did not retain one complete decision domain");
+  for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
+       selection.dispositions) {
+    if (!disposition.coordinate.decision)
+      fail("scope expansion budget selected the cold callable root first");
+  }
 }
 
 void requireEmptyScopeIsCandidateRejection(
@@ -259,6 +273,13 @@ int main() {
   requireCompleteAccounting(parallel);
   if (serial.dispositions != parallel.dispositions)
     fail("candidate worker count changed the disposition sequence");
+
+  auto limitedSerial = explore(design.roots().front(), store, 1, 1);
+  requireDeterministicScopeExpansionBudget(limitedSerial);
+  auto limitedParallel = explore(design.roots().front(), store, 2, 1);
+  requireDeterministicScopeExpansionBudget(limitedParallel);
+  if (limitedSerial.dispositions != limitedParallel.dispositions)
+    fail("worker count changed the resolved scope expansion domain");
 
   error = llvm::sys::fs::remove_directories(directory);
   if (error)

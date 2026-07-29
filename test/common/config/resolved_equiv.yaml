@@ -5,6 +5,8 @@ global:
   mem_bus_width: 1024
 dse:
   ranking_policy: weighted_sum
+  structured_ownership:
+    scope_expansion_limit: 17
   objectives:
     - objective_id: minimize_runtime
       weight: 0.7

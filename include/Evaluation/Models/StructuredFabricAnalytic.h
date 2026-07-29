@@ -83,11 +83,13 @@ struct StructuredFabricAnalyticCandidateProjection final {
 struct StructuredScopeActivityProjection final {
   ::loom::frontend::StructuredEntityRef scope;
   std::uint64_t dynamicActivations = 0;
+  std::uint64_t dynamicLeafExecutions = 0;
 };
 
-/// Projects dynamic activation counts for exact source scopes in caller order.
-/// The projection validates the complete block-observation correspondence once
-/// and performs no candidate materialization, ranking, or target admission.
+/// Projects dynamic activation and executable-leaf counts for exact source
+/// scopes in caller order. The projection validates the complete
+/// block-observation correspondence once and performs no candidate
+/// materialization, ranking, or target admission.
 llvm::Expected<std::vector<StructuredScopeActivityProjection>>
 projectStructuredScopeActivity(
     const ::loom::frontend::StructuredProgramCandidate &sourceProgram,

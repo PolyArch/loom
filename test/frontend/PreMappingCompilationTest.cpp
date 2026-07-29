@@ -1405,14 +1405,17 @@ void operationOwnershipScopesFollowCanonicalOrder() {
   auto view = take(test, compiled.structuredProgram.view());
 
   std::vector<loom::frontend::StructuredEntityRef> scopes;
-  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+  std::vector<std::uint64_t> scopeOrdinals;
+  for (auto [domainOrdinal, entry] : llvm::enumerate(domain)) {
     const auto *scope =
         std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
     if (!scope)
       continue;
     auto entity = take(test, view.resolve(scope->selection));
-    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation))
+    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation)) {
       scopes.push_back(scope->selection);
+      scopeOrdinals.push_back(domainOrdinal);
+    }
   }
 
   std::vector<loom::frontend::StructuredEntityRef> expected;
@@ -1423,10 +1426,23 @@ void operationOwnershipScopesFollowCanonicalOrder() {
   }
   if (expected.size() != 2 || scopes != expected)
     fail(test, "ownership scopes do not follow canonical operation order");
-  for (const auto &scope : scopes)
+  for (auto [scope, domainOrdinal] : llvm::zip_equal(scopes, scopeOrdinals)) {
     if (scope.parent != compiled.structuredProgram.identity() ||
         scope.kind != loom::frontend::StructuredEntityKind::Operation)
       fail(test, "ownership scope is not parent-local operation identity");
+    std::optional<std::uint64_t> parentOrdinal =
+        domain.parentScopeOrdinal(domainOrdinal);
+    if (!parentOrdinal)
+      fail(test, "nested ownership scope has no parent scope");
+    const auto *parentScope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(
+            &domain[*parentOrdinal]);
+    if (!parentScope)
+      fail(test, "nested ownership scope parent is not materializable");
+    auto parentEntity = take(test, view.resolve(parentScope->selection));
+    if (!llvm::isa_and_nonnull<mlir::LLVM::LLVMFuncOp>(parentEntity.operation))
+      fail(test, "loop ownership scope is not parented by its callable");
+  }
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

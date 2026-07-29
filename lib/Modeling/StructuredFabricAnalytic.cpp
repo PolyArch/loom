@@ -563,10 +563,11 @@ projectStructuredScopeActivity(
   std::vector<StructuredScopeActivityProjection> result;
   result.reserve(scopes.size());
   for (const frontend::StructuredEntityRef &scope : scopes) {
-    auto activity = resolveScopeActivity(*projection, scope);
+    auto activity = projectScopeDynamicWork(*projection, scope);
     if (!activity)
       return activity.takeError();
-    result.push_back({scope, activity->dynamicActivations});
+    result.push_back({scope, activity->dynamicActivations,
+                      activity->instructionLeafExecutions});
   }
   return result;
 }

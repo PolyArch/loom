@@ -9,6 +9,8 @@
 // JSON-DAG: "mem_bus_width": 32768
 // JSON-DAG: "dse"
 // JSON-DAG: "ranking_policy": "weighted_sum"
+// JSON-DAG: "structured_ownership"
+// JSON-DAG: "scope_expansion_limit": 64
 // JSON-DAG: "objective_id": "minimize_runtime"
 // NO-TECHMAP-NOT: "fabric_techmap"
 // IDENTITY: {{^[0-9a-f]{64}$}}

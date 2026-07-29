@@ -273,6 +273,16 @@ may be legal and profitable for a different workload. Keeping it outside the
 exact workload-specific Generate domain preserves total accounting without
 inventing a cold-scope status or a second profile record.
 
+Eagerly materializing every active callable and every nested structured region
+also duplicates large complete program snapshots before any useful comparison
+can occur. A wall-time cutoff or worker-count-dependent batch would make the
+formal candidate set machine-dependent. The generator instead derives one
+scope hierarchy, admits children only after their parent reaches the frontier,
+and spends a resolved semantic number of complete scope expansions on the most
+dynamically relevant work first. This preserves exact scope-local alternatives,
+keeps cache hits and misses equivalent, and bounds artifact publication without
+inventing benchmark rules or treating unexplored descendants as failures.
+
 The common workload is rooted in the source Structured Program rather than in
 any candidate graph. Otherwise each ownership candidate would change both the
 program and the workload key, making source equivalence and whole-workload

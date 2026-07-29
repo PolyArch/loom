@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <queue>
 #include <utility>
 #include <vector>
 
@@ -108,6 +109,8 @@ generateAndPromoteStructuredOwnership(
     const ArtifactStore &artifactStore) {
   if (options.candidateWorkerCount == 0)
     return invalid("candidate worker count must be positive");
+  if (config.dse.structuredOwnership.scopeExpansionLimit == 0)
+    return invalid("ownership scope expansion limit must be positive");
   if (llvm::Error error =
           evaluation::models::registerStructuredFabricAnalyticModel())
     return std::move(error);
@@ -161,6 +164,61 @@ generateAndPromoteStructuredOwnership(
     return scopeActivity.takeError();
   if (scopeActivity->size() != domain->size())
     return invalid("scope activity projection is not total");
+
+  std::vector<bool> activeScopes(domain->size(), false);
+  std::vector<std::vector<std::size_t>> childScopes(domain->size());
+  std::vector<std::size_t> rootScopes;
+  for (std::size_t ordinal = 0; ordinal < domain->size(); ++ordinal) {
+    const auto &activity = (*scopeActivity)[ordinal];
+    if (activity.scope != scopeReferences[ordinal])
+      return invalid("scope activity projection changed canonical order");
+    if (activity.dynamicActivations == 0)
+      continue;
+    activeScopes[ordinal] = true;
+  }
+  for (std::size_t ordinal = 0; ordinal < domain->size(); ++ordinal) {
+    if (!activeScopes[ordinal])
+      continue;
+    std::optional<std::uint64_t> parent = domain->parentScopeOrdinal(ordinal);
+    if (!parent) {
+      rootScopes.push_back(ordinal);
+      continue;
+    }
+    if (*parent >= domain->size() || *parent == ordinal)
+      return invalid("ownership scope hierarchy is malformed");
+    if (!activeScopes[*parent])
+      return invalid("active ownership scope has an inactive parent");
+    childScopes[*parent].push_back(ordinal);
+  }
+
+  auto lessPromising = [&](std::size_t lhs, std::size_t rhs) {
+    const auto &left = (*scopeActivity)[lhs];
+    const auto &right = (*scopeActivity)[rhs];
+    if (left.dynamicLeafExecutions != right.dynamicLeafExecutions)
+      return left.dynamicLeafExecutions < right.dynamicLeafExecutions;
+    if (left.dynamicActivations != right.dynamicActivations)
+      return left.dynamicActivations < right.dynamicActivations;
+    return lhs > rhs;
+  };
+  std::priority_queue<std::size_t, std::vector<std::size_t>,
+                      decltype(lessPromising)>
+      frontier(lessPromising);
+  for (std::size_t root : rootScopes)
+    frontier.push(root);
+
+  std::vector<std::size_t> plannedScopeOrdinals;
+  plannedScopeOrdinals.reserve(std::min<std::size_t>(
+      config.dse.structuredOwnership.scopeExpansionLimit, domain->size()));
+  while (!frontier.empty() &&
+         plannedScopeOrdinals.size() <
+             config.dse.structuredOwnership.scopeExpansionLimit) {
+    const std::size_t ordinal = frontier.top();
+    frontier.pop();
+    plannedScopeOrdinals.push_back(ordinal);
+    for (std::size_t child : childScopes[ordinal])
+      frontier.push(child);
+  }
+
   std::vector<OwnershipWorkItem> workItems;
   struct PlannedDisposition final {
     StructuredOwnershipCandidateCoordinate coordinate;
@@ -168,11 +226,9 @@ generateAndPromoteStructuredOwnership(
         source;
   };
   std::vector<PlannedDisposition> plannedDispositions;
-  for (auto [domainOrdinal, entry] : llvm::enumerate(*domain)) {
-    if ((*scopeActivity)[domainOrdinal].scope != scopeReferences[domainOrdinal])
-      return invalid("scope activity projection changed canonical order");
-    if ((*scopeActivity)[domainOrdinal].dynamicActivations == 0)
-      continue;
+  for (std::size_t domainOrdinal : plannedScopeOrdinals) {
+    const frontend::SpatialOwnershipScopeDomainEntry &entry =
+        (*domain)[domainOrdinal];
     if (const auto *rejected =
             std::get_if<frontend::RejectedSpatialOwnershipScope>(&entry)) {
       plannedDispositions.push_back(

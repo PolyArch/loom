@@ -96,6 +96,20 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
+The current schema is `loom.config.resolved 1.1`. Its Structured ownership
+generator policy owns:
+
+```text
+dse.structured_ownership.scope_expansion_limit: positive uint32 = 64
+```
+
+The limit counts complete ownership-scope expansions. Expanding one scope
+enumerates its entire finite typed decision domain; it does not truncate that
+domain based on worker count, wall time, cache state, or completion order. This
+field is semantic because changing it changes the finite Generate domain.
+Physical candidate-worker count remains an invocation Execution Limit and is
+not a ResolvedConfig field.
+
 Closed enums use typed enum definitions and convert to strings only at parser,
 printer, canonical JSON, or diagnostic boundaries. Components do not repeat
 string tables or accept unknown names with an implicit fallback.

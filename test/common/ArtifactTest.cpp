@@ -638,7 +638,7 @@ void resolvedConfigUsesArtifactFinalization() {
               llvm::StringRef("loom.config.resolved"),
           "ResolvedConfig schema identity changed");
   require(__func__,
-          ResolvedConfig::artifactSchema.version == SchemaVersion{1, 0},
+          ResolvedConfig::artifactSchema.version == SchemaVersion{1, 1},
           "ResolvedConfig schema version changed");
 
   const ResolvedConfig config = defaultResolvedConfig();
@@ -653,7 +653,7 @@ void resolvedConfigUsesArtifactFinalization() {
           "ResolvedConfig did not use the common finalizer");
 
   ResolvedConfig changed = config;
-  ++changed.global.addrBits;
+  ++changed.dse.structuredOwnership.scopeExpansionLimit;
   require(__func__,
           resolvedConfigIdentity(config) != resolvedConfigIdentity(changed),
           "ResolvedConfig semantic change did not affect identity");

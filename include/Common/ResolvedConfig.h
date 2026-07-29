@@ -6,6 +6,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -22,14 +23,19 @@ struct ResolvedGlobalConfig {
   unsigned memBusWidth = 32768;
 };
 
+struct ResolvedStructuredOwnershipConfig {
+  std::uint32_t scopeExpansionLimit = 64;
+};
+
 struct ResolvedDseConfig {
   std::string rankingPolicy = "weighted_sum";
+  ResolvedStructuredOwnershipConfig structuredOwnership;
   std::vector<ResolvedDseObjective> objectives;
 };
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{1, 0}};
+      "loom.config.resolved", SchemaVersion{1, 1}};
 
   std::string configId = "loom.default";
   ResolvedGlobalConfig global;

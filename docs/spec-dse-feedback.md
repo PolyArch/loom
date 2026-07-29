@@ -853,6 +853,24 @@ Request consumes no new semantic work; a new replicate is a new Request and
 work unit. Worker count, wall time, license concurrency, process retry limits,
 and host resources are Execution Limits and cannot change the formal plan.
 
+The Structured ownership generator uses one positive
+`scope_expansion_limit` owned by its ResolvedConfig policy. Its finite scope
+domain includes the mechanically derived nearest enclosing ownership-scope
+relation. For one exact workload, scopes with zero dynamic activation are
+removed by the descriptor-owned applicability projection. The remaining roots
+form a deterministic priority frontier. Priority is descending dynamic
+executable-leaf count, then descending activation count, then ascending
+canonical scope ordinal. Popping a scope makes its direct children eligible;
+therefore no child can consume a work slot before its parent. One popped scope
+consumes one expansion slot and contributes its complete typed decision domain
+or its one typed scope rejection.
+
+Scopes not reached before the resolved limit are outside that invocation's
+finite Generate domain. They receive no candidate disposition and no Evidence;
+they are not mislabeled as infeasible or workload-inapplicable. Cache state and
+parallel worker completion order cannot change the frontier or its stable work
+ordinals.
+
 The controller owns finite candidate sets as canonical sets of complete typed
 ArtifactRootReferences. They are controller-local values, not Artifacts. Every
 promotion has one shape:

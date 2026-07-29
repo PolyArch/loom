@@ -8,6 +8,8 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -106,6 +108,35 @@ struct RejectedSpatialOwnershipScope final {
 using SpatialOwnershipScopeDomainEntry =
     std::variant<SpatialOwnershipScope, RejectedSpatialOwnershipScope>;
 
+/// The complete finite scope domain and its mechanically derived ownership
+/// hierarchy. Parent ordinals are local to this exact domain and therefore do
+/// not become Structured Program identity or persistent candidate lineage.
+class SpatialOwnershipScopeDomain final {
+public:
+  using const_iterator =
+      std::vector<SpatialOwnershipScopeDomainEntry>::const_iterator;
+
+  std::size_t size() const { return entries_.size(); }
+  bool empty() const { return entries_.empty(); }
+  const SpatialOwnershipScopeDomainEntry &operator[](std::size_t index) const {
+    return entries_[index];
+  }
+  const_iterator begin() const { return entries_.begin(); }
+  const_iterator end() const { return entries_.end(); }
+
+  std::optional<std::uint64_t>
+  parentScopeOrdinal(std::size_t scopeOrdinal) const {
+    return parentScopeOrdinals_[scopeOrdinal];
+  }
+
+private:
+  std::vector<SpatialOwnershipScopeDomainEntry> entries_;
+  std::vector<std::optional<std::uint64_t>> parentScopeOrdinals_;
+
+  friend llvm::Expected<SpatialOwnershipScopeDomain>
+  enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &);
+};
+
 /// A private clone in which one exact ownership scope has had all selected
 /// semantic decisions materialized, but no execution owner has yet replaced
 /// the selected operation. `liveIns` and `liveOuts` are the exact ordered
@@ -125,7 +156,7 @@ struct PreparedSpatialOwnershipSelection final {
 /// not candidate attempts. Each accepted scope remains independent: callers
 /// derive and explore its decision domain separately rather than constructing
 /// one cross-scope Cartesian product.
-llvm::Expected<std::vector<SpatialOwnershipScopeDomainEntry>>
+llvm::Expected<SpatialOwnershipScopeDomain>
 enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent);
 
 /// Derives the finite typed decision domain for one exact ownership scope.
