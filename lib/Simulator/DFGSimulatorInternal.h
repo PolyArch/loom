@@ -674,6 +674,46 @@ struct ActorExecutionPlan {
   bool isPlainMemory() const { return memory.has_value(); }
 };
 
+struct GraphReturnObservation {
+  llvm::SmallVector<mlir::Value> complete;
+  llvm::SmallVector<mlir::Value> values;
+  llvm::SmallVector<mlir::Value> streams;
+  llvm::SmallVector<mlir::Value> memories;
+};
+
+/// Immutable execution cache derived from one finalized dataflow.graph.
+///
+/// Canonical Dataflow and OperationSchema remain the semantic authorities.
+/// This process-local projection only prevents repeated graph validation,
+/// provider lookup, and pointer-to-ordinal reconstruction when the same graph
+/// is activated many times with different runtime inputs.
+struct PreparedGraphExecution {
+  struct Channel {
+    const mlir::OpOperand *operand = nullptr;
+    unsigned ownerActorOrdinal = InvalidActorOrdinal;
+  };
+
+  dataflow::GraphOp graph = {};
+  unsigned applicationInputCount = 0;
+  GraphReturnObservation returnObservation;
+  llvm::DenseMap<const mlir::OpOperand *, ChannelOrdinal> channelOrdinals;
+  std::vector<Channel> channels;
+  std::vector<ActorExecutionPlan> actorPlans;
+  llvm::DenseSet<mlir::Value> observedValues;
+  llvm::SmallBitVector initialPlainMemoryCandidates;
+};
+
+struct GraphPreparationFailure {
+  std::string status;
+  llvm::SmallVector<std::string> diagnostics;
+};
+
+using GraphPreparationResult =
+    std::variant<PreparedGraphExecution, GraphPreparationFailure>;
+
+llvm::Expected<GraphPreparationResult>
+prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph);
+
 /// Merges the ranges into the ascending, non-touching cover of the same bytes.
 void canonicalizeMemoryActionRanges(
     llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges);
@@ -769,22 +809,20 @@ enum class RunFailure {
 };
 
 struct SimulatorState {
-  // Dense canonical actor order and the candidates whose readiness may have
-  // changed for the next wave. This is a derived execution cache: token
+  // The immutable graph projection outlives this run. Dynamic state never
+  // mutates it, so repeated activations can share one prepared plan.
+  const PreparedGraphExecution *execution = nullptr;
+  // Candidates whose readiness may have changed for the next wave. Token
   // arrival schedules only the consuming actor, while a firing schedules
   // itself in case another transition is already buffered. The bitset keeps
   // equal-wave evaluation in structural order without rescanning the graph.
-  std::vector<ActorExecutionPlan> actorPlans;
-  llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
   llvm::SmallBitVector nextActorCandidates;
-  llvm::DenseMap<const mlir::OpOperand *, ChannelOrdinal> channelOrdinals;
   std::vector<ChannelSlot> channelSlots;
   llvm::SmallVector<ChannelOrdinal, 16> pendingChannelOrdinals;
   const ActorExecutionPlan *currentActorPlan = nullptr;
   // Values whose complete publication sequence is an explicit graph
   // observation. Internal SSA token history is represented by the edge
   // queues alone and is not retained as an implicit trace.
-  llvm::DenseSet<mlir::Value> observedValues;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::SmallVector<mlir::Value, 8> pendingObservedValues;

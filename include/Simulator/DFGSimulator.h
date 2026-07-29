@@ -12,12 +12,14 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <system_error>
 
 namespace dataflow {
 class CanonicalDataflowArtifact;
-}
+struct RootedGraphLaunchRef;
+} // namespace dataflow
 
 namespace loom {
 namespace sim {
@@ -89,6 +91,38 @@ struct RetiredDFGSimulation {
   SpatialFunctionalObservations observations;
 };
 
+/// Disposable execution cache for repeated activations of one exact rooted
+/// graph. The plan owns a strict import of the Canonical Dataflow artifact and
+/// derives every provider, channel, and actor entry from that owner. It is not
+/// persistent, does not affect artifact identity, and carries no dynamic run
+/// state between activations.
+class PreparedDfgExecution {
+public:
+  PreparedDfgExecution(PreparedDfgExecution &&) noexcept;
+  PreparedDfgExecution &operator=(PreparedDfgExecution &&) noexcept;
+  ~PreparedDfgExecution();
+
+  PreparedDfgExecution(const PreparedDfgExecution &) = delete;
+  PreparedDfgExecution &operator=(const PreparedDfgExecution &) = delete;
+
+private:
+  struct Impl;
+  explicit PreparedDfgExecution(std::unique_ptr<Impl> impl);
+
+  std::unique_ptr<Impl> impl_;
+
+  friend llvm::Expected<PreparedDfgExecution>
+  prepareDfgExecution(const dataflow::CanonicalDataflowArtifact &,
+                      const dataflow::RootedGraphLaunchRef &);
+  friend llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
+      const PreparedDfgExecution &, const CanonicalSimulationWorkload &,
+      const CanonicalSimulationRuntimeInput &, std::uint64_t);
+};
+
+llvm::Expected<PreparedDfgExecution>
+prepareDfgExecution(const dataflow::CanonicalDataflowArtifact &program,
+                    const dataflow::RootedGraphLaunchRef &launch);
+
 llvm::Expected<DFGSimulationReport>
 simulateDataflowGraph(::mlir::ModuleOp module,
                       const DFGSimulationOptions &options);
@@ -104,6 +138,12 @@ simulateDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
 
 llvm::Expected<RetiredDFGSimulation>
 simulateRetiredDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
+                           const CanonicalSimulationWorkload &workload,
+                           const CanonicalSimulationRuntimeInput &runtimeInput,
+                           std::uint64_t maxEventSteps = 100000);
+
+llvm::Expected<RetiredDFGSimulation>
+simulateRetiredDfgWorkload(const PreparedDfgExecution &prepared,
                            const CanonicalSimulationWorkload &workload,
                            const CanonicalSimulationRuntimeInput &runtimeInput,
                            std::uint64_t maxEventSteps = 100000);

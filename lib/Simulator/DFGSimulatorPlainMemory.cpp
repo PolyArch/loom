@@ -228,7 +228,7 @@ bool admitReadyPlainMemoryActions(SimulatorState &state) {
   llvm::SmallVector<std::string> projectionDiagnostics;
   for (int ordinal = state.plainMemoryCandidates.find_first(); ordinal >= 0;
        ordinal = state.plainMemoryCandidates.find_next(ordinal)) {
-    const ActorExecutionPlan &plan = state.actorPlans[ordinal];
+    const ActorExecutionPlan &plan = state.execution->actorPlans[ordinal];
     mlir::Operation *operation = plan.operation;
     state.currentActorPlan = &plan;
     PlainMemoryActionProjection projection =

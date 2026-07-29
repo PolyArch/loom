@@ -537,11 +537,28 @@ void typedDfgExecution() {
     fail(test, "runtime-input finalization failed: " +
                    llvm::toString(input.takeError()));
 
+  auto prepared = prepareDfgExecution(artifact, workload->spatial()->launchRef);
+  if (!prepared)
+    fail(test, "typed DFG preparation failed: " +
+                   llvm::toString(prepared.takeError()));
+  llvm::Expected<RetiredDFGSimulation> firstExecution =
+      simulateRetiredDfgWorkload(*prepared, *workload, *input);
+  if (!firstExecution)
+    fail(test, "first prepared DFG execution failed: " +
+                   llvm::toString(firstExecution.takeError()));
   llvm::Expected<RetiredDFGSimulation> execution =
-      simulateRetiredDfgWorkload(artifact, *workload, *input);
+      simulateRetiredDfgWorkload(*prepared, *workload, *input);
   if (!execution)
     fail(test, "typed DFG execution failed: " +
                    llvm::toString(execution.takeError()));
+  require(test,
+          firstExecution->report.wavefrontSteps ==
+                  execution->report.wavefrontSteps &&
+              firstExecution->report.eventCount ==
+                  execution->report.eventCount &&
+              firstExecution->report.operationFireCounts ==
+                  execution->report.operationFireCounts,
+          "prepared execution retained dynamic state across activations");
   DFGSimulationReport &report = execution->report;
   require(test,
           report.workload == formatArtifactIdentityHex(workload->identity()),

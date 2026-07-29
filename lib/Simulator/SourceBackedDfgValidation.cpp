@@ -558,6 +558,10 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
                ? invalid("ownership candidate has no rooted graph launch")
                : unsupported(
                      "one ownership candidate has multiple rooted launches");
+  auto preparedDfg =
+      prepareDfgExecution(candidate.canonicalDataflow, launches.front());
+  if (!preparedDfg)
+    return preparedDfg.takeError();
 
   auto plan = deriveCapturePlan(*view, launches.front(), *prepared);
   if (!plan)
@@ -632,7 +636,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       return replayInput.takeError();
     const auto started = std::chrono::steady_clock::now();
     auto execution = simulateRetiredDfgWorkload(
-        candidate.canonicalDataflow, *replayWorkload, *replayInput,
+        *preparedDfg, *replayWorkload, *replayInput,
         limits.maxWavefrontSteps - result.wavefrontSteps);
     const auto stopped = std::chrono::steady_clock::now();
     result.simulationSeconds +=

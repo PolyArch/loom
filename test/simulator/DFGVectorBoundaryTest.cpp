@@ -306,9 +306,28 @@ template <typename T> T takeExpected(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-ActorExecutionPlan &installActorPlan(SimulatorState &state,
+struct TestSimulatorState : SimulatorState {
+  TestSimulatorState() { execution = &prepared; }
+
+  PreparedGraphExecution prepared;
+};
+
+TokenQueue &testChannelQueue(TestSimulatorState &state,
+                             mlir::OpOperand &operand) {
+  auto found = state.prepared.channelOrdinals.find(&operand);
+  if (found != state.prepared.channelOrdinals.end())
+    return state.channelSlots[found->second].ready;
+  const ChannelOrdinal ordinal = state.channelSlots.size();
+  state.prepared.channelOrdinals.try_emplace(&operand, ordinal);
+  state.prepared.channels.push_back({&operand, InvalidActorOrdinal});
+  state.channelSlots.push_back(
+      ChannelSlot{&operand, InvalidActorOrdinal, {}, {}});
+  return state.channelSlots.back().ready;
+}
+
+ActorExecutionPlan &installActorPlan(TestSimulatorState &state,
                                      mlir::Operation *operation) {
-  for (ActorExecutionPlan &plan : state.actorPlans)
+  for (ActorExecutionPlan &plan : state.prepared.actorPlans)
     if (plan.operation == operation)
       return plan;
 
@@ -325,12 +344,12 @@ ActorExecutionPlan &installActorPlan(SimulatorState &state,
     for (mlir::OpOperand &operand : operation->getOpOperands()) {
       TokenQueue ready;
       TokenQueue pending;
-      auto prior = state.channelOrdinals.find(&operand);
-      if (prior != state.channelOrdinals.end()) {
+      auto prior = state.prepared.channelOrdinals.find(&operand);
+      if (prior != state.prepared.channelOrdinals.end()) {
         const ChannelOrdinal oldOrdinal = prior->second;
         ready = std::move(state.channelSlots[oldOrdinal].ready);
         pending = std::move(state.channelSlots[oldOrdinal].pending);
-        for (ActorExecutionPlan &plan : state.actorPlans)
+        for (ActorExecutionPlan &plan : state.prepared.actorPlans)
           for (ActorExecutionPlan::Output &output : plan.outputs)
             for (ChannelOrdinal &channel : output.channels)
               if (channel == oldOrdinal)
@@ -340,7 +359,7 @@ ActorExecutionPlan &installActorPlan(SimulatorState &state,
             channel = state.channelSlots.size();
       }
       const ChannelOrdinal ordinal = state.channelSlots.size();
-      state.channelOrdinals[&operand] = ordinal;
+      state.prepared.channelOrdinals[&operand] = ordinal;
       state.channelSlots.push_back(ChannelSlot{
           &operand, InvalidActorOrdinal, std::move(ready), std::move(pending)});
     }
@@ -352,8 +371,9 @@ ActorExecutionPlan &installActorPlan(SimulatorState &state,
     output.value = result;
     output.observed = true;
     for (mlir::OpOperand &use : result.getUses()) {
-      (void)channelQueue(state, use);
-      output.channels.push_back(state.channelOrdinals.find(&use)->second);
+      (void)testChannelQueue(state, use);
+      output.channels.push_back(
+          state.prepared.channelOrdinals.find(&use)->second);
     }
     outputs.push_back(std::move(output));
   }
@@ -367,18 +387,18 @@ ActorExecutionPlan &installActorPlan(SimulatorState &state,
     memory =
         takeExpected(memoryActorExecutionPlan(operation, state.graphScope));
   ActorProvider provider = actorProvider(projection->schema);
-  state.actorPlans.push_back(ActorExecutionPlan{
+  state.prepared.actorPlans.push_back(ActorExecutionPlan{
       operation, std::move(*projection), provider, firstInput,
       static_cast<std::uint32_t>(operation->getNumOperands()),
       std::move(outputs), std::move(primitive), std::move(memory)});
-  return state.actorPlans.back();
+  return state.prepared.actorPlans.back();
 }
 
 template <typename Op>
-bool fireAdmittedActorOperation(Op op, SimulatorState &state) {
+bool fireAdmittedActorOperation(Op op, TestSimulatorState &state) {
   mlir::Operation *operation = op.getOperation();
   for (mlir::Value result : operation->getResults())
-    state.observedValues.insert(result);
+    state.prepared.observedValues.insert(result);
   ActorExecutionPlan &plan = installActorPlan(state, operation);
   const ActorExecutionPlan *prior = state.currentActorPlan;
   state.currentActorPlan = &plan;
@@ -422,27 +442,27 @@ void expectPhases(llvm::ArrayRef<Token> tokens,
 void flushPending(SimulatorState &state) { flushPendingTokens(state); }
 
 void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getDataMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getDataMutable())
       .push_back(tokenWithBits(op.getData().getType(), 17));
-  channelQueue(state, op.getDataMutable())
+  testChannelQueue(state, op.getDataMutable())
       .push_back(tokenWithBits(op.getData().getType(), 18));
-  channelQueue(state, op.getScalarPhaseMutable())
+  testChannelQueue(state, op.getScalarPhaseMutable())
       .push_back(boolValueToken(true));
-  channelQueue(state, op.getScalarPhaseMutable())
+  testChannelQueue(state, op.getScalarPhaseMutable())
       .push_back(boolValueToken(false));
-  channelQueue(state, op.getScalarPhaseMutable())
+  testChannelQueue(state, op.getScalarPhaseMutable())
       .push_back(boolValueToken(true));
-  channelQueue(state, op.getScalarPhaseMutable())
+  testChannelQueue(state, op.getScalarPhaseMutable())
       .push_back(boolValueToken(false));
 
   require(fireAdmittedActorOperation(op, state),
           "first scalar true did not fire");
-  require(channelQueue(state, op.getDataMutable()).size() == 1,
+  require(testChannelQueue(state, op.getDataMutable()).size() == 1,
           "first scalar true consumed the wrong payload");
   require(fireAdmittedActorOperation(op, state),
           "first scalar false did not fire");
-  require(channelQueue(state, op.getDataMutable()).size() == 1,
+  require(testChannelQueue(state, op.getDataMutable()).size() == 1,
           "scalar false consumed the next activation payload");
   require(fireAdmittedActorOperation(op, state),
           "second scalar true did not fire");
@@ -462,16 +482,16 @@ void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {
 void serializePreservesQueuedActivation(dataflow::SerializeOp op,
                                         dataflow::UnpackOp vectorUnpack,
                                         dataflow::UnpackOp maskUnpack) {
-  SimulatorState state;
-  channelQueue(state, vectorUnpack.getPackedMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, vectorUnpack.getPackedMutable())
       .push_back(
           tokenWithBits(vectorUnpack.getPacked().getType(), 0x44332211U));
-  channelQueue(state, vectorUnpack.getPackedMutable())
+  testChannelQueue(state, vectorUnpack.getPackedMutable())
       .push_back(
           tokenWithBits(vectorUnpack.getPacked().getType(), 0x44332211U));
-  channelQueue(state, maskUnpack.getPackedMutable())
+  testChannelQueue(state, maskUnpack.getPackedMutable())
       .push_back(tokenWithBits(maskUnpack.getPacked().getType(), 0));
-  channelQueue(state, maskUnpack.getPackedMutable())
+  testChannelQueue(state, maskUnpack.getPackedMutable())
       .push_back(tokenWithBits(maskUnpack.getPacked().getType(), 5));
 
   require(fireAdmittedActorOperation(vectorUnpack, state),
@@ -484,29 +504,29 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
           "second mask unpack did not fire");
   flushPending(state);
 
-  require(channelQueue(state, op.getVectorMutable()).size() == 2 &&
-              channelQueue(state, op.getMaskMutable()).size() == 2,
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 2 &&
+              testChannelQueue(state, op.getMaskMutable()).size() == 2,
           "unpack did not queue both activation payloads");
-  channelQueue(state, op.getGroupPhaseMutable())
+  testChannelQueue(state, op.getGroupPhaseMutable())
       .push_back(boolValueToken(true));
-  channelQueue(state, op.getGroupPhaseMutable())
+  testChannelQueue(state, op.getGroupPhaseMutable())
       .push_back(boolValueToken(false));
-  channelQueue(state, op.getGroupPhaseMutable())
+  testChannelQueue(state, op.getGroupPhaseMutable())
       .push_back(boolValueToken(true));
-  channelQueue(state, op.getGroupPhaseMutable())
+  testChannelQueue(state, op.getGroupPhaseMutable())
       .push_back(boolValueToken(false));
 
   require(fireAdmittedActorOperation(op, state),
           "all-zero true group did not fire");
-  require(channelQueue(state, op.getVectorMutable()).size() == 1 &&
-              channelQueue(state, op.getMaskMutable()).size() == 1,
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 1 &&
+              testChannelQueue(state, op.getMaskMutable()).size() == 1,
           "all-zero true group did not consume its payload");
   require(state.pendingObservedOutputs[op.getData()].empty(),
           "all-zero group emitted scalar data");
   require(fireAdmittedActorOperation(op, state),
           "first group false did not fire");
-  require(channelQueue(state, op.getVectorMutable()).size() == 1 &&
-              channelQueue(state, op.getMaskMutable()).size() == 1,
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 1 &&
+              testChannelQueue(state, op.getMaskMutable()).size() == 1,
           "group false consumed the next activation payload");
   require(fireAdmittedActorOperation(op, state),
           "sparse true group did not fire");
@@ -522,16 +542,16 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
 
 void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
   {
-    SimulatorState state;
-    channelQueue(state, op.getDataMutable())
+    TestSimulatorState state;
+    testChannelQueue(state, op.getDataMutable())
         .push_back(malformedToken(TokenKind::Integer, 16));
-    channelQueue(state, op.getScalarPhaseMutable())
+    testChannelQueue(state, op.getScalarPhaseMutable())
         .push_back(boolValueToken(true));
 
     require(!fireAdmittedActorOperation(op, state),
             "parallelize accepted a malformed scalar token");
-    require(channelQueue(state, op.getDataMutable()).size() == 1 &&
-                channelQueue(state, op.getScalarPhaseMutable()).size() == 1,
+    require(testChannelQueue(state, op.getDataMutable()).size() == 1 &&
+                testChannelQueue(state, op.getScalarPhaseMutable()).size() == 1,
             "parallelize consumed input on conversion failure");
     require(!state.parallelizeStates.contains(op.getOperation()),
             "parallelize changed actor state on conversion failure");
@@ -542,13 +562,13 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
   }
 
   {
-    SimulatorState state;
+    TestSimulatorState state;
     ParallelizeState pending;
     pending.semanticState.pendingItems = 1;
     pending.slots.resize(2);
     pending.slots[0] = malformedToken(TokenKind::Integer, 16);
     state.parallelizeStates[op.getOperation()] = pending;
-    channelQueue(state, op.getScalarPhaseMutable())
+    testChannelQueue(state, op.getScalarPhaseMutable())
         .push_back(boolValueToken(false));
 
     require(!fireAdmittedActorOperation(op, state),
@@ -558,7 +578,7 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
     require(preserved.semanticState.pendingItems == 1 && preserved.slots[0] &&
                 preserved.slots[0]->exactBitWidth() == 16,
             "parallelize changed pending state on group construction failure");
-    require(channelQueue(state, op.getScalarPhaseMutable()).size() == 1,
+    require(testChannelQueue(state, op.getScalarPhaseMutable()).size() == 1,
             "parallelize consumed phase on group construction failure");
     require(state.pendingChannelOrdinals.empty() &&
                 state.pendingObservedOutputs.empty() &&
@@ -580,8 +600,8 @@ llvm::APInt rowMajorLaneBits() {
 }
 
 void unpackPlacesRowMajorLanes(dataflow::UnpackOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getPackedMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getPackedMutable())
       .push_back(tokenWithBits(op.getPacked().getType(), kRankTwoPacked));
 
   require(fireAdmittedActorOperation(op, state),
@@ -603,8 +623,8 @@ void unpackPlacesRowMajorLanes(dataflow::UnpackOp op) {
 }
 
 void packFlattensRowMajorLanes(dataflow::PackOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getVectorMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getVectorMutable())
       .push_back(takeExpected(
           tokenFromBitPattern(rowMajorLaneBits(), op.getVector().getType())));
 
@@ -621,13 +641,13 @@ void packFlattensRowMajorLanes(dataflow::PackOp op) {
 }
 
 void packFailureIsAtomic(dataflow::PackOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getVectorMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getVectorMutable())
       .push_back(malformedToken(TokenKind::Vector, 8));
 
   require(!fireAdmittedActorOperation(op, state),
           "pack accepted a malformed vector");
-  require(channelQueue(state, op.getVectorMutable()).size() == 1,
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 1,
           "pack consumed input on conversion failure");
   require(state.pendingChannelOrdinals.empty() &&
               state.pendingObservedOutputs.empty() &&
@@ -636,13 +656,13 @@ void packFailureIsAtomic(dataflow::PackOp op) {
 }
 
 void unpackFailureIsAtomic(dataflow::UnpackOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getPackedMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getPackedMutable())
       .push_back(malformedToken(TokenKind::Integer, 8));
 
   require(!fireAdmittedActorOperation(op, state),
           "unpack accepted a malformed packed token");
-  require(channelQueue(state, op.getPackedMutable()).size() == 1,
+  require(testChannelQueue(state, op.getPackedMutable()).size() == 1,
           "unpack consumed input on conversion failure");
   require(state.pendingChannelOrdinals.empty() &&
               state.pendingObservedOutputs.empty() &&
@@ -651,19 +671,19 @@ void unpackFailureIsAtomic(dataflow::UnpackOp op) {
 }
 
 void serializeFailureIsAtomic(dataflow::SerializeOp op) {
-  SimulatorState state;
-  channelQueue(state, op.getVectorMutable())
+  TestSimulatorState state;
+  testChannelQueue(state, op.getVectorMutable())
       .push_back(malformedToken(TokenKind::Vector, 8));
-  channelQueue(state, op.getMaskMutable())
+  testChannelQueue(state, op.getMaskMutable())
       .push_back(tokenWithBits(op.getMask().getType(), 1));
-  channelQueue(state, op.getGroupPhaseMutable())
+  testChannelQueue(state, op.getGroupPhaseMutable())
       .push_back(boolValueToken(true));
 
   require(!fireAdmittedActorOperation(op, state),
           "serialize accepted a malformed vector");
-  require(channelQueue(state, op.getVectorMutable()).size() == 1 &&
-              channelQueue(state, op.getMaskMutable()).size() == 1 &&
-              channelQueue(state, op.getGroupPhaseMutable()).size() == 1,
+  require(testChannelQueue(state, op.getVectorMutable()).size() == 1 &&
+              testChannelQueue(state, op.getMaskMutable()).size() == 1 &&
+              testChannelQueue(state, op.getGroupPhaseMutable()).size() == 1,
           "serialize consumed input on conversion failure");
   require(state.pendingChannelOrdinals.empty() &&
               state.pendingObservedOutputs.empty() &&
@@ -691,7 +711,7 @@ unsigned resolvedIndexBits(mlir::Operation *scope) {
   return takeExpected(loom::getIndexBitWidth(scope));
 }
 
-void installMemoryActorPlan(SimulatorState &state, mlir::Operation *op) {
+void installMemoryActorPlan(TestSimulatorState &state, mlir::Operation *op) {
   state.graphScope = op;
   state.currentActorPlan = &installActorPlan(state, op);
 }
@@ -733,17 +753,17 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
 }
 
 void loadRejectionIsAtomic(dataflow::LoadOp op) {
-  SimulatorState state;
+  TestSimulatorState state;
   installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
-  channelQueue(state, op.getMemMutable())
+  testChannelQueue(state, op.getMemMutable())
       .push_back(pointerToken(op.getMem(), memory, 0));
-  channelQueue(state, op.getAddrMutable())
+  testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
-  channelQueue(state, op.getCtrlMutable()).push_back(noneToken());
+  testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
 
   PlainMemoryActionProjection first =
       projectReadyPlainMemoryAction(op.getOperation(), state);
@@ -753,9 +773,9 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
       projectReadyPlainMemoryAction(op.getOperation(), state);
   require(!second.ready && second.diagnostics.size() == 1,
           "a re-polled load rejection is not detectable as a failed attempt");
-  require(channelQueue(state, op.getMemMutable()).size() == 1 &&
-              channelQueue(state, op.getAddrMutable()).size() == 1 &&
-              channelQueue(state, op.getCtrlMutable()).size() == 1,
+  require(testChannelQueue(state, op.getMemMutable()).size() == 1 &&
+              testChannelQueue(state, op.getAddrMutable()).size() == 1 &&
+              testChannelQueue(state, op.getCtrlMutable()).size() == 1,
           "load consumed input on a rejected access");
   expectUntouchedRun(state, *memory, memoryType.getElementType(),
                      op.getOperation(), {0x11, 0x22},
@@ -763,22 +783,22 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
 }
 
 void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
-  SimulatorState state;
+  TestSimulatorState state;
   installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
-  channelQueue(state, op.getMemMutable())
+  testChannelQueue(state, op.getMemMutable())
       .push_back(pointerToken(op.getMem(), memory, 0));
-  channelQueue(state, op.getAddrMutable())
+  testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexVectorToken(resolvedIndexBits(op.getOperation()), {0, 1}));
-  channelQueue(state, op.getDataMutable())
+  testChannelQueue(state, op.getDataMutable())
       .push_back(tokenWithBits(op.getData().getType(), 0xAB43));
   Token ctrl = noneToken();
   ctrl.memoryOrder =
       state.memoryOrderFrontiers.internCanonical(loom::sim::SyncEffectId(99));
-  channelQueue(state, op.getCtrlMutable()).push_back(std::move(ctrl));
+  testChannelQueue(state, op.getCtrlMutable()).push_back(std::move(ctrl));
   PlainMemoryActionProjection projected =
       projectReadyPlainMemoryAction(op.getOperation(), state);
   require(projected.ready && projected.diagnostics.empty(),
@@ -793,10 +813,10 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   require(state.failure == RunFailure::ProviderInvariant,
           "a synchronization provider failure was not classified as an "
           "execution failure");
-  require(channelQueue(state, op.getMemMutable()).size() == 1 &&
-              channelQueue(state, op.getAddrMutable()).size() == 1 &&
-              channelQueue(state, op.getDataMutable()).size() == 1 &&
-              channelQueue(state, op.getCtrlMutable()).size() == 1,
+  require(testChannelQueue(state, op.getMemMutable()).size() == 1 &&
+              testChannelQueue(state, op.getAddrMutable()).size() == 1 &&
+              testChannelQueue(state, op.getDataMutable()).size() == 1 &&
+              testChannelQueue(state, op.getCtrlMutable()).size() == 1,
           "store consumed input on synchronization insertion failure");
   require(state.memoryActions.empty() &&
               state.firingMemoryOrderFrontier.empty() &&
@@ -814,19 +834,19 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
 // the provider guarantees rather than exposing a capability the model lacks,
 // and the refused firing consumes, retains, and publishes nothing.
 void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
-  SimulatorState state;
+  TestSimulatorState state;
   installMemoryActorPlan(state, op.getOperation());
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
-  channelQueue(state, op.getMemMutable())
+  testChannelQueue(state, op.getMemMutable())
       .push_back(pointerToken(op.getMem(), memory, 0));
-  channelQueue(state, op.getAddrMutable())
+  testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexVectorToken(resolvedIndexBits(op.getOperation()), {1, 1}));
-  channelQueue(state, op.getDataMutable())
+  testChannelQueue(state, op.getDataMutable())
       .push_back(tokenWithBits(op.getData().getType(), 0xAB43));
-  channelQueue(state, op.getCtrlMutable()).push_back(noneToken());
+  testChannelQueue(state, op.getCtrlMutable()).push_back(noneToken());
   PlainMemoryActionProjection projected =
       projectReadyPlainMemoryAction(op.getOperation(), state);
   require(projected.ready && projected.diagnostics.empty(),
@@ -841,10 +861,10 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
   require(state.failure == RunFailure::ProviderInvariant,
           "a duplicate plain scatter was not classified as an execution "
           "failure");
-  require(channelQueue(state, op.getMemMutable()).size() == 1 &&
-              channelQueue(state, op.getAddrMutable()).size() == 1 &&
-              channelQueue(state, op.getDataMutable()).size() == 1 &&
-              channelQueue(state, op.getCtrlMutable()).size() == 1,
+  require(testChannelQueue(state, op.getMemMutable()).size() == 1 &&
+              testChannelQueue(state, op.getAddrMutable()).size() == 1 &&
+              testChannelQueue(state, op.getDataMutable()).size() == 1 &&
+              testChannelQueue(state, op.getCtrlMutable()).size() == 1,
           "store consumed input on a duplicate active destination");
   require(state.memoryActions.empty() &&
               state.firingMemoryOrderFrontier.empty() &&
@@ -862,7 +882,7 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
 // failure keeps the driver's own status.
 void runFailureProjectsOnceToExecutionFailed() {
   {
-    SimulatorState state;
+    TestSimulatorState state;
     state.failure = RunFailure::ProviderInvariant;
     loom::sim::DFGSimulationReport report;
     report.status = "pass";
@@ -872,7 +892,7 @@ void runFailureProjectsOnceToExecutionFailed() {
             "a provider invariant did not project to execution_failed");
   }
   {
-    SimulatorState state;
+    TestSimulatorState state;
     loom::sim::DFGSimulationReport report;
     report.status = "pass";
     require(!applyRunFailureTerminal(state, report),

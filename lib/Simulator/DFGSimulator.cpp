@@ -53,6 +53,25 @@ std::error_code NonRetiredDFGExecutionError::convertToErrorCode() const {
   return std::make_error_code(std::errc::state_not_recoverable);
 }
 
+struct PreparedDfgExecution::Impl {
+  std::unique_ptr<dataflow::CanonicalDataflowArtifact> program;
+  dataflow::RootedGraphLaunchRef launch;
+  dataflow::CanonicalDataflowProgramView view;
+  detail::ResolvedLaunchContext context;
+  detail::PreparedGraphExecution execution;
+};
+
+PreparedDfgExecution::PreparedDfgExecution(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+PreparedDfgExecution::PreparedDfgExecution(PreparedDfgExecution &&) noexcept =
+    default;
+
+PreparedDfgExecution &
+PreparedDfgExecution::operator=(PreparedDfgExecution &&) noexcept = default;
+
+PreparedDfgExecution::~PreparedDfgExecution() = default;
+
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
 // A memory fixture is an operand of the graph that owns it, so its element
@@ -167,38 +186,26 @@ llvm::Expected<Token> zeroToken(mlir::Type type) {
 
 static ChannelSlot *findChannelSlot(SimulatorState &state,
                                     mlir::OpOperand &operand) {
-  auto found = state.channelOrdinals.find(&operand);
-  if (found != state.channelOrdinals.end())
+  assert(state.execution && "channel lookup requires a prepared graph");
+  auto found = state.execution->channelOrdinals.find(&operand);
+  if (found != state.execution->channelOrdinals.end())
     return &state.channelSlots[found->second];
   return nullptr;
 }
 
 static const ChannelSlot *findChannelSlot(const SimulatorState &state,
                                           mlir::OpOperand &operand) {
-  auto found = state.channelOrdinals.find(&operand);
-  if (found == state.channelOrdinals.end())
+  assert(state.execution && "channel lookup requires a prepared graph");
+  auto found = state.execution->channelOrdinals.find(&operand);
+  if (found == state.execution->channelOrdinals.end())
     return nullptr;
   return &state.channelSlots[found->second];
 }
 
-static ChannelSlot &getOrCreateChannelSlot(SimulatorState &state,
-                                           mlir::OpOperand &operand) {
-  if (ChannelSlot *slot = findChannelSlot(state, operand))
-    return *slot;
-
-  assert(state.channelSlots.size() <
-             std::numeric_limits<ChannelOrdinal>::max() &&
-         "DFG channel ordinal overflow");
-  ChannelOrdinal ordinal =
-      static_cast<ChannelOrdinal>(state.channelSlots.size());
-  state.channelOrdinals.try_emplace(&operand, ordinal);
-  state.channelSlots.push_back(
-      ChannelSlot{&operand, InvalidActorOrdinal, {}, {}});
-  return state.channelSlots.back();
-}
-
 TokenQueue &channelQueue(SimulatorState &state, mlir::OpOperand &operand) {
-  return getOrCreateChannelSlot(state, operand).ready;
+  ChannelSlot *slot = findChannelSlot(state, operand);
+  assert(slot && "finalized graph operand has no prepared channel");
+  return slot->ready;
 }
 
 bool hasToken(const SimulatorState &state, mlir::OpOperand &operand) {
@@ -229,7 +236,7 @@ static void scheduleActor(SimulatorState &state, unsigned ordinal) {
   if (ordinal == InvalidActorOrdinal)
     return;
   state.nextActorCandidates.set(ordinal);
-  if (state.actorPlans[ordinal].isPlainMemory())
+  if (state.execution->actorPlans[ordinal].isPlainMemory())
     state.plainMemoryCandidates.set(ordinal);
 }
 
@@ -524,13 +531,6 @@ indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
   return byIndex;
 }
 
-struct GraphReturnObservation {
-  llvm::SmallVector<mlir::Value> complete;
-  llvm::SmallVector<mlir::Value> values;
-  llvm::SmallVector<mlir::Value> streams;
-  llvm::SmallVector<mlir::Value> memories;
-};
-
 static GraphReturnObservation observeReturnOperands(dataflow::GraphOp graph) {
   GraphReturnObservation observation;
   auto ret = mlir::dyn_cast_or_null<dataflow::GraphReturnOp>(
@@ -546,18 +546,153 @@ static GraphReturnObservation observeReturnOperands(dataflow::GraphOp graph) {
   return observation;
 }
 
-static void initializeChannelStorage(SimulatorState &state,
-                                     mlir::Block &entry) {
+static void initializeRunState(SimulatorState &state,
+                               const PreparedGraphExecution &execution) {
+  state.execution = &execution;
+  state.channelSlots.reserve(execution.channels.size());
+  for (const PreparedGraphExecution::Channel &channel : execution.channels)
+    state.channelSlots.push_back(
+        ChannelSlot{channel.operand, channel.ownerActorOrdinal, {}, {}});
+  state.nextActorCandidates.resize(execution.actorPlans.size(), true);
+  state.plainMemoryCandidates = execution.initialPlainMemoryCandidates;
+}
+
+llvm::Expected<GraphPreparationResult>
+prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
+  if (llvm::Error error = dataflow::validateFinalizedProgram(module))
+    return std::move(error);
+
+  PreparedGraphExecution execution;
+  execution.graph = graph;
+  execution.applicationInputCount = graph.getFunctionType().getNumInputs();
+  execution.returnObservation = observeReturnOperands(graph);
+  execution.observedValues.insert(execution.returnObservation.complete.begin(),
+                                  execution.returnObservation.complete.end());
+  execution.observedValues.insert(execution.returnObservation.values.begin(),
+                                  execution.returnObservation.values.end());
+  execution.observedValues.insert(execution.returnObservation.streams.begin(),
+                                  execution.returnObservation.streams.end());
+
+  mlir::Block &entry = graph.getBody().front();
   std::size_t channelCount = 0;
-  for (mlir::Operation &op : entry.getOperations())
+  for (mlir::Operation &op : entry.getOperations()) {
+    if (op.getNumOperands() >
+        std::numeric_limits<std::size_t>::max() - channelCount)
+      return llvm::createStringError(std::errc::value_too_large,
+                                     "DFG channel count overflow");
     channelCount += op.getNumOperands();
-  state.channelOrdinals.reserve(channelCount);
-  state.channelSlots.reserve(channelCount);
+  }
+  if (channelCount >= std::numeric_limits<ChannelOrdinal>::max())
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "DFG channel ordinal overflow");
+  execution.channelOrdinals.reserve(channelCount);
+  execution.channels.reserve(channelCount);
   for (mlir::Operation &op : entry.getOperations()) {
     for (mlir::OpOperand &operand : op.getOpOperands()) {
-      (void)getOrCreateChannelSlot(state, operand);
+      const ChannelOrdinal ordinal =
+          static_cast<ChannelOrdinal>(execution.channels.size());
+      execution.channelOrdinals.try_emplace(&operand, ordinal);
+      execution.channels.push_back({&operand, InvalidActorOrdinal});
     }
   }
+
+  llvm::DenseMap<mlir::Operation *, unsigned> actorOrdinals;
+  std::set<std::pair<std::string, std::string>> unsupported;
+  for (mlir::Operation &op : entry.getOperations()) {
+    if (isSupportedNonEvent(&op))
+      continue;
+    if (!dataflow::operationSchemaOf(&op)) {
+      unsupported.emplace(unsupportedOperationLabel(&op), "");
+      continue;
+    }
+    auto projection = dataflow::projectRegisteredActorSchemaProjection(&op);
+    if (!projection) {
+      unsupported.emplace(unsupportedOperationLabel(&op),
+                          llvm::toString(projection.takeError()));
+      continue;
+    }
+    if (auto diagnostic = unsupportedActorProvider(&op, *projection)) {
+      unsupported.emplace(diagnostic->label, diagnostic->reason);
+      continue;
+    }
+
+    std::optional<MemoryActorExecutionPlan> memoryActor;
+    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
+      auto plan = memoryActorExecutionPlan(&op, graph);
+      if (!plan)
+        return GraphPreparationResult{
+            GraphPreparationFailure{"invalid",
+                                    {"invalid memory actor execution plan: " +
+                                     llvm::toString(plan.takeError())}}};
+      memoryActor = std::move(*plan);
+    }
+    std::optional<PrimitiveOperationDescriptor> primitive;
+    if (isSupportedPrimitiveOperation(projection->schema)) {
+      auto descriptor = primitiveDescriptorForActor(*projection, &op);
+      if (!descriptor) {
+        unsupported.emplace(unsupportedOperationLabel(&op),
+                            llvm::toString(descriptor.takeError()));
+        continue;
+      }
+      primitive = std::move(*descriptor);
+    }
+
+    ChannelOrdinal firstInput = 0;
+    if (op.getNumOperands() != 0) {
+      auto channel = execution.channelOrdinals.find(&op.getOpOperand(0));
+      assert(channel != execution.channelOrdinals.end() &&
+             "admitted actor input channel was not initialized");
+      firstInput = channel->second;
+      for (auto [inputOrdinal, operand] : llvm::enumerate(op.getOpOperands()))
+        assert(execution.channelOrdinals.find(&operand)->second ==
+                   firstInput + inputOrdinal &&
+               "actor input channels are not contiguous");
+    }
+    const ActorProvider provider = actorProvider(projection->schema);
+    assert(provider && "admitted actor has no simulator provider");
+    llvm::SmallVector<ActorExecutionPlan::Output, 2> outputs;
+    outputs.reserve(op.getNumResults());
+    for (mlir::Value result : op.getResults()) {
+      ActorExecutionPlan::Output output;
+      output.value = result;
+      output.observed = execution.observedValues.contains(result);
+      for (mlir::OpOperand &use : result.getUses()) {
+        auto channel = execution.channelOrdinals.find(&use);
+        assert(channel != execution.channelOrdinals.end() &&
+               "admitted actor output channel was not initialized");
+        output.channels.push_back(channel->second);
+      }
+      outputs.push_back(std::move(output));
+    }
+    const unsigned actorOrdinal = execution.actorPlans.size();
+    actorOrdinals.try_emplace(&op, actorOrdinal);
+    execution.actorPlans.push_back(ActorExecutionPlan{
+        &op, std::move(*projection), provider, firstInput,
+        static_cast<std::uint32_t>(op.getNumOperands()), std::move(outputs),
+        std::move(primitive), std::move(memoryActor)});
+  }
+  if (!unsupported.empty()) {
+    GraphPreparationFailure failure{"unsupported", {}};
+    for (const auto &[label, reason] : unsupported) {
+      std::string diagnostic = "unsupported op: " + label;
+      if (!reason.empty())
+        diagnostic += ": " + reason;
+      failure.diagnostics.push_back(std::move(diagnostic));
+    }
+    return GraphPreparationResult{std::move(failure)};
+  }
+
+  execution.initialPlainMemoryCandidates.resize(execution.actorPlans.size(),
+                                                false);
+  for (auto [ordinal, plan] : llvm::enumerate(execution.actorPlans))
+    if (plan.isPlainMemory())
+      execution.initialPlainMemoryCandidates.set(ordinal);
+  for (PreparedGraphExecution::Channel &channel : execution.channels) {
+    auto owner = actorOrdinals.find(channel.operand->getOwner());
+    if (owner != actorOrdinals.end())
+      channel.ownerActorOrdinal = owner->second;
+  }
+  return GraphPreparationResult{std::move(execution)};
 }
 
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
@@ -764,7 +899,8 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     const CanonicalSimulationRuntimeInput *typedRuntimeInput,
     const ResolvedLaunchContext *typedContext,
     const dataflow::CanonicalDataflowProgramView *typedProgramView,
-    SpatialFunctionalObservations *retiredObservations) {
+    SpatialFunctionalObservations *retiredObservations,
+    const PreparedGraphExecution *preparedExecution) {
   DFGSimulationReport report;
   report.graph = options.graphName;
   report.workload =
@@ -788,8 +924,24 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     return report;
   }
 
-  if (llvm::Error error = dataflow::validateFinalizedProgram(module))
-    return std::move(error);
+  std::optional<PreparedGraphExecution> ownedExecution;
+  if (preparedExecution && preparedExecution->graph != graph)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "prepared DFG execution does not belong to the admitted graph");
+  if (!preparedExecution) {
+    auto prepared = prepareGraphExecution(module, graph);
+    if (!prepared)
+      return prepared.takeError();
+    if (auto *failure = std::get_if<GraphPreparationFailure>(&*prepared)) {
+      report.status = failure->status;
+      report.diagnostics = std::move(failure->diagnostics);
+      return report;
+    }
+    ownedExecution.emplace(
+        std::move(std::get<PreparedGraphExecution>(*prepared)));
+    preparedExecution = &*ownedExecution;
+  }
 
   llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
   if (options.invocations == 0)
@@ -889,7 +1041,8 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   }
 
   mlir::Block &entry = graph.getBody().front();
-  unsigned applicationInputCount = graph.getFunctionType().getNumInputs();
+  const unsigned applicationInputCount =
+      preparedExecution->applicationInputCount;
   llvm::StringMap<llvm::SmallVector<std::string>> args;
   llvm::StringMap<MemoryFixture> memories;
   if (!typedWorkload) {
@@ -906,14 +1059,9 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
 
   SimulatorState state;
   state.graphScope = graph.getOperation();
-  initializeChannelStorage(state, entry);
-  GraphReturnObservation returnObservation = observeReturnOperands(graph);
-  state.observedValues.insert(returnObservation.complete.begin(),
-                              returnObservation.complete.end());
-  state.observedValues.insert(returnObservation.values.begin(),
-                              returnObservation.values.end());
-  state.observedValues.insert(returnObservation.streams.begin(),
-                              returnObservation.streams.end());
+  initializeRunState(state, *preparedExecution);
+  const GraphReturnObservation &returnObservation =
+      preparedExecution->returnObservation;
   seedBlockArgument(state, graph.getStart(), noneToken());
 
   if (typedWorkload) {
@@ -1008,101 +1156,6 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     return std::move(err);
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);
-
-  std::set<std::pair<std::string, std::string>> unsupported;
-  for (mlir::Operation &op : entry.getOperations()) {
-    if (isSupportedNonEvent(&op)) {
-      continue;
-    }
-    if (!dataflow::operationSchemaOf(&op)) {
-      unsupported.emplace(unsupportedOperationLabel(&op), "");
-      continue;
-    }
-    auto projection = dataflow::projectRegisteredActorSchemaProjection(&op);
-    if (!projection) {
-      unsupported.emplace(unsupportedOperationLabel(&op),
-                          llvm::toString(projection.takeError()));
-      continue;
-    }
-    if (auto diagnostic = unsupportedActorProvider(&op, *projection)) {
-      unsupported.emplace(diagnostic->label, diagnostic->reason);
-      continue;
-    }
-    std::optional<MemoryActorExecutionPlan> memoryActor;
-    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
-      auto plan = memoryActorExecutionPlan(&op, graph);
-      if (!plan) {
-        report.status = "invalid";
-        report.diagnostics.push_back("invalid memory actor execution plan: " +
-                                     llvm::toString(plan.takeError()));
-        return report;
-      }
-      memoryActor = std::move(*plan);
-    }
-    std::optional<PrimitiveOperationDescriptor> primitive;
-    if (isSupportedPrimitiveOperation(projection->schema)) {
-      auto descriptor = primitiveDescriptorForActor(*projection, &op);
-      if (!descriptor) {
-        unsupported.emplace(unsupportedOperationLabel(&op),
-                            llvm::toString(descriptor.takeError()));
-        continue;
-      }
-      primitive = std::move(*descriptor);
-    }
-    ChannelOrdinal firstInput = 0;
-    if (op.getNumOperands() != 0) {
-      auto channel = state.channelOrdinals.find(&op.getOpOperand(0));
-      assert(channel != state.channelOrdinals.end() &&
-             "admitted actor input channel was not initialized");
-      firstInput = channel->second;
-      for (auto [inputOrdinal, operand] : llvm::enumerate(op.getOpOperands()))
-        assert(state.channelOrdinals.find(&operand)->second ==
-                   firstInput + inputOrdinal &&
-               "actor input channels are not contiguous");
-    }
-    const ActorProvider provider = actorProvider(projection->schema);
-    assert(provider && "admitted actor has no simulator provider");
-    llvm::SmallVector<ActorExecutionPlan::Output, 2> outputs;
-    outputs.reserve(op.getNumResults());
-    for (mlir::Value result : op.getResults()) {
-      ActorExecutionPlan::Output output;
-      output.value = result;
-      output.observed = state.observedValues.contains(result);
-      for (mlir::OpOperand &use : result.getUses()) {
-        auto channel = state.channelOrdinals.find(&use);
-        assert(channel != state.channelOrdinals.end() &&
-               "admitted actor output channel was not initialized");
-        output.channels.push_back(channel->second);
-      }
-      outputs.push_back(std::move(output));
-    }
-    const unsigned actorOrdinal = state.actorPlans.size();
-    state.actorOrdinals.try_emplace(&op, actorOrdinal);
-    state.actorPlans.push_back(ActorExecutionPlan{
-        &op, std::move(*projection), provider, firstInput,
-        static_cast<std::uint32_t>(op.getNumOperands()), std::move(outputs),
-        std::move(primitive), std::move(memoryActor)});
-  }
-  if (!unsupported.empty()) {
-    report.status = "unsupported";
-    for (const auto &[label, reason] : unsupported) {
-      std::string diagnostic = "unsupported op: " + label;
-      if (!reason.empty())
-        diagnostic += ": " + reason;
-      report.diagnostics.push_back(std::move(diagnostic));
-    }
-    return report;
-  }
-  state.nextActorCandidates.resize(state.actorPlans.size(), true);
-  state.plainMemoryCandidates.resize(state.actorPlans.size(), false);
-  for (auto [ordinal, plan] : llvm::enumerate(state.actorPlans))
-    if (plan.isPlainMemory())
-      state.plainMemoryCandidates.set(ordinal);
-  for (ChannelSlot &slot : state.channelSlots) {
-    auto owner = state.actorOrdinals.find(slot.operand->getOwner());
-    if (owner != state.actorOrdinals.end())
-      slot.ownerActorOrdinal = owner->second;
-  }
 
   auto outputCount = [&](mlir::Value value) -> size_t {
     auto it = state.observedOutputs.find(value);
@@ -1199,7 +1252,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   };
   observeRetirement();
 
-  llvm::SmallBitVector candidates(state.actorPlans.size(), false);
+  llvm::SmallBitVector candidates(preparedExecution->actorPlans.size(), false);
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
     if (!admitReadyPlainMemoryActions(state))
@@ -1209,7 +1262,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     bool fired = false;
     for (int ordinal = candidates.find_first(); ordinal >= 0;
          ordinal = candidates.find_next(ordinal)) {
-      const ActorExecutionPlan &plan = state.actorPlans[ordinal];
+      const ActorExecutionPlan &plan = preparedExecution->actorPlans[ordinal];
       mlir::Operation *op = plan.operation;
       FireOutcome outcome = fireOperation(plan, state);
       if (outcome == FireOutcome::Fired)
@@ -1334,27 +1387,50 @@ llvm::Expected<DFGSimulationReport>
 loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                  const DFGSimulationOptions &options) {
   return simulateDataflowGraphImpl(module, options, {}, nullptr, nullptr,
-                                   nullptr, nullptr, nullptr);
+                                   nullptr, nullptr, nullptr, nullptr);
 }
 
-static llvm::Expected<DFGSimulationReport>
-simulateTypedDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
-                         const CanonicalSimulationWorkload &workload,
-                         const CanonicalSimulationRuntimeInput &runtimeInput,
-                         std::uint64_t maxEventSteps,
-                         SpatialFunctionalObservations *retiredObservations) {
-  llvm::Expected<dataflow::CanonicalDataflowProgramView> view = program.view();
-  if (!view)
-    return view.takeError();
+static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
+    const dataflow::CanonicalDataflowArtifact &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps,
+    SpatialFunctionalObservations *retiredObservations,
+    const dataflow::CanonicalDataflowProgramView *preparedView = nullptr,
+    const ResolvedLaunchContext *preparedContext = nullptr,
+    const PreparedGraphExecution *preparedExecution = nullptr,
+    const dataflow::RootedGraphLaunchRef *preparedLaunch = nullptr) {
+  std::optional<dataflow::CanonicalDataflowProgramView> ownedView;
+  if (!preparedView) {
+    auto view = program.view();
+    if (!view)
+      return view.takeError();
+    ownedView.emplace(std::move(*view));
+    preparedView = &*ownedView;
+  }
+  if (preparedLaunch && workload.spatial()->launchRef != *preparedLaunch)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "runtime workload does not name the prepared rooted graph launch");
   llvm::Expected<dataflow::GraphRef> graphRef =
-      admitDfgSpatialSimulation(workload, runtimeInput, *view);
+      admitDfgSpatialSimulation(workload, runtimeInput, *preparedView);
   if (!graphRef)
     return graphRef.takeError();
-  llvm::Expected<ResolvedLaunchContext> context =
-      resolveLaunchContext(*view, workload.spatial()->launchRef);
-  if (!context)
-    return context.takeError();
-  llvm::Expected<dataflow::CanonicalGraphView> graph = view->resolve(*graphRef);
+  std::optional<ResolvedLaunchContext> ownedContext;
+  if (!preparedContext) {
+    auto context =
+        resolveLaunchContext(*preparedView, workload.spatial()->launchRef);
+    if (!context)
+      return context.takeError();
+    ownedContext.emplace(std::move(*context));
+    preparedContext = &*ownedContext;
+  }
+  if (preparedContext->graph != *graphRef)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "runtime workload resolves to a different prepared graph");
+  llvm::Expected<dataflow::CanonicalGraphView> graph =
+      preparedView->resolve(*graphRef);
   if (!graph)
     return graph.takeError();
 
@@ -1364,7 +1440,7 @@ simulateTypedDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
   options.workloadName = formatArtifactIdentityHex(workload.identity());
   options.maxEventSteps = maxEventSteps;
   if (std::optional<std::string> reason =
-          unsupportedTypedDfgInput(workload, runtimeInput, *context)) {
+          unsupportedTypedDfgInput(workload, runtimeInput, *preparedContext)) {
     DFGSimulationReport report;
     report.graph = options.graphName;
     report.workload = options.workloadName;
@@ -1374,7 +1450,48 @@ simulateTypedDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
   }
   return simulateDataflowGraphImpl(
       program.module(), options, mlir::cast<dataflow::GraphOp>(graph->op),
-      &workload, &runtimeInput, &*context, &*view, retiredObservations);
+      &workload, &runtimeInput, preparedContext, preparedView,
+      retiredObservations, preparedExecution);
+}
+
+llvm::Expected<PreparedDfgExecution> loom::sim::prepareDfgExecution(
+    const dataflow::CanonicalDataflowArtifact &program,
+    const dataflow::RootedGraphLaunchRef &launch) {
+  auto imported = dataflow::importCanonicalDataflow(program.identity(),
+                                                    program.canonicalBytes());
+  if (!imported)
+    return imported.takeError();
+  auto owned = std::make_unique<dataflow::CanonicalDataflowArtifact>(
+      std::move(*imported));
+  auto view = owned->view();
+  if (!view)
+    return view.takeError();
+  auto context = resolveLaunchContext(*view, launch);
+  if (!context)
+    return context.takeError();
+  auto graphView = view->resolve(context->graph);
+  if (!graphView)
+    return graphView.takeError();
+  auto prepared = prepareGraphExecution(
+      owned->module(), mlir::cast<dataflow::GraphOp>(graphView->op));
+  if (!prepared)
+    return prepared.takeError();
+  if (auto *failure = std::get_if<GraphPreparationFailure>(&*prepared)) {
+    std::string message;
+    for (const std::string &diagnostic : failure->diagnostics) {
+      if (!message.empty())
+        message += "; ";
+      message += diagnostic;
+    }
+    return llvm::createStringError(failure->status == "unsupported"
+                                       ? std::errc::not_supported
+                                       : std::errc::invalid_argument,
+                                   "%s", message.c_str());
+  }
+  return PreparedDfgExecution(
+      std::make_unique<PreparedDfgExecution::Impl>(PreparedDfgExecution::Impl{
+          std::move(owned), launch, std::move(*view), std::move(*context),
+          std::move(std::get<PreparedGraphExecution>(*prepared))}));
 }
 
 llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
@@ -1386,32 +1503,55 @@ llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
                                   maxEventSteps, nullptr);
 }
 
+static llvm::Expected<RetiredDFGSimulation>
+requireRetiredDfgExecution(llvm::Expected<DFGSimulationReport> report,
+                           SpatialFunctionalObservations observations,
+                           std::uint64_t maxEventSteps) {
+  if (!report)
+    return report.takeError();
+  if (report->status == "pass")
+    return RetiredDFGSimulation{std::move(*report), std::move(observations)};
+
+  std::string message = "DFG execution did not retire: " + report->status;
+  if (!report->diagnostics.empty())
+    message += ": " + report->diagnostics.front();
+  if (report->status == "unsupported")
+    return llvm::createStringError(std::errc::not_supported, "%s",
+                                   message.c_str());
+  if (report->status == "blocked" && report->wavefrontSteps == maxEventSteps &&
+      llvm::is_contained(report->diagnostics, "maximum event steps reached"))
+    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
+  if (report->status == "blocked")
+    return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
+  return llvm::createStringError(std::errc::state_not_recoverable, "%s",
+                                 message.c_str());
+}
+
 llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     const dataflow::CanonicalDataflowArtifact &program,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventSteps) {
   SpatialFunctionalObservations observations;
-  llvm::Expected<DFGSimulationReport> report = simulateTypedDfgWorkload(
-      program, workload, runtimeInput, maxEventSteps, &observations);
-  if (!report)
-    return report.takeError();
-  if (report->status != "pass") {
-    std::string message = "DFG execution did not retire: " + report->status;
-    if (!report->diagnostics.empty())
-      message += ": " + report->diagnostics.front();
-    if (report->status == "unsupported")
-      return llvm::createStringError(std::errc::not_supported, "%s",
-                                     message.c_str());
-    if (report->status == "blocked" &&
-        report->wavefrontSteps == maxEventSteps &&
-        llvm::is_contained(report->diagnostics, "maximum event steps reached"))
-      return llvm::createStringError(std::errc::timed_out, "%s",
-                                     message.c_str());
-    if (report->status == "blocked")
-      return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
-    return llvm::createStringError(std::errc::state_not_recoverable, "%s",
-                                   message.c_str());
-  }
-  return RetiredDFGSimulation{std::move(*report), std::move(observations)};
+  auto report = simulateTypedDfgWorkload(program, workload, runtimeInput,
+                                         maxEventSteps, &observations);
+  return requireRetiredDfgExecution(std::move(report), std::move(observations),
+                                    maxEventSteps);
+}
+
+llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
+    const PreparedDfgExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps) {
+  if (!prepared.impl_)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "prepared DFG execution is empty");
+  SpatialFunctionalObservations observations;
+  auto report = simulateTypedDfgWorkload(
+      *prepared.impl_->program, workload, runtimeInput, maxEventSteps,
+      &observations, &prepared.impl_->view, &prepared.impl_->context,
+      &prepared.impl_->execution, &prepared.impl_->launch);
+  return requireRetiredDfgExecution(std::move(report), std::move(observations),
+                                    maxEventSteps);
 }
