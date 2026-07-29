@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <queue>
 #include <utility>
@@ -372,6 +373,9 @@ generateAndPromoteStructuredOwnership(
   functionalEvidence.reserve(candidateSet->candidates().size());
   std::optional<evaluation::CaseSubjectRoleRef> functionalCandidateRole;
   std::optional<evaluation::FindingRequestOrdinal> functionalMismatchRequest;
+  std::map<ArtifactRootReference, frontend::MaterializedOwnershipCandidate,
+           decltype(&artifactRootReferenceLess)>
+      functionalCandidates(&artifactRootReferenceLess);
 
   auto acquireFunctionalEvidence =
       [&](const ArtifactRootReference &candidate) -> llvm::Error {
@@ -410,6 +414,7 @@ generateAndPromoteStructuredOwnership(
       }
       if (!hasDerivation)
         return invalid("cost-ranked ownership candidate has no derivation");
+      functionalCandidates.try_emplace(candidate, std::move(materialized));
     }
 
     auto prepared =
@@ -560,14 +565,25 @@ generateAndPromoteStructuredOwnership(
   std::vector<SelectedStructuredOwnershipCandidate> selected;
   selected.reserve(selection.selected.size());
   for (const ArtifactRootReference &reference : selection.selected) {
-    auto structured =
-        frontend::importStructuredProgram(reference, artifactStore);
-    if (!structured)
-      return structured.takeError();
-    auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
-        *structured, options.lowering);
-    if (!dataflow)
-      return dataflow.takeError();
+    std::optional<frontend::MaterializedOwnershipCandidate> materialized;
+    if (reference == *parentReference) {
+      auto structured =
+          frontend::importStructuredProgram(reference, artifactStore);
+      if (!structured)
+        return structured.takeError();
+      auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
+          *structured, options.lowering);
+      if (!dataflow)
+        return dataflow.takeError();
+      materialized.emplace(frontend::MaterializedOwnershipCandidate{
+          std::move(*structured), std::move(*dataflow)});
+    } else {
+      auto cached = functionalCandidates.find(reference);
+      if (cached == functionalCandidates.end())
+        return invalid("selected ownership candidate has no functional "
+                       "invocation-local projection");
+      materialized.emplace(std::move(cached->second));
+    }
     std::vector<StructuredOwnershipDerivation> derivations;
     for (const StructuredOwnershipCandidateDisposition &disposition :
          dispositions) {
@@ -591,9 +607,8 @@ generateAndPromoteStructuredOwnership(
                        "functional replay");
       functionalReplay.emplace(std::move(*replay));
     }
-    selected.push_back({frontend::MaterializedOwnershipCandidate{
-                            std::move(*structured), std::move(*dataflow)},
-                        std::move(derivations), std::move(functionalReplay)});
+    selected.push_back({std::move(*materialized), std::move(derivations),
+                        std::move(functionalReplay)});
   }
   return StructuredOwnershipExplorationOutcome{
       CompletedStructuredOwnershipSelection{std::move(selected),
