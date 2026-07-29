@@ -4,7 +4,7 @@
 # RUN:   --candidate-jobs=4 --canonical-output=%t.mlir \
 # RUN:   --output=%t.json %t.ll
 # RUN: FileCheck %s --input-file=%t.mlir --check-prefix=DATAFLOW
-# RUN: %python -c "import json; p=json.load(open(r'%t.json')); assert p['status']=='pass'; assert p['graphs'] == 1; assert p['actors'] >= 20; assert p['dynamic_calls'] == 1; assert p['memory_bytes_compared'] == 3 * 64 * 4; assert p['floating_variance_bytes'] == 0; assert p['floating_variance_kind'] == 'none'; assert p['wavefront_steps'] > 0; assert p['event_count'] > 0; assert p['operation_firings']['arith.addf'] == 64; assert p['operation_firings']['dataflow.load'] == 128; assert p['operation_firings']['dataflow.store'] == 64; assert p['wavefront_steps_per_second'] > 0"
+# RUN: %python -c "import json; p=json.load(open(r'%t.json')); assert p['status']=='pass'; assert p['graphs'] == 1; assert p['actors'] >= 20; assert p['dynamic_calls'] == 1; assert p['memory_bytes_compared'] == 3 * 64 * 4; assert p['floating_variance_bytes'] == 0; assert p['floating_variance_kind'] == 'none'; assert p['wavefront_steps'] > 0; assert p['event_count'] > 0; assert p['operation_firings']['arith.addf'] == 64; assert p['operation_firings']['dataflow.load'] == 128; assert p['operation_firings']['dataflow.store'] == 64; assert p['wavefront_steps_per_second'] > 0; assert p['selected_source_callables'] == ['vecadd']"
 # RUN: %loom-cc -emit-llvm -S -O1 %S/../app/vecadd/main_inline.c -o %t.inline.ll
 # RUN: mkdir -p %t.inline.store
 # RUN: loom-dfg-run --builtin=small --artifact-store=%t.inline.store \

@@ -4,6 +4,7 @@
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Raising/StructuredRaising.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -22,6 +23,7 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -203,9 +205,47 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   return std::move(completed.selected.front());
 }
 
+llvm::Expected<std::vector<std::string>> selectedSourceCallables(
+    const loom::dse::SelectedPreMappingCompilation &selected,
+    const loom::ArtifactStore &store) {
+  std::vector<std::string> callables;
+  callables.reserve(selected.derivations.size());
+  for (const loom::dse::StructuredOwnershipDerivation &derivation :
+       selected.derivations) {
+    const loom::ArtifactRootReference sourceReference{
+        loom::frontend::structuredProgramArtifactSchema.identity.str(),
+        loom::frontend::structuredProgramArtifactSchema.version,
+        derivation.scope.selection.parent};
+    auto source =
+        loom::frontend::importStructuredProgram(sourceReference, store);
+    if (!source)
+      return source.takeError();
+    auto view = source->view();
+    if (!view)
+      return view.takeError();
+    auto entity = view->resolve(derivation.scope.selection);
+    if (!entity)
+      return entity.takeError();
+    mlir::LLVM::LLVMFuncOp callable =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity->operation);
+    if (!callable && entity->operation)
+      callable = entity->operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!callable)
+      return invalid("selected ownership scope has no LLVM callable owner");
+    callables.push_back(callable.getSymName().str());
+  }
+  std::sort(callables.begin(), callables.end());
+  callables.erase(std::unique(callables.begin(), callables.end()),
+                  callables.end());
+  if (callables.empty())
+    return invalid("selected graph has no source callable derivation");
+  return callables;
+}
+
 llvm::Error
 writeReport(llvm::StringRef path, std::uint64_t graphCount,
             std::uint64_t actorCount,
+            llvm::ArrayRef<std::string> selectedCallables,
             const loom::sim::SourceBackedDfgValidationResult &replay) {
   llvm::SmallString<256> parent(path);
   llvm::sys::path::remove_filename(parent);
@@ -235,6 +275,10 @@ writeReport(llvm::StringRef path, std::uint64_t graphCount,
                 replay.simulationSeconds
           : 0.0;
   root["operation_firings"] = std::move(firings);
+  llvm::json::Array callables;
+  for (const std::string &callable : selectedCallables)
+    callables.push_back(callable);
+  root["selected_source_callables"] = std::move(callables);
 
   std::error_code error;
   llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
@@ -319,8 +363,12 @@ int main(int argc, char **argv) {
       (replay.valueLanesCompared == 0 && replay.memoryBytesCompared == 0) ||
       replay.eventCount == 0 || replay.operationFireCounts.empty())
     return reportError(invalid("execution produced no substantive workload"));
-  if (llvm::Error error = writeReport(outputPath, view->graphs().size(),
-                                      view->actors().size(), replay))
+  auto sourceCallables = selectedSourceCallables(*selected, store);
+  if (!sourceCallables)
+    return reportError(sourceCallables.takeError());
+  if (llvm::Error error =
+          writeReport(outputPath, view->graphs().size(), view->actors().size(),
+                      *sourceCallables, replay))
     return reportError(std::move(error));
   return 0;
 }

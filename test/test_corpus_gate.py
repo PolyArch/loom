@@ -53,6 +53,7 @@ VALID_DFG_REPORT = json.dumps(
         "kind": "source_backed_dfg_comparison",
         "memory_bytes_compared": 64,
         "operation_firings": {"arith.addi": 4},
+        "selected_source_callables": ["kernel"],
         "simulation_seconds": 0.0001,
         "status": "pass",
         "value_lanes_compared": 0,
@@ -510,6 +511,9 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(result["actors"], 3)
         self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 1)
         self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 64)
+        self.assertEqual(
+            result["dfg_simulation"]["selected_source_callables"], ["kernel"]
+        )
         self.assertEqual(
             result["dfg_simulation"]["wavefront_steps_per_second"], 1_000_000.0
         )
