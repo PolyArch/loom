@@ -583,6 +583,7 @@ class CommandConstructionTest(CorpusGateTestBase):
         self.assertEqual(command[0], self.tool_paths["cxx"])
 
     def test_dfg_sim_command_binds_target_and_outputs(self) -> None:
+        config = self.out_dir / "resolved-config.yaml"
         command = corpus_gate.dfg_sim_command(
             self.toolchain(),
             self.out_dir / "target.ll",
@@ -590,12 +591,14 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "program.dfg.mlir",
             self.out_dir / "simulation.json",
             3,
+            config,
         )
         self.assertEqual(
             command,
             [
                 self.tool_paths["dfg_run"],
                 "--builtin=small",
+                f"--config={config}",
                 f"--artifact-store={self.out_dir / 'store'}",
                 f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",
                 f"--output={self.out_dir / 'simulation.json'}",
@@ -752,6 +755,11 @@ class DeterministicResultsTest(CorpusGateTestBase):
         self.assertEqual(runs[1], runs[2])
 
     def test_d0_candidate_workers_are_forwarded_and_reported(self) -> None:
+        config = self.work / "resolved-config.yaml"
+        config.write_text(
+            "dse:\n  structured_ownership:\n"
+            "    scope_expansion_limit: 16\n"
+        )
         exit_code, human, summary = self.run_gate(
             "--case",
             "loombench:axpy/axpy_func",
@@ -761,10 +769,14 @@ class DeterministicResultsTest(CorpusGateTestBase):
             "1",
             "--candidate-jobs",
             "3",
+            "--config",
+            str(config),
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["candidate_jobs"], 3)
+        self.assertEqual(summary["config"], str(config.resolve()))
         self.assertIn("candidate-jobs=3", human)
+        self.assertIn(f"config={config.resolve()}", human)
         pre_mapping = [
             line
             for line in self.invocation_lines()
@@ -773,6 +785,12 @@ class DeterministicResultsTest(CorpusGateTestBase):
         self.assertEqual(len(pre_mapping), 1)
         self.assertTrue(
             all("--candidate-jobs=3" in invocation for invocation in pre_mapping)
+        )
+        self.assertTrue(
+            all(
+                f"--config={config.resolve()}" in invocation
+                for invocation in pre_mapping
+            )
         )
 
 

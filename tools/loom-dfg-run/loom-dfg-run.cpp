@@ -47,6 +47,10 @@ llvm::cl::opt<std::string>
                       llvm::cl::desc("ArtifactStore directory"),
                       llvm::cl::value_desc("path"), llvm::cl::Required);
 
+llvm::cl::opt<std::string>
+    configPath("config", llvm::cl::desc("resolved configuration file"),
+               llvm::cl::value_desc("path"), llvm::cl::init(""));
+
 llvm::cl::opt<std::string> outputPath("output",
                                       llvm::cl::desc("comparison report JSON"),
                                       llvm::cl::value_desc("path"),
@@ -145,6 +149,7 @@ llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
 llvm::Expected<loom::dse::SelectedPreMappingCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
+              const loom::ResolvedConfig &config,
               const loom::ArtifactStore &store) {
   loom::frontend::PreMappingCompilationOptions compilation;
   auto source = loom::frontend::raiseLlvmModuleToStructured(
@@ -163,7 +168,7 @@ compileTarget(std::unique_ptr<llvm::Module> module,
       maxEventSteps;
   auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(*source), inputs->workload, inputs->runtimeInput, fabric,
-      loom::defaultResolvedConfig(), exploration, store);
+      config, exploration, store);
   if (!outcome)
     return outcome.takeError();
   if (const auto *incomplete =
@@ -258,6 +263,12 @@ int main(int argc, char **argv) {
   auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
   if (!preset)
     return reportError(preset.takeError());
+  llvm::Expected<loom::ResolvedConfig> config =
+      configPath.empty()
+          ? llvm::Expected<loom::ResolvedConfig>(loom::defaultResolvedConfig())
+          : loom::loadResolvedConfig(configPath);
+  if (!config)
+    return reportError(config.takeError());
   loom::ArtifactStore store(artifactStorePath);
   auto design = loom::adg::buildBuiltinTarget(store, *preset);
   if (!design)
@@ -269,8 +280,8 @@ int main(int argc, char **argv) {
   auto target = readModule(targetContext, targetModulePath);
   if (!target)
     return reportError(target.takeError());
-  auto selected =
-      compileTarget(std::move(*target), design->roots().front(), store);
+  auto selected = compileTarget(std::move(*target), design->roots().front(),
+                                *config, store);
   if (!selected)
     return reportError(selected.takeError());
   auto view = selected->compilation.canonicalDataflow.view();

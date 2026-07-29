@@ -76,6 +76,10 @@ namespace {
                       ::llvm::cl::value_desc("path"), ::llvm::cl::Required);
 
 ::llvm::cl::opt<std::string>
+    configPath("config", ::llvm::cl::desc("resolved configuration file"),
+               ::llvm::cl::value_desc("path"), ::llvm::cl::init(""));
+
+::llvm::cl::opt<std::string>
     countsFilename("counts",
                    ::llvm::cl::desc("output path for structured graph/actor "
                                     "counts as one JSON object"),
@@ -290,6 +294,13 @@ int main(int argc, char **argv) {
   auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
   if (!preset)
     return reportError(preset.takeError());
+  ::llvm::Expected<loom::ResolvedConfig> config =
+      configPath.empty()
+          ? ::llvm::Expected<loom::ResolvedConfig>(
+                loom::defaultResolvedConfig())
+          : loom::loadResolvedConfig(configPath);
+  if (!config)
+    return reportError(config.takeError());
 
   // Parse LLVM IR.
   ::llvm::LLVMContext llvmContext;
@@ -356,8 +367,7 @@ int main(int argc, char **argv) {
          candidateJobs}};
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
         std::move(*source), inputs->workload, inputs->runtimeInput,
-        design->roots().front(), loom::defaultResolvedConfig(), exploration,
-        store);
+        design->roots().front(), *config, exploration, store);
     if (!outcome)
       return reportError(outcome.takeError());
     if (const auto *incomplete =

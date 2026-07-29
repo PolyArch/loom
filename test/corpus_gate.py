@@ -508,8 +508,9 @@ def pre_mapping_command(
     d0_module: Path,
     counts: Path,
     candidate_jobs: int,
+    config_path: Path | None = None,
 ) -> list[str]:
-    return [
+    command = [
         toolchain.pre_mapping,
         f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
@@ -519,6 +520,9 @@ def pre_mapping_command(
         "-o",
         str(d0_module),
     ]
+    if config_path is not None:
+        command.insert(2, f"--config={config_path}")
+    return command
 
 
 def dfg_sim_command(
@@ -528,8 +532,9 @@ def dfg_sim_command(
     d0_module: Path,
     report: Path,
     candidate_jobs: int,
+    config_path: Path | None = None,
 ) -> list[str]:
-    return [
+    command = [
         toolchain.dfg_run,
         f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
@@ -538,6 +543,9 @@ def dfg_sim_command(
         f"--candidate-jobs={candidate_jobs}",
         str(target_llvm_ir),
     ]
+    if config_path is not None:
+        command.insert(2, f"--config={config_path}")
+    return command
 
 
 def llvm_ir_defect(path: Path) -> str | None:
@@ -942,6 +950,7 @@ def run_case(
     out_root: Path,
     case_timeout: float,
     candidate_jobs: int,
+    config_path: Path | None,
     provider_results: dict[str, ProducedWorkload | StepFailure],
 ) -> CaseResult:
     started = time.monotonic()
@@ -1045,6 +1054,7 @@ def run_case(
                     d0_module,
                     report_path,
                     candidate_jobs,
+                    config_path,
                 ),
                 case_dir / "dfg-sim.log",
                 deadline,
@@ -1076,6 +1086,7 @@ def run_case(
                     d0_module,
                     counts_path,
                     candidate_jobs,
+                    config_path,
                 ),
                 case_dir / "pre-mapping.log",
                 deadline,
@@ -1133,6 +1144,7 @@ def run_cases(
     jobs: int,
     case_timeout: float,
     candidate_jobs: int,
+    config_path: Path | None,
 ) -> list[CaseResult]:
     workload_cases = [
         case for case in cases if isinstance(case, corpus_inventory.ProgramWorkload)
@@ -1157,6 +1169,7 @@ def run_cases(
                 out_root,
                 case_timeout,
                 candidate_jobs,
+                config_path,
                 provider_results,
             ): index
             for index, case in enumerate(cases)
@@ -1226,6 +1239,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "(default: %(default)s)",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        help="resolved semantic configuration forwarded to pre-Mapping tools",
+    )
+    parser.add_argument(
         "--sysroot",
         help=f"RISC-V cross sysroot (or set {ENV_SYSROOT}; else derived from "
         f"{RISCV_GCC_NAME})",
@@ -1263,6 +1281,7 @@ def render_human(
     toolchain: Toolchain,
     jobs: int,
     candidate_jobs: int,
+    config_path: Path | None,
     duration_seconds: float,
 ) -> str:
     lines = [
@@ -1271,6 +1290,7 @@ def render_human(
         f"code-model={TARGET_CODE_MODEL} "
         f"builtin={BUILTIN_TARGET_PRESET} "
         f"candidate-jobs={candidate_jobs} "
+        f"config={config_path if config_path is not None else '<default>'} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
     ]
     for result in results:
@@ -1318,6 +1338,7 @@ def render_json(
     toolchain: Toolchain,
     jobs: int,
     candidate_jobs: int,
+    config_path: Path | None,
     case_timeout: float,
     duration_seconds: float,
 ) -> str:
@@ -1333,6 +1354,7 @@ def render_json(
         "case_count": len(results),
         "case_timeout_seconds": case_timeout,
         "candidate_jobs": candidate_jobs,
+        "config": str(config_path) if config_path is not None else None,
         "cases": [result.as_dict() for result in results],
         "duration_seconds": round(duration_seconds, 3),
         "failed": len(results) - passed,
@@ -1402,6 +1424,13 @@ def main(argv: Sequence[str]) -> int:
         )
         external_root = corpus_inventory.resolve_externals_root(ROOT)
         toolchain = resolve_toolchain(args)
+        config_path = None
+        if args.config is not None:
+            config_path = args.config.expanduser().resolve()
+            if not config_path.is_file():
+                raise GateConfigError(
+                    f"resolved configuration is not a file: {config_path}"
+                )
     except (corpus_inventory.InventoryError, GateConfigError) as exc:
         print(f"[corpus-gate] configuration error: {exc}", file=sys.stderr)
         return 2
@@ -1429,6 +1458,7 @@ def main(argv: Sequence[str]) -> int:
         args.jobs,
         args.case_timeout,
         args.candidate_jobs,
+        config_path,
     )
     duration = time.monotonic() - started
 
@@ -1439,6 +1469,7 @@ def main(argv: Sequence[str]) -> int:
             toolchain,
             args.jobs,
             args.candidate_jobs,
+            config_path,
             duration,
         )
     )
@@ -1451,6 +1482,7 @@ def main(argv: Sequence[str]) -> int:
                 toolchain,
                 args.jobs,
                 args.candidate_jobs,
+                config_path,
                 args.case_timeout,
                 duration,
             )
