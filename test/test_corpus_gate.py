@@ -29,6 +29,7 @@ sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
+import corpus_link_ownership  # noqa: E402
 
 
 VALID_LL = (
@@ -147,8 +148,10 @@ if out and not out.endswith(os.devnull):
     with open(out, "w") as handle:
         handle.write(content)
     if any("save-temps=resolution" in arg for arg in args):
+        owner = next((arg for arg in args if arg.endswith(".o")), "selected-input.o")
         with open(out + ".resolution.txt", "w") as handle:
-            handle.write("selected-input.o\\n")
+            handle.write(owner + "\\n")
+            handle.write(f"-r={owner},kernel,pl\\n")
         with open(out + ".0.5.precodegen.bc", "wb") as handle:
             handle.write(b"stub bitcode")
 if bitcode_output:
@@ -284,6 +287,21 @@ class CorpusGateTestBase(unittest.TestCase):
 
 
 class InventoryAggregationTest(CorpusGateTestBase):
+    def toolchain(self) -> corpus_gate.Toolchain:
+        return corpus_gate.Toolchain(
+            cc=self.tool_paths["cc"],
+            cxx=self.tool_paths["cxx"],
+            raise_tool=self.tool_paths["raise"],
+            raise_opt=self.tool_paths["opt"],
+            pre_mapping=self.tool_paths["pre_mapping"],
+            dfg_run=self.tool_paths["dfg_run"],
+            lld=self.tool_paths["lld"],
+            payload=self.tool_paths["payload"],
+            llvm_dis=self.tool_paths["llvm_dis"],
+            sysroot=self.sysroot,
+            gcc_toolchain=self.gcc_toolchain,
+        )
+
     def test_cmsis_nn_harness_materializes_owned_test_invocations(self) -> None:
         workloads = tuple(
             case
@@ -365,25 +383,14 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn("cmsis-dsp-test-framework", result["detail"])
 
     def test_produced_workload_import_uses_build_relative_link_records(self) -> None:
-        toolchain = corpus_gate.Toolchain(
-            cc=self.tool_paths["cc"],
-            cxx=self.tool_paths["cxx"],
-            raise_tool=self.tool_paths["raise"],
-            raise_opt=self.tool_paths["opt"],
-            pre_mapping=self.tool_paths["pre_mapping"],
-            dfg_run=self.tool_paths["dfg_run"],
-            lld=self.tool_paths["lld"],
-            payload=self.tool_paths["payload"],
-            llvm_dis=self.tool_paths["llvm_dis"],
-            sysroot=self.sysroot,
-            gcc_toolchain=self.gcc_toolchain,
-        )
+        toolchain = self.toolchain()
         build_dir = self.work / "target-build"
         executable = build_dir / "workloads" / "test_arm_avgpool_s8"
         executable.parent.mkdir(parents=True)
         executable.write_bytes(b"elf")
         Path(f"{executable}.resolution.txt").write_text("selected.o\n")
         Path(f"{executable}.0.5.precodegen.bc").write_bytes(b"bitcode")
+        (build_dir / "compile_commands.json").write_text("[]\n")
         case_dir = self.work / "case"
         case_dir.mkdir()
 
@@ -403,6 +410,113 @@ class InventoryAggregationTest(CorpusGateTestBase):
             invocation,
         )
         self.assertNotIn(str(build_dir), invocation)
+
+    def test_selected_source_projection_uses_prevailing_direct_owner(self) -> None:
+        owner = self.work / "kernel.o"
+        source = ROOT / "test" / "app" / "vecadd" / "main_func.cpp"
+        resolution = self.work / "program.resolution.txt"
+        resolution.write_text(f"{owner}\n-r={owner},kernel,pl\n")
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=resolution,
+            link_root=self.work,
+            object_sources=((owner, source),),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            ("kernel",),
+            Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset({"test/app/vecadd/main_func.cpp"}),
+        )
+
+        self.assertIsNone(defect)
+        self.assertEqual(selected, ("test/app/vecadd/main_func.cpp",))
+
+    def test_selected_source_projection_resolves_archive_member_offset(self) -> None:
+        build = self.work / "build"
+        archive = build / "libkernels.a"
+        archive.parent.mkdir()
+        archive.write_bytes(b"archive")
+        obj = build / "obj" / "kernel.c.obj"
+        source = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Source"
+            / "BasicMathFunctions"
+            / "arm_elementwise_add_s8.c"
+        )
+        resolution = build / "program.resolution.txt"
+        resolution.write_text(
+            "libkernels.a\n"
+            "-r=libkernels.a(kernel.c.obj at 64),kernel,pl\n"
+        )
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=build / "program.ll",
+            resolution=resolution,
+            link_root=build,
+            object_sources=((obj, source),),
+        )
+        query = (
+            "libkernels.a:\n"
+            "  input: C_STATIC_LIBRARY_LINKER\n"
+            "    obj/kernel.c.obj\n"
+            "  outputs:\n"
+        )
+
+        with mock.patch.object(
+            corpus_link_ownership,
+            "_run_quiet",
+            side_effect=["kernel.c.obj 0x7c\n", query],
+        ):
+            selected, defect = corpus_gate.resolve_selected_corpus_sources(
+                linked,
+                ("kernel",),
+                Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+                corpus_inventory.resolve_externals_root(ROOT),
+                ROOT,
+                frozenset(
+                    {
+                        "externals/cmsis-nn/Source/BasicMathFunctions/"
+                        "arm_elementwise_add_s8.c"
+                    }
+                ),
+            )
+
+        self.assertIsNone(defect)
+        self.assertEqual(
+            selected,
+            (
+                "externals/cmsis-nn/Source/BasicMathFunctions/"
+                "arm_elementwise_add_s8.c",
+            ),
+        )
+
+    def test_selected_source_projection_rejects_harness_owner(self) -> None:
+        owner = self.work / "wrapper.o"
+        source = self.work / "generated" / "unity_runner.c"
+        resolution = self.work / "program.resolution.txt"
+        resolution.write_text(f"{owner}\n-r={owner},kernel,pl\n")
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=resolution,
+            link_root=self.work,
+            object_sources=((owner, source),),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            ("kernel",),
+            Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset({"externals/cmsis-nn/Source/kernel.c"}),
+        )
+
+        self.assertIsNone(selected)
+        self.assertIn("not owned by an exact corpus source row", defect)
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
@@ -514,6 +628,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(
             result["dfg_simulation"]["selected_source_callables"], ["kernel"]
         )
+        self.assertEqual(result["selected_sources"], ["test/app/axpy/main_func.cpp"])
         self.assertEqual(
             result["dfg_simulation"]["wavefront_steps_per_second"], 1_000_000.0
         )

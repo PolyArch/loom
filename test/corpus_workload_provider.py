@@ -254,6 +254,7 @@ def cmake_configure_command(
         "-G",
         "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DCMAKE_C_COMPILER={toolchain.c_compiler}",
         f"-DCMAKE_CXX_COMPILER={toolchain.cxx_compiler}",
         f"-DCMAKE_AR={toolchain.archiver}",

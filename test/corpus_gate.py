@@ -62,6 +62,11 @@ from corpus_simulation_report import (  # noqa: E402
     DfgSimulationMetrics,
     parse_dfg_simulation_report,
 )
+from corpus_link_ownership import (  # noqa: E402
+    LinkedWorkloadModules,
+    load_compilation_owners,
+    resolve_selected_corpus_sources,
+)
 from corpus_workload_provider import (  # noqa: E402
     CmakeToolchain,
     ProducedWorkload,
@@ -130,6 +135,7 @@ CATEGORY_PAYLOAD_IMPORT = "payload-import"
 CATEGORY_LINKED_LLVM_ARTIFACT = "linked-llvm-artifact"
 CATEGORY_DFG_SIM = "dfg-sim"
 CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
+CATEGORY_SOURCE_COVERAGE = "source-coverage"
 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE = "workload-provider-unavailable"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
@@ -213,11 +219,6 @@ class StepFailure:
 
 
 @dataclass(frozen=True)
-class LinkedWorkloadModules:
-    target: Path
-
-
-@dataclass(frozen=True)
 class CaseResult:
     case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload
     passed: bool
@@ -227,6 +228,7 @@ class CaseResult:
     graphs: int | None = None
     actors: int | None = None
     dfg_simulation: DfgSimulationMetrics | None = None
+    selected_sources: tuple[str, ...] | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -248,6 +250,8 @@ class CaseResult:
             payload["actors"] = self.actors
         if self.dfg_simulation is not None:
             payload["dfg_simulation"] = self.dfg_simulation.as_dict()
+        if self.selected_sources is not None:
+            payload["selected_sources"] = list(self.selected_sources)
         return payload
 
 
@@ -811,7 +815,15 @@ def prepare_linked_workload(
     if defect is not None:
         return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
 
-    return LinkedWorkloadModules(linked_llvm_ir)
+    return LinkedWorkloadModules(
+        target=linked_llvm_ir,
+        resolution=resolution,
+        link_root=case_dir,
+        object_sources=tuple(
+            (output.resolve(), resolve_source(source, external_root).resolve())
+            for output, source in zip(target_objects, case.sources, strict=True)
+        ),
+    )
 
 
 def import_produced_workload(
@@ -831,10 +843,12 @@ def import_produced_workload(
         )
     resolution = Path(f"{produced.target_executable}.resolution.txt")
     precodegen = Path(f"{produced.target_executable}.0.5.precodegen.bc")
+    compilation_database = produced.target_build_dir / "compile_commands.json"
     for path, role in (
         (produced.target_executable, "linked executable"),
         (resolution, "LLD resolution report"),
         (precodegen, "LLD pre-code-generation bitcode"),
+        (compilation_database, "exact compilation database"),
     ):
         defect = binary_artifact_defect(path, role)
         if defect is not None:
@@ -869,7 +883,16 @@ def import_produced_workload(
     if defect is not None:
         return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
 
-    return LinkedWorkloadModules(linked_llvm_ir)
+    object_sources, defect = load_compilation_owners(compilation_database)
+    if defect is not None:
+        return StepFailure(CATEGORY_FINAL_LINK_ARTIFACT, defect)
+    assert object_sources is not None
+    return LinkedWorkloadModules(
+        target=linked_llvm_ir,
+        resolution=resolution,
+        link_root=produced.target_build_dir,
+        object_sources=object_sources,
+    )
 
 
 def _cmsis_nn_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
@@ -974,12 +997,14 @@ def run_case(
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
     provider_results: dict[str, ProducedWorkload | StepFailure],
+    allowed_sources: frozenset[str],
 ) -> CaseResult:
     started = time.monotonic()
     deadline = started + case_timeout
     graphs = 0
     actors = 0
     dfg_totals = DfgSimulationMetrics.zero()
+    selected_sources: tuple[str, ...] | None = None
 
     def finish(category: str | None, detail: str | None) -> CaseResult:
         passed = category is None
@@ -993,6 +1018,9 @@ def run_case(
             actors=actors if passed and stage in {"d0", "dfg-sim"} else None,
             dfg_simulation=(
                 dfg_totals if passed and stage == "dfg-sim" else None
+            ),
+            selected_sources=(
+                selected_sources if passed and stage == "dfg-sim" else None
             ),
         )
 
@@ -1092,6 +1120,16 @@ def run_case(
             if defect is not None:
                 return finish(CATEGORY_DFG_SIM_ARTIFACT, defect)
             assert report is not None
+            selected_sources, defect = resolve_selected_corpus_sources(
+                prepared,
+                report.selected_source_callables,
+                Path(toolchain.llvm_dis).with_name("llvm-ar"),
+                external_root,
+                ROOT,
+                allowed_sources,
+            )
+            if defect is not None:
+                return finish(CATEGORY_SOURCE_COVERAGE, defect)
             graphs = report.graphs
             actors = report.actors
             dfg_totals = report
@@ -1170,6 +1208,18 @@ def run_cases(
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
 ) -> list[CaseResult]:
+    source_rows = (
+        corpus_inventory.load_source_inventory(ROOT) if stage == "dfg-sim" else ()
+    )
+    allowed_sources_by_suite: dict[str, frozenset[str]] = {
+        suite: frozenset(
+            source
+            for row in source_rows
+            if row.suite == suite
+            for source in row.sources
+        )
+        for suite in corpus_inventory.SUITE_ORDER
+    }
     workload_cases = [
         case for case in cases if isinstance(case, corpus_inventory.ProgramWorkload)
     ]
@@ -1196,6 +1246,7 @@ def run_cases(
                 config_path,
                 dfg_limits,
                 provider_results,
+                allowed_sources_by_suite[case.suite],
             ): index
             for index, case in enumerate(cases)
         }
