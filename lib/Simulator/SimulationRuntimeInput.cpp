@@ -11,16 +11,11 @@
 
 #include "Common/ArtifactFinalizer.h"
 
-#include "llvm/ADT/DenseMap.h"
-
 #include <algorithm>
-#include <numeric>
 #include <utility>
 
 namespace loom::sim {
 namespace {
-
-constexpr std::uint32_t kSpatialRootTag = 0;
 
 using detail::ResolvedLaunchContext;
 
@@ -28,59 +23,19 @@ using detail::ResolvedLaunchContext;
 // Canonical object ordinals
 //===----------------------------------------------------------------------===//
 
-// One equivalence class of roots sharing one runtime object. The canonical
-// key is the sorted nonempty list of (root, byte offset) bindings.
-struct ObjectGroup {
-  std::uint64_t authorOrdinal = 0;
-  std::vector<std::pair<dataflow::LogicalMemoryRootRef, std::uint64_t>> key;
-};
-
-int compareBindingKeys(
-    const std::vector<std::pair<dataflow::LogicalMemoryRootRef, std::uint64_t>>
-        &lhs,
-    const std::vector<std::pair<dataflow::LogicalMemoryRootRef, std::uint64_t>>
-        &rhs) {
-  const std::size_t shared = std::min(lhs.size(), rhs.size());
-  for (std::size_t index = 0; index < shared; ++index) {
-    if (int order = detail::compareRootKeys(lhs[index].first, rhs[index].first))
-      return order;
-    if (lhs[index].second != rhs[index].second)
-      return lhs[index].second < rhs[index].second ? -1 : 1;
-  }
-  if (lhs.size() != rhs.size())
-    return lhs.size() < rhs.size() ? -1 : 1;
-  return 0;
-}
-
-// Group bindings (already sorted by root key) by their object slot and sort
-// the groups by canonical key. Returns, per author slot, the zero-based
-// canonical ordinal. Two groups with one identical key have no canonical
-// order and are rejected as duplicates.
 llvm::Expected<llvm::DenseMap<std::uint64_t, std::uint64_t>>
 deriveCanonicalOrdinals(llvm::ArrayRef<MemoryRootBindingEntry> bindings) {
-  llvm::DenseMap<std::uint64_t, std::size_t> groupIndexOf;
-  std::vector<ObjectGroup> groups;
+  std::vector<detail::RuntimeObjectBindingKey> keys;
+  keys.reserve(bindings.size());
   for (const MemoryRootBindingEntry &entry : bindings) {
-    auto [it, inserted] =
-        groupIndexOf.try_emplace(entry.binding.objectOrdinal, groups.size());
-    if (inserted)
-      groups.push_back(ObjectGroup{entry.binding.objectOrdinal, {}});
-    groups[it->second].key.push_back({entry.root, entry.binding.byteOffset});
+    detail::WireWriter writer;
+    writer.identity(entry.root.artifact);
+    writer.u64(entry.root.entity.value());
+    writer.u64(entry.binding.byteOffset);
+    keys.push_back(detail::RuntimeObjectBindingKey{entry.binding.objectOrdinal,
+                                                   writer.take()});
   }
-  std::vector<std::size_t> order(groups.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-    return compareBindingKeys(groups[a].key, groups[b].key) < 0;
-  });
-  llvm::DenseMap<std::uint64_t, std::uint64_t> canonical;
-  for (std::size_t position = 0; position < order.size(); ++position) {
-    if (position > 0 && compareBindingKeys(groups[order[position - 1]].key,
-                                           groups[order[position]].key) == 0)
-      return detail::invalid("simulation runtime input: two objects share one "
-                             "canonical binding key");
-    canonical[groups[order[position]].authorOrdinal] = position;
-  }
-  return canonical;
+  return detail::deriveCanonicalObjectOrdinals(keys);
 }
 
 //===----------------------------------------------------------------------===//
@@ -139,25 +94,6 @@ validateRuntimeStreams(llvm::ArrayRef<CanonicalStreamSequence> runtimeStreams,
             stream.values, context.streamInputShapes[ordinal],
             "simulation runtime input: stream"))
       return error;
-  }
-  return llvm::Error::success();
-}
-
-// Memory objects are nonempty and carry only canonical byte states; a
-// non-Defined byte has no payload value.
-llvm::Error validateMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects) {
-  for (const RuntimeMemoryObject &object : objects) {
-    if (object.initialBytes.empty())
-      return detail::invalid("simulation runtime input: empty memory object");
-    for (const SemanticMemoryByte &byte : object.initialBytes) {
-      if (static_cast<std::uint32_t>(byte.state) >
-          static_cast<std::uint32_t>(SemanticState::Undef))
-        return detail::invalid(
-            "simulation runtime input: memory-byte state is out of domain");
-      if (byte.state != SemanticState::Defined && byte.value != 0)
-        return detail::invalid("simulation runtime input: a non-defined "
-                               "memory byte carries a hidden value");
-    }
   }
   return llvm::Error::success();
 }
@@ -265,7 +201,7 @@ llvm::Error validateSpatialRuntimeInput(
     return error;
   if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context))
     return error;
-  if (llvm::Error error = validateMemoryObjects(input.memoryObjects))
+  if (llvm::Error error = validateRuntimeMemoryObjects(input.memoryObjects))
     return error;
   if (llvm::Error error = validateRootBindings(
           input.memoryRootBindings, input.memoryObjects, context, view))
@@ -309,7 +245,7 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
   if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context))
     return std::move(error);
 
-  if (llvm::Error error = validateMemoryObjects(draft.memoryObjects))
+  if (llvm::Error error = validateRuntimeMemoryObjects(draft.memoryObjects))
     return std::move(error);
 
   // Bindings: sort by the typed root key, validate totality and ranges
@@ -363,7 +299,7 @@ void encodeEntityRef(detail::WireWriter &writer,
 std::vector<std::uint8_t>
 encodeSpatialRuntimeInput(const SpatialSimulationRuntimeInput &input) {
   detail::WireWriter writer;
-  writer.u32(kSpatialRootTag);
+  writer.u32(static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial));
   writer.identity(input.workloadIdentity);
   writer.u64(input.runtimeValues.size());
   for (const RuntimeValueEntry &entry : input.runtimeValues) {
@@ -405,9 +341,10 @@ decodeSpatialRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
   if (!root)
     return root.takeError();
   if (*root == 1)
-    return detail::invalid("simulation runtime input: the System root is "
-                           "fail-closed in schema 1.0");
-  if (*root != kSpatialRootTag)
+    return detail::invalid(
+        "simulation runtime input: the System root is fail-closed");
+  if (*root !=
+      static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
     return detail::invalid(
         "simulation runtime input: unknown root discriminant");
 
@@ -527,17 +464,21 @@ llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
     const SpatialSimulationRuntimeInputDraft &draft,
     const CanonicalSimulationWorkload &workload,
     const dataflow::CanonicalDataflowProgramView &view) {
+  const SpatialSimulationWorkload *spatialWorkload = workload.spatial();
+  if (!spatialWorkload)
+    return detail::invalid("simulation runtime input: Spatial finalization "
+                           "requires a Spatial workload root");
   llvm::Expected<detail::ResolvedLaunchContext> context =
-      detail::resolveLaunchContext(view, workload.model().launchRef);
+      detail::resolveLaunchContext(view, spatialWorkload->launchRef);
   if (!context)
     return context.takeError();
   llvm::Expected<SpatialSimulationRuntimeInput> input =
       detail::canonicalizeSpatialRuntimeInput(
-          draft, workload.model(), workload.identity(), *context, view);
+          draft, *spatialWorkload, workload.identity(), *context, view);
   if (!input)
     return input.takeError();
   if (llvm::Error error = detail::validateSpatialRuntimeInput(
-          *input, workload.model(), workload.identity(), *context, view))
+          *input, *spatialWorkload, workload.identity(), *context, view))
     return std::move(error);
   ::loom::CanonicalSemanticBytes bytes(encodeSpatialRuntimeInput(*input));
   ::loom::ArtifactIdentity identity =
@@ -551,12 +492,16 @@ importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                              const CanonicalSimulationWorkload &workload,
                              const dataflow::CanonicalDataflowProgramView &view,
                              const ::loom::ArtifactIdentity &expectedIdentity) {
+  const SpatialSimulationWorkload *spatialWorkload = workload.spatial();
+  if (!spatialWorkload)
+    return detail::invalid("simulation runtime input: Spatial import requires "
+                           "a Spatial workload root");
   llvm::Expected<DecodedSpatialRuntimeInput> decoded =
-      decodeSpatialRuntimeInput(canonicalBytes, workload.model(), view);
+      decodeSpatialRuntimeInput(canonicalBytes, *spatialWorkload, view);
   if (!decoded)
     return decoded.takeError();
   if (llvm::Error error = detail::validateSpatialRuntimeInput(
-          decoded->input, workload.model(), workload.identity(),
+          decoded->input, *spatialWorkload, workload.identity(),
           decoded->context, view))
     return std::move(error);
   const std::vector<std::uint8_t> reencoded =

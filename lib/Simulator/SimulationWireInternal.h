@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -123,6 +124,8 @@ int compareRootOrViewKeys(const dataflow::LogicalMemoryRootOrViewRef &lhs,
                           const dataflow::LogicalMemoryRootOrViewRef &rhs);
 int compareObservableTargets(const SpatialMemoryObservableTarget &lhs,
                              const SpatialMemoryObservableTarget &rhs);
+int compareStructuredMemoryTargets(const StructuredProgramMemoryTarget &lhs,
+                                   const StructuredProgramMemoryTarget &rhs);
 
 //===----------------------------------------------------------------------===//
 // Resolved launch context
@@ -177,6 +180,24 @@ llvm::Expected<ResolvedLaunchContext>
 resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
                      const dataflow::RootedGraphLaunchRef &launch);
 
+struct ResolvedStructuredProgramContext {
+  mlir::Operation *entryOp = nullptr;
+  std::vector<mlir::Type> argumentTypes = {};
+  mlir::Type returnType;
+  std::vector<std::optional<LaneShape>> argumentShapes = {};
+  std::optional<LaneShape> returnShape;
+};
+
+llvm::Expected<ResolvedStructuredProgramContext>
+resolveStructuredProgramContext(
+    const frontend::StructuredProgramCandidateView &view,
+    const frontend::StructuredEntityRef &entry);
+
+llvm::Error validateStructuredProgramWorkload(
+    const StructuredProgramSimulationWorkload &workload,
+    const ResolvedStructuredProgramContext &context,
+    const frontend::StructuredProgramCandidateView &view);
+
 //===----------------------------------------------------------------------===//
 // Semantic value, stream, and memory-byte validation and codec
 //===----------------------------------------------------------------------===//
@@ -197,6 +218,20 @@ decodeStreamSequence(WireReader &reader, const LaneShape &shape);
 
 void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object);
 llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader);
+
+struct RuntimeObjectBindingKey {
+  std::uint64_t authorObject = 0;
+  std::vector<std::uint8_t> targetAndOffset;
+};
+
+llvm::Error
+validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects);
+
+/// Assign canonical object ordinals from each object's sorted nonempty list of
+/// typed target-and-offset wire keys. Callers own target validation and must
+/// supply entries in canonical target order.
+llvm::Expected<llvm::DenseMap<std::uint64_t, std::uint64_t>>
+deriveCanonicalObjectOrdinals(llvm::ArrayRef<RuntimeObjectBindingKey> bindings);
 
 //===----------------------------------------------------------------------===//
 // Shared semantic validation (finalize, import, and admission)

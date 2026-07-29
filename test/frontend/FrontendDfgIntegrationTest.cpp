@@ -1147,15 +1147,15 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
       memoryRoot(test, view, 2);
   const loom::sim::MemoryRootBindingEntry *destinationBinding = nullptr;
   for (const loom::sim::MemoryRootBindingEntry &binding :
-       finalizedInput.model().memoryRootBindings)
+       finalizedInput.spatial()->memoryRootBindings)
     if (binding.root == destinationRoot)
       destinationBinding = &binding;
   if (!destinationBinding)
     fail(test, "typed runtime input lost the destination root binding");
   std::vector<loom::sim::SemanticMemoryByte> reconstructed = applyMemoryDiff(
       test,
-      finalizedInput.model()
-          .memoryObjects[destinationBinding->binding.objectOrdinal]
+      finalizedInput.spatial()
+          ->memoryObjects[destinationBinding->binding.objectOrdinal]
           .initialBytes,
       *diff);
   const loom::sim::SimulationMemoryRootCapture &capturedDestination =
@@ -1352,7 +1352,7 @@ void staticTableExecutesThroughTypedDfgInput() {
 
   std::optional<std::uint64_t> outputObject;
   for (const loom::sim::MemoryRootBindingEntry &binding :
-       finalizedInput.model().memoryRootBindings)
+       finalizedInput.spatial()->memoryRootBindings)
     if (binding.root == *outputRoot)
       outputObject = binding.binding.objectOrdinal;
   if (!outputObject)

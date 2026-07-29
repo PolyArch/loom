@@ -676,7 +676,7 @@ llvm::Expected<OwningOpRef<ModuleOp>> canonicalizeClone(ModuleOp source) {
 std::vector<std::uint8_t>
 encodeStructuredEntityRef(const StructuredEntityRef &reference) {
   std::vector<std::uint8_t> bytes;
-  bytes.reserve(ArtifactIdentity::byteSize + 12);
+  bytes.reserve(structuredEntityRefWireSize);
   bytes.insert(bytes.end(), reference.parent.bytes().begin(),
                reference.parent.bytes().end());
   appendU32(bytes, static_cast<std::uint32_t>(reference.kind));
@@ -686,7 +686,7 @@ encodeStructuredEntityRef(const StructuredEntityRef &reference) {
 
 llvm::Expected<StructuredEntityRef>
 decodeStructuredEntityRef(ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != ArtifactIdentity::byteSize + 12)
+  if (bytes.size() != structuredEntityRefWireSize)
     return invalid("StructuredEntityRef has the wrong wire size");
   auto parent =
       ArtifactIdentity::fromBytes(bytes.take_front(ArtifactIdentity::byteSize));

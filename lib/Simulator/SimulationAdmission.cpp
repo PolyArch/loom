@@ -21,15 +21,20 @@ llvm::Expected<dataflow::GraphRef> admitDfgSpatialSimulation(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     const dataflow::CanonicalDataflowProgramView &program) {
+  const SpatialSimulationWorkload *spatialWorkload = workload.spatial();
+  const SpatialSimulationRuntimeInput *spatialInput = runtimeInput.spatial();
+  if (!spatialWorkload || !spatialInput)
+    return detail::invalid(
+        "DFG-sim admission requires Spatial workload and runtime-input roots");
   llvm::Expected<detail::ResolvedLaunchContext> context =
-      detail::resolveLaunchContext(program, workload.model().launchRef);
+      detail::resolveLaunchContext(program, spatialWorkload->launchRef);
   if (!context)
     return context.takeError();
   if (llvm::Error error =
-          detail::validateSpatialWorkload(workload.model(), *context, program))
+          detail::validateSpatialWorkload(*spatialWorkload, *context, program))
     return std::move(error);
   if (llvm::Error error = detail::validateSpatialRuntimeInput(
-          runtimeInput.model(), workload.model(), workload.identity(), *context,
+          *spatialInput, *spatialWorkload, workload.identity(), *context,
           program))
     return std::move(error);
   return context->graph;

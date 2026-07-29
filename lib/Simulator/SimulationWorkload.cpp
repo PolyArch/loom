@@ -1,6 +1,6 @@
 //===- SimulationWorkload.cpp - spatial workload artifact ----------------===//
 //
-// Schema-1.0 Spatial SimulationWorkload: semantic validation against the
+// Schema-1.1 Spatial SimulationWorkload: semantic validation against the
 // exact Dataflow owner view, the one strict canonical encoder/decoder, and
 // failure-atomic finalization/import framed by the Common finalizer.
 //
@@ -20,8 +20,6 @@ using namespace mlir;
 
 namespace loom::sim {
 namespace {
-
-constexpr std::uint32_t kSpatialRootTag = 0;
 
 //===----------------------------------------------------------------------===//
 // Semantic validation
@@ -281,7 +279,7 @@ decodeObservableTarget(detail::WireReader &reader) {
 std::vector<std::uint8_t>
 encodeSpatialWorkload(const SpatialSimulationWorkload &workload) {
   detail::WireWriter writer;
-  writer.u32(kSpatialRootTag);
+  writer.u32(static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial));
   encodeEntityRef(writer, workload.launchRef.rootThreadLaunch);
   encodeEntityRef(writer, workload.launchRef.staticGraphLaunch);
   writer.u64(workload.denseCoordinates.size());
@@ -352,8 +350,9 @@ decodeSpatialWorkload(llvm::ArrayRef<std::uint8_t> bytes,
     return root.takeError();
   if (*root == 1)
     return detail::invalid(
-        "simulation workload: the System root is fail-closed in schema 1.0");
-  if (*root != kSpatialRootTag)
+        "simulation workload: the System root is fail-closed");
+  if (*root !=
+      static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
     return detail::invalid("simulation workload: unknown root discriminant");
 
   llvm::Expected<dataflow::RootThreadLaunchRef> rootLaunch =

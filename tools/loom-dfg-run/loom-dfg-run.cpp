@@ -179,7 +179,7 @@ requireIsolatedCallable(const dataflow::CanonicalDataflowProgramView &view,
     return invalid("rooted launch does not resolve to canonical launch ops");
   if (thread.getDomain().getKind() !=
       dataflow::ThreadDomainKind::DenseRectangular)
-    return unsupported("DynamicWork workloads have no schema-1.0 capture");
+    return unsupported("DynamicWork workloads have no schema-1.1 capture");
   auto callable = rootLaunch->getParentOfType<mlir::LLVM::LLVMFuncOp>();
   if (!callable || callable.getBody().getBlocks().size() != 1)
     return unsupported("root launch is not an isolated single-block callable");
@@ -361,8 +361,7 @@ bool equalNativeCapture(const loom::sim::NativeSimulationInputCapture &lhs,
     return false;
   for (auto [leftCall, rightCall] : llvm::zip_equal(lhs.calls, rhs.calls)) {
     if (!equalRuntimeValues(leftCall.runtimeValues, rightCall.runtimeValues) ||
-        leftCall.memoryRootByteOffsets !=
-            rightCall.memoryRootByteOffsets ||
+        leftCall.memoryRootByteOffsets != rightCall.memoryRootByteOffsets ||
         leftCall.objects.size() != rightCall.objects.size())
       return false;
     for (auto [objectOrdinal, objects] : llvm::enumerate(
@@ -617,12 +616,12 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
     totals.eventCount += execution->report.eventCount;
     for (const auto &[schema, count] : execution->report.operationFireCounts)
       totals.operationFirings[schema] += count;
-    if (llvm::Error error = compareValueObservations(finalizedWorkload->model(),
-                                                     execution->observations,
-                                                     plan, dynamicCall, totals))
+    if (llvm::Error error = compareValueObservations(
+            *finalizedWorkload->spatial(), execution->observations, plan,
+            dynamicCall, totals))
       return error;
     if (llvm::Error error = compareMemoryObservations(
-            finalizedWorkload->model(), execution->observations, plan,
+            *finalizedWorkload->spatial(), execution->observations, plan,
             dynamicCall, source ? &source->calls[callOrdinal] : nullptr,
             allowFloatingVariance, totals))
       return error;

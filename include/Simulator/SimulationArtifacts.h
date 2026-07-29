@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -16,21 +17,26 @@ namespace dataflow {
 class CanonicalDataflowProgramView;
 } // namespace dataflow
 
-// The typed schema-1.0 models of the loom.simulation_workload and
+// The typed schema-1.1 models of the loom.simulation_workload and
 // loom.simulation_runtime_input Artifact families owned by
-// docs/spec-simulation-artifacts.md. RootedGraphLaunchRef is the only Dataflow
-// root: value, stream, memory, and channel meanings are recovered through
-// CanonicalDataflowProgramView and are never copied here. Each family has one
-// typed C++ model and one strict canonical serializer/parser; the Common
-// finalizer is the sole identity authority. The System root is fail-closed in
-// schema 1.0 and is therefore not representable in these models.
+// docs/spec-simulation-artifacts.md. Each root carries one owner reference;
+// types and structural meanings are recovered from that exact owner and are
+// never copied here. Each family has one closed typed C++ model and one strict
+// canonical serializer/parser; the Common finalizer is the sole identity
+// authority. The System root remains fail-closed and is not representable.
 namespace loom::sim {
 
 /// The declared Artifact families framed by Common and hashed with SHA-256 v1.
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationWorkloadSchema{
-    "loom.simulation_workload", ::loom::SchemaVersion{1, 0}};
+    "loom.simulation_workload", ::loom::SchemaVersion{1, 1}};
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationRuntimeInputSchema{
-    "loom.simulation_runtime_input", ::loom::SchemaVersion{1, 0}};
+    "loom.simulation_runtime_input", ::loom::SchemaVersion{1, 1}};
+
+enum class SimulationWorkloadKind : std::uint32_t {
+  Spatial = 0,
+  System = 1,
+  StructuredProgram = 2,
+};
 
 //===----------------------------------------------------------------------===//
 // Canonical semantic values and memory bytes
@@ -167,7 +173,7 @@ struct SpatialObservableContract {
   std::vector<SpatialMemoryObservable> memories = {};
 };
 
-/// The schema-1.0 spatial workload: one rooted graph launch, the dense
+/// The schema-1.1 spatial workload root: one rooted graph launch, the dense
 /// logical coordinates of the root thread point, the total value-input
 /// classification, and the observable contract. Stream inputs and imported
 /// memory roots are always runtime-plane and appear only in the exact
@@ -212,8 +218,8 @@ struct MemoryRootBindingEntry {
   RuntimeMemoryRootBinding binding;
 };
 
-/// The canonical schema-1.0 spatial runtime input. `runtimeValues` is sorted
-/// by value-input ordinal and exactly complements the workload's Runtime
+/// The canonical schema-1.1 spatial runtime-input root. `runtimeValues` is
+/// sorted by value-input ordinal and exactly complements the workload's Runtime
 /// classifications; `runtimeStreams` is dense over graph stream-input
 /// ordinals; `memoryObjects` is in canonical object-ordinal order;
 /// `memoryRootBindings` is sorted by the typed root key and total over the
@@ -245,6 +251,82 @@ struct SpatialSimulationRuntimeInputDraft {
 };
 
 //===----------------------------------------------------------------------===//
+// Structured Program workload and runtime input
+//===----------------------------------------------------------------------===//
+
+struct StructuredRuntimeValueInput {};
+struct StructuredRuntimeMemoryInput {};
+using StructuredProgramArgumentSource =
+    std::variant<CanonicalValueSequence, StructuredRuntimeValueInput,
+                 StructuredRuntimeMemoryInput>;
+
+struct EntryPointerArgumentTarget {
+  std::uint64_t argumentOrdinal = 0;
+};
+
+struct GlobalObjectTarget {
+  frontend::StructuredEntityRef global;
+};
+
+using StructuredProgramMemoryTarget =
+    std::variant<EntryPointerArgumentTarget, GlobalObjectTarget>;
+
+struct StructuredProgramMemoryObservable {
+  StructuredProgramMemoryTarget target;
+  MemoryObservationForm form = MemoryObservationForm::FullState;
+};
+
+struct StructuredProgramObservableContract {
+  bool returnValue = false;
+  std::vector<StructuredProgramMemoryObservable> memories = {};
+};
+
+/// One source-program workload. The entry reference owns the exact S0
+/// identity; ABI order and types are recovered through its parent view.
+struct StructuredProgramSimulationWorkload {
+  frontend::StructuredEntityRef entryRef;
+  std::vector<StructuredProgramArgumentSource> argumentPlan = {};
+  StructuredProgramObservableContract observableContract = {};
+};
+
+struct StructuredRuntimeValueEntry {
+  std::uint64_t argumentOrdinal = 0;
+  CanonicalValueSequence value;
+};
+
+struct StructuredPointerBindingEntry {
+  std::uint64_t argumentOrdinal = 0;
+  RuntimeMemoryRootBinding binding;
+};
+
+struct StructuredProgramSimulationRuntimeInput {
+  ::loom::ArtifactIdentity workloadIdentity;
+  std::vector<StructuredRuntimeValueEntry> runtimeValues = {};
+  std::vector<RuntimeMemoryObject> memoryObjects = {};
+  std::vector<StructuredPointerBindingEntry> pointerBindings = {};
+};
+
+struct StructuredPointerBindingDraft {
+  std::uint64_t argumentOrdinal = 0;
+  std::uint64_t authorObject = 0;
+  std::uint64_t byteOffset = 0;
+};
+
+struct StructuredProgramSimulationRuntimeInputDraft {
+  ::loom::ArtifactIdentity workloadIdentity;
+  std::vector<StructuredRuntimeValueEntry> runtimeValues = {};
+  std::vector<RuntimeMemoryObject> memoryObjects = {};
+  std::vector<StructuredPointerBindingDraft> pointerBindings = {};
+};
+
+using SimulationWorkloadModel =
+    std::variant<SpatialSimulationWorkload,
+                 StructuredProgramSimulationWorkload>;
+using SimulationRuntimeInputModel =
+    std::variant<SpatialSimulationRuntimeInput,
+                 StructuredProgramSimulationRuntimeInput>;
+
+//===----------------------------------------------------------------------===//
 // Canonical artifacts
 //===----------------------------------------------------------------------===//
 
@@ -258,23 +340,31 @@ public:
   operator=(CanonicalSimulationWorkload &&) = default;
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
-  const SpatialSimulationWorkload &model() const { return model_; }
+  SimulationWorkloadKind kind() const {
+    return std::holds_alternative<SpatialSimulationWorkload>(model_)
+               ? SimulationWorkloadKind::Spatial
+               : SimulationWorkloadKind::StructuredProgram;
+  }
+  const SimulationWorkloadModel &root() const { return model_; }
+  const SpatialSimulationWorkload *spatial() const {
+    return std::get_if<SpatialSimulationWorkload>(&model_);
+  }
+  const StructuredProgramSimulationWorkload *structuredProgram() const {
+    return std::get_if<StructuredProgramSimulationWorkload>(&model_);
+  }
   const ::loom::CanonicalSemanticBytes &canonicalBytes() const {
     return bytes_;
-  }
-  dataflow::GraphLaunchDoneTransferRef completion() const {
-    return model_.completion();
   }
 
 private:
   CanonicalSimulationWorkload(::loom::ArtifactIdentity identity,
-                              SpatialSimulationWorkload model,
+                              SimulationWorkloadModel model,
                               ::loom::CanonicalSemanticBytes bytes)
       : identity_(identity), model_(std::move(model)),
         bytes_(std::move(bytes)) {}
 
   ::loom::ArtifactIdentity identity_;
-  SpatialSimulationWorkload model_;
+  SimulationWorkloadModel model_;
   ::loom::CanonicalSemanticBytes bytes_;
 
   friend llvm::Expected<CanonicalSimulationWorkload>
@@ -283,6 +373,13 @@ private:
   friend llvm::Expected<CanonicalSimulationWorkload>
   importSimulationWorkload(llvm::ArrayRef<std::uint8_t>,
                            const dataflow::CanonicalDataflowProgramView &,
+                           const ::loom::ArtifactIdentity &);
+  friend llvm::Expected<CanonicalSimulationWorkload>
+  finalizeSimulationWorkload(const StructuredProgramSimulationWorkload &,
+                             const frontend::StructuredProgramCandidateView &);
+  friend llvm::Expected<CanonicalSimulationWorkload>
+  importSimulationWorkload(llvm::ArrayRef<std::uint8_t>,
+                           const frontend::StructuredProgramCandidateView &,
                            const ::loom::ArtifactIdentity &);
 };
 
@@ -297,20 +394,31 @@ public:
   operator=(CanonicalSimulationRuntimeInput &&) = default;
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
-  const SpatialSimulationRuntimeInput &model() const { return model_; }
+  SimulationWorkloadKind kind() const {
+    return std::holds_alternative<SpatialSimulationRuntimeInput>(model_)
+               ? SimulationWorkloadKind::Spatial
+               : SimulationWorkloadKind::StructuredProgram;
+  }
+  const SimulationRuntimeInputModel &root() const { return model_; }
+  const SpatialSimulationRuntimeInput *spatial() const {
+    return std::get_if<SpatialSimulationRuntimeInput>(&model_);
+  }
+  const StructuredProgramSimulationRuntimeInput *structuredProgram() const {
+    return std::get_if<StructuredProgramSimulationRuntimeInput>(&model_);
+  }
   const ::loom::CanonicalSemanticBytes &canonicalBytes() const {
     return bytes_;
   }
 
 private:
   CanonicalSimulationRuntimeInput(::loom::ArtifactIdentity identity,
-                                  SpatialSimulationRuntimeInput model,
+                                  SimulationRuntimeInputModel model,
                                   ::loom::CanonicalSemanticBytes bytes)
       : identity_(identity), model_(std::move(model)),
         bytes_(std::move(bytes)) {}
 
   ::loom::ArtifactIdentity identity_;
-  SpatialSimulationRuntimeInput model_;
+  SimulationRuntimeInputModel model_;
   ::loom::CanonicalSemanticBytes bytes_;
 
   friend llvm::Expected<CanonicalSimulationRuntimeInput>
@@ -322,6 +430,16 @@ private:
   importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t>,
                                const CanonicalSimulationWorkload &,
                                const dataflow::CanonicalDataflowProgramView &,
+                               const ::loom::ArtifactIdentity &);
+  friend llvm::Expected<CanonicalSimulationRuntimeInput>
+  finalizeSimulationRuntimeInput(
+      const StructuredProgramSimulationRuntimeInputDraft &,
+      const CanonicalSimulationWorkload &,
+      const frontend::StructuredProgramCandidateView &);
+  friend llvm::Expected<CanonicalSimulationRuntimeInput>
+  importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t>,
+                               const CanonicalSimulationWorkload &,
+                               const frontend::StructuredProgramCandidateView &,
                                const ::loom::ArtifactIdentity &);
 };
 
@@ -344,6 +462,20 @@ importSimulationWorkload(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                          const dataflow::CanonicalDataflowProgramView &program,
                          const ::loom::ArtifactIdentity &expectedIdentity);
 
+/// Failure-atomic finalization of one source Structured Program workload.
+/// Entry ownership, LLVM ABI argument classification, fixed value widths, and
+/// observable targets are recovered from the exact Structured owner view.
+llvm::Expected<CanonicalSimulationWorkload> finalizeSimulationWorkload(
+    const StructuredProgramSimulationWorkload &workload,
+    const frontend::StructuredProgramCandidateView &program);
+
+/// Strict import of the Structured Program root. Spatial and reserved System
+/// roots are rejected by this owner-specific overload.
+llvm::Expected<CanonicalSimulationWorkload> importSimulationWorkload(
+    llvm::ArrayRef<std::uint8_t> canonicalBytes,
+    const frontend::StructuredProgramCandidateView &program,
+    const ::loom::ArtifactIdentity &expectedIdentity);
+
 /// Failure-atomic finalization of the exact runtime input of one finalized
 /// workload. Validates the total runtime-value complement, the total stream
 /// table with its horizon state, and the neutral memory objects; derives the
@@ -363,6 +495,20 @@ llvm::Expected<CanonicalSimulationRuntimeInput> importSimulationRuntimeInput(
     llvm::ArrayRef<std::uint8_t> canonicalBytes,
     const CanonicalSimulationWorkload &workload,
     const dataflow::CanonicalDataflowProgramView &program,
+    const ::loom::ArtifactIdentity &expectedIdentity);
+
+/// Canonicalizes source runtime values and finite pointer-backed objects.
+/// Object ordinals derive from sorted pointer-binding keys; sharing one draft
+/// object is the only aliasing authority.
+llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
+    const StructuredProgramSimulationRuntimeInputDraft &draft,
+    const CanonicalSimulationWorkload &workload,
+    const frontend::StructuredProgramCandidateView &program);
+
+llvm::Expected<CanonicalSimulationRuntimeInput> importSimulationRuntimeInput(
+    llvm::ArrayRef<std::uint8_t> canonicalBytes,
+    const CanonicalSimulationWorkload &workload,
+    const frontend::StructuredProgramCandidateView &program,
     const ::loom::ArtifactIdentity &expectedIdentity);
 
 } // namespace loom::sim

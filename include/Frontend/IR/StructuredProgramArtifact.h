@@ -12,6 +12,7 @@
 #include "mlir/IR/Value.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -51,6 +52,9 @@ struct StructuredEntityRef {
     return !(lhs == rhs);
   }
 };
+
+inline constexpr std::size_t structuredEntityRefWireSize =
+    ArtifactIdentity::byteSize + sizeof(std::uint32_t) + sizeof(std::uint64_t);
 
 std::vector<std::uint8_t>
 encodeStructuredEntityRef(const StructuredEntityRef &reference);

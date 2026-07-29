@@ -1334,7 +1334,7 @@ simulateTypedDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
   if (!graphRef)
     return graphRef.takeError();
   llvm::Expected<ResolvedLaunchContext> context =
-      resolveLaunchContext(*view, workload.model().launchRef);
+      resolveLaunchContext(*view, workload.spatial()->launchRef);
   if (!context)
     return context.takeError();
   llvm::Expected<dataflow::CanonicalGraphView> graph = view->resolve(*graphRef);

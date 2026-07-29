@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <numeric>
 #include <utility>
 
 using namespace mlir;
@@ -531,6 +532,74 @@ llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader) {
     object.initialBytes.push_back(byte);
   }
   return object;
+}
+
+llvm::Error
+validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects) {
+  for (const RuntimeMemoryObject &object : objects) {
+    if (object.initialBytes.empty())
+      return invalid("simulation runtime input: empty memory object");
+    for (const SemanticMemoryByte &byte : object.initialBytes) {
+      if (static_cast<std::uint32_t>(byte.state) >
+          static_cast<std::uint32_t>(SemanticState::Undef))
+        return invalid(
+            "simulation runtime input: memory-byte state is out of domain");
+      if (byte.state != SemanticState::Defined && byte.value != 0)
+        return invalid("simulation runtime input: a non-defined memory byte "
+                       "carries a hidden value");
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<llvm::DenseMap<std::uint64_t, std::uint64_t>>
+deriveCanonicalObjectOrdinals(
+    llvm::ArrayRef<RuntimeObjectBindingKey> bindings) {
+  struct ObjectGroup {
+    std::uint64_t authorObject = 0;
+    std::vector<std::vector<std::uint8_t>> key;
+  };
+
+  llvm::DenseMap<std::uint64_t, std::size_t> groupIndex;
+  std::vector<ObjectGroup> groups;
+  for (const RuntimeObjectBindingKey &binding : bindings) {
+    auto [position, inserted] =
+        groupIndex.try_emplace(binding.authorObject, groups.size());
+    if (inserted)
+      groups.push_back(ObjectGroup{binding.authorObject, {}});
+    groups[position->second].key.push_back(binding.targetAndOffset);
+  }
+
+  auto compareGroupKeys = [](const ObjectGroup &lhs, const ObjectGroup &rhs) {
+    const std::size_t shared = std::min(lhs.key.size(), rhs.key.size());
+    for (std::size_t index = 0; index < shared; ++index) {
+      if (lhs.key[index] == rhs.key[index])
+        continue;
+      return std::lexicographical_compare(
+                 lhs.key[index].begin(), lhs.key[index].end(),
+                 rhs.key[index].begin(), rhs.key[index].end())
+                 ? -1
+                 : 1;
+    }
+    if (lhs.key.size() == rhs.key.size())
+      return 0;
+    return lhs.key.size() < rhs.key.size() ? -1 : 1;
+  };
+
+  std::vector<std::size_t> order(groups.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&](std::size_t lhs, std::size_t rhs) {
+    return compareGroupKeys(groups[lhs], groups[rhs]) < 0;
+  });
+  llvm::DenseMap<std::uint64_t, std::uint64_t> canonical;
+  for (std::size_t ordinal = 0; ordinal < order.size(); ++ordinal) {
+    if (ordinal > 0 && compareGroupKeys(groups[order[ordinal - 1]],
+                                        groups[order[ordinal]]) == 0)
+      return invalid("simulation runtime input: two objects share one "
+                     "canonical binding key");
+    canonical[groups[order[ordinal]].authorObject] = ordinal;
+  }
+  return canonical;
 }
 
 } // namespace loom::sim::detail

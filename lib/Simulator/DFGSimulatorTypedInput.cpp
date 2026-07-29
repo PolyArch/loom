@@ -33,15 +33,14 @@ bool sequenceNeedsLaneStateSupport(const CanonicalValueSequence &sequence,
 }
 
 llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
-                                     mlir::Type type,
-                                     const LaneShape &shape) {
+                                     mlir::Type type, const LaneShape &shape) {
   if (shape.lanesPerToken == 0)
     return noneToken();
   const SemanticState state = lanes.front().state;
   if (state != SemanticState::Defined) {
-    const PrimitiveValueState primitive =
-        state == SemanticState::Poison ? PrimitiveValueState::Poison
-                                       : PrimitiveValueState::Undef;
+    const PrimitiveValueState primitive = state == SemanticState::Poison
+                                              ? PrimitiveValueState::Poison
+                                              : PrimitiveValueState::Undef;
     return exceptionalValueToken(primitive, type);
   }
   if (shape.lanesPerToken == 1) {
@@ -54,9 +53,8 @@ llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
       std::numeric_limits<unsigned>::max() / shape.laneBitWidth)
     return llvm::createStringError(std::errc::value_too_large,
                                    "typed vector input is too wide");
-  llvm::APInt bits(static_cast<unsigned>(shape.lanesPerToken) *
-                       shape.laneBitWidth,
-                   0);
+  llvm::APInt bits(
+      static_cast<unsigned>(shape.lanesPerToken) * shape.laneBitWidth, 0);
   for (auto [ordinal, lane] : llvm::enumerate(lanes))
     bits.insertBits(lane.bits,
                     static_cast<unsigned>(ordinal) * shape.laneBitWidth);
@@ -89,8 +87,9 @@ tokensFromSequence(const CanonicalValueSequence &sequence, mlir::Type type,
   return tokens;
 }
 
-const RuntimeValueEntry *runtimeValueAt(
-    const SpatialSimulationRuntimeInput &input, std::uint64_t ordinal) {
+const RuntimeValueEntry *
+runtimeValueAt(const SpatialSimulationRuntimeInput &input,
+               std::uint64_t ordinal) {
   auto found = llvm::lower_bound(
       input.runtimeValues, ordinal,
       [](const RuntimeValueEntry &entry, std::uint64_t value) {
@@ -102,9 +101,9 @@ const RuntimeValueEntry *runtimeValueAt(
              : nullptr;
 }
 
-const MemoryRootBindingEntry *bindingFor(
-    const SpatialSimulationRuntimeInput &input,
-    dataflow::LogicalMemoryRootRef root) {
+const MemoryRootBindingEntry *
+bindingFor(const SpatialSimulationRuntimeInput &input,
+           dataflow::LogicalMemoryRootRef root) {
   for (const MemoryRootBindingEntry &entry : input.memoryRootBindings)
     if (entry.root == root)
       return &entry;
@@ -113,12 +112,12 @@ const MemoryRootBindingEntry *bindingFor(
 
 } // namespace
 
-std::optional<std::string> unsupportedTypedDfgInput(
-    const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput,
-    const ResolvedLaunchContext &context) {
-  const SpatialSimulationWorkload &model = workload.model();
-  const SpatialSimulationRuntimeInput &input = runtimeInput.model();
+std::optional<std::string>
+unsupportedTypedDfgInput(const CanonicalSimulationWorkload &workload,
+                         const CanonicalSimulationRuntimeInput &runtimeInput,
+                         const ResolvedLaunchContext &context) {
+  const SpatialSimulationWorkload &model = *workload.spatial();
+  const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
   for (std::uint64_t ordinal = 0; ordinal < model.valueInputPlan.size();
        ++ordinal) {
     const CanonicalValueSequence *sequence =
@@ -149,14 +148,14 @@ std::optional<std::string> unsupportedTypedDfgInput(
   return std::nullopt;
 }
 
-llvm::Error seedTypedDfgInputs(
-    SimulatorState &state, dataflow::GraphOp graph,
-    const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput,
-    const ResolvedLaunchContext &context) {
+llvm::Error
+seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
+                   const CanonicalSimulationWorkload &workload,
+                   const CanonicalSimulationRuntimeInput &runtimeInput,
+                   const ResolvedLaunchContext &context) {
   mlir::Block &entry = graph.getBody().front();
-  const SpatialSimulationWorkload &model = workload.model();
-  const SpatialSimulationRuntimeInput &input = runtimeInput.model();
+  const SpatialSimulationWorkload &model = *workload.spatial();
+  const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
 
   for (std::uint64_t ordinal = 0; ordinal < model.valueInputPlan.size();
        ++ordinal) {
@@ -201,7 +200,8 @@ llvm::Error seedTypedDfgInputs(
           "typed runtime memory exceeds the DFG provider capacity");
     auto memory = std::make_shared<MemoryValue>();
     memory->logicalRootId = ordinal;
-    memory->bytes.append(object.initialBytes.begin(), object.initialBytes.end());
+    memory->bytes.append(object.initialBytes.begin(),
+                         object.initialBytes.end());
     memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
     objects.push_back(std::move(memory));
   }
@@ -218,14 +218,14 @@ llvm::Error seedTypedDfgInputs(
     const MemoryRootBindingEntry *binding = bindingFor(input, *root);
     if (!binding || binding->binding.objectOrdinal >= objects.size() ||
         binding->binding.byteOffset >
-            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()))
       return llvm::createStringError(
           std::errc::invalid_argument,
           "admitted typed memory binding is not executable");
     mlir::BlockArgument argument = entry.getArgument(memoryBase + ordinal);
     mlir::Type elementType;
-    if (auto memoryType =
-            mlir::dyn_cast<mlir::MemRefType>(argument.getType()))
+    if (auto memoryType = mlir::dyn_cast<mlir::MemRefType>(argument.getType()))
       elementType = memoryType.getElementType();
     std::shared_ptr<MemoryValue> memory =
         objects[binding->binding.objectOrdinal];

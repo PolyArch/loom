@@ -83,3 +83,18 @@ target_link_libraries(loom-simulator-simulation-wire-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-simulator-structured-program-wire-test
+  StructuredProgramSimulationWireTest.cpp
+)
+
+target_link_libraries(loom-simulator-structured-program-wire-test PRIVATE
+  LoomCommon
+  LoomSimulator
+  MLIRLoom
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)

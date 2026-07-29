@@ -1,4 +1,4 @@
-// Anchor tests for the schema-1.0 Spatial SimulationWorkload and
+// Anchor tests for the schema-1.1 Spatial SimulationWorkload and
 // SimulationRuntimeInput persistent artifacts: rooted-launch ownership,
 // total value classification, stream horizon state, canonical object
 // ordinals, observable contracts, strict wire parsing, and DFG/CGRA
@@ -71,8 +71,8 @@ mlir::MLIRContext &context() {
     registry.insert<dataflow::DataflowDialect, mlir::DLTIDialect,
                     mlir::func::FuncDialect, mlir::arith::ArithDialect,
                     mlir::memref::MemRefDialect>();
-    auto *c = new mlir::MLIRContext(
-        registry, mlir::MLIRContext::Threading::DISABLED);
+    auto *c =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     c->loadAllAvailableDialects();
     return c;
   }();
@@ -196,7 +196,7 @@ void rootedLaunchOwnership() {
     fail(test, "a valid spatial workload finalizes: " +
                    llvm::toString(finalized.takeError()));
   require(test,
-          finalized->completion() ==
+          finalized->spatial()->completion() ==
               GraphLaunchDoneTransferRef{workload.launchRef},
           "graph completion derives from the rooted launch");
 
@@ -564,9 +564,10 @@ void typedDfgExecution() {
   const FullMemoryObservation *rootAState = nullptr;
   const FullMemoryObservation *rootBState = nullptr;
   for (std::size_t index = 0;
-       index < workload->model().observableContract.memories.size(); ++index) {
+       index < workload->spatial()->observableContract.memories.size();
+       ++index) {
     const SpatialMemoryObservable &observable =
-        workload->model().observableContract.memories[index];
+        workload->spatial()->observableContract.memories[index];
     const LogicalMemoryRootRef root = std::get<LogicalMemoryRootRef>(
         std::get<LogicalMemoryRootOrViewRef>(observable.target));
     if (root == rootA)
@@ -816,7 +817,7 @@ void streamHorizonAndCardinality() {
   if (!again)
     fail(test, "the open-stream input imports");
   require(test,
-          again->model().runtimeStreams[0].termination ==
+          again->spatial()->runtimeStreams[0].termination ==
               StreamTermination::OpenAfterLast,
           "the open horizon state survives the round trip");
   llvm::Expected<DFGSimulationReport> report =
@@ -882,7 +883,7 @@ void memoryObjectOrdinals() {
                      RuntimeMemoryBindingDraft{rootC, 1, 0}});
   if (!aliased)
     fail(test, "overlapping same-object aliases finalize");
-  const SpatialSimulationRuntimeInput &aliasModel = aliased->model();
+  const SpatialSimulationRuntimeInput &aliasModel = *aliased->spatial();
   auto bindingOf = [&](const dataflow::LogicalMemoryRootRef &root) {
     for (const MemoryRootBindingEntry &entry : aliasModel.memoryRootBindings)
       if (entry.root == root)
@@ -1026,12 +1027,12 @@ void observableContractRules() {
   if (!one)
     fail(test, "observable workload finalizes");
   require(test,
-          one->completion() ==
-              GraphLaunchDoneTransferRef{one->model().launchRef},
+          one->spatial()->completion() ==
+              GraphLaunchDoneTransferRef{one->spatial()->launchRef},
           "mandatory completion derives from the rooted launch");
   require(test,
-          !errored(
-              view.validate(GraphLaunchBoundaryTransferRef{one->completion()})),
+          !errored(view.validate(
+              GraphLaunchBoundaryTransferRef{one->spatial()->completion()})),
           "the derived completion transfer is valid in the owner view");
 }
 
@@ -1508,8 +1509,8 @@ void noneTokenStreams() {
   if (!imported)
     fail(test, "the none stream imports");
   require(test,
-          imported->model().runtimeStreams[0].values.tokenCount == 3 &&
-              imported->model().runtimeStreams[0].values.lanes.empty(),
+          imported->spatial()->runtimeStreams[0].values.tokenCount == 3 &&
+              imported->spatial()->runtimeStreams[0].values.lanes.empty(),
           "the none token count survives the round trip with empty lanes");
   require(test,
           !isRejected(finalizeSimulationRuntimeInput(draftWith(noneStream(0)),

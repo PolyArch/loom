@@ -255,7 +255,8 @@ projectRetiredFunctionalObservations(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     const ResolvedLaunchContext &context,
     const dataflow::CanonicalDataflowProgramView &program) {
-  const SpatialSimulationWorkload &model = workload.model();
+  const SpatialSimulationWorkload &model = *workload.spatial();
+  const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
   auto graphReturn = mlir::cast<dataflow::GraphReturnOp>(
       graph.getBody().front().getTerminator());
   SpatialFunctionalObservations observations;
@@ -298,9 +299,8 @@ projectRetiredFunctionalObservations(
   observations.memories.reserve(model.observableContract.memories.size());
   for (const SpatialMemoryObservable &observable :
        model.observableContract.memories) {
-    llvm::Expected<MemoryObservationPayload> payload =
-        projectMemoryObservation(observable, model, runtimeInput.model(), graph,
-                                 state, context, program);
+    llvm::Expected<MemoryObservationPayload> payload = projectMemoryObservation(
+        observable, model, input, graph, state, context, program);
     if (!payload)
       return payload.takeError();
     observations.memories.push_back(std::move(*payload));

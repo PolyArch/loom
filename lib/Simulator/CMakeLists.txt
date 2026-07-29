@@ -17,6 +17,8 @@ add_mlir_library(LoomSimulator
   SimulationRuntimeInput.cpp
   SimulationWireSupport.cpp
   SimulationWorkload.cpp
+  StructuredProgramSimulationRuntimeInput.cpp
+  StructuredProgramSimulationWorkload.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -25,6 +27,7 @@ add_mlir_library(LoomSimulator
 
   LINK_LIBS PUBLIC
   LoomCommon
+  MLIRLoom
   MLIRArithDialect
   MLIRDataflow
   MLIRDataLayoutInterfaces
