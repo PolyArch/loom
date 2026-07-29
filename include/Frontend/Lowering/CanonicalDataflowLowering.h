@@ -6,8 +6,12 @@
 
 #include "llvm/Support/Error.h"
 
+#include <optional>
+#include <string>
+
 namespace mlir {
 class ModuleOp;
+class Operation;
 } // namespace mlir
 
 namespace loom::lowering {
@@ -18,6 +22,14 @@ struct CanonicalDataflowLoweringOptions {
   bool verifyEach = true;
   bool applyPassManagerCommandLineOptions = false;
 };
+
+/// Returns a lowering-owned reason when `scope` contains a structural
+/// operation that neither graph-region lowering nor a mandatory typed
+/// ownership decision can implement. This is a conservative preflight:
+/// absence of a reason does not prove finalizability, while a returned reason
+/// identifies an unsupported capability before candidate materialization.
+std::optional<std::string>
+explainGraphRegionStructuralRejection(mlir::Operation *scope);
 
 /// Runs the standard mechanical SCF-to-Dataflow transaction in place. This
 /// supports focused developer tools and leaves Artifact publication to callers

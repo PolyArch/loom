@@ -64,6 +64,15 @@ bool isGraphFrontier(::mlir::Block *block) {
   return graph && block == &graph.getBody().front();
 }
 
+bool isGraphRegionControlOperation(::mlir::Operation *op) {
+  return ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
+                     ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp,
+                     ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
+                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
+                     ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp,
+                     ::dataflow::GraphReturnOp>(op);
+}
+
 } // namespace
 
 GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
@@ -108,6 +117,31 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
   // atomic_rmw or cmpxchg lands here: it has no rewrite above and cannot be
   // moved without dropping the ordering semantics lowering does not reproduce.
   return GraphLeafLowering::Unsupported;
+}
+
+std::optional<std::string>
+explainGraphRegionStructuralRejection(::mlir::Operation *scope) {
+  if (!scope)
+    return std::string("missing graph-region scope");
+
+  const bool callableRoot = ::llvm::isa<::mlir::FunctionOpInterface>(scope);
+  std::optional<std::string> rejection;
+  scope->walk([&](::mlir::Operation *op) {
+    if (op != scope && ::llvm::isa<::mlir::FunctionOpInterface>(op))
+      return ::mlir::WalkResult::skip();
+    if ((op == scope && callableRoot) ||
+        (callableRoot && ::llvm::isa<::mlir::LLVM::ReturnOp>(op)) ||
+        ::llvm::isa<::mlir::LLVM::FMulAddOp>(op) ||
+        isGraphRegionControlOperation(op) ||
+        classifyGraphLoweringLeaf(op) != GraphLeafLowering::Unsupported)
+      return ::mlir::WalkResult::advance();
+
+    rejection = ("operation '" + op->getName().getStringRef() +
+                 "' has no graph-region lowering")
+                    .str();
+    return ::mlir::WalkResult::interrupt();
+  });
+  return rejection;
 }
 
 } // namespace lowering
@@ -290,14 +324,9 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
-    bool modeled =
-        ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
-                    ::mlir::scf::IndexSwitchOp, ::mlir::scf::ParallelOp,
-                    ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
-                    ::mlir::scf::ConditionOp, ::mlir::scf::ReduceOp,
-                    ::mlir::scf::InParallelOp, ::dataflow::GraphReturnOp>(op) ||
-        ::loom::lowering::classifyGraphLoweringLeaf(op) !=
-            ::loom::lowering::GraphLeafLowering::Unsupported;
+    bool modeled = ::loom::lowering::isGraphRegionControlOperation(op) ||
+                   ::loom::lowering::classifyGraphLoweringLeaf(op) !=
+                       ::loom::lowering::GraphLeafLowering::Unsupported;
     if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
             op))
       modeled = boundary.isTransient();

@@ -973,7 +973,14 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
     if (analyzeOwnershipScope(entity.operation).rejection !=
         OwnershipScopeRejection::None)
       continue;
-    domain.entries_.push_back(SpatialOwnershipScope{entity.reference});
+    SpatialOwnershipScope scope{entity.reference};
+    if (std::optional<std::string> rejection =
+            lowering::explainGraphRegionStructuralRejection(entity.operation)) {
+      domain.entries_.push_back(
+          RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
+    } else {
+      domain.entries_.push_back(scope);
+    }
     scopeOperations.push_back(entity.operation);
   }
 

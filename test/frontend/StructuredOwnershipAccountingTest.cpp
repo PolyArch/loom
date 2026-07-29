@@ -96,6 +96,40 @@ merge:
   return module;
 }
 
+std::unique_ptr<llvm::Module>
+parseNestedCallScopeModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown"
+
+declare void @external(ptr)
+
+define void @main(ptr %base, i64 %count) {
+entry:
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %address = getelementptr i8, ptr %base, i64 %index
+  call void @external(ptr %address)
+  %next = add nuw i64 %index, 1
+  %continue = icmp ult i64 %next, %count
+  br i1 %continue, label %loop, label %exit
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<nested-call>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipAccounting", stream);
+    fail(stream.str());
+  }
+  return module;
+}
+
 loom::dse::CompletedPreMappingSelection
 explore(const loom::fabric::FinalizedFabricRoot &fabric,
         const loom::ArtifactStore &store, std::uint32_t workers,
@@ -253,6 +287,37 @@ void requireEmptyScopeIsCandidateRejection(
     fail("empty Spatial scope did not produce a NonFinalizable disposition");
 }
 
+void requireUnsupportedNestedLeafIsPreflightRejection(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  llvm::LLVMContext context;
+  auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseNestedCallScopeModule(context), fabric));
+  auto view = take(structured.structuredProgram.view());
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
+      structured.structuredProgram));
+
+  bool sawNestedCallScope = false;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto *rejected =
+        std::get_if<loom::frontend::RejectedSpatialOwnershipScope>(&entry);
+    if (!rejected)
+      continue;
+    auto entity = take(view.resolve(rejected->scope.selection));
+    if (!entity.operation ||
+        llvm::isa<mlir::LLVM::LLVMFuncOp>(entity.operation))
+      continue;
+    bool containsCall = false;
+    entity.operation->walk([&](mlir::LLVM::CallOp) { containsCall = true; });
+    if (!containsCall)
+      continue;
+    if (rejected->message.find("llvm.call") == std::string::npos)
+      fail("nested unsupported leaf rejection lost the lowering reason");
+    sawNestedCallScope = true;
+  }
+  if (!sawNestedCallScope)
+    fail("nested unresolved call reached candidate materialization");
+}
+
 } // namespace
 
 int main() {
@@ -266,6 +331,7 @@ int main() {
       store, loom::adg::BuiltinTargetPreset::Small));
 
   requireEmptyScopeIsCandidateRejection(design.roots().front());
+  requireUnsupportedNestedLeafIsPreflightRejection(design.roots().front());
 
   auto serial = explore(design.roots().front(), store, 1);
   requireCompleteAccounting(serial);
