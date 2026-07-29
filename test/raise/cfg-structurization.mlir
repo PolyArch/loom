@@ -6,6 +6,8 @@
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/preserved.mlir | FileCheck %s --check-prefix=PRESERVE
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=cf.cond_br
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/orphan-loop-hint.mlir | FileCheck %s --check-prefix=ORPHAN --implicit-check-not=cf.cond_br
+// RUN: loom-raise-opt --loom-lift-cf-to-scf %t/numbered-default.mlir -o %t/numbered-default.out.mlir
+// RUN: loom-raise-opt %t/numbered-default.out.mlir | FileCheck %s --check-prefix=NUMBERED-DEFAULT
 
 // Mechanical CFG recovery runs on the callable region where it stands. What
 // an imported LLVM callable spells differently is respelled by an adapter, and
@@ -90,6 +92,15 @@
 // ORPHAN-LABEL: llvm.func @orphan_loop_hint
 // ORPHAN: scf.while
 // ORPHAN-NOT: llvm.loop_annotation
+
+// A two-way residual dispatch may carry one result of a multi-result
+// structured op. It must remain round-trip parseable even though the upstream
+// cf.switch parser rejects numbered results on its default successor.
+// NUMBERED-DEFAULT-LABEL: func.func @numbered_default_dispatch
+// NUMBERED-DEFAULT: scf.index_switch
+// NUMBERED-DEFAULT: arith.cmpi eq
+// NUMBERED-DEFAULT: cf.cond_br
+// NUMBERED-DEFAULT-NOT: cf.switch
 
 //--- counted.ll
 define void @counted(ptr %p) {
@@ -248,4 +259,19 @@ llvm.func @orphan_loop_hint(%limit: i32, %skip: i1) -> i32 {
   cf.cond_br %done, ^exit, ^header(%next : i32)
 ^exit:
   llvm.return %next : i32
+}
+
+//--- numbered-default.mlir
+func.func @numbered_default_dispatch(%flag: i32) {
+  %five = arith.constant 5 : i32
+  %six = arith.constant 6 : i32
+  cf.switch %flag : i32, [
+    default: ^fail,
+    0: ^loop(%five : i32),
+    1: ^loop(%six : i32)
+  ]
+^fail:
+  llvm.unreachable
+^loop(%arg: i32):
+  cf.br ^loop(%arg : i32)
 }

@@ -110,9 +110,11 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cassert>
+#include <iterator>
 #include <memory>
 #include <optional>
 
@@ -362,6 +364,66 @@ private:
   ::std::optional<::mlir::Location> firstUnprovenAssociation;
 };
 
+// The pinned cf.switch printer accepts a numbered multi-result value in case
+// successor operands but its parser rejects one in the default operands. Such
+// values appear only after CFG-to-SCF replaces an entry multiplexer argument,
+// so repair the completed clone rather than perturbing the transformation.
+void makeResidualSwitchesRoundTripSafe(::mlir::Region &region,
+                                       ::mlir::IRRewriter &rewriter) {
+  ::llvm::SmallVector<::mlir::cf::SwitchOp, 2> switches;
+  region.walk([&](::mlir::cf::SwitchOp op) {
+    if (::llvm::any_of(op.getDefaultOperands(), [](::mlir::Value value) {
+          auto result = ::mlir::dyn_cast<::mlir::OpResult>(value);
+          return result && result.getOwner()->getNumResults() > 1;
+        }))
+      switches.push_back(op);
+  });
+
+  for (::mlir::cf::SwitchOp op : switches) {
+    ::mlir::SuccessorRange cases = op.getCaseDestinations();
+    rewriter.setInsertionPoint(op);
+    if (cases.empty()) {
+      rewriter.replaceOpWithNewOp<::mlir::cf::BranchOp>(
+          op, op.getDefaultDestination(), op.getDefaultOperands());
+      continue;
+    }
+    if (cases.size() == 1) {
+      const ::llvm::APInt &caseValue =
+          *op.getCaseValuesAttr().getValues<::llvm::APInt>().begin();
+      ::mlir::Value constant = ::mlir::arith::ConstantOp::create(
+          rewriter, op.getLoc(),
+          ::mlir::IntegerAttr::get(op.getFlag().getType(), caseValue));
+      ::mlir::Value selected = ::mlir::arith::CmpIOp::create(
+          rewriter, op.getLoc(), ::mlir::arith::CmpIPredicate::eq, op.getFlag(),
+          constant);
+      ::mlir::cf::CondBranchOp::create(
+          rewriter, op.getLoc(), selected, cases.front(), op.getCaseOperands(0),
+          op.getDefaultDestination(), op.getDefaultOperands());
+      rewriter.eraseOp(op);
+      continue;
+    }
+
+    ::mlir::Block *dispatchBlock = op->getBlock();
+    ::mlir::Block *defaultTrampoline = rewriter.createBlock(
+        dispatchBlock->getParent(), ::std::next(dispatchBlock->getIterator()));
+    ::mlir::cf::BranchOp::create(rewriter, op.getLoc(),
+                                 op.getDefaultDestination(),
+                                 op.getDefaultOperands());
+    rewriter.setInsertionPoint(op);
+    ::llvm::SmallVector<::llvm::SmallVector<::mlir::Value>, 4>
+        caseArgumentStorage;
+    for (::mlir::OperandRange operands : op.getCaseOperands())
+      caseArgumentStorage.emplace_back(operands.begin(), operands.end());
+    ::llvm::SmallVector<::mlir::ValueRange, 4> caseArguments;
+    for (const auto &operands : caseArgumentStorage)
+      caseArguments.emplace_back(operands);
+    ::mlir::cf::SwitchOp::create(rewriter, op.getLoc(), op.getFlag(),
+                                 defaultTrampoline, ::mlir::ValueRange{},
+                                 op.getCaseValuesAttr(), cases, caseArguments);
+    rewriter.eraseOp(op);
+  }
+}
+
 struct LiftCFToSCFPass
     : public ::mlir::PassWrapper<LiftCFToSCFPass, ::mlir::OperationPass<>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LiftCFToSCFPass)
@@ -451,6 +513,8 @@ struct LiftCFToSCFPass
       if (failed(
               ::mlir::transformCFGToSCF(cloneRegion, structuring, dominance)))
         continue;
+
+      makeResidualSwitchesRoundTripSafe(cloneRegion, rewriter);
 
       // Two facts only the completed clone can state: an entry multiplexer
       // that dispatches to more than one annotated loop header leaves the
