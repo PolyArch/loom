@@ -280,6 +280,23 @@ candidate, or rebind the Mapping. Promotion to Mapping is an explicit,
 potentially expensive branch for a selected survivor set rather than an
 implicit action performed by frontend passes.
 
+Workload-aware compilation uses the same mechanism. An exact source-program
+Request binds its `SimulationWorkload` and `SimulationRuntimeInput`; its
+Evidence owns normalized dynamic observations. A compiler generator may
+consume only the model descriptor's typed projection of those observations.
+Fine-grained counters or traces needed while evaluating one invocation remain
+removable execution state and do not create a profile Artifact, candidate
+identity field, or alternate workload authority. The workload reference and
+runtime-input reference in the Evaluation case are the sole input identity.
+
+Promotion of a Spatial ownership candidate has two independent gates. The
+semantic gate requires source-program equivalence, selected Structured-program
+equivalence, and exact graph replay equivalence for every observed dynamic
+activation. The benefit gate compares whole-workload metrics against the
+stored-program baseline. Passing one gate cannot imply the other. A host-only
+selection is a valid DSE result only when complete candidate dispositions and
+workload-aware Evidence justify it; it is not an accelerator-success result.
+
 ## EvaluationRequest and Model Descriptor
 
 `evaluation.request.1.0` has one strict typed root:

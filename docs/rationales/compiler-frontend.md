@@ -248,6 +248,23 @@ do not silently fall back to the InstructionCore during lowering. The DSE must
 select a different Structured Program Candidate if it wants a different
 ownership cut.
 
+## Why Ownership Ranking Is Workload-Aware
+
+Static graph size cannot distinguish a hot compute loop from a cold helper.
+Ranking only the selected region can therefore prefer a tiny shape query or
+descriptor copy even though accelerating it has no whole-program benefit. A
+benchmark-name rule or minimum coverage percentage would hide that modeling
+error behind another policy.
+
+The source workload is evaluated once through the central Evaluation system.
+Its typed dynamic projection weights each dependency-closed candidate while
+the ordinary whole-workload cost accounts for remaining host work, launch and
+transfer overhead, and Fabric-constrained Spatial work. This makes a helper
+lose for the correct reason: its saved dynamic work does not repay its
+boundary cost. The profile is not a second program or workload Artifact, and
+the selected schedule and thread domain remain materialized only in the child
+Structured Program.
+
 ## Why SCF-To-Dataflow Is Mechanical
 
 Once the candidate fixes schedule, shape, reduction, and ownership, lowering

@@ -31,6 +31,21 @@ Deployment-selected target binary on the bound gem5 ISA model. RISC-V support
 therefore comes from the exact Fabric architectural contract, compiler target
 binding, and gem5 processor correspondence rather than from host JIT behavior.
 
+Source-backed pointer discovery remains ephemeral for the same reason. One
+runtime object registry resolves every concrete pointer to an allocation and
+byte offset, while canonical graph boundaries expose memory capabilities rather
+than raw host pointers. Treating descriptor fields, call operands, and globals
+as separate pointer authorities would duplicate aliasing facts and make two
+equivalent access paths simulate differently.
+
+Source, selected Structured execution, and DFG replay are intentionally three
+separate observations. Source-versus-selected comparison validates the
+transformation; selected-versus-DFG comparison validates lowering and actor
+semantics. Comparing only source and DFG would not identify which boundary was
+wrong, while comparing only selected and DFG could bless a miscompiled
+candidate. All executions start from the same immutable runtime input so the
+comparison cannot be contaminated by earlier mutable state.
+
 SST remains a possible future adapter for large-scale exploration, not a first-
 version second system authority.
 

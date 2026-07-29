@@ -103,6 +103,24 @@ then derives that root's exact byte offset from the concrete boundary pointer
 for every dynamic invocation. A static offset may not stand in for this
 invocation-local binding, and the ephemeral pointer does not enter either
 persistent Simulation schema.
+
+Source-backed capture uses one invocation-local object registry for globals,
+stack allocations, runtime allocations, descriptor-reached objects, aliases,
+and byte offsets. Object ownership is a property of the concrete runtime
+allocation, never of an enclosing callable. Every observed host pointer is
+resolved to one registry object plus byte offset before constructing the
+canonical runtime input. Shared resolutions use one object ordinal and thereby
+preserve aliasing. No descriptor-specific pointer table, call-local alias map,
+or raw host address enters a graph or persistent Simulation Artifact.
+
+Pointer-producing descriptor loads and analogous aggregate traversal are
+normalized before graph finalization. InstructionCore code resolves them to
+explicit memory capabilities at the graph boundary; the graph consumes only
+those capabilities plus fixed-width integer access functions. If a pointer
+root or finite extent cannot be resolved at one concrete activation, that
+activation is typed `Unsupported`. The oracle does not infer a static pointer
+identity from one reaching store or introduce pointer-as-data semantics into
+canonical Dataflow.
 The canonical memory-actor relation also determines whether independent
 native replays must agree on an imported object's pre-activation bytes. If any
 aliasing root loads, performs RMW, or otherwise may read initial state, those
@@ -133,10 +151,26 @@ Deployment-selected target binary through `Gem5SimulationBinding`; a
 layout-compatible host oracle therefore cannot stand in for RISC-V execution,
 InstructionCore timing, NoC behavior, coherence, or external-memory behavior.
 
-Source-backed functional validation replays the exact selected typed semantic
-decision in an independently lowered native execution. DFG-sim observations
-must match that selected-decision execution bit for bit. A numeric tolerance is
-not a correctness authority.
+Source-backed functional validation has three comparisons over clones of the
+same immutable runtime input:
+
+1. the unmodified source execution produces the workload reference result;
+2. the exact selected Structured candidate produces an equivalent whole-program
+   result; and
+3. every dynamically observed graph activation replays in DFG-sim with the
+   same graph-boundary values, memory effects, and completion as the selected
+   Structured execution.
+
+The selected candidate and source executions must start from independently
+cloned objects derived from the same `SimulationRuntimeInput`; process-global
+mutable state cannot leak between them. A selected region that has no dynamic
+activation for the workload is inapplicable and cannot report successful
+source-backed acceleration. A mismatch is a hard semantic-gate failure and
+cannot be repaired by falling back to host execution or selecting another
+unreported graph. Exact integer and byte semantics must agree. Any accepted
+floating variance must be attributed to an explicitly legal floating
+transformation and reported as such; a generic numeric tolerance is not a
+correctness authority.
 
 The unmodified source execution may differ from the selected execution only
 when the selected lineage contains an explicit typed floating-point decision,

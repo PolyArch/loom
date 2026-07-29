@@ -574,12 +574,50 @@ consume only the typed Evidence projections declared by the central plan; they
 do not scan an Artifact Store, choose the latest result, or accept free-form
 backend advice.
 
+### Workload-Aware Ownership Selection
+
+Ownership promotion is a whole-workload decision. Before a promotion gate
+ranks ownership candidates, an Evaluation model executes the exact source
+program with the exact `SimulationWorkload` and `SimulationRuntimeInput`. Its
+`EvaluationEvidence` is the sole persistent owner of normalized observations.
+Dynamic callable invocation counts, structured-scope activation counts, loop
+trip counts, path coverage, and memory traffic may be exposed to generators as
+descriptor-owned typed projections or retained as removable in-memory analysis
+views. They do not form a `ProfileArtifact`, candidate-owned counter table, or
+second workload identity.
+
+The cost of one ownership candidate is evaluated over the complete workload:
+remaining HostCore and InstructionCore work, logical-thread launch and
+synchronization, boundary transfer and memory work, and dynamically activated
+Spatial work under the exact Fabric capability projection. A statically small
+helper therefore receives credit only for the dynamic work it actually covers.
+There is no function-name classification, benchmark-specific preference, or
+fixed hot-region percentage. A candidate with zero dynamic activations is
+inapplicable to that workload and cannot satisfy an accelerator promotion gate.
+
+An ownership decision is one dependency-closed structured-region decision,
+not separate whole-callable and single-operation semantics. Callable, loop,
+selection, and nested-region roots differ only in how their common data,
+control, memory, channel, and ownership closure is derived. A direct call may
+be specialized or inlined before closure, or remain in InstructionCore while
+independent regions on either side are considered. A canonical graph never
+contains a general call.
+
+Dense thread-domain choices are part of the same Structured candidate. They
+materialize exact rank, extents, source-IV reconstruction, and inner loop shape
+before handoff. For example, a selected `[0, 1024)` source iteration domain may
+materialize an extent-eight logical thread domain whose coordinate `t`
+reconstructs the tile `[t * 128, (t + 1) * 128)`, with the tile-local loop in a
+`loom.spatial_region`. These are logical coordinates, not physical X/Y
+coordinates or AccCore selections. SystemMapping alone owns their physical
+binding.
+
 ### Complete Candidate Dispositions
 
 An Ownership Generate invocation enumerates one finite scope-local domain in
-canonical Structured operation order. Every defined callable considered as a
-whole-callable scope appears exactly once. A callable that cannot yet be
-materialized records one scope coordinate with no decision and a typed
+canonical Structured operation order. Every maximal dependency-closed
+structured scope considered for ownership appears exactly once. A scope that
+cannot yet be materialized records one coordinate with no decision and a typed
 `NonFinalizable` disposition. External declarations and operations that are
 not ownership scopes are not candidate attempts. Every accepted scope then
 enumerates its typed decision domain in owner-defined canonical order.
