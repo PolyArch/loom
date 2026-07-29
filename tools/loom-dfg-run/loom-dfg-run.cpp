@@ -197,10 +197,16 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   if (!outcome)
     return outcome.takeError();
   if (const auto *incomplete =
-          std::get_if<loom::dse::IncompleteSelection>(&*outcome))
-    return unsupported(
-        "central DSE did not complete for candidate " +
-        loom::formatArtifactIdentityHex(incomplete->candidate.artifact));
+          std::get_if<loom::dse::IncompleteSelection>(&*outcome)) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    stream << "central DSE did not complete: reason="
+           << loom::dse::toString(incomplete->reason)
+           << ", candidate="
+           << loom::formatArtifactIdentityHex(incomplete->candidate.artifact)
+           << ", retained_evidence=" << incomplete->retainedEvidence.size();
+    return unsupported(stream.str());
+  }
   if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(*outcome))
     return unsupported("central DSE found no feasible ownership candidate");
   auto completed =
