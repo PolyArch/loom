@@ -472,6 +472,12 @@ admission joins the third:
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
+Because `loom.fabric 1.0` admits only the `RiscV` Architectural Contract, the
+selected gem5 build and every `Processor` correspondence must provide a
+compatible RISC-V ISA model. A build without that ISA or a correspondence to a
+different ISA is typed `Unsupported`; the binding cannot retarget the binary
+or substitute a host-native model.
+
 It does not reference or copy SystemMapping or CompilerTargetBindings. The
 system-simulator descriptor
 references the shared system-simulation case signature with ordered

@@ -24,6 +24,13 @@ device-level participant. Building another CPU or SoC simulator inside Loom
 would duplicate mature infrastructure and distract from the accelerator
 research focus.
 
+This separation also keeps source-backed host validation from becoming an
+accidental system simulator. DFG-sim may temporarily retarget an exact selected
+region after proving effective layout compatibility, but sys-sim executes the
+Deployment-selected target binary on the bound gem5 ISA model. RISC-V support
+therefore comes from the exact Fabric architectural contract, compiler target
+binding, and gem5 processor correspondence rather than from host JIT behavior.
+
 SST remains a possible future adapter for large-scale exploration, not a first-
 version second system authority.
 

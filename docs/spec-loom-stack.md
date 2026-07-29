@@ -76,6 +76,23 @@ AccCore = InstructionCore + SpatialCore
 SpatialCore = arbitrary-topology CGRA described by fabric.module
 ```
 
+The same entities form two weakly coupled execution domains:
+
+```text
+host side = HostCore + host runtime and memory services
+accelerator side = heterogeneous AccCore cluster + accelerator NoC
+                   + accelerator memory/services
+host/accelerator interface = typed service endpoints + system transport
+```
+
+This partition expresses coupling and ownership, not physical packaging. It
+does not add an accelerator-subsystem artifact or another topology owner. The
+logical endpoints, services, connectivity, and guarantees remain in
+`fabric.system`; PCIe, CXL, an SoC interconnect, or a custom link is an exact
+Interconnect Implementation choice. Accelerator memory outside a
+SpatialCore's local memories remains an explicit physical memory service in
+the accelerator-side Fabric system description.
+
 An InstructionCore is a PC-based von Neumann core used for the selected
 program regions that do not execute spatially. It may be scalar, vector,
 in-order, or out-of-order. A SpatialCore executes canonical Dataflow graphs on
@@ -276,6 +293,12 @@ belong to an external system simulator integrated through Loom's bridge. Loom
 does not rebuild a CPU or full-system simulator. A system simulation is an
 ordinary Evaluation model over an exact Deployment, Gem5SimulationBinding,
 workload, and runtime input.
+
+The host-retargeted source oracle used by DFG-sim is not a sys-sim execution
+path and proves no target timing or architecture property. Sys-sim executes
+the exact target binaries selected by Deployment in gem5, including RISC-V
+InstructionCore binaries, and invokes Loom only through the typed Spatial
+Launch bridge.
 
 Architecture-only RTL or EDA evaluation may produce EvaluationEvidence without
 claiming workload execution. Raw reports remain owner-attempt or scratch

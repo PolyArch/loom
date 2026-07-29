@@ -40,6 +40,16 @@ The Fabric Hardware Description family distinguishes:
 These are typed Fabric concepts. A generic node kind, open dictionary, protocol
 string, or placeholder record is not an alternative system schema.
 
+The host/accelerator organization partitions these existing objects into a
+HostCore domain and a weakly coupled accelerator domain containing
+heterogeneous AccCores, the accelerator Transport Architecture, and
+accelerator memory or services. Communication uses the same typed service
+endpoints, transport resources, and directed connections as the rest of the
+System graph. The partition is derived from those objects and connections; it
+is not a new persistent entity. PCIe, CXL, an SoC interconnect, or a custom
+link may implement the interface, but none is a topology assumption or a field
+in `fabric.system`.
+
 Every referenced module is selected through the root's canonical
 `ImportedModule` dependency table from `docs/spec-fabric-artifact.md`. A
 module target inside that dependency is encoded as the dependency ordinal plus
@@ -520,6 +530,12 @@ state, InstructionCore execution, and the whole-system event queue. Its grant
 sequence must follow the exact Fabric/Mapping-selected refinement contract.
 Gem5 does not own Fabric topology, cycle-visible policy, Mapping choices, or
 the Interconnect Implementation definition.
+
+The gem5 execution contains the HostCore side and accelerator-side
+InstructionCores, NoC, caches, coherence, and accelerator external memory.
+Loom's bridge supplies only the SpatialCore participant at each exact Spatial
+Launch boundary. A DFG-sim host-retargeted oracle module is never executable
+input to this system path.
 
 A workload-independent Gem5 Simulation Binding maps exact Fabric and
 Interconnect Implementation objects to gem5 models, SimObjects, parameters,

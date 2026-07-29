@@ -112,6 +112,11 @@ identity remain unchanged. Residual host work executes as host work and is
 never inserted into the Canonical Dataflow graph. This execution is a
 functional oracle, not a target timing or architecture model.
 
+Sys-sim does not consume this retargeted clone. It executes the exact
+Deployment-selected target binary through `Gem5SimulationBinding`; a
+layout-compatible host oracle therefore cannot stand in for RISC-V execution,
+InstructionCore timing, NoC behavior, coherence, or external-memory behavior.
+
 Source-backed functional validation replays the exact selected typed semantic
 decision in an independently lowered native execution. DFG-sim observations
 must match that selected-decision execution bit for bit. A numeric tolerance is

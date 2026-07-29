@@ -44,6 +44,23 @@ dialect are explained by
 [Fabric And ADG Construction](fabric-and-adg.md). The full-stack machine model
 depends on that one hardware authority rather than restating its ownership.
 
+## Why Host And Accelerator Domains Are A Partition
+
+The intended system weakly couples a HostCore domain to a heterogeneous
+AccCore cluster with its own NoC and accelerator memory. PCIe is a useful
+analogy, but the same organization may be integrated through CXL, an SoC
+interconnect, or a custom link. Physical packaging is not a semantic
+distinction. Making the accelerator domain another persistent artifact would
+duplicate the same occurrences, endpoints, services, and transport already
+owned by `fabric.system`.
+
+Loom therefore treats the two domains as a conceptual partition derived from
+the system graph. Typed service endpoints express communication, Transport
+Architecture owns its logical guarantees, and Interconnect Implementation
+owns the concrete protocol. This preserves arbitrary topology and lets the
+hardware and simulator bindings change protocol realization without changing
+software or Mapping identity.
+
 ## Why The Inputs And Outputs Are Asymmetric
 
 LLVM IR is the language-independent software boundary because C and C++ are
