@@ -177,6 +177,8 @@ struct CaptureContext {
   std::vector<std::uint64_t> byteCounts;
   std::vector<std::uint64_t> rootObjectOrdinals;
   std::vector<std::uint64_t> staticRootByteOffsets;
+  std::vector<std::uint64_t> baseBindingDepths;
+  std::vector<void *> boundObjectBases;
   std::vector<RuntimeValueCaptureShape> runtimeValueShapes;
   std::vector<ValueResultCaptureShape> valueResultShapes;
   bool littleEndian = true;
@@ -422,6 +424,43 @@ void captureEnd() {
   context.activeCalls.pop_back();
 }
 
+void captureBindObjectBase(std::uint64_t objectOrdinal, void *base,
+                           std::uint64_t byteCount) {
+  if (!activeCapture)
+    return;
+  CaptureContext &context = *activeCapture;
+  if (context.error)
+    return;
+  if (objectOrdinal >= context.byteCounts.size() || !base ||
+      context.byteCounts[objectOrdinal] != byteCount ||
+      objectOrdinal >= context.baseBindingDepths.size() ||
+      context.baseBindingDepths[objectOrdinal] == 0 ||
+      context.baseBindingDepths[objectOrdinal] != context.gateDepth) {
+    recordCaptureError("object-base binding is outside its invocation edge");
+    return;
+  }
+  context.boundObjectBases[objectOrdinal] = base;
+}
+
+void *captureLookupObjectBase(std::uint64_t objectOrdinal,
+                              std::uint64_t byteCount) {
+  CaptureContext *enabled = enabledCapture();
+  if (!enabled)
+    return nullptr;
+  CaptureContext &context = *enabled;
+  if (context.error)
+    return nullptr;
+  if (objectOrdinal >= context.byteCounts.size() ||
+      context.byteCounts[objectOrdinal] != byteCount ||
+      objectOrdinal >= context.baseBindingDepths.size() ||
+      context.baseBindingDepths[objectOrdinal] == 0 ||
+      !context.boundObjectBases[objectOrdinal]) {
+    recordCaptureError("selected operation has no bound backing object");
+    return nullptr;
+  }
+  return context.boundObjectBases[objectOrdinal];
+}
+
 void captureGateEnter() {
   if (!activeCapture)
     return;
@@ -429,7 +468,12 @@ void captureGateEnter() {
     recordCaptureError("capture invocation gate exceeded its exact path");
     return;
   }
-  ++activeCapture->gateDepth;
+  const std::uint64_t nextDepth = activeCapture->gateDepth + 1;
+  for (std::size_t ordinal = 0;
+       ordinal < activeCapture->baseBindingDepths.size(); ++ordinal)
+    if (activeCapture->baseBindingDepths[ordinal] == nextDepth)
+      activeCapture->boundObjectBases[ordinal] = nullptr;
+  activeCapture->gateDepth = nextDepth;
 }
 
 void captureGateExit() {
@@ -439,6 +483,10 @@ void captureGateExit() {
     recordCaptureError("capture invocation gate exited without entry");
     return;
   }
+  for (std::size_t ordinal = 0;
+       ordinal < activeCapture->baseBindingDepths.size(); ++ordinal)
+    if (activeCapture->baseBindingDepths[ordinal] == activeCapture->gateDepth)
+      activeCapture->boundObjectBases[ordinal] = nullptr;
   --activeCapture->gateDepth;
 }
 
@@ -450,6 +498,8 @@ struct CaptureCallbackNames {
   std::optional<std::string> memoryRoot;
   std::optional<std::string> value;
   std::optional<std::string> result;
+  std::optional<std::string> bindObjectBase;
+  std::optional<std::string> lookupObjectBase;
   std::optional<std::string> gateEnter;
   std::optional<std::string> gateExit;
   std::uint64_t requiredGateDepth = 0;
@@ -684,12 +734,18 @@ instrumentCapture(llvm::Module &module,
   afterBuilder.CreateCall(end);
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("instrumented native LLVM module does not verify");
-  return CaptureCallbackNames{
-      std::move(beginName),     std::move(endName),
-      std::move(beforeName),    std::move(afterName),
-      std::nullopt,             std::move(valueName),
-      std::move(resultName),    std::move(gateEnterName),
-      std::move(gateExitName),  invocationPath.size() - 1};
+  return CaptureCallbackNames{std::move(beginName),
+                              std::move(endName),
+                              std::move(beforeName),
+                              std::move(afterName),
+                              std::nullopt,
+                              std::move(valueName),
+                              std::move(resultName),
+                              std::nullopt,
+                              std::nullopt,
+                              std::move(gateEnterName),
+                              std::move(gateExitName),
+                              invocationPath.size() - 1};
 }
 
 std::string uniqueCallbackName(mlir::ModuleOp module, llvm::StringRef prefix) {
@@ -740,6 +796,8 @@ instrumentStructuredCapture(mlir::ModuleOp module,
       mlir::LLVM::LLVMVoidType::get(context), {});
   mlir::Type callbackType = mlir::LLVM::LLVMFunctionType::get(
       mlir::LLVM::LLVMVoidType::get(context), {i64, pointer, i64});
+  mlir::Type objectBaseLookupType =
+      mlir::LLVM::LLVMFunctionType::get(pointer, {i64, i64});
   mlir::Type memoryRootCallbackType = mlir::LLVM::LLVMFunctionType::get(
       mlir::LLVM::LLVMVoidType::get(context),
       {i64, i64, pointer, pointer, i64});
@@ -762,6 +820,18 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   std::optional<std::string> resultName;
   if (!inputPlan.valueResults.empty())
     resultName = uniqueCallbackName(module, "__loom_native_capture_result");
+  const bool hasBoundObjectBase =
+      llvm::any_of(inputPlan.objects, [](const auto &object) {
+        return object.baseBindingCallOrdinal.has_value();
+      });
+  std::optional<std::string> bindObjectBaseName;
+  std::optional<std::string> lookupObjectBaseName;
+  if (hasBoundObjectBase) {
+    bindObjectBaseName =
+        uniqueCallbackName(module, "__loom_native_capture_bind_object_base");
+    lookupObjectBaseName =
+        uniqueCallbackName(module, "__loom_native_capture_lookup_object_base");
+  }
   std::optional<std::string> gateEnterName;
   std::optional<std::string> gateExitName;
   if (!plan.invocationPath.empty()) {
@@ -787,17 +857,55 @@ instrumentStructuredCapture(mlir::ModuleOp module,
   if (resultName)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *resultName,
                                    callbackType);
+  if (bindObjectBaseName) {
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *bindObjectBaseName,
+                                   callbackType);
+    mlir::LLVM::LLVMFuncOp::create(declarations, location,
+                                   *lookupObjectBaseName, objectBaseLookupType);
+  }
   if (gateEnterName) {
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *gateEnterName,
                                    lifecycleType);
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *gateExitName,
                                    lifecycleType);
-    for (const DirectCallCaptureSite &site : plan.invocationPath) {
+    for (auto [callOrdinal, site] : llvm::enumerate(plan.invocationPath)) {
       mlir::OpBuilder gateBefore(site.hostCall);
       mlir::OpBuilder gateAfter(site.hostCall);
       gateAfter.setInsertionPointAfter(site.hostCall);
       mlir::LLVM::CallOp::create(gateBefore, location, mlir::TypeRange{},
                                  *gateEnterName, mlir::ValueRange{});
+      for (auto [objectOrdinal, object] : llvm::enumerate(inputPlan.objects)) {
+        if (object.baseBindingCallOrdinal != callOrdinal)
+          continue;
+        if (!bindObjectBaseName || !object.base ||
+            !llvm::isa<mlir::LLVM::LLVMPointerType>(object.base.getType()) ||
+            object.byteCount == 0 ||
+            object.operandByteOffset >= object.byteCount ||
+            object.operandByteOffset >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()))
+          return invalid("bound capture object has an invalid projection");
+        mlir::Value base = object.base;
+        if (object.operandByteOffset != 0) {
+          mlir::Value negativeOffset = mlir::LLVM::ConstantOp::create(
+              gateBefore, location, i64,
+              gateBefore.getI64IntegerAttr(
+                  -static_cast<std::int64_t>(object.operandByteOffset)));
+          base = mlir::LLVM::GEPOp::create(gateBefore, location, pointer,
+                                           gateBefore.getI8Type(), object.base,
+                                           mlir::ValueRange{negativeOffset})
+                     .getResult();
+        }
+        mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+            gateBefore, location, i64,
+            gateBefore.getI64IntegerAttr(objectOrdinal));
+        mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
+            gateBefore, location, i64,
+            gateBefore.getI64IntegerAttr(object.byteCount));
+        mlir::LLVM::CallOp::create(
+            gateBefore, location, mlir::TypeRange{}, *bindObjectBaseName,
+            mlir::ValueRange{ordinalValue, base, byteCount});
+      }
       mlir::LLVM::CallOp::create(gateAfter, location, mlir::TypeRange{},
                                  *gateExitName, mlir::ValueRange{});
     }
@@ -820,8 +928,23 @@ instrumentStructuredCapture(mlir::ModuleOp module,
             static_cast<std::uint64_t>(
                 std::numeric_limits<std::int64_t>::max()))
       return invalid("capture object has an invalid finite projection");
-    mlir::Value base = object.base;
-    if (object.operandByteOffset != 0) {
+    mlir::Value base;
+    if (object.baseBindingCallOrdinal) {
+      if (!lookupObjectBaseName)
+        return invalid("bound capture object has no lookup provider");
+      mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+          before, location, i64, before.getI64IntegerAttr(ordinal));
+      mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
+          before, location, i64, before.getI64IntegerAttr(object.byteCount));
+      base =
+          mlir::LLVM::CallOp::create(before, location, mlir::TypeRange{pointer},
+                                     *lookupObjectBaseName,
+                                     mlir::ValueRange{ordinalValue, byteCount})
+              .getResult();
+    } else {
+      base = object.base;
+    }
+    if (!object.baseBindingCallOrdinal && object.operandByteOffset != 0) {
       mlir::Value negativeOffset = mlir::LLVM::ConstantOp::create(
           before, location, i64,
           before.getI64IntegerAttr(
@@ -921,12 +1044,18 @@ instrumentStructuredCapture(mlir::ModuleOp module,
                              mlir::ValueRange{});
   if (mlir::failed(mlir::verify(module)))
     return invalid("instrumented Structured Program does not verify");
-  return CaptureCallbackNames{
-      std::move(beginName),      std::move(endName),
-      std::move(beforeName),     std::move(afterName),
-      std::move(memoryRootName), std::move(valueName),
-      std::move(resultName),     std::move(gateEnterName),
-      std::move(gateExitName),   plan.invocationPath.size()};
+  return CaptureCallbackNames{std::move(beginName),
+                              std::move(endName),
+                              std::move(beforeName),
+                              std::move(afterName),
+                              std::move(memoryRootName),
+                              std::move(valueName),
+                              std::move(resultName),
+                              std::move(bindObjectBaseName),
+                              std::move(lookupObjectBaseName),
+                              std::move(gateEnterName),
+                              std::move(gateExitName),
+                              plan.invocationPath.size()};
 }
 
 void collectReferencedGlobals(llvm::Value *value,
@@ -1070,6 +1199,17 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     callbacks[jit->mangleAndIntern(*callbackNames.result)] = {
         llvm::orc::ExecutorAddr::fromPtr(&captureResult),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (callbackNames.bindObjectBase.has_value() !=
+      callbackNames.lookupObjectBase.has_value())
+    return invalid("capture object-base callback table is incomplete");
+  if (callbackNames.bindObjectBase) {
+    callbacks[jit->mangleAndIntern(*callbackNames.bindObjectBase)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&captureBindObjectBase),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    callbacks[jit->mangleAndIntern(*callbackNames.lookupObjectBase)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&captureLookupObjectBase),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  }
   if (callbackNames.gateEnter.has_value() != callbackNames.gateExit.has_value())
     return invalid("capture invocation gate callback table is incomplete");
   if (callbackNames.gateEnter) {
@@ -1097,8 +1237,18 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
   if ((capture.requiredGateDepth == 0) != !callbackNames.gateEnter.has_value())
     return invalid("capture invocation gate depth is inconsistent");
   capture.byteCounts.reserve(plan.objects.size());
-  for (const SimulationMemoryCaptureObject &object : plan.objects)
+  capture.baseBindingDepths.reserve(plan.objects.size());
+  for (const SimulationMemoryCaptureObject &object : plan.objects) {
     capture.byteCounts.push_back(object.byteCount);
+    if (object.baseBindingCallOrdinal) {
+      if (*object.baseBindingCallOrdinal >= capture.requiredGateDepth)
+        return invalid("capture object-base binding exceeds invocation path");
+      capture.baseBindingDepths.push_back(*object.baseBindingCallOrdinal + 1);
+    } else {
+      capture.baseBindingDepths.push_back(0);
+    }
+  }
+  capture.boundObjectBases.resize(plan.objects.size(), nullptr);
   capture.rootObjectOrdinals.reserve(plan.memoryRootBindings.size());
   capture.staticRootByteOffsets.reserve(plan.memoryRootBindings.size());
   for (const SimulationMemoryRootCapture &binding : plan.memoryRootBindings) {
@@ -1132,6 +1282,9 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
     return executionFailed(*capture.error);
   if (capture.gateDepth != 0)
     return executionFailed("native execution left an open invocation gate");
+  if (llvm::any_of(capture.boundObjectBases,
+                   [](void *base) { return base != nullptr; }))
+    return executionFailed("native execution left a bound backing object");
   if (!capture.activeCalls.empty())
     return executionFailed("native execution left an incomplete call capture");
   return std::move(capture.result);

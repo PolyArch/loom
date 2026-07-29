@@ -24,6 +24,11 @@ struct SimulationMemoryCaptureObject {
   mlir::Value base;
   std::uint64_t byteCount = 0;
   std::uint64_t operandByteOffset = 0;
+  /// Exact invocation-path call whose caller owns `base`. When present, native
+  /// instrumentation binds the backing base while entering that call and the
+  /// selected operation consumes the transient binding. This never enters the
+  /// persistent SimulationRuntimeInput wire.
+  std::optional<std::uint64_t> baseBindingCallOrdinal;
 };
 
 struct DirectCallOperandMemorySource final {

@@ -269,6 +269,9 @@ entry:
 std::unique_ptr<llvm::Module> parseScalarReduction(const char *test,
                                                    llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define i32 @accum() {
 entry:
   br label %loop
@@ -359,6 +362,150 @@ entry:
   return module;
 }
 
+std::unique_ptr<llvm::Module>
+parseDescriptorMemoryView(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+@lookup = private constant [6 x i32]
+    [i32 287454020, i32 1432778632, i32 -1, i32 7, i32 9, i32 11], align 16
+@alternate = private constant [6 x i32]
+    [i32 10, i32 1, i32 2, i32 3, i32 4, i32 5], align 16
+
+define void @descriptor_lookup(ptr %descriptor, ptr %output) {
+entry:
+  %table = load ptr, ptr %descriptor, align 8
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %source = getelementptr i32, ptr %table, i64 %i
+  %value = load i32, ptr %source, align 4
+  %destination = getelementptr i32, ptr %output, i64 %i
+  store i32 %value, ptr %destination, align 4
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp eq i64 %next, 4
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define i32 @main() {
+entry:
+  %descriptor = alloca ptr, align 8
+  %output = alloca [4 x i32], align 16
+  %lookup.view = getelementptr [6 x i32], ptr @lookup, i64 0, i64 1
+  store ptr %lookup.view, ptr %descriptor, align 8
+  call void @descriptor_lookup(ptr %descriptor, ptr %output)
+  ret i32 0
+}
+
+define i32 @ambiguous_main(i1 %condition) {
+entry:
+  %descriptor = alloca ptr, align 8
+  %output = alloca [4 x i32], align 16
+  br i1 %condition, label %left, label %right
+
+left:
+  %lookup.view = getelementptr [6 x i32], ptr @lookup, i64 0, i64 1
+  store ptr %lookup.view, ptr %descriptor, align 8
+  br label %invoke
+
+right:
+  %alternate.view = getelementptr [6 x i32], ptr @alternate, i64 0, i64 1
+  store ptr %alternate.view, ptr %descriptor, align 8
+  br label %invoke
+
+invoke:
+  call void @descriptor_lookup(ptr %descriptor, ptr %output)
+  ret i32 0
+}
+
+define i32 @offset_ambiguous_main(i1 %condition) {
+entry:
+  %descriptor = alloca ptr, align 8
+  %output = alloca [4 x i32], align 16
+  %first = getelementptr [6 x i32], ptr @lookup, i64 0, i64 1
+  %second = getelementptr [6 x i32], ptr @lookup, i64 0, i64 2
+  %view = select i1 %condition, ptr %first, ptr %second
+  store ptr %view, ptr %descriptor, align 8
+  call void @descriptor_lookup(ptr %descriptor, ptr %output)
+  ret i32 0
+}
+
+define void @descriptor_repeat_select(ptr %descriptor, ptr %output,
+                                      i1 %execute) {
+entry:
+  br label %outer
+
+outer:
+  %iteration = phi i64 [ 0, %entry ], [ %outer.next, %latch ]
+  %slot = phi ptr [ %descriptor, %entry ], [ %slot.next, %latch ]
+  %table = load ptr, ptr %slot, align 8
+  br label %inner
+
+inner:
+  %index = phi i64 [ 0, %outer ], [ %next, %inner.latch ]
+  br i1 %execute, label %selected, label %inner.latch
+
+selected:
+  %source = getelementptr i32, ptr %table, i64 %index
+  %value = load i32, ptr %source, align 4
+  %destination = getelementptr i32, ptr %output, i64 %index
+  store i32 %value, ptr %destination, align 4
+  br label %inner.latch
+
+inner.latch:
+  %next = add nuw nsw i64 %index, 1
+  %inner.done = icmp eq i64 %next, 4
+  br i1 %inner.done, label %latch, label %inner
+
+latch:
+  %slot.next = getelementptr ptr, ptr %slot, i64 0
+  %outer.next = add nuw nsw i64 %iteration, 1
+  %outer.done = icmp eq i64 %outer.next, 1
+  br i1 %outer.done, label %exit, label %outer
+
+exit:
+  ret void
+}
+
+define i32 @repeat_select_main() {
+entry:
+  %descriptor = alloca ptr, align 8
+  %output = alloca [4 x i32], align 16
+  %lookup.view = getelementptr [6 x i32], ptr @lookup, i64 0, i64 1
+  store ptr %lookup.view, ptr %descriptor, align 8
+  br label %invoke.loop
+
+invoke.loop:
+  %iteration = phi i64 [ 0, %entry ], [ %next, %invoke.loop ]
+  %slot = phi ptr [ %descriptor, %entry ], [ %slot.next, %invoke.loop ]
+  call void @descriptor_repeat_select(ptr %slot, ptr %output, i1 true)
+  %slot.next = getelementptr ptr, ptr %slot, i64 0
+  %next = add nuw nsw i64 %iteration, 1
+  %done = icmp eq i64 %next, 1
+  br i1 %done, label %exit, label %invoke.loop
+
+exit:
+  ret i32 0
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<descriptor-memory-view>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
 void configureHostModule(const char *test, llvm::Module &module) {
   static const bool initializationFailed = [] {
     return llvm::InitializeNativeTarget() ||
@@ -417,8 +564,7 @@ findStructuredLoop(const char *test,
   fail(test, "raised Structured Program has no requested loop");
 }
 
-loom::frontend::StructuredEntityRef
-findNestedStructuredLoop(
+loom::frontend::StructuredEntityRef findNestedStructuredLoop(
     const char *test,
     const loom::frontend::StructuredProgramCandidate &candidate,
     llvm::StringRef callableName) {
@@ -870,6 +1016,138 @@ void operationCandidateCapturesInvocationLocalMemoryViews() {
       capture.calls.back().memoryRootByteOffsets.front() !=
           4 * sizeof(std::int32_t))
     fail(test, "dynamic row views did not retain invocation-local offsets");
+
+  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
+  if (cleanup)
+    fail(test, "cannot remove artifact store: " + cleanup.message());
+}
+
+void operationCandidateCapturesDescriptorLoadedMemory() {
+  const char *test = "operationCandidateCapturesDescriptorLoadedMemory";
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-operation-descriptor-memory", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  llvm::LLVMContext context;
+  auto compiled = take(test, loom::frontend::compileLlvmModuleToPreMapping(
+                                 parseDescriptorMemoryView(test, context),
+                                 design.roots().front().reference(), store));
+  loom::frontend::SpatialOwnershipScope scope{findStructuredLoop(
+      test, compiled.structuredProgram, "descriptor_lookup")};
+  auto decisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, scope.selection));
+  if (decisions.empty())
+    fail(test, "descriptor lookup loop has no ownership decision");
+  auto candidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, scope, decisions.front(),
+                     design.roots().front()));
+  auto view = take(test, candidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
+  auto prepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, scope, decisions.front()));
+  mlir::LLVM::CallOp invocation =
+      findHostCall(test, *prepared.module, "main", "descriptor_lookup");
+  auto plan = take(
+      test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                view, launch, prepared.liveIns, prepared.liveOuts, invocation));
+  if (plan.input.objects.size() != 2 ||
+      plan.input.memoryRootBindings.size() != 2)
+    fail(test, "descriptor memory capture lost its finite backing object");
+  std::optional<std::uint64_t> tableObjectOrdinal;
+  std::optional<std::uint64_t> tableRootOrdinal;
+  for (auto [ordinal, object] : llvm::enumerate(plan.input.objects))
+    if (object.byteCount == 6 * sizeof(std::int32_t))
+      tableObjectOrdinal = ordinal;
+  if (!tableObjectOrdinal)
+    fail(test, "descriptor capture lost the complete table allocation");
+  for (auto [ordinal, root] : llvm::enumerate(plan.input.memoryRootBindings))
+    if (root.objectIndex == *tableObjectOrdinal)
+      tableRootOrdinal = ordinal;
+  if (!tableRootOrdinal)
+    fail(test, "descriptor table has no logical memory-root binding");
+
+  mlir::LLVM::CallOp ambiguousInvocation = findHostCall(
+      test, *prepared.module, "ambiguous_main", "descriptor_lookup");
+  auto ambiguous = loom::sim::deriveOperationSimulationInputCapturePlan(
+      view, launch, prepared.liveIns, prepared.liveOuts, ambiguousInvocation);
+  if (ambiguous)
+    fail(test, "ambiguous descriptor stores unexpectedly produced a plan");
+  std::string ambiguity = llvm::toString(ambiguous.takeError());
+  if (ambiguity.find("simulation_input_capture_unsupported") ==
+      std::string::npos)
+    fail(test, "descriptor ambiguity reported the wrong failure: " + ambiguity);
+
+  mlir::LLVM::CallOp offsetAmbiguousInvocation = findHostCall(
+      test, *prepared.module, "offset_ambiguous_main", "descriptor_lookup");
+  auto offsetAmbiguous = loom::sim::deriveOperationSimulationInputCapturePlan(
+      view, launch, prepared.liveIns, prepared.liveOuts,
+      offsetAmbiguousInvocation);
+  if (offsetAmbiguous)
+    fail(test, "distinct descriptor offsets unexpectedly produced a plan");
+  std::string offsetAmbiguity = llvm::toString(offsetAmbiguous.takeError());
+  if (offsetAmbiguity.find("simulation_input_capture_unsupported") ==
+      std::string::npos)
+    fail(test, "descriptor offset ambiguity reported the wrong failure: " +
+                   offsetAmbiguity);
+
+  loom::frontend::SpatialOwnershipScope nestedScope{findNestedStructuredLoop(
+      test, compiled.structuredProgram, "descriptor_repeat_select")};
+  auto nestedDecisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, nestedScope.selection));
+  if (nestedDecisions.empty())
+    fail(test, "repeat/select descriptor loop has no ownership decision");
+  auto nestedCandidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, nestedScope,
+                     nestedDecisions.front(), design.roots().front()));
+  auto nestedView = take(test, nestedCandidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef nestedLaunch = onlyLaunch(test, nestedView);
+  auto nestedPrepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, nestedScope,
+                     nestedDecisions.front()));
+  mlir::LLVM::CallOp nestedInvocation =
+      findHostCall(test, *nestedPrepared.module, "repeat_select_main",
+                   "descriptor_repeat_select");
+  auto nestedPlan =
+      take(test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                     nestedView, nestedLaunch, nestedPrepared.liveIns,
+                     nestedPrepared.liveOuts, nestedInvocation));
+  if (nestedPlan.input.objects.size() != 2 ||
+      nestedPlan.input.memoryRootBindings.size() != 2)
+    fail(test, "repeat/select descriptor capture lost a backing object");
+  mlir::Operation *nestedOperation = nestedPrepared.operation;
+  loom::sim::NativeSimulationInputCapture nestedCapture =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(nestedPrepared.module), nestedOperation,
+                     nestedPlan, "repeat_select_main"));
+  if (nestedCapture.entryResult != 0 || nestedCapture.calls.size() != 1 ||
+      nestedCapture.calls.front().objects.size() != 2)
+    fail(test,
+         "repeat/select descriptor oracle lost its exact graph activation");
+
+  loom::sim::NativeSimulationInputCapture capture =
+      take(test, loom::sim::executeStructuredSimulationInputCapture(
+                     std::move(prepared.module), prepared.operation, plan));
+  if (capture.entryResult != 0 || capture.calls.size() != 1 ||
+      capture.calls.front().objects.size() != 2)
+    fail(test, "descriptor memory oracle did not capture one invocation");
+  const auto &table = capture.calls.front().objects[*tableObjectOrdinal];
+  if (table.initialBytes.size() != 6 * sizeof(std::int32_t) ||
+      table.initialBytes[0] != 0x44 || table.initialBytes[1] != 0x33 ||
+      table.initialBytes[2] != 0x22 || table.initialBytes[3] != 0x11 ||
+      capture.calls.front().memoryRootByteOffsets[*tableRootOrdinal] !=
+          sizeof(std::int32_t))
+    fail(test, "descriptor interior view lost its backing-object projection");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -1399,6 +1677,7 @@ int main() {
   operationCandidateCapturesCallerOwnedMemory();
   nestedOperationCandidateUsesExactCallPath();
   operationCandidateCapturesInvocationLocalMemoryViews();
+  operationCandidateCapturesDescriptorLoadedMemory();
   wholeCallableScalarResultUsesCallerStorage();
   sourceCandidateExecutesThroughTypedDfgInput();
   staticTableExecutesThroughTypedDfgInput();

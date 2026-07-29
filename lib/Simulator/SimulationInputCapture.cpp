@@ -8,9 +8,11 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include <limits>
@@ -267,8 +269,11 @@ llvm::Expected<std::uint64_t> constantGepByteOffset(mlir::LLVM::GEPOp gep) {
     } else {
       index = raw;
     }
-    if (!index || *index < 0)
-      return unsupported("LLVM GEP has no nonnegative constant index");
+    if (!index)
+      return unsupported("LLVM GEP index is not constant");
+    if (*index < 0)
+      return unsupported(llvm::Twine("LLVM GEP has negative constant index ") +
+                         llvm::Twine(*index));
 
     mlir::Type strideType = indexedType;
     if (position != 0) {
@@ -309,6 +314,15 @@ llvm::Expected<ResolvedObject> resolveObject(mlir::Value pointer) {
     if (base->byteOffset >= base->byteCount)
       return invalid("LLVM GEP points outside its finite allocation");
     return *base;
+  }
+  if (auto cast = pointer.getDefiningOp<mlir::LLVM::BitcastOp>())
+    return resolveObject(cast.getArg());
+  if (auto cast = pointer.getDefiningOp<mlir::LLVM::AddrSpaceCastOp>())
+    return resolveObject(cast.getArg());
+  if (auto cast = pointer.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() != 1)
+      return unsupported("finite object has a non-unary pointer cast");
+    return resolveObject(cast.getInputs().front());
   }
   if (auto allocation = pointer.getDefiningOp<mlir::LLVM::AllocaOp>()) {
     llvm::Expected<std::uint64_t> byteCount =
@@ -354,9 +368,18 @@ llvm::Expected<ResolvedObject> resolveObjectThroughCallPath(
     return *base;
   }
   if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
-    if (argument.getOwner() != &enclosingCallable.getBody().front())
+    if (argument.getOwner() != &enclosingCallable.getBody().front()) {
+      mlir::Operation *owner = argument.getOwner()->getParentOp();
+      auto branch =
+          llvm::dyn_cast_or_null<mlir::RegionBranchOpInterface>(owner);
       return unsupported(
-          "memory boundary is not owned by its enclosing callable");
+          llvm::Twine("memory boundary block argument ") +
+          llvm::Twine(argument.getArgNumber()) + " is owned by '" +
+          (owner ? owner->getName().getStringRef()
+                 : llvm::StringRef("<unknown>")) +
+          "', not callable '" + enclosingCallable.getSymName() +
+          "'; region-branch interface=" + (branch ? "present" : "absent"));
+    }
     if (pathIndex >= invocationPath.size())
       return invalid("operation invocation path is incomplete");
     mlir::LLVM::CallOp hostCall = invocationPath[pathIndex];
@@ -417,39 +440,472 @@ std::optional<RegionValueSource> getRegionValueSource(mlir::Value value) {
       static_cast<unsigned>(std::distance(inputs.begin(), position))};
 }
 
+llvm::Expected<ResolvedObject>
+resolveObjectAtInvocation(mlir::Value pointer, mlir::LLVM::LLVMFuncOp callable,
+                          llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  if (!callable || invocationPath.empty())
+    return resolveObject(pointer);
+
+  for (std::size_t pathIndex = 0; pathIndex < invocationPath.size();
+       ++pathIndex) {
+    mlir::LLVM::CallOp call = invocationPath[pathIndex];
+    if (!call.getCalleeAttr())
+      return invalid("operation invocation path contains an indirect call");
+    auto callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+            call, call.getCalleeAttr());
+    if (callee == callable)
+      return resolveObjectThroughCallPath(pointer, callable, invocationPath,
+                                          pathIndex);
+  }
+
+  auto rootCaller =
+      invocationPath.front()->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (rootCaller == callable)
+    return resolveObject(pointer);
+  return invalid("pointer value is outside the exact invocation path");
+}
+
+struct InvocationSegment {
+  mlir::LLVM::LLVMFuncOp callable;
+  mlir::Operation *anchor = nullptr;
+};
+
+llvm::Expected<llvm::SmallVector<InvocationSegment, 4>>
+invocationSegmentsTo(mlir::LLVM::LoadOp load,
+                     llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  auto loadCallable = load->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!loadCallable)
+    return invalid("pointer load is not enclosed by an LLVM callable");
+  if (invocationPath.empty())
+    return llvm::SmallVector<InvocationSegment, 4>{
+        InvocationSegment{loadCallable, load.getOperation()}};
+
+  llvm::SmallVector<InvocationSegment, 4> segments;
+  auto rootCaller =
+      invocationPath.front()->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!rootCaller)
+    return invalid("operation invocation path has no root caller");
+  segments.push_back(InvocationSegment{
+      rootCaller, mlir::LLVM::CallOp(invocationPath.front()).getOperation()});
+  for (std::size_t index = 0; index < invocationPath.size(); ++index) {
+    mlir::LLVM::CallOp call = invocationPath[index];
+    if (!call.getCalleeAttr())
+      return invalid("operation invocation path contains an indirect call");
+    auto callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+            call, call.getCalleeAttr());
+    if (!callee)
+      return invalid("operation invocation path callee does not resolve");
+    mlir::Operation *anchor =
+        index + 1 == invocationPath.size()
+            ? load.getOperation()
+            : mlir::LLVM::CallOp(invocationPath[index + 1]).getOperation();
+    segments.push_back(InvocationSegment{callee, anchor});
+  }
+  if (segments.back().callable != loadCallable)
+    return invalid("operation invocation path does not reach pointer load");
+  return segments;
+}
+
+llvm::Expected<std::optional<mlir::Value>> findSegmentReachingPointerStore(
+    const ResolvedObject &slot, InvocationSegment segment,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  mlir::DominanceInfo dominance(segment.callable);
+  mlir::LLVM::StoreOp winner;
+  bool ambiguous = false;
+  llvm::Error resolutionError = llvm::Error::success();
+  segment.callable.walk([&](mlir::LLVM::StoreOp store) {
+    if (ambiguous || resolutionError)
+      return;
+    llvm::Expected<ResolvedObject> target = resolveObjectAtInvocation(
+        store.getAddr(), segment.callable, invocationPath);
+    if (!target) {
+      llvm::Error error = target.takeError();
+      std::error_code code = llvm::errorToErrorCode(std::move(error));
+      if (code == std::make_error_code(std::errc::not_supported))
+        return;
+      resolutionError = invalid(
+          "malformed store address reached pointer descriptor analysis");
+      return;
+    }
+    if (target->owner != slot.owner || target->byteOffset != slot.byteOffset)
+      return;
+    if (dominance.properlyDominates(segment.anchor, store.getOperation()))
+      return;
+    if (!dominance.properlyDominates(store.getOperation(), segment.anchor)) {
+      ambiguous = true;
+      return;
+    }
+    if (!winner) {
+      winner = store;
+      return;
+    }
+    if (dominance.properlyDominates(winner.getOperation(),
+                                    store.getOperation())) {
+      winner = store;
+      return;
+    }
+    if (!dominance.properlyDominates(store.getOperation(),
+                                     winner.getOperation()))
+      ambiguous = true;
+  });
+  if (resolutionError)
+    return std::move(resolutionError);
+  if (ambiguous)
+    return unsupported(
+        "pointer descriptor slot has an ambiguous reaching store");
+  if (!winner)
+    return std::optional<mlir::Value>{};
+  if (!llvm::isa<mlir::LLVM::LLVMPointerType>(winner.getValue().getType()))
+    return unsupported("pointer descriptor slot is written by a non-pointer");
+  return std::optional<mlir::Value>(winner.getValue());
+}
+
+llvm::Expected<InvocationSegment>
+segmentFor(mlir::Operation *operation,
+           llvm::ArrayRef<InvocationSegment> segments) {
+  auto callable = operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  for (InvocationSegment segment : segments)
+    if (segment.callable == callable)
+      return segment;
+  return invalid("descriptor use is outside the exact invocation path");
+}
+
+llvm::Expected<std::uint64_t> directCallOrdinal(mlir::LLVM::LLVMFuncOp caller,
+                                                mlir::LLVM::CallOp target,
+                                                llvm::StringRef callee);
+
+llvm::Expected<bool>
+isExactInvocationCall(mlir::LLVM::CallOp call,
+                      llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  if (!call.getCalleeAttr())
+    return false;
+  auto caller = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!caller)
+    return invalid("invocation call has no enclosing callable");
+  llvm::Expected<std::uint64_t> ordinal =
+      directCallOrdinal(caller, call, call.getCalleeAttr().getValue());
+  if (!ordinal)
+    return ordinal.takeError();
+  for (mlir::LLVM::CallOp candidate : invocationPath) {
+    if (!candidate.getCalleeAttr() ||
+        candidate.getCalleeAttr().getValue() != call.getCalleeAttr().getValue())
+      continue;
+    auto candidateCaller = candidate->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!candidateCaller || candidateCaller.getSymName() != caller.getSymName())
+      continue;
+    llvm::Expected<std::uint64_t> candidateOrdinal = directCallOrdinal(
+        candidateCaller, candidate, candidate.getCalleeAttr().getValue());
+    if (!candidateOrdinal)
+      return candidateOrdinal.takeError();
+    if (*candidateOrdinal == *ordinal)
+      return true;
+  }
+  return false;
+}
+
+bool appendRegionBranchSuccessorInputs(
+    mlir::OpOperand &use, llvm::SmallVectorImpl<mlir::Value> &worklist) {
+  mlir::Operation *owner = use.getOwner();
+  auto branch = llvm::dyn_cast<mlir::RegionBranchOpInterface>(owner);
+  if (!branch && llvm::isa<mlir::RegionBranchTerminatorOpInterface>(owner))
+    branch = llvm::dyn_cast_or_null<mlir::RegionBranchOpInterface>(
+        owner->getParentOp());
+  if (!branch)
+    return false;
+
+  mlir::RegionBranchSuccessorMapping mapping;
+  branch.getSuccessorOperandInputMapping(mapping);
+  auto forwarded = mapping.find(&use);
+  if (forwarded == mapping.end())
+    return false;
+  worklist.append(forwarded->second.begin(), forwarded->second.end());
+  return true;
+}
+
+llvm::Error validateDescriptorUseClosure(
+    const ResolvedObject &slot, llvm::ArrayRef<InvocationSegment> segments,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  auto allocation = llvm::dyn_cast<mlir::LLVM::AllocaOp>(slot.owner);
+  if (!allocation)
+    return unsupported(
+        "pointer descriptor slot is not owned by a finite stack allocation");
+
+  llvm::SmallVector<mlir::Value, 8> worklist{allocation.getResult()};
+  llvm::DenseSet<mlir::Value> visited;
+  while (!worklist.empty()) {
+    mlir::Value value = worklist.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (mlir::OpOperand &use : value.getUses()) {
+      mlir::Operation *owner = use.getOwner();
+      llvm::Expected<InvocationSegment> segment = segmentFor(owner, segments);
+      if (!segment)
+        return segment.takeError();
+      if (appendRegionBranchSuccessorInputs(use, worklist))
+        continue;
+      mlir::DominanceInfo dominance(segment->callable);
+      if (dominance.properlyDominates(segment->anchor, owner))
+        continue;
+      if (owner != segment->anchor &&
+          !dominance.properlyDominates(owner, segment->anchor))
+        return unsupported(
+            "pointer descriptor has a control-dependent use before capture");
+
+      if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(owner)) {
+        if (gep.getBase() != value)
+          return invalid("descriptor pointer is not the LLVM GEP base");
+        llvm::Expected<std::uint64_t> offset = constantGepByteOffset(gep);
+        if (!offset)
+          return offset.takeError();
+        worklist.push_back(gep.getResult());
+        continue;
+      }
+      if (auto cast = llvm::dyn_cast<mlir::LLVM::BitcastOp>(owner)) {
+        if (cast.getArg() != value)
+          return invalid("descriptor pointer is not the LLVM bitcast input");
+        worklist.push_back(cast.getResult());
+        continue;
+      }
+      if (auto cast = llvm::dyn_cast<mlir::LLVM::AddrSpaceCastOp>(owner)) {
+        if (cast.getArg() != value)
+          return invalid(
+              "descriptor pointer is not the address-space cast input");
+        worklist.push_back(cast.getResult());
+        continue;
+      }
+      if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(owner)) {
+        if (cast.getInputs().size() != 1 || cast.getResults().size() != 1 ||
+            cast.getInputs().front() != value)
+          return unsupported(
+              "descriptor pointer has a non-unary conversion cast");
+        worklist.push_back(cast.getResults().front());
+        continue;
+      }
+      if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(owner)) {
+        if (store.getValue() == value)
+          return unsupported("pointer descriptor allocation escapes by store");
+        if (store.getAddr() != value)
+          return invalid("descriptor pointer has a malformed store use");
+        continue;
+      }
+      if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(owner)) {
+        if (load.getAddr() != value)
+          return invalid("descriptor pointer has a malformed load use");
+        continue;
+      }
+      if (llvm::isa<mlir::LLVM::LifetimeStartOp, mlir::LLVM::LifetimeEndOp>(
+              owner))
+        continue;
+      if (auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(owner)) {
+        llvm::Expected<bool> exact =
+            isExactInvocationCall(call, invocationPath);
+        if (!exact)
+          return exact.takeError();
+        if (!*exact) {
+          llvm::StringRef callee = call.getCalleeAttr()
+                                       ? call.getCalleeAttr().getValue()
+                                       : llvm::StringRef("<indirect>");
+          auto caller = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+          return unsupported(
+              llvm::Twine("pointer descriptor escapes through non-selected '") +
+              (caller ? caller.getSymName() : llvm::StringRef("<unknown>")) +
+              " -> " + callee + "'");
+        }
+        if (!call.getCalleeAttr())
+          return invalid("exact invocation call has no direct callee");
+        auto callee =
+            mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+                call, call.getCalleeAttr());
+        if (!callee || callee.getBody().empty())
+          return invalid("exact invocation callee has no body");
+        bool forwarded = false;
+        for (auto [ordinal, operand] :
+             llvm::enumerate(call.getCalleeOperands())) {
+          if (operand != value)
+            continue;
+          if (ordinal >= callee.getBody().front().getNumArguments())
+            return invalid("call operand exceeds callee arguments");
+          worklist.push_back(callee.getBody().front().getArgument(ordinal));
+          forwarded = true;
+        }
+        if (!forwarded)
+          return invalid("descriptor pointer is not a callee operand");
+        continue;
+      }
+      return unsupported(
+          llvm::Twine("pointer descriptor has an unsupported use by '") +
+          owner->getName().getStringRef() + "'");
+    }
+  }
+  return llvm::Error::success();
+}
+
+struct ResolvedOperationObject {
+  ResolvedObject object;
+  mlir::Value captureBase;
+};
+
+llvm::Expected<ResolvedOperationObject>
+resolveOperationObject(mlir::Value pointer,
+                       llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath);
+
+llvm::Expected<mlir::Value>
+reachingStoredPointer(mlir::LLVM::LoadOp load,
+                      llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  auto loadCallable = load->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!loadCallable)
+    return invalid("pointer load is not enclosed by an LLVM callable");
+  llvm::Expected<ResolvedOperationObject> resolvedSlot =
+      resolveOperationObject(load.getAddr(), invocationPath);
+  if (!resolvedSlot)
+    return resolvedSlot.takeError();
+  ResolvedObject &slot = resolvedSlot->object;
+  llvm::Expected<llvm::SmallVector<InvocationSegment, 4>> segments =
+      invocationSegmentsTo(load, invocationPath);
+  if (!segments)
+    return segments.takeError();
+  if (llvm::Error error =
+          validateDescriptorUseClosure(slot, *segments, invocationPath))
+    return std::move(error);
+
+  mlir::Value reachingValue;
+  for (const InvocationSegment &segment : *segments) {
+    llvm::Expected<std::optional<mlir::Value>> local =
+        findSegmentReachingPointerStore(slot, segment, invocationPath);
+    if (!local)
+      return local.takeError();
+    if (*local)
+      reachingValue = **local;
+  }
+  if (!reachingValue)
+    return unsupported("pointer descriptor load has no unique reaching store");
+  return reachingValue;
+}
+
+struct OperationPointerOrigin {
+  mlir::Value staticRoot;
+  mlir::Value captureBase;
+  std::uint64_t staticByteOffset = 0;
+};
+
+using OperationPointerVisit = std::pair<mlir::Value, mlir::Value>;
+
+mlir::LLVM::LLVMFuncOp enclosingLlvmCallable(mlir::Value value) {
+  mlir::Operation *scope = value.getDefiningOp();
+  if (!scope) {
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+    if (!argument)
+      return {};
+    scope = argument.getOwner()->getParentOp();
+  }
+  if (auto callable = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(scope))
+    return callable;
+  return scope->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+baseBindingCallOrdinal(mlir::Value base, mlir::Value boundaryPointer,
+                       llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  mlir::LLVM::LLVMFuncOp baseCallable = enclosingLlvmCallable(base);
+  mlir::LLVM::LLVMFuncOp selectedCallable =
+      enclosingLlvmCallable(boundaryPointer);
+  if (!baseCallable || !selectedCallable)
+    return invalid("operation memory base is outside an LLVM callable");
+  if (baseCallable == selectedCallable)
+    return std::optional<std::uint64_t>{};
+
+  std::optional<std::uint64_t> result;
+  for (std::uint64_t ordinal = 0; ordinal < invocationPath.size(); ++ordinal) {
+    mlir::LLVM::CallOp call = invocationPath[ordinal];
+    auto caller = call->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (caller != baseCallable)
+      continue;
+    if (result)
+      return invalid("operation memory base has multiple invocation bindings");
+    mlir::DominanceInfo dominance(baseCallable);
+    if (!dominance.dominates(base, call.getOperation()))
+      return unsupported(
+          "operation memory base does not dominate its invocation edge");
+    result = ordinal;
+  }
+  if (!result)
+    return invalid(
+        "operation memory base is outside the exact invocation path");
+  return result;
+}
+
 llvm::Error collectOperationPointerRoots(
-    mlir::Value pointer, llvm::DenseSet<mlir::Value> &visited,
-    llvm::SmallVectorImpl<mlir::Value> &roots) {
+    mlir::Value pointer,
+    llvm::DenseMap<OperationPointerVisit, std::uint64_t> &visited,
+    llvm::SmallVectorImpl<OperationPointerOrigin> &roots,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath,
+    mlir::Value captureBase = {}, std::uint64_t staticByteOffset = 0) {
   if (!pointer)
     return invalid("operation memory boundary contains an absent pointer");
-  if (!visited.insert(pointer).second)
+  OperationPointerVisit visit{pointer, captureBase};
+  auto [position, inserted] = visited.try_emplace(visit, staticByteOffset);
+  if (!inserted && position->second != staticByteOffset)
+    return unsupported(
+        "operation memory boundary has inconsistent descriptor offsets");
+  if (!inserted)
     return llvm::Error::success();
 
   auto collect = [&](mlir::Value source) {
-    return collectOperationPointerRoots(source, visited, roots);
+    return collectOperationPointerRoots(source, visited, roots, invocationPath,
+                                        captureBase, staticByteOffset);
   };
-  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
-    return collect(gep.getBase());
+  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>()) {
+    if (!captureBase)
+      return collect(gep.getBase());
+    llvm::Expected<std::uint64_t> offset = constantGepByteOffset(gep);
+    if (!offset)
+      return offset.takeError();
+    if (staticByteOffset > std::numeric_limits<std::uint64_t>::max() - *offset)
+      return invalid("descriptor pointer byte offset overflows uint64");
+    return collectOperationPointerRoots(gep.getBase(), visited, roots,
+                                        invocationPath, captureBase,
+                                        staticByteOffset + *offset);
+  }
   if (auto cast = pointer.getDefiningOp<mlir::LLVM::BitcastOp>())
     return collect(cast.getArg());
   if (auto cast = pointer.getDefiningOp<mlir::LLVM::AddrSpaceCastOp>())
     return collect(cast.getArg());
-  if (auto cast =
-          pointer.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+  if (auto cast = pointer.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
     if (cast.getInputs().size() != 1)
       return unsupported(
           "operation memory boundary has a non-unary pointer cast");
     return collect(cast.getInputs().front());
   }
   if (auto select = pointer.getDefiningOp<mlir::arith::SelectOp>()) {
-    if (llvm::Error error = collect(select.getTrueValue()))
+    if (llvm::Error error = collectOperationPointerRoots(
+            select.getTrueValue(), visited, roots, invocationPath, captureBase,
+            staticByteOffset))
       return error;
-    return collect(select.getFalseValue());
+    return collectOperationPointerRoots(select.getFalseValue(), visited, roots,
+                                        invocationPath, captureBase,
+                                        staticByteOffset);
   }
   if (auto select = pointer.getDefiningOp<mlir::LLVM::SelectOp>()) {
-    if (llvm::Error error = collect(select.getTrueValue()))
+    if (llvm::Error error = collectOperationPointerRoots(
+            select.getTrueValue(), visited, roots, invocationPath, captureBase,
+            staticByteOffset))
       return error;
-    return collect(select.getFalseValue());
+    return collectOperationPointerRoots(select.getFalseValue(), visited, roots,
+                                        invocationPath, captureBase,
+                                        staticByteOffset);
+  }
+  if (auto load = pointer.getDefiningOp<mlir::LLVM::LoadOp>()) {
+    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(load.getResult().getType()))
+      return invalid("non-pointer LLVM load reached pointer-origin analysis");
+    llvm::Expected<mlir::Value> stored =
+        reachingStoredPointer(load, invocationPath);
+    if (!stored)
+      return stored.takeError();
+    return collectOperationPointerRoots(*stored, visited, roots, invocationPath,
+                                        captureBase ? captureBase : pointer,
+                                        staticByteOffset);
   }
 
   if (std::optional<RegionValueSource> source = getRegionValueSource(pointer)) {
@@ -461,60 +917,110 @@ llvm::Error collectOperationPointerRoots(
     if (predecessors.size() != values.size())
       return invalid("region pointer predecessor table is malformed");
     for (mlir::Value predecessor : values)
-      if (llvm::Error error = collect(predecessor))
+      if (llvm::Error error = collectOperationPointerRoots(
+              predecessor, visited, roots, invocationPath, captureBase,
+              staticByteOffset))
         return error;
     return llvm::Error::success();
+  }
+
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
+    auto callable = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
+        argument.getOwner()->getParentOp());
+    if (callable && argument.getOwner() == &callable.getBody().front()) {
+      mlir::LLVM::CallOp incomingCall;
+      for (mlir::LLVM::CallOp call : invocationPath) {
+        if (!call.getCalleeAttr())
+          return invalid("operation invocation path contains an indirect call");
+        auto callee =
+            mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+                call, call.getCalleeAttr());
+        if (callee != callable)
+          continue;
+        if (incomingCall)
+          return invalid("recursive operation invocation path is unsupported");
+        incomingCall = call;
+      }
+      if (incomingCall) {
+        const unsigned ordinal = argument.getArgNumber();
+        if (ordinal >= incomingCall.getCalleeOperands().size())
+          return invalid("callable argument exceeds exact call operands");
+        return collectOperationPointerRoots(
+            incomingCall.getCalleeOperands()[ordinal], visited, roots,
+            invocationPath, captureBase, staticByteOffset);
+      }
+    }
   }
 
   if (pointer.getDefiningOp<mlir::LLVM::AllocaOp>() ||
       pointer.getDefiningOp<mlir::LLVM::AddressOfOp>() ||
       llvm::isa<mlir::BlockArgument>(pointer)) {
-    if (!llvm::is_contained(roots, pointer))
-      roots.push_back(pointer);
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
+      if (auto branch = llvm::dyn_cast_or_null<mlir::RegionBranchOpInterface>(
+              argument.getOwner()->getParentOp())) {
+        mlir::RegionSuccessor successor(argument.getOwner()->getParent());
+        return invalid(
+            llvm::Twine("region branch block argument ") +
+            llvm::Twine(argument.getArgNumber()) + " of '" +
+            branch->getName().getStringRef() +
+            "' is absent from its canonical successor-input range of " +
+            llvm::Twine(branch.getSuccessorInputs(successor).size()));
+      }
+    }
+    OperationPointerOrigin origin{pointer, captureBase ? captureBase : pointer,
+                                  staticByteOffset};
+    if (!llvm::any_of(roots, [&](const OperationPointerOrigin &candidate) {
+          return candidate.staticRoot == origin.staticRoot &&
+                 candidate.captureBase == origin.captureBase &&
+                 candidate.staticByteOffset == origin.staticByteOffset;
+        }))
+      roots.push_back(origin);
     return llvm::Error::success();
   }
   if (pointer.getDefiningOp<mlir::LLVM::ZeroOp>() ||
       pointer.getDefiningOp<mlir::LLVM::UndefOp>() ||
       pointer.getDefiningOp<mlir::LLVM::PoisonOp>())
     return llvm::Error::success();
+  mlir::Operation *definition = pointer.getDefiningOp();
   return unsupported(
-      "operation memory boundary has no closed pointer-origin projection");
+      llvm::Twine("operation memory boundary has no closed pointer-origin "
+                  "projection through '") +
+      definition->getName().getStringRef() + "'");
 }
 
-struct ResolvedOperationObject {
-  ResolvedObject object;
-  mlir::Value captureBase;
-};
-
-llvm::Expected<ResolvedOperationObject> resolveOperationObject(
-    mlir::Value pointer, mlir::LLVM::LLVMFuncOp enclosingCallable,
-    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
-  llvm::DenseSet<mlir::Value> visited;
-  llvm::SmallVector<mlir::Value, 4> roots;
-  if (llvm::Error error = collectOperationPointerRoots(pointer, visited, roots))
+llvm::Expected<ResolvedOperationObject>
+resolveOperationObject(mlir::Value pointer,
+                       llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath) {
+  llvm::DenseMap<OperationPointerVisit, std::uint64_t> visited;
+  llvm::SmallVector<OperationPointerOrigin, 4> roots;
+  if (llvm::Error error =
+          collectOperationPointerRoots(pointer, visited, roots, invocationPath))
     return std::move(error);
   if (roots.empty())
     return unsupported(
         "operation memory boundary has no concrete finite pointer origin");
 
   std::optional<ResolvedOperationObject> result;
-  for (mlir::Value root : roots) {
-    llvm::Expected<ResolvedObject> object =
-        invocationPath.empty()
-            ? resolveObject(root)
-            : resolveObjectThroughCallPath(root, enclosingCallable,
-                                           invocationPath,
-                                           invocationPath.size() - 1);
+  for (const OperationPointerOrigin &origin : roots) {
+    llvm::Expected<ResolvedObject> object = resolveObject(origin.staticRoot);
     if (!object)
       return object.takeError();
+    if (object->byteOffset >
+        std::numeric_limits<std::uint64_t>::max() - origin.staticByteOffset)
+      return invalid("operation memory byte offset overflows uint64");
+    object->byteOffset += origin.staticByteOffset;
+    if (object->byteOffset >= object->byteCount)
+      return invalid("operation memory view begins outside its finite object");
     if (!result) {
-      result = ResolvedOperationObject{*object, root};
+      result = ResolvedOperationObject{*object, origin.captureBase};
       continue;
     }
     if (result->object.owner != object->owner ||
-        result->object.byteCount != object->byteCount)
+        result->object.byteCount != object->byteCount ||
+        result->object.byteOffset != object->byteOffset ||
+        result->captureBase != origin.captureBase)
       return unsupported(
-          "operation memory boundary may select distinct backing objects");
+          "operation memory boundary may select distinct backing views");
   }
   return *result;
 }
@@ -1045,8 +1551,9 @@ deriveSimulationInputCapturePlan(
       ++objectIndex;
     }
     if (objectIndex == plan.input.objects.size()) {
-      plan.input.objects.push_back(SimulationMemoryCaptureObject{
-          resolved->pointer, object.byteCount, object.byteOffset});
+      plan.input.objects.push_back(
+          SimulationMemoryCaptureObject{resolved->pointer, object.byteCount,
+                                        object.byteOffset, std::nullopt});
       plan.memoryObjectSources.push_back(std::move(resolved->source));
       objectOwners.push_back(object.owner);
     } else if (plan.input.objects[objectIndex].byteCount != object.byteCount)
@@ -1054,9 +1561,12 @@ deriveSimulationInputCapturePlan(
     if (object.byteOffset >= object.byteCount)
       return invalid("logical root offset is outside its host allocation");
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
-        root, objectIndex, object.byteOffset,
+        root,
+        objectIndex,
+        object.byteOffset,
         memoryRequiresInitialState(*context, root),
-        uniformFloatingWriteLaneType(*context, root), {}});
+        uniformFloatingWriteLaneType(*context, root),
+        {}});
   }
   return plan;
 }
@@ -1072,7 +1582,6 @@ deriveOperationSimulationInputCapturePlanImpl(
   if (!context)
     return context.takeError();
 
-  mlir::LLVM::LLVMFuncOp enclosingCallable;
   std::vector<DirectCallCaptureSite> invocationSites;
   if (!invocationPath.empty()) {
     llvm::Expected<std::vector<DirectCallCaptureSite>> resolvedPath =
@@ -1080,12 +1589,6 @@ deriveOperationSimulationInputCapturePlanImpl(
     if (!resolvedPath)
       return resolvedPath.takeError();
     invocationSites = std::move(*resolvedPath);
-    mlir::LLVM::CallOp leafCall = invocationPath.back();
-    enclosingCallable =
-        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
-            leafCall, leafCall.getCalleeAttr());
-    if (!enclosingCallable)
-      return invalid("operation invocation leaf does not resolve");
   }
 
   if (boundaryResults.size() != context->numValueResults)
@@ -1127,9 +1630,13 @@ deriveOperationSimulationInputCapturePlanImpl(
 
     mlir::Value pointer = boundaryInputs[boundaryOrdinal];
     llvm::Expected<ResolvedOperationObject> resolved =
-        resolveOperationObject(pointer, enclosingCallable, invocationPath);
+        resolveOperationObject(pointer, invocationPath);
     if (!resolved)
       return resolved.takeError();
+    llvm::Expected<std::optional<std::uint64_t>> bindingCallOrdinal =
+        baseBindingCallOrdinal(resolved->captureBase, pointer, invocationPath);
+    if (!bindingCallOrdinal)
+      return bindingCallOrdinal.takeError();
     ResolvedObject &object = resolved->object;
     std::uint64_t objectIndex = 0;
     while (objectIndex < objectOwners.size()) {
@@ -1139,10 +1646,20 @@ deriveOperationSimulationInputCapturePlanImpl(
     }
     if (objectIndex == plan.input.objects.size()) {
       plan.input.objects.push_back(SimulationMemoryCaptureObject{
-          resolved->captureBase, object.byteCount, object.byteOffset});
+          resolved->captureBase, object.byteCount, object.byteOffset,
+          *bindingCallOrdinal});
       objectOwners.push_back(object.owner);
-    } else if (plan.input.objects[objectIndex].byteCount != object.byteCount) {
-      return invalid("one source allocation resolved to inconsistent extents");
+    } else {
+      const SimulationMemoryCaptureObject &existing =
+          plan.input.objects[objectIndex];
+      if (existing.byteCount != object.byteCount)
+        return invalid(
+            "one source allocation resolved to inconsistent extents");
+      if (existing.base != resolved->captureBase ||
+          existing.operandByteOffset != object.byteOffset ||
+          existing.baseBindingCallOrdinal != *bindingCallOrdinal)
+        return unsupported(
+            "one source allocation has inconsistent backing-base projections");
     }
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
         root, objectIndex, object.byteOffset,
