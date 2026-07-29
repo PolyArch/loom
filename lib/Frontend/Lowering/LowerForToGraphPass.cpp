@@ -4,8 +4,8 @@
 // Start/done remain explicit launch protocol endpoints, and graph.return owns
 // the segmented payload boundary plus retirement frontier.
 
+#include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Lowering/Passes.h"
-#include "GraphParallelLowering.h"
 #include "GraphRegionLowering.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"

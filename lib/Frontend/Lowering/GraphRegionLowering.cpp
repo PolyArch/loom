@@ -1,6 +1,6 @@
 #include "GraphRegionLowering.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
 #include "GraphIndexLowering.h"
-#include "GraphParallelLowering.h"
 #include "GraphStreamBoundaryLowering.h"
 #include "RankedMemRefLowering.h"
 

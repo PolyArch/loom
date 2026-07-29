@@ -56,6 +56,8 @@ add_mlir_library(LoomNativeSimulationOracle
   NativeSimulationOracle.cpp
   SourceBackedDfgValidation.cpp
   StructuredProgramNativeExecution.cpp
+  StructuredProgramObservations.cpp
+  StructuredOwnershipProjection.cpp
 
   PARTIAL_SOURCES_INTENDED
 

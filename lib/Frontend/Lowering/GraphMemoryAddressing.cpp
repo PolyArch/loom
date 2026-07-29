@@ -170,6 +170,16 @@ getMLIRAllocByteSize(const mlir::DataLayout &layout, mlir::Type type) {
 }
 
 std::optional<std::uint64_t>
+getMLIRStoreByteSize(const mlir::DataLayout &layout, mlir::Type type) {
+  if (!isSupportedElementType(type))
+    return std::nullopt;
+  llvm::TypeSize bytes = layout.getTypeSize(type);
+  if (bytes.isScalable() || bytes.getFixedValue() == 0)
+    return std::nullopt;
+  return bytes.getFixedValue();
+}
+
+std::optional<std::uint64_t>
 getLLVMAllocByteSize(const llvm::DataLayout &layout,
                      mlir::LLVM::TypeToLLVMIRTranslator &translator,
                      mlir::Type type) {
@@ -177,6 +187,19 @@ getLLVMAllocByteSize(const llvm::DataLayout &layout,
     return std::nullopt;
   llvm::TypeSize bytes =
       layout.getTypeAllocSize(translator.translateType(type));
+  if (bytes.isScalable() || bytes.getFixedValue() == 0)
+    return std::nullopt;
+  return bytes.getFixedValue();
+}
+
+std::optional<std::uint64_t>
+getLLVMStoreByteSize(const llvm::DataLayout &layout,
+                     mlir::LLVM::TypeToLLVMIRTranslator &translator,
+                     mlir::Type type) {
+  if (!isSupportedElementType(type))
+    return std::nullopt;
+  llvm::TypeSize bytes =
+      layout.getTypeStoreSize(translator.translateType(type));
   if (bytes.isScalable() || bytes.getFixedValue() == 0)
     return std::nullopt;
   return bytes.getFixedValue();
@@ -200,24 +223,20 @@ std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
 
 } // namespace
 
-std::optional<ResolvedLinearGepAddress>
-resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
-                        mlir::Type elementType, unsigned canonicalIndexBits) {
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
+                           unsigned canonicalIndexBits) {
   if (canonicalIndexBits == 0 ||
       canonicalIndexBits > mlir::IntegerType::kMaxWidth)
     return std::nullopt;
   llvm::SmallVector<mlir::LLVM::GEPOp, 4> leafToRoot;
-  mlir::Value root;
-  for (mlir::LLVM::GEPOp current = leafGep; current;) {
+  mlir::Value root = pointer;
+  while (auto current = root.getDefiningOp<mlir::LLVM::GEPOp>()) {
     leafToRoot.push_back(current);
-    mlir::Value base = current.getBase();
-    if (isGraphPointerArgument(base, graph)) {
-      root = base;
-      break;
-    }
-    current = base.getDefiningOp<mlir::LLVM::GEPOp>();
+    root = current.getBase();
   }
-  if (!root)
+  auto rootType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(root.getType());
+  if (!rootType)
     return std::nullopt;
 
   // The chain is discharged only when all pointer uses lower to logical
@@ -226,15 +245,18 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
   // load or store has undefined behavior. The linear address is therefore the
   // exact defined-domain projection regardless of the chain's flag spelling.
 
-  mlir::DataLayout dataLayout =
-      mlir::DataLayout::closest(leafGep.getOperation());
+  mlir::Operation *scope = pointer.getDefiningOp();
+  if (!scope) {
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer);
+    scope = argument ? argument.getOwner()->getParentOp() : nullptr;
+  }
+  if (!scope)
+    return std::nullopt;
+  mlir::DataLayout dataLayout = mlir::DataLayout::closest(scope);
   std::optional<llvm::DataLayout> llvmDataLayout =
-      getModuleLLVMDataLayout(leafGep.getOperation());
+      getModuleLLVMDataLayout(scope);
   llvm::LLVMContext llvmContext;
   mlir::LLVM::TypeToLLVMIRTranslator translator(llvmContext);
-  auto rootType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(root.getType());
-  if (!rootType)
-    return std::nullopt;
 
   std::optional<std::uint64_t> pointerIndexBits;
   if (llvmDataLayout)
@@ -250,19 +272,27 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       return getLLVMAllocByteSize(*llvmDataLayout, translator, type);
     return getMLIRAllocByteSize(dataLayout, type);
   };
-  std::optional<std::uint64_t> elementBytes = getAllocBytes(elementType);
+  auto getStoreBytes = [&](mlir::Type type) {
+    if (llvmDataLayout)
+      return getLLVMStoreByteSize(*llvmDataLayout, translator, type);
+    return getMLIRStoreByteSize(dataLayout, type);
+  };
+  std::optional<std::uint64_t> elementBytes = getAllocBytes(accessType);
+  std::optional<std::uint64_t> accessBytes = getStoreBytes(accessType);
   constexpr std::uint64_t maxSigned =
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-  if (!elementBytes || *elementBytes > maxSigned ||
-      !llvm::isPowerOf2_64(*elementBytes))
+  if (!elementBytes || !accessBytes || *elementBytes > maxSigned ||
+      *accessBytes > maxSigned || !llvm::isPowerOf2_64(*elementBytes))
     return std::nullopt;
   unsigned elementShift = llvm::Log2_64(*elementBytes);
   if (elementShift >= *pointerIndexBits)
     return std::nullopt;
 
-  ResolvedLinearGepAddress result;
+  ResolvedLinearMemoryAddress result;
   result.root = root;
   result.byteToElementShift = elementShift;
+  result.elementAllocByteCount = *elementBytes;
+  result.accessByteCount = *accessBytes;
   std::int64_t constantByteOffset = 0;
 
   for (mlir::LLVM::GEPOp gep : llvm::reverse(leafToRoot)) {
@@ -294,7 +324,7 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       if (!indexBits || *indexBits > canonicalIndexBits)
         return std::nullopt;
       result.indexType =
-          mlir::IntegerType::get(leafGep.getContext(), canonicalIndexBits);
+          mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
       if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
         return std::nullopt;
       unsigned strideShift =
@@ -302,6 +332,9 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       if (!isKnownMultipleOfPowerOfTwo(index, elementShift - strideShift))
         return std::nullopt;
       result.terms.push_back({index, static_cast<std::int64_t>(*strideBytes)});
+      result.elementTerms.push_back(
+          {index, static_cast<std::int64_t>(*strideBytes >> strideShift),
+           elementShift - strideShift});
       continue;
     }
 
@@ -319,25 +352,25 @@ resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
       !llvm::isIntN(canonicalIndexBits, constantByteOffset))
     return std::nullopt;
 
-  bool preserveElementIndex =
-      leafToRoot.size() == 1 && result.terms.size() == 1 &&
-      constantByteOffset == 0 &&
-      result.terms.front().byteStride ==
-          static_cast<std::int64_t>(*elementBytes) &&
-      mlir::LLVM::bitEnumContainsAny(leafGep.getNoWrapFlags(),
-                                     mlir::LLVM::GEPNoWrapFlags::nusw);
-  if (preserveElementIndex) {
-    result.terms.front().byteStride = 1;
-    result.byteToElementShift = 0;
-  }
-
   if (!result.indexType)
     result.indexType =
-        mlir::IntegerType::get(leafGep.getContext(), canonicalIndexBits);
+        mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
   result.byteBias = constantByteOffset;
+  result.elementBias =
+      constantByteOffset / static_cast<std::int64_t>(*elementBytes);
   for (mlir::LLVM::GEPOp gep : leafToRoot)
     result.gepsLeafToRoot.push_back(gep.getOperation());
   return result;
+}
+
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
+                           mlir::Type accessType, unsigned canonicalIndexBits) {
+  auto resolved =
+      resolveLinearMemoryAddress(pointer, accessType, canonicalIndexBits);
+  if (!resolved || !isGraphPointerArgument(resolved->root, graph))
+    return std::nullopt;
+  return resolved;
 }
 
 } // namespace loom::lowering

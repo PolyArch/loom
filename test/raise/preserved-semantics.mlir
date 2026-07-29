@@ -67,6 +67,9 @@
 // PROVENANCE-DAG: #[[BODY]] = loc(fused<#[[SCOPE]]>[#[[ADDS]]])
 
 //--- frozen-undef.ll
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define i32 @frozen_undef(i1 %select) {
 entry:
   br i1 %select, label %frozen, label %raw

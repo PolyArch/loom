@@ -26,6 +26,7 @@
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Metadata.h"
@@ -171,6 +172,12 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
   normalizeBulkMemoryIntrinsics(*module);
   if (llvm::verifyModule(*module))
     return invalid("bulk-memory normalization produced invalid LLVM IR");
+  const std::string llvmDataLayout = module->getDataLayoutStr();
+  if (llvmDataLayout.empty())
+    return invalid("LLVM module has no DataLayout");
+  if (auto parsed = llvm::DataLayout::parse(llvmDataLayout); !parsed)
+    return invalid("LLVM module has an invalid DataLayout: " +
+                   llvm::toString(parsed.takeError()));
 
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
@@ -190,6 +197,8 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
       mlir::translateLLVMIRToModule(std::move(module), &context);
   if (!raised)
     return invalid("LLVM IR import failed");
+  raised->getOperation()->setAttr(
+      "llvm.data_layout", mlir::StringAttr::get(&context, llvmDataLayout));
 
   static const bool passesRegistered = [] {
     mlir::registerAllPasses();

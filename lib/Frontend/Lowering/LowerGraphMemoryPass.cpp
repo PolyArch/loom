@@ -58,7 +58,7 @@
 
 namespace {
 
-using ::loom::lowering::LinearByteTerm;
+using ::loom::lowering::LinearElementTerm;
 
 bool isGraphPtrBlockArg(::mlir::Value v, ::dataflow::GraphOp graph) {
   auto blockArg = ::llvm::dyn_cast<::mlir::BlockArgument>(v);
@@ -123,12 +123,13 @@ using ScopedBridgeCache =
 // intermediate pointers never become independent memory capabilities.
 struct AddrResolution {
   ::mlir::Value ptr;
-  ::llvm::SmallVector<::loom::lowering::LinearByteTerm, 4> linearByteTerms;
+  ::llvm::SmallVector<::loom::lowering::LinearElementTerm, 4>
+      linearElementTerms;
+  ::mlir::Value directElementIndex;
   ::dataflow::StreamOp ordinalStream;
   std::int64_t ordinalElementBias = 0;
-  unsigned byteToElementShift = 0;
   ::mlir::Type linearIndexType;
-  std::int64_t linearByteBias = 0;
+  std::int64_t linearElementBias = 0;
   ::llvm::SmallVector<::mlir::Operation *, 4> gepsToErase;
 };
 
@@ -242,18 +243,23 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
                                              ::dataflow::GraphOp graph,
                                              bool topLevel, ::mlir::Type elemTy,
                                              unsigned indexBits) {
-  if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
-    if (auto linear = ::loom::lowering::resolveLinearGepAddress(
-            gep, graph, elemTy, indexBits)) {
-      AddrResolution resolution;
-      resolution.ptr = linear->root;
-      resolution.linearByteTerms = std::move(linear->terms);
-      resolution.byteToElementShift = linear->byteToElementShift;
+  if (auto linear = ::loom::lowering::resolveLinearMemoryAddress(
+          loadStorePtr, graph, elemTy, indexBits)) {
+    AddrResolution resolution;
+    resolution.ptr = linear->root;
+    bool directElementIndex =
+        linear->elementTerms.size() == 1 && linear->elementBias == 0 &&
+        linear->elementTerms.front().scale == 1 &&
+        linear->elementTerms.front().exactSignedDivideShift == 0;
+    if (directElementIndex) {
+      resolution.directElementIndex = linear->elementTerms.front().index;
+    } else {
+      resolution.linearElementTerms = std::move(linear->elementTerms);
       resolution.linearIndexType = linear->indexType;
-      resolution.linearByteBias = linear->byteBias;
-      resolution.gepsToErase = std::move(linear->gepsLeafToRoot);
-      return resolution;
+      resolution.linearElementBias = linear->elementBias;
     }
+    resolution.gepsToErase = std::move(linear->gepsLeafToRoot);
+    return resolution;
   }
   if (topLevel) {
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
@@ -315,7 +321,7 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
           ::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType())) {
         AddrResolution resolution;
         resolution.ptr = gep.getBase();
-        resolution.linearByteTerms.push_back({idx, 1});
+        resolution.linearElementTerms.push_back({idx, 1, 0});
         resolution.linearIndexType = idx.getType();
         resolution.gepsToErase.push_back(gep.getOperation());
         return resolution;
@@ -390,9 +396,10 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
     return iv;
   if (!canMaterializeIndex(iv.getType(), indexBits))
     return {};
+  ::mlir::Value source = iv;
   auto &blockCache =
       cache.try_emplace(insertBeforeIfNested->getBlock()).first->second;
-  if (auto it = blockCache.find(iv); it != blockCache.end())
+  if (auto it = blockCache.find(source); it != blockCache.end())
     return it->second;
   bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(iv);
   ::mlir::OpBuilder::InsertionGuard g(builder);
@@ -400,10 +407,16 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
     builder.setInsertionPointToStart(&graph.getBody().front());
   else
     builder.setInsertionPoint(insertBeforeIfNested);
+  if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(iv.getType());
+      integer && integer.getWidth() < indexBits) {
+    auto canonicalType = builder.getIntegerType(indexBits);
+    iv = ::mlir::arith::ExtSIOp::create(builder, loc, canonicalType, iv)
+             .getResult();
+  }
   ::mlir::Value out = ::mlir::arith::IndexCastOp::create(
                           builder, loc, builder.getIndexType(), iv)
                           .getResult();
-  blockCache.try_emplace(iv, out);
+  blockCache.try_emplace(source, out);
   return out;
 }
 
@@ -416,47 +429,53 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
   return {};
 }
 
-::mlir::Value getLinearByteIndex(::mlir::OpBuilder &builder,
-                                 ::llvm::ArrayRef<LinearByteTerm> terms,
-                                 ::mlir::Type indexType, std::int64_t byteBias,
-                                 ::mlir::Location loc,
-                                 ::mlir::Operation *insertBefore) {
-  if (!indexType)
+::mlir::Value getLinearElementIndex(
+    ::mlir::OpBuilder &builder, ::llvm::ArrayRef<LinearElementTerm> terms,
+    ::mlir::Type indexType, std::int64_t elementBias, ::mlir::Location loc,
+    ::mlir::Operation *insertBefore) {
+  auto canonicalType = ::llvm::dyn_cast<::mlir::IntegerType>(indexType);
+  if (!canonicalType || !canonicalType.isSignless())
     return {};
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(insertBefore);
   ::mlir::Value result;
-  for (const LinearByteTerm &term : terms) {
+  for (const LinearElementTerm &term : terms) {
     ::mlir::Value contribution = term.index;
-    if (contribution.getType() != indexType) {
-      auto destination = ::llvm::dyn_cast<::mlir::IntegerType>(indexType);
-      if (!destination || !destination.isSignless())
+    if (::llvm::isa<::mlir::IndexType>(contribution.getType())) {
+      contribution = ::mlir::arith::IndexCastOp::create(
+                         builder, loc, canonicalType, contribution)
+                         .getResult();
+    } else if (contribution.getType() != canonicalType) {
+      auto source =
+          ::llvm::dyn_cast<::mlir::IntegerType>(contribution.getType());
+      if (!source || !source.isSignless() ||
+          source.getWidth() >= canonicalType.getWidth())
         return {};
-      if (::llvm::isa<::mlir::IndexType>(contribution.getType())) {
-        contribution = ::mlir::arith::IndexCastOp::create(
-                           builder, loc, destination, contribution)
-                           .getResult();
-      } else {
-        auto source =
-            ::llvm::dyn_cast<::mlir::IntegerType>(contribution.getType());
-        if (!source || !source.isSignless() ||
-            source.getWidth() >= destination.getWidth())
-          return {};
-        contribution = ::mlir::arith::ExtSIOp::create(builder, loc, destination,
-                                                      contribution)
-                           .getResult();
-      }
+      contribution = ::mlir::arith::ExtSIOp::create(
+                         builder, loc, canonicalType, contribution)
+                         .getResult();
     }
-    if (term.byteStride != 1) {
-      ::mlir::TypedAttr strideAttr =
-          getIntegerLikeAttr(builder, indexType, term.byteStride);
-      if (!strideAttr)
+    if (term.exactSignedDivideShift != 0) {
+      auto shiftAttr = builder.getIntegerAttr(
+          canonicalType, term.exactSignedDivideShift);
+      ::mlir::Value shift = ::mlir::arith::ConstantOp::create(
+                                builder, loc, canonicalType, shiftAttr)
+                                .getResult();
+      contribution = ::mlir::arith::ShRSIOp::create(
+                         builder, loc, contribution, shift)
+                         .getResult();
+    }
+    if (term.scale != 1) {
+      ::mlir::TypedAttr scaleAttr =
+          getIntegerLikeAttr(builder, canonicalType, term.scale);
+      if (!scaleAttr)
         return {};
-      ::mlir::Value stride =
-          ::mlir::arith::ConstantOp::create(builder, loc, indexType, strideAttr)
+      ::mlir::Value scale =
+          ::mlir::arith::ConstantOp::create(builder, loc, canonicalType,
+                                            scaleAttr)
               .getResult();
       contribution =
-          ::mlir::arith::MulIOp::create(builder, loc, contribution, stride)
+          ::mlir::arith::MulIOp::create(builder, loc, contribution, scale)
               .getResult();
     }
     result = result ? ::mlir::arith::AddIOp::create(builder, loc, result,
@@ -464,19 +483,24 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
                           .getResult()
                     : contribution;
   }
-  if (byteBias != 0) {
+  if (elementBias != 0) {
     ::mlir::TypedAttr biasAttr =
-        getIntegerLikeAttr(builder, indexType, byteBias);
+        getIntegerLikeAttr(builder, canonicalType, elementBias);
     if (!biasAttr)
       return {};
     ::mlir::Value bias =
-        ::mlir::arith::ConstantOp::create(builder, loc, indexType, biasAttr)
+        ::mlir::arith::ConstantOp::create(builder, loc, canonicalType,
+                                          biasAttr)
             .getResult();
     result = result ? ::mlir::arith::AddIOp::create(builder, loc, result, bias)
                           .getResult()
                     : bias;
   }
-  return result;
+  if (!result)
+    return {};
+  return ::mlir::arith::IndexCastOp::create(
+             builder, loc, builder.getIndexType(), result)
+      .getResult();
 }
 
 ::mlir::Value projectStreamValue(::mlir::OpBuilder &builder,
@@ -512,39 +536,6 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
       projectStreamValue(builder, stream, stableBiasRaw, loc);
   return ::mlir::arith::AddIOp::create(builder, loc, ordinal, stableBias)
       .getResult();
-}
-
-::mlir::Value getElementIndex(::mlir::OpBuilder &builder,
-                              ::dataflow::GraphOp graph,
-                              ScopedValueCache &cache, unsigned indexBits,
-                              ::mlir::Value intIndex,
-                              unsigned byteToElementShift, ::mlir::Value ctrl,
-                              ::mlir::Location loc, bool topLevel,
-                              ::mlir::Operation *insertBeforeIfNested) {
-  if (byteToElementShift == 0)
-    return getIndexCast(builder, graph, cache, indexBits, intIndex, loc,
-                        topLevel, insertBeforeIfNested);
-  if (!canMaterializeIndex(intIndex.getType(), indexBits))
-    return {};
-  auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(intIndex.getType());
-  if (!intTy)
-    return {};
-
-  ::mlir::OpBuilder::InsertionGuard g(builder);
-  bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(intIndex);
-  if (hoist)
-    builder.setInsertionPointToStart(&graph.getBody().front());
-  else
-    builder.setInsertionPoint(insertBeforeIfNested);
-  auto shiftAttr = builder.getIntegerAttr(intTy, byteToElementShift);
-  ::mlir::Value shiftAmount =
-      ::dataflow::ConstantOp::create(builder, loc, intTy, ctrl, shiftAttr)
-          .getValue();
-  ::mlir::Value elemIndex =
-      ::mlir::arith::ShRSIOp::create(builder, loc, intIndex, shiftAmount)
-          .getResult();
-  return getIndexCast(builder, graph, cache, indexBits, elemIndex, loc,
-                      topLevel, insertBeforeIfNested);
 }
 
 ::mlir::Value getZeroIndex(::mlir::OpBuilder &builder,
@@ -616,7 +607,7 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
       !canMaterializeIndex(resolved->ordinalStream.getIv().getType(),
                            ctx.indexBits))
     return false;
-  for (const LinearByteTerm &term : resolved->linearByteTerms) {
+  for (const LinearElementTerm &term : resolved->linearElementTerms) {
     if (!canMaterializeIndex(term.index.getType(), ctx.indexBits))
       return false;
   }
@@ -630,26 +621,23 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   if (auto it = addressCache.find(addressKey); it != addressCache.end()) {
     addr = it->second;
   } else {
-    if (resolved->ordinalStream) {
+    if (resolved->directElementIndex) {
+      addr = getIndexCast(builder, ctx.graph, ctx.indexCastCache, ctx.indexBits,
+                          resolved->directElementIndex, loc, topLevel, op);
+    } else if (resolved->ordinalStream) {
       ::mlir::Value ordinal = resolved->ordinalStream.getIv();
       ordinal = getBiasedStreamOrdinal(builder, resolved->ordinalStream,
                                        ordinal, resolved->ordinalElementBias,
                                        ctx.ctrl, loc, op);
       if (!ordinal)
         return false;
-      addr = getElementIndex(
-          builder, ctx.graph, ctx.indexCastCache, ctx.indexBits, ordinal,
-          resolved->byteToElementShift, ctx.ctrl, loc, topLevel, op);
-    } else if (!resolved->linearByteTerms.empty() ||
-               resolved->linearByteBias != 0) {
-      ::mlir::Value intIndex = getLinearByteIndex(
-          builder, resolved->linearByteTerms, resolved->linearIndexType,
-          resolved->linearByteBias, loc, op);
-      if (!intIndex)
-        return false;
-      addr = getElementIndex(
-          builder, ctx.graph, ctx.indexCastCache, ctx.indexBits, intIndex,
-          resolved->byteToElementShift, ctx.ctrl, loc, topLevel, op);
+      addr = getIndexCast(builder, ctx.graph, ctx.indexCastCache,
+                          ctx.indexBits, ordinal, loc, topLevel, op);
+    } else if (!resolved->linearElementTerms.empty() ||
+               resolved->linearElementBias != 0) {
+      addr = getLinearElementIndex(
+          builder, resolved->linearElementTerms, resolved->linearIndexType,
+          resolved->linearElementBias, loc, op);
     } else {
       addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
     }

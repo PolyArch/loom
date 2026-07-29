@@ -423,7 +423,8 @@ generateAndPromoteStructuredOwnership(
                   {*workloadReference, *runtimeInputReference, parent,
                    disposition.coordinate.scope,
                    *disposition.coordinate.decision, materialized, workload,
-                   runtimeInput, *sourceObservations},
+                   runtimeInput, *sourceObservations,
+                   options.functionalReplayLimits},
                   artifactStore))
         return std::move(error);
     }

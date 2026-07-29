@@ -3,6 +3,7 @@
 
 #include "Simulator/SimulationInputCapture.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/Error.h"
@@ -22,6 +23,7 @@ struct NativeCapturedMemoryObject {
 };
 
 struct NativeSimulationCallCapture {
+  std::vector<std::uint64_t> denseCoordinates;
   std::vector<RuntimeValueEntry> runtimeValues;
   std::vector<CanonicalValueSequence> valueResults;
   std::vector<NativeCapturedMemoryObject> objects;
@@ -37,6 +39,9 @@ struct NativeSimulationInputCapture {
   std::int32_t entryResult = 0;
   std::vector<NativeSimulationCallCapture> calls;
 };
+
+using WorkloadBackedSimulationInputVisitor =
+    llvm::function_ref<llvm::Error(NativeSimulationCallCapture &&)>;
 
 struct NativeStructuredBlockActivation {
   frontend::StructuredEntityRef block;
@@ -64,11 +69,21 @@ struct WorkloadBackedMemoryRootCapture final {
   mlir::Value boundaryPointer;
 };
 
+/// One normalized logical thread coordinate at the selected source boundary.
+/// The value is captured for each dynamic activation and becomes the exact
+/// SpatialSimulationWorkload coordinate; it is never a persistent profile.
+struct WorkloadBackedDenseCoordinateCapture final {
+  std::uint64_t dimension = 0;
+  mlir::Value boundaryValue;
+  std::uint64_t byteCount = 0;
+};
+
 /// The exact finite graph boundary instrumented during one selected
 /// Structured execution. This is a removable native-execution plan, not a
 /// persistent Simulation schema or a second graph ABI authority.
 struct WorkloadBackedSimulationInputCapturePlan final {
   dataflow::RootedGraphLaunchRef launch;
+  std::vector<WorkloadBackedDenseCoordinateCapture> denseCoordinates;
   std::vector<SimulationValueInputCapture> valueInputs;
   std::vector<SimulationValueResultCapture> valueResults;
   std::vector<WorkloadBackedMemoryRootCapture> memoryRoots;
@@ -97,19 +112,19 @@ executeSelectedStructuredProgram(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput);
 
-/// Execute one prepared selected Structured Program from the exact production
-/// workload/runtime pair and capture every dynamic invocation of its selected
-/// boundary. Memory pointers must resolve through the invocation's runtime
-/// object registry; an unregistered allocation is typed Unsupported rather
-/// than inferred from static reaching stores.
-llvm::Expected<NativeSimulationInputCapture>
-executeWorkloadBackedSimulationInputCapture(
+/// Stream workload-backed boundary captures to one synchronous consumer. At
+/// most `maxRetainedCaptureBytes` of invocation snapshots may be live across
+/// nested calls; completed invocations are released immediately after the
+/// visitor returns. The source program still executes exactly once.
+llvm::Error visitWorkloadBackedSimulationInputCaptures(
     mlir::OwningOpRef<mlir::ModuleOp> preparedModule,
     mlir::Operation *selectedOperation,
     const WorkloadBackedSimulationInputCapturePlan &plan,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput);
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxRetainedCaptureBytes,
+    WorkloadBackedSimulationInputVisitor visitor);
 
 /// Exact comparison of whole-program return and memory observations. Dynamic
 /// source coverage is intentionally excluded because it profiles the source

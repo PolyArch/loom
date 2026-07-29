@@ -1383,9 +1383,14 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     std::string message = "DFG execution did not retire: " + report->status;
     if (!report->diagnostics.empty())
       message += ": " + report->diagnostics.front();
-    const std::errc code = report->status == "unsupported"
-                               ? std::errc::not_supported
-                               : std::errc::state_not_recoverable;
+    std::errc code = std::errc::state_not_recoverable;
+    if (report->status == "unsupported")
+      code = std::errc::not_supported;
+    else if (report->status == "blocked" &&
+             report->wavefrontSteps == maxEventSteps &&
+             llvm::is_contained(report->diagnostics,
+                                "maximum event steps reached"))
+      code = std::errc::timed_out;
     return llvm::createStringError(code, "%s", message.c_str());
   }
   return RetiredDFGSimulation{std::move(*report), std::move(observations)};

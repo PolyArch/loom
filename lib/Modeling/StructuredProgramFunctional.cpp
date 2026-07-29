@@ -159,7 +159,6 @@ enum class ReplayResultKind : std::uint8_t {
   Mismatch,
   Inapplicable,
   Unsupported,
-  ExecutionFailed,
 };
 
 struct CachedReplayResult final {
@@ -229,8 +228,6 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
   stream.flush();
   if (code == std::make_error_code(std::errc::not_supported))
     return CachedReplayResult{ReplayResultKind::Unsupported};
-  if (code == std::make_error_code(std::errc::io_error))
-    return CachedReplayResult{ReplayResultKind::ExecutionFailed};
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }
@@ -377,9 +374,6 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     if (replay->kind == ReplayResultKind::Unsupported)
       return EvaluationModelResult{
           {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    if (replay->kind == ReplayResultKind::ExecutionFailed)
-      return EvaluationModelResult{
-          {}, ExecutionFailedEvidence{OutcomeReason::ToolFailure}};
     mismatch = replay->kind == ReplayResultKind::Mismatch;
   }
 
@@ -489,7 +483,7 @@ llvm::Error primeStructuredProgramFunctionalReplay(
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.scope, invocation.decision,
       invocation.candidate, invocation.simulationWorkload,
-      invocation.simulationRuntimeInput));
+      invocation.simulationRuntimeInput, invocation.limits));
   if (!classified)
     return classified.takeError();
   const std::vector<std::uint8_t> key = replayCacheKey(

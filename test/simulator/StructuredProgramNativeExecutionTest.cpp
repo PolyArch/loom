@@ -1,10 +1,12 @@
-#include "Frontend/IR/StructuredProgramArtifact.h"
-#include "Frontend/IR/LoomDialect.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Frontend/IR/LoomDialect.h"
+#include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -44,7 +46,8 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *result = [] {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
-                    mlir::LLVM::LLVMDialect>();
+                    mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                    mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -290,27 +293,215 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
   const char *test = __func__;
   SourceProgram source = sourceProgram(test);
   auto sourceView = take(test, source.candidate.view());
-  auto workload = take(
-      test, loom::sim::finalizeSimulationWorkload(
-                makeWorkload(entryRef(test, sourceView), definedI32(0x12345678)),
-                sourceView));
-  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
-                              makeRuntimeInput(workload.identity()), workload,
-                              sourceView));
+  auto workload =
+      take(test,
+           loom::sim::finalizeSimulationWorkload(
+               makeWorkload(entryRef(test, sourceView), definedI32(0x12345678)),
+               sourceView));
+  auto input = take(
+      test, loom::sim::finalizeSimulationRuntimeInput(
+                makeRuntimeInput(workload.identity()), workload, sourceView));
   auto selected = selectedProgram(test, source.layout);
 
-  const auto reference = take(
-      test, loom::sim::executeNativeStructuredProgram(source.candidate,
-                                                       workload, input));
-  const auto candidate = take(
-      test, loom::sim::executeSelectedStructuredProgram(
-                selected, source.candidate, workload, input));
+  const auto reference = take(test, loom::sim::executeNativeStructuredProgram(
+                                        source.candidate, workload, input));
+  const auto candidate =
+      take(test, loom::sim::executeSelectedStructuredProgram(
+                     selected, source.candidate, workload, input));
   require(test,
-          loom::sim::haveEquivalentFunctionalObservations(reference,
-                                                          candidate),
+          loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
           "selected ownership carriers changed whole-program semantics");
   require(test, candidate.blockActivations.empty(),
           "selected candidate execution invented a source coverage profile");
+}
+
+loom::frontend::StructuredProgramCandidate
+denseThreadProgram(llvm::StringRef test, const llvm::DataLayout &layout,
+                   bool selected) {
+  const char *source = selected ? R"mlir(
+module {
+  dataflow.thread private @dense domain(#dataflow.thread_domain<dense>)(
+      %base: !llvm.ptr) ctrl (%ctrl: none) iv (%coord: index) {
+    "loom.spatial_region"(%coord, %base)
+        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%i: index, %target: !llvm.ptr):
+        %i64 = arith.index_cast %i : index to i64
+        %ptr = llvm.getelementptr %target[%i64]
+            : (!llvm.ptr, i64) -> !llvm.ptr, i32
+        %ten = arith.constant 10 : i32
+        %i32 = arith.index_cast %i : index to i32
+        %value = arith.addi %ten, %i32 : i32
+        llvm.store %value, %ptr : i32, !llvm.ptr
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "dense_graph", source_maps = []} :
+        (index, !llvm.ptr) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel(%base: !llvm.ptr) -> i32 {
+    %extent = arith.constant 4 : index
+    %token = dataflow.thread.launch @dense(%base) grid(%extent) :
+        (!llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    %last = llvm.getelementptr %base[3] : (!llvm.ptr) -> !llvm.ptr, i32
+    %result = llvm.load %last : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir"
+                                : R"mlir(
+module {
+  llvm.func @kernel(%base: !llvm.ptr) -> i32 {
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %i64 = arith.index_cast %i : index to i64
+      %ptr = llvm.getelementptr %base[%i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %ten = arith.constant 10 : i32
+      %i32 = arith.index_cast %i : index to i32
+      %value = arith.addi %ten, %i32 : i32
+      llvm.store %value, %ptr : i32, !llvm.ptr
+    }
+    %last = llvm.getelementptr %base[3] : (!llvm.ptr) -> !llvm.ptr, i32
+    %result = llvm.load %last : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context());
+  if (!module)
+    fail(test, "cannot parse the dense thread-domain program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+  return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
+void denseThreadDomainsPreserveWholeProgramSemantics() {
+  const char *test = __func__;
+  SourceProgram host = sourceProgram(test);
+  auto source = denseThreadProgram(test, host.layout, false);
+  auto sourceView = take(test, source.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      entryRef(test, sourceView)};
+  workloadDraft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{}};
+  workloadDraft.observableContract.returnValue = true;
+  workloadDraft.observableContract.memories = {
+      {loom::sim::EntryPointerArgumentTarget{0},
+       loom::sim::MemoryObservationForm::FullState}};
+  auto workload = take(
+      test, loom::sim::finalizeSimulationWorkload(workloadDraft, sourceView));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  inputDraft.memoryObjects.push_back(
+      loom::sim::RuntimeMemoryObject{std::vector<loom::sim::SemanticMemoryByte>(
+          16, {loom::sim::SemanticState::Defined, 0})});
+  inputDraft.pointerBindings.push_back({0, 0, 0});
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              inputDraft, workload, sourceView));
+  auto selected = denseThreadProgram(test, host.layout, true);
+
+  const auto reference = take(
+      test, loom::sim::executeNativeStructuredProgram(source, workload, input));
+  const auto candidate = take(test, loom::sim::executeSelectedStructuredProgram(
+                                        selected, source, workload, input));
+  require(test,
+          loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
+          "dense logical thread projection changed whole-program semantics");
+}
+
+loom::frontend::StructuredProgramCandidate
+dynamicDenseThreadProgram(llvm::StringRef test, const llvm::DataLayout &layout,
+                          bool selected) {
+  const char *source = selected ? R"mlir(
+module {
+  dataflow.thread private @dense domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) iv (%coord: index) {
+    "loom.spatial_region"(%coord)
+        <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%i: index):
+        %unused = arith.index_cast %i : index to i64
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "dense_graph", source_maps = []} : (index) -> ()
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel(%extent64: i64) -> i32 {
+    %extent = arith.index_cast %extent64 : i64 to index
+    %token = dataflow.thread.launch @dense() grid(%extent) :
+        () -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir"
+                                : R"mlir(
+module {
+  llvm.func @kernel(%extent64: i64) -> i32 {
+    %extent = arith.index_cast %extent64 : i64 to index
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    scf.for %i = %zero to %extent step %one {
+      %unused = arith.index_cast %i : index to i64
+    }
+    %result = arith.constant 0 : i32
+    llvm.return %result : i32
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context());
+  if (!module)
+    fail(test, "cannot parse the dynamic dense thread-domain program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+  return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
+void negativeDynamicThreadExtentFailsExecution() {
+  const char *test = __func__;
+  SourceProgram host = sourceProgram(test);
+  auto source = dynamicDenseThreadProgram(test, host.layout, false);
+  auto sourceView = take(test, source.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      entryRef(test, sourceView)};
+  workloadDraft.argumentPlan = {loom::sim::StructuredRuntimeValueInput{}};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload = take(
+      test, loom::sim::finalizeSimulationWorkload(workloadDraft, sourceView));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  loom::sim::CanonicalValueSequence extent;
+  extent.tokenCount = 1;
+  extent.lanes.push_back(
+      loom::sim::SemanticLane::defined(llvm::APInt(64, -1, /*isSigned=*/true)));
+  inputDraft.runtimeValues = {{0, std::move(extent)}};
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              inputDraft, workload, sourceView));
+  auto selected = dynamicDenseThreadProgram(test, host.layout, true);
+
+  auto execution = loom::sim::executeSelectedStructuredProgram(selected, source,
+                                                               workload, input);
+  require(test, !execution, "a negative dynamic thread extent was accepted");
+  const std::string error = llvm::toString(execution.takeError());
+  require(test,
+          error.find("_execution_failed:") != std::string::npos &&
+              error.find("logical thread extent is negative") !=
+                  std::string::npos,
+          "negative dynamic thread extent used the wrong failure class");
 }
 
 void runtimeAllocationsEnterTheCaptureRegistry() {
@@ -407,23 +598,28 @@ module {
       dataflow::RootThreadLaunchRef{identity, dataflow::RootThreadLaunchId(0)},
       dataflow::StaticGraphLaunchRef{identity,
                                      dataflow::StaticGraphLaunchId(0)}};
-  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{launch, {}, {}, {}};
+  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{
+      launch, {}, {}, {}, {}};
   plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
                                   identity, dataflow::LogicalMemoryRootId(0)},
                               selectedStore.getAddr()});
 
-  loom::sim::NativeSimulationInputCapture capture =
-      take(test, loom::sim::executeWorkloadBackedSimulationInputCapture(
-                     std::move(module), selectedStore.getOperation(), plan,
-                     source, workload, runtimeInput));
+  std::vector<loom::sim::NativeSimulationCallCapture> calls;
+  if (llvm::Error error = loom::sim::visitWorkloadBackedSimulationInputCaptures(
+          std::move(module), selectedStore.getOperation(), plan, source,
+          workload, runtimeInput, 1024 * 1024,
+          [&](loom::sim::NativeSimulationCallCapture &&capture) {
+            calls.push_back(std::move(capture));
+            return llvm::Error::success();
+          }))
+    fail(test, llvm::toString(std::move(error)));
   require(test,
-          capture.entryResult == 0 && capture.calls.size() == 1 &&
-              capture.calls.front().objects.size() == 1 &&
-              capture.calls.front().objects.front().initialBytes.size() == 16 &&
-              capture.calls.front().objects.front().finalBytes.size() == 16 &&
-              capture.calls.front().memoryRootObjectOrdinals ==
+          calls.size() == 1 && calls.front().objects.size() == 1 &&
+              calls.front().objects.front().initialBytes.size() == 16 &&
+              calls.front().objects.front().finalBytes.size() == 16 &&
+              calls.front().memoryRootObjectOrdinals ==
                   std::vector<std::uint64_t>{0} &&
-              capture.calls.front().memoryRootByteOffsets ==
+              calls.front().memoryRootByteOffsets ==
                   std::vector<std::uint64_t>{0},
           "runtime allocation did not resolve to one finite capture object");
 }
@@ -434,6 +630,8 @@ int main() {
   exactEntryPreservesAliasingAndObservations();
   nonDefinedInputsFailClosed();
   selectedOwnershipCarriersExecuteAsWholeProgram();
+  denseThreadDomainsPreserveWholeProgramSemantics();
+  negativeDynamicThreadExtentFailsExecution();
   runtimeAllocationsEnterTheCaptureRegistry();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;

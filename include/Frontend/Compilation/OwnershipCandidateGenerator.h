@@ -26,6 +26,15 @@ struct MaterializedOwnershipCandidate final {
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
 };
 
+/// The two ownership shapes of an effect-form scf.forall. GraphParallel keeps
+/// the parallel domain inside one SpatialCore graph. LogicalThreadDomain makes
+/// the forall iteration space the dense logical dataflow.thread domain. The
+/// selected child IR remains the sole authority in either case.
+enum class ForallOwnershipShape {
+  GraphParallel,
+  LogicalThreadDomain,
+};
+
 /// Typed decisions that must be materialized in the selected Structured
 /// Program before the mechanical Dataflow boundary. An absent decision never
 /// selects a default; a selected region that still contains such a choice
@@ -34,6 +43,7 @@ struct SpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
+  std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
 };
 
 /// One finite, scope-local ownership decision point. This is an ephemeral
@@ -43,11 +53,13 @@ struct SpatialOwnershipOptions final {
 struct SpatialOwnershipDecisionPoint final {
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
+  std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
 
   friend bool operator==(const SpatialOwnershipDecisionPoint &lhs,
                          const SpatialOwnershipDecisionPoint &rhs) {
     return lhs.fmuladdExecutionShape == rhs.fmuladdExecutionShape &&
-           lhs.canonicalIndexWidth == rhs.canonicalIndexWidth;
+           lhs.canonicalIndexWidth == rhs.canonicalIndexWidth &&
+           lhs.forallOwnershipShape == rhs.forallOwnershipShape;
   }
 };
 
@@ -144,10 +156,23 @@ private:
 /// nested-operation scopes. The parent candidate owns the MLIRContext and must
 /// outlive this ephemeral projection.
 struct PreparedSpatialOwnershipSelection final {
+  struct SourceInductionBinding final {
+    std::optional<std::uint64_t> lowerInputOrdinal;
+    std::optional<std::uint64_t> stepInputOrdinal;
+  };
+
   mlir::OwningOpRef<mlir::ModuleOp> module;
   mlir::Operation *operation = nullptr;
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
+  /// Present exactly when the selected decision promotes an scf.forall to a
+  /// dense logical thread domain. Each source-IV binding indexes `liveIns`;
+  /// absent lower/step ordinals denote canonical zero/one respectively.
+  std::optional<std::vector<SourceInductionBinding>> sourceInductions;
+  /// Exact zero-based launch extents for a logical thread domain. Dynamic
+  /// source domains compute these in widened integer arithmetic before the
+  /// selected forall; no source bound is copied into the thread-domain ABI.
+  std::optional<std::vector<mlir::Value>> threadExtents;
 };
 
 /// Enumerates the complete finite ownership scope domain in the parent
@@ -191,7 +216,10 @@ materializeSpatialOwnershipDecision(
 /// Materializes one exact dependency-closed Spatial ownership scope. A
 /// callable selection retains the callable as the LLVM ABI authority; a
 /// nested structured selection replaces that operation at its exact position.
-/// Both forms create one private rank-zero thread containing exactly one
+/// Ordinary scopes and GraphParallel forall decisions create one private
+/// rank-zero thread. A LogicalThreadDomain forall decision instead creates a
+/// dense thread whose coordinate suffix and launch extents exactly restate the
+/// selected forall domain. Every thread contains exactly one
 /// loom.spatial_region. Value live-outs cross the thread boundary through
 /// caller-owned result storage, while dataflow.thread retains no data results.
 /// Fabric is used only for hard-negative actor-capability pruning; this

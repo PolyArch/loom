@@ -27,6 +27,12 @@ struct SourceBackedDfgValidationResult final {
   std::uint64_t eventCount = 0;
 };
 
+struct SourceBackedDfgValidationLimits final {
+  std::uint64_t maxWavefrontSteps;
+  std::uint64_t maxEventCount;
+  std::uint64_t maxRetainedCaptureBytes;
+};
+
 /// Reapply one exact parent-local Structured ownership decision, capture every
 /// selected-region activation under the common source workload, replay the
 /// mechanically derived Canonical Dataflow graph, and compare value, memory,
@@ -40,7 +46,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps = 100000);
+    SourceBackedDfgValidationLimits limits);
 
 } // namespace loom::sim
 

@@ -18,19 +18,32 @@ struct LinearByteTerm {
   std::int64_t byteStride = 1;
 };
 
-struct ResolvedLinearGepAddress {
+struct LinearElementTerm {
+  mlir::Value index;
+  std::int64_t scale = 1;
+  unsigned exactSignedDivideShift = 0;
+};
+
+struct ResolvedLinearMemoryAddress {
   mlir::Value root;
   llvm::SmallVector<LinearByteTerm, 4> terms;
+  llvm::SmallVector<LinearElementTerm, 4> elementTerms;
   mlir::Type indexType;
   std::int64_t byteBias = 0;
+  std::int64_t elementBias = 0;
   unsigned byteToElementShift = 0;
+  std::uint64_t elementAllocByteCount = 0;
+  std::uint64_t accessByteCount = 0;
   llvm::SmallVector<mlir::Operation *, 4> gepsLeafToRoot;
 };
 
-std::optional<ResolvedLinearGepAddress>
-resolveLinearGepAddress(mlir::LLVM::GEPOp leafGep, dataflow::GraphOp graph,
-                        mlir::Type elementType,
-                        unsigned canonicalIndexBits);
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
+                           unsigned canonicalIndexBits);
+
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
+                           mlir::Type accessType, unsigned canonicalIndexBits);
 
 } // namespace loom::lowering
 

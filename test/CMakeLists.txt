@@ -74,6 +74,7 @@ set(LOOM_TEST_DEPENDS
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
   loom-structured-program-artifact-test
+  loom-structured-thread-domain-test
   loom-pre-mapping-compilation-test
   loom-frontend-payload-framing-test
   loom-mapping-core-test

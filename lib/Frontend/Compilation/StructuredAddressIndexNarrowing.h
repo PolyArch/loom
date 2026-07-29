@@ -8,6 +8,16 @@
 
 namespace loom::frontend::detail {
 
+/// Validate the LLVM module-owned DataLayout and materialize its exact
+/// endianness as the one DLTI projection consumed by Structured/Dataflow
+/// lowering. Existing DLTI endianness must agree; no default is inferred.
+llvm::Error materializeDataLayoutEndiannessProjection(mlir::ModuleOp module);
+
+bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
+                                  mlir::OpFoldResult upper,
+                                  mlir::OpFoldResult step,
+                                  unsigned targetWidth);
+
 /// Whether this exact scope still needs a candidate-owned fixed index-width
 /// decision. Constant-only addresses do not create such a decision unless
 /// they form a proven pointer induction that must become integer loop state.

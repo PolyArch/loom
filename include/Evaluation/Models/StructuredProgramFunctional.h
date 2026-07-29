@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Request.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "llvm/Support/Error.h"
 
@@ -48,6 +49,7 @@ struct StructuredProgramFunctionalReplayInvocation final {
   const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
   const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;
   const ::loom::sim::NativeStructuredProgramObservations &sourceObservations;
+  ::loom::sim::SourceBackedDfgValidationLimits limits;
 };
 
 /// Registers the exact source-versus-selected Structured functional model.

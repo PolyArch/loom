@@ -103,6 +103,9 @@
 // NUMBERED-DEFAULT-NOT: cf.switch
 
 //--- counted.ll
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define void @counted(ptr %p) {
 entry:
   br label %body
@@ -123,6 +126,9 @@ exit:
 !1 = !{!"llvm.loop.mustprogress"}
 
 //--- spin.ll
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define i32 @spin(ptr %flag) {
 entry:
   br label %loop
@@ -133,6 +139,9 @@ loop:
 }
 
 //--- irreducible.ll
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define i32 @irreducible(i1 %enter_right, i32 %seed) {
 entry:
   br i1 %enter_right, label %right, label %left

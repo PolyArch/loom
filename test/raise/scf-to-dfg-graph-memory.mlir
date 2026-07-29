@@ -10,10 +10,9 @@
 // CHECK-LABEL: dataflow.graph private @g_canonical
 // CHECK-DAG: %[[MEM:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
 // CHECK: %[[STREAM:.*]], %[[RWC:.*]] = dataflow.stream
-// CHECK: %[[LOAD_STRIDE:.*]] = arith.constant 4 : i64
-// CHECK: %[[LOAD_BYTE:.*]] = arith.muli %[[STREAM]], %[[LOAD_STRIDE]] : i64
-// CHECK: %[[LOAD_ELEM:.*]] = arith.shrsi %[[LOAD_BYTE]], %{{.*}} : i64
-// CHECK: %[[LOAD_IDX:.*]] = arith.index_cast %[[LOAD_ELEM]] : i64 to index
+// CHECK-NOT: arith.muli
+// CHECK-NOT: arith.shrsi
+// CHECK: %[[LOAD_IDX:.*]] = arith.index_cast %[[STREAM]] : i64 to index
 // CHECK: %{{.*}}, %[[LOAD_DONE:.*]] = dataflow.load %[[MEM]][%[[LOAD_IDX]]] %arg0 : memref<?xf32>
 // CHECK: dataflow.store %[[MEM]][%[[LOAD_IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
@@ -88,14 +87,13 @@ dataflow.graph private @g_nested_static_bridge(
   dataflow.graph.return %start : none
 }
 
-// Unsigned-only no-wrap remains on the conservative byte-normalization path.
+// No-wrap spelling does not create a second address projection.
 
 // CHECK-LABEL: dataflow.graph private @g_nuw_element_index
 // CHECK: %[[NUW_INDEX:.*]], %[[NUW_RWC:.*]] = dataflow.stream
-// CHECK: %[[NUW_STRIDE:.*]] = arith.constant 4 : i64
-// CHECK: %[[NUW_BYTES:.*]] = arith.muli %[[NUW_INDEX]], %[[NUW_STRIDE]] : i64
-// CHECK: %[[NUW_ELEMENTS:.*]] = arith.shrsi %[[NUW_BYTES]], %{{.*}} : i64
-// CHECK: %[[NUW_ADDR:.*]] = arith.index_cast %[[NUW_ELEMENTS]] : i64 to index
+// CHECK-NOT: arith.muli
+// CHECK-NOT: arith.shrsi
+// CHECK: %[[NUW_ADDR:.*]] = arith.index_cast %[[NUW_INDEX]] : i64 to index
 dataflow.graph private @g_nuw_element_index(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: !llvm.ptr) -> ()
@@ -110,14 +108,13 @@ dataflow.graph private @g_nuw_element_index(
   dataflow.graph.return %arg0 : none
 }
 
-// A zero companion GEP stays on the general byte-normalization path.
+// A zero companion GEP preserves the same element index.
 
 // CHECK-LABEL: dataflow.graph private @g_inbounds_zero_companion
 // CHECK: %[[CHAIN_ZERO_INDEX:.*]], %[[CHAIN_ZERO_RWC:.*]] = dataflow.stream
-// CHECK: %[[CHAIN_ZERO_STRIDE:.*]] = arith.constant 4 : i64
-// CHECK: %[[CHAIN_ZERO_BYTES:.*]] = arith.muli %[[CHAIN_ZERO_INDEX]], %[[CHAIN_ZERO_STRIDE]] : i64
-// CHECK: %[[CHAIN_ZERO_ELEMENTS:.*]] = arith.shrsi %[[CHAIN_ZERO_BYTES]], %{{.*}} : i64
-// CHECK: %[[CHAIN_ZERO_ADDR:.*]] = arith.index_cast %[[CHAIN_ZERO_ELEMENTS]] : i64 to index
+// CHECK-NOT: arith.muli
+// CHECK-NOT: arith.shrsi
+// CHECK: %[[CHAIN_ZERO_ADDR:.*]] = arith.index_cast %[[CHAIN_ZERO_INDEX]] : i64 to index
 dataflow.graph private @g_inbounds_zero_companion(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: !llvm.ptr) -> ()
@@ -140,12 +137,11 @@ dataflow.graph private @g_inbounds_zero_companion(
 // CHECK-LABEL: dataflow.graph private @g_chained_gep_i8_i16
 // CHECK-DAG: %[[MEM_CHAIN:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xi16>
 // CHECK: %[[STREAM_CHAIN:.*]], %[[RWC_CHAIN:.*]] = dataflow.stream
-// CHECK: %[[STRIDE_CHAIN:.*]] = arith.constant 4 : i64
-// CHECK: %[[BASE_BYTES_CHAIN:.*]] = arith.muli %[[STREAM_CHAIN]], %[[STRIDE_CHAIN]] : i64
-// CHECK: %[[BIAS_CHAIN:.*]] = arith.constant 2 : i64
-// CHECK: %[[ADDR_BYTES_CHAIN:.*]] = arith.addi %[[BASE_BYTES_CHAIN]], %[[BIAS_CHAIN]] : i64
-// CHECK: %[[ADDR_ELEMS_CHAIN:.*]] = arith.shrsi %[[ADDR_BYTES_CHAIN]], %{{.*}} : i64
-// CHECK: %[[IDX_CHAIN:.*]] = arith.index_cast %[[ADDR_ELEMS_CHAIN]] : i64 to index
+// CHECK: %[[STREAM_ELEMENT:.*]] = arith.index_cast %[[STREAM_CHAIN]] : i64 to index
+// CHECK: %[[TWO:.*]] = arith.index_cast {{.*}} : i64 to index
+// CHECK: %[[SCALED_ELEMENT:.*]] = arith.muli %[[STREAM_ELEMENT]], %[[TWO]] : index
+// CHECK: %[[ONE:.*]] = arith.index_cast {{.*}} : i64 to index
+// CHECK: %[[IDX_CHAIN:.*]] = arith.addi %[[SCALED_ELEMENT]], %[[ONE]] : index
 // CHECK: dataflow.load %[[MEM_CHAIN]][%[[IDX_CHAIN]]] %arg0 : memref<?xi16>
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
@@ -191,12 +187,11 @@ dataflow.graph private @g_rank3_row_major(
 // CHECK-LABEL: dataflow.graph private @g_chained_gep_negative_bias
 // CHECK-DAG: %[[NEG_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi16>
 // CHECK: %[[NEG_INDEX:.*]], %[[NEG_RWC:.*]] = dataflow.stream
-// CHECK: %[[NEG_STRIDE:.*]] = arith.constant 4 : i64
-// CHECK: %[[NEG_BASE_BYTES:.*]] = arith.muli %[[NEG_INDEX]], %[[NEG_STRIDE]] : i64
-// CHECK: %[[NEG_BIAS:.*]] = arith.constant -2 : i64
-// CHECK: %[[NEG_BYTES:.*]] = arith.addi %[[NEG_BASE_BYTES]], %[[NEG_BIAS]] : i64
-// CHECK: %[[NEG_ELEMENTS:.*]] = arith.shrsi %[[NEG_BYTES]], %{{.*}} : i64
-// CHECK: %[[NEG_ADDR:.*]] = arith.index_cast %[[NEG_ELEMENTS]] : i64 to index
+// CHECK: %[[NEG_ELEMENT:.*]] = arith.index_cast %[[NEG_INDEX]] : i64 to index
+// CHECK: %[[NEG_TWO:.*]] = arith.index_cast {{.*}} : i64 to index
+// CHECK: %[[NEG_SCALED:.*]] = arith.muli %[[NEG_ELEMENT]], %[[NEG_TWO]] : index
+// CHECK: %[[NEG_ONE:.*]] = arith.index_cast {{.*}} : i64 to index
+// CHECK: %[[NEG_ADDR:.*]] = arith.addi %[[NEG_SCALED]], %[[NEG_ONE]] : index
 // CHECK: dataflow.load %[[NEG_MEM]][%[[NEG_ADDR]]] %arg0 : memref<?xi16>
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
@@ -220,13 +215,11 @@ dataflow.graph private @g_chained_gep_negative_bias(
 // intermediate pointer values are not independent memory capabilities.
 
 // CHECK-LABEL: dataflow.graph private @g_chained_dynamic_gep
-// CHECK: %[[OUTER_BYTES:.*]] = arith.muli %arg1, %{{.*}} : i64
-// CHECK: %[[MIDDLE_BYTES:.*]] = arith.muli %arg2, %{{.*}} : i64
-// CHECK: %[[FIRST_SUM:.*]] = arith.addi %[[OUTER_BYTES]], %[[MIDDLE_BYTES]] : i64
-// CHECK: %[[INNER_BYTES:.*]] = arith.muli %arg3, %{{.*}} : i64
-// CHECK: %[[BYTE_ADDRESS:.*]] = arith.addi %[[FIRST_SUM]], %[[INNER_BYTES]] : i64
-// CHECK: %[[ELEMENT_ADDRESS:.*]] = arith.shrsi %[[BYTE_ADDRESS]], %{{.*}} : i64
-// CHECK: %[[INDEX:.*]] = arith.index_cast %[[ELEMENT_ADDRESS]] : i64 to index
+// CHECK: %[[OUTER_ELEMENT:.*]] = arith.index_cast %arg1 : i64 to index
+// CHECK: %[[MIDDLE_ELEMENT:.*]] = arith.index_cast %arg2 : i64 to index
+// CHECK: %[[FIRST_SUM:.*]] = arith.addi %[[OUTER_ELEMENT]], %[[MIDDLE_ELEMENT]] : index
+// CHECK: %[[INNER_ELEMENT:.*]] = arith.index_cast %arg3 : i64 to index
+// CHECK: %[[INDEX:.*]] = arith.addi %[[FIRST_SUM]], %[[INNER_ELEMENT]] : index
 // CHECK: dataflow.load %{{.*}}[%[[INDEX]]] %arg0 : memref<?xf32>
 // CHECK-NOT: llvm.getelementptr
 dataflow.graph private @g_chained_dynamic_gep(

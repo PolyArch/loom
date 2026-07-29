@@ -1,4 +1,5 @@
-#include "GraphParallelLowering.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
+#include "GraphMemoryAddressing.h"
 #include "GraphRegionLowering.h"
 
 #include "Common/IndexWidth.h"
@@ -6,6 +7,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -97,20 +99,6 @@ bool forEachParallelPointUntil(
   return true;
 }
 
-unsigned pointCountCappedAtTwo(const FixedParallelDomain &domain) {
-  unsigned count = 1;
-  for (auto [lower, upper, step] :
-       ::llvm::zip_equal(domain.lower, domain.upper, domain.step)) {
-    if (lower >= upper)
-      return 0;
-    __int128 distance = static_cast<__int128>(upper) - lower;
-    __int128 extent = (distance + step - 1) / step;
-    if (extent > 1 || count > 1)
-      count = 2;
-  }
-  return count;
-}
-
 bool hasSpatialCarrierAncestor(::mlir::Operation *op) {
   for (::mlir::Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp())
@@ -123,9 +111,16 @@ struct ParallelMemoryAccess {
   ::mlir::Operation *op;
   ::mlir::Value memory;
   ::llvm::SmallVector<::mlir::Value, 4> address;
+  ::mlir::Type llvmAccessType;
   bool writes;
   bool atomic;
 };
+
+std::optional<ParallelMemoryAccess>
+getLlvmMemoryAccess(::mlir::Operation *op, ::mlir::Value pointer,
+                    ::mlir::Type accessType, bool writes, bool atomic) {
+  return ParallelMemoryAccess{op, pointer, {}, accessType, writes, atomic};
+}
 
 // A canonical actor that graph-region lowering cannot lower or move has no
 // per-lane completion event either. This queries the shared leaf
@@ -148,6 +143,7 @@ getParallelMemoryAccess(::mlir::Operation *op) {
         op,
         load.getMemRef(),
         {load.getIndices().begin(), load.getIndices().end()},
+        mlir::Type{},
         /*writes=*/false,
         /*atomic=*/false};
   if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op))
@@ -155,20 +151,33 @@ getParallelMemoryAccess(::mlir::Operation *op) {
         op,
         store.getMemRef(),
         {store.getIndices().begin(), store.getIndices().end()},
+        mlir::Type{},
         /*writes=*/true,
         /*atomic=*/false};
   if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
     return ParallelMemoryAccess{op,
                                 load.getMem(),
                                 {load.getAddr()},
+                                mlir::Type{},
                                 /*writes=*/false,
                                 atomic()};
   if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op))
     return ParallelMemoryAccess{op,
                                 store.getMem(),
                                 {store.getAddr()},
+                                mlir::Type{},
                                 /*writes=*/true,
                                 atomic()};
+  if (auto load = ::llvm::dyn_cast<::mlir::LLVM::LoadOp>(op))
+    return getLlvmMemoryAccess(op, load.getAddr(), load.getType(),
+                               /*writes=*/false,
+                               load.getOrdering() !=
+                                   ::mlir::LLVM::AtomicOrdering::not_atomic);
+  if (auto store = ::llvm::dyn_cast<::mlir::LLVM::StoreOp>(op))
+    return getLlvmMemoryAccess(op, store.getAddr(), store.getValue().getType(),
+                               /*writes=*/true,
+                               store.getOrdering() !=
+                                   ::mlir::LLVM::AtomicOrdering::not_atomic);
   return std::nullopt;
 }
 
@@ -236,6 +245,10 @@ public:
         value = view.getViewSource();
         continue;
       }
+      if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {
+        value = gep.getBase();
+        continue;
+      }
       if (auto cast =
               ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
         if (cast.getInputs().size() != 1)
@@ -271,6 +284,12 @@ private:
         return std::nullopt;
       attrs =
           ::mlir::function_interface_impl::getArgAttrDict(thread, inputIndex);
+    } else if (auto function =
+                   ::llvm::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(owner)) {
+      if (inputIndex >= function.getFunctionType().getNumParams())
+        return std::nullopt;
+      attrs =
+          ::mlir::function_interface_impl::getArgAttrDict(function, inputIndex);
     } else {
       return std::nullopt;
     }
@@ -282,6 +301,20 @@ private:
 };
 
 struct LinearExpression {
+  enum class TransformKind {
+    SignedDivide,
+    SignedBitProjection,
+    UnsignedBitProjection
+  };
+  struct Transform {
+    TransformKind kind;
+    ::llvm::APInt operand;
+
+    friend bool operator==(const Transform &lhs, const Transform &rhs) {
+      return lhs.kind == rhs.kind && lhs.operand == rhs.operand;
+    }
+  };
+
   LinearExpression(unsigned width, unsigned laneCount)
       : constant(width, 0), lanes(laneCount, ::llvm::APInt(width, 0)) {}
 
@@ -289,6 +322,7 @@ struct LinearExpression {
   ::llvm::SmallVector<::llvm::APInt, 4> lanes;
   ::llvm::DenseMap<::mlir::Value, ::llvm::APInt> symbols;
   ::llvm::DenseMap<::mlir::Value, ::llvm::APInt> descendantLanes;
+  ::llvm::SmallVector<Transform, 2> transforms;
 };
 
 bool isParallelInductionVariable(::mlir::Operation *op, ::mlir::Value value) {
@@ -368,6 +402,36 @@ public:
       return finish(combine(sub.getLhs(), sub.getRhs(), /*subtract=*/true));
     if (auto mul = ::llvm::dyn_cast<::mlir::arith::MulIOp>(def))
       return finish(multiply(mul.getLhs(), mul.getRhs()));
+    if (auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastOp>(def))
+      return finish(projectIndexCast(cast.getIn(), cast.getType(), false));
+    if (auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastUIOp>(def))
+      return finish(projectIndexCast(cast.getIn(), cast.getType(), true));
+    if (auto truncate = ::llvm::dyn_cast<::mlir::arith::TruncIOp>(def)) {
+      auto expression = build(truncate.getIn());
+      auto resultType =
+          ::llvm::dyn_cast<::mlir::IntegerType>(truncate.getType());
+      if (!expression || !resultType)
+        return finish(std::nullopt);
+      expression->transforms.push_back(
+          {LinearExpression::TransformKind::SignedBitProjection,
+           ::llvm::APInt(width, resultType.getWidth())});
+      return finish(std::move(expression));
+    }
+    if (auto divide = ::llvm::dyn_cast<::mlir::arith::DivSIOp>(def)) {
+      ::mlir::APInt divisor;
+      if (!::mlir::matchPattern(divide.getRhs(),
+                                ::mlir::m_ConstantInt(&divisor)) ||
+          divisor.isZero() || divisor.isNegative())
+        return finish(std::nullopt);
+      auto expression = build(divide.getLhs());
+      if (!expression || !expression->symbols.empty() ||
+          !expression->descendantLanes.empty())
+        return finish(std::nullopt);
+      expression->transforms.push_back(
+          {LinearExpression::TransformKind::SignedDivide,
+           divisor.sextOrTrunc(width)});
+      return finish(std::move(expression));
+    }
 
     if (!::mlir::isPure(def) || dependsOnLane(value))
       return finish(std::nullopt);
@@ -385,6 +449,35 @@ private:
   ::llvm::DenseSet<::mlir::Value> active;
   ::llvm::DenseMap<::mlir::Value, bool> dependencyCache;
   ::llvm::DenseSet<::mlir::Value> dependencyActive;
+
+  std::optional<unsigned> integerWidth(::mlir::Type type) const {
+    if (::llvm::isa<::mlir::IndexType>(type))
+      return width;
+    if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type))
+      return integer.getWidth();
+    return std::nullopt;
+  }
+
+  std::optional<LinearExpression>
+  projectIndexCast(::mlir::Value input, ::mlir::Type resultType,
+                   bool unsignedExtension) {
+    auto sourceWidth = integerWidth(input.getType());
+    auto destinationWidth = integerWidth(resultType);
+    auto expression = build(input);
+    if (!sourceWidth || !destinationWidth || !expression)
+      return std::nullopt;
+    if (*destinationWidth < *sourceWidth) {
+      expression->transforms.push_back(
+          {LinearExpression::TransformKind::SignedBitProjection,
+           ::llvm::APInt(width, std::min(*destinationWidth, width))});
+    } else if (unsignedExtension && *sourceWidth < *destinationWidth &&
+               *sourceWidth < width) {
+      expression->transforms.push_back(
+          {LinearExpression::TransformKind::UnsignedBitProjection,
+           ::llvm::APInt(width, *sourceWidth)});
+    }
+    return expression;
+  }
 
   void
   addCoefficient(::llvm::DenseMap<::mlir::Value, ::llvm::APInt> &coefficients,
@@ -425,7 +518,8 @@ private:
                                           bool subtract) {
     auto left = build(lhs);
     auto right = build(rhs);
-    if (!left || !right)
+    if (!left || !right || !left->transforms.empty() ||
+        !right->transforms.empty())
       return std::nullopt;
     add(*left, *right, subtract);
     return left;
@@ -435,7 +529,8 @@ private:
                                            ::mlir::Value rhs) {
     auto left = build(lhs);
     auto right = build(rhs);
-    if (!left || !right)
+    if (!left || !right || !left->transforms.empty() ||
+        !right->transforms.empty())
       return std::nullopt;
 
     auto isConstant = [](const LinearExpression &expression) {
@@ -496,7 +591,8 @@ private:
 };
 
 bool sameSymbols(const LinearExpression &lhs, const LinearExpression &rhs) {
-  if (lhs.symbols.size() != rhs.symbols.size())
+  if (lhs.symbols.size() != rhs.symbols.size() ||
+      lhs.transforms != rhs.transforms)
     return false;
   for (const auto &[symbol, coefficient] : lhs.symbols) {
     auto found = rhs.symbols.find(symbol);
@@ -514,8 +610,165 @@ bool sameSymbols(const LinearExpression &lhs, const LinearExpression &rhs) {
     result += coefficient * ::llvm::APInt(result.getBitWidth(),
                                           static_cast<uint64_t>(coordinate),
                                           /*isSigned=*/true);
+  for (const LinearExpression::Transform &transform : expression.transforms) {
+    switch (transform.kind) {
+    case LinearExpression::TransformKind::SignedDivide:
+      result = result.sdiv(transform.operand);
+      break;
+    case LinearExpression::TransformKind::SignedBitProjection: {
+      const unsigned targetWidth =
+          static_cast<unsigned>(transform.operand.getZExtValue());
+      result =
+          result.trunc(targetWidth).sext(expression.constant.getBitWidth());
+      break;
+    }
+    case LinearExpression::TransformKind::UnsignedBitProjection: {
+      const unsigned targetWidth =
+          static_cast<unsigned>(transform.operand.getZExtValue());
+      result =
+          result.trunc(targetWidth).zext(expression.constant.getBitWidth());
+      break;
+    }
+    }
+  }
   return result;
 }
+
+struct ByteAddressTermExpression {
+  LinearExpression index;
+  std::int64_t byteStride = 0;
+  std::int64_t elementScale = 0;
+  unsigned exactSignedDivideShift = 0;
+};
+
+struct ByteAccessExpression {
+  const ParallelMemoryAccess *access = nullptr;
+  ::llvm::SmallVector<ByteAddressTermExpression, 4> terms;
+  std::int64_t byteBias = 0;
+  std::int64_t elementBias = 0;
+  std::uint64_t accessByteCount = 0;
+  bool exactCanonicalElementProjection = false;
+};
+
+using ByteSymbolProjection = ::llvm::DenseMap<::mlir::Value, ::llvm::APInt>;
+
+std::optional<ByteSymbolProjection>
+projectByteAddressSymbols(const ByteAccessExpression &address, unsigned width) {
+  ByteSymbolProjection projection;
+  for (const ByteAddressTermExpression &term : address.terms) {
+    if (!term.index.descendantLanes.empty() ||
+        (!term.index.transforms.empty() && !term.index.symbols.empty()))
+      return std::nullopt;
+    if (!term.index.transforms.empty())
+      continue;
+    ::llvm::APInt stride(width, static_cast<std::uint64_t>(term.byteStride),
+                         /*isSigned=*/true);
+    for (const auto &[symbol, coefficient] : term.index.symbols) {
+      ::llvm::APInt scaled = coefficient.sextOrTrunc(width) * stride;
+      auto found = projection.find(symbol);
+      if (found == projection.end()) {
+        if (!scaled.isZero())
+          projection.try_emplace(symbol, std::move(scaled));
+        continue;
+      }
+      found->second += scaled;
+      if (found->second.isZero())
+        projection.erase(found);
+    }
+  }
+  return projection;
+}
+
+bool sameByteAddressSymbols(const ByteSymbolProjection &lhs,
+                            const ByteSymbolProjection &rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (const auto &[symbol, coefficient] : lhs) {
+    auto found = rhs.find(symbol);
+    if (found == rhs.end() || found->second != coefficient)
+      return false;
+  }
+  return true;
+}
+
+::llvm::APInt evaluateByteAddress(const ByteAccessExpression &address,
+                                  ::llvm::ArrayRef<int64_t> point,
+                                  unsigned width) {
+  ::llvm::APInt result(width, static_cast<std::uint64_t>(address.byteBias),
+                       /*isSigned=*/true);
+  for (const ByteAddressTermExpression &term : address.terms) {
+    ::llvm::APInt index =
+        evaluateLaneConstant(term.index, point).sextOrTrunc(width);
+    ::llvm::APInt stride(width, static_cast<std::uint64_t>(term.byteStride),
+                         /*isSigned=*/true);
+    result += index * stride;
+  }
+  return result;
+}
+
+bool hasExactCanonicalElementProjection(
+    const ResolvedLinearMemoryAddress &address) {
+  if (address.elementTerms.empty()) {
+    auto indexType = ::llvm::dyn_cast<::mlir::IntegerType>(address.indexType);
+    return indexType &&
+           ::llvm::isIntN(indexType.getWidth(), address.elementBias);
+  }
+  return address.elementTerms.size() == 1 && address.elementBias == 0 &&
+         address.elementTerms.front().scale == 1 &&
+         address.elementTerms.front().exactSignedDivideShift == 0;
+}
+
+bool hasRepresentableCanonicalElementArithmetic(
+    const ByteAccessExpression &address, ::llvm::ArrayRef<int64_t> point,
+    unsigned comparisonWidth, unsigned canonicalWidth) {
+  ::llvm::APInt result(comparisonWidth, 0);
+  for (const ByteAddressTermExpression &term : address.terms) {
+    ::llvm::APInt contribution =
+        evaluateLaneConstant(term.index, point).sextOrTrunc(comparisonWidth);
+    if (term.exactSignedDivideShift != 0)
+      contribution = contribution.ashr(term.exactSignedDivideShift);
+    contribution *=
+        ::llvm::APInt(comparisonWidth,
+                      static_cast<std::uint64_t>(term.elementScale),
+                      /*isSigned=*/true);
+    if (!contribution.isSignedIntN(canonicalWidth))
+      return false;
+    result += contribution;
+    if (!result.isSignedIntN(canonicalWidth))
+      return false;
+  }
+  ::llvm::APInt bias(comparisonWidth,
+                     static_cast<std::uint64_t>(address.elementBias),
+                     /*isSigned=*/true);
+  if (!bias.isSignedIntN(canonicalWidth))
+    return false;
+  result += bias;
+  return result.isSignedIntN(canonicalWidth);
+}
+
+bool hasDynamicByteLaneSeparation(const ByteAccessExpression &address,
+                                  unsigned laneCount, unsigned width) {
+  if (laneCount != 1 || !address.exactCanonicalElementProjection)
+    return false;
+  ::llvm::APInt stride(width, 0);
+  for (const ByteAddressTermExpression &term : address.terms) {
+    if (!term.index.transforms.empty() || !term.index.descendantLanes.empty())
+      return false;
+    ::llvm::APInt byteStride(width, static_cast<std::uint64_t>(term.byteStride),
+                             /*isSigned=*/true);
+    stride += term.index.lanes.front().sextOrTrunc(width) * byteStride;
+  }
+  ::llvm::APInt accessBytes(width, address.accessByteCount);
+  return !stride.isZero() && stride.abs().uge(accessBytes);
+}
+
+struct ByteInterval {
+  ::llvm::APInt begin;
+  ::llvm::APInt end;
+  std::uint64_t lane = 0;
+  bool writes = false;
+  bool atomic = false;
+};
 
 struct AddressKeyHash {
   std::size_t operator()(const std::vector<::llvm::APInt> &address) const {
@@ -535,7 +788,7 @@ struct SeenAddress {
 
 struct ParallelCheckInfo {
   ::mlir::Operation *op;
-  FixedParallelDomain domain;
+  std::optional<FixedParallelDomain> domain;
   bool owned;
   ::llvm::SmallVector<ParallelMemoryAccess, 8> accesses;
   ::mlir::Operation *unmodeledWrite = nullptr;
@@ -544,8 +797,6 @@ struct ParallelCheckInfo {
 ::mlir::LogicalResult checkLaneMemoryLegality(
     ParallelCheckInfo &info,
     const ::llvm::DenseSet<::mlir::Operation *> &provenParallelOps) {
-  if (pointCountCappedAtTwo(info.domain) <= 1)
-    return ::mlir::success();
   if (info.unmodeledWrite)
     return info.unmodeledWrite->emitError(
         "loom-lower-graph-memory: parallel lane effect has no disjoint, "
@@ -555,8 +806,6 @@ struct ParallelCheckInfo {
       ::llvm::any_of(info.accesses, [](const ParallelMemoryAccess &access) {
         return access.writes;
       });
-  if (!anyWrite)
-    return ::mlir::success();
 
   bool allAtomic =
       ::llvm::all_of(info.accesses, [](const ParallelMemoryAccess &access) {
@@ -575,10 +824,9 @@ struct ParallelCheckInfo {
     }
     accessesByRoot[*root].push_back(&access);
   }
-  if (unresolved && !allAtomic)
+  if (unresolved && anyWrite && !allAtomic)
     return info.op->emitError(
-        "loom-lower-graph-memory: parallel lane memory effects are not "
-        "provably disjoint");
+        "loom-lower-graph-memory: parallel memory root is unresolved");
 
   ::llvm::Expected<unsigned> indexBits = ::loom::getIndexBitWidth(info.op);
   if (!indexBits)
@@ -607,16 +855,175 @@ struct ParallelCheckInfo {
         ::llvm::all_of(rootAccesses, [](const ParallelMemoryAccess *access) {
           return access->atomic;
         });
+
+    bool hasLlvmAccess =
+        ::llvm::any_of(rootAccesses, [](const ParallelMemoryAccess *access) {
+          return static_cast<bool>(access->llvmAccessType);
+        });
+    if (!hasLlvmAccess) {
+      ::mlir::Value memory = mapSpatialArguments(rootAccesses.front()->memory);
+      if (::llvm::any_of(rootAccesses, [&](const ParallelMemoryAccess *access) {
+            return mapSpatialArguments(access->memory) != memory;
+          }))
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel accesses disagree on their "
+            "resolved memory base");
+    }
+    if (hasLlvmAccess) {
+      if (::llvm::any_of(rootAccesses, [](const ParallelMemoryAccess *access) {
+            return !access->llvmAccessType;
+          }))
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel memory root mixes LLVM byte "
+            "addresses with non-LLVM indices");
+      if (*indexBits > (mlir::IntegerType::kMaxWidth - 1) / 2)
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel byte-address comparison width "
+            "is invalid");
+      const unsigned comparisonWidth = *indexBits * 2 + 1;
+      ::llvm::SmallVector<ByteAccessExpression, 8> byteAddresses;
+      byteAddresses.reserve(rootAccesses.size());
+      for (const ParallelMemoryAccess *access : rootAccesses) {
+        auto resolved = resolveLinearMemoryAddress(
+            access->memory, access->llvmAccessType, *indexBits);
+        if (!resolved)
+          return access->op->emitError(
+              "loom-lower-graph-memory: LLVM memory access has no exact "
+              "DataLayout byte-address projection");
+        auto resolvedRoot = roots.resolve(resolved->root);
+        if (!resolvedRoot || *resolvedRoot != root)
+          return access->op->emitError(
+              "loom-lower-graph-memory: LLVM byte-address projection changed "
+              "its resolved memory root");
+
+        ByteAccessExpression address;
+        address.access = access;
+        address.byteBias = resolved->byteBias;
+        address.elementBias = resolved->elementBias;
+        address.accessByteCount = resolved->accessByteCount;
+        address.exactCanonicalElementProjection =
+            hasExactCanonicalElementProjection(*resolved);
+        address.terms.reserve(resolved->terms.size());
+        for (auto [byteTerm, elementTerm] :
+             ::llvm::zip_equal(resolved->terms, resolved->elementTerms)) {
+          auto expression = expressions.build(byteTerm.index);
+          if (!expression)
+            return access->op->emitError(
+                "loom-lower-graph-memory: LLVM byte address has no affine "
+                "lane projection");
+          address.terms.push_back(
+              {std::move(*expression), byteTerm.byteStride,
+               elementTerm.scale, elementTerm.exactSignedDivideShift});
+        }
+        byteAddresses.push_back(std::move(address));
+      }
+
+      if (!info.domain) {
+        if (::llvm::any_of(byteAddresses, [](const ByteAccessExpression &value) {
+              return !value.exactCanonicalElementProjection;
+            }))
+          return info.op->emitError(
+              "loom-lower-graph-memory: dynamic LLVM element address has no "
+              "exact canonical-index projection");
+        if (rootWrites && !rootAtomic &&
+            (byteAddresses.size() != 1 ||
+             !hasDynamicByteLaneSeparation(byteAddresses.front(),
+                                           inductionVars.size(),
+                                           comparisonWidth)))
+          return info.op->emitError(
+              "loom-lower-graph-memory: dynamic parallel LLVM memory effect "
+              "has no exact byte-disjoint lane projection");
+        continue;
+      }
+
+      auto referenceSymbols =
+          projectByteAddressSymbols(byteAddresses.front(), comparisonWidth);
+      if (!referenceSymbols)
+        return info.op->emitError(
+            "loom-lower-graph-memory: LLVM byte address has an incomparable "
+            "symbolic projection");
+      for (const ByteAccessExpression &address :
+           ::llvm::drop_begin(byteAddresses)) {
+        auto symbols = projectByteAddressSymbols(address, comparisonWidth);
+        if (!symbols || !sameByteAddressSymbols(*referenceSymbols, *symbols))
+          return info.op->emitError(
+              "loom-lower-graph-memory: LLVM byte addresses have different "
+              "symbolic projections");
+      }
+      if (!referenceSymbols->empty() &&
+          ::llvm::any_of(byteAddresses, [](const ByteAccessExpression &value) {
+            return !value.exactCanonicalElementProjection;
+          }))
+        return info.op->emitError(
+            "loom-lower-graph-memory: symbolic LLVM element address has no "
+            "exact canonical-index projection");
+
+      ::llvm::SmallVector<ByteInterval, 16> intervals;
+      std::uint64_t lane = 0;
+      bool unrepresentableElementIndex = false;
+      ::llvm::SmallVector<int64_t, 4> point;
+      (void)forEachParallelPointUntil(
+          *info.domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+            for (const ByteAccessExpression &address : byteAddresses) {
+              ::llvm::APInt begin =
+                  evaluateByteAddress(address, coordinates, comparisonWidth);
+              if (!address.exactCanonicalElementProjection &&
+                  !hasRepresentableCanonicalElementArithmetic(
+                      address, coordinates, comparisonWidth, *indexBits)) {
+                unrepresentableElementIndex = true;
+                return false;
+              }
+              ::llvm::APInt end =
+                  begin +
+                  ::llvm::APInt(comparisonWidth, address.accessByteCount);
+              intervals.push_back(ByteInterval{std::move(begin), std::move(end),
+                                               lane, address.access->writes,
+                                               address.access->atomic});
+            }
+            ++lane;
+            return true;
+          });
+      if (unrepresentableElementIndex)
+        return info.op->emitError(
+            "loom-lower-graph-memory: LLVM element address exceeds the "
+            "selected canonical index width");
+      if (!rootWrites || rootAtomic)
+        continue;
+      ::llvm::sort(intervals,
+                   [](const ByteInterval &lhs, const ByteInterval &rhs) {
+                     if (lhs.begin != rhs.begin)
+                       return lhs.begin.slt(rhs.begin);
+                     if (lhs.end != rhs.end)
+                       return lhs.end.slt(rhs.end);
+                     return lhs.lane < rhs.lane;
+                   });
+      ::llvm::SmallVector<ByteInterval, 8> active;
+      bool overlap = false;
+      for (const ByteInterval &interval : intervals) {
+        ::llvm::erase_if(active, [&](const ByteInterval &candidate) {
+          return candidate.end.sle(interval.begin);
+        });
+        for (const ByteInterval &candidate : active) {
+          if (candidate.lane != interval.lane &&
+              (candidate.writes || interval.writes) &&
+              (!candidate.atomic || !interval.atomic)) {
+            overlap = true;
+            break;
+          }
+        }
+        if (overlap)
+          break;
+        active.push_back(interval);
+      }
+      if (overlap)
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel lanes have overlapping plain "
+            "memory byte ranges");
+      continue;
+    }
+
     if (!rootWrites || rootAtomic)
       continue;
-
-    ::mlir::Value memory = mapSpatialArguments(rootAccesses.front()->memory);
-    if (::llvm::any_of(rootAccesses, [&](const ParallelMemoryAccess *access) {
-          return mapSpatialArguments(access->memory) != memory;
-        }))
-      return info.op->emitError(
-          "loom-lower-graph-memory: parallel lane memory effects are not "
-          "provably disjoint");
 
     struct AccessExpressions {
       const ParallelMemoryAccess *access;
@@ -625,19 +1032,18 @@ struct ParallelCheckInfo {
     ::llvm::SmallVector<AccessExpressions, 8> analyzed;
     for (const ParallelMemoryAccess *access : rootAccesses) {
       if (::llvm::any_of(access->address, [](const ::mlir::Value value) {
-            return !::llvm::isa<::mlir::IndexType>(value.getType());
+            return !value.getType().isIntOrIndex();
           }))
         return info.op->emitError(
-            "loom-lower-graph-memory: parallel lane memory effects are not "
-            "provably disjoint");
+            "loom-lower-graph-memory: parallel address is not integer-typed");
 
       AccessExpressions one{access, {}};
       for (::mlir::Value address : access->address) {
         auto expression = expressions.build(address);
         if (!expression)
           return info.op->emitError(
-              "loom-lower-graph-memory: parallel lane memory effects are not "
-              "provably disjoint");
+              "loom-lower-graph-memory: parallel address has no affine lane "
+              "projection");
         one.address.push_back(std::move(*expression));
       }
       analyzed.push_back(std::move(one));
@@ -648,8 +1054,8 @@ struct ParallelCheckInfo {
           return access.address.size() != rank;
         }))
       return info.op->emitError(
-          "loom-lower-graph-memory: parallel lane memory effects are not "
-          "provably disjoint");
+          "loom-lower-graph-memory: parallel accesses have different address "
+          "ranks");
 
     ::llvm::SmallVector<unsigned, 4> comparableDimensions;
     for (unsigned dimension = 0; dimension < rank; ++dimension) {
@@ -661,10 +1067,45 @@ struct ParallelCheckInfo {
           }))
         comparableDimensions.push_back(dimension);
     }
-    if (comparableDimensions.empty())
-      return info.op->emitError(
-          "loom-lower-graph-memory: parallel lane memory effects are not "
-          "provably disjoint");
+    if (comparableDimensions.empty()) {
+      auto diagnostic = info.op->emitError(
+          "loom-lower-graph-memory: parallel addresses have no comparable "
+          "lane projection; address rank is ");
+      diagnostic << rank;
+      return ::mlir::failure();
+    }
+
+    if (!info.domain) {
+      if (analyzed.size() != 1)
+        return info.op->emitError(
+            "loom-lower-graph-memory: dynamic parallel plain-memory effects "
+            "require one injective access per memory root");
+      ::llvm::SmallVector<bool, 4> projected(inductionVars.size(), false);
+      for (const LinearExpression &expression : analyzed.front().address) {
+        if (!expression.transforms.empty() ||
+            !expression.descendantLanes.empty())
+          continue;
+        std::optional<unsigned> lane;
+        bool unitProjection = true;
+        for (auto [ordinal, coefficient] :
+             ::llvm::enumerate(expression.lanes)) {
+          if (coefficient.isZero())
+            continue;
+          if (lane || (!coefficient.isOne() && !coefficient.isAllOnes())) {
+            unitProjection = false;
+            break;
+          }
+          lane = ordinal;
+        }
+        if (unitProjection && lane && !projected[*lane])
+          projected[*lane] = true;
+      }
+      if (!::llvm::all_of(projected, [](bool value) { return value; }))
+        return info.op->emitError(
+            "loom-lower-graph-memory: dynamic parallel plain-memory effects "
+            "have no exact injective lane projection");
+      continue;
+    }
 
     std::unordered_map<std::vector<::llvm::APInt>, SeenAddress, AddressKeyHash>
         seen;
@@ -672,7 +1113,7 @@ struct ParallelCheckInfo {
     bool overlap = false;
     ::llvm::SmallVector<int64_t, 4> point;
     (void)forEachParallelPointUntil(
-        info.domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+        *info.domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
           uint64_t currentLane = lane++;
           for (const AccessExpressions &access : analyzed) {
             std::vector<::llvm::APInt> key;
@@ -733,8 +1174,11 @@ void forEachParallelPoint(
                                   });
 }
 
-::mlir::LogicalResult checkGraphOwnedParallelPreconditions(
-    ::llvm::ArrayRef<::mlir::Operation *> parallelOps) {
+namespace {
+
+::mlir::LogicalResult
+checkParallelPreconditions(::llvm::ArrayRef<::mlir::Operation *> parallelOps,
+                           bool requireFixedDomain, bool selectedOwnership) {
   if (parallelOps.empty())
     return ::mlir::success();
 
@@ -772,24 +1216,29 @@ void forEachParallelPoint(
             "must be normalized before fixed-lane lowering");
     }
 
-    auto domain = getFixedParallelDomain(op);
-    if (!domain)
+    std::optional<FixedParallelDomain> domain;
+    if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op))
+      domain = getFixedParallelDomain(forall);
+    else if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op))
+      domain = getFixedParallelDomain(parallel);
+    if (requireFixedDomain && !domain)
       return op->emitError(
           "loom-lower-graph-memory: selected graph-owned parallel SCF "
           "requires a fixed compile-time lane domain");
-    if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
+    if (domain &&
+        ::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
       return op->emitError(
           "loom-lower-graph-memory: selected graph-owned parallel SCF "
           "requires positive fixed lane steps");
 
     bool graphOwned =
         static_cast<bool>(op->getParentOfType<::dataflow::GraphOp>());
-    checks.try_emplace(
-        op, ParallelCheckInfo{op,
-                              std::move(*domain),
-                              graphOwned || hasSpatialCarrierAncestor(op),
-                              {},
-                              nullptr});
+    checks.try_emplace(op, ParallelCheckInfo{op,
+                                             std::move(domain),
+                                             selectedOwnership || graphOwned ||
+                                                 hasSpatialCarrierAncestor(op),
+                                             {},
+                                             nullptr});
     provenParallelOps.insert(op);
   }
 
@@ -847,6 +1296,23 @@ void forEachParallelPoint(
       return ::mlir::failure();
   }
   return ::mlir::success();
+}
+
+} // namespace
+
+::mlir::LogicalResult checkGraphOwnedParallelPreconditions(
+    ::llvm::ArrayRef<::mlir::Operation *> parallelOps) {
+  return checkParallelPreconditions(parallelOps,
+                                    /*requireFixedDomain=*/true,
+                                    /*selectedOwnership=*/false);
+}
+
+::mlir::LogicalResult
+checkLogicalThreadParallelPreconditions(::mlir::Operation *forall) {
+  if (!::llvm::isa_and_nonnull<::mlir::scf::ForallOp>(forall))
+    return ::mlir::failure();
+  return checkParallelPreconditions({forall}, /*requireFixedDomain=*/false,
+                                    /*selectedOwnership=*/true);
 }
 
 } // namespace lowering

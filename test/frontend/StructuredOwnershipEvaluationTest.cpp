@@ -452,7 +452,8 @@ void runEvaluationAnchor() {
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, spatialScope, spatialDecision, spatial,
-      inputs.workload, inputs.runtimeInput));
+      inputs.workload, inputs.runtimeInput,
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}));
   if (spatialReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
       spatialReplay.dynamicActivations != 1 ||
@@ -460,35 +461,75 @@ void runEvaluationAnchor() {
     fail("functional replay did not execute the selected graph activation");
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, coldScope, coldDecision, cold,
-      inputs.workload, inputs.runtimeInput));
+      inputs.workload, inputs.runtimeInput,
+      {100000, 1000000, 256ULL * 1024ULL * 1024ULL}));
   if (coldReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Inapplicable ||
       coldReplay.dynamicActivations != 0 || coldReplay.wavefrontSteps != 0 ||
       coldReplay.eventCount != 0)
     fail("functional replay treated an unexecuted graph as passing");
+  llvm::Error limitedReplay =
+      loom::evaluation::models::primeStructuredProgramFunctionalReplay(
+          spatialRef,
+          {inputs.workloadReference,
+           inputs.runtimeInputReference,
+           compiled.structuredProgram,
+           spatialScope,
+           spatialDecision,
+           spatial,
+           inputs.workload,
+           inputs.runtimeInput,
+           inputs.observations,
+           {1, 1, 256ULL * 1024ULL * 1024ULL}},
+          store);
+  if (!limitedReplay)
+    fail("functional replay execution limit was ignored");
+  if (llvm::errorToErrorCode(std::move(limitedReplay)) !=
+      std::make_error_code(std::errc::timed_out))
+    fail("functional replay execution limit used the wrong failure kind");
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredProgramFunctionalReplay(
               spatialRef,
-              {inputs.workloadReference, inputs.runtimeInputReference,
-               compiled.structuredProgram, spatialScope, spatialDecision,
-               spatial, inputs.workload, inputs.runtimeInput,
-               inputs.observations},
+              {inputs.workloadReference,
+               inputs.runtimeInputReference,
+               compiled.structuredProgram,
+               spatialScope,
+               spatialDecision,
+               spatial,
+               inputs.workload,
+               inputs.runtimeInput,
+               inputs.observations,
+               {100000, 1000000, 256ULL * 1024ULL * 1024ULL}},
               store))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredProgramFunctionalReplay(
               tinyRef,
-              {inputs.workloadReference, inputs.runtimeInputReference,
-               compiled.structuredProgram, tinyScope, tinyDecision, tiny,
-               inputs.workload, inputs.runtimeInput, inputs.observations},
+              {inputs.workloadReference,
+               inputs.runtimeInputReference,
+               compiled.structuredProgram,
+               tinyScope,
+               tinyDecision,
+               tiny,
+               inputs.workload,
+               inputs.runtimeInput,
+               inputs.observations,
+               {100000, 1000000, 256ULL * 1024ULL * 1024ULL}},
               store))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredProgramFunctionalReplay(
               coldRef,
-              {inputs.workloadReference, inputs.runtimeInputReference,
-               compiled.structuredProgram, coldScope, coldDecision, cold,
-               inputs.workload, inputs.runtimeInput, inputs.observations},
+              {inputs.workloadReference,
+               inputs.runtimeInputReference,
+               compiled.structuredProgram,
+               coldScope,
+               coldDecision,
+               cold,
+               inputs.workload,
+               inputs.runtimeInput,
+               inputs.observations,
+               {100000, 1000000, 256ULL * 1024ULL * 1024ULL}},
               store))
     fail(llvm::toString(std::move(error)));
   const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{

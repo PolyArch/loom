@@ -2,14 +2,19 @@
 
 #include "StructuredAddressIndexNarrowing.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -149,22 +154,25 @@ createCallerOwnedResultStorage(mlir::LLVM::LLVMFuncOp callable,
   return slots;
 }
 
-/// One new private rank-zero dataflow.thread holding one loom.spatial_region.
-/// The captured source values become the thread's function inputs, partitioned
-/// into the region's ordinary values and memory capabilities.
+/// One new private dataflow.thread holding one loom.spatial_region. The
+/// captured source values become the thread's function inputs, partitioned
+/// into the region's ordinary values and memory capabilities. Logical
+/// coordinates are definition-owned suffix arguments and enter the Spatial
+/// region as ordinary values.
 struct SpatialThreadBoundary {
   dataflow::ThreadOp thread;
   loom::SpatialRegionOp spatial;
   mlir::Block *spatialEntry;
   llvm::SmallVector<mlir::Value> captureArguments;
   llvm::SmallVector<mlir::Value> threadOnlyArguments;
+  llvm::SmallVector<mlir::Value> spatialCoordinates;
 };
 
 llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
     mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp sourceCallable,
     mlir::ValueRange captures, mlir::ValueRange threadOnlyCaptures,
     mlir::TypeRange valueResultTypes, mlir::TypeRange memoryResultTypes,
-    mlir::Location location) {
+    mlir::Location location, unsigned threadRank = 0) {
   mlir::MLIRContext *context = module.getContext();
   mlir::OpBuilder builder(context);
   const std::string threadName =
@@ -199,6 +207,8 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
   for (mlir::Type type : threadInputTypes)
     threadEntry->addArgument(type, location);
   threadEntry->addArgument(builder.getNoneType(), location);
+  for (unsigned dimension = 0; dimension < threadRank; ++dimension)
+    threadEntry->addArgument(builder.getIndexType(), location);
 
   llvm::SmallVector<mlir::Value, 8> values;
   llvm::SmallVector<mlir::Value, 8> memories;
@@ -216,6 +226,9 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
     spatialArgument[index] = values.size();
     values.push_back(argument);
   }
+  const std::size_t coordinateValueOffset = values.size();
+  llvm::append_range(values, threadEntry->getArguments().drop_front(
+                                 threadInputTypes.size() + 1));
   for (std::size_t index = 0; index < captures.size(); ++index)
     if (dataflow::DataflowDialect::isMemoryCapabilityType(
             captures[index].getType()))
@@ -243,9 +256,17 @@ llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
   for (std::size_t index = 0; index < threadOnlyCaptures.size(); ++index)
     threadOnlyArguments.push_back(
         threadEntry->getArgument(captures.size() + index));
-  return SpatialThreadBoundary{thread, spatial, spatialEntry,
+  llvm::SmallVector<mlir::Value, 4> spatialCoordinates;
+  spatialCoordinates.reserve(threadRank);
+  for (unsigned dimension = 0; dimension < threadRank; ++dimension)
+    spatialCoordinates.push_back(
+        spatialEntry->getArgument(coordinateValueOffset + dimension));
+  return SpatialThreadBoundary{thread,
+                               spatial,
+                               spatialEntry,
                                std::move(captureArguments),
-                               std::move(threadOnlyArguments)};
+                               std::move(threadOnlyArguments),
+                               std::move(spatialCoordinates)};
 }
 
 struct CallableOwnershipBoundary final {
@@ -450,6 +471,323 @@ OperationClosure deriveOperationClosure(mlir::Operation *operation) {
     if (!result.use_empty())
       closure.liveOuts.push_back(result);
   return closure;
+}
+
+bool fitsSignedIndexWidth(__int128 value, unsigned width);
+
+llvm::Error verifyThreadDomainForall(mlir::scf::ForallOp forall) {
+  if (forall.getMapping())
+    return invalid("thread-domain forall must not carry a physical mapping");
+  if (!forall.getOutputs().empty() || forall.getNumResults() != 0)
+    return invalid(
+        "thread-domain forall must materialize aggregation before ownership");
+  auto inParallel = forall.getTerminator();
+  if (!inParallel.getRegion().front().empty())
+    return invalid("thread-domain forall must have an empty combining action");
+  if (mlir::failed(lowering::checkLogicalThreadParallelPreconditions(forall)))
+    return invalid("thread-domain forall failed parallel dependence and "
+                   "effect legality");
+  return llvm::Error::success();
+}
+
+llvm::Error verifyDynamicThreadDomainWidth(mlir::scf::ForallOp forall,
+                                           unsigned indexWidth) {
+  for (auto [lower, upper, step] :
+       llvm::zip_equal(forall.getMixedLowerBound(), forall.getMixedUpperBound(),
+                       forall.getMixedStep())) {
+    if (mlir::getConstantIntValue(lower) && mlir::getConstantIntValue(upper) &&
+        mlir::getConstantIntValue(step))
+      continue;
+    if (indexWidth != 32 && indexWidth != 64)
+      return invalid("dynamic thread-domain extent requires a 32-bit or "
+                     "64-bit selected index ABI");
+    if (!detail::provesThreadDomainExtentFits(lower, upper, step, indexWidth))
+      return invalid("dynamic thread-domain bounds have no complete signed "
+                     "value-domain proof for the selected index width");
+  }
+  return llvm::Error::success();
+}
+
+void addForallThreadBodyCapture(mlir::scf::ForallOp forall, mlir::Value value,
+                                llvm::SmallVectorImpl<mlir::Value> &liveIns,
+                                llvm::SmallPtrSetImpl<mlir::Value> &seen) {
+  if (!seen.insert(value).second)
+    return;
+  if (llvm::is_contained(forall.getInductionVars(), value))
+    return;
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+    if (forall->isAncestor(argument.getOwner()->getParentOp()))
+      return;
+  } else if (forall->isAncestor(value.getDefiningOp())) {
+    return;
+  }
+  if (value.getDefiningOp<mlir::arith::ConstantOp>())
+    return;
+  liveIns.push_back(value);
+}
+
+struct DerivedForallThreadBoundary final {
+  llvm::SmallVector<mlir::Value, 8> liveIns;
+  std::vector<PreparedSpatialOwnershipSelection::SourceInductionBinding>
+      sourceInductions;
+};
+
+std::uint64_t
+appendForallThreadInput(llvm::SmallVectorImpl<mlir::Value> &liveIns,
+                        mlir::Value value) {
+  auto found = llvm::find(liveIns, value);
+  if (found != liveIns.end())
+    return static_cast<std::uint64_t>(std::distance(liveIns.begin(), found));
+  const std::uint64_t ordinal = liveIns.size();
+  liveIns.push_back(value);
+  return ordinal;
+}
+
+llvm::Expected<DerivedForallThreadBoundary>
+deriveForallThreadBoundary(mlir::scf::ForallOp forall) {
+  if (llvm::Error error = verifyThreadDomainForall(forall))
+    return std::move(error);
+
+  DerivedForallThreadBoundary boundary;
+  llvm::SmallPtrSet<mlir::Value, 8> seen;
+  for (mlir::Operation &operation : forall.getBody()->without_terminator()) {
+    operation.walk([&](mlir::Operation *nested) {
+      for (mlir::Value operand : nested->getOperands())
+        addForallThreadBodyCapture(forall, operand, boundary.liveIns, seen);
+    });
+  }
+
+  mlir::OpBuilder builder(forall);
+  boundary.sourceInductions.reserve(forall.getRank());
+  for (auto [lower, step] :
+       llvm::zip_equal(forall.getMixedLowerBound(), forall.getMixedStep())) {
+    PreparedSpatialOwnershipSelection::SourceInductionBinding binding;
+    if (mlir::getConstantIntValue(lower) != 0) {
+      mlir::Value value = mlir::getValueOrCreateConstantIndexOp(
+          builder, forall.getLoc(), lower);
+      binding.lowerInputOrdinal =
+          appendForallThreadInput(boundary.liveIns, value);
+    }
+    if (mlir::getConstantIntValue(step) != 1) {
+      mlir::Value value =
+          mlir::getValueOrCreateConstantIndexOp(builder, forall.getLoc(), step);
+      binding.stepInputOrdinal =
+          appendForallThreadInput(boundary.liveIns, value);
+    }
+    boundary.sourceInductions.push_back(binding);
+  }
+  return boundary;
+}
+
+llvm::Expected<mlir::Value> materializeIndexValue(mlir::OpBuilder &builder,
+                                                  mlir::Location location,
+                                                  mlir::OpFoldResult value) {
+  if (auto dynamic = llvm::dyn_cast<mlir::Value>(value))
+    return dynamic;
+  return mlir::getValueOrCreateConstantIndexOp(builder, location, value);
+}
+
+bool fitsSignedIndexWidth(__int128 value, unsigned width) {
+  if (width == 0)
+    return false;
+  if (width >= 128)
+    return true;
+  const __int128 limit = static_cast<__int128>(1) << (width - 1);
+  return value >= -limit && value < limit;
+}
+
+llvm::Expected<mlir::Value>
+materializeThreadExtent(mlir::OpBuilder &builder, mlir::Location location,
+                        mlir::OpFoldResult lower, mlir::OpFoldResult upper,
+                        mlir::OpFoldResult step, unsigned indexWidth) {
+  std::optional<int64_t> staticLower = mlir::getConstantIntValue(lower);
+  std::optional<int64_t> staticUpper = mlir::getConstantIntValue(upper);
+  std::optional<int64_t> staticStep = mlir::getConstantIntValue(step);
+  if (staticStep && *staticStep <= 0)
+    return invalid("thread-domain forall step must be positive");
+  if (staticLower && staticUpper && staticStep) {
+    if (!fitsSignedIndexWidth(*staticLower, indexWidth) ||
+        !fitsSignedIndexWidth(*staticUpper, indexWidth) ||
+        !fitsSignedIndexWidth(*staticStep, indexWidth))
+      return invalid(
+          "thread-domain bounds exceed the selected signed index width");
+    __int128 distance = static_cast<__int128>(*staticUpper) - *staticLower;
+    __int128 extent =
+        distance <= 0 ? 0 : (distance + *staticStep - 1) / *staticStep;
+    if (!fitsSignedIndexWidth(extent, indexWidth))
+      return invalid(
+          "thread-domain extent exceeds the selected signed index width");
+    if (extent != 0) {
+      __int128 last =
+          static_cast<__int128>(*staticLower) + (extent - 1) * *staticStep;
+      if (!fitsSignedIndexWidth(last, indexWidth))
+        return invalid("thread-domain source induction exceeds the selected "
+                       "signed index width");
+    }
+    return mlir::arith::ConstantIndexOp::create(builder, location,
+                                                static_cast<int64_t>(extent));
+  }
+  if (indexWidth != 32 && indexWidth != 64)
+    return invalid("dynamic thread-domain extent requires a 32-bit or 64-bit "
+                   "selected index ABI");
+  auto lowerValue = materializeIndexValue(builder, location, lower);
+  if (!lowerValue)
+    return lowerValue.takeError();
+  auto upperValue = materializeIndexValue(builder, location, upper);
+  if (!upperValue)
+    return upperValue.takeError();
+  auto stepValue = materializeIndexValue(builder, location, step);
+  if (!stepValue)
+    return stepValue.takeError();
+
+  if (!detail::provesThreadDomainExtentFits(lower, upper, step, indexWidth))
+    return invalid("dynamic thread-domain bounds have no complete signed "
+                   "value-domain proof for the selected index width");
+
+  const unsigned arithmeticWidth = indexWidth * 2;
+  mlir::IntegerType arithmeticType = builder.getIntegerType(arithmeticWidth);
+  auto widen = [&](mlir::Value value) {
+    return mlir::arith::IndexCastOp::create(builder, location, arithmeticType,
+                                            value)
+        .getResult();
+  };
+  mlir::Value widenedLower = widen(*lowerValue);
+  mlir::Value widenedUpper = widen(*upperValue);
+  mlir::Value widenedStep = widen(*stepValue);
+  auto integerConstant = [&](const llvm::APInt &value) {
+    return mlir::arith::ConstantOp::create(
+        builder, location, arithmeticType,
+        mlir::IntegerAttr::get(arithmeticType, value));
+  };
+  mlir::Value zero = integerConstant(llvm::APInt(arithmeticWidth, 0));
+  mlir::Value distance = mlir::arith::SubIOp::create(
+      builder, location, widenedUpper, widenedLower);
+  mlir::Value positiveDistance =
+      mlir::arith::MaxSIOp::create(builder, location, distance, zero);
+  mlir::Value extent = mlir::arith::CeilDivSIOp::create(
+      builder, location, positiveDistance, widenedStep);
+  mlir::Value narrowed = mlir::arith::IndexCastOp::create(
+      builder, location, builder.getIndexType(), extent);
+  return narrowed;
+}
+
+llvm::Expected<mlir::Value> materializeSourceInduction(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Value coordinate,
+    std::optional<mlir::Value> lower, std::optional<mlir::Value> step,
+    unsigned indexWidth) {
+  if (!lower && !step)
+    return coordinate;
+  if (indexWidth == 0 || indexWidth > mlir::IntegerType::kMaxWidth / 2)
+    return invalid("thread-domain source-IV arithmetic width is invalid");
+
+  mlir::IntegerType arithmeticType = builder.getIntegerType(indexWidth * 2);
+  auto widen = [&](mlir::Value value) -> llvm::Expected<mlir::Value> {
+    if (!llvm::isa<mlir::IndexType>(value.getType()))
+      return invalid("thread-domain source-IV operand is not index-typed");
+    return mlir::arith::IndexCastOp::create(builder, location, arithmeticType,
+                                            value)
+        .getResult();
+  };
+
+  auto widenedCoordinate = widen(coordinate);
+  if (!widenedCoordinate)
+    return widenedCoordinate.takeError();
+  mlir::Value reconstructed = *widenedCoordinate;
+  if (step) {
+    auto widenedStep = widen(*step);
+    if (!widenedStep)
+      return widenedStep.takeError();
+    reconstructed = mlir::arith::MulIOp::create(builder, location,
+                                                reconstructed, *widenedStep);
+  }
+  if (lower) {
+    auto widenedLower = widen(*lower);
+    if (!widenedLower)
+      return widenedLower.takeError();
+    reconstructed = mlir::arith::AddIOp::create(builder, location,
+                                                *widenedLower, reconstructed);
+  }
+  return mlir::arith::IndexCastOp::create(
+      builder, location, builder.getIndexType(), reconstructed);
+}
+
+llvm::Error materializePreparedForallThreadDomain(
+    PreparedSpatialOwnershipSelection &prepared, mlir::scf::ForallOp forall) {
+  mlir::ModuleOp module = prepared.module.get();
+  if (!prepared.sourceInductions ||
+      prepared.sourceInductions->size() !=
+          static_cast<std::size_t>(forall.getRank()))
+    return invalid("thread-domain source-IV boundary is not total");
+  if (!prepared.threadExtents || prepared.threadExtents->size() !=
+                                     static_cast<std::size_t>(forall.getRank()))
+    return invalid("thread-domain extent projection is not total");
+  auto indexWidth = ::loom::getIndexBitWidth(forall);
+  if (!indexWidth)
+    return indexWidth.takeError();
+  auto callable = eligibleOwningCallable(forall);
+  if (!callable)
+    return callable.takeError();
+
+  mlir::Location location = forall.getLoc();
+  auto boundary = createSpatialThreadBoundary(
+      module, *callable, prepared.liveIns, mlir::ValueRange{},
+      mlir::TypeRange{}, mlir::TypeRange{}, location, forall.getRank());
+  if (!boundary)
+    return boundary.takeError();
+
+  mlir::IRMapping mapping;
+  for (auto [index, liveIn] : llvm::enumerate(prepared.liveIns))
+    mapping.map(liveIn, boundary->captureArguments[index]);
+  mlir::OpBuilder builder(module.getContext());
+  builder.setInsertionPointToEnd(boundary->spatialEntry);
+  llvm::SmallPtrSet<mlir::Operation *, 8> clonedConstants;
+  forall.getBody()->walk([&](mlir::Operation *nested) {
+    for (mlir::Value operand : nested->getOperands()) {
+      auto constant = operand.getDefiningOp<mlir::arith::ConstantOp>();
+      if (constant && !forall->isAncestor(constant) &&
+          !mapping.contains(operand) && clonedConstants.insert(constant).second)
+        builder.clone(*constant, mapping);
+    }
+  });
+  for (auto [dimension, induction] :
+       llvm::enumerate(forall.getInductionVars())) {
+    const auto &binding = (*prepared.sourceInductions)[dimension];
+    auto resolveInput = [&](std::optional<std::uint64_t> ordinal)
+        -> llvm::Expected<std::optional<mlir::Value>> {
+      if (!ordinal)
+        return std::optional<mlir::Value>{};
+      if (*ordinal >= boundary->captureArguments.size())
+        return invalid("thread-domain source-IV input is out of range");
+      return std::optional<mlir::Value>(boundary->captureArguments[*ordinal]);
+    };
+    auto lower = resolveInput(binding.lowerInputOrdinal);
+    if (!lower)
+      return lower.takeError();
+    auto step = resolveInput(binding.stepInputOrdinal);
+    if (!step)
+      return step.takeError();
+    auto sourceInduction = materializeSourceInduction(
+        builder, location, boundary->spatialCoordinates[dimension],
+        std::move(*lower), std::move(*step), *indexWidth);
+    if (!sourceInduction)
+      return sourceInduction.takeError();
+    mapping.map(induction, *sourceInduction);
+  }
+  for (mlir::Operation &operation : forall.getBody()->without_terminator())
+    builder.clone(operation, mapping);
+  loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
+                               mlir::ValueRange{});
+
+  builder.setInsertionPoint(forall);
+  auto launch = dataflow::ThreadLaunchOp::create(
+      builder, location,
+      mlir::FlatSymbolRefAttr::get(module.getContext(),
+                                   boundary->thread.getSymName()),
+      prepared.liveIns, *prepared.threadExtents, mlir::ValueRange{});
+  dataflow::ThreadWaitOp::create(builder, location,
+                                 mlir::ValueRange{launch.getAsyncToken()});
+  forall.erase();
+  return llvm::Error::success();
 }
 
 llvm::Error materializePreparedOperation(mlir::ModuleOp module,
@@ -709,11 +1047,22 @@ enumerateSpatialOwnershipDecisionDomain(
     executionShapes.push_back(std::nullopt);
   }
 
+  llvm::SmallVector<std::optional<ForallOwnershipShape>, 2> forallShapes;
+  if (llvm::isa<mlir::scf::ForallOp>(operation)) {
+    forallShapes.push_back(ForallOwnershipShape::GraphParallel);
+    forallShapes.push_back(ForallOwnershipShape::LogicalThreadDomain);
+  } else {
+    forallShapes.push_back(std::nullopt);
+  }
+
   std::vector<SpatialOwnershipDecisionPoint> result;
-  result.reserve(indexWidths.size() * executionShapes.size());
+  result.reserve(indexWidths.size() * executionShapes.size() *
+                 forallShapes.size());
   for (std::optional<unsigned> indexWidth : indexWidths)
     for (std::optional<raising::FMulAddExecutionShape> shape : executionShapes)
-      result.push_back(SpatialOwnershipDecisionPoint{shape, indexWidth});
+      for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
+        result.push_back(
+            SpatialOwnershipDecisionPoint{shape, indexWidth, forallShape});
   return result;
 }
 
@@ -731,6 +1080,14 @@ materializeSpatialOwnershipDecision(
   if (auto function =
           llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(prepared->operation)) {
     if (llvm::Error error = materializeThread(prepared->module.get(), function))
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    std::move(error));
+  } else if (auto forall = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(
+                 prepared->operation);
+             forall && decision.forallOwnershipShape ==
+                           ForallOwnershipShape::LogicalThreadDomain) {
+    if (llvm::Error error =
+            materializePreparedForallThreadDomain(*prepared, forall))
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   } else {
@@ -764,6 +1121,11 @@ prepareSpatialOwnershipSelection(
         }))
       return invalid(
           "selected scope requires an explicit fmuladd execution shape");
+    if (!decision.forallOwnershipShape &&
+        llvm::all_of(*domain, [](const SpatialOwnershipDecisionPoint &point) {
+          return point.forallOwnershipShape.has_value();
+        }))
+      return invalid("selected forall requires an explicit ownership shape");
     return invalid("decision is not in the selected scope's typed domain");
   }
 
@@ -778,6 +1140,26 @@ prepareSpatialOwnershipSelection(
     if (auto callable = eligibleOwningCallable(operation); !callable)
       return callable.takeError();
   }
+  if (auto forall = llvm::dyn_cast<mlir::scf::ForallOp>(operation);
+      forall && decision.forallOwnershipShape ==
+                    ForallOwnershipShape::LogicalThreadDomain) {
+    unsigned indexWidth = 0;
+    if (decision.canonicalIndexWidth) {
+      indexWidth = *decision.canonicalIndexWidth;
+    } else {
+      auto resolved = ::loom::getIndexBitWidth(forall);
+      if (!resolved)
+        return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                      resolved.takeError());
+      indexWidth = *resolved;
+    }
+    if (llvm::Error error = verifyDynamicThreadDomainWidth(forall, indexWidth))
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    std::move(error));
+  }
+  if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
+          selection->clone.get()))
+    return std::move(error);
   auto normalized = detail::materializeAddressIndexContract(
       selection->clone.get(), operation, decision.canonicalIndexWidth);
   if (!normalized)
@@ -787,23 +1169,55 @@ prepareSpatialOwnershipSelection(
   if (decision.fmuladdExecutionShape)
     raising::materializeFMulAddInOperation(*operation,
                                            *decision.fmuladdExecutionShape);
-  if (mlir::failed(mlir::verify(selection->clone.get())))
-    return invalid("prepared ownership selection does not verify");
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
+  std::optional<
+      std::vector<PreparedSpatialOwnershipSelection::SourceInductionBinding>>
+      sourceInductions;
+  std::optional<std::vector<mlir::Value>> threadExtents;
   if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
     CallableOwnershipBoundary boundary =
         deriveCallableOwnershipBoundary(function);
     liveIns.assign(boundary.inputs.begin(), boundary.inputs.end());
     liveOuts.assign(boundary.outputs.begin(), boundary.outputs.end());
+  } else if (auto forall = llvm::dyn_cast<mlir::scf::ForallOp>(operation);
+             forall && decision.forallOwnershipShape ==
+                           ForallOwnershipShape::LogicalThreadDomain) {
+    auto boundary = deriveForallThreadBoundary(forall);
+    if (!boundary)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    boundary.takeError());
+    liveIns.assign(boundary->liveIns.begin(), boundary->liveIns.end());
+    sourceInductions = std::move(boundary->sourceInductions);
+    auto indexWidth = ::loom::getIndexBitWidth(forall);
+    if (!indexWidth)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    indexWidth.takeError());
+    mlir::OpBuilder builder(forall);
+    std::vector<mlir::Value> extents;
+    extents.reserve(forall.getRank());
+    for (auto [lower, upper, step] :
+         llvm::zip_equal(forall.getMixedLowerBound(),
+                         forall.getMixedUpperBound(), forall.getMixedStep())) {
+      auto projection = materializeThreadExtent(builder, forall.getLoc(), lower,
+                                                upper, step, *indexWidth);
+      if (!projection)
+        return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                      projection.takeError());
+      extents.push_back(*projection);
+    }
+    threadExtents = std::move(extents);
   } else {
     OperationClosure closure = deriveOperationClosure(operation);
     liveIns.assign(closure.liveIns.begin(), closure.liveIns.end());
     liveOuts.assign(closure.liveOuts.begin(), closure.liveOuts.end());
   }
-  return PreparedSpatialOwnershipSelection{std::move(selection->clone),
-                                           operation, std::move(liveIns),
-                                           std::move(liveOuts)};
+  if (mlir::failed(mlir::verify(selection->clone.get())))
+    return invalid("prepared ownership selection does not verify");
+  return PreparedSpatialOwnershipSelection{
+      std::move(selection->clone), operation,
+      std::move(liveIns),          std::move(liveOuts),
+      std::move(sourceInductions), std::move(threadExtents)};
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>
@@ -811,10 +1225,11 @@ materializeSpatialOwnership(const StructuredProgramCandidate &parent,
                             const StructuredEntityRef &selection,
                             const fabric::FinalizedFabricRoot &fabric,
                             const SpatialOwnershipOptions &options) {
-  return materializeSpatialOwnershipDecision(
-      parent, {selection},
-      {options.fmuladdExecutionShape, options.canonicalIndexWidth}, fabric,
-      options.lowering);
+  return materializeSpatialOwnershipDecision(parent, {selection},
+                                             {options.fmuladdExecutionShape,
+                                              options.canonicalIndexWidth,
+                                              options.forallOwnershipShape},
+                                             fabric, options.lowering);
 }
 
 } // namespace loom::frontend

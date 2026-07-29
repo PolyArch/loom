@@ -44,6 +44,9 @@ template <typename T> T take(const char *test, llvm::Expected<T> value) {
 std::unique_ptr<llvm::Module> parseModule(const char *test,
                                           llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
 define i32 @main(i32 %value) {
 entry:
   %sum = add i32 %value, %value

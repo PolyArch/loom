@@ -4,6 +4,7 @@
 #include "DSE/Promotion.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "llvm/Support/Error.h"
 
@@ -24,6 +25,8 @@ struct StructuredOwnershipExplorationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   PointMetricTopKSelection selection;
   std::uint32_t candidateWorkerCount = 1;
+  sim::SourceBackedDfgValidationLimits functionalReplayLimits{
+      100000, 1000000, 256ULL * 1024ULL * 1024ULL};
 };
 
 /// One exact parent-local ownership decision that produced a child candidate.

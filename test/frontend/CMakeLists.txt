@@ -31,6 +31,19 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-thread-domain-test
+  StructuredThreadDomainTest.cpp
+)
+
+target_link_libraries(loom-structured-thread-domain-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
+  MLIRParser
+)
+
 add_executable(loom-constant-callback-specialization-test
   ConstantCallbackSpecializationTest.cpp
 )

@@ -10,8 +10,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace loom {
-namespace lowering {
+namespace loom::lowering {
 
 struct FixedParallelDomain {
   ::llvm::SmallVector<int64_t, 4> lower;
@@ -29,7 +28,13 @@ void forEachParallelPoint(
 ::mlir::LogicalResult checkGraphOwnedParallelPreconditions(
     ::llvm::ArrayRef<::mlir::Operation *> parallelOps);
 
-} // namespace lowering
-} // namespace loom
+/// Proves that one effect-form forall can become an unordered logical thread
+/// domain. Dynamic read-only and atomic domains are admissible; plain writes
+/// require the same fixed-domain disjointness proof used by graph-owned
+/// parallel lowering.
+::mlir::LogicalResult
+checkLogicalThreadParallelPreconditions(::mlir::Operation *forall);
+
+} // namespace loom::lowering
 
 #endif // LOOM_FRONTEND_LOWERING_GRAPH_PARALLEL_LOWERING_H

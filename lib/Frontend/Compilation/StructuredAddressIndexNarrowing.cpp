@@ -15,6 +15,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/IR/DataLayout.h"
 
 #include <cstdint>
 #include <string>
@@ -137,33 +138,224 @@ bool provesSignedFit(mlir::Value value, unsigned targetWidth) {
       return true;
   }
 
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>()) {
+    auto sourceType = llvm::dyn_cast<mlir::IntegerType>(cast.getIn().getType());
+    if (sourceType && sourceType.getWidth() <= targetWidth)
+      return true;
+    return provesSignedFit(cast.getIn(), targetWidth);
+  }
+
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastUIOp>()) {
+    auto sourceType = llvm::dyn_cast<mlir::IntegerType>(cast.getIn().getType());
+    if (sourceType && sourceType.getWidth() < targetWidth)
+      return true;
+    return provesSignedFit(cast.getIn(), targetWidth);
+  }
+
   return provesPostTestedInductionDomain(value, targetWidth);
+}
+
+struct ThreadDomainSignedRange final {
+  __int128 minimum = 0;
+  __int128 maximum = 0;
+};
+
+std::optional<unsigned> semanticIntegerWidth(mlir::Type type,
+                                             unsigned indexWidth) {
+  if (llvm::isa<mlir::IndexType>(type))
+    return indexWidth;
+  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth();
+  return std::nullopt;
+}
+
+std::optional<ThreadDomainSignedRange>
+fullThreadDomainSignedRange(unsigned width) {
+  if (width == 0 || width > 64)
+    return std::nullopt;
+  const __int128 limit = static_cast<__int128>(1) << (width - 1);
+  return ThreadDomainSignedRange{-limit, limit - 1};
+}
+
+std::optional<ThreadDomainSignedRange>
+inferThreadDomainSignedRange(mlir::Value value, unsigned indexWidth);
+
+std::optional<ThreadDomainSignedRange>
+inferThreadDomainUnsignedExtensionRange(mlir::Value value,
+                                        unsigned indexWidth,
+                                        unsigned resultWidth) {
+  auto sourceWidth = semanticIntegerWidth(value.getType(), indexWidth);
+  if (!sourceWidth || *sourceWidth == 0 || *sourceWidth > 64 ||
+      resultWidth == 0 || resultWidth > 64)
+    return std::nullopt;
+  __int128 minimum = 0;
+  __int128 maximum = (static_cast<__int128>(1) << *sourceWidth) - 1;
+  if (mlir::IntegerAttr constant = integerConstant(value)) {
+    minimum = constant.getValue().getZExtValue();
+    maximum = minimum;
+  }
+  auto destination = fullThreadDomainSignedRange(resultWidth);
+  if (!destination || maximum > destination->maximum)
+    return destination;
+  return ThreadDomainSignedRange{minimum, maximum};
+}
+
+std::optional<ThreadDomainSignedRange>
+projectThreadDomainSignedCast(ThreadDomainSignedRange source,
+                              unsigned resultWidth) {
+  auto destination = fullThreadDomainSignedRange(resultWidth);
+  if (!destination)
+    return std::nullopt;
+  if (source.minimum < destination->minimum ||
+      source.maximum > destination->maximum)
+    return destination;
+  return source;
+}
+
+std::optional<ThreadDomainSignedRange>
+inferThreadDomainSignedRange(mlir::Value value, unsigned indexWidth) {
+  auto resultWidth = semanticIntegerWidth(value.getType(), indexWidth);
+  if (!resultWidth)
+    return std::nullopt;
+  if (mlir::IntegerAttr constant = integerConstant(value)) {
+    if (constant.getValue().getBitWidth() > 64)
+      return std::nullopt;
+    const __int128 exact = constant.getValue().getSExtValue();
+    return ThreadDomainSignedRange{exact, exact};
+  }
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>()) {
+    auto source = inferThreadDomainSignedRange(cast.getIn(), indexWidth);
+    return source ? projectThreadDomainSignedCast(*source, *resultWidth)
+                  : std::nullopt;
+  }
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastUIOp>())
+    return inferThreadDomainUnsignedExtensionRange(cast.getIn(), indexWidth,
+                                                   *resultWidth);
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
+    auto source =
+        inferThreadDomainSignedRange(extension.getIn(), indexWidth);
+    return source ? projectThreadDomainSignedCast(*source, *resultWidth)
+                  : std::nullopt;
+  }
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>())
+    return inferThreadDomainUnsignedExtensionRange(
+        extension.getIn(), indexWidth, *resultWidth);
+  if (auto maximum = value.getDefiningOp<mlir::arith::MaxSIOp>()) {
+    auto lhs = inferThreadDomainSignedRange(maximum.getLhs(), indexWidth);
+    auto rhs = inferThreadDomainSignedRange(maximum.getRhs(), indexWidth);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return ThreadDomainSignedRange{std::max(lhs->minimum, rhs->minimum),
+                                   std::max(lhs->maximum, rhs->maximum)};
+  }
+  if (auto minimum = value.getDefiningOp<mlir::arith::MinSIOp>()) {
+    auto lhs = inferThreadDomainSignedRange(minimum.getLhs(), indexWidth);
+    auto rhs = inferThreadDomainSignedRange(minimum.getRhs(), indexWidth);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return ThreadDomainSignedRange{std::min(lhs->minimum, rhs->minimum),
+                                   std::min(lhs->maximum, rhs->maximum)};
+  }
+  if (auto select = value.getDefiningOp<mlir::arith::SelectOp>()) {
+    auto trueRange =
+        inferThreadDomainSignedRange(select.getTrueValue(), indexWidth);
+    auto falseRange =
+        inferThreadDomainSignedRange(select.getFalseValue(), indexWidth);
+    if (!trueRange || !falseRange)
+      return std::nullopt;
+    return ThreadDomainSignedRange{
+        std::min(trueRange->minimum, falseRange->minimum),
+        std::max(trueRange->maximum, falseRange->maximum)};
+  }
+  return fullThreadDomainSignedRange(*resultWidth);
+}
+
+std::optional<ThreadDomainSignedRange>
+inferThreadDomainSignedRange(mlir::OpFoldResult value, unsigned indexWidth) {
+  if (auto dynamic = llvm::dyn_cast<mlir::Value>(value))
+    return inferThreadDomainSignedRange(dynamic, indexWidth);
+  auto integer = llvm::dyn_cast<mlir::IntegerAttr>(
+      llvm::cast<mlir::Attribute>(value));
+  if (!integer || integer.getValue().getBitWidth() > 64)
+    return std::nullopt;
+  const __int128 exact = integer.getValue().getSExtValue();
+  return ThreadDomainSignedRange{exact, exact};
+}
+
+llvm::Error
+materializeDataLayoutEndiannessProjectionImpl(mlir::ModuleOp module) {
+  mlir::MLIRContext *context = module.getContext();
+  mlir::StringAttr endiannessKey = mlir::StringAttr::get(
+      context, mlir::DLTIDialect::kDataLayoutEndiannessKey);
+
+  mlir::DataLayoutSpecInterface current = module.getDataLayoutSpec();
+  bool hasEndianness = false;
+  mlir::StringAttr expectedEndianness;
+  if (current) {
+    if (mlir::DataLayoutEntryInterface entry =
+            current.getSpecForIdentifier(endiannessKey)) {
+      auto declared = llvm::dyn_cast<mlir::StringAttr>(entry.getValue());
+      if (!declared ||
+          (declared.getValue() !=
+               mlir::DLTIDialect::kDataLayoutEndiannessLittle &&
+           declared.getValue() != mlir::DLTIDialect::kDataLayoutEndiannessBig))
+        return invalid("has an unsupported explicit DLTI endianness");
+      expectedEndianness = declared;
+      hasEndianness = true;
+    }
+  }
+
+  auto llvmLayout = module->getAttrOfType<mlir::StringAttr>("llvm.data_layout");
+  if (!llvmLayout || llvmLayout.getValue().empty())
+    return invalid("requires a nonempty LLVM DataLayout");
+  auto parsedLayout = llvm::DataLayout::parse(llvmLayout.getValue());
+  if (!parsedLayout)
+    return invalid("cannot parse the LLVM DataLayout: " +
+                   llvm::toString(parsedLayout.takeError()));
+  mlir::StringAttr projectedEndianness = mlir::StringAttr::get(
+      context, parsedLayout->isLittleEndian()
+                   ? mlir::DLTIDialect::kDataLayoutEndiannessLittle
+                   : mlir::DLTIDialect::kDataLayoutEndiannessBig);
+  if (hasEndianness && expectedEndianness != projectedEndianness)
+    return invalid("conflicts with the LLVM DataLayout endianness");
+  expectedEndianness = projectedEndianness;
+
+  if (hasEndianness)
+    return llvm::Error::success();
+
+  llvm::SmallVector<mlir::DataLayoutEntryInterface> entries;
+  if (current)
+    llvm::append_range(entries, current.getEntries());
+  entries.push_back(
+      mlir::DataLayoutEntryAttr::get(endiannessKey, expectedEndianness));
+  module->setAttr(mlir::DLTIDialect::kDataLayoutAttrName,
+                  mlir::DataLayoutSpecAttr::get(context, entries));
+  return llvm::Error::success();
 }
 
 llvm::Error materializeIndexLayout(mlir::ModuleOp module, unsigned width) {
   if (width == 0 || width > mlir::IntegerType::kMaxWidth)
     return invalid("requires a representable nonzero fixed width");
+  if (llvm::Error error = materializeDataLayoutEndiannessProjectionImpl(module))
+    return error;
 
+  mlir::MLIRContext *context = module.getContext();
   mlir::DataLayoutSpecInterface current = module.getDataLayoutSpec();
-  if (current) {
-    mlir::DataLayoutEntryList indexEntries =
-        current.getSpecForType<mlir::IndexType>();
-    if (indexEntries.size() > 1)
-      return invalid("found duplicate module index layout entries");
-    if (!indexEntries.empty()) {
-      auto declared =
-          llvm::dyn_cast<mlir::IntegerAttr>(indexEntries.front().getValue());
-      if (!declared || declared.getValue().getActiveBits() > 64 ||
-          declared.getValue().getZExtValue() != width)
-        return invalid("conflicts with the existing module index width");
-      return llvm::Error::success();
-    }
+  mlir::DataLayoutEntryList indexEntries =
+      current.getSpecForType<mlir::IndexType>();
+  if (indexEntries.size() > 1)
+    return invalid("found duplicate module index layout entries");
+  if (!indexEntries.empty()) {
+    auto declared =
+        llvm::dyn_cast<mlir::IntegerAttr>(indexEntries.front().getValue());
+    if (!declared || declared.getValue().getActiveBits() > 64 ||
+        declared.getValue().getZExtValue() != width)
+      return invalid("conflicts with the existing module index width");
+    return llvm::Error::success();
   }
 
   llvm::SmallVector<mlir::DataLayoutEntryInterface> entries;
-  if (current)
-    llvm::append_range(entries, current.getEntries());
-  mlir::MLIRContext *context = module.getContext();
+  llvm::append_range(entries, current.getEntries());
   entries.push_back(mlir::DataLayoutEntryAttr::get(
       mlir::IndexType::get(context),
       mlir::IntegerAttr::get(mlir::IntegerType::get(context, 64), width)));
@@ -233,8 +425,7 @@ bool isDefinedOutsideLoop(mlir::Value value, mlir::scf::WhileOp loop) {
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
   mlir::Operation *owner =
       argument ? argument.getOwner()->getParentOp() : nullptr;
-  return !owner ||
-         (owner != loop.getOperation() && !loop->isAncestor(owner));
+  return !owner || (owner != loop.getOperation() && !loop->isAncestor(owner));
 }
 
 std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
@@ -747,6 +938,36 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
 }
 
 } // namespace
+
+llvm::Error materializeDataLayoutEndiannessProjection(mlir::ModuleOp module) {
+  if (!module)
+    return invalid("requires a Structured Program module");
+  return materializeDataLayoutEndiannessProjectionImpl(module);
+}
+
+bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
+                                  mlir::OpFoldResult upper,
+                                  mlir::OpFoldResult step,
+                                  unsigned targetWidth) {
+  auto lowerRange = inferThreadDomainSignedRange(lower, targetWidth);
+  auto upperRange = inferThreadDomainSignedRange(upper, targetWidth);
+  auto stepRange = inferThreadDomainSignedRange(step, targetWidth);
+  auto targetRange = fullThreadDomainSignedRange(targetWidth);
+  if (!lowerRange || !upperRange || !stepRange || !targetRange ||
+      stepRange->minimum <= 0 ||
+      lowerRange->minimum < targetRange->minimum ||
+      lowerRange->maximum > targetRange->maximum ||
+      upperRange->minimum < targetRange->minimum ||
+      upperRange->maximum > targetRange->maximum ||
+      stepRange->maximum > targetRange->maximum)
+    return false;
+  const __int128 maximumDistance = upperRange->maximum - lowerRange->minimum;
+  const __int128 maximumExtent =
+      maximumDistance <= 0
+          ? 0
+          : (maximumDistance + stepRange->minimum - 1) / stepRange->minimum;
+  return maximumExtent <= targetRange->maximum;
+}
 
 bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
                                            mlir::Operation *selectedOperation) {

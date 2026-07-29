@@ -2,6 +2,7 @@
 
 #include "NativeExecutionSupport.h"
 #include "SimulationWireInternal.h"
+#include "StructuredProgramNativeExecutionInternal.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/LoomOps.h"
@@ -9,6 +10,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -42,6 +44,14 @@
 
 namespace loom::sim {
 namespace {
+
+using native_detail::AlignedByteStorage;
+using native_detail::buildObservations;
+using native_detail::instrumentBlockActivations;
+using native_detail::MemoryTargetPlan;
+using native_detail::NativeExecutionContext;
+using native_detail::projectSelectedWholeProgram;
+using native_detail::uniqueMlirSymbolName;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -82,80 +92,6 @@ llvm::Error classifyJitError(llvm::Error error, llvm::StringRef operation) {
   return executionFailed(llvm::Twine(operation) + ": " + detail);
 }
 
-class AlignedByteStorage final {
-public:
-  static llvm::Expected<AlignedByteStorage>
-  create(llvm::ArrayRef<std::uint8_t> bytes, llvm::Align alignment) {
-    AlignedByteStorage storage;
-    storage.size_ = bytes.size();
-    storage.alignment_ = alignment.value();
-    storage.data_ = static_cast<std::uint8_t *>(::operator new(
-        storage.size_, std::align_val_t(storage.alignment_), std::nothrow));
-    if (!storage.data_)
-      return executionFailed("cannot allocate a runtime memory object");
-    std::memcpy(storage.data_, bytes.data(), storage.size_);
-    return std::move(storage);
-  }
-
-  AlignedByteStorage(const AlignedByteStorage &) = delete;
-  AlignedByteStorage &operator=(const AlignedByteStorage &) = delete;
-
-  AlignedByteStorage(AlignedByteStorage &&other) noexcept
-      : data_(std::exchange(other.data_, nullptr)),
-        size_(std::exchange(other.size_, 0)), alignment_(other.alignment_) {}
-
-  AlignedByteStorage &operator=(AlignedByteStorage &&other) noexcept {
-    if (this == &other)
-      return *this;
-    reset();
-    data_ = std::exchange(other.data_, nullptr);
-    size_ = std::exchange(other.size_, 0);
-    alignment_ = other.alignment_;
-    return *this;
-  }
-
-  ~AlignedByteStorage() { reset(); }
-
-  std::uint8_t *data() { return data_; }
-  const std::uint8_t *data() const { return data_; }
-  std::size_t size() const { return size_; }
-
-private:
-  AlignedByteStorage() = default;
-
-  void reset() {
-    if (data_)
-      ::operator delete(data_, std::align_val_t(alignment_));
-    data_ = nullptr;
-  }
-
-  std::uint8_t *data_ = nullptr;
-  std::size_t size_ = 0;
-  std::size_t alignment_ = alignof(std::max_align_t);
-};
-
-struct MemoryTargetPlan {
-  MemoryObservationForm form = MemoryObservationForm::FullState;
-  std::optional<std::uint64_t> objectOrdinal;
-  std::string globalSymbol;
-  std::uint64_t byteCount = 0;
-};
-
-struct NativeExecutionContext {
-  std::vector<AlignedByteStorage> objects;
-  std::optional<detail::LaneShape> returnShape;
-  std::uint64_t returnByteCount = 0;
-  bool littleEndian = true;
-  std::optional<CanonicalValueSequence> returnValue;
-  std::vector<std::vector<std::uint8_t>> globalBefore;
-  std::vector<std::vector<std::uint8_t>> globalAfter;
-  std::vector<bool> sawGlobalBefore;
-  std::vector<bool> sawGlobalAfter;
-  std::vector<frontend::StructuredEntityRef> profileBlocks;
-  std::vector<std::uint64_t> blockActivationCounts;
-  std::optional<std::string> error;
-};
-
 struct WorkloadCaptureValueShape final {
   std::uint64_t graphOrdinal = 0;
   std::uint64_t lanesPerToken = 0;
@@ -165,6 +101,8 @@ struct WorkloadCaptureValueShape final {
 
 struct WorkloadCaptureActiveCall final {
   std::size_t captureIndex = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t nextCoordinate = 0;
   std::uint64_t nextRoot = 0;
   std::uint64_t nextValue = 0;
   std::uint64_t nextResult = 0;
@@ -173,12 +111,16 @@ struct WorkloadCaptureActiveCall final {
 };
 
 struct WorkloadCaptureContext final {
-  NativeSimulationInputCapture result;
+  std::vector<std::optional<NativeSimulationCallCapture>> captures;
+  std::vector<WorkloadCaptureValueShape> coordinateShapes;
   std::vector<WorkloadCaptureValueShape> runtimeValueShapes;
   std::vector<WorkloadCaptureValueShape> valueResultShapes;
   std::vector<std::pair<std::uint8_t *, std::size_t>> runtimeObjects;
   std::vector<WorkloadCaptureActiveCall> activeCalls;
   std::uint64_t rootCount = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t maxRetainedBytes = 0;
+  WorkloadBackedSimulationInputVisitor *visitor = nullptr;
   bool littleEndian = true;
   std::optional<std::error_code> errorCode;
   std::optional<std::string> error;
@@ -188,6 +130,7 @@ struct WorkloadCaptureCallbackNames final {
   std::string begin;
   std::string end;
   std::optional<std::string> registerObject;
+  std::optional<std::string> coordinate;
   std::optional<std::string> memoryRoot;
   std::optional<std::string> value;
   std::optional<std::string> result;
@@ -199,6 +142,10 @@ thread_local WorkloadCaptureContext *activeWorkloadCapture = nullptr;
 void recordExecutionError(llvm::StringRef message) {
   if (activeExecution && !activeExecution->error)
     activeExecution->error = message.str();
+}
+
+void nativeInvalidLogicalThreadExtent() {
+  recordExecutionError("logical thread extent is negative");
 }
 
 void *nativeRuntimeObject(std::uint64_t ordinal) {
@@ -286,12 +233,30 @@ void copyWorkloadCaptureBytes(std::vector<std::uint8_t> &destination,
     std::memcpy(destination.data(), base, byteCount);
 }
 
+bool reserveWorkloadCaptureBytes(WorkloadCaptureContext &context,
+                                 WorkloadCaptureActiveCall &active,
+                                 std::uint64_t byteCount) {
+  if (active.retainedBytes >
+          std::numeric_limits<std::uint64_t>::max() - byteCount ||
+      context.retainedBytes >
+          std::numeric_limits<std::uint64_t>::max() - byteCount ||
+      context.retainedBytes + byteCount > context.maxRetainedBytes) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::timed_out),
+        "retained capture bytes exceeded the execution limit");
+    return false;
+  }
+  active.retainedBytes += byteCount;
+  context.retainedBytes += byteCount;
+  return true;
+}
+
 void workloadCaptureBegin() {
   if (!activeWorkloadCapture || activeWorkloadCapture->error)
     return;
-  activeWorkloadCapture->result.calls.emplace_back();
+  activeWorkloadCapture->captures.emplace_back(std::in_place);
   WorkloadCaptureActiveCall active;
-  active.captureIndex = activeWorkloadCapture->result.calls.size() - 1;
+  active.captureIndex = activeWorkloadCapture->captures.size() - 1;
   activeWorkloadCapture->activeCalls.push_back(std::move(active));
 }
 
@@ -346,7 +311,10 @@ void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
   if (!activeWorkloadCapture || activeWorkloadCapture->error)
     return;
   WorkloadCaptureContext &context = *activeWorkloadCapture;
-  if (context.activeCalls.empty() || rootOrdinal >= context.rootCount ||
+  if (context.activeCalls.empty() ||
+      context.activeCalls.back().nextCoordinate !=
+          context.coordinateShapes.size() ||
+      rootOrdinal >= context.rootCount ||
       context.activeCalls.back().nextRoot != rootOrdinal) {
     recordWorkloadCaptureError(
         std::make_error_code(std::errc::io_error),
@@ -363,14 +331,15 @@ void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
   }
 
   WorkloadCaptureActiveCall &active = context.activeCalls.back();
-  NativeSimulationCallCapture &capture =
-      context.result.calls[active.captureIndex];
+  NativeSimulationCallCapture &capture = *context.captures[active.captureIndex];
   auto found = llvm::find(active.runtimeObjectOrdinals, resolved->first);
   std::uint64_t objectOrdinal = 0;
   if (found == active.runtimeObjectOrdinals.end()) {
     objectOrdinal = capture.objects.size();
     active.runtimeObjectOrdinals.push_back(resolved->first);
     const auto &[base, byteCount] = context.runtimeObjects[resolved->first];
+    if (!reserveWorkloadCaptureBytes(context, active, byteCount))
+      return;
     active.objectBases.push_back(base);
     capture.objects.emplace_back();
     copyWorkloadCaptureBytes(capture.objects.back().initialBytes, base,
@@ -393,6 +362,39 @@ readWorkloadCaptureValue(void *base, const WorkloadCaptureValueShape &shape,
       shape.lanesPerToken, shape.laneBitWidth, littleEndian);
 }
 
+void workloadCaptureCoordinate(std::uint64_t ordinal, void *base,
+                               std::uint64_t byteCount) {
+  if (!activeWorkloadCapture || activeWorkloadCapture->error)
+    return;
+  WorkloadCaptureContext &context = *activeWorkloadCapture;
+  if (context.activeCalls.empty() ||
+      ordinal >= context.coordinateShapes.size() || !base ||
+      context.coordinateShapes[ordinal].byteCount != byteCount ||
+      context.activeCalls.back().nextCoordinate != ordinal) {
+    recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
+                               "dense coordinate callback is malformed");
+    return;
+  }
+  const WorkloadCaptureValueShape &shape = context.coordinateShapes[ordinal];
+  WorkloadCaptureActiveCall &active = context.activeCalls.back();
+  if (!reserveWorkloadCaptureBytes(context, active, byteCount))
+    return;
+  CanonicalValueSequence value =
+      readWorkloadCaptureValue(base, shape, context.littleEndian);
+  if (value.tokenCount != 1 || value.lanes.size() != 1 ||
+      value.lanes.front().state != SemanticState::Defined ||
+      value.lanes.front().bits.isNegative() ||
+      value.lanes.front().bits.getActiveBits() > 64) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::io_error),
+        "dense coordinate is not one defined unsigned 64-bit value");
+    return;
+  }
+  context.captures[active.captureIndex]->denseCoordinates.push_back(
+      value.lanes.front().bits.getZExtValue());
+  ++active.nextCoordinate;
+}
+
 void workloadCaptureValue(std::uint64_t ordinal, void *base,
                           std::uint64_t byteCount) {
   if (!activeWorkloadCapture || activeWorkloadCapture->error)
@@ -401,6 +403,8 @@ void workloadCaptureValue(std::uint64_t ordinal, void *base,
   if (context.activeCalls.empty() ||
       ordinal >= context.runtimeValueShapes.size() || !base ||
       context.runtimeValueShapes[ordinal].byteCount != byteCount ||
+      context.activeCalls.back().nextCoordinate !=
+          context.coordinateShapes.size() ||
       context.activeCalls.back().nextRoot != context.rootCount ||
       context.activeCalls.back().nextValue != ordinal) {
     recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
@@ -409,7 +413,9 @@ void workloadCaptureValue(std::uint64_t ordinal, void *base,
   }
   WorkloadCaptureActiveCall &active = context.activeCalls.back();
   const WorkloadCaptureValueShape &shape = context.runtimeValueShapes[ordinal];
-  context.result.calls[active.captureIndex].runtimeValues.push_back(
+  if (!reserveWorkloadCaptureBytes(context, active, byteCount))
+    return;
+  context.captures[active.captureIndex]->runtimeValues.push_back(
       RuntimeValueEntry{
           shape.graphOrdinal,
           readWorkloadCaptureValue(base, shape, context.littleEndian)});
@@ -424,6 +430,8 @@ void workloadCaptureResult(std::uint64_t ordinal, void *base,
   if (context.activeCalls.empty() ||
       ordinal >= context.valueResultShapes.size() || !base ||
       context.valueResultShapes[ordinal].byteCount != byteCount ||
+      context.activeCalls.back().nextCoordinate !=
+          context.coordinateShapes.size() ||
       context.activeCalls.back().nextRoot != context.rootCount ||
       context.activeCalls.back().nextValue !=
           context.runtimeValueShapes.size() ||
@@ -433,7 +441,9 @@ void workloadCaptureResult(std::uint64_t ordinal, void *base,
     return;
   }
   WorkloadCaptureActiveCall &active = context.activeCalls.back();
-  context.result.calls[active.captureIndex].valueResults.push_back(
+  if (!reserveWorkloadCaptureBytes(context, active, byteCount))
+    return;
+  context.captures[active.captureIndex]->valueResults.push_back(
       readWorkloadCaptureValue(base, context.valueResultShapes[ordinal],
                                context.littleEndian));
   ++active.nextResult;
@@ -449,21 +459,46 @@ void workloadCaptureEnd() {
     return;
   }
   WorkloadCaptureActiveCall &active = context.activeCalls.back();
-  if (active.nextRoot != context.rootCount ||
+  if (active.nextCoordinate != context.coordinateShapes.size() ||
+      active.nextRoot != context.rootCount ||
       active.nextValue != context.runtimeValueShapes.size() ||
       active.nextResult != context.valueResultShapes.size()) {
     recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
                                "capture end observed an incomplete boundary");
     return;
   }
-  NativeSimulationCallCapture &capture =
-      context.result.calls[active.captureIndex];
+  NativeSimulationCallCapture &capture = *context.captures[active.captureIndex];
   for (auto [ordinal, base] : llvm::enumerate(active.objectBases)) {
     const std::uint64_t runtimeOrdinal = active.runtimeObjectOrdinals[ordinal];
+    if (!reserveWorkloadCaptureBytes(
+            context, active, context.runtimeObjects[runtimeOrdinal].second))
+      return;
     copyWorkloadCaptureBytes(capture.objects[ordinal].finalBytes, base,
                              context.runtimeObjects[runtimeOrdinal].second);
   }
+  if (context.visitor) {
+    if (llvm::Error error = (*context.visitor)(std::move(capture))) {
+      std::error_code code;
+      std::string message;
+      llvm::raw_string_ostream stream(message);
+      llvm::handleAllErrors(std::move(error),
+                            [&](const llvm::ErrorInfoBase &failure) {
+                              code = failure.convertToErrorCode();
+                              failure.log(stream);
+                            });
+      stream.flush();
+      recordWorkloadCaptureError(
+          code ? code : std::make_error_code(std::errc::io_error), message);
+    }
+    context.retainedBytes -= active.retainedBytes;
+  } else {
+    recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
+                               "workload capture has no streaming consumer");
+  }
+  context.captures[active.captureIndex].reset();
   context.activeCalls.pop_back();
+  while (!context.captures.empty() && !context.captures.back())
+    context.captures.pop_back();
 }
 
 std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
@@ -472,74 +507,6 @@ std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
   while (module.getNamedValue(candidate))
     candidate = (prefix + "." + llvm::Twine(++suffix)).str();
   return candidate;
-}
-
-std::string uniqueMlirSymbolName(mlir::ModuleOp module,
-                                 llvm::StringRef prefix) {
-  std::string candidate = prefix.str();
-  std::uint64_t suffix = 0;
-  while (mlir::SymbolTable::lookupSymbolIn(module, candidate))
-    candidate = (prefix + "." + llvm::Twine(++suffix)).str();
-  return candidate;
-}
-
-mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
-  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
-  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(owner);
-  if (!function && owner)
-    function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  return function && !function.getBody().empty() ? function
-                                                 : mlir::LLVM::LLVMFuncOp{};
-}
-
-llvm::Expected<std::string>
-instrumentBlockActivations(mlir::ModuleOp module,
-                           const ArtifactIdentity &identity,
-                           NativeExecutionContext &capture) {
-  llvm::Expected<frontend::StructuredProgramCandidateView> view =
-      frontend::buildStructuredProgramCandidateView(module, identity);
-  if (!view)
-    return view.takeError();
-
-  struct ProfileSite {
-    frontend::StructuredEntityRef reference;
-    mlir::Block *block = nullptr;
-  };
-  std::vector<ProfileSite> sites;
-  for (const frontend::StructuredEntity &entity :
-       view->entities(frontend::StructuredEntityKind::Block)) {
-    if (enclosingDefinedLlvmFunction(entity.block))
-      sites.push_back({entity.reference, entity.block});
-  }
-
-  const std::string callbackName =
-      uniqueMlirSymbolName(module, "__loom_structured_block_activation");
-  mlir::OpBuilder declarations(module.getContext());
-  declarations.setInsertionPointToStart(module.getBody());
-  const mlir::Type i64 = declarations.getI64Type();
-  const mlir::Type callbackType = mlir::LLVM::LLVMFunctionType::get(
-      mlir::LLVM::LLVMVoidType::get(module.getContext()), {i64});
-  mlir::LLVM::LLVMFuncOp::create(declarations, module.getLoc(), callbackName,
-                                 callbackType);
-
-  capture.profileBlocks.reserve(sites.size());
-  capture.blockActivationCounts.assign(sites.size(), 0);
-  for (auto [ordinal, site] : llvm::enumerate(sites)) {
-    capture.profileBlocks.push_back(site.reference);
-    mlir::OpBuilder builder(module.getContext());
-    builder.setInsertionPointToStart(site.block);
-    const mlir::Location location =
-        site.block->empty() ? module.getLoc() : site.block->front().getLoc();
-    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
-        builder, location, i64, builder.getI64IntegerAttr(ordinal));
-    mlir::LLVM::CallOp::create(builder, location, mlir::TypeRange{},
-                               callbackName, mlir::ValueRange{ordinalValue});
-  }
-  if (mlir::failed(mlir::verify(module)))
-    return unsupported(
-        "native block activation provider cannot instrument this Structured "
-        "control form");
-  return callbackName;
 }
 
 struct ProgramObjectCaptureSite final {
@@ -675,17 +642,29 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     return invalid("selected capture boundary is not owned by its module");
   auto selectedFunction =
       llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(selectedOperation);
+  auto selectedForall = llvm::dyn_cast<mlir::scf::ForallOp>(selectedOperation);
+  auto selectedThread =
+      selectedOperation->getParentOfType<dataflow::ThreadOp>();
   auto callable =
       selectedFunction
           ? selectedFunction
           : selectedOperation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  if (!callable || callable.getBody().empty())
-    return invalid("selected capture boundary has no LLVM callable");
+  mlir::Block *captureEntry = nullptr;
+  if (callable && !callable.getBody().empty())
+    captureEntry = &callable.getBody().front();
+  else if (selectedThread && !selectedThread.getBody().empty())
+    captureEntry = &selectedThread.getBody().front();
+  if (!captureEntry)
+    return invalid("selected capture boundary has no executable owner");
   if (selectedFunction && !callable.getBody().hasOneBlock())
     return unsupported(
         "workload-backed callable capture requires one structured block");
 
-  auto objectSites = collectProgramObjectCaptureSites(module);
+  llvm::Expected<std::vector<ProgramObjectCaptureSite>> objectSites =
+      plan.memoryRoots.empty()
+          ? llvm::Expected<std::vector<ProgramObjectCaptureSite>>(
+                std::vector<ProgramObjectCaptureSite>{})
+          : collectProgramObjectCaptureSites(module);
   if (!objectSites)
     return objectSites.takeError();
 
@@ -711,6 +690,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (!objectSites->empty())
     names.registerObject =
         uniqueMlirSymbolName(module, "__loom_workload_capture_register_object");
+  if (!plan.denseCoordinates.empty())
+    names.coordinate =
+        uniqueMlirSymbolName(module, "__loom_workload_capture_coordinate");
   if (!plan.memoryRoots.empty())
     names.memoryRoot =
         uniqueMlirSymbolName(module, "__loom_workload_capture_memory_root");
@@ -729,6 +711,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (names.registerObject)
     mlir::LLVM::LLVMFuncOp::create(
         declarations, location, *names.registerObject, objectRegistrationType);
+  if (names.coordinate)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.coordinate,
+                                   valueType);
   if (names.memoryRoot)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.memoryRoot,
                                    memoryRootType);
@@ -770,7 +755,7 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   }
 
   mlir::OpBuilder storage(context);
-  storage.setInsertionPointToStart(&callable.getBody().front());
+  storage.setInsertionPointToStart(captureEntry);
   mlir::Value one;
   mlir::Operation *lastStorage = nullptr;
   auto allocateSlot = [&](mlir::Type type) {
@@ -785,15 +770,65 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     lastStorage = slot.getDefiningOp();
     return slot;
   };
+  auto storageTypeFor =
+      [&](mlir::Type semanticType,
+          std::uint64_t byteCount) -> llvm::Expected<mlir::Type> {
+    if (!semanticType.isIndex())
+      return semanticType;
+    if (byteCount == 0 || byteCount > std::numeric_limits<unsigned>::max() / 8)
+      return invalid("index capture has no finite storage width");
+    return mlir::IntegerType::get(context,
+                                  static_cast<unsigned>(byteCount * 8));
+  };
+  auto valueForStorage =
+      [&](mlir::OpBuilder &builder, mlir::Value value,
+          mlir::Type storageType) -> llvm::Expected<mlir::Value> {
+    if (value.getType() == storageType)
+      return value;
+    if (value.getType().isIndex() && llvm::isa<mlir::IntegerType>(storageType))
+      return mlir::arith::IndexCastOp::create(builder, location, storageType,
+                                              value)
+          .getResult();
+    return invalid("capture value has no exact LLVM storage projection");
+  };
 
+  std::vector<mlir::Value> coordinateSlots;
+  std::vector<mlir::Type> coordinateStorageTypes;
+  coordinateSlots.reserve(plan.denseCoordinates.size());
+  coordinateStorageTypes.reserve(plan.denseCoordinates.size());
+  for (const WorkloadBackedDenseCoordinateCapture &coordinate :
+       plan.denseCoordinates) {
+    auto storageType = storageTypeFor(coordinate.boundaryValue.getType(),
+                                      coordinate.byteCount);
+    if (!storageType)
+      return storageType.takeError();
+    coordinateStorageTypes.push_back(*storageType);
+    coordinateSlots.push_back(allocateSlot(*storageType));
+  }
   std::vector<mlir::Value> inputSlots(plan.valueInputs.size());
-  for (auto [ordinal, input] : llvm::enumerate(plan.valueInputs))
-    if (!input.fixedValue)
-      inputSlots[ordinal] = allocateSlot(input.boundaryValue.getType());
+  std::vector<mlir::Type> inputStorageTypes(plan.valueInputs.size());
+  for (auto [ordinal, input] : llvm::enumerate(plan.valueInputs)) {
+    if (input.fixedValue)
+      continue;
+    auto storageType =
+        storageTypeFor(input.boundaryValue.getType(), input.byteCount);
+    if (!storageType)
+      return storageType.takeError();
+    inputStorageTypes[ordinal] = *storageType;
+    inputSlots[ordinal] = allocateSlot(*storageType);
+  }
   std::vector<mlir::Value> resultSlots;
+  std::vector<mlir::Type> resultStorageTypes;
   resultSlots.reserve(plan.valueResults.size());
-  for (const SimulationValueResultCapture &result : plan.valueResults)
-    resultSlots.push_back(allocateSlot(result.boundaryValue.getType()));
+  resultStorageTypes.reserve(plan.valueResults.size());
+  for (const SimulationValueResultCapture &result : plan.valueResults) {
+    auto storageType =
+        storageTypeFor(result.boundaryValue.getType(), result.byteCount);
+    if (!storageType)
+      return storageType.takeError();
+    resultStorageTypes.push_back(*storageType);
+    resultSlots.push_back(allocateSlot(*storageType));
+  }
 
   mlir::OpBuilder before(context);
   if (selectedFunction) {
@@ -807,6 +842,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     };
     for (const SimulationValueInputCapture &input : plan.valueInputs)
       includePrelude(input.boundaryValue.getDefiningOp());
+    for (const WorkloadBackedDenseCoordinateCapture &coordinate :
+         plan.denseCoordinates)
+      includePrelude(coordinate.boundaryValue.getDefiningOp());
     for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
       includePrelude(root.boundaryPointer.getDefiningOp());
       mlir::Value base = programObjectBase(root.boundaryPointer);
@@ -820,11 +858,56 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       before.setInsertionPointAfter(lastPrelude);
     else
       before.setInsertionPointToStart(entry);
+  } else if (selectedForall) {
+    mlir::Operation *lastPrelude = nullptr;
+    mlir::Block *body = selectedForall.getBody();
+    auto includePrelude = [&](mlir::Operation *operation) {
+      if (!operation || operation->getBlock() != body)
+        return;
+      if (!lastPrelude || lastPrelude->isBeforeInBlock(operation))
+        lastPrelude = operation;
+    };
+    for (const SimulationValueInputCapture &input : plan.valueInputs)
+      includePrelude(input.boundaryValue.getDefiningOp());
+    for (const WorkloadBackedDenseCoordinateCapture &coordinate :
+         plan.denseCoordinates)
+      includePrelude(coordinate.boundaryValue.getDefiningOp());
+    for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
+      includePrelude(root.boundaryPointer.getDefiningOp());
+      mlir::Value base = programObjectBase(root.boundaryPointer);
+      if (!base)
+        continue;
+      for (const ProgramObjectCaptureSite &site : *objectSites)
+        if (site.base == base)
+          includePrelude(site.registration);
+    }
+    if (lastPrelude)
+      before.setInsertionPointAfter(lastPrelude);
+    else
+      before.setInsertionPointToStart(body);
   } else {
     before.setInsertionPoint(selectedOperation);
   }
   mlir::LLVM::CallOp::create(before, location, mlir::TypeRange{}, names.begin,
                              mlir::ValueRange{});
+  for (auto [ordinal, coordinate] : llvm::enumerate(plan.denseCoordinates)) {
+    if (!names.coordinate || !coordinate.boundaryValue ||
+        coordinate.dimension != ordinal || coordinate.byteCount == 0)
+      return invalid("dense coordinate has no finite selected boundary");
+    auto storageValue = valueForStorage(before, coordinate.boundaryValue,
+                                        coordinateStorageTypes[ordinal]);
+    if (!storageValue)
+      return storageValue.takeError();
+    mlir::LLVM::StoreOp::create(before, location, *storageValue,
+                                coordinateSlots[ordinal]);
+    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+        before, location, i64, before.getI64IntegerAttr(ordinal));
+    mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
+        before, location, i64, before.getI64IntegerAttr(coordinate.byteCount));
+    mlir::LLVM::CallOp::create(
+        before, location, mlir::TypeRange{}, *names.coordinate,
+        mlir::ValueRange{ordinalValue, coordinateSlots[ordinal], byteCount});
+  }
   for (auto [ordinal, root] : llvm::enumerate(plan.memoryRoots)) {
     if (!names.memoryRoot || !root.boundaryPointer ||
         !llvm::isa<mlir::LLVM::LLVMPointerType>(root.boundaryPointer.getType()))
@@ -841,7 +924,11 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       continue;
     if (!names.value || !input.boundaryValue || input.byteCount == 0)
       return invalid("runtime graph input has no finite selected boundary");
-    mlir::LLVM::StoreOp::create(before, location, input.boundaryValue,
+    auto storageValue = valueForStorage(before, input.boundaryValue,
+                                        inputStorageTypes[ordinal]);
+    if (!storageValue)
+      return storageValue.takeError();
+    mlir::LLVM::StoreOp::create(before, location, *storageValue,
                                 inputSlots[ordinal]);
     mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
         before, location, i64, before.getI64IntegerAttr(runtimeOrdinal));
@@ -857,7 +944,11 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
       if (!names.result || !result.boundaryValue || result.byteCount == 0)
         return invalid("graph result has no finite selected boundary");
-      mlir::LLVM::StoreOp::create(after, location, result.boundaryValue,
+      auto storageValue = valueForStorage(after, result.boundaryValue,
+                                          resultStorageTypes[ordinal]);
+      if (!storageValue)
+        return storageValue.takeError();
+      mlir::LLVM::StoreOp::create(after, location, *storageValue,
                                   resultSlots[ordinal]);
       mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
           after, location, i64, after.getI64IntegerAttr(ordinal));
@@ -879,6 +970,10 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       return unsupported(
           "workload-backed callable capture has no direct return");
     mlir::OpBuilder after(returnOp);
+    if (llvm::Error error = emitResultsAndEnd(after))
+      return std::move(error);
+  } else if (selectedForall) {
+    mlir::OpBuilder after(selectedForall.getTerminator());
     if (llvm::Error error = emitResultsAndEnd(after))
       return std::move(error);
   } else {
@@ -1048,48 +1143,6 @@ llvm::Expected<std::uint64_t> fixedStoreBytes(const llvm::DataLayout &layout,
   return size.getFixedValue();
 }
 
-std::vector<SemanticMemoryByte>
-definedSemanticBytes(llvm::ArrayRef<std::uint8_t> bytes) {
-  std::vector<SemanticMemoryByte> result;
-  result.reserve(bytes.size());
-  for (std::uint8_t byte : bytes)
-    result.push_back({SemanticState::Defined, byte});
-  return result;
-}
-
-bool sameByte(const SemanticMemoryByte &lhs, const SemanticMemoryByte &rhs) {
-  return lhs.state == rhs.state &&
-         (lhs.state != SemanticState::Defined || lhs.value == rhs.value);
-}
-
-MemoryObservationPayload
-makeMemoryObservation(MemoryObservationForm form,
-                      llvm::ArrayRef<SemanticMemoryByte> baseline,
-                      llvm::ArrayRef<std::uint8_t> finalBytes) {
-  std::vector<SemanticMemoryByte> final = definedSemanticBytes(finalBytes);
-  if (form == MemoryObservationForm::FullState)
-    return FullMemoryObservation{std::move(final)};
-
-  DiffMemoryObservation diff;
-  diff.byteCount = final.size();
-  std::uint64_t offset = 0;
-  while (offset < final.size()) {
-    if (sameByte(baseline[offset], final[offset])) {
-      ++offset;
-      continue;
-    }
-    MemoryDiffRun run;
-    run.byteOffset = offset;
-    do {
-      run.changedBytes.push_back(final[offset]);
-      ++offset;
-    } while (offset < final.size() &&
-             !sameByte(baseline[offset], final[offset]));
-    diff.runs.push_back(std::move(run));
-  }
-  return diff;
-}
-
 llvm::Expected<std::vector<MemoryTargetPlan>>
 buildMemoryPlans(const StructuredProgramSimulationWorkload &workload,
                  const StructuredProgramSimulationRuntimeInput &input,
@@ -1132,6 +1185,7 @@ buildMemoryPlans(const StructuredProgramSimulationWorkload &workload,
 struct CallbackNames {
   std::string wrapper;
   std::string runtimeObject;
+  std::optional<std::string> invalidThreadExtent;
   std::optional<std::string> blockActivation;
   std::optional<std::string> returnValue;
   std::optional<std::string> globalBefore;
@@ -1301,13 +1355,27 @@ llvm::Expected<CallbackNames> instrumentExecution(
 
 llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
     const WorkloadBackedSimulationInputCapturePlan &plan,
-    NativeExecutionContext &execution) {
+    NativeExecutionContext &execution,
+    WorkloadBackedSimulationInputVisitor *visitor,
+    std::uint64_t maxRetainedBytes) {
   WorkloadCaptureContext capture;
+  capture.visitor = visitor;
+  capture.maxRetainedBytes = maxRetainedBytes;
   capture.rootCount = plan.memoryRoots.size();
   capture.littleEndian = execution.littleEndian;
   capture.runtimeObjects.reserve(execution.objects.size());
   for (AlignedByteStorage &object : execution.objects)
     capture.runtimeObjects.push_back({object.data(), object.size()});
+  capture.coordinateShapes.reserve(plan.denseCoordinates.size());
+  for (auto [dimension, coordinate] : llvm::enumerate(plan.denseCoordinates)) {
+    if (coordinate.dimension != dimension || coordinate.byteCount == 0 ||
+        coordinate.byteCount > std::numeric_limits<std::uint32_t>::max() / 8)
+      return invalid("dense coordinate capture is not canonical");
+    capture.coordinateShapes.push_back(WorkloadCaptureValueShape{
+        coordinate.dimension, 1,
+        static_cast<std::uint32_t>(coordinate.byteCount * 8),
+        coordinate.byteCount});
+  }
   for (const SimulationValueInputCapture &input : plan.valueInputs) {
     if (input.valueInputOrdinal >= plan.valueInputs.size())
       return invalid("graph value input ordinal is outside its capture plan");
@@ -1348,6 +1416,10 @@ llvm::Error runInstrumentedExecution(
   callbacks[jit->mangleAndIntern(names.runtimeObject)] = {
       llvm::orc::ExecutorAddr::fromPtr(&nativeRuntimeObject),
       llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.invalidThreadExtent)
+    callbacks[jit->mangleAndIntern(*names.invalidThreadExtent)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeInvalidLogicalThreadExtent),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   if (names.blockActivation)
     callbacks[jit->mangleAndIntern(*names.blockActivation)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeBlockActivation),
@@ -1374,6 +1446,10 @@ llvm::Error runInstrumentedExecution(
     if (workloadCaptureNames->registerObject)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->registerObject)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureRegisterObject),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->coordinate)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->coordinate)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureCoordinate),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
     if (workloadCaptureNames->memoryRoot)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->memoryRoot)] = {
@@ -1425,221 +1501,12 @@ llvm::Error runInstrumentedExecution(
     if (!workloadCapture->activeCalls.empty())
       return executionFailed(
           "workload-backed capture left an incomplete invocation");
-    workloadCapture->result.entryResult = 0;
   }
   return llvm::Error::success();
-}
-
-llvm::Expected<NativeStructuredProgramObservations>
-buildObservations(const StructuredProgramSimulationWorkload &workload,
-                  const StructuredProgramSimulationRuntimeInput &input,
-                  llvm::ArrayRef<MemoryTargetPlan> plans,
-                  const NativeExecutionContext &capture) {
-  NativeStructuredProgramObservations result;
-  if (workload.observableContract.returnValue) {
-    if (!capture.returnValue)
-      return executionFailed("selected return value was not captured");
-    result.returnValue = capture.returnValue;
-  }
-  result.memories.reserve(plans.size());
-  for (std::uint64_t ordinal = 0; ordinal < plans.size(); ++ordinal) {
-    const MemoryTargetPlan &plan = plans[ordinal];
-    if (plan.objectOrdinal) {
-      const RuntimeMemoryObject &baseline =
-          input.memoryObjects[*plan.objectOrdinal];
-      const AlignedByteStorage &final = capture.objects[*plan.objectOrdinal];
-      result.memories.push_back(makeMemoryObservation(
-          plan.form, baseline.initialBytes,
-          llvm::ArrayRef<std::uint8_t>(final.data(), final.size())));
-      continue;
-    }
-    if (!capture.sawGlobalBefore[ordinal] || !capture.sawGlobalAfter[ordinal])
-      return executionFailed("selected global observation was not captured");
-    std::vector<SemanticMemoryByte> baseline =
-        definedSemanticBytes(capture.globalBefore[ordinal]);
-    result.memories.push_back(makeMemoryObservation(
-        plan.form, baseline, capture.globalAfter[ordinal]));
-  }
-  if (capture.profileBlocks.size() != capture.blockActivationCounts.size())
-    return executionFailed("block activation projection is inconsistent");
-  result.blockActivations.reserve(capture.profileBlocks.size());
-  for (std::size_t ordinal = 0; ordinal < capture.profileBlocks.size();
-       ++ordinal)
-    result.blockActivations.push_back({capture.profileBlocks[ordinal],
-                                       capture.blockActivationCounts[ordinal]});
-  return result;
-}
-
-llvm::Error inlineSpatialOwnershipCarriers(mlir::ModuleOp module) {
-  llvm::SmallVector<loom::SpatialRegionOp> regions;
-  module.walk([&](loom::SpatialRegionOp region) { regions.push_back(region); });
-  for (loom::SpatialRegionOp region : llvm::reverse(regions)) {
-    if (!region.getStreamInputs().empty() || !region.getStreamOutputs().empty())
-      return unsupported(
-          "native selected execution does not support stream ownership "
-          "carriers");
-    if (!region.getBody().hasOneBlock())
-      return invalid("selected spatial ownership carrier is not single-block");
-    mlir::Block &body = region.getBody().front();
-    auto yield = llvm::dyn_cast<loom::SpatialYieldOp>(body.getTerminator());
-    if (!yield)
-      return invalid("selected spatial ownership carrier has no typed yield");
-    if (body.getNumArguments() != region->getNumOperands() ||
-        yield->getNumOperands() != region->getNumResults())
-      return invalid("selected spatial ownership carrier boundary is not "
-                     "positional");
-
-    mlir::IRMapping mapping;
-    for (auto [argument, operand] :
-         llvm::zip_equal(body.getArguments(), region->getOperands()))
-      mapping.map(argument, operand);
-    mlir::OpBuilder builder(region);
-    for (mlir::Operation &operation : body.without_terminator())
-      builder.clone(operation, mapping);
-
-    llvm::SmallVector<mlir::Value> results;
-    results.reserve(yield->getNumOperands());
-    for (mlir::Value value : yield->getOperands())
-      results.push_back(mapping.lookupOrDefault(value));
-    region->replaceAllUsesWith(results);
-    region.erase();
-  }
-  return llvm::Error::success();
-}
-
-llvm::Error inlineRankZeroThreadOwnershipCarriers(mlir::ModuleOp module) {
-  llvm::SmallVector<dataflow::ThreadLaunchOp> launches;
-  module.walk(
-      [&](dataflow::ThreadLaunchOp launch) { launches.push_back(launch); });
-  for (dataflow::ThreadLaunchOp launch : launches) {
-    if (!launch.getGridUpperBounds().empty())
-      return unsupported(
-          "native selected execution does not yet project a dense thread "
-          "domain");
-    if (!launch.getAsyncDependencies().empty())
-      return unsupported(
-          "native selected execution does not project asynchronous thread "
-          "dependencies");
-    if (!launch.getAsyncToken().hasOneUse())
-      return unsupported(
-          "native selected execution requires one exact thread wait");
-    auto wait = llvm::dyn_cast<dataflow::ThreadWaitOp>(
-        *launch.getAsyncToken().getUsers().begin());
-    if (!wait || wait->getNumOperands() != 1 ||
-        launch->getNextNode() != wait.getOperation())
-      return unsupported(
-          "native selected execution requires an immediately joined thread "
-          "launch");
-
-    auto thread =
-        mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
-            launch, launch.getCalleeAttr());
-    if (!thread || thread.isExternal())
-      return invalid("selected thread launch has no exact definition");
-    if (thread.getDomain().getKind() !=
-        dataflow::ThreadDomainKind::DenseRectangular)
-      return unsupported(
-          "native selected execution does not support dynamic-work threads");
-    mlir::Block &body = thread.getBody().front();
-    const std::size_t inputCount = thread.getFunctionType().getNumInputs();
-    if (body.getNumArguments() != inputCount + 1 ||
-        launch.getBodyOperands().size() != inputCount)
-      return invalid("selected rank-zero thread boundary is malformed");
-    if (!body.getArgument(inputCount).use_empty())
-      return unsupported(
-          "native selected execution cannot erase a used thread control "
-          "token");
-    auto yield = llvm::dyn_cast<dataflow::ThreadYieldOp>(body.getTerminator());
-    if (!yield || !yield.getCompletionFrontier().empty())
-      return unsupported(
-          "native selected execution cannot erase a completion frontier");
-
-    mlir::IRMapping mapping;
-    for (auto [argument, operand] :
-         llvm::zip_equal(body.getArguments().take_front(inputCount),
-                         launch.getBodyOperands()))
-      mapping.map(argument, operand);
-    mlir::OpBuilder builder(launch);
-    for (mlir::Operation &operation : body.without_terminator())
-      builder.clone(operation, mapping);
-    wait.erase();
-    launch.erase();
-  }
-
-  bool residualLaunch = false;
-  module.walk([&](dataflow::ThreadLaunchOp) { residualLaunch = true; });
-  if (residualLaunch)
-    return invalid("selected thread projection left a residual launch");
-  llvm::SmallVector<dataflow::ThreadOp> threads;
-  module.walk([&](dataflow::ThreadOp thread) { threads.push_back(thread); });
-  for (dataflow::ThreadOp thread : threads)
-    thread.erase();
-  return llvm::Error::success();
-}
-
-llvm::Error projectSelectedWholeProgram(mlir::ModuleOp module) {
-  if (llvm::Error error = inlineSpatialOwnershipCarriers(module))
-    return error;
-  if (llvm::Error error = inlineRankZeroThreadOwnershipCarriers(module))
-    return error;
-  bool residualCarrier = false;
-  module.walk([&](mlir::Operation *operation) {
-    residualCarrier |=
-        llvm::isa<loom::SpatialRegionOp, loom::SpatialYieldOp,
-                  dataflow::ThreadOp, dataflow::ThreadLaunchOp,
-                  dataflow::ThreadWaitOp, dataflow::ThreadYieldOp>(operation);
-  });
-  if (residualCarrier)
-    return invalid("selected whole-program projection left an ownership "
-                   "carrier");
-  if (mlir::failed(mlir::verify(module)))
-    return invalid("selected whole-program projection does not verify");
-  return llvm::Error::success();
-}
-
-bool sameLane(const SemanticLane &lhs, const SemanticLane &rhs) {
-  return lhs.state == rhs.state &&
-         (lhs.state != SemanticState::Defined || lhs.bits == rhs.bits);
-}
-
-bool sameValueSequence(const CanonicalValueSequence &lhs,
-                       const CanonicalValueSequence &rhs) {
-  return lhs.tokenCount == rhs.tokenCount &&
-         lhs.lanes.size() == rhs.lanes.size() &&
-         llvm::equal(lhs.lanes, rhs.lanes, sameLane);
-}
-
-bool sameMemoryByte(const SemanticMemoryByte &lhs,
-                    const SemanticMemoryByte &rhs) {
-  return lhs.state == rhs.state &&
-         (lhs.state != SemanticState::Defined || lhs.value == rhs.value);
-}
-
-bool sameMemoryObservation(const MemoryObservationPayload &lhs,
-                           const MemoryObservationPayload &rhs) {
-  if (lhs.index() != rhs.index())
-    return false;
-  if (const auto *lhsFull = std::get_if<FullMemoryObservation>(&lhs)) {
-    const auto &rhsFull = std::get<FullMemoryObservation>(rhs);
-    return lhsFull->bytes.size() == rhsFull.bytes.size() &&
-           llvm::equal(lhsFull->bytes, rhsFull.bytes, sameMemoryByte);
-  }
-  const auto &lhsDiff = std::get<DiffMemoryObservation>(lhs);
-  const auto &rhsDiff = std::get<DiffMemoryObservation>(rhs);
-  if (lhsDiff.byteCount != rhsDiff.byteCount ||
-      lhsDiff.runs.size() != rhsDiff.runs.size())
-    return false;
-  for (auto [left, right] : llvm::zip_equal(lhsDiff.runs, rhsDiff.runs))
-    if (left.byteOffset != right.byteOffset ||
-        left.changedBytes.size() != right.changedBytes.size() ||
-        !llvm::equal(left.changedBytes, right.changedBytes, sameMemoryByte))
-      return false;
-  return true;
 }
 
 struct NativeProgramExecutionResult final {
   NativeStructuredProgramObservations observations;
-  std::optional<NativeSimulationInputCapture> boundaryCapture;
 };
 
 llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
@@ -1649,13 +1516,18 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     bool profileSourceBlocks, bool projectOwnership,
     mlir::Operation *selectedOperation = nullptr,
-    const WorkloadBackedSimulationInputCapturePlan *capturePlan = nullptr) {
+    const WorkloadBackedSimulationInputCapturePlan *capturePlan = nullptr,
+    WorkloadBackedSimulationInputVisitor *captureVisitor = nullptr,
+    std::uint64_t maxRetainedCaptureBytes =
+        std::numeric_limits<std::uint64_t>::max()) {
   if (!module)
     return invalid("native execution has no Structured module");
   if ((selectedOperation == nullptr) != (capturePlan == nullptr))
     return invalid("workload-backed capture plan is partial");
-  if (projectOwnership && capturePlan)
-    return invalid("capture cannot instrument a projected ownership carrier");
+  if ((captureVisitor == nullptr) != (capturePlan == nullptr))
+    return invalid("workload-backed capture requires one streaming visitor");
+  if (capturePlan && maxRetainedCaptureBytes == 0)
+    return invalid("workload-backed capture byte limit must be positive");
   const StructuredProgramSimulationWorkload *structured =
       workload.structuredProgram();
   const StructuredProgramSimulationRuntimeInput *input =
@@ -1686,9 +1558,6 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
   if (!plans)
     return plans.takeError();
 
-  if (projectOwnership)
-    if (llvm::Error error = projectSelectedWholeProgram(*module))
-      return std::move(error);
   NativeExecutionContext capture;
   std::optional<WorkloadCaptureCallbackNames> workloadCaptureNames;
   if (capturePlan) {
@@ -1697,6 +1566,13 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
     if (!names)
       return names.takeError();
     workloadCaptureNames.emplace(std::move(*names));
+  }
+  std::optional<std::string> invalidThreadExtent;
+  if (projectOwnership) {
+    auto projection = projectSelectedWholeProgram(*module);
+    if (!projection)
+      return projection.takeError();
+    invalidThreadExtent = std::move(*projection);
   }
   std::optional<std::string> blockActivation;
   if (profileSourceBlocks) {
@@ -1730,9 +1606,11 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
         if (!names)
           return names.takeError();
         callbackNames = std::move(*names);
+        callbackNames.invalidThreadExtent = std::move(invalidThreadExtent);
         callbackNames.blockActivation = std::move(blockActivation);
         if (capturePlan) {
-          auto prepared = prepareWorkloadCaptureContext(*capturePlan, capture);
+          auto prepared = prepareWorkloadCaptureContext(
+              *capturePlan, capture, captureVisitor, maxRetainedCaptureBytes);
           if (!prepared)
             return prepared.takeError();
           workloadCapture.emplace(std::move(*prepared));
@@ -1749,10 +1627,7 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
   auto observations = buildObservations(*structured, *input, *plans, capture);
   if (!observations)
     return observations.takeError();
-  NativeProgramExecutionResult result{std::move(*observations), std::nullopt};
-  if (workloadCapture)
-    result.boundaryCapture.emplace(std::move(workloadCapture->result));
-  return result;
+  return NativeProgramExecutionResult{std::move(*observations)};
 }
 
 llvm::Expected<NativeStructuredProgramObservations>
@@ -1795,39 +1670,39 @@ executeSelectedStructuredProgram(
                               runtimeInput, false, true);
 }
 
-llvm::Expected<NativeSimulationInputCapture>
-executeWorkloadBackedSimulationInputCapture(
+llvm::Error visitWorkloadBackedSimulationInputCaptures(
     mlir::OwningOpRef<mlir::ModuleOp> preparedModule,
     mlir::Operation *selectedOperation,
     const WorkloadBackedSimulationInputCapturePlan &plan,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput) {
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxRetainedCaptureBytes,
+    WorkloadBackedSimulationInputVisitor visitor) {
   auto result = executePreparedProgramModule(
       std::move(preparedModule), sourceProgram, workload, runtimeInput, false,
-      false, selectedOperation, &plan);
+      false, selectedOperation, &plan, &visitor, maxRetainedCaptureBytes);
   if (!result)
     return result.takeError();
-  if (!result->boundaryCapture)
-    return executionFailed("workload-backed capture produced no result");
-  return std::move(*result->boundaryCapture);
-}
-
-bool haveEquivalentFunctionalObservations(
-    const NativeStructuredProgramObservations &reference,
-    const NativeStructuredProgramObservations &candidate) {
-  if (reference.returnValue.has_value() != candidate.returnValue.has_value())
-    return false;
-  if (reference.returnValue &&
-      !sameValueSequence(*reference.returnValue, *candidate.returnValue))
-    return false;
-  if (reference.memories.size() != candidate.memories.size())
-    return false;
-  for (auto [left, right] :
-       llvm::zip_equal(reference.memories, candidate.memories))
-    if (!sameMemoryObservation(left, right))
-      return false;
-  return true;
+  return llvm::Error::success();
 }
 
 } // namespace loom::sim
+
+llvm::Error
+loom::sim::native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+    mlir::OwningOpRef<mlir::ModuleOp> selectedModule,
+    mlir::Operation *selectedOperation,
+    const WorkloadBackedSimulationInputCapturePlan &plan,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxRetainedCaptureBytes,
+    WorkloadBackedSimulationInputVisitor visitor) {
+  auto result = executePreparedProgramModule(
+      std::move(selectedModule), sourceProgram, workload, runtimeInput, false,
+      true, selectedOperation, &plan, &visitor, maxRetainedCaptureBytes);
+  if (!result)
+    return result.takeError();
+  return llvm::Error::success();
+}
