@@ -18,6 +18,7 @@ add_library(LoomEvaluation
   Request.cpp
   RequestText.cpp
   Scope.cpp
+  StandardFindings.cpp
   ToolRunner.cpp
 )
 

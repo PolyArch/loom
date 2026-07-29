@@ -2,6 +2,7 @@ add_library(LoomStructuredFabricAnalyticModel
   AnalyticModelSupport.cpp
   CanonicalDataflowFabricAnalytic.cpp
   StructuredFabricAnalytic.cpp
+  StructuredProgramFunctional.cpp
 )
 
 target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC

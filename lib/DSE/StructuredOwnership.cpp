@@ -5,6 +5,7 @@
 #include "Common/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
+#include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -13,6 +14,7 @@
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -41,6 +43,14 @@ struct MaterializedOwnershipWorkItem final {
 using OwnershipAttemptResult =
     std::variant<MaterializedOwnershipWorkItem,
                  StructuredOwnershipCandidateRejectionRecord>;
+
+void mergeEvidenceReferences(std::vector<ArtifactRootReference> &destination,
+                             llvm::ArrayRef<ArtifactRootReference> additional) {
+  destination.insert(destination.end(), additional.begin(), additional.end());
+  llvm::sort(destination, artifactRootReferenceLess);
+  destination.erase(std::unique(destination.begin(), destination.end()),
+                    destination.end());
+}
 
 llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const frontend::StructuredProgramCandidate &parent,
@@ -98,6 +108,9 @@ generateAndPromoteStructuredOwnership(
     return invalid("candidate worker count must be positive");
   if (llvm::Error error =
           evaluation::models::registerStructuredFabricAnalyticModel())
+    return std::move(error);
+  if (llvm::Error error =
+          evaluation::models::registerStructuredProgramFunctionalModel())
     return std::move(error);
 
   std::vector<ArtifactRootReference> candidateReferences;
@@ -253,39 +266,100 @@ generateAndPromoteStructuredOwnership(
   if (!candidateSet)
     return candidateSet.takeError();
 
-  std::vector<PromotionEvidence> evidence;
-  evidence.reserve(candidateSet->candidates().size());
-  std::optional<evaluation::CaseSubjectRoleRef> candidateRole;
+  std::vector<PromotionEvidence> functionalEvidence;
+  functionalEvidence.reserve(candidateSet->candidates().size());
+  std::optional<evaluation::CaseSubjectRoleRef> functionalCandidateRole;
+  std::optional<evaluation::FindingRequestOrdinal> functionalMismatchRequest;
   for (const ArtifactRootReference &candidate : candidateSet->candidates()) {
+    auto prepared =
+        evaluation::models::prepareStructuredProgramFunctionalEvaluation(
+            candidate, *workloadReference, *runtimeInputReference, config,
+            artifactStore);
+    if (!prepared)
+      return prepared.takeError();
+    if (functionalCandidateRole &&
+        *functionalCandidateRole != prepared->candidateRole)
+      return invalid(
+          "functional model changed its candidate role across obligations");
+    functionalCandidateRole = prepared->candidateRole;
+    if (functionalMismatchRequest &&
+        *functionalMismatchRequest != prepared->functionalMismatchRequest)
+      return invalid("functional model changed its finding request across "
+                     "obligations");
+    functionalMismatchRequest = prepared->functionalMismatchRequest;
+    auto result = evaluation::evaluateRequest(
+        prepared->request, prepared->resolution, artifactStore);
+    if (!result)
+      return result.takeError();
+    functionalEvidence.push_back(
+        {std::move(prepared->request), std::move(*result)});
+  }
+  if (!functionalCandidateRole || !functionalMismatchRequest)
+    return invalid(
+        "nonempty candidate set produced no functional Evidence obligations");
+
+  auto semanticallyPromoted = promoteFindingAbsenceAllPassing(
+      *candidateSet, *functionalCandidateRole, functionalEvidence,
+      *functionalMismatchRequest, artifactStore);
+  if (!semanticallyPromoted)
+    return semanticallyPromoted.takeError();
+  if (const auto *incomplete =
+          std::get_if<IncompleteSelection>(&*semanticallyPromoted))
+    return StructuredOwnershipExplorationOutcome{*incomplete};
+  if (std::holds_alternative<CompletedNoFeasibleCandidate>(
+          *semanticallyPromoted))
+    return StructuredOwnershipExplorationOutcome{
+        CompletedNoFeasibleCandidate{}};
+  const auto &semanticSelection =
+      std::get<CompletedSelection>(*semanticallyPromoted);
+
+  auto passingCandidateSet = CandidateSet::get(
+      frontend::structuredProgramArtifactSchema, semanticSelection.selected);
+  if (!passingCandidateSet)
+    return passingCandidateSet.takeError();
+  std::vector<PromotionEvidence> costEvidence;
+  costEvidence.reserve(passingCandidateSet->candidates().size());
+  std::optional<evaluation::CaseSubjectRoleRef> costCandidateRole;
+  for (const ArtifactRootReference &candidate :
+       passingCandidateSet->candidates()) {
     auto prepared = evaluation::models::prepareStructuredFabricEvaluation(
         candidate, fabric.reference(), *workloadReference,
         *runtimeInputReference, config, artifactStore);
     if (!prepared)
       return prepared.takeError();
-    if (candidateRole && *candidateRole != prepared->candidateRole)
-      return invalid("model changed its candidate role across obligations");
-    candidateRole = prepared->candidateRole;
+    if (costCandidateRole && *costCandidateRole != prepared->candidateRole)
+      return invalid(
+          "cost model changed its candidate role across obligations");
+    costCandidateRole = prepared->candidateRole;
     auto result = evaluation::evaluateRequest(
         prepared->request, prepared->resolution, artifactStore);
     if (!result)
       return result.takeError();
-    evidence.push_back({std::move(prepared->request), std::move(*result)});
+    costEvidence.push_back({std::move(prepared->request), std::move(*result)});
   }
-  if (!candidateRole)
-    return invalid("nonempty candidate set produced no Evidence obligations");
+  if (!costCandidateRole)
+    return invalid(
+        "nonempty semantic selection produced no cost Evidence obligations");
 
   auto promoted = promoteMetricTopKAgainstBaseline(
-      *candidateSet, *candidateRole, *parentReference, evidence,
+      *passingCandidateSet, *costCandidateRole, *parentReference, costEvidence,
       options.selection, artifactStore);
   if (!promoted)
     return promoted.takeError();
-  if (const auto *incomplete = std::get_if<IncompleteSelection>(&*promoted))
-    return StructuredOwnershipExplorationOutcome{*incomplete};
+  if (const auto *incomplete = std::get_if<IncompleteSelection>(&*promoted)) {
+    IncompleteSelection combined = *incomplete;
+    mergeEvidenceReferences(combined.retainedEvidence,
+                            semanticSelection.satisfiedEvidence);
+    return StructuredOwnershipExplorationOutcome{std::move(combined)};
+  }
   if (std::holds_alternative<CompletedNoFeasibleCandidate>(*promoted))
     return StructuredOwnershipExplorationOutcome{
         CompletedNoFeasibleCandidate{}};
 
   const auto &selection = std::get<CompletedSelection>(*promoted);
+  std::vector<ArtifactRootReference> satisfiedEvidence =
+      semanticSelection.satisfiedEvidence;
+  mergeEvidenceReferences(satisfiedEvidence, selection.satisfiedEvidence);
   std::vector<SelectedStructuredOwnershipCandidate> selected;
   selected.reserve(selection.selected.size());
   for (const ArtifactRootReference &reference : selection.selected) {
@@ -314,7 +388,7 @@ generateAndPromoteStructuredOwnership(
   }
   return StructuredOwnershipExplorationOutcome{
       CompletedStructuredOwnershipSelection{std::move(selected),
-                                            selection.satisfiedEvidence,
+                                            std::move(satisfiedEvidence),
                                             std::move(dispositions)}};
 }
 

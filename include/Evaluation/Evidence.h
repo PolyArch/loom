@@ -124,6 +124,8 @@ struct NotApplicableFinding {
 using FindingResultValue =
     std::variant<AbsentFinding, PresentFinding, NotApplicableFinding>;
 
+FindingResultForm findingResultForm(const FindingResultValue &result);
+
 struct FindingResult {
   FindingResultValue result;
 };

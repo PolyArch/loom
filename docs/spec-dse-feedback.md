@@ -257,6 +257,32 @@ model at any point in the stack. The initial production profiles are:
 | hardware-only analysis | Fabric |
 | mapped or CGRA analysis | Canonical Dataflow Program, Fabric, Mapping |
 
+Schema 1.0 initially registers these exact pre-Mapping case signatures:
+
+| Case kind | Stable spelling | Ordered roles | Workload/runtime input |
+| --- | --- | --- | --- |
+| 0 | `structured_program_with_fabric` | `0: Structured Program Candidate`, `1: Fabric` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
+| 1 | `canonical_dataflow_with_fabric` | `0: Canonical Dataflow Program`, `1: Fabric` | both forbidden |
+| 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
+
+The matching initial model descriptors are:
+
+| Model kind | Stable spelling | Case kind | Capability |
+| --- | --- | --- | --- |
+| 2 | `structured_fabric_low_confidence` | 0 | deterministic Analytic point estimates for whole-case Runtime, limiting clock frequency, total area, dynamic power, and leakage power |
+| 3 | `canonical_dataflow_fabric_low_confidence` | 1 | the same deterministic Analytic metric set for a Canonical Dataflow/Fabric pair |
+| 4 | `structured_program_functional` | 2 | deterministic Simulation result for the whole-case `functional_mismatch` finding only |
+
+Model kinds 2 and 3 consume the exact shared low-confidence config-view
+contract. Model kind 4 consumes a distinct zero-field config view because its
+functional comparison has no cost-model parameters. Model kind 4 compares the
+candidate's selected whole-program native execution with the source execution
+owned by the exact workload/runtime pair. Exact Artifact identity is sufficient
+to establish equality for the unchanged source baseline; all other candidates
+must execute. Unsupported projection or execution capability produces typed
+`Unsupported`, provider failure produces typed `ExecutionFailed`, and only
+completed unequal observations produce `functional_mismatch = Present`.
+
 This table does not introduce a second case-kind enum or a generic optional
 subject bag. Every real model registers one exact
 `EvaluationCaseSignatureDescriptor` with ordered roles, accepted Artifact
@@ -856,6 +882,14 @@ Every candidate entering one comparison receives same-shaped Evidence
 obligations. A missing result is never interpreted as zero, infinity, or worst
 score. A candidate removed by an earlier resolved gate need not acquire later
 expensive Evidence, but runtime timing and cache state cannot alter gate order.
+
+An `AllPassing` node with a resolved `functional_mismatch` absence gate retains
+exactly candidates whose corresponding completed Finding result is `Absent`.
+`Present` is a completed adverse observation and removes that candidate;
+`NotApplicable` does not satisfy an absence gate. Missing, Unsupported,
+ExecutionFailed, or CancelledOrTimeout Evidence makes the promotion
+`Incomplete` rather than silently removing or accepting the candidate. The
+Evidence remains retained whether its candidate passes or fails.
 
 The Artifact store may maintain a removable index:
 

@@ -310,6 +310,18 @@ codec owned by Simulation Artifacts. The concrete witness instance is owned by
 the referenced `SimulationExecution`; Evidence never copies it. Nonterminal
 findings select their Finding-registry-owned inline occurrence codecs.
 
+Schema 1.0 reserves finding ordinal `0` for `functional_mismatch`. Its only
+scope form is `WholeExactCase`, and its occurrence schema is
+`evaluation.functional_mismatch.1.0`. The occurrence is a zero-field typed
+singleton. `Present` contains exactly that one occurrence when two exact
+functional observations differ under the comparison model's proven
+deterministic relation; `Absent` means they agree. The Request already owns the
+exact subjects, workload, runtime input, conditions, and scope, so the
+occurrence does not copy an output path, value bytes, candidate identity, or a
+diagnostic string. A comparison that cannot establish the required relation
+uses the existing `NotApplicable` or non-Completed outcome rather than
+reporting a mismatch.
+
 The registry does not own severity, candidate acceptance, or a numeric score.
 For example, deadlock, functional mismatch, negative slack, or a physical-rule
 violation can be present in a successfully completed Evaluation. The resolved

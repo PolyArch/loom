@@ -18,14 +18,6 @@ namespace {
 
 using detail::evaluationError;
 
-FindingResultForm findingResultForm(const FindingResultValue &result) {
-  if (std::holds_alternative<AbsentFinding>(result))
-    return FindingResultForm::Absent;
-  if (std::holds_alternative<PresentFinding>(result))
-    return FindingResultForm::Present;
-  return FindingResultForm::NotApplicable;
-}
-
 const ModelOutputBinding *
 findOutputBinding(llvm::ArrayRef<ModelOutputBinding> bindings,
                   ModelOutputSlotRef slot) {
@@ -225,6 +217,14 @@ llvm::Error validateOutcomeReason(EvidenceOutcomeKind outcome,
 }
 
 } // namespace
+
+FindingResultForm findingResultForm(const FindingResultValue &result) {
+  if (std::holds_alternative<AbsentFinding>(result))
+    return FindingResultForm::Absent;
+  if (std::holds_alternative<PresentFinding>(result))
+    return FindingResultForm::Present;
+  return FindingResultForm::NotApplicable;
+}
 
 const ArtifactRootReference *
 FindingOccurrenceContext::resolveOutput(ModelOutputSlotRef slot,

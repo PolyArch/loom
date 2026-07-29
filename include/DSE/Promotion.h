@@ -101,6 +101,16 @@ promoteMetricTopKAgainstBaseline(const CandidateSet &candidateSet,
                                  const PointMetricTopKSelection &selection,
                                  const ArtifactStore &artifactStore);
 
+/// Applies one AllPassing selection whose resolved quality gate requires the
+/// exact Finding result to be Absent. Present and NotApplicable candidates are
+/// removed; missing or non-completed Evidence makes the node Incomplete.
+llvm::Expected<PromotionOutcome> promoteFindingAbsenceAllPassing(
+    const CandidateSet &candidateSet,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    llvm::ArrayRef<PromotionEvidence> evidence,
+    evaluation::FindingRequestOrdinal findingRequest,
+    const ArtifactStore &artifactStore);
+
 } // namespace loom::dse
 
 #endif // LOOM_DSE_PROMOTION_H

@@ -19,6 +19,14 @@ combines them into objectives, quality gates, Pareto sets, promotion, or final
 selection. A mapper, simulator, or backend cannot embed a private score and
 silently override policy.
 
+Functional mismatch therefore uses one shared FindingKind rather than a
+frontend-, simulator-, or backend-local status. Its occurrence is deliberately
+zero-field: the exact Request already identifies both the semantic relation and
+all compared inputs, while detailed first-difference paths are removable
+diagnostics. Copying those paths into persistent Evidence would make every
+comparison provider own a competing output-reference language without changing
+the only stable gate fact, mismatch presence.
+
 The same boundary is required before Mapping. Structured and Dataflow
 optimization need both software-only estimates and exact hardware-aware
 estimates, while hardware exploration also needs hardware-only models. Exact

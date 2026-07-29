@@ -323,3 +323,98 @@ loom::dse::promoteMetricTopKAgainstBaseline(
   return promoteMetricTopKImpl(candidateSet, candidateRole, baseline, evidence,
                                selection, artifactStore);
 }
+
+llvm::Expected<loom::dse::PromotionOutcome>
+loom::dse::promoteFindingAbsenceAllPassing(
+    const CandidateSet &candidateSet,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    llvm::ArrayRef<PromotionEvidence> evidence,
+    evaluation::FindingRequestOrdinal findingRequest,
+    const ArtifactStore &artifactStore) {
+  if (candidateSet.candidates().empty())
+    return PromotionOutcome{CompletedNoFeasibleCandidate{}};
+
+  std::map<ArtifactRootReference, const PromotionEvidence *,
+           decltype(&artifactRootReferenceLess)>
+      records(&artifactRootReferenceLess);
+  for (const PromotionEvidence &record : evidence) {
+    if (record.evidence.requestRef() !=
+        evaluation::evaluationRequestReference(record.request))
+      return invalid("Evidence does not reference its supplied Request");
+    llvm::ArrayRef<ArtifactRootReference> subjects =
+        record.request.subjectBindings().subjects(candidateRole);
+    if (subjects.size() != 1)
+      return invalid("candidate role is not bound to exactly one Artifact");
+    if (!containsCandidate(candidateSet, subjects.front()))
+      return invalid("Evidence names a candidate outside the input set");
+    if (!records.emplace(subjects.front(), &record).second)
+      return invalid("candidate has duplicate Evidence obligations");
+  }
+
+  const evaluation::EvaluationRequest *obligationShape = nullptr;
+  std::optional<std::pair<IncompleteSelectionReason, ArtifactRootReference>>
+      incomplete;
+  std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> retainedEvidence;
+  for (const ArtifactRootReference &candidate : candidateSet.candidates()) {
+    auto record = records.find(candidate);
+    if (record == records.end()) {
+      if (!incomplete)
+        incomplete = std::make_pair(IncompleteSelectionReason::MissingEvidence,
+                                    candidate);
+      continue;
+    }
+    const PromotionEvidence &value = *record->second;
+    if (obligationShape &&
+        !sameObligationShape(*obligationShape, value.request, candidateRole))
+      return invalid("candidate Evidence obligations are not same-shaped");
+    obligationShape = &value.request;
+
+    auto evidenceReference =
+        evaluation::publishEvaluationEvidence(value.evidence, artifactStore);
+    if (!evidenceReference)
+      return evidenceReference.takeError();
+    retainedEvidence.push_back(*evidenceReference);
+
+    const auto *completed =
+        std::get_if<evaluation::CompletedEvidence>(&value.evidence.outcome());
+    if (!completed) {
+      IncompleteSelectionReason reason =
+          IncompleteSelectionReason::UnsupportedEvidence;
+      switch (value.evidence.outcomeKind()) {
+      case evaluation::EvidenceOutcomeKind::Completed:
+        llvm_unreachable("Completed outcome variant mismatch");
+      case evaluation::EvidenceOutcomeKind::Unsupported:
+        break;
+      case evaluation::EvidenceOutcomeKind::ExecutionFailed:
+        reason = IncompleteSelectionReason::ExecutionFailedEvidence;
+        break;
+      case evaluation::EvidenceOutcomeKind::CancelledOrTimeout:
+        reason = IncompleteSelectionReason::CancelledOrTimeoutEvidence;
+        break;
+      }
+      if (!incomplete)
+        incomplete = std::make_pair(reason, candidate);
+      continue;
+    }
+    const std::uint64_t ordinal = findingRequest.ordinal();
+    if (ordinal >= completed->findingResults.size() ||
+        !value.request.resolve(findingRequest))
+      return invalid("AllPassing finding ordinal is outside the Request");
+    if (std::holds_alternative<evaluation::AbsentFinding>(
+            completed->findingResults[ordinal].result))
+      selected.push_back(candidate);
+  }
+
+  llvm::sort(retainedEvidence, artifactRootReferenceLess);
+  retainedEvidence.erase(
+      std::unique(retainedEvidence.begin(), retainedEvidence.end()),
+      retainedEvidence.end());
+  if (incomplete)
+    return PromotionOutcome{IncompleteSelection{
+        incomplete->first, incomplete->second, std::move(retainedEvidence)}};
+  if (selected.empty())
+    return PromotionOutcome{CompletedNoFeasibleCandidate{}};
+  return PromotionOutcome{
+      CompletedSelection{std::move(selected), std::move(retainedEvidence)}};
+}

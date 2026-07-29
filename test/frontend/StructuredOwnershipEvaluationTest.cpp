@@ -6,14 +6,20 @@
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
+#include "Evaluation/Models/StructuredProgramFunctional.h"
+#include "Evaluation/StandardFindings.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -90,6 +96,28 @@ entry:
   return module;
 }
 
+std::unique_ptr<llvm::Module>
+parseFunctionallyIncorrectModule(llvm::LLVMContext &context) {
+  std::unique_ptr<llvm::Module> module = parseModule(context);
+  llvm::Function *kernel = module->getFunction("kernel");
+  if (!kernel)
+    fail("incorrect candidate lost kernel");
+  for (llvm::BasicBlock &block : *kernel) {
+    for (llvm::Instruction &instruction : llvm::make_early_inc_range(block)) {
+      auto *add = llvm::dyn_cast<llvm::BinaryOperator>(&instruction);
+      if (!add || add->getOpcode() != llvm::Instruction::FAdd)
+        continue;
+      llvm::IRBuilder<> builder(add);
+      llvm::Value *subtract =
+          builder.CreateFSub(add->getOperand(0), add->getOperand(1));
+      add->replaceAllUsesWith(subtract);
+      add->eraseFromParent();
+      return module;
+    }
+  }
+  fail("incorrect candidate found no floating addition");
+}
+
 loom::frontend::StructuredEntityRef
 findCallable(const loom::frontend::StructuredProgramCandidate &candidate,
              llvm::StringRef name) {
@@ -108,6 +136,17 @@ loom::sim::RuntimeMemoryObject zeroedMemory(std::size_t byteCount) {
   return loom::sim::RuntimeMemoryObject{
       std::vector<loom::sim::SemanticMemoryByte>(
           byteCount, {loom::sim::SemanticState::Defined, std::uint8_t{0}})};
+}
+
+loom::sim::RuntimeMemoryObject f32Memory(float value) {
+  llvm::APInt bits = llvm::APFloat(value).bitcastToAPInt();
+  std::vector<loom::sim::SemanticMemoryByte> bytes;
+  bytes.reserve(4);
+  for (unsigned byte = 0; byte < 4; ++byte)
+    bytes.push_back(
+        {loom::sim::SemanticState::Defined,
+         static_cast<std::uint8_t>(bits.extractBitsAsZExtValue(8, byte * 8))});
+  return loom::sim::RuntimeMemoryObject{std::move(bytes)};
 }
 
 struct SourceSimulationInputs final {
@@ -135,7 +174,7 @@ SourceSimulationInputs makeSourceSimulationInputs(
 
   loom::sim::StructuredProgramSimulationRuntimeInputDraft runtime{
       workload.identity()};
-  runtime.memoryObjects = {zeroedMemory(4), zeroedMemory(4), zeroedMemory(4)};
+  runtime.memoryObjects = {f32Memory(3.0F), f32Memory(2.0F), zeroedMemory(4)};
   runtime.pointerBindings = {{0, 0, 0}, {1, 1, 0}, {2, 2, 0}};
   auto runtimeInput =
       take(loom::sim::finalizeSimulationRuntimeInput(runtime, workload, view));
@@ -189,6 +228,12 @@ struct EvaluatedRuntime final {
   loom::evaluation::EvaluationEvidence evidence;
 };
 
+struct EvaluatedFunctional final {
+  loom::evaluation::EvaluationRequest request;
+  loom::evaluation::EvaluationEvidence evidence;
+  loom::evaluation::FindingRequestOrdinal functionalMismatchRequest;
+};
+
 EvaluatedRuntime
 evaluateStructuredRuntime(const loom::ArtifactRootReference &structuredProgram,
                           const loom::ArtifactRootReference &fabric,
@@ -204,6 +249,37 @@ evaluateStructuredRuntime(const loom::ArtifactRootReference &structuredProgram,
   return EvaluatedRuntime{metricResult(prepared.request, evidence,
                                        loom::evaluation::MetricKind::Runtime),
                           std::move(prepared.request), std::move(evidence)};
+}
+
+EvaluatedFunctional evaluateStructuredFunctional(
+    const loom::ArtifactRootReference &structuredProgram,
+    const loom::ArtifactRootReference &workload,
+    const loom::ArtifactRootReference &runtimeInput,
+    const loom::ArtifactStore &store) {
+  auto prepared = take(
+      loom::evaluation::models::prepareStructuredProgramFunctionalEvaluation(
+          structuredProgram, workload, runtimeInput,
+          loom::defaultResolvedConfig(), store));
+  auto evidence = take(loom::evaluation::evaluateRequest(
+      prepared.request, prepared.resolution, store));
+  return {std::move(prepared.request), std::move(evidence),
+          prepared.functionalMismatchRequest};
+}
+
+loom::evaluation::FindingResultForm
+functionalMismatchResult(const loom::evaluation::EvaluationRequest &request,
+                         const loom::evaluation::EvaluationEvidence &evidence) {
+  const auto *completed =
+      std::get_if<loom::evaluation::CompletedEvidence>(&evidence.outcome());
+  if (!completed ||
+      completed->findingResults.size() != request.findingRequests().size())
+    fail("structured model did not return total finding results");
+  for (std::size_t index = 0; index < request.findingRequests().size(); ++index)
+    if (request.findingRequests()[index].query().kind ==
+        loom::evaluation::standard_findings::FunctionalMismatch)
+      return loom::evaluation::findingResultForm(
+          completed->findingResults[index].result);
+  fail("structured model omitted functional mismatch");
 }
 
 loom::evaluation::DecimalValue
@@ -242,6 +318,9 @@ void runEvaluationAnchor() {
       compiled.structuredProgram,
       findCallable(compiled.structuredProgram, "cold"),
       design.roots().front()));
+  auto incorrect = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseFunctionallyIncorrectModule(context),
+      design.roots().front().reference(), store));
 
   const loom::ArtifactRootReference baselineRef =
       take(loom::frontend::publishStructuredProgram(compiled.structuredProgram,
@@ -251,6 +330,9 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference coldRef = take(
       loom::frontend::publishStructuredProgram(cold.structuredProgram, store));
+  const loom::ArtifactRootReference incorrectRef =
+      take(loom::frontend::publishStructuredProgram(incorrect.structuredProgram,
+                                                    store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
   const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{
@@ -287,17 +369,57 @@ void runEvaluationAnchor() {
   EvaluatedRuntime coldEvaluation = evaluateStructuredRuntime(
       coldRef, design.roots().front().reference(), inputs.workloadReference,
       inputs.runtimeInputReference, store);
+  EvaluatedFunctional baselineFunctional =
+      evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
+                                   inputs.runtimeInputReference, store);
+  EvaluatedFunctional spatialFunctional =
+      evaluateStructuredFunctional(spatialRef, inputs.workloadReference,
+                                   inputs.runtimeInputReference, store);
+  EvaluatedFunctional incorrectFunctional =
+      evaluateStructuredFunctional(incorrectRef, inputs.workloadReference,
+                                   inputs.runtimeInputReference, store);
   if (baseline.request.workload() != inputs.workloadReference ||
       baseline.request.runtimeInput() != inputs.runtimeInputReference)
     fail("Structured Evaluation Request lost its exact source inputs");
   if (baseline.request.metricRequests().size() != 5 ||
       spatialEvaluation.request.metricRequests().size() != 5)
     fail("low-confidence model did not expose the complete metric set");
+  if (!baseline.request.findingRequests().empty() ||
+      !baselineFunctional.request.metricRequests().empty())
+    fail("functional and cost semantics share one model authority");
   if (loom::evaluation::compareDecimalValue(spatialEvaluation.value,
                                             baseline.value) >= 0)
     fail("Fabric-aware Evaluation did not prefer Spatial ownership");
   if (coldEvaluation.value != baseline.value)
     fail("an unexecuted candidate changed whole-workload Runtime");
+  if (functionalMismatchResult(baselineFunctional.request,
+                               baselineFunctional.evidence) !=
+          loom::evaluation::FindingResultForm::Absent ||
+      functionalMismatchResult(spatialFunctional.request,
+                               spatialFunctional.evidence) !=
+          loom::evaluation::FindingResultForm::Absent ||
+      functionalMismatchResult(incorrectFunctional.request,
+                               incorrectFunctional.evidence) !=
+          loom::evaluation::FindingResultForm::Present)
+    fail("functional semantic Evidence did not distinguish the wrong "
+         "candidate");
+
+  auto semanticCandidates = take(loom::dse::CandidateSet::get(
+      loom::frontend::structuredProgramArtifactSchema,
+      {baselineRef, spatialRef, incorrectRef}));
+  auto semanticPromotion = take(loom::dse::promoteFindingAbsenceAllPassing(
+      semanticCandidates, loom::evaluation::CaseSubjectRoleRef(0),
+      {{baselineFunctional.request, baselineFunctional.evidence},
+       {spatialFunctional.request, spatialFunctional.evidence},
+       {incorrectFunctional.request, incorrectFunctional.evidence}},
+      baselineFunctional.functionalMismatchRequest, store));
+  const auto *semanticSelection =
+      std::get_if<loom::dse::CompletedSelection>(&semanticPromotion);
+  if (!semanticSelection || semanticSelection->selected.size() != 2 ||
+      llvm::is_contained(semanticSelection->selected, incorrectRef) ||
+      !llvm::is_contained(semanticSelection->selected, baselineRef) ||
+      !llvm::is_contained(semanticSelection->selected, spatialRef))
+    fail("AllPassing did not enforce functional finding absence");
 
   auto coldCandidateSet = take(loom::dse::CandidateSet::get(
       loom::frontend::structuredProgramArtifactSchema, {baselineRef, coldRef}));
@@ -379,6 +501,17 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
+  const std::size_t materializedCandidates =
+      1 + static_cast<std::size_t>(llvm::count_if(
+              exploredSelection->dispositions,
+              [](const loom::dse::StructuredOwnershipCandidateDisposition
+                     &disposition) {
+                return std::holds_alternative<loom::ArtifactRootReference>(
+                    disposition.result);
+              }));
+  if (exploredSelection->satisfiedEvidence.size() != materializedCandidates * 2)
+    fail("central ownership exploration did not retain distinct functional "
+         "and cost Evidence for every materialized candidate");
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||
