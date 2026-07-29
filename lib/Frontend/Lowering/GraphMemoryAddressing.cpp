@@ -221,6 +221,32 @@ std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
       std::min<std::uint64_t>(bits.getFixedValue(), 64));
 }
 
+std::optional<std::uint64_t>
+getStructElementOffset(const mlir::DataLayout &layout,
+                       mlir::LLVM::LLVMStructType type, unsigned ordinal) {
+  if (type.isOpaque() || ordinal >= type.getBody().size())
+    return std::nullopt;
+  std::uint64_t offset = 0;
+  for (unsigned index = 0; index <= ordinal; ++index) {
+    mlir::Type element = type.getBody()[index];
+    std::optional<std::uint64_t> size = getMLIRAllocByteSize(layout, element);
+    if (!size)
+      return std::nullopt;
+    std::uint64_t alignment =
+        type.isPacked() ? 1 : layout.getTypeABIAlignment(element);
+    if (alignment == 0 ||
+        offset > std::numeric_limits<std::uint64_t>::max() - (alignment - 1))
+      return std::nullopt;
+    offset = llvm::alignTo(offset, alignment);
+    if (index == ordinal)
+      return offset;
+    if (offset > std::numeric_limits<std::uint64_t>::max() - *size)
+      return std::nullopt;
+    offset += *size;
+  }
+  llvm_unreachable("struct element loop must return at the selected ordinal");
+}
+
 } // namespace
 
 std::optional<ResolvedLinearMemoryAddress>
@@ -298,52 +324,96 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
   for (mlir::LLVM::GEPOp gep : llvm::reverse(leafToRoot)) {
     auto rawIndices = gep.getRawConstantIndices();
     auto dynamicIndices = gep.getDynamicIndices();
-    if (rawIndices.size() != 1)
+    if (rawIndices.empty())
       return std::nullopt;
-    std::optional<std::uint64_t> strideBytes = getAllocBytes(gep.getElemType());
-    if (!strideBytes || *strideBytes > maxSigned ||
-        !llvm::isIntN(*pointerIndexBits,
-                      static_cast<std::int64_t>(*strideBytes)) ||
-        !llvm::isIntN(canonicalIndexBits,
-                      static_cast<std::int64_t>(*strideBytes)))
-      return std::nullopt;
-
-    if (rawIndices.front() == mlir::LLVM::GEPOp::kDynamicIndex) {
-      if (dynamicIndices.size() != 1)
-        return std::nullopt;
-      mlir::Value index = dynamicIndices.front();
-      std::optional<unsigned> indexBits;
-      if (llvmDataLayout) {
-        auto integer = llvm::dyn_cast<mlir::IntegerType>(index.getType());
-        if (!integer || !integer.isSignless())
+    std::size_t dynamicOrdinal = 0;
+    mlir::Type indexedType = gep.getElemType();
+    for (auto [position, rawIndex] : llvm::enumerate(rawIndices)) {
+      std::optional<std::uint64_t> strideBytes;
+      std::optional<std::uint64_t> fixedByteOffset;
+      if (position == 0) {
+        strideBytes = getAllocBytes(indexedType);
+      } else if (auto array =
+                     llvm::dyn_cast<mlir::LLVM::LLVMArrayType>(indexedType)) {
+        indexedType = array.getElementType();
+        strideBytes = getAllocBytes(indexedType);
+      } else if (auto vector = llvm::dyn_cast<mlir::VectorType>(indexedType)) {
+        indexedType = vector.getElementType();
+        strideBytes = getAllocBytes(indexedType);
+      } else if (auto structure =
+                     llvm::dyn_cast<mlir::LLVM::LLVMStructType>(indexedType)) {
+        if (rawIndex == mlir::LLVM::GEPOp::kDynamicIndex || rawIndex < 0 ||
+            static_cast<std::size_t>(rawIndex) >= structure.getBody().size())
           return std::nullopt;
-        indexBits = integer.getWidth();
+        if (llvmDataLayout) {
+          auto *translated = llvm::dyn_cast_or_null<llvm::StructType>(
+              translator.translateType(structure));
+          if (!translated)
+            return std::nullopt;
+          fixedByteOffset = llvmDataLayout->getStructLayout(translated)
+                                ->getElementOffset(rawIndex);
+        } else {
+          fixedByteOffset =
+              getStructElementOffset(dataLayout, structure, rawIndex);
+        }
+        indexedType = structure.getBody()[rawIndex];
       } else {
-        indexBits = getIntegralIndexBitWidth(dataLayout, index.getType());
+        return std::nullopt;
       }
-      if (!indexBits || *indexBits > canonicalIndexBits)
-        return std::nullopt;
-      result.indexType =
-          mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
-      if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
-        return std::nullopt;
-      unsigned strideShift =
-          std::min<unsigned>(elementShift, llvm::countr_zero(*strideBytes));
-      if (!isKnownMultipleOfPowerOfTwo(index, elementShift - strideShift))
-        return std::nullopt;
-      result.terms.push_back({index, static_cast<std::int64_t>(*strideBytes)});
-      result.elementTerms.push_back(
-          {index, static_cast<std::int64_t>(*strideBytes >> strideShift),
-           elementShift - strideShift});
-      continue;
-    }
 
-    if (!dynamicIndices.empty())
-      return std::nullopt;
-    std::int64_t term = 0;
-    if (llvm::MulOverflow(static_cast<std::int64_t>(rawIndices.front()),
-                          static_cast<std::int64_t>(*strideBytes), term) ||
-        llvm::AddOverflow(constantByteOffset, term, constantByteOffset))
+      if (fixedByteOffset) {
+        if (*fixedByteOffset > maxSigned ||
+            llvm::AddOverflow(constantByteOffset,
+                              static_cast<std::int64_t>(*fixedByteOffset),
+                              constantByteOffset))
+          return std::nullopt;
+        continue;
+      }
+      if (!strideBytes || *strideBytes > maxSigned ||
+          !llvm::isIntN(*pointerIndexBits,
+                        static_cast<std::int64_t>(*strideBytes)) ||
+          !llvm::isIntN(canonicalIndexBits,
+                        static_cast<std::int64_t>(*strideBytes)))
+        return std::nullopt;
+
+      if (rawIndex == mlir::LLVM::GEPOp::kDynamicIndex) {
+        if (dynamicOrdinal >= dynamicIndices.size())
+          return std::nullopt;
+        mlir::Value index = dynamicIndices[dynamicOrdinal++];
+        std::optional<unsigned> indexBits;
+        if (llvmDataLayout) {
+          auto integer = llvm::dyn_cast<mlir::IntegerType>(index.getType());
+          if (!integer || !integer.isSignless())
+            return std::nullopt;
+          indexBits = integer.getWidth();
+        } else {
+          indexBits = getIntegralIndexBitWidth(dataLayout, index.getType());
+        }
+        if (!indexBits || *indexBits > canonicalIndexBits)
+          return std::nullopt;
+        result.indexType =
+            mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
+        if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
+          return std::nullopt;
+        unsigned strideShift =
+            std::min<unsigned>(elementShift, llvm::countr_zero(*strideBytes));
+        if (!isKnownMultipleOfPowerOfTwo(index, elementShift - strideShift))
+          return std::nullopt;
+        result.terms.push_back(
+            {index, static_cast<std::int64_t>(*strideBytes)});
+        result.elementTerms.push_back(
+            {index, static_cast<std::int64_t>(*strideBytes >> strideShift),
+             elementShift - strideShift});
+        continue;
+      }
+
+      std::int64_t term = 0;
+      if (llvm::MulOverflow(static_cast<std::int64_t>(rawIndex),
+                            static_cast<std::int64_t>(*strideBytes), term) ||
+          llvm::AddOverflow(constantByteOffset, term, constantByteOffset))
+        return std::nullopt;
+    }
+    if (dynamicOrdinal != dynamicIndices.size())
       return std::nullopt;
   }
 
