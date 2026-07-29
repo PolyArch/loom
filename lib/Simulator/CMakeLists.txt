@@ -68,9 +68,19 @@ add_mlir_library(LoomNativeSimulationOracle
   ${loom_native_oracle_llvm_libs}
 )
 mlir_target_link_libraries(LoomNativeSimulationOracle PUBLIC
+  MLIRArithToLLVM
+  MLIRBuiltinToLLVMIRTranslation
+  MLIRControlFlowToLLVM
   MLIRConvertToLLVM
+  MLIRFuncToLLVM
+  MLIRIndexToLLVM
   MLIRLLVMDialect
+  MLIRLLVMToLLVMIRTranslation
+  MLIRMathToLLVM
+  MLIRMemRefToLLVM
   MLIRPass
   MLIRSCFToControlFlow
   MLIRTargetLLVMIRExport
+  MLIRUBToLLVM
+  MLIRVectorToLLVM
 )

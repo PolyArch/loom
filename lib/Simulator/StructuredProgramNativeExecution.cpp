@@ -295,14 +295,24 @@ void workloadCaptureBegin() {
   activeWorkloadCapture->activeCalls.push_back(std::move(active));
 }
 
-void workloadCaptureRegisterObject(void *base, std::uint64_t byteCount) {
+void workloadCaptureRegisterObject(void *base, std::uint64_t extentFactor0,
+                                   std::uint64_t extentFactor1) {
   if (!activeWorkloadCapture || activeWorkloadCapture->error)
     return;
-  if (!base || byteCount == 0 ||
-      byteCount > std::numeric_limits<std::size_t>::max()) {
+  if (!base || extentFactor0 == 0 || extentFactor1 == 0)
+    return;
+  if (extentFactor0 >
+      std::numeric_limits<std::uint64_t>::max() / extentFactor1) {
     recordWorkloadCaptureError(
-        std::make_error_code(std::errc::io_error),
-        "program object registration has an invalid extent");
+        std::make_error_code(std::errc::not_supported),
+        "program object extent exceeds the runtime registry domain");
+    return;
+  }
+  const std::uint64_t byteCount = extentFactor0 * extentFactor1;
+  if (byteCount > std::numeric_limits<std::size_t>::max()) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "program object extent exceeds the host addressable domain");
     return;
   }
   WorkloadCaptureContext &context = *activeWorkloadCapture;
@@ -534,7 +544,10 @@ instrumentBlockActivations(mlir::ModuleOp module,
 
 struct ProgramObjectCaptureSite final {
   mlir::Value base;
-  std::uint64_t byteCount = 0;
+  struct ExtentFactor final {
+    mlir::Value runtimeValue;
+    std::uint64_t fixedValue = 1;
+  } extentFactor0, extentFactor1;
   mlir::Operation *registration = nullptr;
 };
 
@@ -575,19 +588,22 @@ llvm::Expected<std::vector<ProgramObjectCaptureSite>>
 collectProgramObjectCaptureSites(mlir::ModuleOp module) {
   std::vector<mlir::LLVM::AllocaOp> allocations;
   std::vector<mlir::LLVM::AddressOfOp> addresses;
+  std::vector<mlir::LLVM::CallOp> calls;
   module.walk([&](mlir::LLVM::AllocaOp allocation) {
     allocations.push_back(allocation);
   });
   module.walk(
       [&](mlir::LLVM::AddressOfOp address) { addresses.push_back(address); });
+  module.walk([&](mlir::LLVM::CallOp call) { calls.push_back(call); });
 
   std::vector<ProgramObjectCaptureSite> sites;
-  sites.reserve(allocations.size() + addresses.size());
+  sites.reserve(allocations.size() + addresses.size() + calls.size());
   for (mlir::LLVM::AllocaOp allocation : allocations) {
     std::optional<std::uint64_t> byteCount =
         fixedAllocationByteCountForCapture(allocation);
     if (byteCount)
-      sites.push_back({allocation.getRes(), *byteCount, nullptr});
+      sites.push_back(
+          {allocation.getRes(), {{}, *byteCount}, {{}, 1}, nullptr});
   }
   for (mlir::LLVM::AddressOfOp address : addresses) {
     auto global =
@@ -598,7 +614,45 @@ collectProgramObjectCaptureSites(mlir::ModuleOp module) {
     std::optional<std::uint64_t> byteCount = fixedTypeByteCountForCapture(
         global.getOperation(), global.getGlobalType());
     if (byteCount)
-      sites.push_back({address.getResult(), *byteCount, nullptr});
+      sites.push_back(
+          {address.getResult(), {{}, *byteCount}, {{}, 1}, nullptr});
+  }
+  for (mlir::LLVM::CallOp call : calls) {
+    std::optional<llvm::ArrayRef<std::int32_t>> allocsize = call.getAllocsize();
+    if (!allocsize && call.getCalleeAttr()) {
+      auto callee =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+              call, call.getCalleeAttr());
+      if (callee)
+        allocsize = callee.getAllocsize();
+    }
+    if (!allocsize)
+      continue;
+    if (allocsize->empty() || allocsize->size() > 2)
+      return invalid("allocator allocsize must name one or two operands");
+    if (call->getNumResults() != 1 ||
+        !llvm::isa<mlir::LLVM::LLVMPointerType>(call->getResult(0).getType()))
+      continue;
+
+    ProgramObjectCaptureSite site;
+    site.base = call->getResult(0);
+    ProgramObjectCaptureSite::ExtentFactor *factors[] = {&site.extentFactor0,
+                                                         &site.extentFactor1};
+    bool representable = true;
+    for (auto [factorOrdinal, operandOrdinal] : llvm::enumerate(*allocsize)) {
+      if (operandOrdinal < 0 || static_cast<std::size_t>(operandOrdinal) >=
+                                    call.getCalleeOperands().size())
+        return invalid("allocator allocsize operand is outside the call ABI");
+      mlir::Value operand = call.getCalleeOperands()[operandOrdinal];
+      auto type = llvm::dyn_cast<mlir::IntegerType>(operand.getType());
+      if (!type || type.getWidth() > 64) {
+        representable = false;
+        break;
+      }
+      factors[factorOrdinal]->runtimeValue = operand;
+    }
+    if (representable)
+      sites.push_back(std::move(site));
   }
   return sites;
 }
@@ -607,7 +661,8 @@ mlir::Value programObjectBase(mlir::Value pointer) {
   while (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
     pointer = gep.getBase();
   if (pointer.getDefiningOp<mlir::LLVM::AllocaOp>() ||
-      pointer.getDefiningOp<mlir::LLVM::AddressOfOp>())
+      pointer.getDefiningOp<mlir::LLVM::AddressOfOp>() ||
+      pointer.getDefiningOp<mlir::LLVM::CallOp>())
     return pointer;
   return {};
 }
@@ -646,7 +701,7 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   const mlir::Type memoryRootType =
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer});
   const mlir::Type objectRegistrationType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64});
+      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64, i64});
   const mlir::Type valueType =
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer, i64});
 
@@ -685,15 +740,31 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
                                    valueType);
 
   if (names.registerObject) {
+    auto materializeExtentFactor =
+        [&](mlir::OpBuilder &builder, mlir::Location factorLocation,
+            const ProgramObjectCaptureSite::ExtentFactor &factor) {
+          if (!factor.runtimeValue)
+            return mlir::Value(mlir::LLVM::ConstantOp::create(
+                builder, factorLocation, i64,
+                builder.getI64IntegerAttr(factor.fixedValue)));
+          auto type =
+              llvm::cast<mlir::IntegerType>(factor.runtimeValue.getType());
+          if (type.getWidth() == 64)
+            return factor.runtimeValue;
+          return mlir::Value(mlir::LLVM::ZExtOp::create(
+              builder, factorLocation, i64, factor.runtimeValue));
+        };
     for (ProgramObjectCaptureSite &site : *objectSites) {
       mlir::OpBuilder registration(context);
       registration.setInsertionPointAfter(site.base.getDefiningOp());
-      mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
-          registration, site.base.getLoc(), i64,
-          registration.getI64IntegerAttr(site.byteCount));
+      mlir::Value extentFactor0 = materializeExtentFactor(
+          registration, site.base.getLoc(), site.extentFactor0);
+      mlir::Value extentFactor1 = materializeExtentFactor(
+          registration, site.base.getLoc(), site.extentFactor1);
       auto call = mlir::LLVM::CallOp::create(
           registration, site.base.getLoc(), mlir::TypeRange{},
-          *names.registerObject, mlir::ValueRange{site.base, byteCount});
+          *names.registerObject,
+          mlir::ValueRange{site.base, extentFactor0, extentFactor1});
       site.registration = call.getOperation();
     }
   }

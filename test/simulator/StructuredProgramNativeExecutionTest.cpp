@@ -18,6 +18,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -312,12 +313,128 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
           "selected candidate execution invented a source coverage profile");
 }
 
+void runtimeAllocationsEnterTheCaptureRegistry() {
+  const char *test = __func__;
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail(test, "cannot initialize the native target");
+  auto target = take(test, llvm::orc::JITTargetMachineBuilder::detectHost());
+  llvm::DataLayout layout = take(test, target.getDefaultDataLayoutForTarget());
+
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
+                  mlir::LLVM::LLVMDialect>();
+  mlir::MLIRContext localContext(registry,
+                                 mlir::MLIRContext::Threading::DISABLED);
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func @malloc(%size: i64) -> !llvm.ptr
+  llvm.func @free(%object: !llvm.ptr)
+
+  llvm.func @runtime_allocate(%size: i64) -> !llvm.ptr
+      attributes {allocsize = array<i32: 0>} {
+    %object = llvm.call @malloc(%size) : (i64) -> !llvm.ptr
+    llvm.return %object : !llvm.ptr
+  }
+  llvm.func @runtime_release(%object: !llvm.ptr) {
+    llvm.call @free(%object) : (!llvm.ptr) -> ()
+    llvm.return
+  }
+
+  llvm.func @main() -> i32 {
+    %size = llvm.mlir.constant(16 : i64) : i64
+    %object = llvm.call @runtime_allocate(%size) : (i64) -> !llvm.ptr
+    %one = llvm.mlir.constant(1 : i32) : i32
+    %two = llvm.mlir.constant(2 : i32) : i32
+    %three = llvm.mlir.constant(3 : i32) : i32
+    %four = llvm.mlir.constant(4 : i32) : i32
+    %selected = llvm.mlir.constant(42 : i32) : i32
+    %p1 = llvm.getelementptr %object[1] : (!llvm.ptr) -> !llvm.ptr, i32
+    %p2 = llvm.getelementptr %object[2] : (!llvm.ptr) -> !llvm.ptr, i32
+    %p3 = llvm.getelementptr %object[3] : (!llvm.ptr) -> !llvm.ptr, i32
+    llvm.store %one, %object : i32, !llvm.ptr
+    llvm.store %two, %p1 : i32, !llvm.ptr
+    llvm.store %three, %p2 : i32, !llvm.ptr
+    llvm.store %four, %p3 : i32, !llvm.ptr
+    llvm.store %selected, %object : i32, !llvm.ptr
+    llvm.call @runtime_release(%object) : (!llvm.ptr) -> ()
+    %zero = llvm.mlir.constant(0 : i32) : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir",
+                                                        &localContext);
+  if (!module)
+    fail(test, "cannot parse the runtime-allocation program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&localContext, "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&localContext, layout.getStringRepresentation()));
+
+  loom::frontend::StructuredProgramCandidate source =
+      take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+  auto view = take(test, source.view());
+  std::optional<loom::frontend::StructuredEntityRef> mainRef;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function && function.getName() == "main") {
+      mainRef = entity.reference;
+      break;
+    }
+  }
+  require(test, mainRef.has_value(), "cannot find the exact main reference");
+
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{*mainRef};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(test, loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  auto runtimeInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                                     runtimeDraft, workload, view));
+
+  mlir::LLVM::StoreOp selectedStore;
+  module->walk([&](mlir::LLVM::StoreOp store) { selectedStore = store; });
+  require(test, static_cast<bool>(selectedStore),
+          "runtime-allocation program has no selected store");
+  const loom::ArtifactIdentity &identity = source.identity();
+  dataflow::RootedGraphLaunchRef launch{
+      dataflow::RootThreadLaunchRef{identity, dataflow::RootThreadLaunchId(0)},
+      dataflow::StaticGraphLaunchRef{identity,
+                                     dataflow::StaticGraphLaunchId(0)}};
+  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{launch, {}, {}, {}};
+  plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
+                                  identity, dataflow::LogicalMemoryRootId(0)},
+                              selectedStore.getAddr()});
+
+  loom::sim::NativeSimulationInputCapture capture =
+      take(test, loom::sim::executeWorkloadBackedSimulationInputCapture(
+                     std::move(module), selectedStore.getOperation(), plan,
+                     source, workload, runtimeInput));
+  require(test,
+          capture.entryResult == 0 && capture.calls.size() == 1 &&
+              capture.calls.front().objects.size() == 1 &&
+              capture.calls.front().objects.front().initialBytes.size() == 16 &&
+              capture.calls.front().objects.front().finalBytes.size() == 16 &&
+              capture.calls.front().memoryRootObjectOrdinals ==
+                  std::vector<std::uint64_t>{0} &&
+              capture.calls.front().memoryRootByteOffsets ==
+                  std::vector<std::uint64_t>{0},
+          "runtime allocation did not resolve to one finite capture object");
+}
+
 } // namespace
 
 int main() {
   exactEntryPreservesAliasingAndObservations();
   nonDefinedInputsFailClosed();
   selectedOwnershipCarriersExecuteAsWholeProgram();
+  runtimeAllocationsEnterTheCaptureRegistry();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;
 }
