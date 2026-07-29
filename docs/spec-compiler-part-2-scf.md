@@ -95,6 +95,14 @@ Spatial region requires structured lowering and cannot preserve or consume the
 weight is non-finalizable, while independently derived ownership candidates
 remain eligible. Loom does not copy weights into a second metadata schema.
 
+LLVM loop metadata has a loop owner only when its carrier terminator closes a
+backedge to one exact dominating loop header. Mechanical structuring moves that
+hint to the recovered loop. Metadata on a terminator with no such backedge is
+an orphan under the LLVM loop contract: successful structuring removes the
+orphan carrier, preserves the corresponding analysis fact as unknown, and does
+not guess a loop owner. A carrier that can close backedges to multiple headers
+remains unstructured because its owner is ambiguous.
+
 InstructionCore ownership is not a fifth disposition and is never an implicit
 raising fallback. Ownership belongs to a Structured Program Candidate. If a
 selected `loom.spatial_region` contains an unsupported construct, that whole

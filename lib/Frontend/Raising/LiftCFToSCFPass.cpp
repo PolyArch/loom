@@ -20,9 +20,12 @@
 //     without inventing a result value.
 //
 // Imported loop annotations are hints Part 1 requires to stay associated with
-// their loop. They arrive on the branch that closes a cycle; this pass resolves
-// each one to the loop header it repeats to and hands it to the structured loop
-// that ends up owning that cycle. A cycle entered on more than one edge is
+// their loop. A well-formed annotation arrives on a branch that closes a cycle;
+// this pass resolves it to the loop header it repeats to and hands it to the
+// structured loop that ends up owning that cycle. An annotation on a branch
+// with no backedge is orphan metadata under LLVM's loop contract. It is removed
+// only from a detached clone that successfully structures, and is never guessed
+// onto an unrelated loop. A cycle entered on more than one edge is
 // headed by an entry multiplexer upstream creates, and every edge to its entry
 // blocks is redirected through that multiplexer, so the cycle's annotated
 // original header is the dispatch destination that has the multiplexer as its
@@ -119,6 +122,7 @@ namespace {
 // that describes it. Keys are blocks of the original IR; the structuring
 // traversal remaps them to each clone's own blocks before the adapter runs.
 using LoopAnnotations = ::llvm::DenseMap<::mlir::Block *, ::mlir::Attribute>;
+using OrphanLoopHintBlocks = ::llvm::SmallVector<::mlir::Block *, 2>;
 
 // Mechanical disposition of one callable region.
 enum class Disposition {
@@ -179,7 +183,8 @@ bool holdsOnlyLLVMSpellableValues(::mlir::Block &block) {
 // Decide the disposition of `region`, resolving every loop annotation to the
 // single loop header it repeats to. Modifies nothing, and hands `annotations`
 // the resolved headers only when the region will actually be structured.
-Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations) {
+Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations,
+                         OrphanLoopHintBlocks &orphanHints) {
   if (isStructured(region))
     return Disposition::Preserve;
 
@@ -234,8 +239,12 @@ Disposition decideRegion(::mlir::Region &region, LoopAnnotations &annotations) {
       }
       header = successor;
     }
-    if (ambiguous || !header)
+    if (ambiguous)
       return Disposition::Preserve;
+    if (!header) {
+      orphanHints.push_back(&block);
+      continue;
+    }
 
     auto [entry, inserted] = resolved.try_emplace(header, annotation);
     if (!inserted && entry->second != annotation)
@@ -381,6 +390,7 @@ struct LiftCFToSCFPass
     struct RegionPlan {
       ::mlir::Region *region;
       LoopAnnotations annotations;
+      OrphanLoopHintBlocks orphanHints;
     };
     // The callable walk is post-order, so a nested callable is planned before
     // its enclosing callable. Structuring in that order is what makes nested
@@ -391,8 +401,11 @@ struct LiftCFToSCFPass
     (void)loom::raising::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
           LoopAnnotations regionAnnotations;
-          if (decideRegion(region, regionAnnotations) == Disposition::Structure)
-            plans.push_back({&region, std::move(regionAnnotations)});
+          OrphanLoopHintBlocks orphanHints;
+          if (decideRegion(region, regionAnnotations, orphanHints) ==
+              Disposition::Structure)
+            plans.push_back({&region, std::move(regionAnnotations),
+                             std::move(orphanHints)});
           return ::mlir::success();
         });
 
@@ -415,6 +428,12 @@ struct LiftCFToSCFPass
         ::mlir::Block *cloneHeader = mapping.lookupOrNull(header);
         assert(cloneHeader && "cloned region holds every original block");
         cloneAnnotations[cloneHeader] = annotation;
+      }
+      for (::mlir::Block *orphanBlock : plan.orphanHints) {
+        ::mlir::Block *cloneBlock = mapping.lookupOrNull(orphanBlock);
+        assert(cloneBlock && "cloned region holds every original block");
+        cloneBlock->getTerminator()->removeAttr(
+            loom::raising::loopAnnotationName);
       }
 
       // Upstream rejects a region holding a block no edge reaches. Such a

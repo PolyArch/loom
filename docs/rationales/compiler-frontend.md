@@ -30,6 +30,15 @@ identity-feedback shape. This narrow rule removes accidental CFG structure
 without introducing a general equivalence engine or turning canonicalization
 into an optimization decision.
 
+LLVM assigns loop metadata through latch terminators, not arbitrary branches
+inside a loop. Optimizers can leave an orphan attachment after reshaping a CFG;
+such an attachment no longer proves any loop fact. Letting it block the whole
+callable would hide independent structured candidates, while attaching it to a
+nearby loop would invent a fact. Loom therefore discards only the orphan on a
+successfully structured clone and keeps the analysis fact unknown. Exact and
+ambiguous backedge owners remain subject to the stricter preserve-or-migrate
+rules.
+
 The same structuring utility can thread exit constants and exceptional-value
 placeholders through several adjacent loops as publication latches. When the
 failed condition publishes an exact value that already dominates the loop,

@@ -8,13 +8,15 @@
 namespace loom {
 namespace raising {
 
-// Carrier under which an imported LLVM loop annotation stays associated with
-// the loop it describes once mechanical raising has respelled the branch that
-// carried it. The value is the imported LLVM::LoopAnnotationAttr itself; only
-// its carrier changes, from the latch branch to the cf branch that replaces it
-// and then to the structured loop that owns the recovered cycle. A raising
-// step that cannot move it to the operation owning the same loop preserves the
-// construct it describes instead of dropping it.
+// Carrier under which a well-formed imported LLVM loop annotation stays
+// associated with the loop it describes once mechanical raising has respelled
+// the branch that carried it. The value is the imported
+// LLVM::LoopAnnotationAttr itself; only its carrier changes, from the latch
+// branch to the cf branch that replaces it and then to the structured loop that
+// owns the recovered cycle. A raising step that cannot move it to the operation
+// owning the same loop preserves the construct it describes instead of
+// dropping it. An annotation outside a latch has no LLVM loop owner and is
+// handled as an orphan by the structuring pass.
 inline constexpr ::llvm::StringLiteral loopAnnotationName =
     "llvm.loop_annotation";
 

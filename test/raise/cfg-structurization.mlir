@@ -5,6 +5,7 @@
 // RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-lift-cf-to-scf %t/switch-carrier.mlir | FileCheck %s --check-prefix=SWITCH
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/preserved.mlir | FileCheck %s --check-prefix=PRESERVE
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=cf.cond_br
+// RUN: loom-raise-opt --loom-lift-cf-to-scf %t/orphan-loop-hint.mlir | FileCheck %s --check-prefix=ORPHAN --implicit-check-not=cf.cond_br
 
 // Mechanical CFG recovery runs on the callable region where it stands. What
 // an imported LLVM callable spells differently is respelled by an adapter, and
@@ -82,6 +83,13 @@
 // NESTED-LABEL: llvm.func @inner
 // NESTED: scf.while
 // NESTED: } attributes {llvm.loop_annotation = #[[INNER_ANNOTATION]]}
+
+// LLVM gives llvm.loop meaning only on a loop latch. An annotation left on a
+// non-latch branch by an earlier LLVM transformation is not a loop fact and
+// must not block mechanical structuring or become attached to a guessed loop.
+// ORPHAN-LABEL: llvm.func @orphan_loop_hint
+// ORPHAN: scf.while
+// ORPHAN-NOT: llvm.loop_annotation
 
 //--- counted.ll
 define void @counted(ptr %p) {
@@ -219,4 +227,25 @@ func.func @outer(%c: i1) -> i32 {
     }
   }
   return %r : i32
+}
+
+//--- orphan-loop-hint.mlir
+#orphan_annotation = #llvm.loop_annotation<mustProgress = true>
+
+llvm.func @orphan_loop_hint(%limit: i32, %skip: i1) -> i32 {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  cf.br ^header(%zero : i32)
+^header(%iv: i32):
+  cf.cond_br %skip, ^latch, ^body {
+    llvm.loop_annotation = #orphan_annotation
+  }
+^body:
+  cf.br ^latch
+^latch:
+  %next = arith.addi %iv, %one : i32
+  %done = arith.cmpi eq, %next, %limit : i32
+  cf.cond_br %done, ^exit, ^header(%next : i32)
+^exit:
+  llvm.return %next : i32
 }
