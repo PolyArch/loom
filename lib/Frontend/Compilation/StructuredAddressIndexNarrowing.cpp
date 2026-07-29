@@ -1,5 +1,7 @@
 #include "StructuredAddressIndexNarrowing.h"
 
+#include "Dataflow/IR/DataflowDialect.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -1007,6 +1009,50 @@ bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
   auto pointerLoops = collectPointerInductionLoops(selectedOperation);
   return containsDynamicAddressIndex(selectedOperation) ||
          !pointerLoops.empty();
+}
+
+std::optional<std::string>
+explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation) {
+  if (!selectedOperation)
+    return "selected scope is absent";
+
+  std::optional<std::string> rejection;
+  auto containsMemoryCapability = [](mlir::TypeRange types) {
+    return llvm::any_of(types, [](mlir::Type type) {
+      return dataflow::DataflowDialect::isMemoryCapabilityType(type);
+    });
+  };
+  selectedOperation->walk([&](mlir::Operation *operation) {
+    if (auto loop = llvm::dyn_cast<mlir::scf::WhileOp>(operation)) {
+      if (containsMemoryCapability(loop.getInits().getTypes()) &&
+          !analyzePointerInductionLoop(loop)) {
+        rejection = "loop-carried memory capability has no canonical "
+                    "capability-plus-offset normalization";
+        return mlir::WalkResult::interrupt();
+      }
+    } else if (auto loop = llvm::dyn_cast<mlir::scf::ForOp>(operation)) {
+      if (containsMemoryCapability(loop.getInitArgs().getTypes())) {
+        rejection = "loop-carried memory capability has no canonical "
+                    "capability-plus-offset normalization";
+        return mlir::WalkResult::interrupt();
+      }
+    } else if (auto select = llvm::dyn_cast<mlir::scf::IfOp>(operation)) {
+      if (containsMemoryCapability(select.getResultTypes())) {
+        rejection = "selected memory capability has no canonical "
+                    "capability-plus-offset normalization";
+        return mlir::WalkResult::interrupt();
+      }
+    } else if (auto select =
+                   llvm::dyn_cast<mlir::scf::IndexSwitchOp>(operation)) {
+      if (containsMemoryCapability(select.getResultTypes())) {
+        rejection = "selected memory capability has no canonical "
+                    "capability-plus-offset normalization";
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    return mlir::WalkResult::advance();
+  });
+  return rejection;
 }
 
 llvm::Expected<mlir::Operation *>

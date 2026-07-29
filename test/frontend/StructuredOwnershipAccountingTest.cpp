@@ -6,6 +6,7 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -120,6 +121,68 @@ exit:
 )llvm";
   llvm::SMDiagnostic diagnostic;
   auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<nested-call>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipAccounting", stream);
+    fail(stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
+parseBranchPointerScopeModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown"
+
+define void @main(ptr %base, i32 %count) {
+entry:
+  %has_work = icmp sgt i32 %count, 0
+  br i1 %has_work, label %outer, label %exit
+
+outer:
+  %index = phi i32 [ 0, %entry ], [ %next_index, %latch ]
+  %cursor = phi ptr [ %base, %entry ], [ %next_cursor, %latch ]
+  br label %inner
+
+inner:
+  %inner_index = phi i64 [ 0, %outer ], [ %next_inner, %inner ]
+  %address = getelementptr inbounds i8, ptr %cursor, i64 %inner_index
+  %value = load i8, ptr %address, align 1
+  store i8 %value, ptr %address, align 1
+  %next_inner = add nuw nsw i64 %inner_index, 1
+  %more_inner = icmp ult i64 %next_inner, 2
+  br i1 %more_inner, label %inner, label %select
+
+select:
+  %parity = and i32 %index, 1
+  %odd = icmp ne i32 %parity, 0
+  br i1 %odd, label %left, label %right
+
+left:
+  %left_cursor = getelementptr inbounds i8, ptr %cursor, i64 1
+  br label %latch
+
+right:
+  %right_cursor = getelementptr inbounds i8, ptr %cursor, i64 2
+  br label %latch
+
+latch:
+  %next_cursor = phi ptr [ %left_cursor, %left ],
+                             [ %right_cursor, %right ]
+  %next_index = add nuw nsw i32 %index, 1
+  %more = icmp slt i32 %next_index, %count
+  br i1 %more, label %outer, label %exit
+
+exit:
+  ret void
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<branch-pointer-scope>");
   auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
   if (!module) {
     std::string message;
@@ -318,6 +381,47 @@ void requireUnsupportedNestedLeafIsPreflightRejection(
     fail("nested unresolved call reached candidate materialization");
 }
 
+void requireUnsupportedPointerStateDoesNotHideInnerScope(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  llvm::LLVMContext context;
+  auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseBranchPointerScopeModule(context), fabric));
+  auto view = take(structured.structuredProgram.view());
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
+      structured.structuredProgram));
+
+  bool sawRejectedPointerState = false;
+  bool sawAcceptedInnerLoop = false;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const loom::frontend::SpatialOwnershipScope *scope =
+        std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
+    const auto *rejected =
+        std::get_if<loom::frontend::RejectedSpatialOwnershipScope>(&entry);
+    const loom::frontend::StructuredEntityRef &reference =
+        scope ? scope->selection : rejected->scope.selection;
+    auto entity = take(view.resolve(reference));
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
+    if (!loop)
+      continue;
+    const bool carriesPointer =
+        llvm::any_of(loop.getInits(), [](mlir::Value value) {
+          return llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType());
+        });
+    if (carriesPointer) {
+      if (!rejected ||
+          rejected->message.find("memory capability") == std::string::npos)
+        fail("branch-dependent pointer state escaped ownership preflight");
+      sawRejectedPointerState = true;
+    } else if (scope) {
+      sawAcceptedInnerLoop = true;
+    }
+  }
+  if (!sawRejectedPointerState)
+    fail("branch-dependent pointer state was not represented in the domain");
+  if (!sawAcceptedInnerLoop)
+    fail("unsupported outer pointer state hid a graphable inner loop");
+}
+
 } // namespace
 
 int main() {
@@ -332,6 +436,7 @@ int main() {
 
   requireEmptyScopeIsCandidateRejection(design.roots().front());
   requireUnsupportedNestedLeafIsPreflightRejection(design.roots().front());
+  requireUnsupportedPointerStateDoesNotHideInnerScope(design.roots().front());
 
   auto serial = explore(design.roots().front(), store, 1);
   requireCompleteAccounting(serial);

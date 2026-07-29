@@ -5,6 +5,7 @@
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <string>
 
 namespace loom::frontend::detail {
 
@@ -23,6 +24,14 @@ bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
 /// they form a proven pointer induction that must become integer loop state.
 bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
                                            mlir::Operation *selectedOperation);
+
+/// Explains why structured control in this exact scope cannot be normalized to
+/// invariant memory capabilities plus integer state by the production address
+/// normalizer. Absence means only that this normalization boundary is
+/// supported; later materialization and graph verification remain
+/// authoritative.
+std::optional<std::string>
+explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation);
 
 /// Enforces an explicit canonical index contract for LLVM GEPs. A selected
 /// width is materialized in the Structured Program and wider operands are
