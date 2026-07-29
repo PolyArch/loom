@@ -392,6 +392,41 @@ exit:
   ret void
 }
 
+define void @descriptor_leaf(ptr %table, ptr %output) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %source = getelementptr i32, ptr %table, i64 %i
+  %value = load i32, ptr %source, align 4
+  %destination = getelementptr i32, ptr %output, i64 %i
+  store i32 %value, ptr %destination, align 4
+  %next = add nuw nsw i64 %i, 1
+  %done = icmp eq i64 %next, 4
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define void @descriptor_bridge(ptr %descriptor, ptr %output) {
+entry:
+  %table = load ptr, ptr %descriptor, align 8
+  call void @descriptor_leaf(ptr %table, ptr %output)
+  ret void
+}
+
+define i32 @nested_descriptor_main() {
+entry:
+  %descriptor = alloca ptr, align 8
+  %output = alloca [4 x i32], align 16
+  %lookup.view = getelementptr [6 x i32], ptr @lookup, i64 0, i64 1
+  store ptr %lookup.view, ptr %descriptor, align 8
+  call void @descriptor_bridge(ptr %descriptor, ptr %output)
+  ret i32 0
+}
+
 define i32 @main() {
 entry:
   %descriptor = alloca ptr, align 8
@@ -1073,6 +1108,38 @@ void operationCandidateCapturesDescriptorLoadedMemory() {
       tableRootOrdinal = ordinal;
   if (!tableRootOrdinal)
     fail(test, "descriptor table has no logical memory-root binding");
+
+  loom::frontend::SpatialOwnershipScope transitiveScope{
+      findStructuredLoop(test, compiled.structuredProgram, "descriptor_leaf")};
+  auto transitiveDecisions =
+      take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+                     compiled.structuredProgram, transitiveScope.selection));
+  if (transitiveDecisions.empty())
+    fail(test, "transitive descriptor leaf has no ownership decision");
+  auto transitiveCandidate =
+      take(test, loom::frontend::materializeSpatialOwnershipDecision(
+                     compiled.structuredProgram, transitiveScope,
+                     transitiveDecisions.front(), design.roots().front()));
+  auto transitiveView =
+      take(test, transitiveCandidate.canonicalDataflow.view());
+  dataflow::RootedGraphLaunchRef transitiveLaunch =
+      onlyLaunch(test, transitiveView);
+  auto transitivePrepared =
+      take(test, loom::frontend::prepareSpatialOwnershipSelection(
+                     compiled.structuredProgram, transitiveScope,
+                     transitiveDecisions.front()));
+  llvm::SmallVector<mlir::LLVM::CallOp, 2> transitivePath{
+      findHostCall(test, *transitivePrepared.module, "nested_descriptor_main",
+                   "descriptor_bridge"),
+      findHostCall(test, *transitivePrepared.module, "descriptor_bridge",
+                   "descriptor_leaf")};
+  auto transitivePlan = take(
+      test, loom::sim::deriveOperationSimulationInputCapturePlan(
+                transitiveView, transitiveLaunch, transitivePrepared.liveIns,
+                transitivePrepared.liveOuts, transitivePath));
+  if (transitivePlan.input.objects.size() != 2 ||
+      transitivePlan.input.memoryRootBindings.size() != 2)
+    fail(test, "transitive descriptor capture lost a finite backing object");
 
   mlir::LLVM::CallOp ambiguousInvocation = findHostCall(
       test, *prepared.module, "ambiguous_main", "descriptor_lookup");

@@ -486,6 +486,10 @@ invocationSegmentsTo(mlir::LLVM::LoadOp load,
       invocationPath.front()->getParentOfType<mlir::LLVM::LLVMFuncOp>();
   if (!rootCaller)
     return invalid("operation invocation path has no root caller");
+  if (rootCaller == loadCallable)
+    return llvm::SmallVector<InvocationSegment, 4>{
+        InvocationSegment{rootCaller, load.getOperation()}};
+
   segments.push_back(InvocationSegment{
       rootCaller, mlir::LLVM::CallOp(invocationPath.front()).getOperation()});
   for (std::size_t index = 0; index < invocationPath.size(); ++index) {
@@ -497,15 +501,17 @@ invocationSegmentsTo(mlir::LLVM::LoadOp load,
             call, call.getCalleeAttr());
     if (!callee)
       return invalid("operation invocation path callee does not resolve");
+    if (callee == loadCallable) {
+      segments.push_back(InvocationSegment{callee, load.getOperation()});
+      return segments;
+    }
+    if (index + 1 == invocationPath.size())
+      break;
     mlir::Operation *anchor =
-        index + 1 == invocationPath.size()
-            ? load.getOperation()
-            : mlir::LLVM::CallOp(invocationPath[index + 1]).getOperation();
+        mlir::LLVM::CallOp(invocationPath[index + 1]).getOperation();
     segments.push_back(InvocationSegment{callee, anchor});
   }
-  if (segments.back().callable != loadCallable)
-    return invalid("operation invocation path does not reach pointer load");
-  return segments;
+  return invalid("operation invocation path does not reach pointer load");
 }
 
 llvm::Expected<std::optional<mlir::Value>> findSegmentReachingPointerStore(
