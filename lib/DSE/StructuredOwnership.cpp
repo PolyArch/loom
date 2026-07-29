@@ -579,9 +579,21 @@ generateAndPromoteStructuredOwnership(
       derivations.push_back(StructuredOwnershipDerivation{
           disposition.coordinate.scope, *disposition.coordinate.decision});
     }
+    std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
+    if (reference != *parentReference) {
+      auto replay =
+          evaluation::models::getPrimedStructuredProgramFunctionalReplay(
+              reference, *workloadReference, *runtimeInputReference);
+      if (!replay)
+        return replay.takeError();
+      if (replay->status != sim::SourceBackedDfgValidationStatus::Equivalent)
+        return invalid("selected accelerator candidate lacks equivalent "
+                       "functional replay");
+      functionalReplay.emplace(std::move(*replay));
+    }
     selected.push_back({frontend::MaterializedOwnershipCandidate{
                             std::move(*structured), std::move(*dataflow)},
-                        std::move(derivations)});
+                        std::move(derivations), std::move(functionalReplay)});
   }
   return StructuredOwnershipExplorationOutcome{
       CompletedStructuredOwnershipSelection{std::move(selected),

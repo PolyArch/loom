@@ -219,7 +219,6 @@ class CorpusGateTestBase(unittest.TestCase):
             ("lld", "stub-lld"),
             ("payload", "stub-payload"),
             ("llvm_dis", "stub-llvm-dis"),
-            ("llvm_link", "stub-llvm-link"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -244,7 +243,6 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_LLD": self.tool_paths["lld"],
             "LOOM_PAYLOAD": self.tool_paths["payload"],
             "LOOM_LLVM_DIS": self.tool_paths["llvm_dis"],
-            "LOOM_LLVM_LINK": self.tool_paths["llvm_link"],
             "STUB_LOG": str(self.log),
         }
         for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
@@ -372,7 +370,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
-            llvm_link=self.tool_paths["llvm_link"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -386,11 +383,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
         case_dir.mkdir()
 
         prepared = corpus_gate.import_produced_workload(
-            corpus_gate.ProducedWorkload(build_dir, executable, None),
+            corpus_gate.ProducedWorkload(build_dir, executable),
             toolchain,
             case_dir,
             time.monotonic() + 5.0,
-            need_native=False,
         )
 
         self.assertIsInstance(prepared, corpus_gate.LinkedWorkloadModules)
@@ -515,15 +511,13 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
 
         invocations = self.invocation_lines()
-        compiled = [line for line in invocations if "-emit-llvm" in line]
         linked = [line for line in invocations if "save-temps=resolution" in line]
         simulated = [line for line in invocations if "stub-dfg-run " in line]
-        self.assertEqual(len(compiled), 1)
         self.assertEqual(len(linked), 1)
         self.assertEqual(len(simulated), 1)
         for line in simulated:
             self.assertIn("--builtin=small", line)
-            self.assertIn("--native-llvm=", line)
+            self.assertNotIn("--native-llvm=", line)
             self.assertIn("--canonical-output=", line)
             self.assertIn("--output=", line)
             self.assertIn("--candidate-jobs=1", line)
@@ -541,7 +535,6 @@ class CommandConstructionTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
-            llvm_link=self.tool_paths["llvm_link"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -589,11 +582,10 @@ class CommandConstructionTest(CorpusGateTestBase):
         )
         self.assertEqual(command[0], self.tool_paths["cxx"])
 
-    def test_dfg_sim_command_binds_target_native_and_outputs(self) -> None:
+    def test_dfg_sim_command_binds_target_and_outputs(self) -> None:
         command = corpus_gate.dfg_sim_command(
             self.toolchain(),
             self.out_dir / "target.ll",
-            self.out_dir / "native.ll",
             self.out_dir / "store",
             self.out_dir / "program.dfg.mlir",
             self.out_dir / "simulation.json",
@@ -605,7 +597,6 @@ class CommandConstructionTest(CorpusGateTestBase):
                 self.tool_paths["dfg_run"],
                 "--builtin=small",
                 f"--artifact-store={self.out_dir / 'store'}",
-                f"--native-llvm={self.out_dir / 'native.ll'}",
                 f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",
                 f"--output={self.out_dir / 'simulation.json'}",
                 "--candidate-jobs=3",

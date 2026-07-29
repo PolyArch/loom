@@ -41,7 +41,8 @@ exploreStructuredCompilationToPreMapping(
             compilation.fabric, compilation.staticGlobalMemory,
             std::move(candidate.candidate.structuredProgram),
             std::move(candidate.candidate.canonicalDataflow)},
-        std::move(candidate.derivations)});
+        std::move(candidate.derivations),
+        std::move(candidate.functionalReplay)});
   }
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(selection.satisfiedEvidence),

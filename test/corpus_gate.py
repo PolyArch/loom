@@ -18,10 +18,10 @@ test/corpus_inventory.py and run through production compiler tools:
   must carry the exact target triple attribute and its structured
   graph/actor counts must parse, so a graph-free whole-program result is
   distinguishable from a nonempty Spatial graph.
-- stage ``dfg-sim``: compiles target and native LLVM modules, then runs the
-  production pre-Mapping path and typed DFG simulator in one invocation. Each
-  exact Spatial invocation is compared with independently captured native
-  memory results. Graph-free, unsupported, empty, or malformed executions fail.
+- stage ``dfg-sim``: runs the production pre-Mapping path and typed DFG
+  simulator in one invocation. Each exact Spatial invocation is compared with
+  the source program under the workload-owned runtime input. Graph-free,
+  unsupported, empty, or malformed executions fail.
 
 A source row whose feature-guarded body is empty under the exact target can
 still pass the ``llvm`` stage. It cannot stand in for a linked workload or a
@@ -128,9 +128,6 @@ CATEGORY_FINAL_LINK = "final-link"
 CATEGORY_FINAL_LINK_ARTIFACT = "final-link-artifact"
 CATEGORY_PAYLOAD_IMPORT = "payload-import"
 CATEGORY_LINKED_LLVM_ARTIFACT = "linked-llvm-artifact"
-CATEGORY_NATIVE_COMPILE = "native-compile"
-CATEGORY_NATIVE_LINK = "native-link"
-CATEGORY_NATIVE_LLVM_ARTIFACT = "native-llvm-artifact"
 CATEGORY_DFG_SIM = "dfg-sim"
 CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE = "workload-provider-unavailable"
@@ -152,7 +149,6 @@ ENV_TOOL_NAMES = {
     "lld": "LOOM_LLD",
     "payload": "LOOM_PAYLOAD",
     "llvm_dis": "LOOM_LLVM_DIS",
-    "llvm_link": "LOOM_LLVM_LINK",
 }
 TOOL_FILE_NAMES = {
     "cc": "loom-cc",
@@ -164,9 +160,8 @@ TOOL_FILE_NAMES = {
     "lld": "ld.lld",
     "payload": "loom-payload",
     "llvm_dis": "llvm-dis",
-    "llvm_link": "llvm-link",
 }
-LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis", "llvm_link"})
+LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 15.0
@@ -190,7 +185,6 @@ class Toolchain:
     lld: str
     payload: str
     llvm_dis: str
-    llvm_link: str
     sysroot: Path
     gcc_toolchain: Path
 
@@ -204,7 +198,6 @@ class StepFailure:
 @dataclass(frozen=True)
 class LinkedWorkloadModules:
     target: Path
-    native: Path | None
 
 
 @dataclass(frozen=True)
@@ -360,7 +353,6 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
         lld=tools["lld"],
         payload=tools["payload"],
         llvm_dis=tools["llvm_dis"],
-        llvm_link=tools["llvm_link"],
         sysroot=sysroot,
         gcc_toolchain=gcc_toolchain,
     )
@@ -451,24 +443,6 @@ def target_object_command(
     ]
 
 
-def native_compile_command(
-    toolchain: Toolchain,
-    suite_flags: Sequence[str],
-    source: Path,
-    output: Path,
-) -> list[str]:
-    return [
-        compiler_for(toolchain, source),
-        *suite_flags,
-        "-emit-llvm",
-        "-S",
-        "-O1",
-        str(source),
-        "-o",
-        str(output),
-    ]
-
-
 def final_link_command(
     toolchain: Toolchain,
     sources: Sequence[Path],
@@ -519,18 +493,6 @@ def disassemble_command(
     return [toolchain.llvm_dis, str(bitcode), "-o", str(llvm_ir)]
 
 
-def native_link_command(
-    toolchain: Toolchain, modules: Sequence[Path], output: Path
-) -> list[str]:
-    return [
-        toolchain.llvm_link,
-        *(str(path) for path in modules),
-        "-S",
-        "-o",
-        str(output),
-    ]
-
-
 def raise_command(toolchain: Toolchain, llvm_ir: Path, output: Path) -> list[str]:
     return [toolchain.raise_tool, str(llvm_ir), "-o", str(output)]
 
@@ -562,7 +524,6 @@ def pre_mapping_command(
 def dfg_sim_command(
     toolchain: Toolchain,
     target_llvm_ir: Path,
-    native_llvm_ir: Path,
     store_dir: Path,
     d0_module: Path,
     report: Path,
@@ -572,7 +533,6 @@ def dfg_sim_command(
         toolchain.dfg_run,
         f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
-        f"--native-llvm={native_llvm_ir}",
         f"--canonical-output={d0_module}",
         f"--output={report}",
         f"--candidate-jobs={candidate_jobs}",
@@ -593,22 +553,6 @@ def llvm_ir_defect(path: Path) -> str | None:
         return f"LLVM IR lacks exact target triple {LLVM_TRIPLE_LINE!r}: {path}"
     if LLVM_DATALAYOUT_LINE not in lines:
         return f"LLVM IR lacks exact target DataLayout {LLVM_DATALAYOUT_LINE!r}: {path}"
-    return None
-
-
-def native_llvm_ir_defect(path: Path) -> str | None:
-    """Return why a host LLVM module cannot serve as a native oracle."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return f"cannot read native LLVM IR {path}: {exc}"
-    if not text.strip():
-        return f"empty native LLVM IR: {path}"
-    lines = text.splitlines()
-    if not any(line.startswith("target triple = ") for line in lines):
-        return f"native LLVM IR lacks a target triple: {path}"
-    if not any(line.startswith("target datalayout = ") for line in lines):
-        return f"native LLVM IR lacks a DataLayout: {path}"
     return None
 
 
@@ -754,7 +698,6 @@ def prepare_linked_workload(
     external_root: Path,
     case_dir: Path,
     deadline: float,
-    need_native: bool,
 ) -> LinkedWorkloadModules | StepFailure:
     if not case.sources:
         return StepFailure(
@@ -766,7 +709,6 @@ def prepare_linked_workload(
     suite_flags.extend(case.compiler_flags)
     sources = [resolve_source(path, external_root) for path in case.sources]
     target_objects: list[Path] = []
-    native_modules: list[Path] = []
     for ordinal, (repo_relative, source) in enumerate(
         zip(case.sources, sources, strict=True)
     ):
@@ -788,29 +730,6 @@ def prepare_linked_workload(
         if defect is not None:
             return StepFailure(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
         target_objects.append(target_object)
-
-        if need_native:
-            native_module = case_dir / f"source-{ordinal:03d}.native.ll"
-            clear_artifacts(native_module)
-            failure = run_step(
-                native_compile_command(
-                    toolchain, suite_flags, source, native_module
-                ),
-                case_dir / f"source-{ordinal:03d}.native-compile.log",
-                deadline,
-                CATEGORY_NATIVE_COMPILE,
-            )
-            if failure is not None:
-                return StepFailure(
-                    failure.category, f"{repo_relative}: {failure.detail}"
-                )
-            defect = native_llvm_ir_defect(native_module)
-            if defect is not None:
-                return StepFailure(
-                    CATEGORY_NATIVE_LLVM_ARTIFACT,
-                    f"{repo_relative}: {defect}",
-                )
-            native_modules.append(native_module)
 
     executable = case_dir / "program.elf"
     resolution = Path(f"{executable}.resolution.txt")
@@ -863,23 +782,7 @@ def prepare_linked_workload(
     if defect is not None:
         return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
 
-    native_llvm_ir: Path | None = None
-    if need_native:
-        native_llvm_ir = case_dir / "program.native.ll"
-        clear_artifacts(native_llvm_ir)
-        failure = run_step(
-            native_link_command(toolchain, native_modules, native_llvm_ir),
-            case_dir / "native-link.log",
-            deadline,
-            CATEGORY_NATIVE_LINK,
-        )
-        if failure is not None:
-            return failure
-        defect = native_llvm_ir_defect(native_llvm_ir)
-        if defect is not None:
-            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
-
-    return LinkedWorkloadModules(linked_llvm_ir, native_llvm_ir)
+    return LinkedWorkloadModules(linked_llvm_ir)
 
 
 def import_produced_workload(
@@ -887,7 +790,6 @@ def import_produced_workload(
     toolchain: Toolchain,
     case_dir: Path,
     deadline: float,
-    need_native: bool,
 ) -> LinkedWorkloadModules | StepFailure:
     try:
         relative_executable = produced.target_executable.relative_to(
@@ -938,62 +840,22 @@ def import_produced_workload(
     if defect is not None:
         return StepFailure(CATEGORY_LINKED_LLVM_ARTIFACT, defect)
 
-    native_llvm_ir: Path | None = None
-    if need_native:
-        if produced.native_bitcode is None:
-            return StepFailure(
-                CATEGORY_NATIVE_LLVM_ARTIFACT,
-                "produced workload has no native pre-code-generation bitcode",
-            )
-        defect = binary_artifact_defect(
-            produced.native_bitcode, "native pre-code-generation bitcode"
-        )
-        if defect is not None:
-            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
-        native_llvm_ir = case_dir / "program.native.ll"
-        clear_artifacts(native_llvm_ir)
-        failure = run_step(
-            disassemble_command(toolchain, produced.native_bitcode, native_llvm_ir),
-            case_dir / "native-llvm-dis.log",
-            deadline,
-            CATEGORY_NATIVE_LLVM_ARTIFACT,
-        )
-        if failure is not None:
-            return failure
-        defect = native_llvm_ir_defect(native_llvm_ir)
-        if defect is not None:
-            return StepFailure(CATEGORY_NATIVE_LLVM_ARTIFACT, defect)
-
-    return LinkedWorkloadModules(linked_llvm_ir, native_llvm_ir)
+    return LinkedWorkloadModules(linked_llvm_ir)
 
 
-def _cmsis_nn_cmake_toolchain(
-    toolchain: Toolchain, *, target: bool
-) -> CmakeToolchain:
+def _cmsis_nn_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
     llvm_bin = Path(toolchain.llvm_dis).parent
-    compiler_flags = ["-flto=full"]
+    compiler_flags = [*target_flags(toolchain), "-flto=full", "-ffat-lto-objects"]
     linker_flags = [
         f"-fuse-ld={toolchain.lld}",
         "-flto=full",
+        "-Wl,--fat-lto-objects",
         "-Wl,--save-temps=precodegen",
+        "-Wl,--save-temps=resolution",
         "-Wl,--lto-O1",
+        "-Xlinker",
+        f"--plugin-opt=-mattr={TARGET_LTO_MATTR}",
     ]
-    system_name: str | None = None
-    if target:
-        compiler_flags = [
-            *target_flags(toolchain),
-            *compiler_flags,
-            "-ffat-lto-objects",
-        ]
-        linker_flags.extend(
-            [
-                "-Wl,--fat-lto-objects",
-                "-Wl,--save-temps=resolution",
-                "-Xlinker",
-                f"--plugin-opt=-mattr={TARGET_LTO_MATTR}",
-            ]
-        )
-        system_name = "Generic"
     return CmakeToolchain(
         c_compiler=toolchain.cc,
         cxx_compiler=toolchain.cxx,
@@ -1001,13 +863,12 @@ def _cmsis_nn_cmake_toolchain(
         ranlib=llvm_bin / "llvm-ranlib",
         compiler_flags=tuple(compiler_flags),
         linker_flags=tuple(linker_flags),
-        system_name=system_name,
+        system_name="Generic",
     )
 
 
 def prepare_workload_providers(
     cases: Sequence[corpus_inventory.ProgramWorkload],
-    stage: str,
     toolchain: Toolchain,
     external_root: Path,
     out_root: Path,
@@ -1050,7 +911,7 @@ def prepare_workload_providers(
             harness,
             external_root / "cmsis-nn",
             target_build,
-            _cmsis_nn_cmake_toolchain(toolchain, target=True),
+            _cmsis_nn_cmake_toolchain(toolchain),
         ),
         provider_root / "target-configure.log",
         time.monotonic() + timeout,
@@ -1067,41 +928,9 @@ def prepare_workload_providers(
     if failure is not None:
         return fail_all(failure)
 
-    native_build: Path | None = None
-    if stage == "dfg-sim":
-        native_build = provider_root / "native"
-        failure = run_step(
-            cmake_configure_command(
-                harness,
-                external_root / "cmsis-nn",
-                native_build,
-                _cmsis_nn_cmake_toolchain(toolchain, target=False),
-            ),
-            provider_root / "native-configure.log",
-            time.monotonic() + timeout,
-            CATEGORY_NATIVE_LINK,
-        )
-        if failure is not None:
-            return fail_all(failure)
-        failure = run_step(
-            cmake_build_command(native_build, harness.targets, jobs),
-            provider_root / "native-build.log",
-            time.monotonic() + timeout,
-            CATEGORY_NATIVE_LINK,
-        )
-        if failure is not None:
-            return fail_all(failure)
-
     for case in cmsis_nn:
         target_executable = harness.executable(target_build, case.executable)
-        native_bitcode = (
-            Path(f"{harness.executable(native_build, case.executable)}.0.5.precodegen.bc")
-            if native_build is not None
-            else None
-        )
-        results[case.identity] = ProducedWorkload(
-            target_build, target_executable, native_bitcode
-        )
+        results[case.identity] = ProducedWorkload(target_build, target_executable)
     return results
 
 
@@ -1184,7 +1013,6 @@ def run_case(
                 external_root,
                 case_dir,
                 deadline,
-                need_native=stage == "dfg-sim",
             )
         else:
             produced = provider_results.get(case.identity)
@@ -1201,17 +1029,11 @@ def run_case(
                 toolchain,
                 case_dir,
                 deadline,
-                need_native=stage == "dfg-sim",
             )
         if isinstance(prepared, StepFailure):
             return finish(prepared.category, prepared.detail)
 
         if stage == "dfg-sim":
-            if prepared.native is None:
-                return finish(
-                    CATEGORY_INTERNAL,
-                    "DFG simulation received no native-oracle module",
-                )
             d0_module = case_dir / "program.dfg.mlir"
             report_path = case_dir / "program.dfg-sim.json"
             clear_artifacts(d0_module, report_path)
@@ -1219,7 +1041,6 @@ def run_case(
                 dfg_sim_command(
                     toolchain,
                     prepared.target,
-                    prepared.native,
                     store_dir,
                     d0_module,
                     report_path,
@@ -1318,7 +1139,6 @@ def run_cases(
     ]
     provider_results = prepare_workload_providers(
         workload_cases,
-        stage,
         toolchain,
         external_root,
         out_root,
@@ -1537,7 +1357,6 @@ def render_json(
             "dfg_run": toolchain.dfg_run,
             "lld": toolchain.lld,
             "llvm_dis": toolchain.llvm_dis,
-            "llvm_link": toolchain.llvm_link,
             "payload": toolchain.payload,
             "pre_mapping": toolchain.pre_mapping,
             "raise": toolchain.raise_tool,

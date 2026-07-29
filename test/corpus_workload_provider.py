@@ -32,7 +32,6 @@ class CmsisNnHarness:
 class ProducedWorkload:
     target_build_dir: Path
     target_executable: Path
-    native_bitcode: Path | None
 
 
 @dataclass(frozen=True)

@@ -85,6 +85,7 @@ struct StructuredOwnershipCandidateDisposition final {
 struct SelectedStructuredOwnershipCandidate final {
   frontend::MaterializedOwnershipCandidate candidate;
   std::vector<StructuredOwnershipDerivation> derivations;
+  std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 
 struct CompletedStructuredOwnershipSelection final {

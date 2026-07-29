@@ -1,12 +1,14 @@
 #ifndef LOOM_SIMULATOR_SOURCEBACKEDDFGVALIDATION_H
 #define LOOM_SIMULATOR_SOURCEBACKEDDFGVALIDATION_H
 
+#include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <map>
 
 namespace loom::sim {
 
@@ -25,8 +27,12 @@ struct SourceBackedDfgValidationResult final {
   SourceBackedDfgValidationStatus status =
       SourceBackedDfgValidationStatus::Inapplicable;
   std::uint64_t dynamicActivations = 0;
+  std::uint64_t valueLanesCompared = 0;
+  std::uint64_t memoryBytesCompared = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
+  double simulationSeconds = 0.0;
+  std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
 };
 
 struct SourceBackedDfgValidationLimits final {

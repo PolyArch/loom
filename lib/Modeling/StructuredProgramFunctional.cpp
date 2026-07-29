@@ -163,16 +163,24 @@ enum class ReplayResultKind : std::uint8_t {
 
 struct CachedReplayResult final {
   ReplayResultKind kind = ReplayResultKind::Unsupported;
-  std::uint64_t dynamicActivations = 0;
-  std::uint64_t wavefrontSteps = 0;
-  std::uint64_t eventCount = 0;
+  std::optional<sim::SourceBackedDfgValidationResult> replay;
 
   friend bool operator==(const CachedReplayResult &lhs,
                          const CachedReplayResult &rhs) {
-    return lhs.kind == rhs.kind &&
-           lhs.dynamicActivations == rhs.dynamicActivations &&
-           lhs.wavefrontSteps == rhs.wavefrontSteps &&
-           lhs.eventCount == rhs.eventCount;
+    if (lhs.kind != rhs.kind ||
+        lhs.replay.has_value() != rhs.replay.has_value())
+      return false;
+    if (!lhs.replay)
+      return true;
+    const auto &left = *lhs.replay;
+    const auto &right = *rhs.replay;
+    return left.status == right.status &&
+           left.dynamicActivations == right.dynamicActivations &&
+           left.valueLanesCompared == right.valueLanesCompared &&
+           left.memoryBytesCompared == right.memoryBytesCompared &&
+           left.wavefrontSteps == right.wavefrontSteps &&
+           left.eventCount == right.eventCount &&
+           left.operationFireCounts == right.operationFireCounts;
   }
 };
 
@@ -213,8 +221,7 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
       kind = ReplayResultKind::Inapplicable;
       break;
     }
-    return CachedReplayResult{kind, replay->dynamicActivations,
-                              replay->wavefrontSteps, replay->eventCount};
+    return CachedReplayResult{kind, std::move(*replay)};
   }
 
   std::error_code code;
@@ -227,7 +234,7 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
                         });
   stream.flush();
   if (code == std::make_error_code(std::errc::not_supported))
-    return CachedReplayResult{ReplayResultKind::Unsupported};
+    return CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt};
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }
@@ -500,6 +507,26 @@ llvm::Error primeStructuredProgramFunctionalReplay(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: nondeterministic replay");
   return llvm::Error::success();
+}
+
+llvm::Expected<sim::SourceBackedDfgValidationResult>
+getPrimedStructuredProgramFunctionalReplay(
+    const ArtifactRootReference &candidate,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput) {
+  const std::vector<std::uint8_t> key =
+      replayCacheKey(candidate, workload, runtimeInput);
+  std::lock_guard<std::mutex> lock(replayCacheMutex());
+  auto found = replayCache().find(key);
+  if (found == replayCache().end())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay was not primed");
+  if (!found->second.replay)
+    return llvm::createStringError(
+        std::make_error_code(std::errc::not_supported),
+        "structured_functional_model_unsupported: replay provider unavailable");
+  return *found->second.replay;
 }
 
 llvm::Expected<PreparedStructuredProgramFunctionalEvaluation>

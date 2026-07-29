@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -439,7 +440,8 @@ llvm::Expected<bool>
 compareObservations(const SpatialSimulationWorkload &workload,
                     const SpatialFunctionalObservations &observations,
                     const WorkloadBackedSimulationInputCapturePlan &plan,
-                    const NativeSimulationCallCapture &native) {
+                    const NativeSimulationCallCapture &native,
+                    SourceBackedDfgValidationResult &result) {
   if (workload.observableContract.valueResults.size() !=
           plan.valueResults.size() ||
       observations.valueResults.size() != plan.valueResults.size() ||
@@ -452,6 +454,7 @@ compareObservations(const SpatialSimulationWorkload &workload,
       return false;
     if (!sameValue(published->value, expected))
       return false;
+    result.valueLanesCompared += published->value.lanes.size();
   }
 
   if (observations.memories.size() !=
@@ -486,6 +489,7 @@ compareObservations(const SpatialSimulationWorkload &workload,
     for (auto [actual, byte] : llvm::zip_equal(full->bytes, expected))
       if (actual.state != SemanticState::Defined || actual.value != byte)
         return false;
+    result.memoryBytesCompared += full->bytes.size();
   }
   return true;
 }
@@ -600,8 +604,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
 
   std::uint64_t sourceActivationCount = 0;
   bool activationMismatch = false;
-  SourceBackedDfgValidationResult result{
-      SourceBackedDfgValidationStatus::Equivalent};
+  SourceBackedDfgValidationResult result;
+  result.status = SourceBackedDfgValidationStatus::Equivalent;
   auto replayActivation =
       [&](NativeSimulationCallCapture &&call) -> llvm::Error {
     if (result.wavefrontSteps >= limits.maxWavefrontSteps)
@@ -626,45 +630,54 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
     if (!replayInput)
       return replayInput.takeError();
+    const auto started = std::chrono::steady_clock::now();
     auto execution = simulateRetiredDfgWorkload(
         candidate.canonicalDataflow, *replayWorkload, *replayInput,
         limits.maxWavefrontSteps - result.wavefrontSteps);
-    auto accountExecution = [&](std::uint64_t wavefrontSteps,
-                                std::uint64_t eventCount) -> llvm::Error {
-      if (eventCount > limits.maxEventCount - result.eventCount)
+    const auto stopped = std::chrono::steady_clock::now();
+    result.simulationSeconds +=
+        std::chrono::duration<double>(stopped - started).count();
+    auto accountExecution =
+        [&](const DFGSimulationReport &report) -> llvm::Error {
+      if (report.eventCount > limits.maxEventCount - result.eventCount)
         return executionLimit("aggregate event budget exhausted");
       if (result.dynamicActivations ==
               std::numeric_limits<std::uint64_t>::max() ||
-          result.wavefrontSteps >
-              std::numeric_limits<std::uint64_t>::max() - wavefrontSteps ||
+          result.wavefrontSteps > std::numeric_limits<std::uint64_t>::max() -
+                                      report.wavefrontSteps ||
           result.eventCount >
-              std::numeric_limits<std::uint64_t>::max() - eventCount)
+              std::numeric_limits<std::uint64_t>::max() - report.eventCount)
         return executionFailed("source-backed replay accounting overflowed");
       ++result.dynamicActivations;
-      result.wavefrontSteps += wavefrontSteps;
-      result.eventCount += eventCount;
+      result.wavefrontSteps += report.wavefrontSteps;
+      result.eventCount += report.eventCount;
+      for (const auto &[schema, count] : report.operationFireCounts) {
+        std::uint64_t &aggregate = result.operationFireCounts[schema];
+        if (aggregate > std::numeric_limits<std::uint64_t>::max() - count)
+          return executionFailed(
+              "source-backed operation firing count overflowed");
+        aggregate += count;
+      }
       return llvm::Error::success();
     };
     if (!execution) {
       return llvm::handleErrors(
           execution.takeError(),
           [&](const NonRetiredDFGExecutionError &failure) -> llvm::Error {
-            if (llvm::Error error =
-                    accountExecution(failure.report().wavefrontSteps,
-                                     failure.report().eventCount))
+            if (llvm::Error error = accountExecution(failure.report()))
               return error;
             result.status = SourceBackedDfgValidationStatus::Mismatch;
             return llvm::Error::success();
           });
     }
-    auto equivalent = compareObservations(*replayWorkload->spatial(),
-                                          execution->observations, *plan, call);
+    auto equivalent =
+        compareObservations(*replayWorkload->spatial(), execution->observations,
+                            *plan, call, result);
     if (!equivalent)
       return equivalent.takeError();
     if (!*equivalent)
       result.status = SourceBackedDfgValidationStatus::Mismatch;
-    return accountExecution(execution->report.wavefrontSteps,
-                            execution->report.eventCount);
+    return accountExecution(execution->report);
   };
   std::optional<llvm::Error> deferredReplayFailure;
   auto censusAndReplay =
@@ -702,8 +715,10 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   if (activationMismatch || wholeProgramMismatch) {
     if (deferredReplayFailure)
       llvm::consumeError(std::move(*deferredReplayFailure));
-    return SourceBackedDfgValidationResult{
-        SourceBackedDfgValidationStatus::Mismatch, sourceActivationCount, 0, 0};
+    SourceBackedDfgValidationResult mismatch;
+    mismatch.status = SourceBackedDfgValidationStatus::Mismatch;
+    mismatch.dynamicActivations = sourceActivationCount;
+    return mismatch;
   }
   if (deferredReplayFailure)
     return std::move(*deferredReplayFailure);

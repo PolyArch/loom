@@ -64,6 +64,15 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     const StructuredProgramFunctionalReplayInvocation &invocation,
     const ::loom::ArtifactStore &artifactStore);
 
+/// Return the provider-owned transient replay projection already used to
+/// produce functional Evidence for this exact case. This does not execute the
+/// candidate again and does not become persistent candidate state.
+llvm::Expected<::loom::sim::SourceBackedDfgValidationResult>
+getPrimedStructuredProgramFunctionalReplay(
+    const ::loom::ArtifactRootReference &candidate,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput);
+
 /// Constructs the finding-only request comparing one exact Structured
 /// candidate with the source program owned by the exact workload/runtime pair.
 llvm::Expected<PreparedStructuredProgramFunctionalEvaluation>
