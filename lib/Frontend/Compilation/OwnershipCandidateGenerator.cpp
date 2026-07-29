@@ -1,6 +1,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
 #include "StructuredAddressIndexNarrowing.h"
+#include "StructuredCallSpecialization.h"
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowAttrs.h"
@@ -288,8 +289,9 @@ deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
       boundary.undefs.push_back(undef);
   });
   mlir::Block &entry = function.getBody().front();
-  boundary.inputs.append(entry.getArguments().begin(),
-                         entry.getArguments().end());
+  for (mlir::BlockArgument argument : entry.getArguments())
+    if (!argument.use_empty())
+      boundary.inputs.push_back(argument);
   for (mlir::LLVM::AddressOfOp address : boundary.addresses)
     boundary.inputs.push_back(address.getRes());
   for (mlir::LLVM::UndefOp undef : boundary.undefs)
@@ -1072,14 +1074,28 @@ enumerateSpatialOwnershipDecisionDomain(
     forallShapes.push_back(std::nullopt);
   }
 
+  llvm::SmallVector<std::optional<DirectCallSpecializationShape>, 2>
+      callSpecializations;
+  callSpecializations.push_back(std::nullopt);
+  auto hasCallSpecialization =
+      detail::hasUniformExactCallArgumentSpecialization(parent.module(),
+                                                        operation);
+  if (!hasCallSpecialization)
+    return hasCallSpecialization.takeError();
+  if (*hasCallSpecialization)
+    callSpecializations.push_back(
+        DirectCallSpecializationShape::UniformExactConstants);
+
   std::vector<SpatialOwnershipDecisionPoint> result;
   result.reserve(indexWidths.size() * executionShapes.size() *
-                 forallShapes.size());
+                 forallShapes.size() * callSpecializations.size());
   for (std::optional<unsigned> indexWidth : indexWidths)
     for (std::optional<raising::FMulAddExecutionShape> shape : executionShapes)
       for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
-        result.push_back(
-            SpatialOwnershipDecisionPoint{shape, indexWidth, forallShape});
+        for (std::optional<DirectCallSpecializationShape> callSpecialization :
+             callSpecializations)
+          result.push_back(SpatialOwnershipDecisionPoint{
+              shape, indexWidth, forallShape, callSpecialization});
   return result;
 }
 
@@ -1174,6 +1190,18 @@ prepareSpatialOwnershipSelection(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   }
+  if (decision.directCallSpecializationShape) {
+    if (*decision.directCallSpecializationShape !=
+        DirectCallSpecializationShape::UniformExactConstants)
+      return invalid("unknown direct-call specialization shape");
+    auto specialized =
+        detail::materializeUniformExactCallArgumentSpecialization(
+            selection->clone.get(), operation);
+    if (!specialized)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    specialized.takeError());
+    operation = *specialized;
+  }
   if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
           selection->clone.get()))
     return std::move(error);
@@ -1242,11 +1270,11 @@ materializeSpatialOwnership(const StructuredProgramCandidate &parent,
                             const StructuredEntityRef &selection,
                             const fabric::FinalizedFabricRoot &fabric,
                             const SpatialOwnershipOptions &options) {
-  return materializeSpatialOwnershipDecision(parent, {selection},
-                                             {options.fmuladdExecutionShape,
-                                              options.canonicalIndexWidth,
-                                              options.forallOwnershipShape},
-                                             fabric, options.lowering);
+  return materializeSpatialOwnershipDecision(
+      parent, {selection},
+      {options.fmuladdExecutionShape, options.canonicalIndexWidth,
+       options.forallOwnershipShape, options.directCallSpecializationShape},
+      fabric, options.lowering);
 }
 
 } // namespace loom::frontend

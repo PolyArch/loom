@@ -197,6 +197,15 @@ Requiring one explicit decision for every Spatial ownership shape avoids an
 ambient default and lets proof-backed narrowing reject only the infeasible
 candidate rather than silently truncating source addresses.
 
+Direct-call constant specialization follows the same rule. Treating each
+formal as an independent switch would create an argument-subset powerset and a
+second call-profile authority. The SCF specification therefore defines one
+all-bindings decision derived from the exact linked call graph. Candidate-local
+substitution and simplification expose a smaller dependency-closed region while
+preserving the original callable ABI; unknown or conflicting callers simply
+leave that choice absent. Dynamic workload coverage remains useful for ranking,
+but cannot justify changing code that is reachable under another legal input.
+
 Candidate rejection must remain as observable invocation provenance. Dropping
 a whole callable because it contains an unresolved call, or dropping one
 address-width choice because narrowing cannot be proved, makes a graph-free

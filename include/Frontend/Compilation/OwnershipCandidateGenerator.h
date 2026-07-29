@@ -35,6 +35,10 @@ enum class ForallOwnershipShape {
   LogicalThreadDomain,
 };
 
+enum class DirectCallSpecializationShape : std::uint8_t {
+  UniformExactConstants = 0,
+};
+
 /// Typed decisions that must be materialized in the selected Structured
 /// Program before the mechanical Dataflow boundary. An absent decision never
 /// selects a default; a selected region that still contains such a choice
@@ -44,6 +48,8 @@ struct SpatialOwnershipOptions final {
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
+  std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
+      std::nullopt;
 };
 
 /// One finite, scope-local ownership decision point. This is an ephemeral
@@ -54,12 +60,16 @@ struct SpatialOwnershipDecisionPoint final {
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
   std::optional<unsigned> canonicalIndexWidth;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
+  std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
+      std::nullopt;
 
   friend bool operator==(const SpatialOwnershipDecisionPoint &lhs,
                          const SpatialOwnershipDecisionPoint &rhs) {
     return lhs.fmuladdExecutionShape == rhs.fmuladdExecutionShape &&
            lhs.canonicalIndexWidth == rhs.canonicalIndexWidth &&
-           lhs.forallOwnershipShape == rhs.forallOwnershipShape;
+           lhs.forallOwnershipShape == rhs.forallOwnershipShape &&
+           lhs.directCallSpecializationShape ==
+               rhs.directCallSpecializationShape;
   }
 };
 
@@ -188,8 +198,11 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent);
 /// Canonical address widths come from the closed Fabric index-width schema;
 /// exact concrete target admission remains part of candidate materialization.
 /// Fmuladd alternatives are exposed only when the selected scope contains the
-/// corresponding unresolved LLVM operation. The result is deterministic and
-/// performs no ranking or implicit default selection.
+/// corresponding unresolved LLVM operation. A callable whose exact closed
+/// call graph proves uniformly constant arguments exposes one additional
+/// all-bindings specialization choice rather than an argument-subset
+/// Cartesian product. The result is deterministic and performs no ranking or
+/// implicit default selection.
 llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
 enumerateSpatialOwnershipDecisionDomain(
     const StructuredProgramCandidate &parent, const StructuredEntityRef &scope);

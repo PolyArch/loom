@@ -16,6 +16,7 @@
 #include "Simulator/SourceBackedDfgValidation.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -137,6 +138,91 @@ parseFunctionallyIncorrectModule(llvm::LLVMContext &context) {
   fail("incorrect candidate found no floating addition");
 }
 
+std::unique_ptr<llvm::Module>
+parseUniformCallSpecializationModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+define internal i32 @uniform_core(ptr %optional, ptr %out, i32 %count) {
+entry:
+  %is_null = icmp eq ptr %optional, null
+  br i1 %is_null, label %without_value, label %with_value
+
+with_value:
+  %loaded = load i32, ptr %optional, align 4
+  br label %merge
+
+without_value:
+  br label %merge
+
+merge:
+  %value = phi i32 [ %loaded, %with_value ], [ 0, %without_value ]
+  br label %loop
+
+loop:
+  %index = phi i32 [ 0, %merge ], [ %next_index, %loop ]
+  %acc = phi i32 [ %value, %merge ], [ %next_acc, %loop ]
+  %next_acc = add i32 %acc, 1
+  %next_index = add i32 %index, 1
+  %continue = icmp slt i32 %next_index, %count
+  br i1 %continue, label %loop, label %exit
+
+exit:
+  store i32 %next_acc, ptr %out, align 4
+  ret i32 %next_acc
+}
+
+define internal i32 @uniform_forward(ptr %optional, ptr %out, i32 %count) {
+entry:
+  %value = call i32 @uniform_core(ptr %optional, ptr %out, i32 %count)
+  ret i32 %value
+}
+
+define internal i32 @conflicting_core(ptr %optional, ptr %out) {
+entry:
+  %is_null = icmp eq ptr %optional, null
+  br i1 %is_null, label %without_value, label %with_value
+
+with_value:
+  %loaded = load i32, ptr %optional, align 4
+  br label %merge
+
+without_value:
+  br label %merge
+
+merge:
+  %value = phi i32 [ %loaded, %with_value ], [ 0, %without_value ]
+  store i32 %value, ptr %out, align 4
+  ret i32 %value
+}
+
+define i32 @entry(ptr %unknown, ptr %out, i32 %count) {
+entry:
+  %uniform = call i32 @uniform_forward(ptr null, ptr %out, i32 %count)
+  %null_case = call i32 @conflicting_core(ptr null, ptr %out)
+  %unknown_case = call i32 @conflicting_core(ptr %unknown, ptr %out)
+  %partial = add i32 %uniform, %null_case
+  %result = add i32 %partial, %unknown_case
+  ret i32 %result
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<call-specialization>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipEvaluation", stream);
+    fail(stream.str());
+  }
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail("cannot initialize the native target");
+  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+  module->setDataLayout(take(target.getDefaultDataLayoutForTarget()));
+  module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
+  return module;
+}
+
 loom::frontend::StructuredEntityRef
 findCallable(const loom::frontend::StructuredProgramCandidate &candidate,
              llvm::StringRef name) {
@@ -149,6 +235,23 @@ findCallable(const loom::frontend::StructuredProgramCandidate &candidate,
       return entity.reference;
   }
   fail("callable is absent from the Structured Program: " + name.str());
+}
+
+template <typename... OpTy>
+loom::frontend::StructuredEntityRef findTopLevelOperationInCallable(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef callableName) {
+  auto view = take(candidate.view());
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    if (!entity.operation || !llvm::isa<OpTy...>(entity.operation))
+      continue;
+    auto function = entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (function && function.getSymName() == callableName &&
+        entity.operation->getParentOp() == function.getOperation())
+      return entity.reference;
+  }
+  fail("operation is absent from Structured callable: " + callableName.str());
 }
 
 loom::sim::RuntimeMemoryObject zeroedMemory(std::size_t byteCount) {
@@ -208,6 +311,73 @@ SourceSimulationInputs makeSourceSimulationInputs(
   return {std::move(workload), std::move(runtimeInput),
           std::move(workloadReference), std::move(runtimeInputReference),
           std::move(observations)};
+}
+
+void exactUniformCallArgumentsAreCandidateLocal() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-uniform-call-specialization", directory);
+  if (error)
+    fail("cannot create artifact store directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseUniformCallSpecializationModule(context),
+      design.roots().front().reference(), store));
+  const loom::frontend::StructuredEntityRef uniform =
+      findTopLevelOperationInCallable<mlir::scf::ForOp, mlir::scf::WhileOp>(
+          compiled.structuredProgram, "uniform_core");
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+      compiled.structuredProgram, uniform));
+  if (domain.size() != 2)
+    fail("uniform call arguments did not add one specialization choice");
+
+  using Shape = loom::frontend::DirectCallSpecializationShape;
+  const auto specialized = llvm::find_if(
+      domain, [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
+        return point.directCallSpecializationShape ==
+               Shape::UniformExactConstants;
+      });
+  const auto unspecialized = llvm::find_if(
+      domain, [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
+        return !point.directCallSpecializationShape;
+      });
+  if (specialized == domain.end() || unspecialized == domain.end())
+    fail("uniform call specialization domain is incomplete");
+
+  auto baseline = take(loom::frontend::prepareSpatialOwnershipSelection(
+      compiled.structuredProgram, {uniform}, *unspecialized));
+  auto selected = take(loom::frontend::prepareSpatialOwnershipSelection(
+      compiled.structuredProgram, {uniform}, *specialized));
+  auto baselineFunction =
+      baseline.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  auto selectedFunction =
+      selected.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!baselineFunction || !selectedFunction)
+    fail("call specialization changed the selected callable kind");
+  std::size_t baselineLoads = 0;
+  std::size_t selectedLoads = 0;
+  baselineFunction.walk([&](mlir::LLVM::LoadOp) { ++baselineLoads; });
+  selectedFunction.walk([&](mlir::LLVM::LoadOp) { ++selectedLoads; });
+  if (baselineLoads != 1 || selectedLoads != 0 ||
+      !selectedFunction.getBody().front().getArgument(0).use_empty())
+    fail("uniform null specialization retained the unreachable memory path");
+
+  const loom::frontend::StructuredEntityRef conflicting =
+      findCallable(compiled.structuredProgram, "conflicting_core");
+  auto conflictingDomain =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          compiled.structuredProgram, conflicting));
+  if (conflictingDomain.size() != 1 ||
+      conflictingDomain.front().directCallSpecializationShape)
+    fail("conflicting call arguments admitted an unsound specialization");
+
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail("cannot remove artifact store directory: " + error.message());
 }
 
 loom::evaluation::DecimalValue
@@ -812,6 +982,7 @@ int main() {
   if (llvm::Error error = loom::evaluation::models::
           registerCanonicalDataflowFabricAnalyticModel())
     fail(llvm::toString(std::move(error)));
+  exactUniformCallArgumentsAreCandidateLocal();
   runEvaluationAnchor();
   return EXIT_SUCCESS;
 }

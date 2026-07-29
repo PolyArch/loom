@@ -5,6 +5,7 @@ add_library(LoomFrontendCompilation
   StaticGlobalMemory.cpp
   StaticMemoryBinding.cpp
   StructuredAddressIndexNarrowing.cpp
+  StructuredCallSpecialization.cpp
 )
 
 target_include_directories(LoomFrontendCompilation PUBLIC
@@ -26,4 +27,5 @@ mlir_target_link_libraries(LoomFrontendCompilation PUBLIC
   MLIRIR
   MLIRLLVMDialect
   MLIRSCFDialect
+  MLIRTransforms
 )

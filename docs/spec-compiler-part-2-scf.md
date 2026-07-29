@@ -638,6 +638,26 @@ be specialized or inlined before closure, or remain in InstructionCore while
 independent regions on either side are considered. A canonical graph never
 contains a general call.
 
+`UniformExactConstants` is the scope-local direct-call specialization choice.
+It applies to the selected scope's nearest owning `llvm.func`, or to the
+selected function itself. The function must be a defined, non-variadic local
+symbol whose complete symbol-use set consists of exact direct calls. A
+fixed-point proof over that closed direct-call graph may bind a formal only
+when every call supplies the same typed canonical constant, either directly or
+through another proven formal. Constant, zero, and symbol-address values are
+admissible; poison, undef, unknown, conflicting, indirect, address-escaped, and
+foreign uses are not. All proven and used formals constitute one decision. The
+generator does not enumerate subsets of arguments.
+
+Materialization changes only the candidate clone: it preserves the callable
+ABI, substitutes the proven constants, simplifies unreachable control, and
+then re-resolves the selected nested scope. Removal of that scope rejects only
+that decision. Unused formals are omitted from the derived Spatial boundary
+without changing the callable ABI. The resulting Structured Program is the
+only semantic owner; neither the proof table nor the direct-call relation is a
+persistent program representation. Workload path coverage cannot replace this
+whole-program proof.
+
 Dense thread-domain choices are part of the same Structured candidate. They
 materialize exact rank, extents, source-IV reconstruction, and inner loop shape
 before handoff. For example, a selected `[0, 1024)` source iteration domain may
