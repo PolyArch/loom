@@ -149,3 +149,13 @@ already names the exact parent, scope, and typed decision, so it is sufficient
 and introduces no persistent schema. Requiring effective execution-layout
 equivalence before host JIT execution prevents the oracle from becoming a
 silent cross-target emulator.
+
+Target-triple spelling alone is not execution compatibility. Two triples may
+name different targets while the exact selected region uses only types,
+address spaces, and layouts whose effective projections are identical. A
+name-equality gate rejects such regions without adding safety. Conversely,
+similar target names do not prove compatible layouts. The oracle therefore
+proves compatibility from the selected region's actual layout roots and used
+types, then retargets only an ephemeral execution clone. This keeps the
+original target artifacts authoritative while allowing an independent host
+functional oracle where no target-specific behavior is involved.

@@ -534,6 +534,11 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
   llvm::LLVMContext context;
   std::unique_ptr<llvm::Module> source = parseScalarReduction(test, context);
   configureHostModule(test, *source);
+  llvm::Triple foreignTarget(source->getTargetTriple());
+  foreignTarget.setVendorName(foreignTarget.getVendorName() == "unknown"
+                                  ? "pc"
+                                  : "unknown");
+  source->setTargetTriple(foreignTarget);
   auto compiled = take(
       test, loom::frontend::compileLlvmModuleToPreMapping(
                 std::move(source), design.roots().front().reference(), store));

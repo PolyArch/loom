@@ -907,9 +907,8 @@ llvm::Error retargetStructuredOracle(llvm::Module &module,
     if (function.isTargetIntrinsic())
       return unsupported("target module contains a target-specific intrinsic");
 
-  if (module.getTargetTriple().empty() ||
-      llvm::Triple(module.getTargetTriple()) != jit.getTargetTriple())
-    return unsupported("target module triple does not match this host");
+  if (module.getTargetTriple().empty())
+    return unsupported("target module has no target triple");
   if (llvm::Error error =
           requireExecutionLayoutCompatibility(module, jit.getDataLayout()))
     return error;

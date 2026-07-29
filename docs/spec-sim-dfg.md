@@ -96,12 +96,21 @@ those objects are not compiler-output differences. Each captured execution
 still supplies one complete concrete Defined runtime memory object to DFG-sim.
 Unknown capability consumers conservatively require initial-state agreement.
 
-An operation-owned oracle executes only when the target triple equals the host
-JIT triple and every root execution-layout property, used pointer address
-space, used type layout, and used struct element offset is equal. Equivalent
-DataLayout spellings are accepted through their effective projections; a real
-layout difference fails closed. Residual host work executes as host work and
-is never inserted into the Canonical Dataflow graph.
+An operation-owned oracle executes an ephemeral clone of the exact selected
+target Structured region. It does not reselect ownership, rerun DSE, or match
+the region against a separately compiled host operation. Before assigning the
+host JIT triple and DataLayout to that clone, the oracle rejects inline
+assembly and target-specific intrinsics and proves that every root
+execution-layout property, used pointer address space, used type layout, and
+used struct element offset is equal. The target triple must be present but its
+name need not equal the host triple. Equivalent DataLayout spellings are
+accepted through their effective projections; a real layout difference fails
+closed. Retargeting removes target CPU, feature, and tuning attributes only
+from the ephemeral execution clone. The target Structured Program, Canonical
+Dataflow Program, typed semantic decisions, Fabric target, and Mapping
+identity remain unchanged. Residual host work executes as host work and is
+never inserted into the Canonical Dataflow graph. This execution is a
+functional oracle, not a target timing or architecture model.
 
 Source-backed functional validation replays the exact selected typed semantic
 decision in an independently lowered native execution. DFG-sim observations
