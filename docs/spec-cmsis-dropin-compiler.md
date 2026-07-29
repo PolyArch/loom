@@ -319,6 +319,15 @@ wrapper may invoke a real public API, but it cannot add algorithmic work to a
 data-only unit, replace a feature-gated implementation, or stand in for a
 missing provider.
 
+The CMSIS-NN workload provider consumes the pinned `externals/unity` source,
+the selected upstream case `CMakeLists.txt`, its Unity wrapper, and the
+CMSIS-NN library CMake target as one build description. Generated Unity runners
+and CMake build trees are ephemeral harness products. They preserve the owned
+test-function order and assertions, are compiled for both the exact Loom target
+and the native oracle, and never become program or oracle authority. Both
+builds use the LLVM tools pinned by Loom; a host `ar`, `ranlib`, or linker from
+another LLVM revision is not admissible.
+
 The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public
 source symbol, and optional compiler flags. The tables must validate as strict

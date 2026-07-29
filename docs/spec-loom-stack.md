@@ -481,6 +481,12 @@ submodule remains uninitialized. A dependency upgrade selects an exact stable
 `firtool-*` release commit and atomically pins top-level CIRCT and the LLVM
 commit referenced by that CIRCT revision.
 
+Unity is an unmodified test-workload dependency at `externals/unity`, pinned to
+the revision selected by the CMSIS-NN validation owner. It supplies the real
+CMSIS-NN assertion runtime and runner ABI only; it is not a Loom product
+runtime, compiler semantic registry, or distributed dependency of generated
+accelerator programs.
+
 ## Verification Boundary
 
 Tests protect stable semantic anchors: canonical schema and identity,

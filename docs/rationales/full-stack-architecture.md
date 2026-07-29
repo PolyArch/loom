@@ -131,6 +131,14 @@ closure, profile, inputs, and oracle needed by optimization, simulation, and
 Mapping. Data-only units receive honest coverage through real consumers rather
 than synthetic computation.
 
+CMSIS-NN already owns executable test cases and their expected values through
+Unity wrappers. Replacing those wrappers with one Loom-specific harness per
+operator would create a second workload and oracle catalog. Loom instead pins
+the Unity runtime selected upstream, mechanically generates only the missing
+runner, and lets the upstream CMake targets select library sources and archive
+members. Staging generated files outside the submodule keeps external sources
+immutable while preserving the real test semantics.
+
 Fast tests may stop at stage checkpoints to localize regressions, and smoke
 selections may keep routine execution affordable. Those are invocation choices,
 not alternate semantics. A graph-free Canonical Dataflow result is legal only

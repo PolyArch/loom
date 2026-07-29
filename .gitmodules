@@ -16,3 +16,6 @@
 [submodule "externals/gem5"]
 	path = externals/gem5
 	url = https://github.com/gem5/gem5.git
+[submodule "externals/unity"]
+	path = externals/unity
+	url = https://github.com/ThrowTheSwitch/Unity.git
