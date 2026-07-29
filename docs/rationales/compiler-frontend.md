@@ -265,6 +265,15 @@ boundary cost. The profile is not a second program or workload Artifact, and
 the selected schedule and thread domain remain materialized only in the child
 Structured Program.
 
+Functional replay executes the complete selected program and is materially
+more expensive than the analytical pre-Mapping model. Replaying every candidate
+that merely beats the host baseline would undermine the early pruning that the
+model exists to provide. Loom therefore validates the best-ranked prefix
+and deterministically admits the next-ranked candidates only when a completed
+functional mismatch removes a survivor. This retains the result of an eager
+filter-then-rank implementation while avoiding replay work for candidates that
+cannot enter the resolved `TopK` result.
+
 The same projection excludes a scope with zero dynamic activations before the
 compiler clones or publishes a candidate. Materializing it first would consume
 artifact I/O and lowering work only to prove an already known applicability

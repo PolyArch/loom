@@ -366,78 +366,52 @@ generateAndPromoteStructuredOwnership(
     return invalid(
         "nonempty candidate set produced no cost Evidence obligations");
 
-  PointMetricTopKSelection benefitFilter = options.selection;
-  benefitFilter.k =
-      static_cast<std::uint64_t>(candidateSet->candidates().size());
-  auto benefitPromoted = promoteMetricTopKAgainstBaseline(
-      *candidateSet, *costCandidateRole, *parentReference, costEvidence,
-      benefitFilter, artifactStore);
-  if (!benefitPromoted)
-    return benefitPromoted.takeError();
-  if (const auto *incomplete =
-          std::get_if<IncompleteSelection>(&*benefitPromoted))
-    return StructuredOwnershipExplorationOutcome{*incomplete};
-  if (std::holds_alternative<CompletedNoFeasibleCandidate>(*benefitPromoted))
-    return StructuredOwnershipExplorationOutcome{
-        CompletedNoFeasibleCandidate{}};
-  const auto &benefitSelection = std::get<CompletedSelection>(*benefitPromoted);
-
-  std::vector<ArtifactRootReference> semanticCandidates =
-      benefitSelection.selected;
-  semanticCandidates.push_back(*parentReference);
-  llvm::sort(semanticCandidates, artifactRootReferenceLess);
-  semanticCandidates.erase(
-      std::unique(semanticCandidates.begin(), semanticCandidates.end()),
-      semanticCandidates.end());
-  auto semanticCandidateSet = CandidateSet::get(
-      frontend::structuredProgramArtifactSchema, semanticCandidates);
-  if (!semanticCandidateSet)
-    return semanticCandidateSet.takeError();
-
-  for (const ArtifactRootReference &candidate :
-       semanticCandidateSet->candidates()) {
-    if (candidate == *parentReference)
-      continue;
-    auto structured =
-        frontend::importStructuredProgram(candidate, artifactStore);
-    if (!structured)
-      return structured.takeError();
-    auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
-        *structured, options.lowering);
-    if (!dataflow)
-      return dataflow.takeError();
-    frontend::MaterializedOwnershipCandidate materialized{
-        std::move(*structured), std::move(*dataflow)};
-    bool hasDerivation = false;
-    for (const StructuredOwnershipCandidateDisposition &disposition :
-         dispositions) {
-      const auto *derivedCandidate =
-          std::get_if<ArtifactRootReference>(&disposition.result);
-      if (!derivedCandidate || *derivedCandidate != candidate ||
-          !disposition.coordinate.decision)
-        continue;
-      hasDerivation = true;
-      if (llvm::Error error =
-              evaluation::models::primeStructuredProgramFunctionalReplay(
-                  candidate,
-                  {*workloadReference, *runtimeInputReference, parent,
-                   disposition.coordinate.scope,
-                   *disposition.coordinate.decision, materialized, workload,
-                   runtimeInput, *sourceObservations,
-                   options.functionalReplayLimits},
-                  artifactStore))
-        return std::move(error);
-    }
-    if (!hasDerivation)
-      return invalid("beneficial ownership candidate has no derivation");
-  }
-
+  std::vector<ArtifactRootReference> costEvidenceReferences;
+  std::vector<ArtifactRootReference> semanticCandidates;
   std::vector<PromotionEvidence> functionalEvidence;
-  functionalEvidence.reserve(semanticCandidateSet->candidates().size());
+  functionalEvidence.reserve(candidateSet->candidates().size());
   std::optional<evaluation::CaseSubjectRoleRef> functionalCandidateRole;
   std::optional<evaluation::FindingRequestOrdinal> functionalMismatchRequest;
-  for (const ArtifactRootReference &candidate :
-       semanticCandidateSet->candidates()) {
+
+  auto acquireFunctionalEvidence =
+      [&](const ArtifactRootReference &candidate) -> llvm::Error {
+    if (llvm::is_contained(semanticCandidates, candidate))
+      return llvm::Error::success();
+    if (candidate != *parentReference) {
+      auto structured =
+          frontend::importStructuredProgram(candidate, artifactStore);
+      if (!structured)
+        return structured.takeError();
+      auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
+          *structured, options.lowering);
+      if (!dataflow)
+        return dataflow.takeError();
+      frontend::MaterializedOwnershipCandidate materialized{
+          std::move(*structured), std::move(*dataflow)};
+      bool hasDerivation = false;
+      for (const StructuredOwnershipCandidateDisposition &disposition :
+           dispositions) {
+        const auto *derivedCandidate =
+            std::get_if<ArtifactRootReference>(&disposition.result);
+        if (!derivedCandidate || *derivedCandidate != candidate ||
+            !disposition.coordinate.decision)
+          continue;
+        hasDerivation = true;
+        if (llvm::Error error =
+                evaluation::models::primeStructuredProgramFunctionalReplay(
+                    candidate,
+                    {*workloadReference, *runtimeInputReference, parent,
+                     disposition.coordinate.scope,
+                     *disposition.coordinate.decision, materialized, workload,
+                     runtimeInput, *sourceObservations,
+                     options.functionalReplayLimits},
+                    artifactStore))
+          return error;
+      }
+      if (!hasDerivation)
+        return invalid("cost-ranked ownership candidate has no derivation");
+    }
+
     auto prepared =
         evaluation::models::prepareStructuredProgramFunctionalEvaluation(
             candidate, *workloadReference, *runtimeInputReference, config,
@@ -460,32 +434,91 @@ generateAndPromoteStructuredOwnership(
       return result.takeError();
     functionalEvidence.push_back(
         {std::move(prepared->request), std::move(*result)});
-  }
-  if (!functionalCandidateRole || !functionalMismatchRequest)
-    return invalid(
-        "benefit-filtered candidate set produced no functional Evidence");
+    semanticCandidates.push_back(candidate);
+    llvm::sort(semanticCandidates, artifactRootReferenceLess);
+    return llvm::Error::success();
+  };
 
-  auto semanticallyPromoted = promoteFindingAbsenceAllPassing(
-      *semanticCandidateSet, *functionalCandidateRole, functionalEvidence,
-      *functionalMismatchRequest, artifactStore);
-  if (!semanticallyPromoted)
-    return semanticallyPromoted.takeError();
-  if (const auto *incomplete =
-          std::get_if<IncompleteSelection>(&*semanticallyPromoted)) {
-    IncompleteSelection combined = *incomplete;
-    mergeEvidenceReferences(combined.retainedEvidence,
+  if (llvm::Error error = acquireFunctionalEvidence(*parentReference))
+    return std::move(error);
+
+  const std::uint64_t acceleratorCandidateCount =
+      static_cast<std::uint64_t>(candidateSet->candidates().size() - 1);
+  PointMetricTopKSelection benefitFilter = options.selection;
+  if (acceleratorCandidateCount != 0)
+    benefitFilter.k = std::min(benefitFilter.k, acceleratorCandidateCount);
+
+  std::optional<CompletedSelection> semanticSelection;
+  while (true) {
+    auto benefitPromoted = promoteMetricTopKAgainstBaseline(
+        *candidateSet, *costCandidateRole, *parentReference, costEvidence,
+        benefitFilter, artifactStore);
+    if (!benefitPromoted)
+      return benefitPromoted.takeError();
+    if (const auto *incomplete =
+            std::get_if<IncompleteSelection>(&*benefitPromoted))
+      return StructuredOwnershipExplorationOutcome{*incomplete};
+    if (std::holds_alternative<CompletedNoFeasibleCandidate>(*benefitPromoted))
+      return StructuredOwnershipExplorationOutcome{
+          CompletedNoFeasibleCandidate{}};
+    const auto &benefitSelection =
+        std::get<CompletedSelection>(*benefitPromoted);
+    mergeEvidenceReferences(costEvidenceReferences,
                             benefitSelection.satisfiedEvidence);
-    return StructuredOwnershipExplorationOutcome{std::move(combined)};
+
+    for (const ArtifactRootReference &candidate : benefitSelection.selected)
+      if (llvm::Error error = acquireFunctionalEvidence(candidate))
+        return std::move(error);
+
+    auto semanticCandidateSet = CandidateSet::get(
+        frontend::structuredProgramArtifactSchema, semanticCandidates);
+    if (!semanticCandidateSet)
+      return semanticCandidateSet.takeError();
+    if (!functionalCandidateRole || !functionalMismatchRequest)
+      return invalid(
+          "cost-ranked candidate set produced no functional Evidence");
+
+    auto semanticallyPromoted = promoteFindingAbsenceAllPassing(
+        *semanticCandidateSet, *functionalCandidateRole, functionalEvidence,
+        *functionalMismatchRequest, artifactStore);
+    if (!semanticallyPromoted)
+      return semanticallyPromoted.takeError();
+    if (const auto *incomplete =
+            std::get_if<IncompleteSelection>(&*semanticallyPromoted)) {
+      IncompleteSelection combined = *incomplete;
+      mergeEvidenceReferences(combined.retainedEvidence,
+                              costEvidenceReferences);
+      return StructuredOwnershipExplorationOutcome{std::move(combined)};
+    }
+    if (std::holds_alternative<CompletedNoFeasibleCandidate>(
+            *semanticallyPromoted))
+      return StructuredOwnershipExplorationOutcome{
+          CompletedNoFeasibleCandidate{}};
+    semanticSelection = std::get<CompletedSelection>(*semanticallyPromoted);
+
+    const std::uint64_t passingAcceleratorCount = static_cast<std::uint64_t>(
+        llvm::count_if(semanticSelection->selected,
+                       [&](const ArtifactRootReference &candidate) {
+                         return candidate != *parentReference;
+                       }));
+    const bool exhaustedProfitableCandidates =
+        benefitSelection.selected.size() < benefitFilter.k ||
+        llvm::is_contained(benefitSelection.selected, *parentReference) ||
+        benefitFilter.k >= acceleratorCandidateCount;
+    if (passingAcceleratorCount >= options.selection.k ||
+        exhaustedProfitableCandidates)
+      break;
+
+    const std::uint64_t missing = options.selection.k - passingAcceleratorCount;
+    benefitFilter.k = missing >= acceleratorCandidateCount - benefitFilter.k
+                          ? acceleratorCandidateCount
+                          : benefitFilter.k + missing;
   }
-  if (std::holds_alternative<CompletedNoFeasibleCandidate>(
-          *semanticallyPromoted))
-    return StructuredOwnershipExplorationOutcome{
-        CompletedNoFeasibleCandidate{}};
-  const auto &semanticSelection =
-      std::get<CompletedSelection>(*semanticallyPromoted);
+  if (!semanticSelection)
+    return invalid("ownership promotion produced no semantic selection");
 
   auto passingCandidateSet = CandidateSet::get(
-      frontend::structuredProgramArtifactSchema, semanticSelection.selected);
+      frontend::structuredProgramArtifactSchema, semanticSelection->selected);
   if (!passingCandidateSet)
     return passingCandidateSet.takeError();
   std::vector<PromotionEvidence> passingCostEvidence;
@@ -510,10 +543,9 @@ generateAndPromoteStructuredOwnership(
     return promoted.takeError();
   if (const auto *incomplete = std::get_if<IncompleteSelection>(&*promoted)) {
     IncompleteSelection combined = *incomplete;
+    mergeEvidenceReferences(combined.retainedEvidence, costEvidenceReferences);
     mergeEvidenceReferences(combined.retainedEvidence,
-                            benefitSelection.satisfiedEvidence);
-    mergeEvidenceReferences(combined.retainedEvidence,
-                            semanticSelection.satisfiedEvidence);
+                            semanticSelection->satisfiedEvidence);
     return StructuredOwnershipExplorationOutcome{std::move(combined)};
   }
   if (std::holds_alternative<CompletedNoFeasibleCandidate>(*promoted))
@@ -521,10 +553,9 @@ generateAndPromoteStructuredOwnership(
         CompletedNoFeasibleCandidate{}};
 
   const auto &selection = std::get<CompletedSelection>(*promoted);
-  std::vector<ArtifactRootReference> satisfiedEvidence =
-      benefitSelection.satisfiedEvidence;
+  std::vector<ArtifactRootReference> satisfiedEvidence = costEvidenceReferences;
   mergeEvidenceReferences(satisfiedEvidence,
-                          semanticSelection.satisfiedEvidence);
+                          semanticSelection->satisfiedEvidence);
   mergeEvidenceReferences(satisfiedEvidence, selection.satisfiedEvidence);
   std::vector<SelectedStructuredOwnershipCandidate> selected;
   selected.reserve(selection.selected.size());

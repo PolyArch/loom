@@ -599,6 +599,20 @@ helper therefore receives credit only for the dynamic work it actually covers.
 There is no function-name classification, benchmark-specific preference, or
 fixed hot-region percentage. A candidate with zero dynamic activations is
 inapplicable to that workload and cannot satisfy an accelerator promotion gate.
+
+The resolved ownership gate first applies the analytical whole-workload
+`TopK` objective against the unmodified host baseline, then applies the
+`functional_mismatch` absence `AllPassing` gate only to that ranked prefix. If
+a completed adverse finding removes a ranked candidate, the controller
+deterministically extends the analytical prefix by the number of missing
+survivors and evaluates only the newly exposed candidates. Expansion stops
+when `k` candidates pass or every analytically profitable candidate has been
+exhausted. Missing, Unsupported, ExecutionFailed, or CancelledOrTimeout
+functional Evidence remains an incomplete promotion and never triggers a
+refill. This staged acquisition produces the same final cost order as eager
+functional evaluation of every profitable candidate without making cache
+state, worker completion order, or wall time part of selection.
+
 The descriptor-owned source-activity projection resolves this condition before
 ownership candidate cloning or publication. Such a scope is outside that exact
 workload-specific Generate domain: it receives no candidate disposition and no

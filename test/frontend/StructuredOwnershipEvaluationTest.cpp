@@ -75,14 +75,24 @@ entry:
   ret void
 }
 
+define void @warm(ptr %a, ptr %b, ptr %c) {
+entry:
+  %lhs = load float, ptr %a, align 4
+  %rhs = load float, ptr %b, align 4
+  %sum = fadd float %lhs, %rhs
+  store float %sum, ptr %c, align 4
+  ret void
+}
+
 define i32 @tiny() {
 entry:
   ret i32 7
 }
 
-define i32 @main(ptr %a, ptr %b, ptr %c) {
+define i32 @main(ptr %a, ptr %b, ptr %c, ptr %d) {
 entry:
   call void @kernel(ptr %a, ptr %b, ptr %c)
+  call void @warm(ptr %a, ptr %b, ptr %d)
   %ignored = call i32 @tiny()
   ret i32 0
 }
@@ -174,6 +184,7 @@ SourceSimulationInputs makeSourceSimulationInputs(
       findCallable(source, "main")};
   draft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{},
                         loom::sim::StructuredRuntimeMemoryInput{},
+                        loom::sim::StructuredRuntimeMemoryInput{},
                         loom::sim::StructuredRuntimeMemoryInput{}};
   draft.observableContract.returnValue = true;
   draft.observableContract.memories.push_back(
@@ -183,8 +194,9 @@ SourceSimulationInputs makeSourceSimulationInputs(
 
   loom::sim::StructuredProgramSimulationRuntimeInputDraft runtime{
       workload.identity()};
-  runtime.memoryObjects = {f32Memory(3.0F), f32Memory(2.0F), zeroedMemory(4)};
-  runtime.pointerBindings = {{0, 0, 0}, {1, 1, 0}, {2, 2, 0}};
+  runtime.memoryObjects = {f32Memory(3.0F), f32Memory(2.0F), zeroedMemory(4),
+                           zeroedMemory(4)};
+  runtime.pointerBindings = {{0, 0, 0}, {1, 1, 0}, {2, 2, 0}, {3, 3, 0}};
   auto runtimeInput =
       take(loom::sim::finalizeSimulationRuntimeInput(runtime, workload, view));
   auto workloadReference =
@@ -307,8 +319,8 @@ evaluateCanonicalDataflowRuntime(const loom::ArtifactRootReference &program,
 void verifyStagedOwnershipEvidence(
     const loom::dse::CompletedPreMappingSelection &selection,
     const loom::ArtifactRootReference &source,
-    const loom::ArtifactRootReference &profitableCandidate,
-    llvm::ArrayRef<loom::ArtifactRootReference> unprofitableCandidates,
+    const loom::ArtifactRootReference &selectedCandidate,
+    llvm::ArrayRef<loom::ArtifactRootReference> costOnlyCandidates,
     llvm::ArrayRef<loom::ArtifactRootReference> inapplicableCandidates,
     const loom::ArtifactRootReference &fabric,
     const loom::ArtifactRootReference &workload,
@@ -370,11 +382,11 @@ void verifyStagedOwnershipEvidence(
   }
 
   if (counts[source].cost != 1 || counts[source].functional != 1 ||
-      counts[profitableCandidate].cost != 1 ||
-      counts[profitableCandidate].functional != 1)
+      counts[selectedCandidate].cost != 1 ||
+      counts[selectedCandidate].functional != 1)
     fail("ownership DSE acquired expensive functional Evidence before the "
          "resolved benefit gate");
-  for (const loom::ArtifactRootReference &candidate : unprofitableCandidates)
+  for (const loom::ArtifactRootReference &candidate : costOnlyCandidates)
     if (counts[candidate].cost != 1 || counts[candidate].functional != 0)
       fail("ownership DSE acquired expensive functional Evidence before the "
            "resolved benefit gate");
@@ -402,6 +414,8 @@ void runEvaluationAnchor() {
       findCallable(compiled.structuredProgram, "kernel")};
   const loom::frontend::SpatialOwnershipScope coldScope{
       findCallable(compiled.structuredProgram, "cold")};
+  const loom::frontend::SpatialOwnershipScope warmScope{
+      findCallable(compiled.structuredProgram, "warm")};
   const loom::frontend::SpatialOwnershipScope tinyScope{
       findCallable(compiled.structuredProgram, "tiny")};
   auto spatialDecisions =
@@ -410,16 +424,21 @@ void runEvaluationAnchor() {
   auto coldDecisions =
       take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
           compiled.structuredProgram, coldScope.selection));
+  auto warmDecisions =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          compiled.structuredProgram, warmScope.selection));
   auto tinyDecisions =
       take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
           compiled.structuredProgram, tinyScope.selection));
   if (spatialDecisions.size() != 1 || coldDecisions.size() != 1 ||
-      tinyDecisions.size() != 1)
+      warmDecisions.size() != 1 || tinyDecisions.size() != 1)
     fail("functional replay anchor has a non-singleton decision domain");
   const loom::frontend::SpatialOwnershipDecisionPoint spatialDecision =
       spatialDecisions.front();
   const loom::frontend::SpatialOwnershipDecisionPoint coldDecision =
       coldDecisions.front();
+  const loom::frontend::SpatialOwnershipDecisionPoint warmDecision =
+      warmDecisions.front();
   const loom::frontend::SpatialOwnershipDecisionPoint tinyDecision =
       tinyDecisions.front();
   auto spatial = take(loom::frontend::materializeSpatialOwnershipDecision(
@@ -427,6 +446,9 @@ void runEvaluationAnchor() {
       design.roots().front()));
   auto cold = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, coldScope, coldDecision,
+      design.roots().front()));
+  auto warm = take(loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, warmScope, warmDecision,
       design.roots().front()));
   auto tiny = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, tinyScope, tinyDecision,
@@ -443,6 +465,8 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference coldRef = take(
       loom::frontend::publishStructuredProgram(cold.structuredProgram, store));
+  const loom::ArtifactRootReference warmRef = take(
+      loom::frontend::publishStructuredProgram(warm.structuredProgram, store));
   const loom::ArtifactRootReference tinyRef = take(
       loom::frontend::publishStructuredProgram(tiny.structuredProgram, store));
   const loom::ArtifactRootReference incorrectRef =
@@ -717,16 +741,25 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&explored);
   if (!exploredSelection || exploredSelection->selected.size() != 1)
     fail("central ownership exploration did not select one survivor");
+  const loom::ArtifactRootReference selectedRef =
+      take(loom::frontend::publishStructuredProgram(
+          exploredSelection->selected.front().compilation.structuredProgram,
+          store));
+  if (selectedRef != spatialRef && selectedRef != warmRef)
+    fail("central ownership exploration selected no profitable kernel");
+  const loom::ArtifactRootReference costOnlyProfitable =
+      selectedRef == spatialRef ? warmRef : spatialRef;
   if (llvm::any_of(exploredSelection->dispositions,
                    [&](const loom::dse::StructuredOwnershipCandidateDisposition
                            &disposition) {
                      return disposition.coordinate.scope == coldScope;
                    }))
     fail("ownership DSE attempted a workload-inapplicable scope");
-  verifyStagedOwnershipEvidence(
-      *exploredSelection, baselineRef, spatialRef, {tinyRef}, {coldRef},
-      design.roots().front().reference(), inputs.workloadReference,
-      inputs.runtimeInputReference, store);
+  verifyStagedOwnershipEvidence(*exploredSelection, baselineRef, selectedRef,
+                                {costOnlyProfitable, tinyRef}, {coldRef},
+                                design.roots().front().reference(),
+                                inputs.workloadReference,
+                                inputs.runtimeInputReference, store);
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||
