@@ -547,12 +547,11 @@ executeCapturedInputPlan(const loom::frontend::PreMappingCompilation &compiled,
         "Spatial execution has no externally observable value or memory");
   if (capture.entryResult != 0)
     return invalid("native oracle entry returned a nonzero status");
-  if (capture.calls.empty())
-    return unsupported(
-        "selected Spatial region produced no dynamic invocation");
   if (source && !equalNativeCapture(*source, capture, false, plan))
     return invalid(
         "source and selected-decision native executions have different inputs");
+  if (capture.calls.empty())
+    return llvm::Error::success();
 
   loom::sim::SpatialSimulationWorkload workload{launch};
   for (const loom::sim::SimulationValueInputCapture &value : plan.valueInputs) {

@@ -170,7 +170,11 @@ multiple outer call sites. Source-backed validation therefore derives an
 ephemeral, finite root-to-leaf direct-call path. The leaf remains the only
 value sampling boundary; outer path edges only prove finite object lineage and
 gate the selected dynamic context. This preserves one program identity model
-while preventing unrelated invocations from being conflated.
+while preventing unrelated invocations from being conflated and allowing a
+workload to leave one statically reachable branch untaken.
+Requiring every static path to execute would confuse control-flow reachability
+with one concrete workload; requiring the aggregate to execute keeps an
+unobserved candidate from passing.
 
 Target-triple spelling alone is not execution compatibility. Two triples may
 name different targets while the exact selected region uses only types,

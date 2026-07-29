@@ -84,6 +84,12 @@ context. Distinct static paths are replayed independently. Indirect,
 recursive, noncontiguous, or unbounded invocation lineage is typed
 `Unsupported`. Source locations, symbol position, operation position, and
 printer order are never persistent identity or ownership authority.
+One finite static path may contribute zero dynamic invocations for the exact
+workload. Its source and selected-decision replays must agree on that empty
+sequence, and validation continues with the other paths. The complete
+source-backed validation still requires at least one observed selected-region
+invocation, one externally observable result, and nonempty DFG execution; an
+all-empty aggregate cannot report success.
 
 Graph value inputs are classified totally as `Fixed` or `Runtime`. Fixed
 inputs preserve defined, poison, or undef state; runtime inputs are captured in
