@@ -2,55 +2,27 @@
 //
 // Resolution of the memory-order frontiers that simulator tokens carry.
 //
-// A frontier is accumulated in transient mutable state and interned only when
-// a token actually carries it, so the run retains one immutable copy per
-// distinct published frontier and every carrier holds a dense handle.
+// A frontier is accumulated as immutable handles and interned only when a
+// token actually carries their union. Growing frontiers retain one union node
+// per publication instead of copying every earlier effect into every prefix.
 //
 // A stateful actor's activation retains one union across its firings. The
 // union trades between the activation's slot and the firing slot with its
-// reduction and publication memos intact, so an unchanged union is never
-// reduced or interned twice and order that no token carries is never
-// interned at all.
+// publication memo intact, so an unchanged union is never interned twice and
+// order that no token carries is never interned at all.
 //
-// MemorySynchronization stays the sole authority for happens-before and for
-// reducing a frontier to its maximal members; nothing here relates two
-// effects.
+// MemorySynchronization stays the sole authority for happens-before. Union
+// nodes only defer canonical effect-set materialization until that authority
+// needs it; nothing here relates two effects.
 //
 //===----------------------------------------------------------------------===//
 
 #include "DFGSimulatorInternal.h"
 
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Error.h"
-
-#include <algorithm>
 #include <cassert>
 #include <utility>
 
 namespace loom::sim::detail {
-
-void reduceMemoryOrderFrontier(SimulatorState &state,
-                               llvm::SmallVectorImpl<SyncEffectId> &frontier) {
-  if (frontier.size() < 2)
-    return;
-  assert(state.memorySync && "a memory-order witness requires its authority");
-  // The authority canonicalizes and reduces in one pass and owns that shape;
-  // canonicalizing here first would only repeat its work.
-  llvm::SmallVector<SyncEffectId> reduced =
-      llvm::cantFail(state.memorySync->maximalHappensBeforeFrontier(frontier));
-  frontier.assign(reduced.begin(), reduced.end());
-}
-
-void reduceMemoryOrder(SimulatorState &state,
-                       MemoryOrderAccumulator &accumulator) {
-  if (accumulator.isReduced())
-    return;
-  llvm::SmallVector<SyncEffectId, 4> frontier(accumulator.elements().begin(),
-                                              accumulator.elements().end());
-  reduceMemoryOrderFrontier(state, frontier);
-  accumulator.adoptReduced(frontier);
-}
 
 MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
                                          MemoryOrderAccumulator &accumulator) {
@@ -61,10 +33,8 @@ MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
     return MemoryOrderFrontierId{};
   if (std::optional<MemoryOrderFrontierId> published = accumulator.published())
     return *published;
-  // Reduction leaves the elements canonical, so interning never sorts again.
-  reduceMemoryOrder(state, accumulator);
   const MemoryOrderFrontierId id =
-      state.memoryOrderFrontiers.internCanonical(accumulator.elements());
+      state.memoryOrderFrontiers.internUnion(accumulator.frontiers());
   accumulator.markPublished(id);
   return id;
 }
@@ -87,8 +57,8 @@ MemoryOrderFrontierId publishFiredMemoryOrder(SimulatorState &state,
   if (state.firingMemoryOrderFrontier.hasAbsorbed(carried))
     return fired;
   MemoryOrderAccumulator merged;
-  merged.append(state.memoryOrderFrontiers.elements(carried));
-  merged.append(state.memoryOrderFrontiers.elements(fired));
+  merged.absorb(carried);
+  merged.absorb(fired);
   return publishMemoryOrder(state, merged);
 }
 
@@ -120,7 +90,7 @@ void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
     state.activationMemoryOrderFrontiers.erase(retained);
     return;
   }
-  // The union, with the memos its publications set, rests in the activation
+  // The union, with the memo its publication set, rests in the activation
   // slot until the next firing trades for it. The firing slot keeps the
   // firing's own consumed remnant, which the scheduler clears before the
   // next attempt.

@@ -642,8 +642,8 @@ static llvm::SmallVector<SyncEffectId, 2>
 peekMemoryOrderFrontier(SimulatorState &state, unsigned controlOperandOrdinal) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
   if (hasInputToken(state, controlOperandOrdinal))
-    frontier.assign(state.memoryOrderFrontiers.elements(
-        peekInputToken(state, controlOperandOrdinal).memoryOrder));
+    state.memoryOrderFrontiers.appendCanonicalEffects(
+        peekInputToken(state, controlOperandOrdinal).memoryOrder, frontier);
   return frontier;
 }
 

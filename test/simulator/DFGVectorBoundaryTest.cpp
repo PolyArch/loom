@@ -99,12 +99,29 @@ void publishedWideFrontierForwardsByHandle() {
   const MemoryOrderFrontierId frontier = arena.internCanonical(effects);
 
   MemoryOrderAccumulator accumulator;
-  accumulator.absorb(arena.elements(frontier), frontier);
+  accumulator.absorb(frontier);
 
-  require(accumulator.isReduced(),
-          "a stored wide frontier lost its canonical reduction");
   require(accumulator.published() == frontier,
           "a stored wide frontier was expanded instead of forwarded");
+}
+
+void growingFrontierSharesPublishedPrefixes() {
+  constexpr std::uint64_t kEffects = 2048;
+  MemoryOrderFrontierArena arena;
+  MemoryOrderFrontierId frontier;
+  for (std::uint64_t ordinal = 0; ordinal < kEffects; ++ordinal) {
+    const MemoryOrderFrontierId effect =
+        arena.internCanonical(loom::sim::SyncEffectId(ordinal));
+    frontier = arena.internUnion({frontier, effect});
+  }
+
+  llvm::SmallVector<loom::sim::SyncEffectId> effects;
+  arena.appendCanonicalEffects(frontier, effects);
+  require(effects.size() == kEffects && effects.front().value() == 0 &&
+              effects.back().value() == kEffects - 1,
+          "a persistent frontier union changed its effect set");
+  require(arena.retainedEffectReferences() == kEffects,
+          "a growing frontier copied previously published effects");
 }
 
 template <typename Input>
@@ -923,6 +940,7 @@ int main() {
   tokenWidthNarrowsAtTokenBoundary();
   actorTransitionDescriptorContract();
   publishedWideFrontierForwardsByHandle();
+  growingFrontierSharesPublishedPrefixes();
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();

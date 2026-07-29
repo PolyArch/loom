@@ -246,9 +246,7 @@ Token popInputToken(SimulatorState &state, unsigned operandOrdinal) {
   Token token = std::move(queue.front());
   queue.pop_front();
   if (!token.memoryOrder.empty())
-    state.firingMemoryOrderFrontier.absorb(
-        state.memoryOrderFrontiers.elements(token.memoryOrder),
-        token.memoryOrder);
+    state.firingMemoryOrderFrontier.absorb(token.memoryOrder);
   ++state.actorMutationEpoch;
   return token;
 }

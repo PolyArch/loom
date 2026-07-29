@@ -303,7 +303,7 @@ struct ParallelizeGroup {
   Token vector;
   Token mask;
   // Memory order from every active lane assembled across prior firings.
-  llvm::SmallVector<SyncEffectId, 2> frontier;
+  MemoryOrderAccumulator frontier;
 };
 
 static llvm::Expected<ParallelizeGroup>
@@ -327,7 +327,7 @@ buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
 
   llvm::APInt vectorBits(*totalWidth, 0);
   llvm::APInt maskBits(*maskWidth, 0);
-  llvm::SmallVector<SyncEffectId, 2> frontier;
+  MemoryOrderAccumulator frontier;
   for (std::uint64_t lane = 0; lane < activeItems; ++lane) {
     if (!parallel.slots[lane]) {
       return llvm::createStringError(
@@ -340,9 +340,7 @@ buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
       return laneBits.takeError();
     vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
     maskBits.setBit(static_cast<unsigned>(lane));
-    llvm::ArrayRef<SyncEffectId> laneOrder =
-        state.memoryOrderFrontiers.elements(parallel.slots[lane]->memoryOrder);
-    frontier.append(laneOrder.begin(), laneOrder.end());
+    frontier.absorb(parallel.slots[lane]->memoryOrder);
   }
 
   auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
@@ -380,8 +378,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   // group publishes nothing until it emits, so this only accumulates.
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
-    next.phaseFrontier.append(state.memoryOrderFrontiers.elements(
-        peekInputToken(state, 1).memoryOrder));
+    next.phaseFrontier.absorb(peekInputToken(state, 1).memoryOrder);
 
   std::optional<ParallelizeGroup> group;
   if (selectsSemanticInput(transition.firing.consumedInputs,
@@ -408,8 +405,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
       return false;
     }
     group = *groupOrErr;
-    llvm::ArrayRef<SyncEffectId> phaseOrder = next.phaseFrontier.elements();
-    group->frontier.append(phaseOrder.begin(), phaseOrder.end());
+    group->frontier.absorbAll(next.phaseFrontier);
     next.slots.assign(vectorLength, std::nullopt);
     next.phaseFrontier.clear();
   }
@@ -425,7 +421,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     (void)popInputToken(state, 0);
   state.parallelizeStates[op.getOperation()] = std::move(next);
   if (group) {
-    state.firingMemoryOrderFrontier.append(group->frontier);
+    state.firingMemoryOrderFrontier.absorbAll(group->frontier);
     emitResultToken(state, 0, group->vector);
     emitResultToken(state, 1, group->mask);
   }
