@@ -98,3 +98,17 @@ target_link_libraries(loom-simulator-structured-program-wire-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-simulator-structured-program-native-execution-test
+  StructuredProgramNativeExecutionTest.cpp
+)
+
+target_link_libraries(loom-simulator-structured-program-native-execution-test PRIVATE
+  LoomCommon
+  LoomNativeSimulationOracle
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)

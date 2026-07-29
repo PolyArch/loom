@@ -53,6 +53,7 @@ endif()
 add_mlir_library(LoomNativeSimulationOracle
   NativeExecutionSupport.cpp
   NativeSimulationOracle.cpp
+  StructuredProgramNativeExecution.cpp
 
   PARTIAL_SOURCES_INTENDED
 

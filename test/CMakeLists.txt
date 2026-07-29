@@ -85,6 +85,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-dynamic-work-test
   loom-simulator-operation-schema-projection-test
   loom-simulator-simulation-wire-test
+  loom-simulator-structured-program-native-execution-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
   loom-tblgen

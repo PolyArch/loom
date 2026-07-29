@@ -16,6 +16,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/TargetSelect.h"
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <system_error>
@@ -208,6 +209,33 @@ llvm::Error retargetStructuredOracle(llvm::Module &module,
   if (llvm::verifyModule(module, &llvm::errs()))
     return invalid("retargeted Structured oracle module does not verify");
   return llvm::Error::success();
+}
+
+CanonicalValueSequence
+readDefinedNativeValue(llvm::ArrayRef<std::uint8_t> bytes,
+                       std::uint64_t lanesPerToken, std::uint32_t laneBitWidth,
+                       bool littleEndian) {
+  auto readLane = [&](std::uint64_t bitOffset) {
+    llvm::APInt bits(laneBitWidth, 0);
+    for (std::uint32_t bit = 0; bit < laneBitWidth; ++bit) {
+      const std::uint64_t storageBit = bitOffset + bit;
+      const std::uint64_t byteOrdinal = storageBit / 8;
+      const std::uint32_t bitInByte = storageBit % 8;
+      const std::uint64_t addressedByte =
+          littleEndian ? byteOrdinal : bytes.size() - 1 - byteOrdinal;
+      if ((bytes[addressedByte] >> bitInByte) & 1U)
+        bits.setBit(bit);
+    }
+    return bits;
+  };
+
+  CanonicalValueSequence sequence;
+  sequence.tokenCount = 1;
+  sequence.lanes.reserve(lanesPerToken);
+  for (std::uint64_t lane = 0; lane < lanesPerToken; ++lane)
+    sequence.lanes.push_back(
+        SemanticLane::defined(readLane(lane * laneBitWidth)));
+  return sequence;
 }
 
 } // namespace loom::sim::detail

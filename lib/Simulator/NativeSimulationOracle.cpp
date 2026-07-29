@@ -322,35 +322,14 @@ void captureAfter(std::uint64_t objectOrdinal, void *base,
   ++active.nextAfter;
 }
 
-llvm::APInt readLaneBits(llvm::ArrayRef<std::uint8_t> bytes,
-                         std::uint64_t bitOffset, std::uint32_t bitWidth,
-                         bool littleEndian) {
-  llvm::APInt bits(bitWidth, 0);
-  for (std::uint32_t bit = 0; bit < bitWidth; ++bit) {
-    const std::uint64_t storageBit = bitOffset + bit;
-    const std::uint64_t byteOrdinal = storageBit / 8;
-    const std::uint32_t bitInByte = storageBit % 8;
-    const std::uint64_t addressedByte =
-        littleEndian ? byteOrdinal : bytes.size() - 1 - byteOrdinal;
-    if ((bytes[addressedByte] >> bitInByte) & 1U)
-      bits.setBit(bit);
-  }
-  return bits;
-}
-
 CanonicalValueSequence readCapturedValue(void *base, std::uint64_t byteCount,
                                          std::uint64_t lanesPerToken,
                                          std::uint32_t laneBitWidth,
                                          bool littleEndian) {
   llvm::ArrayRef<std::uint8_t> bytes(static_cast<const std::uint8_t *>(base),
                                      static_cast<std::size_t>(byteCount));
-  CanonicalValueSequence sequence;
-  sequence.tokenCount = 1;
-  sequence.lanes.reserve(lanesPerToken);
-  for (std::uint64_t lane = 0; lane < lanesPerToken; ++lane)
-    sequence.lanes.push_back(SemanticLane::defined(
-        readLaneBits(bytes, lane * laneBitWidth, laneBitWidth, littleEndian)));
-  return sequence;
+  return detail::readDefinedNativeValue(bytes, lanesPerToken, laneBitWidth,
+                                        littleEndian);
 }
 
 void captureValue(std::uint64_t valueOrdinal, void *base,

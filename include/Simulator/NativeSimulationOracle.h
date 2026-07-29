@@ -11,6 +11,7 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::sim {
@@ -31,6 +32,25 @@ struct NativeSimulationInputCapture {
   std::int32_t entryResult = 0;
   std::vector<NativeSimulationCallCapture> calls;
 };
+
+/// Transient functional observations from executing one exact Structured
+/// Program workload. The workload remains the sole owner of selected targets
+/// and order; this provider result is not a persistent wire or workload key.
+struct NativeStructuredProgramObservations {
+  std::optional<CanonicalValueSequence> returnValue;
+  std::vector<MemoryObservationPayload> memories;
+};
+
+/// Execute the exact workload entry from an immutable Structured Program.
+/// Runtime objects are finite byte-addressed storage, and shared object
+/// ordinals preserve pointer aliasing. This native provider accepts only
+/// concrete Defined inputs and first proves execution-layout compatibility
+/// before retargeting an ephemeral module clone to the host JIT.
+llvm::Expected<NativeStructuredProgramObservations>
+executeNativeStructuredProgram(
+    const frontend::StructuredProgramCandidate &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
 
 /// Execute one native LLVM module and capture the finite graph inputs around
 /// every dynamic execution of the exact statically selected host call. This is

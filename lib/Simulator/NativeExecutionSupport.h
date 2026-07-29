@@ -1,6 +1,9 @@
 #ifndef LOOM_SIMULATOR_NATIVEEXECUTIONSUPPORT_H
 #define LOOM_SIMULATOR_NATIVEEXECUTIONSUPPORT_H
 
+#include "Simulator/SimulationArtifacts.h"
+
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/Error.h"
 
@@ -30,6 +33,11 @@ llvm::Error admitNativeHostModule(llvm::Module &module,
 /// retargeting only an ephemeral oracle clone.
 llvm::Error retargetStructuredOracle(llvm::Module &module,
                                      const llvm::orc::LLJIT &jit);
+
+CanonicalValueSequence
+readDefinedNativeValue(llvm::ArrayRef<std::uint8_t> bytes,
+                       std::uint64_t lanesPerToken, std::uint32_t laneBitWidth,
+                       bool littleEndian);
 
 } // namespace loom::sim::detail
 

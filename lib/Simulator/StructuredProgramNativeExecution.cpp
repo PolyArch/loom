@@ -1,0 +1,795 @@
+#include "Simulator/NativeSimulationOracle.h"
+
+#include "NativeExecutionSupport.h"
+#include "SimulationWireInternal.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/Support/Alignment.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <new>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace loom::sim {
+namespace {
+
+llvm::Error invalid(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      llvm::Twine("native_structured_program_invalid: ") + message);
+}
+
+llvm::Error unsupported(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::not_supported),
+      llvm::Twine("native_structured_program_unsupported: ") + message);
+}
+
+llvm::Error executionFailed(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::io_error),
+      llvm::Twine("native_structured_program_execution_failed: ") + message);
+}
+
+llvm::Error classifyJitError(llvm::Error error, llvm::StringRef operation) {
+  bool missingSymbol = false;
+  bool otherFailure = false;
+  std::string detail;
+  llvm::raw_string_ostream stream(detail);
+  llvm::handleAllErrors(
+      std::move(error),
+      [&](const llvm::orc::SymbolsNotFound &missing) {
+        missingSymbol = true;
+        missing.log(stream);
+      },
+      [&](const llvm::ErrorInfoBase &other) {
+        otherFailure = true;
+        other.log(stream);
+      });
+  stream.flush();
+  if (missingSymbol && !otherFailure)
+    return unsupported(llvm::Twine(operation) + ": " + detail);
+  return executionFailed(llvm::Twine(operation) + ": " + detail);
+}
+
+class AlignedByteStorage final {
+public:
+  static llvm::Expected<AlignedByteStorage>
+  create(llvm::ArrayRef<std::uint8_t> bytes, llvm::Align alignment) {
+    AlignedByteStorage storage;
+    storage.size_ = bytes.size();
+    storage.alignment_ = alignment.value();
+    storage.data_ = static_cast<std::uint8_t *>(::operator new(
+        storage.size_, std::align_val_t(storage.alignment_), std::nothrow));
+    if (!storage.data_)
+      return executionFailed("cannot allocate a runtime memory object");
+    std::memcpy(storage.data_, bytes.data(), storage.size_);
+    return std::move(storage);
+  }
+
+  AlignedByteStorage(const AlignedByteStorage &) = delete;
+  AlignedByteStorage &operator=(const AlignedByteStorage &) = delete;
+
+  AlignedByteStorage(AlignedByteStorage &&other) noexcept
+      : data_(std::exchange(other.data_, nullptr)),
+        size_(std::exchange(other.size_, 0)), alignment_(other.alignment_) {}
+
+  AlignedByteStorage &operator=(AlignedByteStorage &&other) noexcept {
+    if (this == &other)
+      return *this;
+    reset();
+    data_ = std::exchange(other.data_, nullptr);
+    size_ = std::exchange(other.size_, 0);
+    alignment_ = other.alignment_;
+    return *this;
+  }
+
+  ~AlignedByteStorage() { reset(); }
+
+  std::uint8_t *data() { return data_; }
+  const std::uint8_t *data() const { return data_; }
+  std::size_t size() const { return size_; }
+
+private:
+  AlignedByteStorage() = default;
+
+  void reset() {
+    if (data_)
+      ::operator delete(data_, std::align_val_t(alignment_));
+    data_ = nullptr;
+  }
+
+  std::uint8_t *data_ = nullptr;
+  std::size_t size_ = 0;
+  std::size_t alignment_ = alignof(std::max_align_t);
+};
+
+struct MemoryTargetPlan {
+  MemoryObservationForm form = MemoryObservationForm::FullState;
+  std::optional<std::uint64_t> objectOrdinal;
+  std::string globalSymbol;
+  std::uint64_t byteCount = 0;
+};
+
+struct NativeExecutionContext {
+  std::vector<AlignedByteStorage> objects;
+  std::optional<detail::LaneShape> returnShape;
+  std::uint64_t returnByteCount = 0;
+  bool littleEndian = true;
+  std::optional<CanonicalValueSequence> returnValue;
+  std::vector<std::vector<std::uint8_t>> globalBefore;
+  std::vector<std::vector<std::uint8_t>> globalAfter;
+  std::vector<bool> sawGlobalBefore;
+  std::vector<bool> sawGlobalAfter;
+  std::optional<std::string> error;
+};
+
+thread_local NativeExecutionContext *activeExecution = nullptr;
+
+void recordExecutionError(llvm::StringRef message) {
+  if (activeExecution && !activeExecution->error)
+    activeExecution->error = message.str();
+}
+
+void *nativeRuntimeObject(std::uint64_t ordinal) {
+  if (!activeExecution || ordinal >= activeExecution->objects.size()) {
+    recordExecutionError("runtime object callback has an invalid ordinal");
+    return nullptr;
+  }
+  return activeExecution->objects[ordinal].data();
+}
+
+void nativeReturnValue(void *base, std::uint64_t byteCount) {
+  if (!activeExecution || !activeExecution->returnShape || !base ||
+      byteCount != activeExecution->returnByteCount ||
+      activeExecution->returnValue) {
+    recordExecutionError("return callback has an invalid projection");
+    return;
+  }
+  activeExecution->returnValue = detail::readDefinedNativeValue(
+      llvm::ArrayRef<std::uint8_t>(static_cast<const std::uint8_t *>(base),
+                                   static_cast<std::size_t>(byteCount)),
+      activeExecution->returnShape->lanesPerToken,
+      activeExecution->returnShape->laneBitWidth,
+      activeExecution->littleEndian);
+}
+
+void copyGlobalBytes(std::vector<std::uint8_t> &destination, void *base,
+                     std::uint64_t byteCount) {
+  destination.resize(static_cast<std::size_t>(byteCount));
+  if (byteCount != 0)
+    std::memcpy(destination.data(), base, destination.size());
+}
+
+void nativeGlobalBefore(std::uint64_t targetOrdinal, void *base,
+                        std::uint64_t byteCount) {
+  if (!activeExecution ||
+      targetOrdinal >= activeExecution->globalBefore.size() || !base ||
+      activeExecution->sawGlobalBefore[targetOrdinal]) {
+    recordExecutionError("global-before callback has an invalid projection");
+    return;
+  }
+  copyGlobalBytes(activeExecution->globalBefore[targetOrdinal], base,
+                  byteCount);
+  activeExecution->sawGlobalBefore[targetOrdinal] = true;
+}
+
+void nativeGlobalAfter(std::uint64_t targetOrdinal, void *base,
+                       std::uint64_t byteCount) {
+  if (!activeExecution ||
+      targetOrdinal >= activeExecution->globalAfter.size() || !base ||
+      activeExecution->sawGlobalAfter[targetOrdinal] ||
+      !activeExecution->sawGlobalBefore[targetOrdinal] ||
+      activeExecution->globalBefore[targetOrdinal].size() != byteCount) {
+    recordExecutionError("global-after callback has an invalid projection");
+    return;
+  }
+  copyGlobalBytes(activeExecution->globalAfter[targetOrdinal], base, byteCount);
+  activeExecution->sawGlobalAfter[targetOrdinal] = true;
+}
+
+std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
+  std::string candidate = prefix.str();
+  std::uint64_t suffix = 0;
+  while (module.getNamedValue(candidate))
+    candidate = (prefix + "." + llvm::Twine(++suffix)).str();
+  return candidate;
+}
+
+llvm::Align requiredRuntimeObjectAlignment(const llvm::Module &module) {
+  llvm::Align result(alignof(std::max_align_t));
+  auto include = [&](llvm::MaybeAlign alignment) {
+    if (alignment && alignment->value() > result.value())
+      result = *alignment;
+  };
+
+  for (const llvm::Function &function : module) {
+    for (unsigned ordinal = 0; ordinal < function.arg_size(); ++ordinal)
+      include(function.getParamAlign(ordinal));
+    for (const llvm::Instruction &instruction : llvm::instructions(function)) {
+      if (const auto *load = llvm::dyn_cast<llvm::LoadInst>(&instruction))
+        include(load->getAlign());
+      else if (const auto *store =
+                   llvm::dyn_cast<llvm::StoreInst>(&instruction))
+        include(store->getAlign());
+      else if (const auto *rmw =
+                   llvm::dyn_cast<llvm::AtomicRMWInst>(&instruction))
+        include(rmw->getAlign());
+      else if (const auto *compare =
+                   llvm::dyn_cast<llvm::AtomicCmpXchgInst>(&instruction))
+        include(compare->getAlign());
+      else if (const auto *memory =
+                   llvm::dyn_cast<llvm::MemIntrinsic>(&instruction)) {
+        include(memory->getDestAlign());
+        if (const auto *transfer =
+                llvm::dyn_cast<llvm::MemTransferInst>(memory))
+          include(transfer->getSourceAlign());
+      } else if (const auto *call =
+                     llvm::dyn_cast<llvm::CallBase>(&instruction)) {
+        for (unsigned ordinal = 0; ordinal < call->arg_size(); ++ordinal)
+          include(call->getParamAlign(ordinal));
+      }
+    }
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+definedMemoryBytes(const RuntimeMemoryObject &object) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(object.initialBytes.size());
+  for (const SemanticMemoryByte &byte : object.initialBytes) {
+    if (byte.state != SemanticState::Defined)
+      return unsupported(
+          "native execution requires Defined runtime memory bytes");
+    bytes.push_back(byte.value);
+  }
+  return bytes;
+}
+
+llvm::Expected<llvm::Constant *>
+definedScalarConstant(llvm::Type *type, const SemanticLane &lane) {
+  if (lane.state != SemanticState::Defined)
+    return unsupported(
+        "native execution requires Defined scalar and vector inputs");
+  if (auto *integer = llvm::dyn_cast<llvm::IntegerType>(type)) {
+    if (integer->getBitWidth() != lane.bits.getBitWidth())
+      return invalid("entry integer width differs from the workload ABI");
+    return llvm::ConstantInt::get(integer, lane.bits);
+  }
+  if (type->isFloatingPointTy()) {
+    if (type->getPrimitiveSizeInBits() != lane.bits.getBitWidth())
+      return invalid("entry floating width differs from the workload ABI");
+    return llvm::ConstantFP::get(
+        type->getContext(), llvm::APFloat(type->getFltSemantics(), lane.bits));
+  }
+  return unsupported("entry value type has no native constant provider");
+}
+
+llvm::Expected<llvm::Constant *>
+definedValueConstant(llvm::Type *type, const CanonicalValueSequence &sequence) {
+  if (sequence.tokenCount != 1)
+    return invalid("entry value input does not contain exactly one token");
+  if (auto *vector = llvm::dyn_cast<llvm::FixedVectorType>(type)) {
+    if (sequence.lanes.size() != vector->getNumElements())
+      return invalid("entry vector lane count differs from the workload ABI");
+    std::vector<llvm::Constant *> elements;
+    elements.reserve(sequence.lanes.size());
+    for (const SemanticLane &lane : sequence.lanes) {
+      llvm::Expected<llvm::Constant *> element =
+          definedScalarConstant(vector->getElementType(), lane);
+      if (!element)
+        return element.takeError();
+      elements.push_back(*element);
+    }
+    return llvm::ConstantVector::get(elements);
+  }
+  if (sequence.lanes.size() != 1)
+    return invalid("entry scalar input has a non-scalar lane sequence");
+  return definedScalarConstant(type, sequence.lanes.front());
+}
+
+const StructuredRuntimeValueEntry *
+findRuntimeValue(const StructuredProgramSimulationRuntimeInput &input,
+                 std::uint64_t argumentOrdinal) {
+  auto found = llvm::lower_bound(
+      input.runtimeValues, argumentOrdinal,
+      [](const StructuredRuntimeValueEntry &entry, std::uint64_t ordinal) {
+        return entry.argumentOrdinal < ordinal;
+      });
+  return found != input.runtimeValues.end() &&
+                 found->argumentOrdinal == argumentOrdinal
+             ? &*found
+             : nullptr;
+}
+
+const StructuredPointerBindingEntry *
+findPointerBinding(const StructuredProgramSimulationRuntimeInput &input,
+                   std::uint64_t argumentOrdinal) {
+  auto found = llvm::lower_bound(
+      input.pointerBindings, argumentOrdinal,
+      [](const StructuredPointerBindingEntry &entry, std::uint64_t ordinal) {
+        return entry.argumentOrdinal < ordinal;
+      });
+  return found != input.pointerBindings.end() &&
+                 found->argumentOrdinal == argumentOrdinal
+             ? &*found
+             : nullptr;
+}
+
+llvm::Expected<const CanonicalValueSequence *>
+valueForArgument(const StructuredProgramSimulationWorkload &workload,
+                 const StructuredProgramSimulationRuntimeInput &input,
+                 std::uint64_t argumentOrdinal) {
+  const StructuredProgramArgumentSource &source =
+      workload.argumentPlan[argumentOrdinal];
+  if (const auto *fixed = std::get_if<CanonicalValueSequence>(&source))
+    return fixed;
+  if (std::holds_alternative<StructuredRuntimeValueInput>(source)) {
+    const StructuredRuntimeValueEntry *runtime =
+        findRuntimeValue(input, argumentOrdinal);
+    if (!runtime)
+      return invalid("runtime value table is not total over the workload");
+    return &runtime->value;
+  }
+  return invalid("a memory argument was requested as a value");
+}
+
+llvm::Value *castPointerTo(llvm::IRBuilder<> &builder, llvm::Value *pointer,
+                           llvm::PointerType *target) {
+  auto *source = llvm::cast<llvm::PointerType>(pointer->getType());
+  if (source->getAddressSpace() == target->getAddressSpace())
+    return pointer;
+  return builder.CreateAddrSpaceCast(pointer, target);
+}
+
+llvm::Expected<std::uint64_t> fixedStoreBytes(const llvm::DataLayout &layout,
+                                              llvm::Type *type,
+                                              llvm::StringRef what) {
+  const llvm::TypeSize size = layout.getTypeStoreSize(type);
+  if (size.isScalable() || size.getFixedValue() == 0)
+    return unsupported(what + " has no fixed nonzero native storage size");
+  return size.getFixedValue();
+}
+
+std::vector<SemanticMemoryByte>
+definedSemanticBytes(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<SemanticMemoryByte> result;
+  result.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    result.push_back({SemanticState::Defined, byte});
+  return result;
+}
+
+bool sameByte(const SemanticMemoryByte &lhs, const SemanticMemoryByte &rhs) {
+  return lhs.state == rhs.state &&
+         (lhs.state != SemanticState::Defined || lhs.value == rhs.value);
+}
+
+MemoryObservationPayload
+makeMemoryObservation(MemoryObservationForm form,
+                      llvm::ArrayRef<SemanticMemoryByte> baseline,
+                      llvm::ArrayRef<std::uint8_t> finalBytes) {
+  std::vector<SemanticMemoryByte> final = definedSemanticBytes(finalBytes);
+  if (form == MemoryObservationForm::FullState)
+    return FullMemoryObservation{std::move(final)};
+
+  DiffMemoryObservation diff;
+  diff.byteCount = final.size();
+  std::uint64_t offset = 0;
+  while (offset < final.size()) {
+    if (sameByte(baseline[offset], final[offset])) {
+      ++offset;
+      continue;
+    }
+    MemoryDiffRun run;
+    run.byteOffset = offset;
+    do {
+      run.changedBytes.push_back(final[offset]);
+      ++offset;
+    } while (offset < final.size() &&
+             !sameByte(baseline[offset], final[offset]));
+    diff.runs.push_back(std::move(run));
+  }
+  return diff;
+}
+
+llvm::Expected<std::vector<MemoryTargetPlan>>
+buildMemoryPlans(const StructuredProgramSimulationWorkload &workload,
+                 const StructuredProgramSimulationRuntimeInput &input,
+                 const frontend::StructuredProgramCandidateView &view) {
+  std::vector<MemoryTargetPlan> plans;
+  plans.reserve(workload.observableContract.memories.size());
+  for (const StructuredProgramMemoryObservable &observable :
+       workload.observableContract.memories) {
+    MemoryTargetPlan plan;
+    plan.form = observable.form;
+    if (const auto *argument =
+            std::get_if<EntryPointerArgumentTarget>(&observable.target)) {
+      const StructuredPointerBindingEntry *binding =
+          findPointerBinding(input, argument->argumentOrdinal);
+      if (!binding ||
+          binding->binding.objectOrdinal >= input.memoryObjects.size())
+        return invalid("memory observable has no exact runtime object");
+      plan.objectOrdinal = binding->binding.objectOrdinal;
+      plan.byteCount = input.memoryObjects[binding->binding.objectOrdinal]
+                           .initialBytes.size();
+    } else {
+      const frontend::StructuredEntityRef &reference =
+          std::get<GlobalObjectTarget>(observable.target).global;
+      llvm::Expected<frontend::StructuredEntity> entity =
+          view.resolve(reference);
+      if (!entity)
+        return entity.takeError();
+      auto global =
+          llvm::dyn_cast_or_null<mlir::LLVM::GlobalOp>(entity->operation);
+      if (!global)
+        return invalid(
+            "global observable does not resolve to llvm.mlir.global");
+      plan.globalSymbol = global.getSymName().str();
+    }
+    plans.push_back(std::move(plan));
+  }
+  return plans;
+}
+
+struct CallbackNames {
+  std::string wrapper;
+  std::string runtimeObject;
+  std::optional<std::string> returnValue;
+  std::optional<std::string> globalBefore;
+  std::optional<std::string> globalAfter;
+};
+
+llvm::Expected<CallbackNames> instrumentExecution(
+    llvm::Module &module, llvm::StringRef entrySymbol,
+    const StructuredProgramSimulationWorkload &workload,
+    const StructuredProgramSimulationRuntimeInput &input,
+    const detail::ResolvedStructuredProgramContext &sourceContext,
+    std::vector<MemoryTargetPlan> &memoryPlans,
+    NativeExecutionContext &capture) {
+  llvm::Function *entry = module.getFunction(entrySymbol);
+  if (!entry || entry->isDeclaration())
+    return invalid("exact entry is absent after Structured lowering");
+  if (entry->isVarArg())
+    return unsupported("variadic Structured entries lack a workload ABI");
+  if (entry->arg_size() != workload.argumentPlan.size())
+    return invalid("lowered entry arguments differ from the exact workload");
+
+  const llvm::DataLayout &layout = module.getDataLayout();
+  const llvm::Align objectAlignment = requiredRuntimeObjectAlignment(module);
+  capture.objects.reserve(input.memoryObjects.size());
+  for (const RuntimeMemoryObject &object : input.memoryObjects) {
+    llvm::Expected<std::vector<std::uint8_t>> bytes =
+        definedMemoryBytes(object);
+    if (!bytes)
+      return bytes.takeError();
+    llvm::Expected<AlignedByteStorage> storage =
+        AlignedByteStorage::create(*bytes, objectAlignment);
+    if (!storage)
+      return storage.takeError();
+    capture.objects.push_back(std::move(*storage));
+  }
+  capture.littleEndian = layout.isLittleEndian();
+  capture.globalBefore.resize(memoryPlans.size());
+  capture.globalAfter.resize(memoryPlans.size());
+  capture.sawGlobalBefore.resize(memoryPlans.size());
+  capture.sawGlobalAfter.resize(memoryPlans.size());
+
+  CallbackNames names;
+  names.wrapper = uniqueName(module, "__loom_structured_entry");
+  names.runtimeObject = uniqueName(module, "__loom_structured_runtime_object");
+  if (workload.observableContract.returnValue)
+    names.returnValue = uniqueName(module, "__loom_structured_return_value");
+  if (llvm::any_of(memoryPlans, [](const MemoryTargetPlan &plan) {
+        return !plan.globalSymbol.empty();
+      })) {
+    names.globalBefore = uniqueName(module, "__loom_structured_global_before");
+    names.globalAfter = uniqueName(module, "__loom_structured_global_after");
+  }
+
+  llvm::LLVMContext &context = module.getContext();
+  llvm::Type *voidType = llvm::Type::getVoidTy(context);
+  llvm::Type *i64Type = llvm::Type::getInt64Ty(context);
+  llvm::PointerType *pointerType = llvm::PointerType::getUnqual(context);
+  llvm::FunctionType *objectCallbackType =
+      llvm::FunctionType::get(pointerType, {i64Type}, false);
+  llvm::FunctionCallee objectCallback =
+      module.getOrInsertFunction(names.runtimeObject, objectCallbackType);
+
+  llvm::FunctionCallee returnCallback;
+  if (names.returnValue) {
+    llvm::FunctionType *type =
+        llvm::FunctionType::get(voidType, {pointerType, i64Type}, false);
+    returnCallback = module.getOrInsertFunction(*names.returnValue, type);
+  }
+
+  llvm::FunctionCallee beforeCallback;
+  llvm::FunctionCallee afterCallback;
+  if (names.globalBefore) {
+    llvm::FunctionType *type = llvm::FunctionType::get(
+        voidType, {i64Type, pointerType, i64Type}, false);
+    beforeCallback = module.getOrInsertFunction(*names.globalBefore, type);
+    afterCallback = module.getOrInsertFunction(*names.globalAfter, type);
+  }
+
+  llvm::Function *wrapper = llvm::Function::Create(
+      llvm::FunctionType::get(voidType, false),
+      llvm::GlobalValue::ExternalLinkage, names.wrapper, module);
+  llvm::BasicBlock *block = llvm::BasicBlock::Create(context, "entry", wrapper);
+  llvm::IRBuilder<> builder(block);
+
+  std::vector<llvm::Value *> arguments;
+  arguments.reserve(entry->arg_size());
+  for (std::uint64_t ordinal = 0; ordinal < entry->arg_size(); ++ordinal) {
+    llvm::Type *type = entry->getFunctionType()->getParamType(ordinal);
+    if (auto *pointer = llvm::dyn_cast<llvm::PointerType>(type)) {
+      const StructuredPointerBindingEntry *binding =
+          findPointerBinding(input, ordinal);
+      if (!binding)
+        return invalid("entry pointer has no exact runtime binding");
+      llvm::Value *objectOrdinal =
+          llvm::ConstantInt::get(i64Type, binding->binding.objectOrdinal);
+      llvm::Value *base = builder.CreateCall(objectCallback, {objectOrdinal});
+      llvm::Value *view = builder.CreateConstGEP1_64(
+          llvm::Type::getInt8Ty(context), base, binding->binding.byteOffset);
+      arguments.push_back(castPointerTo(builder, view, pointer));
+      continue;
+    }
+    llvm::Expected<const CanonicalValueSequence *> sequence =
+        valueForArgument(workload, input, ordinal);
+    if (!sequence)
+      return sequence.takeError();
+    llvm::Expected<llvm::Constant *> value =
+        definedValueConstant(type, **sequence);
+    if (!value)
+      return value.takeError();
+    arguments.push_back(*value);
+  }
+
+  for (std::uint64_t ordinal = 0; ordinal < memoryPlans.size(); ++ordinal) {
+    MemoryTargetPlan &plan = memoryPlans[ordinal];
+    if (plan.globalSymbol.empty())
+      continue;
+    llvm::GlobalVariable *global =
+        module.getGlobalVariable(plan.globalSymbol, true);
+    if (!global || global->isDeclaration())
+      return unsupported("observed global has no native storage provider");
+    llvm::Expected<std::uint64_t> bytes =
+        fixedStoreBytes(layout, global->getValueType(), "observed global");
+    if (!bytes)
+      return bytes.takeError();
+    plan.byteCount = *bytes;
+    llvm::Value *pointer = castPointerTo(builder, global, pointerType);
+    builder.CreateCall(beforeCallback,
+                       {llvm::ConstantInt::get(i64Type, ordinal), pointer,
+                        llvm::ConstantInt::get(i64Type, plan.byteCount)});
+  }
+
+  llvm::CallInst *call = builder.CreateCall(entry, arguments);
+  call->setCallingConv(entry->getCallingConv());
+  call->setAttributes(entry->getAttributes());
+  if (workload.observableContract.returnValue) {
+    if (entry->getReturnType()->isVoidTy() || !sourceContext.returnShape)
+      return invalid("selected return observation has no concrete result");
+    llvm::Expected<std::uint64_t> bytes = fixedStoreBytes(
+        layout, entry->getReturnType(), "Structured entry return");
+    if (!bytes)
+      return bytes.takeError();
+    capture.returnShape = sourceContext.returnShape;
+    capture.returnByteCount = *bytes;
+    llvm::AllocaInst *storage = builder.CreateAlloca(entry->getReturnType());
+    storage->setAlignment(layout.getABITypeAlign(entry->getReturnType()));
+    builder.CreateStore(call, storage);
+    builder.CreateCall(returnCallback,
+                       {storage, llvm::ConstantInt::get(i64Type, *bytes)});
+  }
+
+  for (std::uint64_t ordinal = 0; ordinal < memoryPlans.size(); ++ordinal) {
+    const MemoryTargetPlan &plan = memoryPlans[ordinal];
+    if (plan.globalSymbol.empty())
+      continue;
+    llvm::GlobalVariable *global =
+        module.getGlobalVariable(plan.globalSymbol, true);
+    llvm::Value *pointer = castPointerTo(builder, global, pointerType);
+    builder.CreateCall(afterCallback,
+                       {llvm::ConstantInt::get(i64Type, ordinal), pointer,
+                        llvm::ConstantInt::get(i64Type, plan.byteCount)});
+  }
+  builder.CreateRetVoid();
+  if (llvm::verifyModule(module, &llvm::errs()))
+    return invalid("instrumented Structured execution module does not verify");
+  return names;
+}
+
+llvm::Error runInstrumentedExecution(llvm::orc::ThreadSafeModule module,
+                                     const CallbackNames &names,
+                                     NativeExecutionContext &capture,
+                                     std::unique_ptr<llvm::orc::LLJIT> jit) {
+  llvm::orc::JITDylib &dylib = jit->getMainJITDylib();
+  if (llvm::Expected<std::unique_ptr<llvm::orc::DynamicLibrarySearchGenerator>>
+          generator =
+              llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+                  jit->getDataLayout().getGlobalPrefix()))
+    dylib.addGenerator(std::move(*generator));
+  else
+    return classifyJitError(generator.takeError(),
+                            "cannot bind host process symbols");
+
+  llvm::orc::SymbolMap callbacks;
+  callbacks[jit->mangleAndIntern(names.runtimeObject)] = {
+      llvm::orc::ExecutorAddr::fromPtr(&nativeRuntimeObject),
+      llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.returnValue)
+    callbacks[jit->mangleAndIntern(*names.returnValue)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeReturnValue),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.globalBefore) {
+    callbacks[jit->mangleAndIntern(*names.globalBefore)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeGlobalBefore),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    callbacks[jit->mangleAndIntern(*names.globalAfter)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeGlobalAfter),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  }
+  if (llvm::Error error =
+          dylib.define(llvm::orc::absoluteSymbols(std::move(callbacks))))
+    return classifyJitError(std::move(error),
+                            "cannot bind execution callbacks");
+  if (llvm::Error error = jit->addIRModule(std::move(module)))
+    return classifyJitError(std::move(error),
+                            "cannot add the Structured execution module");
+  if (llvm::Error error = jit->initialize(dylib))
+    return classifyJitError(std::move(error),
+                            "cannot initialize the Structured program");
+  llvm::Expected<llvm::orc::ExecutorAddr> wrapper = jit->lookup(names.wrapper);
+  if (!wrapper)
+    return classifyJitError(wrapper.takeError(),
+                            "cannot materialize the Structured entry");
+  if (activeExecution)
+    return executionFailed("nested native Structured execution is unsupported");
+  activeExecution = &capture;
+  using Wrapper = void();
+  wrapper->toPtr<Wrapper>()();
+  activeExecution = nullptr;
+  if (llvm::Error error = jit->deinitialize(dylib))
+    return classifyJitError(std::move(error),
+                            "cannot deinitialize the Structured program");
+  if (capture.error)
+    return executionFailed(*capture.error);
+  return llvm::Error::success();
+}
+
+llvm::Expected<NativeStructuredProgramObservations>
+buildObservations(const StructuredProgramSimulationWorkload &workload,
+                  const StructuredProgramSimulationRuntimeInput &input,
+                  llvm::ArrayRef<MemoryTargetPlan> plans,
+                  const NativeExecutionContext &capture) {
+  NativeStructuredProgramObservations result;
+  if (workload.observableContract.returnValue) {
+    if (!capture.returnValue)
+      return executionFailed("selected return value was not captured");
+    result.returnValue = capture.returnValue;
+  }
+  result.memories.reserve(plans.size());
+  for (std::uint64_t ordinal = 0; ordinal < plans.size(); ++ordinal) {
+    const MemoryTargetPlan &plan = plans[ordinal];
+    if (plan.objectOrdinal) {
+      const RuntimeMemoryObject &baseline =
+          input.memoryObjects[*plan.objectOrdinal];
+      const AlignedByteStorage &final = capture.objects[*plan.objectOrdinal];
+      result.memories.push_back(makeMemoryObservation(
+          plan.form, baseline.initialBytes,
+          llvm::ArrayRef<std::uint8_t>(final.data(), final.size())));
+      continue;
+    }
+    if (!capture.sawGlobalBefore[ordinal] || !capture.sawGlobalAfter[ordinal])
+      return executionFailed("selected global observation was not captured");
+    std::vector<SemanticMemoryByte> baseline =
+        definedSemanticBytes(capture.globalBefore[ordinal]);
+    result.memories.push_back(makeMemoryObservation(
+        plan.form, baseline, capture.globalAfter[ordinal]));
+  }
+  return result;
+}
+
+} // namespace
+
+llvm::Expected<NativeStructuredProgramObservations>
+executeNativeStructuredProgram(
+    const frontend::StructuredProgramCandidate &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  const StructuredProgramSimulationWorkload *structured =
+      workload.structuredProgram();
+  const StructuredProgramSimulationRuntimeInput *input =
+      runtimeInput.structuredProgram();
+  if (!structured || !input)
+    return invalid("native execution requires Structured workload roots");
+
+  llvm::Expected<frontend::StructuredProgramCandidateView> view =
+      program.view();
+  if (!view)
+    return view.takeError();
+  llvm::Expected<CanonicalSimulationWorkload> verifiedWorkload =
+      importSimulationWorkload(workload.canonicalBytes().bytes(), *view,
+                               workload.identity());
+  if (!verifiedWorkload)
+    return verifiedWorkload.takeError();
+  llvm::Expected<CanonicalSimulationRuntimeInput> verifiedInput =
+      importSimulationRuntimeInput(runtimeInput.canonicalBytes().bytes(),
+                                   workload, *view, runtimeInput.identity());
+  if (!verifiedInput)
+    return verifiedInput.takeError();
+  llvm::Expected<detail::ResolvedStructuredProgramContext> sourceContext =
+      detail::resolveStructuredProgramContext(*view, structured->entryRef);
+  if (!sourceContext)
+    return sourceContext.takeError();
+  auto entry = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(sourceContext->entryOp);
+  if (!entry)
+    return invalid("exact workload entry is not llvm.func");
+  llvm::Expected<std::vector<MemoryTargetPlan>> plans =
+      buildMemoryPlans(*structured, *input, *view);
+  if (!plans)
+    return plans.takeError();
+
+  mlir::OwningOpRef<mlir::ModuleOp> cloned(
+      llvm::cast<mlir::ModuleOp>(program.module()->clone()));
+  llvm::Expected<llvm::orc::ThreadSafeModule> native =
+      detail::lowerStructuredModuleToLlvm(std::move(cloned));
+  if (!native)
+    return native.takeError();
+  if (llvm::Error error = detail::initializeNativeTarget())
+    return std::move(error);
+  llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> targetJitOrError =
+      llvm::orc::LLJITBuilder().create();
+  if (!targetJitOrError)
+    return classifyJitError(targetJitOrError.takeError(),
+                            "cannot create host JIT");
+  std::unique_ptr<llvm::orc::LLJIT> targetJit = std::move(*targetJitOrError);
+
+  NativeExecutionContext capture;
+  CallbackNames callbackNames;
+  llvm::Error preparation =
+      native->withModuleDo([&](llvm::Module &module) -> llvm::Error {
+        if (llvm::Error error =
+                detail::retargetStructuredOracle(module, *targetJit))
+          return error;
+        llvm::Expected<CallbackNames> names =
+            instrumentExecution(module, entry.getSymName(), *structured, *input,
+                                *sourceContext, *plans, capture);
+        if (!names)
+          return names.takeError();
+        callbackNames = std::move(*names);
+        return llvm::Error::success();
+      });
+  if (preparation)
+    return std::move(preparation);
+  if (llvm::Error error = runInstrumentedExecution(
+          std::move(*native), callbackNames, capture, std::move(targetJit)))
+    return std::move(error);
+  return buildObservations(*structured, *input, *plans, capture);
+}
+
+} // namespace loom::sim
