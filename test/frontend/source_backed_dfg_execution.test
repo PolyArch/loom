@@ -24,6 +24,12 @@
 # RUN:   --candidate-jobs=4 \
 # RUN:   --canonical-output=%t.alloc.mlir --output=%t.alloc.json %t.alloc.ll
 # RUN: %python -c "import json; p=json.load(open(r'%t.alloc.json')); assert p['status']=='pass'; assert p['graphs'] == 1; assert p['dynamic_calls'] > 0; assert p['memory_bytes_compared'] >= 64; assert p['event_count'] > 0"
+# RUN: %loom-cc -emit-llvm -S -O1 %S/Inputs/source_backed_global_descriptor.c -o %t.global.ll
+# RUN: mkdir -p %t.global.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.global.store \
+# RUN:   --candidate-jobs=4 \
+# RUN:   --canonical-output=%t.global.mlir --output=%t.global.json %t.global.ll
+# RUN: %python -c "import json; p=json.load(open(r'%t.global.json')); assert p['status']=='pass'; assert p['graphs'] == 1; assert p['dynamic_calls'] > 0; assert p['memory_bytes_compared'] >= 256; assert p['operation_firings']['dataflow.load'] > 0; assert p['event_count'] > 0"
 
 # DATAFLOW: dataflow.graph private
 # DATAFLOW: dataflow.graph.launch

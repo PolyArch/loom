@@ -511,11 +511,14 @@ std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
 
 struct ProgramObjectCaptureSite final {
   mlir::Value base;
+  mlir::LLVM::GlobalOp global;
   struct ExtentFactor final {
     mlir::Value runtimeValue;
     std::uint64_t fixedValue = 1;
   } extentFactor0, extentFactor1;
   mlir::Operation *registration = nullptr;
+
+  bool isGlobal() const { return static_cast<bool>(global); }
 };
 
 std::optional<std::uint64_t> constantUnsignedValue(mlir::Value value) {
@@ -554,35 +557,37 @@ fixedAllocationByteCountForCapture(mlir::LLVM::AllocaOp allocation) {
 llvm::Expected<std::vector<ProgramObjectCaptureSite>>
 collectProgramObjectCaptureSites(mlir::ModuleOp module) {
   std::vector<mlir::LLVM::AllocaOp> allocations;
-  std::vector<mlir::LLVM::AddressOfOp> addresses;
+  std::vector<mlir::LLVM::GlobalOp> globals;
   std::vector<mlir::LLVM::CallOp> calls;
   module.walk([&](mlir::LLVM::AllocaOp allocation) {
     allocations.push_back(allocation);
   });
-  module.walk(
-      [&](mlir::LLVM::AddressOfOp address) { addresses.push_back(address); });
+  module.walk([&](mlir::LLVM::GlobalOp global) { globals.push_back(global); });
   module.walk([&](mlir::LLVM::CallOp call) { calls.push_back(call); });
 
   std::vector<ProgramObjectCaptureSite> sites;
-  sites.reserve(allocations.size() + addresses.size() + calls.size());
+  sites.reserve(allocations.size() + globals.size() + calls.size());
   for (mlir::LLVM::AllocaOp allocation : allocations) {
     std::optional<std::uint64_t> byteCount =
         fixedAllocationByteCountForCapture(allocation);
-    if (byteCount)
-      sites.push_back(
-          {allocation.getRes(), {{}, *byteCount}, {{}, 1}, nullptr});
+    if (!byteCount)
+      continue;
+    ProgramObjectCaptureSite site;
+    site.base = allocation.getRes();
+    site.extentFactor0.fixedValue = *byteCount;
+    sites.push_back(std::move(site));
   }
-  for (mlir::LLVM::AddressOfOp address : addresses) {
-    auto global =
-        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::GlobalOp>(
-            address, address.getGlobalNameAttr());
-    if (!global)
+  for (mlir::LLVM::GlobalOp global : globals) {
+    if (!global.getValueOrNull() && !global.getInitializerBlock())
       continue;
     std::optional<std::uint64_t> byteCount = fixedTypeByteCountForCapture(
         global.getOperation(), global.getGlobalType());
-    if (byteCount)
-      sites.push_back(
-          {address.getResult(), {{}, *byteCount}, {{}, 1}, nullptr});
+    if (!byteCount)
+      continue;
+    ProgramObjectCaptureSite site;
+    site.global = global;
+    site.extentFactor0.fixedValue = *byteCount;
+    sites.push_back(std::move(site));
   }
   for (mlir::LLVM::CallOp call : calls) {
     std::optional<llvm::ArrayRef<std::int32_t>> allocsize = call.getAllocsize();
@@ -741,14 +746,22 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         };
     for (ProgramObjectCaptureSite &site : *objectSites) {
       mlir::OpBuilder registration(context);
-      registration.setInsertionPointAfter(site.base.getDefiningOp());
+      mlir::Location siteLocation = location;
+      if (site.isGlobal()) {
+        siteLocation = site.global.getLoc();
+        registration.setInsertionPointToStart(captureEntry);
+        site.base = mlir::LLVM::AddressOfOp::create(registration, siteLocation,
+                                                    site.global);
+      } else {
+        siteLocation = site.base.getLoc();
+        registration.setInsertionPointAfter(site.base.getDefiningOp());
+      }
       mlir::Value extentFactor0 = materializeExtentFactor(
-          registration, site.base.getLoc(), site.extentFactor0);
+          registration, siteLocation, site.extentFactor0);
       mlir::Value extentFactor1 = materializeExtentFactor(
-          registration, site.base.getLoc(), site.extentFactor1);
+          registration, siteLocation, site.extentFactor1);
       auto call = mlir::LLVM::CallOp::create(
-          registration, site.base.getLoc(), mlir::TypeRange{},
-          *names.registerObject,
+          registration, siteLocation, mlir::TypeRange{}, *names.registerObject,
           mlir::ValueRange{site.base, extentFactor0, extentFactor1});
       site.registration = call.getOperation();
     }
@@ -845,6 +858,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     for (const WorkloadBackedDenseCoordinateCapture &coordinate :
          plan.denseCoordinates)
       includePrelude(coordinate.boundaryValue.getDefiningOp());
+    for (const ProgramObjectCaptureSite &site : *objectSites)
+      if (site.isGlobal())
+        includePrelude(site.registration);
     for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
       includePrelude(root.boundaryPointer.getDefiningOp());
       mlir::Value base = programObjectBase(root.boundaryPointer);
