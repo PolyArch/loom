@@ -116,6 +116,11 @@ resolved to one registry object plus byte offset before constructing the
 canonical runtime input. Shared resolutions use one object ordinal and thereby
 preserve aliasing. No descriptor-specific pointer table, call-local alias map,
 or raw host address enters a graph or persistent Simulation Artifact.
+When a boundary pointer is a visible direct-call result, capture derives its
+origin by projecting every exact callee return operand back through that call's
+operands. All reachable return paths must resolve to the same finite runtime
+object; indirect calls, unavailable bodies, or divergent object origins are
+`Unsupported` rather than guessed from a symbol name.
 
 Pointer-producing descriptor loads and analogous aggregate traversal are
 normalized before graph finalization. InstructionCore code resolves them to

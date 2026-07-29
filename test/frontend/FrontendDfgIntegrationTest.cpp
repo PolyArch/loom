@@ -392,7 +392,7 @@ exit:
   ret void
 }
 
-define void @descriptor_leaf(ptr %table, ptr %output) {
+define ptr @descriptor_leaf(ptr %table, ptr %output) {
 entry:
   br label %loop
 
@@ -407,13 +407,15 @@ loop:
   br i1 %done, label %exit, label %loop
 
 exit:
-  ret void
+  %next.table = getelementptr i32, ptr %table, i64 1
+  ret ptr %next.table
 }
 
 define void @descriptor_bridge(ptr %descriptor, ptr %output) {
 entry:
   %table = load ptr, ptr %descriptor, align 8
-  call void @descriptor_leaf(ptr %table, ptr %output)
+  %next.table = call ptr @descriptor_leaf(ptr %table, ptr %output)
+  %ignored = call ptr @descriptor_leaf(ptr %next.table, ptr %output)
   ret void
 }
 
@@ -1132,7 +1134,7 @@ void operationCandidateCapturesDescriptorLoadedMemory() {
       findHostCall(test, *transitivePrepared.module, "nested_descriptor_main",
                    "descriptor_bridge"),
       findHostCall(test, *transitivePrepared.module, "descriptor_bridge",
-                   "descriptor_leaf")};
+                   "descriptor_leaf", 1)};
   auto transitivePlan = take(
       test, loom::sim::deriveOperationSimulationInputCapturePlan(
                 transitiveView, transitiveLaunch, transitivePrepared.liveIns,
