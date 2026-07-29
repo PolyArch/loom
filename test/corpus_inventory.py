@@ -81,6 +81,25 @@ class WorkloadProducer:
 
 
 @dataclass(frozen=True)
+class CmsisNnWorkloadProducer:
+    definition: str
+    target: str
+    test_function: str
+
+    @property
+    def kind(self) -> str:
+        return "cmsis-nn-unit-test"
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "definition": self.definition,
+            "kind": self.kind,
+            "target": self.target,
+            "test_function": self.test_function,
+        }
+
+
+@dataclass(frozen=True)
 class ProgramWorkload:
     suite: str
     case: str
@@ -89,7 +108,7 @@ class ProgramWorkload:
     entry_symbol: str
     target_profile: str
     oracle: WorkloadOracle
-    producer: WorkloadProducer
+    producer: WorkloadProducer | CmsisNnWorkloadProducer
     compiler_flags: tuple[str, ...] = ()
     link_flags: tuple[str, ...] = ()
 
@@ -368,7 +387,6 @@ def load_workload_inventory(repo_root: Path = ROOT) -> tuple[ProgramWorkload, ..
         key=lambda workload: (
             SUITE_ORDER.index(workload.suite),
             workload.case,
-            workload.executable,
         )
     )
     require_unique_identities(workloads)
@@ -411,6 +429,37 @@ def load_cmsis_dsp_workloads(external_root: Path) -> list[ProgramWorkload]:
     return workloads
 
 
+_CMSIS_NN_UNITY_TEST = re.compile(
+    r"(?m)^\s*void\s+(test_[A-Za-z0-9_]+)\s*\(\s*void\s*\)\s*\{"
+)
+
+
+def load_cmsis_nn_unity_test_functions(case_dir: Path) -> tuple[str, ...]:
+    wrappers = tuple(sorted((case_dir / "Unity").glob("unity_test_arm*.c")))
+    if len(wrappers) != 1:
+        raise InventoryError(
+            f"CMSIS-NN case must own one Unity wrapper: {case_dir}"
+        )
+    try:
+        text = wrappers[0].read_text(encoding="utf-8")
+    except OSError as exc:
+        raise InventoryError(f"cannot read {wrappers[0]}: {exc}") from exc
+    tests = tuple(_CMSIS_NN_UNITY_TEST.findall(text))
+    if not tests:
+        raise InventoryError(f"Unity wrapper defines no tests: {wrappers[0]}")
+    if len(tests) != len(set(tests)):
+        raise InventoryError(f"Unity wrapper repeats a test function: {wrappers[0]}")
+    return tests
+
+
+def cmsis_nn_workload_target(target: str, test_function: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", target):
+        raise InventoryError(f"invalid CMSIS-NN target: {target}")
+    if not re.fullmatch(r"test_[A-Za-z0-9_]+", test_function):
+        raise InventoryError(f"invalid CMSIS-NN test function: {test_function}")
+    return f"{target}__{test_function}"
+
+
 def load_cmsis_nn_workloads(external_root: Path) -> list[ProgramWorkload]:
     unit_root = external_root / "cmsis-nn" / "Tests" / "UnitTest"
     root_cmake = unit_root / "CMakeLists.txt"
@@ -450,25 +499,26 @@ def load_cmsis_nn_workloads(external_root: Path) -> list[ProgramWorkload]:
         repo_case_dir = (
             f"externals/cmsis-nn/Tests/UnitTest/TestCases/{case_name}"
         )
-        workloads.append(
-            ProgramWorkload(
-                suite="cmsis-nn",
-                case=case_name,
-                executable=target,
-                sources=(),
-                entry_symbol="main",
-                target_profile="riscv64-portable-scalar",
-                oracle=WorkloadOracle(
-                    kind="cmsis-nn-unity",
-                    path=repo_case_dir,
-                ),
-                producer=WorkloadProducer(
-                    kind="cmsis-nn-unit-test",
-                    definition=f"{repo_case_dir}/CMakeLists.txt",
-                    target=target,
-                ),
+        for test_function in load_cmsis_nn_unity_test_functions(case_dir):
+            workloads.append(
+                ProgramWorkload(
+                    suite="cmsis-nn",
+                    case=case_name,
+                    executable=cmsis_nn_workload_target(target, test_function),
+                    sources=(),
+                    entry_symbol="main",
+                    target_profile="riscv64-portable-scalar",
+                    oracle=WorkloadOracle(
+                        kind="cmsis-nn-unity",
+                        path=repo_case_dir,
+                    ),
+                    producer=CmsisNnWorkloadProducer(
+                        definition=f"{repo_case_dir}/CMakeLists.txt",
+                        target=target,
+                        test_function=test_function,
+                    ),
+                )
             )
-        )
     return workloads
 
 

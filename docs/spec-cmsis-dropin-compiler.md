@@ -322,11 +322,22 @@ missing provider.
 The CMSIS-NN workload provider consumes the pinned `externals/unity` source,
 the selected upstream case `CMakeLists.txt`, its Unity wrapper, and the
 CMSIS-NN library CMake target as one build description. Generated Unity runners
-and CMake build trees are ephemeral harness products. They preserve the owned
-test-function order and assertions, are compiled for both the exact Loom target
-and the native oracle, and never become program or oracle authority. Both
-builds use the LLVM tools pinned by Loom; a host `ar`, `ranlib`, or linker from
-another LLVM revision is not admissible.
+and CMake build trees are ephemeral harness products. Each test function in the
+upstream wrapper defines one exact workload row, in wrapper source order. Its
+generated runner invokes exactly that function while preserving the upstream
+setup, teardown, assertions, sources, compile definitions, and linked CMSIS-NN
+target. The same exact program is compiled for the Loom target and the native
+oracle. Generated runners never become program, input, or oracle authority.
+Both builds use the LLVM tools pinned by Loom; a host `ar`, `ranlib`, or linker
+from another LLVM revision is not admissible.
+
+The DFG semantic gate gives each exact workload a 15-second wall-time execution
+limit by default. Provider configuration and shared target construction occur
+outside that per-workload limit. The workload must be compact enough to execute
+its meaningful firing and state-transition behavior within the limit; combining
+independent Unity test functions into one DFG workload is invalid. Exceeding the
+limit reports an incomplete execution and cannot change candidate semantics,
+prove graph-free legality, or authorize a passing result.
 
 The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public

@@ -281,47 +281,46 @@ class CorpusGateTestBase(unittest.TestCase):
 
 
 class InventoryAggregationTest(CorpusGateTestBase):
-    def test_cmsis_nn_harness_preserves_owned_target_and_test_order(self) -> None:
-        workload = next(
+    def test_cmsis_nn_harness_materializes_owned_test_invocations(self) -> None:
+        workloads = tuple(
             case
             for case in corpus_inventory.load_workload_inventory(ROOT)
             if case.identity
-            == "cmsis-nn:test_arm_avgpool_s8/test_arm_avgpool_s8"
+            in {
+                (
+                    "cmsis-nn:test_arm_avgpool_s8/"
+                    "test_arm_avgpool_s8__test_avgpooling_arm_avgpool_s8"
+                ),
+                (
+                    "cmsis-nn:test_arm_avgpool_s8/"
+                    "test_arm_avgpool_s8__test_avgpooling_1_arm_avgpool_s8"
+                ),
+            }
         )
         harness = corpus_gate.materialize_cmsis_nn_harness(
-            (workload,),
+            workloads,
             corpus_inventory.resolve_externals_root(ROOT),
             self.work / "cmsis-nn-harness",
         )
 
-        self.assertEqual(harness.targets, ("test_arm_avgpool_s8",))
+        self.assertEqual(
+            harness.targets, tuple(workload.executable for workload in workloads)
+        )
         self.assertEqual(
             harness.unity_source,
             corpus_inventory.resolve_externals_root(ROOT) / "unity",
         )
-        runner = (
-            harness.source_dir
-            / "TestCases"
-            / "test_arm_avgpool_s8"
-            / "Unity"
-            / "TestRunner"
-            / "unity_test_arm_avgpool_s8_runner.c"
-        ).read_text()
-        calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
-        self.assertEqual(
-            calls,
-            [
-                "test_avgpooling_arm_avgpool_s8",
-                "test_avgpooling_1_arm_avgpool_s8",
-                "test_avgpooling_2_arm_avgpool_s8",
-                "test_avgpooling_3_arm_avgpool_s8",
-                "test_avgpooling_4_arm_avgpool_s8",
-                "test_avgpooling_5_arm_avgpool_s8",
-                "test_buffer_size_mve_arm_avgpool_s8",
-                "test_buffer_size_dsp_arm_avgpool_s8",
-                "test_avgpooling_param_fail_arm_avgpool_s8",
-            ],
-        )
+        for workload in workloads:
+            runner = (
+                harness.source_dir
+                / "TestCases"
+                / workload.executable
+                / "Unity"
+                / "TestRunner"
+                / "unity_test_arm_avgpool_s8_runner.c"
+            ).read_text()
+            calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
+            self.assertEqual(calls, [workload.producer.test_function])
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(

@@ -90,18 +90,22 @@ class DualInventoryContractTest(unittest.TestCase):
         )
 
         nn = [row for row in workloads if row.suite == "cmsis-nn"]
-        self.assertEqual(len(nn), 41)
-        avgpool = next(
-            row
-            for row in nn
-            if row.case == "test_arm_avgpool_s8"
-        )
-        self.assertEqual(avgpool.producer.kind, "cmsis-nn-unit-test")
-        self.assertEqual(avgpool.producer.target, "test_arm_avgpool_s8")
-        self.assertEqual(avgpool.entry_symbol, "main")
-        self.assertEqual(avgpool.oracle.kind, "cmsis-nn-unity")
+        self.assertEqual(len(nn), 249)
+        avgpool = [row for row in nn if row.case == "test_arm_avgpool_s8"]
         self.assertEqual(
-            avgpool.oracle.path,
+            [row.producer.test_function for row in avgpool[:2]],
+            [
+                "test_avgpooling_arm_avgpool_s8",
+                "test_avgpooling_1_arm_avgpool_s8",
+            ],
+        )
+        first_avgpool = avgpool[0]
+        self.assertEqual(first_avgpool.producer.kind, "cmsis-nn-unit-test")
+        self.assertEqual(first_avgpool.producer.target, "test_arm_avgpool_s8")
+        self.assertEqual(first_avgpool.entry_symbol, "main")
+        self.assertEqual(first_avgpool.oracle.kind, "cmsis-nn-unity")
+        self.assertEqual(
+            first_avgpool.oracle.path,
             "externals/cmsis-nn/Tests/UnitTest/TestCases/test_arm_avgpool_s8",
         )
 

@@ -46,35 +46,15 @@ class CmakeToolchain:
     system_name: str | None = None
 
 
-_UNITY_TEST = re.compile(
-    r"(?m)^\s*void\s+(test_[A-Za-z0-9_]+)\s*\(\s*void\s*\)\s*\{"
-)
-
-
-def _unity_tests(source: Path) -> tuple[str, ...]:
-    try:
-        text = source.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise WorkloadProviderError(f"cannot read Unity wrapper {source}: {exc}") from exc
-    tests = tuple(_UNITY_TEST.findall(text))
-    if not tests:
-        raise WorkloadProviderError(f"Unity wrapper defines no tests: {source}")
-    if len(tests) != len(set(tests)):
-        raise WorkloadProviderError(f"Unity wrapper repeats a test function: {source}")
-    return tests
-
-
-def _render_unity_runner(tests: Sequence[str]) -> str:
-    declarations = "\n".join(f"void {test}(void);" for test in tests)
-    invocations = "\n".join(f"  RUN_TEST({test});" for test in tests)
+def _render_unity_runner(test_function: str) -> str:
     return (
         '#include "unity.h"\n\n'
         "void setUp(void);\n"
         "void tearDown(void);\n"
-        f"{declarations}\n\n"
+        f"void {test_function}(void);\n\n"
         "int main(void) {\n"
         "  UNITY_BEGIN();\n"
-        f"{invocations}\n"
+        f"  RUN_TEST({test_function});\n"
         "  return UNITY_END();\n"
         "}\n"
     )
@@ -132,6 +112,36 @@ endforeach()
 """
 
 
+def _rename_staged_cmake_target(
+    cmake_path: Path, owner_target: str, workload_target: str
+) -> None:
+    try:
+        text = cmake_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkloadProviderError(f"cannot read {cmake_path}: {exc}") from exc
+    declaration = re.compile(
+        r"(?m)^\s*add_cmsis_nn_unit_test_executable\(\s*"
+        + re.escape(owner_target)
+        + r"\s*\)\s*$"
+    )
+    if len(declaration.findall(text)) != 1:
+        raise WorkloadProviderError(
+            f"CMSIS-NN case does not uniquely declare target {owner_target}"
+        )
+    token = re.compile(
+        r"(?<![A-Za-z0-9_])" + re.escape(owner_target) + r"(?![A-Za-z0-9_])"
+    )
+    rewritten, replacements = token.subn(workload_target, text)
+    if replacements < 2:
+        raise WorkloadProviderError(
+            f"CMSIS-NN case does not completely define target {owner_target}"
+        )
+    try:
+        cmake_path.write_text(rewritten, encoding="utf-8")
+    except OSError as exc:
+        raise WorkloadProviderError(f"cannot write {cmake_path}: {exc}") from exc
+
+
 def materialize_cmsis_nn_harness(
     workloads: Sequence[corpus_inventory.ProgramWorkload],
     external_root: Path,
@@ -162,19 +172,30 @@ def materialize_cmsis_nn_harness(
     targets: list[str] = []
     case_directories: list[str] = []
     for workload in workloads:
-        if workload.suite != "cmsis-nn" or workload.producer.kind != "cmsis-nn-unit-test":
+        if (
+            workload.suite != "cmsis-nn"
+            or not isinstance(
+                workload.producer, corpus_inventory.CmsisNnWorkloadProducer
+            )
+        ):
             raise WorkloadProviderError(
                 f"workload is not owned by the CMSIS-NN provider: {workload.identity}"
             )
-        target = workload.producer.target
-        if target != workload.executable or not re.fullmatch(r"[A-Za-z0-9_]+", target):
+        owner_target = workload.producer.target
+        target = workload.executable
+        try:
+            expected_target = corpus_inventory.cmsis_nn_workload_target(
+                owner_target, workload.producer.test_function
+            )
+        except corpus_inventory.InventoryError as exc:
+            raise WorkloadProviderError(str(exc)) from exc
+        if target != expected_target:
             raise WorkloadProviderError(
                 f"CMSIS-NN workload has an invalid target: {workload.identity}"
             )
         case_source = _case_source(workload, external_root)
-        case_name = case_source.name
-        case_destination = test_cases / case_name
-        if case_name in case_directories or target in targets:
+        case_destination = test_cases / target
+        if target in case_directories or target in targets:
             raise WorkloadProviderError(
                 f"CMSIS-NN harness repeats a case or target: {workload.identity}"
             )
@@ -185,17 +206,33 @@ def materialize_cmsis_nn_harness(
                 f"cannot stage CMSIS-NN case {case_source}: {exc}"
             ) from exc
 
+        _rename_staged_cmake_target(
+            case_destination / "CMakeLists.txt", owner_target, target
+        )
+
         wrappers = tuple((case_destination / "Unity").glob("unity_test_arm*.c"))
         if len(wrappers) != 1:
             raise WorkloadProviderError(
                 f"CMSIS-NN case must own one Unity wrapper: {case_source}"
             )
         wrapper = wrappers[0]
+        try:
+            test_functions = corpus_inventory.load_cmsis_nn_unity_test_functions(
+                case_destination
+            )
+        except corpus_inventory.InventoryError as exc:
+            raise WorkloadProviderError(str(exc)) from exc
+        if workload.producer.test_function not in test_functions:
+            raise WorkloadProviderError(
+                f"CMSIS-NN workload selects an unknown test function: {workload.identity}"
+            )
         runner = wrapper.parent / "TestRunner" / f"{wrapper.stem}_runner.c"
         runner.parent.mkdir()
-        runner.write_text(_render_unity_runner(_unity_tests(wrapper)), encoding="utf-8")
+        runner.write_text(
+            _render_unity_runner(workload.producer.test_function), encoding="utf-8"
+        )
         targets.append(target)
-        case_directories.append(case_name)
+        case_directories.append(target)
 
     (source_dir / "CMakeLists.txt").write_text(
         _render_harness_cmake(case_directories, targets), encoding="utf-8"

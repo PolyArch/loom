@@ -132,12 +132,17 @@ Mapping. Data-only units receive honest coverage through real consumers rather
 than synthetic computation.
 
 CMSIS-NN already owns executable test cases and their expected values through
-Unity wrappers. Replacing those wrappers with one Loom-specific harness per
-operator would create a second workload and oracle catalog. Loom instead pins
-the Unity runtime selected upstream, mechanically generates only the missing
-runner, and lets the upstream CMake targets select library sources and archive
-members. Staging generated files outside the submodule keeps external sources
-immutable while preserving the real test semantics.
+Unity wrappers. Replacing those wrappers with a Loom-authored operator catalog
+would create a second workload and oracle authority. The wrapper itself can,
+however, be projected mechanically into one exact workload per owned test
+function: membership, order, setup, assertions, inputs, and expected values all
+remain upstream-owned, while each generated runner merely selects one member.
+This avoids repeating an entire independent regression suite for every DSE
+candidate and gives each semantic witness an independent resource limit. Loom
+pins the Unity runtime selected upstream and lets the upstream CMake targets
+select library sources and archive members. Staging generated files outside the
+submodule keeps external sources immutable while preserving the real test
+semantics.
 
 Fast tests may stop at stage checkpoints to localize regressions, and smoke
 selections may keep routine execution affordable. Those are invocation choices,
