@@ -92,6 +92,21 @@ void require(bool condition, llvm::StringRef message) {
     fail(message);
 }
 
+void publishedWideFrontierForwardsByHandle() {
+  MemoryOrderFrontierArena arena;
+  const llvm::SmallVector<loom::sim::SyncEffectId, 2> effects = {
+      loom::sim::SyncEffectId(1), loom::sim::SyncEffectId(2)};
+  const MemoryOrderFrontierId frontier = arena.internCanonical(effects);
+
+  MemoryOrderAccumulator accumulator;
+  accumulator.absorb(arena.elements(frontier), frontier);
+
+  require(accumulator.isReduced(),
+          "a stored wide frontier lost its canonical reduction");
+  require(accumulator.published() == frontier,
+          "a stored wide frontier was expanded instead of forwarded");
+}
+
 template <typename Input>
 sem::SemanticInputMask consumedMask(std::initializer_list<Input> inputs) {
   sem::SemanticInputMask mask = 0;
@@ -907,6 +922,7 @@ void runFailureProjectsOnceToExecutionFailed() {
 int main() {
   tokenWidthNarrowsAtTokenBoundary();
   actorTransitionDescriptorContract();
+  publishedWideFrontierForwardsByHandle();
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();

@@ -288,8 +288,9 @@ public:
               MemoryOrderFrontierId frontier) {
     if (frontier.empty())
       return;
-    if (elements_.empty() && absorbed_.empty() && effects.size() == 1) {
-      elements_.push_back(effects.front());
+    if (elements_.empty() && absorbed_.empty()) {
+      elements_.assign(effects.begin(), effects.end());
+      rebuildMemberIndex();
       absorbed_.push_back(frontier.value());
       reduced_ = true;
       published_ = frontier;
