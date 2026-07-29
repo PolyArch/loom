@@ -51,6 +51,7 @@ else()
 endif()
 
 add_mlir_library(LoomNativeSimulationOracle
+  NativeExecutionSupport.cpp
   NativeSimulationOracle.cpp
 
   PARTIAL_SOURCES_INTENDED

@@ -1,11 +1,10 @@
 #include "Simulator/NativeSimulationOracle.h"
 
-#include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
-#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "NativeExecutionSupport.h"
+
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Export.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -22,12 +21,10 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Support/TargetSelect.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <cstring>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -46,12 +43,6 @@ llvm::Error executionFailed(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::io_error),
       llvm::Twine("native_simulation_oracle_execution_failed: ") + message);
-}
-
-llvm::Error unsupported(const llvm::Twine &message) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::not_supported),
-      llvm::Twine("native_simulation_oracle_unsupported: ") + message);
 }
 
 struct ActiveCall {
@@ -958,16 +949,6 @@ instrumentStructuredCapture(mlir::ModuleOp module,
       std::move(gateExitName),   plan.invocationPath.size()};
 }
 
-llvm::Error lowerStructuredOracleToLlvmDialect(mlir::ModuleOp module) {
-  mlir::PassManager pipeline(module->getContext());
-  pipeline.enableVerifier(true);
-  pipeline.addPass(mlir::createSCFToControlFlowPass());
-  pipeline.addPass(mlir::createConvertToLLVMPass());
-  if (mlir::failed(pipeline.run(module)))
-    return invalid("prepared Structured Program cannot lower to LLVM");
-  return llvm::Error::success();
-}
-
 void collectReferencedGlobals(llvm::Value *value,
                               llvm::SmallPtrSetImpl<llvm::GlobalValue *> &out) {
   if (auto *global = llvm::dyn_cast<llvm::GlobalValue>(value)) {
@@ -979,19 +960,6 @@ void collectReferencedGlobals(llvm::Value *value,
     return;
   for (llvm::Value *operand : constant->operands())
     collectReferencedGlobals(operand, out);
-}
-
-llvm::Expected<llvm::orc::ThreadSafeModule>
-lowerStructuredOracleToLlvm(mlir::OwningOpRef<mlir::ModuleOp> module) {
-  if (llvm::Error error = lowerStructuredOracleToLlvmDialect(*module))
-    return std::move(error);
-
-  auto context = std::make_unique<llvm::LLVMContext>();
-  std::unique_ptr<llvm::Module> translated = mlir::translateModuleToLLVMIR(
-      module->getOperation(), *context, "loom-structured-native-oracle");
-  if (!translated)
-    return invalid("instrumented Structured Program cannot translate to LLVM");
-  return llvm::orc::ThreadSafeModule(std::move(translated), std::move(context));
 }
 
 llvm::Error replaceCallableBody(llvm::Module &host,
@@ -1060,149 +1028,6 @@ llvm::Error replaceCallableBody(llvm::Module &host,
   return llvm::Error::success();
 }
 
-llvm::Error admitNativeHostModule(llvm::Module &module,
-                                  const llvm::orc::LLJIT &jit) {
-  if (module.getTargetTriple().empty())
-    module.setTargetTriple(jit.getTargetTriple());
-  else if (llvm::Triple(module.getTargetTriple()) != jit.getTargetTriple())
-    return invalid("native module target triple does not match this host");
-  if (module.getDataLayoutStr().empty())
-    module.setDataLayout(jit.getDataLayout());
-  else if (module.getDataLayout() != jit.getDataLayout())
-    return invalid("native module data layout does not match this host");
-  return llvm::Error::success();
-}
-
-void collectExecutionLayoutType(
-    llvm::Type *type, llvm::SmallPtrSetImpl<llvm::Type *> &types,
-    llvm::SmallDenseSet<unsigned, 8> &addressSpaces) {
-  if (!type || !types.insert(type).second)
-    return;
-  if (auto *pointer = llvm::dyn_cast<llvm::PointerType>(type->getScalarType()))
-    addressSpaces.insert(pointer->getAddressSpace());
-  for (llvm::Type *subtype : type->subtypes())
-    collectExecutionLayoutType(subtype, types, addressSpaces);
-}
-
-llvm::Error requireExecutionLayoutCompatibility(llvm::Module &module,
-                                                const llvm::DataLayout &host) {
-  if (module.getDataLayoutStr().empty())
-    return unsupported("target module has no data-layout contract");
-  const llvm::DataLayout &target = module.getDataLayout();
-  if (target.isLittleEndian() != host.isLittleEndian() ||
-      target.getStackAlignment() != host.getStackAlignment() ||
-      target.getAllocaAddrSpace() != host.getAllocaAddrSpace() ||
-      target.getProgramAddressSpace() != host.getProgramAddressSpace() ||
-      target.getDefaultGlobalsAddressSpace() !=
-          host.getDefaultGlobalsAddressSpace() ||
-      target.getFunctionPtrAlign() != host.getFunctionPtrAlign() ||
-      target.getFunctionPtrAlignType() != host.getFunctionPtrAlignType())
-    return unsupported("target and host execution-layout roots differ");
-
-  llvm::SmallPtrSet<llvm::Type *, 32> types;
-  llvm::SmallDenseSet<unsigned, 8> addressSpaces;
-  addressSpaces.insert(target.getAllocaAddrSpace());
-  addressSpaces.insert(target.getProgramAddressSpace());
-  addressSpaces.insert(target.getDefaultGlobalsAddressSpace());
-  for (llvm::GlobalValue &global : module.global_values()) {
-    collectExecutionLayoutType(global.getType(), types, addressSpaces);
-    collectExecutionLayoutType(global.getValueType(), types, addressSpaces);
-  }
-  for (llvm::Function &function : module) {
-    collectExecutionLayoutType(function.getFunctionType(), types,
-                               addressSpaces);
-    for (llvm::BasicBlock &block : function)
-      for (llvm::Instruction &instruction : block) {
-        collectExecutionLayoutType(instruction.getType(), types, addressSpaces);
-        for (llvm::Value *operand : instruction.operands())
-          collectExecutionLayoutType(operand->getType(), types, addressSpaces);
-      }
-  }
-
-  for (unsigned addressSpace : addressSpaces) {
-    if (target.getPointerSizeInBits(addressSpace) !=
-            host.getPointerSizeInBits(addressSpace) ||
-        target.getIndexSizeInBits(addressSpace) !=
-            host.getIndexSizeInBits(addressSpace) ||
-        target.getPointerABIAlignment(addressSpace) !=
-            host.getPointerABIAlignment(addressSpace) ||
-        target.getPointerPrefAlignment(addressSpace) !=
-            host.getPointerPrefAlignment(addressSpace) ||
-        target.isNonIntegralAddressSpace(addressSpace) !=
-            host.isNonIntegralAddressSpace(addressSpace) ||
-        target.hasUnstableRepresentation(addressSpace) !=
-            host.hasUnstableRepresentation(addressSpace) ||
-        target.hasExternalState(addressSpace) !=
-            host.hasExternalState(addressSpace) ||
-        target.getNullPtrValue(addressSpace) !=
-            host.getNullPtrValue(addressSpace))
-      return unsupported("target and host pointer layouts differ for a used "
-                         "address space");
-  }
-
-  for (llvm::Type *type : types) {
-    if (!type->isSized())
-      continue;
-    if (target.getTypeSizeInBits(type) != host.getTypeSizeInBits(type) ||
-        target.getTypeStoreSize(type) != host.getTypeStoreSize(type) ||
-        target.getTypeAllocSize(type) != host.getTypeAllocSize(type) ||
-        target.getABITypeAlign(type) != host.getABITypeAlign(type) ||
-        target.getPrefTypeAlign(type) != host.getPrefTypeAlign(type))
-      return unsupported("target and host layouts differ for an executed type");
-    auto *structure = llvm::dyn_cast<llvm::StructType>(type);
-    if (!structure)
-      continue;
-    const llvm::StructLayout *targetLayout = target.getStructLayout(structure);
-    const llvm::StructLayout *hostLayout = host.getStructLayout(structure);
-    for (unsigned element = 0; element < structure->getNumElements(); ++element)
-      if (targetLayout->getElementOffsetInBits(element) !=
-          hostLayout->getElementOffsetInBits(element))
-        return unsupported("target and host struct element layouts differ");
-  }
-  return llvm::Error::success();
-}
-
-llvm::Error retargetStructuredOracle(llvm::Module &module,
-                                     const llvm::orc::LLJIT &jit) {
-  if (!module.getModuleInlineAsm().empty())
-    return unsupported("target module contains inline assembly");
-  for (const llvm::Function &function : module)
-    if (function.isTargetIntrinsic())
-      return unsupported("target module contains a target-specific intrinsic");
-
-  if (module.getTargetTriple().empty())
-    return unsupported("target module has no target triple");
-  if (llvm::Error error =
-          requireExecutionLayoutCompatibility(module, jit.getDataLayout()))
-    return error;
-
-  if (llvm::NamedMDNode *flags = module.getNamedMetadata("llvm.module.flags"))
-    module.eraseNamedMetadata(flags);
-  for (llvm::Function &function : module) {
-    function.removeFnAttr("target-cpu");
-    function.removeFnAttr("target-features");
-    function.removeFnAttr("tune-cpu");
-  }
-  module.setTargetTriple(jit.getTargetTriple());
-  module.setDataLayout(jit.getDataLayout());
-  if (llvm::verifyModule(module, &llvm::errs()))
-    return invalid("retargeted Structured oracle module does not verify");
-  return llvm::Error::success();
-}
-
-llvm::Error initializeNativeTargetOnce() {
-  static std::once_flag once;
-  static bool targetFailed = false;
-  static bool printerFailed = false;
-  std::call_once(once, [] {
-    targetFailed = llvm::InitializeNativeTarget();
-    printerFailed = llvm::InitializeNativeTargetAsmPrinter();
-  });
-  if (targetFailed || printerFailed)
-    return executionFailed("native LLVM target initialization failed");
-  return llvm::Error::success();
-}
-
 using PrepareNativeModule =
     llvm::function_ref<llvm::Expected<CaptureCallbackNames>(
         llvm::Module &, const llvm::orc::LLJIT &)>;
@@ -1211,7 +1036,7 @@ llvm::Expected<NativeSimulationInputCapture>
 runNativeCapture(llvm::orc::ThreadSafeModule module,
                  const SimulationInputCapturePlan &plan,
                  llvm::StringRef entrySymbol, PrepareNativeModule prepare) {
-  if (llvm::Error error = initializeNativeTargetOnce())
+  if (llvm::Error error = detail::initializeNativeTarget())
     return std::move(error);
   llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> jitOrError =
       llvm::orc::LLJITBuilder().create();
@@ -1343,7 +1168,7 @@ executeNativeSimulationInputCapture(
       std::move(module), plan.input, entrySymbol,
       [&](llvm::Module &native,
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
-        if (llvm::Error error = admitNativeHostModule(native, jit))
+        if (llvm::Error error = detail::admitNativeHostModule(native, jit))
           return std::move(error);
         return instrumentCapture(native, plan, entrySymbol);
       });
@@ -1359,13 +1184,13 @@ executeStructuredDirectCallSimulationInputCapture(
     return invalid("prepared Structured Program module is absent");
   if (plan.invocationPath.empty())
     return invalid("direct-call capture has no exact invocation path");
-  if (llvm::Error error = lowerStructuredOracleToLlvmDialect(*module))
+  if (llvm::Error error = detail::lowerStructuredModuleToLlvmDialect(*module))
     return std::move(error);
   return runNativeCapture(
       std::move(hostModule), plan.input, entrySymbol,
       [&](llvm::Module &target,
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
-        if (llvm::Error error = admitNativeHostModule(target, jit))
+        if (llvm::Error error = detail::admitNativeHostModule(target, jit))
           return std::move(error);
         if (llvm::Error error = replaceCallableBody(
                 target, *module, plan.invocationPath.back().hostCalleeSymbol))
@@ -1394,7 +1219,7 @@ executeStructuredSimulationInputCapture(
   if (!callbackNames)
     return callbackNames.takeError();
   llvm::Expected<llvm::orc::ThreadSafeModule> native =
-      lowerStructuredOracleToLlvm(std::move(module));
+      detail::lowerStructuredModuleToLlvm(std::move(module));
   if (!native)
     return native.takeError();
 
@@ -1402,7 +1227,7 @@ executeStructuredSimulationInputCapture(
       std::move(*native), plan.input, entrySymbol,
       [&](llvm::Module &target,
           const llvm::orc::LLJIT &jit) -> llvm::Expected<CaptureCallbackNames> {
-        if (llvm::Error error = retargetStructuredOracle(target, jit))
+        if (llvm::Error error = detail::retargetStructuredOracle(target, jit))
           return std::move(error);
         return *callbackNames;
       });
