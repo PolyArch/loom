@@ -43,5 +43,7 @@ mlir_target_link_libraries(LoomFrontendRaising PUBLIC
   MLIRUBDialect
   LLVMCore
   LLVMAnalysis
+  LLVMipo
+  LLVMPasses
   LLVMTransformUtils
 )

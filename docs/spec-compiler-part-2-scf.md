@@ -158,6 +158,17 @@ library spelling is not a semantic proof. The first version deliberately has
 no such opaque-library model; it is reopened only when a required library body
 cannot be exposed through the ordinary final LLVM link.
 
+Mechanical raising may devirtualize an indirect call only when pinned LLVM
+interprocedural constant propagation proves one exact direct `Function`
+target in the complete linked module and the call and target function types
+are identical. The proof runs on a disposable clone. Raising projects only
+the proven called operand back to the input module; constant folding, dead-code
+removal, branch simplification, global-memory rewriting, function cloning, and
+all other optimizer effects from the proof clone are discarded. Unknown,
+escaped, type-adjusted, or path-dependent callees remain indirect calls. This
+is call-kind canonicalization, not library modeling, inlining, ownership, or a
+performance decision.
+
 LLVM leading- and trailing-zero count intrinsics with
 `is_zero_poison = false` normalize mechanically to `math.ctlz` and
 `math.cttz`. The poison-flagged forms retain their LLVM spelling and project

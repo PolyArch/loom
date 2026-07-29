@@ -22,11 +22,19 @@
 #include "mlir/Target/LLVMIR/Import.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Transforms/IPO/SCCP.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
 
 #include <memory>
@@ -38,6 +46,88 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "structured_raising_invalid: " + message);
 }
+
+} // namespace
+
+llvm::Error normalizeProvenConstantCallbacks(llvm::Module &module) {
+  if (llvm::verifyModule(module))
+    return invalid("LLVM module failed verification");
+
+  llvm::SmallVector<llvm::CallBase *, 8> indirectCalls;
+  for (llvm::Function &function : module)
+    for (llvm::Instruction &instruction : llvm::instructions(function))
+      if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+          call && !call->isInlineAsm() && !call->getCalledFunction())
+        indirectCalls.push_back(call);
+  if (indirectCalls.empty())
+    return llvm::Error::success();
+
+  llvm::ValueToValueMapTy mapping;
+  std::unique_ptr<llvm::Module> probe = llvm::CloneModule(module, mapping);
+  constexpr llvm::StringLiteral probeMetadata = "loom.constant_callback_probe";
+  for (llvm::Function &function : *probe)
+    for (llvm::Instruction &instruction : llvm::instructions(function))
+      if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
+        call->setMetadata(probeMetadata, nullptr);
+  for (auto [ordinal, call] : llvm::enumerate(indirectCalls)) {
+    auto *cloned = llvm::dyn_cast_or_null<llvm::CallBase>(mapping.lookup(call));
+    if (!cloned)
+      return invalid("constant-callback probe lost an indirect call");
+    llvm::Constant *value = llvm::ConstantInt::get(
+        llvm::Type::getInt64Ty(module.getContext()), ordinal);
+    cloned->setMetadata(
+        probeMetadata, llvm::MDNode::get(module.getContext(),
+                                         llvm::ConstantAsMetadata::get(value)));
+  }
+
+  llvm::LoopAnalysisManager loopAnalyses;
+  llvm::FunctionAnalysisManager functionAnalyses;
+  llvm::CGSCCAnalysisManager cgsccAnalyses;
+  llvm::ModuleAnalysisManager moduleAnalyses;
+  llvm::PassBuilder builder;
+  builder.registerModuleAnalyses(moduleAnalyses);
+  builder.registerCGSCCAnalyses(cgsccAnalyses);
+  builder.registerFunctionAnalyses(functionAnalyses);
+  builder.registerLoopAnalyses(loopAnalyses);
+  builder.crossRegisterProxies(loopAnalyses, functionAnalyses, cgsccAnalyses,
+                               moduleAnalyses);
+
+  llvm::ModulePassManager pipeline;
+  pipeline.addPass(llvm::IPSCCPPass(llvm::IPSCCPOptions().setFuncSpec(false)));
+  pipeline.run(*probe, moduleAnalyses);
+
+  for (llvm::Function &function : *probe) {
+    for (llvm::Instruction &instruction : llvm::instructions(function)) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+      if (!call)
+        continue;
+      llvm::MDNode *tag = call->getMetadata(probeMetadata);
+      if (!tag || tag->getNumOperands() != 1)
+        continue;
+      auto *metadata =
+          llvm::dyn_cast<llvm::ConstantAsMetadata>(tag->getOperand(0));
+      auto *ordinal =
+          metadata ? llvm::dyn_cast<llvm::ConstantInt>(metadata->getValue())
+                   : nullptr;
+      auto *target = llvm::dyn_cast<llvm::Function>(
+          call->getCalledOperand()->stripPointerCasts());
+      if (!ordinal || !target ||
+          ordinal->getZExtValue() >= indirectCalls.size())
+        continue;
+      llvm::CallBase *original = indirectCalls[ordinal->getZExtValue()];
+      llvm::Function *originalTarget = module.getFunction(target->getName());
+      if (!originalTarget ||
+          original->getFunctionType() != originalTarget->getFunctionType())
+        continue;
+      original->setCalledOperand(originalTarget);
+    }
+  }
+  if (llvm::verifyModule(module))
+    return invalid("constant-callback normalization produced invalid LLVM IR");
+  return llvm::Error::success();
+}
+
+namespace {
 
 void normalizeBulkMemoryIntrinsics(llvm::Module &module) {
   llvm::TargetTransformInfo target(module.getDataLayout());
@@ -73,8 +163,8 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
                                    StructuredRaisingOptions options) {
   if (!module)
     return invalid("missing LLVM module");
-  if (llvm::verifyModule(*module))
-    return invalid("LLVM module failed verification");
+  if (llvm::Error error = normalizeProvenConstantCallbacks(*module))
+    return std::move(error);
 
   normalizeBulkMemoryIntrinsics(*module);
   if (llvm::verifyModule(*module))

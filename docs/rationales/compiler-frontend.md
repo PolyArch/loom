@@ -53,6 +53,16 @@ overflow, exactness, fast-math, rounding, and predicates remain explicit. A
 single generated OperationSchema projection prevents frontend, Dataflow,
 simulator, Fabric, and backend from maintaining separate name tables.
 
+Source-backed execution and region extraction need finite call lineage, while
+ordinary C harnesses often pass a compile-time constant callback through one
+internal dispatcher. Treating that call as permanently opaque loses a fact
+LLVM can prove; running a whole interprocedural optimizer on the production
+module would instead move unrelated optimization choices ahead of SCF. Loom
+therefore runs pinned LLVM constant propagation on a disposable proof clone
+and imports only exact, signature-preserving callee resolution. This reuses
+LLVM as the proof authority without copying its analysis or admitting its
+unrelated rewrites into the mechanical program boundary.
+
 The LLVM importer uses one `passthrough` array for every function attribute it
 does not expose as a typed LLVMFuncOp field. Treating that storage container as
 the floating environment blocks ordinary Clang programs for unrelated facts

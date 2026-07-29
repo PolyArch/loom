@@ -21,6 +21,11 @@ struct StructuredRaisingOptions {
   bool applyPassManagerCommandLineOptions = false;
 };
 
+/// Projects only exact, signature-preserving callback targets proven by the
+/// pinned LLVM interprocedural analysis. All other proof-clone rewrites are
+/// discarded, so this remains a mechanical LLVM normalization.
+llvm::Error normalizeProvenConstantCallbacks(llvm::Module &module);
+
 /// Imports one verified LLVM module, performs the exact mechanical raising
 /// pipeline, and publishes the resulting immutable Structured Program view.
 llvm::Expected<frontend::StructuredProgramCandidate>

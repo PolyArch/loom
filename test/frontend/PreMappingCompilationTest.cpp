@@ -97,6 +97,60 @@ entry:
 }
 
 std::unique_ptr<llvm::Module>
+parseConstantCallbackModule(const char *test, llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define internal void @target() {
+entry:
+  ret void
+}
+
+define internal void @wrong_target() {
+entry:
+  ret void
+}
+
+define internal void @dispatch(ptr %callback) {
+entry:
+  call void %callback()
+  ret void
+}
+
+define void @unknown_dispatch(ptr %callback) {
+entry:
+  call void %callback()
+  ret void
+}
+
+define void @metadata_spoof() {
+entry:
+  call void @wrong_target(), !loom.constant_callback_probe !0
+  ret void
+}
+
+define i32 @main() {
+entry:
+  call void @dispatch(ptr @target)
+  ret i32 0
+}
+
+!0 = !{i64 1}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<constant-callback>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print(test, stream);
+    fail(test, stream.str());
+  }
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
 parseGlobalMemoryModule(const char *test, llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:32:32-i64:64-n32-S128"
@@ -656,6 +710,41 @@ void exactFabricAndWholeProgramDataflow() {
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void constantCallbackIsMechanicallyDevirtualized() {
+  const char *test = "constantCallbackIsMechanicallyDevirtualized";
+  llvm::LLVMContext context;
+  auto structured =
+      take(test, loom::raising::raiseLlvmModuleToStructuredProgram(
+                     parseConstantCallbackModule(test, context)));
+  auto dispatch =
+      structured.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>("dispatch");
+  if (!dispatch)
+    fail(test, "mechanical raising lost the callback dispatcher");
+
+  bool sawDirectTarget = false;
+  bool sawIndirectCall = false;
+  dispatch.walk([&](mlir::LLVM::CallOp call) {
+    if (!call.getCalleeAttr()) {
+      sawIndirectCall = true;
+      return;
+    }
+    sawDirectTarget |= call.getCalleeAttr().getValue() == "target";
+  });
+  if (!sawDirectTarget || sawIndirectCall)
+    fail(test, "constant callback did not become one exact direct call");
+
+  auto unknown = structured.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+      "unknown_dispatch");
+  if (!unknown)
+    fail(test, "mechanical raising lost the unknown callback dispatcher");
+  bool retainedIndirectCall = false;
+  unknown.walk([&](mlir::LLVM::CallOp call) {
+    retainedIndirectCall |= !call.getCalleeAttr();
+  });
+  if (!retainedIndirectCall)
+    fail(test, "input metadata spoofed an exact callback proof");
 }
 
 void explicitWholeCallableSpatialOwnership() {
@@ -1614,6 +1703,7 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
 
 int main() {
   exactFabricAndWholeProgramDataflow();
+  constantCallbackIsMechanicallyDevirtualized();
   explicitWholeCallableSpatialOwnership();
   wholeCallableExternalizesGlobalMemoryCapability();
   wholeCallableExternalizesUndefValue();
