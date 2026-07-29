@@ -198,6 +198,12 @@ llvm::Error validateStructuredProgramWorkload(
     const ResolvedStructuredProgramContext &context,
     const frontend::StructuredProgramCandidateView &view);
 
+/// Bootstrap only the Structured owner identity needed to perform a strict
+/// stored import. The complete workload is subsequently decoded, validated,
+/// and byte-reencoded by its normal owner importer.
+llvm::Expected<::loom::ArtifactIdentity>
+structuredProgramWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes);
+
 //===----------------------------------------------------------------------===//
 // Semantic value, stream, and memory-byte validation and codec
 //===----------------------------------------------------------------------===//

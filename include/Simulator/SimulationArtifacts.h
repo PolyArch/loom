@@ -17,6 +17,10 @@ namespace dataflow {
 class CanonicalDataflowProgramView;
 } // namespace dataflow
 
+namespace loom {
+class ArtifactStore;
+} // namespace loom
+
 // The typed schema-1.1 models of the loom.simulation_workload and
 // loom.simulation_runtime_input Artifact families owned by
 // docs/spec-simulation-artifacts.md. Each root carries one owner reference;
@@ -442,6 +446,29 @@ private:
                                const frontend::StructuredProgramCandidateView &,
                                const ::loom::ArtifactIdentity &);
 };
+
+struct ImportedStructuredProgramSimulationInputs {
+  frontend::StructuredProgramCandidate structuredProgram;
+  CanonicalSimulationWorkload workload;
+  CanonicalSimulationRuntimeInput runtimeInput;
+};
+
+llvm::Expected<::loom::ArtifactRootReference>
+publishSimulationWorkload(const CanonicalSimulationWorkload &workload,
+                          const ::loom::ArtifactStore &store);
+
+llvm::Expected<::loom::ArtifactRootReference> publishSimulationRuntimeInput(
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ::loom::ArtifactStore &store);
+
+/// Strictly imports one stored Structured Program workload/runtime pair and
+/// its sole owner. The owner identity is recovered from the workload's typed
+/// entry reference; no caller-supplied program, symbol, or path participates.
+llvm::Expected<ImportedStructuredProgramSimulationInputs>
+importStructuredProgramSimulationInputs(
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ::loom::ArtifactStore &store);
 
 /// Failure-atomic finalization. Validates the complete spatial workload
 /// against the exact Dataflow owner view -- rooted-launch ownership, dense

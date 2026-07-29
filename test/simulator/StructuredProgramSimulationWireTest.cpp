@@ -1,3 +1,4 @@
+#include "Common/ArtifactStore.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -9,6 +10,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -230,11 +232,56 @@ void runtimeInputBindsExactWorkloadAndPointerObject() {
           "runtime input accepted a missing pointer binding");
 }
 
+void storedInputsRecoverTheirExactStructuredOwner() {
+  const char *test = __func__;
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-structured-simulation-store", directory);
+  if (error)
+    fail(test, "cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+
+  loom::frontend::StructuredProgramCandidate source = sourceProgram(test);
+  auto sourceReference =
+      take(test, loom::frontend::publishStructuredProgram(source, store));
+  auto view = take(test, source.view());
+  loom::sim::CanonicalSimulationWorkload workload =
+      take(test, loom::sim::finalizeSimulationWorkload(
+                     makeWorkload(entryRef(test, view), 7), view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft draft{
+      workload.identity()};
+  draft.memoryObjects.push_back(
+      loom::sim::RuntimeMemoryObject{std::vector<loom::sim::SemanticMemoryByte>(
+          32, loom::sim::SemanticMemoryByte{loom::sim::SemanticState::Defined,
+                                            0})});
+  draft.pointerBindings = {loom::sim::StructuredPointerBindingDraft{1, 0, 4},
+                           loom::sim::StructuredPointerBindingDraft{2, 0, 8}};
+  loom::sim::CanonicalSimulationRuntimeInput input = take(
+      test, loom::sim::finalizeSimulationRuntimeInput(draft, workload, view));
+
+  auto workloadReference =
+      take(test, loom::sim::publishSimulationWorkload(workload, store));
+  auto inputReference =
+      take(test, loom::sim::publishSimulationRuntimeInput(input, store));
+  auto imported = take(test, loom::sim::importStructuredProgramSimulationInputs(
+                                 workloadReference, inputReference, store));
+  require(test,
+          imported.structuredProgram.identity() == sourceReference.artifact &&
+              imported.workload.identity() == workload.identity() &&
+              imported.runtimeInput.identity() == input.identity(),
+          "stored simulation inputs did not recover their exact owners");
+
+  error = llvm::sys::fs::remove_directories(directory);
+  if (error)
+    fail(test, "cannot remove artifact store: " + error.message());
+}
+
 } // namespace
 
 int main() {
   structuredRootRoundTripsAgainstExactSource();
   runtimeInputBindsExactWorkloadAndPointerObject();
+  storedInputsRecoverTheirExactStructuredOwner();
   llvm::outs() << "structured program simulation wire anchors passed\n";
   return EXIT_SUCCESS;
 }

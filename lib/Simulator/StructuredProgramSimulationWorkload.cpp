@@ -217,6 +217,23 @@ decodeStructuredProgramWorkload(
 
 namespace detail {
 
+llvm::Expected<::loom::ArtifactIdentity>
+structuredProgramWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes) {
+  detail::WireReader reader(bytes);
+  llvm::Expected<std::uint32_t> root = reader.u32();
+  if (!root)
+    return root.takeError();
+  if (*root !=
+      static_cast<std::uint32_t>(SimulationWorkloadKind::StructuredProgram))
+    return detail::invalid(
+        "simulation workload: stored import requires a Structured root");
+  llvm::Expected<frontend::StructuredEntityRef> entry =
+      decodeStructuredRef(reader);
+  if (!entry)
+    return entry.takeError();
+  return entry->parent;
+}
+
 int compareStructuredMemoryTargets(const StructuredProgramMemoryTarget &lhs,
                                    const StructuredProgramMemoryTarget &rhs) {
   if (lhs.index() != rhs.index())
