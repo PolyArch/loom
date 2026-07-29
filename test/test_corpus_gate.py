@@ -62,6 +62,25 @@ VALID_DFG_REPORT = json.dumps(
     sort_keys=True,
 ) + "\n"
 
+
+class CorpusGateExecutionPolicyTest(unittest.TestCase):
+    def test_defaults_reserve_development_cpus_and_bound_dfg_sim_time(self) -> None:
+        with mock.patch.object(corpus_gate.os, "cpu_count", return_value=32):
+            self.assertEqual(corpus_gate.default_jobs(), 28)
+        with mock.patch.object(corpus_gate.os, "cpu_count", return_value=256):
+            self.assertEqual(corpus_gate.default_jobs(), 128)
+        with mock.patch.object(corpus_gate.os, "cpu_count", return_value=4):
+            self.assertEqual(corpus_gate.default_jobs(), 1)
+
+        self.assertEqual(
+            corpus_gate.parse_args(["--stage", "dfg-sim"]).case_timeout,
+            15.0,
+        )
+        self.assertEqual(
+            corpus_gate.parse_args(["--stage", "d0"]).case_timeout,
+            120.0,
+        )
+
 STUB = """#!/usr/bin/env python3
 import os
 import subprocess

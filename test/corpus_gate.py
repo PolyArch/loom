@@ -169,6 +169,10 @@ TOOL_FILE_NAMES = {
 LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis", "llvm_link"})
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
+DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 15.0
+DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = 120.0
+RESERVED_DEVELOPMENT_CPUS = 4
+MAX_CASE_WORKERS = 128
 
 
 class GateConfigError(ValueError):
@@ -1319,7 +1323,7 @@ def run_cases(
         external_root,
         out_root,
         jobs,
-        case_timeout,
+        max(DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS, case_timeout),
     )
     results: list[CaseResult | None] = [None] * len(cases)
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
@@ -1346,7 +1350,14 @@ def run_cases(
 
 
 def default_jobs() -> int:
-    return max(1, min(24, os.cpu_count() or 1))
+    available = (os.cpu_count() or 1) - RESERVED_DEVELOPMENT_CPUS
+    return max(1, min(available, MAX_CASE_WORKERS))
+
+
+def default_case_timeout(stage: str) -> float:
+    if stage == "dfg-sim":
+        return DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS
+    return DEFAULT_CASE_TIMEOUT_SECONDS
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -1382,10 +1393,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--case-timeout",
         type=float,
-        default=DEFAULT_CASE_TIMEOUT_SECONDS,
+        default=None,
         metavar="SECONDS",
         help="per-case wall-clock deadline; the case process group is killed "
-        "when it expires (default: %(default)s)",
+        "when it expires (default: 15 for dfg-sim, 120 otherwise)",
     )
     parser.add_argument(
         "--candidate-jobs",
@@ -1420,7 +1431,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=Path,
         help="JSON summary path (default: <out-dir>/summary.json)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.case_timeout is None:
+        args.case_timeout = default_case_timeout(args.stage)
+    return args
 
 
 def render_human(
