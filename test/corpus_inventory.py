@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ CMSIS_WORKLOAD_SUPPORT_SUBMODULES = (
     *CMSIS_SUPPORT_SUBMODULES,
     Path("externals/unity"),
 )
+OPERATOR_GATE_MANIFEST = Path("test/data/corpus-operator-gate-v1.jsonl")
 
 
 class InventoryError(ValueError):
@@ -100,6 +102,15 @@ class CmsisNnWorkloadProducer:
 
 
 @dataclass(frozen=True)
+class OperatorProtocolCall:
+    symbol: str
+    signature: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"signature": self.signature, "symbol": self.symbol}
+
+
+@dataclass(frozen=True)
 class ProgramWorkload:
     suite: str
     case: str
@@ -109,12 +120,15 @@ class ProgramWorkload:
     target_profile: str
     oracle: WorkloadOracle
     producer: WorkloadProducer | CmsisNnWorkloadProducer
+    operator_id: str
+    vector_identity: str
+    protocol: tuple[OperatorProtocolCall, ...]
     compiler_flags: tuple[str, ...] = ()
     link_flags: tuple[str, ...] = ()
 
     @property
     def identity(self) -> str:
-        return f"{self.suite}:{self.case}/{self.executable}"
+        return self.operator_id
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -124,11 +138,14 @@ class ProgramWorkload:
             "executable": self.executable,
             "identity": self.identity,
             "link_flags": list(self.link_flags),
+            "operator_id": self.operator_id,
             "oracle": self.oracle.as_dict(),
             "producer": self.producer.as_dict(),
+            "protocol": [call.as_dict() for call in self.protocol],
             "sources": list(self.sources),
             "suite": self.suite,
             "target_profile": self.target_profile,
+            "vector_identity": self.vector_identity,
         }
 
 
@@ -233,48 +250,6 @@ def load_loombench_sources(repo_root: Path) -> list[SourceTranslationUnit]:
     return cases
 
 
-def load_loombench_workloads(repo_root: Path) -> list[ProgramWorkload]:
-    workloads: list[ProgramWorkload] = []
-    for entry in load_loombench_manifest(repo_root):
-        case = entry["case"]
-        sources = entry["sources"]
-        executables = entry["expected_executables"]
-        expected_stdout = entry["expected_stdout"]
-        compiler_flags = entry["compiler_flags"]
-        link_flags = entry["link_flags"]
-        assert isinstance(case, str)
-        assert isinstance(sources, list)
-        assert isinstance(executables, list)
-        assert isinstance(expected_stdout, str)
-        assert isinstance(compiler_flags, list)
-        assert isinstance(link_flags, list)
-        for source, executable in zip(sources, executables, strict=True):
-            assert isinstance(source, str)
-            assert isinstance(executable, str)
-            workloads.append(
-                ProgramWorkload(
-                    suite="loombench",
-                    case=case,
-                    executable=executable,
-                    sources=(f"test/app/{case}/{source}",),
-                    entry_symbol="main",
-                    target_profile="riscv64-portable-scalar",
-                    oracle=WorkloadOracle(
-                        kind="expected-stdout",
-                        path=f"test/app/{case}/{expected_stdout}",
-                    ),
-                    producer=WorkloadProducer(
-                        kind="direct-source",
-                        definition="test/app/manifest.json",
-                        target=executable,
-                    ),
-                    compiler_flags=tuple(compiler_flags),
-                    link_flags=tuple(link_flags),
-                )
-            )
-    return workloads
-
-
 def require_pinned_submodule(
     repo_root: Path, external_root: Path, relative_path: Path
 ) -> tuple[Path, str]:
@@ -374,59 +349,212 @@ def load_source_inventory(
 def load_workload_inventory(repo_root: Path = ROOT) -> tuple[ProgramWorkload, ...]:
     root = repo_root.resolve()
     external_root = resolve_externals_root(root)
-    for relative_path in (
-        *CMSIS_WORKLOAD_SUPPORT_SUBMODULES,
-        *CMSIS_SUBMODULES.values(),
+    document = _load_operator_gate_document(root)
+    provenance = _require_mapping(document.get("provenance"), "provenance")
+    expected_provenance = {
+        "cmsis_core_revision",
+        "cmsis_dsp_revision",
+        "cmsis_nn_revision",
+        "loombench_manifest_digest",
+    }
+    if set(provenance) != expected_provenance:
+        raise InventoryError("operator gate provenance has unknown or missing fields")
+
+    for suite, relative_path in CMSIS_SUBMODULES.items():
+        _, revision = require_pinned_submodule(root, external_root, relative_path)
+        key = suite.replace("-", "_") + "_revision"
+        if provenance.get(key) != revision:
+            raise InventoryError(
+                f"operator gate {key} does not match the pinned submodule"
+            )
+    for relative_path in CMSIS_SUPPORT_SUBMODULES:
+        _, revision = require_pinned_submodule(root, external_root, relative_path)
+        key = relative_path.name.replace("-", "_") + "_revision"
+        if provenance.get(key) != revision:
+            raise InventoryError(
+                f"operator gate {key} does not match the pinned submodule"
+            )
+    for relative_path in set(CMSIS_WORKLOAD_SUPPORT_SUBMODULES) - set(
+        CMSIS_SUPPORT_SUBMODULES
     ):
         require_pinned_submodule(root, external_root, relative_path)
 
-    workloads = load_loombench_workloads(root)
-    workloads.extend(load_cmsis_dsp_workloads(external_root))
-    workloads.extend(load_cmsis_nn_workloads(external_root))
-    workloads.sort(
-        key=lambda workload: (
-            SUITE_ORDER.index(workload.suite),
-            workload.case,
+    manifest_digest = hashlib.sha256(
+        (root / "test" / "app" / "manifest.json").read_bytes()
+    ).hexdigest()
+    if provenance.get("loombench_manifest_digest") != manifest_digest:
+        raise InventoryError(
+            "operator gate LoomBench manifest digest does not match the pinned manifest"
         )
-    )
+
+    raw_workloads = document.get("workloads")
+    if not isinstance(raw_workloads, list):
+        raise InventoryError("operator gate workloads must be an array")
+    workloads = [_parse_operator_gate_workload(row) for row in raw_workloads]
+    workloads.sort(key=lambda workload: workload.operator_id)
     require_unique_identities(workloads)
+    operator_ids = [workload.operator_id for workload in workloads]
+    if len(operator_ids) != len(set(operator_ids)):
+        raise InventoryError("operator gate repeats a typed operator identity")
+
+    counts = _require_mapping(document.get("counts"), "counts")
+    suite_counts = Counter(workload.suite for workload in workloads)
+    expected_suite_counts = counts.get("suite_counts")
+    if counts.get("operator_execution_count") != len(workloads):
+        raise InventoryError("operator gate execution count is stale")
+    if expected_suite_counts != dict(sorted(suite_counts.items())):
+        raise InventoryError("operator gate suite counts are stale")
     return tuple(workloads)
 
 
-def load_cmsis_dsp_workloads(external_root: Path) -> list[ProgramWorkload]:
-    definitions = (
-        ("float16", "desc_f16.txt", "riscv64-standard-float16"),
-        ("scalar", "desc.txt", "riscv64-portable-scalar"),
-    )
-    testing = external_root / "cmsis-dsp" / "Testing"
-    workloads: list[ProgramWorkload] = []
-    for executable, descriptor, profile in definitions:
-        descriptor_path = testing / descriptor
-        if not descriptor_path.is_file():
-            raise InventoryError(
-                f"missing CMSIS-DSP workload descriptor: {descriptor_path}"
-            )
-        repo_path = f"externals/cmsis-dsp/Testing/{descriptor}"
-        workloads.append(
-            ProgramWorkload(
-                suite="cmsis-dsp",
-                case="official-tests",
-                executable=executable,
-                sources=(),
-                entry_symbol="main",
-                target_profile=profile,
-                oracle=WorkloadOracle(
-                    kind="cmsis-dsp-patterns",
-                    path=repo_path,
-                ),
-                producer=WorkloadProducer(
-                    kind="cmsis-dsp-test-framework",
-                    definition=repo_path,
-                    target="test",
-                ),
+def _require_mapping(value: object, context: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise InventoryError(f"operator gate {context} must be an object")
+    return value
+
+
+def _require_string(value: object, context: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise InventoryError(f"operator gate {context} must be a nonempty string")
+    return value
+
+
+def _require_string_array(value: object, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise InventoryError(f"operator gate {context} must be a string array")
+    return tuple(value)
+
+
+def _load_operator_gate_document(repo_root: Path) -> dict[str, object]:
+    path = repo_root / OPERATOR_GATE_MANIFEST
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) < 2 or any(not line for line in lines):
+            raise InventoryError("operator gate manifest must contain metadata and rows")
+        document = json.loads(lines[0])
+        workloads = [json.loads(line) for line in lines[1:]]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InventoryError(f"cannot read operator gate manifest {path}: {exc}") from exc
+    document = _require_mapping(document, "root")
+    if set(document) != {"counts", "provenance", "schema_version"}:
+        raise InventoryError("operator gate root has unknown or missing fields")
+    if document["schema_version"] != 1:
+        raise InventoryError("operator gate schema version is unsupported")
+    document["workloads"] = workloads
+    return document
+
+
+def _execution_target_profile(profile: str) -> str:
+    if profile in {"portable-scalar", "scalar"}:
+        return "riscv64-portable-scalar"
+    if profile == "f16":
+        return "riscv64-standard-float16"
+    return profile
+
+
+def _parse_operator_gate_workload(value: object) -> ProgramWorkload:
+    row = _require_mapping(value, "workload")
+    expected_fields = {
+        "compiler_flags",
+        "entry_symbol",
+        "link_flags",
+        "operator_id",
+        "producer",
+        "profile",
+        "protocol",
+        "suite",
+        "vector",
+    }
+    if set(row) != expected_fields:
+        raise InventoryError("operator gate workload has unknown or missing fields")
+
+    suite = _require_string(row["suite"], "workload suite")
+    if suite not in SUITE_ORDER:
+        raise InventoryError(f"operator gate has unknown suite: {suite}")
+    operator_id = _require_string(row["operator_id"], "operator identity")
+    parts = operator_id.split(":", 2)
+    if len(parts) != 3 or parts[0] != suite:
+        raise InventoryError(f"operator gate has malformed identity: {operator_id}")
+
+    raw_protocol = row["protocol"]
+    if not isinstance(raw_protocol, list) or not raw_protocol:
+        raise InventoryError(f"operator gate protocol is empty: {operator_id}")
+    protocol: list[OperatorProtocolCall] = []
+    for ordinal, value in enumerate(raw_protocol):
+        call = _require_mapping(value, f"protocol call {ordinal}")
+        if set(call) != {"signature", "symbol"}:
+            raise InventoryError("operator gate protocol call has invalid fields")
+        protocol.append(
+            OperatorProtocolCall(
+                symbol=_require_string(call["symbol"], "protocol symbol"),
+                signature=_require_string(call["signature"], "protocol signature"),
             )
         )
-    return workloads
+
+    raw_producer = _require_mapping(row["producer"], "producer")
+    if set(raw_producer) != {"definitions", "kind", "sources", "variant"}:
+        raise InventoryError("operator gate producer has invalid fields")
+    definitions = _require_string_array(
+        raw_producer["definitions"], "producer definitions"
+    )
+    sources = _require_string_array(raw_producer["sources"], "producer sources")
+    producer_kind = _require_string(raw_producer["kind"], "producer kind")
+    producer_variant = _require_string(raw_producer["variant"], "producer variant")
+
+    raw_vector = _require_mapping(row["vector"], "vector")
+    if set(raw_vector) != {"identity", "oracle", "selector"}:
+        raise InventoryError("operator gate vector has invalid fields")
+    vector_identity = _require_string(raw_vector["identity"], "vector identity")
+    raw_oracle = _require_mapping(raw_vector["oracle"], "oracle")
+    if set(raw_oracle) != {"kind", "path"}:
+        raise InventoryError("operator gate oracle has invalid fields")
+    oracle = WorkloadOracle(
+        kind=_require_string(raw_oracle["kind"], "oracle kind"),
+        path=_require_string(raw_oracle["path"], "oracle path"),
+    )
+    selector = _require_mapping(raw_vector["selector"], "vector selector")
+    selector_kind = _require_string(selector.get("kind"), "vector selector kind")
+
+    if producer_kind == "cmsis-nn-operator-harness" and selector_kind == "upstream":
+        case = _require_string(selector.get("case"), "CMSIS-NN case")
+        test_function = _require_string(selector.get("test"), "CMSIS-NN test")
+        producer: WorkloadProducer | CmsisNnWorkloadProducer = (
+            CmsisNnWorkloadProducer(
+                definition=definitions[0],
+                target=case,
+                test_function=test_function,
+            )
+        )
+        executable = cmsis_nn_workload_target(case, test_function)
+    else:
+        producer = WorkloadProducer(
+            kind=producer_kind,
+            definition=definitions[0],
+            target=producer_variant,
+        )
+        executable = producer_variant if producer_kind == "direct-source" else parts[2]
+
+    return ProgramWorkload(
+        suite=suite,
+        case=parts[1],
+        executable=executable,
+        sources=sources,
+        entry_symbol=_require_string(row["entry_symbol"], "entry symbol"),
+        target_profile=_execution_target_profile(
+            _require_string(row["profile"], "target profile")
+        ),
+        oracle=oracle,
+        producer=producer,
+        operator_id=operator_id,
+        vector_identity=vector_identity,
+        protocol=tuple(protocol),
+        compiler_flags=_require_string_array(
+            row["compiler_flags"], "compiler flags"
+        ),
+        link_flags=_require_string_array(row["link_flags"], "link flags"),
+    )
 
 
 _CMSIS_NN_UNITY_TEST = re.compile(
@@ -458,68 +586,6 @@ def cmsis_nn_workload_target(target: str, test_function: str) -> str:
     if not re.fullmatch(r"test_[A-Za-z0-9_]+", test_function):
         raise InventoryError(f"invalid CMSIS-NN test function: {test_function}")
     return f"{target}__{test_function}"
-
-
-def load_cmsis_nn_workloads(external_root: Path) -> list[ProgramWorkload]:
-    unit_root = external_root / "cmsis-nn" / "Tests" / "UnitTest"
-    root_cmake = unit_root / "CMakeLists.txt"
-    try:
-        root_text = root_cmake.read_text()
-    except OSError as exc:
-        raise InventoryError(f"cannot read {root_cmake}: {exc}") from exc
-
-    case_names = re.findall(
-        r"(?m)^\s*add_subdirectory\(TestCases/([A-Za-z0-9_]+)\)\s*$",
-        root_text,
-    )
-    if not case_names or len(case_names) != len(set(case_names)):
-        raise InventoryError(
-            "CMSIS-NN unit-test owner has no unique TestCases subdirectory list"
-        )
-
-    workloads: list[ProgramWorkload] = []
-    target_pattern = re.compile(
-        r"(?m)^\s*add_cmsis_nn_unit_test_executable\(\s*"
-        r"([A-Za-z0-9_]+)\s*\)\s*$"
-    )
-    for case_name in case_names:
-        case_dir = unit_root / "TestCases" / case_name
-        cmake_path = case_dir / "CMakeLists.txt"
-        try:
-            cmake_text = cmake_path.read_text()
-        except OSError as exc:
-            raise InventoryError(f"cannot read {cmake_path}: {exc}") from exc
-        targets = target_pattern.findall(cmake_text)
-        if len(targets) != 1:
-            raise InventoryError(
-                f"CMSIS-NN workload {case_name} must define exactly one unit-test "
-                "executable"
-            )
-        target = targets[0]
-        repo_case_dir = (
-            f"externals/cmsis-nn/Tests/UnitTest/TestCases/{case_name}"
-        )
-        for test_function in load_cmsis_nn_unity_test_functions(case_dir):
-            workloads.append(
-                ProgramWorkload(
-                    suite="cmsis-nn",
-                    case=case_name,
-                    executable=cmsis_nn_workload_target(target, test_function),
-                    sources=(),
-                    entry_symbol="main",
-                    target_profile="riscv64-portable-scalar",
-                    oracle=WorkloadOracle(
-                        kind="cmsis-nn-unity",
-                        path=repo_case_dir,
-                    ),
-                    producer=CmsisNnWorkloadProducer(
-                        definition=f"{repo_case_dir}/CMakeLists.txt",
-                        target=target,
-                        test_function=test_function,
-                    ),
-                )
-            )
-    return workloads
 
 
 def require_unique_identities(

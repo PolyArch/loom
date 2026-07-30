@@ -150,6 +150,14 @@ not new operators or a blanket multiplication rule. This granularity preserves
 upstream ownership, keeps work modular, and prevents both giant-wrapper and
 per-vector fragmentation.
 
+The primary semantic-alignment gate needs breadth across operator protocols,
+not a Cartesian product of every profile, build alias, and input vector. It
+therefore chooses one real producer, one applicable profile, and one
+deterministic vector per typed operator identity. Additional profiles and
+vectors remain useful extended coverage, but multiplying them into the primary
+gate would spend most of its time repeating compilation and DSE rather than
+exposing new compiler semantics.
+
 Loom pins the Unity runtime selected upstream and lets upstream build metadata
 select library sources and archive members. Staging generated files outside the
 submodule keeps external sources immutable while preserving the real test

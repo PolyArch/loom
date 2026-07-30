@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -28,6 +29,20 @@ CMSIS_SUITES = {
 
 
 class DualInventoryContractTest(unittest.TestCase):
+    def test_operator_gate_uses_one_representative_execution_per_operator(self) -> None:
+        workloads = corpus_inventory.load_workload_inventory(ROOT)
+
+        self.assertEqual(
+            Counter(workload.suite for workload in workloads),
+            {"loombench": 132, "cmsis-dsp": 571, "cmsis-nn": 186},
+        )
+        self.assertEqual(len(workloads), 889)
+        self.assertEqual(
+            len({workload.operator_id for workload in workloads}),
+            len(workloads),
+        )
+        self.assertTrue(all(workload.vector_identity for workload in workloads))
+
     def test_loombench_workloads_are_real_manifest_programs(self) -> None:
         sources = corpus_inventory.load_source_inventory(ROOT)
         workloads = corpus_inventory.load_workload_inventory(ROOT)
@@ -46,66 +61,41 @@ class DualInventoryContractTest(unittest.TestCase):
         axpy_workloads = [
             row for row in workloads if row.suite == "loombench" and row.case == "axpy"
         ]
-        self.assertEqual(
-            [row.identity for row in axpy_workloads],
-            [
-                "loombench:axpy/axpy_func",
-                "loombench:axpy/axpy_inline",
-            ],
-        )
-        self.assertEqual(
-            [row.sources for row in axpy_workloads],
-            [
-                ("test/app/axpy/main_func.cpp",),
-                ("test/app/axpy/main_inline.cpp",),
-            ],
-        )
-        for workload in axpy_workloads:
-            self.assertEqual(workload.entry_symbol, "main")
-            self.assertEqual(workload.target_profile, "riscv64-portable-scalar")
-            self.assertEqual(workload.oracle.kind, "expected-stdout")
-            self.assertEqual(workload.oracle.path, "test/app/axpy/expected.txt")
+        self.assertEqual(len(axpy_workloads), 1)
+        workload = axpy_workloads[0]
+        self.assertEqual(workload.sources, ("test/app/axpy/main_func.cpp",))
+        self.assertEqual(workload.entry_symbol, "main")
+        self.assertEqual(workload.target_profile, "riscv64-portable-scalar")
+        self.assertEqual(workload.oracle.kind, "expected-stdout")
+        self.assertEqual(workload.oracle.path, "test/app/axpy/expected.txt")
+        self.assertEqual(workload.vector_identity, "axpy:manifest-vector")
 
     def test_cmsis_workloads_are_upstream_test_owners(self) -> None:
         workloads = corpus_inventory.load_workload_inventory(ROOT)
 
         dsp = [row for row in workloads if row.suite == "cmsis-dsp"]
-        self.assertEqual(
-            [row.identity for row in dsp],
-            [
-                "cmsis-dsp:official-tests/float16",
-                "cmsis-dsp:official-tests/scalar",
-            ],
+        self.assertEqual(len(dsp), 571)
+        self.assertTrue(
+            all(row.producer.kind == "cmsis-dsp-operator-harness" for row in dsp)
         )
         self.assertEqual(
-            [row.producer.kind for row in dsp],
-            ["cmsis-dsp-test-framework", "cmsis-dsp-test-framework"],
-        )
-        self.assertEqual(
-            [row.oracle.path for row in dsp],
-            [
-                "externals/cmsis-dsp/Testing/desc_f16.txt",
-                "externals/cmsis-dsp/Testing/desc.txt",
-            ],
+            {row.oracle.kind for row in dsp},
+            {"cmsis-dsp-patterns", "generated-native-reference"},
         )
 
         nn = [row for row in workloads if row.suite == "cmsis-nn"]
-        self.assertEqual(len(nn), 249)
-        avgpool = [row for row in nn if row.case == "test_arm_avgpool_s8"]
-        self.assertEqual(
-            [row.producer.test_function for row in avgpool[:2]],
-            [
-                "test_avgpooling_arm_avgpool_s8",
-                "test_avgpooling_1_arm_avgpool_s8",
-            ],
+        self.assertEqual(len(nn), 186)
+        avgpool = next(
+            row
+            for row in nn
+            if row.operator_id == "cmsis-nn:arm-avgpool-s8:533aaa9d3f64c768"
         )
-        first_avgpool = avgpool[0]
-        self.assertEqual(first_avgpool.producer.kind, "cmsis-nn-unit-test")
-        self.assertEqual(first_avgpool.producer.target, "test_arm_avgpool_s8")
-        self.assertEqual(first_avgpool.entry_symbol, "main")
-        self.assertEqual(first_avgpool.oracle.kind, "cmsis-nn-unity")
+        self.assertEqual(avgpool.producer.kind, "cmsis-nn-unit-test")
+        self.assertEqual(avgpool.producer.target, "test_arm_avgpool_s8")
+        self.assertEqual(avgpool.entry_symbol, "main")
+        self.assertEqual(avgpool.oracle.kind, "cmsis-nn-unity")
         self.assertEqual(
-            first_avgpool.oracle.path,
+            avgpool.oracle.path,
             "externals/cmsis-nn/Tests/UnitTest/TestCases/test_arm_avgpool_s8",
         )
 

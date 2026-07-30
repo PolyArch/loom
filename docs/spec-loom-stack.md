@@ -408,24 +408,24 @@ through a real consumer that selects its definitions. Alternative aggregate
 and individual-source library builds are distinct producer variants and must
 not be linked together.
 
-The checked-in conformance inventory implementation mechanically derives its
-current baseline from the exact LoomBench manifest, pinned CMSIS descriptors,
-Clang typed call projection, CMake source selection, package descriptors, and
-gitlinks. For the currently pinned inputs the closed baseline is:
+The checked-in representative semantic gate selects one real producer, one
+applicable target profile, and one deterministic vector for each typed operator
+identity. `test/data/corpus-operator-gate-v1.jsonl` records that selection and
+its pinned-input provenance; `test/corpus_inventory.py` strictly imports it and
+rejects stale revisions, duplicate identities, or malformed rows. For the
+currently pinned inputs the gate is:
 
-| Derived view | Count |
+| Suite | Representative operator executions |
 | --- | ---: |
-| source translation units | 1,040 |
-| operator identities | 889 |
-| profile groups | 1,204 |
-| operator workloads | 1,916 |
-| profile-local vectors | 3,781 |
-| DFG-sim vector executions | 6,565 |
+| LoomBench | 132 |
+| CMSIS-DSP | 571 |
+| CMSIS-NN | 186 |
+| Total | 889 |
 
-The derivation and both coverage anti-joins are authoritative, not these
-snapshot numbers. A pinned manifest, descriptor, build, or submodule change
-must regenerate the baseline and review the semantic delta; callers never
-hard-code the snapshot as membership policy.
+Profiles, producer aliases, and additional vectors do not multiply this total.
+They remain extended coverage and may reuse the same final link and DSE result.
+A pinned manifest, descriptor, build, or submodule change must update the
+selection and review its semantic delta before the strict importer accepts it.
 
 A target profile is a general typed compiler and provider configuration, not a
 suite exception. The repository conformance profiles cover portable scalar
@@ -499,11 +499,12 @@ boundary. The pre-Mapping workload gate final-links every selected operator
 workload once, then uses the same `loom-cc` or `loom-c++` contract to produce
 LLVM IR, Structured candidates, and a finalized Canonical Dataflow Program
 while resolving one exact Fabric target and using central Evaluation where
-required. Every owned vector then executes through the semantic gate with its
-own limit and oracle. Mapping is outside this gate. The harness verifies both
-coverage anti-joins separately from stage success. A typed unsupported outcome
-remains a tool or target limitation; it is not success and cannot be made
-suite-specific.
+required. The representative vector then executes through the semantic gate
+with its own limit and oracle; extended invocations may execute further owned
+vectors without redefining operator membership. Mapping is outside this gate.
+The harness verifies both coverage anti-joins separately from stage success. A
+typed unsupported outcome remains a tool or target limitation; it is not
+success and cannot be made suite-specific.
 
 Frontend and non-Mapping Evaluation capabilities advance together after at
 least one exact builtin Fabric is available. Hardware-aware compiler decisions

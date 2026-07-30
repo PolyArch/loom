@@ -707,7 +707,8 @@ def case_out_dir(
     case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload,
 ) -> Path:
     if isinstance(case, corpus_inventory.ProgramWorkload):
-        return out_root / case.suite / case.case / case.executable
+        operator_digest = case.operator_id.rsplit(":", 1)[-1]
+        return out_root / case.suite / case.case / operator_digest
     return out_root / case.suite / case.case.removesuffix(".c")
 
 

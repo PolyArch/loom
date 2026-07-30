@@ -347,8 +347,9 @@ link closure.
 Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
 `ranlib`, or linker from another LLVM revision is not admissible.
 
-The DFG semantic gate gives each WorkloadVector a 15-second wall-time execution
-limit by default. Provider configuration, final link, compilation, candidate
+The primary DFG semantic gate chooses one deterministic WorkloadVector per
+typed operator identity and gives it a 15-second wall-time execution limit by
+default. Provider configuration, final link, compilation, candidate
 generation, and shared target construction occur outside that simulation
 limit and have separate bounded execution controls. A vector must be compact
 enough to execute meaningful firing and state-transition behavior within the

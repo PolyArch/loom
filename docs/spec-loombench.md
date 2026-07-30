@@ -139,8 +139,10 @@ evidence.
 the LoomBench manifest and pinned CMSIS owners, emits separate source and
 operator-workload views, preserves their identities, and supports
 complete-suite or explicit-row selection. One LoomBench manifest case is one
-operator protocol with its ordered input vector and separate `func` and
-`inline` producer variants. It does not maintain a competing membership list.
+operator protocol with its ordered input vector. The primary semantic gate
+uses the `func` producer; the `inline` source remains ordinary frontend and
+source-compilation coverage rather than a second operator identity. It does
+not maintain a competing membership list.
 
 Runners discover cases from that structured view. Empty selections, duplicate
 case/source identities, missing sources, malformed manifest records, stale
