@@ -190,9 +190,7 @@ def resolve_externals_root(repo_root: Path) -> Path:
             text=True,
         )
     except OSError as exc:
-        raise InventoryError(
-            f"cannot resolve shared external sources: {exc}"
-        ) from exc
+        raise InventoryError(f"cannot resolve shared external sources: {exc}") from exc
     if completed.returncode != 0:
         diagnostic = completed.stderr.strip()
         raise InventoryError(
@@ -278,9 +276,7 @@ def require_pinned_submodule(
             f"submodule revision mismatch for {relative_path}: "
             f"expected {pinned_revision}, found {checked_out_revision}"
         )
-    dirty = git_text(
-        ["status", "--porcelain", "--untracked-files=no"], submodule
-    )
+    dirty = git_text(["status", "--porcelain", "--untracked-files=no"], submodule)
     if dirty:
         raise InventoryError(
             f"shared submodule has tracked modifications: {relative_path}"
@@ -390,7 +386,9 @@ def load_workload_inventory(repo_root: Path = ROOT) -> tuple[ProgramWorkload, ..
     raw_workloads = document.get("workloads")
     if not isinstance(raw_workloads, list):
         raise InventoryError("operator gate workloads must be an array")
-    workloads = [_parse_operator_gate_workload(row) for row in raw_workloads]
+    workloads = [
+        _parse_operator_gate_workload(row, external_root) for row in raw_workloads
+    ]
     workloads.sort(key=lambda workload: workload.operator_id)
     require_unique_identities(workloads)
     operator_ids = [workload.operator_id for workload in workloads]
@@ -432,11 +430,15 @@ def _load_operator_gate_document(repo_root: Path) -> dict[str, object]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
         if len(lines) < 2 or any(not line for line in lines):
-            raise InventoryError("operator gate manifest must contain metadata and rows")
+            raise InventoryError(
+                "operator gate manifest must contain metadata and rows"
+            )
         document = json.loads(lines[0])
         workloads = [json.loads(line) for line in lines[1:]]
     except (OSError, json.JSONDecodeError) as exc:
-        raise InventoryError(f"cannot read operator gate manifest {path}: {exc}") from exc
+        raise InventoryError(
+            f"cannot read operator gate manifest {path}: {exc}"
+        ) from exc
     document = _require_mapping(document, "root")
     if set(document) != {"counts", "provenance", "schema_version"}:
         raise InventoryError("operator gate root has unknown or missing fields")
@@ -454,7 +456,9 @@ def _execution_target_profile(profile: str) -> str:
     return profile
 
 
-def _parse_operator_gate_workload(value: object) -> ProgramWorkload:
+def _parse_operator_gate_workload(
+    value: object, external_root: Path
+) -> ProgramWorkload:
     row = _require_mapping(value, "workload")
     expected_fields = {
         "compiler_flags",
@@ -520,14 +524,24 @@ def _parse_operator_gate_workload(value: object) -> ProgramWorkload:
     if producer_kind == "cmsis-nn-operator-harness" and selector_kind == "upstream":
         case = _require_string(selector.get("case"), "CMSIS-NN case")
         test_function = _require_string(selector.get("test"), "CMSIS-NN test")
-        producer: WorkloadProducer | CmsisNnWorkloadProducer = (
-            CmsisNnWorkloadProducer(
-                definition=definitions[0],
-                target=case,
-                test_function=test_function,
+        definition = Path(definitions[0])
+        if definition.parts[:2] != ("externals", "cmsis-nn"):
+            raise InventoryError(
+                f"CMSIS-NN producer definition escapes its owner: {definition}"
             )
+        if definition.name != "CMakeLists.txt" or definition.parent.name != case:
+            raise InventoryError(
+                f"CMSIS-NN vector case does not own its build description: {case}"
+            )
+        target = load_cmsis_nn_case_target(
+            external_root.joinpath(*definition.parts[1:])
         )
-        executable = cmsis_nn_workload_target(case, test_function)
+        producer: WorkloadProducer | CmsisNnWorkloadProducer = CmsisNnWorkloadProducer(
+            definition=definitions[0],
+            target=target,
+            test_function=test_function,
+        )
+        executable = cmsis_nn_workload_target(target, test_function)
     else:
         producer = WorkloadProducer(
             kind=producer_kind,
@@ -550,9 +564,7 @@ def _parse_operator_gate_workload(value: object) -> ProgramWorkload:
         operator_id=operator_id,
         vector_identity=vector_identity,
         protocol=tuple(protocol),
-        compiler_flags=_require_string_array(
-            row["compiler_flags"], "compiler flags"
-        ),
+        compiler_flags=_require_string_array(row["compiler_flags"], "compiler flags"),
         link_flags=_require_string_array(row["link_flags"], "link flags"),
     )
 
@@ -560,14 +572,29 @@ def _parse_operator_gate_workload(value: object) -> ProgramWorkload:
 _CMSIS_NN_UNITY_TEST = re.compile(
     r"(?m)^\s*void\s+(test_[A-Za-z0-9_]+)\s*\(\s*void\s*\)\s*\{"
 )
+_CMSIS_NN_TARGET_DECLARATION = re.compile(
+    r"(?m)^\s*add_cmsis_nn_unit_test_executable\(\s*"
+    r"([A-Za-z0-9_]+)\s*\)\s*$"
+)
+
+
+def load_cmsis_nn_case_target(cmake_path: Path) -> str:
+    try:
+        text = cmake_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise InventoryError(f"cannot read {cmake_path}: {exc}") from exc
+    targets = _CMSIS_NN_TARGET_DECLARATION.findall(text)
+    if len(targets) != 1:
+        raise InventoryError(
+            f"CMSIS-NN case must declare one unit-test target: {cmake_path}"
+        )
+    return targets[0]
 
 
 def load_cmsis_nn_unity_test_functions(case_dir: Path) -> tuple[str, ...]:
     wrappers = tuple(sorted((case_dir / "Unity").glob("unity_test_arm*.c")))
     if len(wrappers) != 1:
-        raise InventoryError(
-            f"CMSIS-NN case must own one Unity wrapper: {case_dir}"
-        )
+        raise InventoryError(f"CMSIS-NN case must own one Unity wrapper: {case_dir}")
     try:
         text = wrappers[0].read_text(encoding="utf-8")
     except OSError as exc:
@@ -665,9 +692,7 @@ def render_json(
 ) -> str:
     if inventory_kind == "source-translation-unit":
         if not all(isinstance(case, SourceTranslationUnit) for case in cases):
-            raise InventoryError(
-                "source inventory contains a non-source workload row"
-            )
+            raise InventoryError("source inventory contains a non-source workload row")
         require_unique_inventory(
             [case for case in cases if isinstance(case, SourceTranslationUnit)]
         )

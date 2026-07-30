@@ -47,9 +47,7 @@ class DualInventoryContractTest(unittest.TestCase):
         sources = corpus_inventory.load_source_inventory(ROOT)
         workloads = corpus_inventory.load_workload_inventory(ROOT)
 
-        axpy_source = next(
-            row for row in sources if row.identity == "loombench:axpy"
-        )
+        axpy_source = next(row for row in sources if row.identity == "loombench:axpy")
         self.assertEqual(
             axpy_source.sources,
             (
@@ -98,6 +96,16 @@ class DualInventoryContractTest(unittest.TestCase):
             avgpool.oracle.path,
             "externals/cmsis-nn/Tests/UnitTest/TestCases/test_arm_avgpool_s8",
         )
+        batch_matmul = next(
+            row
+            for row in nn
+            if row.operator_id == "cmsis-nn:arm-batch-matmul-s16:baf58c6a708ee1e0"
+        )
+        self.assertEqual(batch_matmul.producer.target, "batch_matmul_s16")
+        self.assertEqual(
+            batch_matmul.executable,
+            "batch_matmul_s16__test_batch_matmul_1_s16",
+        )
 
 
 def git_output(repository: Path, *arguments: str) -> str:
@@ -123,7 +131,8 @@ def tracked_translation_units(submodule: Path, revision: str = "HEAD") -> list[s
     return sorted(
         path
         for path in output.split("\0")
-        if path.startswith("Source/") and path.endswith(".c")
+        if path.startswith("Source/")
+        and path.endswith(".c")
         and not Path(path).name.startswith("_")
     )
 
@@ -358,9 +367,7 @@ class CorpusInventoryTest(unittest.TestCase):
                 )
             )
             _, diagnostics = app_manifest.validate_manifest(manifest_path)
-            self.assertIn(
-                "alpha: unsupported fields ['obsolete_field']", diagnostics
-            )
+            self.assertIn("alpha: unsupported fields ['obsolete_field']", diagnostics)
 
             manifest_path.write_text(
                 json.dumps(

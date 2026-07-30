@@ -74,10 +74,19 @@ def _case_source(
         raise WorkloadProviderError(
             f"CMSIS-NN producer definition is not one exact case: {definition}"
         )
-    return external_root / "cmsis-nn" / "Tests" / "UnitTest" / "TestCases" / relative.parent
+    return (
+        external_root
+        / "cmsis-nn"
+        / "Tests"
+        / "UnitTest"
+        / "TestCases"
+        / relative.parent
+    )
 
 
-def _render_harness_cmake(case_directories: Sequence[str], targets: Sequence[str]) -> str:
+def _render_harness_cmake(
+    case_directories: Sequence[str], targets: Sequence[str]
+) -> str:
     add_cases = "\n".join(
         f'add_subdirectory("TestCases/{case}" "cases/{case}")'
         for case in case_directories
@@ -118,14 +127,13 @@ def _rename_staged_cmake_target(
         text = cmake_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise WorkloadProviderError(f"cannot read {cmake_path}: {exc}") from exc
-    declaration = re.compile(
-        r"(?m)^\s*add_cmsis_nn_unit_test_executable\(\s*"
-        + re.escape(owner_target)
-        + r"\s*\)\s*$"
-    )
-    if len(declaration.findall(text)) != 1:
+    try:
+        declared_target = corpus_inventory.load_cmsis_nn_case_target(cmake_path)
+    except corpus_inventory.InventoryError as exc:
+        raise WorkloadProviderError(str(exc)) from exc
+    if declared_target != owner_target:
         raise WorkloadProviderError(
-            f"CMSIS-NN case does not uniquely declare target {owner_target}"
+            f"CMSIS-NN case declares {declared_target}, expected {owner_target}"
         )
     token = re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(owner_target) + r"(?![A-Za-z0-9_])"
@@ -154,9 +162,14 @@ def materialize_cmsis_nn_harness(
         )
 
     unity_source = external_root / "unity"
-    for required in (unity_source / "src" / "unity.c", unity_source / "src" / "unity.h"):
+    for required in (
+        unity_source / "src" / "unity.c",
+        unity_source / "src" / "unity.h",
+    ):
         if not required.is_file():
-            raise WorkloadProviderError(f"pinned Unity source is unavailable: {required}")
+            raise WorkloadProviderError(
+                f"pinned Unity source is unavailable: {required}"
+            )
 
     source_dir = destination / "source"
     test_cases = source_dir / "TestCases"
@@ -165,17 +178,16 @@ def materialize_cmsis_nn_harness(
     for name in ("Common", "TestData", "Utils"):
         shared = cmsis_shared / name
         if not shared.is_dir():
-            raise WorkloadProviderError(f"CMSIS-NN shared test input is unavailable: {shared}")
+            raise WorkloadProviderError(
+                f"CMSIS-NN shared test input is unavailable: {shared}"
+            )
         (test_cases / name).symlink_to(shared, target_is_directory=True)
 
     targets: list[str] = []
     case_directories: list[str] = []
     for workload in workloads:
-        if (
-            workload.suite != "cmsis-nn"
-            or not isinstance(
-                workload.producer, corpus_inventory.CmsisNnWorkloadProducer
-            )
+        if workload.suite != "cmsis-nn" or not isinstance(
+            workload.producer, corpus_inventory.CmsisNnWorkloadProducer
         ):
             raise WorkloadProviderError(
                 f"workload is not owned by the CMSIS-NN provider: {workload.identity}"
