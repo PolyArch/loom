@@ -851,8 +851,9 @@ mlir::Value materializeElementStride(mlir::OpBuilder &builder,
   return mlir::arith::MulIOp::create(builder, location, stride, scale);
 }
 
-mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
-                                               unsigned width) {
+llvm::Expected<mlir::scf::WhileOp>
+rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
+                            BlockReplacementObserver observeReplacement) {
   mlir::scf::WhileOp loop = plan.operation;
   mlir::OpBuilder builder(loop);
   mlir::IntegerType offsetType = builder.getIntegerType(width);
@@ -866,6 +867,23 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
     inits[lane.ordinal] = zero;
     resultTypes[lane.ordinal] = offsetType;
   }
+
+  llvm::Error observerError = llvm::Error::success();
+  auto observe = [&](mlir::Block *source, mlir::Block *replacement) {
+    if (observerError)
+      return;
+    observerError = observeReplacement(source, replacement);
+  };
+  auto observeNestedBlocks = [&](mlir::Block *source,
+                                 const mlir::IRMapping &mapping) {
+    for (mlir::Operation &operation : *source)
+      operation.walk([&](mlir::Operation *nested) {
+        for (mlir::Region &region : nested->getRegions())
+          for (mlir::Block &block : region)
+            if (mlir::Block *replacement = mapping.lookupOrNull(&block))
+              observe(&block, replacement);
+      });
+  };
 
   auto buildBefore = [&](mlir::OpBuilder &bodyBuilder, mlir::Location location,
                          mlir::ValueRange arguments) {
@@ -899,6 +917,8 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
          loop.getBeforeBody()->without_terminator())
       if (!skippedUpdates.contains(&operation))
         bodyBuilder.clone(operation, mapping);
+    observe(loop.getBeforeBody(), bodyBuilder.getInsertionBlock());
+    observeNestedBlocks(loop.getBeforeBody(), mapping);
 
     llvm::SmallVector<mlir::Value, 4> nextArguments;
     nextArguments.reserve(loop.getConditionOp().getArgs().size());
@@ -936,6 +956,8 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
     }
     for (mlir::Operation &operation : loop.getAfterBody()->without_terminator())
       bodyBuilder.clone(operation, mapping);
+    observe(loop.getAfterBody(), bodyBuilder.getInsertionBlock());
+    observeNestedBlocks(loop.getAfterBody(), mapping);
 
     llvm::SmallVector<mlir::Value, 4> yields;
     yields.reserve(loop.getYieldOp().getResults().size());
@@ -951,6 +973,10 @@ mlir::scf::WhileOp rewritePointerInductionLoop(const PointerInductionLoop &plan,
 
   auto replacement = mlir::scf::WhileOp::create(
       builder, loop.getLoc(), resultTypes, inits, buildBefore, buildAfter);
+  if (observerError) {
+    replacement.erase();
+    return std::move(observerError);
+  }
   replacement->setDiscardableAttrs(loop->getDiscardableAttrDictionary());
 
   builder.setInsertionPointAfter(replacement);
@@ -1058,7 +1084,8 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation) {
 llvm::Expected<mlir::Operation *>
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,
-                                std::optional<unsigned> canonicalIndexWidth) {
+                                std::optional<unsigned> canonicalIndexWidth,
+                                BlockReplacementObserver observeReplacement) {
   if (!selectedOperation)
     return invalid("requires a selected structured operation");
   std::optional<unsigned> effectiveWidth = canonicalIndexWidth;
@@ -1142,10 +1169,12 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     PointerInductionLoop &loop = pointerLoops.front();
     const bool replacesSelection =
         selectedOperation == loop.operation.getOperation();
-    mlir::scf::WhileOp replacement =
-        rewritePointerInductionLoop(loop, *effectiveWidth);
+    auto replacement =
+        rewritePointerInductionLoop(loop, *effectiveWidth, observeReplacement);
+    if (!replacement)
+      return replacement.takeError();
     if (replacesSelection)
-      selectedOperation = replacement.getOperation();
+      selectedOperation = replacement->getOperation();
     pointerLoops = collectPointerInductionLoops(selectedOperation);
     for (const PointerInductionLoop &loop : pointerLoops)
       if (!pointerOffsetsFit(loop, *effectiveWidth))

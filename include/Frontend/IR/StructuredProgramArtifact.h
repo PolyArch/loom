@@ -29,6 +29,7 @@ namespace loom::frontend {
 
 class StructuredProgramCandidate;
 class StructuredProgramCandidateView;
+struct FinalizedStructuredProgramProjection;
 
 inline constexpr ArtifactSchemaDescriptor structuredProgramArtifactSchema{
     "loom.structured_program", {1, 0}};
@@ -97,6 +98,9 @@ private:
   buildStructuredProgramCandidateView(mlir::ModuleOp, const ArtifactIdentity &);
   friend llvm::Expected<StructuredProgramCandidate>
       finalizeStructuredProgram(mlir::ModuleOp);
+  friend llvm::Expected<FinalizedStructuredProgramProjection>
+      finalizeStructuredProgramWithTrackedBlocks(mlir::ModuleOp,
+                                                 llvm::ArrayRef<mlir::Block *>);
 };
 
 /// A complete immutable S0/Sn snapshot. The family owns one canonical MLIR
@@ -137,6 +141,9 @@ private:
 
   friend llvm::Expected<StructuredProgramCandidate>
       finalizeStructuredProgram(mlir::ModuleOp);
+  friend llvm::Expected<FinalizedStructuredProgramProjection>
+      finalizeStructuredProgramWithTrackedBlocks(mlir::ModuleOp,
+                                                 llvm::ArrayRef<mlir::Block *>);
   friend llvm::Expected<StructuredProgramCandidate>
   importStructuredProgram(const ArtifactIdentity &,
                           const CanonicalSemanticBytes &);
@@ -144,11 +151,26 @@ private:
   importStructuredProgram(const ArtifactRootReference &, const ArtifactStore &);
 };
 
+/// One finalized Structured Program plus an ordered projection of source
+/// blocks into the candidate's canonical entity domain. The correspondence is
+/// invocation-local transformation lineage; it is not serialized and can be
+/// reconstructed by replaying the exact transformation.
+struct FinalizedStructuredProgramProjection final {
+  StructuredProgramCandidate artifact;
+  std::vector<StructuredEntityRef> trackedBlocks;
+};
+
 /// Finalizes a private clone of one complete mixed-dialect S0/Sn module.
 /// Source locations and consumed hints do not affect identity; ordered program
 /// semantics, ABI facts, and selected structured decisions do.
 llvm::Expected<StructuredProgramCandidate>
 finalizeStructuredProgram(mlir::ModuleOp source);
+
+/// Finalizes one program while carrying an ordered set of live source blocks
+/// through the private clone and canonical labeling transaction.
+llvm::Expected<FinalizedStructuredProgramProjection>
+finalizeStructuredProgramWithTrackedBlocks(
+    mlir::ModuleOp source, llvm::ArrayRef<mlir::Block *> trackedBlocks);
 
 /// Strictly imports one exact family payload. The supplied identity must match
 /// the Common identity of the canonical semantic bytes, and re-encoding must

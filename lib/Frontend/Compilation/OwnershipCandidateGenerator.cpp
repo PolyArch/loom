@@ -23,6 +23,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -169,6 +170,66 @@ struct SpatialThreadBoundary {
   llvm::SmallVector<mlir::Value> spatialCoordinates;
 };
 
+llvm::Expected<StructuredEntityRef>
+sourceBlockReference(const PreparedSpatialOwnershipSelection &prepared,
+                     mlir::Block *block) {
+  auto found = llvm::find_if(
+      prepared.sourceBlocks,
+      [&](const PreparedSpatialOwnershipSelection::SourceBlockBinding &entry) {
+        return entry.candidateBlock == block;
+      });
+  if (found == prepared.sourceBlocks.end())
+    return invalid("ownership block has no parent activity lineage");
+  return found->parentBlock;
+}
+
+llvm::Error addSourceBlockBinding(PreparedSpatialOwnershipSelection &prepared,
+                                  mlir::Block *candidateBlock,
+                                  const StructuredEntityRef &parentBlock) {
+  if (!candidateBlock || parentBlock.kind != StructuredEntityKind::Block)
+    return invalid("ownership block activity lineage has the wrong kind");
+  auto found = llvm::find_if(
+      prepared.sourceBlocks,
+      [&](const PreparedSpatialOwnershipSelection::SourceBlockBinding &entry) {
+        return entry.candidateBlock == candidateBlock;
+      });
+  if (found != prepared.sourceBlocks.end()) {
+    if (found->parentBlock != parentBlock)
+      return invalid("ownership block has conflicting parent activity lineage");
+    return llvm::Error::success();
+  }
+  prepared.sourceBlocks.push_back({candidateBlock, parentBlock});
+  return llvm::Error::success();
+}
+
+llvm::Error
+propagateClonedBlockBindings(PreparedSpatialOwnershipSelection &prepared,
+                             const mlir::IRMapping &mapping,
+                             std::size_t sourceBindingCount) {
+  if (sourceBindingCount > prepared.sourceBlocks.size())
+    return invalid("ownership block activity lineage changed during cloning");
+  llvm::DenseMap<mlir::Block *, StructuredEntityRef> knownBindings;
+  knownBindings.reserve(prepared.sourceBlocks.size() + sourceBindingCount);
+  for (const auto &binding : prepared.sourceBlocks)
+    knownBindings.try_emplace(binding.candidateBlock, binding.parentBlock);
+  for (std::size_t index = 0; index < sourceBindingCount; ++index) {
+    const auto source = prepared.sourceBlocks[index];
+    mlir::Block *cloned = mapping.lookupOrNull(source.candidateBlock);
+    if (!cloned)
+      continue;
+    auto [found, inserted] =
+        knownBindings.try_emplace(cloned, source.parentBlock);
+    if (!inserted) {
+      if (found->second != source.parentBlock)
+        return invalid(
+            "ownership block has conflicting parent activity lineage");
+      continue;
+    }
+    prepared.sourceBlocks.push_back({cloned, source.parentBlock});
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<SpatialThreadBoundary> createSpatialThreadBoundary(
     mlir::ModuleOp module, mlir::LLVM::LLVMFuncOp sourceCallable,
     mlir::ValueRange captures, mlir::ValueRange threadOnlyCaptures,
@@ -302,13 +363,17 @@ deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
   return boundary;
 }
 
-llvm::Error materializeThread(mlir::ModuleOp module,
+llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
                               mlir::LLVM::LLVMFuncOp function) {
+  mlir::ModuleOp module = prepared.module.get();
   if (llvm::Error error = verifyEligibleCallable(function))
     return error;
   mlir::MLIRContext *context = module.getContext();
   mlir::Location location = function.getLoc();
   mlir::Block &source = function.getBody().front();
+  auto activationSource = sourceBlockReference(prepared, &source);
+  if (!activationSource)
+    return activationSource.takeError();
   auto sourceReturn = llvm::cast<mlir::LLVM::ReturnOp>(source.getTerminator());
 
   // A global address is resolved by the stored-program launch owner and
@@ -350,11 +415,21 @@ llvm::Error materializeThread(mlir::ModuleOp module,
 
   mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
+  const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
   for (auto [index, capture] : llvm::enumerate(captures))
     mapping.map(capture, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::Operation *operation : selectedBody)
     builder.clone(*operation, mapping);
+  if (llvm::Error error =
+          propagateClonedBlockBindings(prepared, mapping, sourceBindingCount))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, &boundary->thread.getBody().front(), *activationSource))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, boundary->spatialEntry, *activationSource))
+    return error;
   llvm::SmallVector<mlir::Value, 1> mappedResults;
   mappedResults.reserve(yieldedValues.size());
   for (mlir::Value value : yieldedValues)
@@ -729,6 +804,9 @@ llvm::Error materializePreparedForallThreadDomain(
   auto callable = eligibleOwningCallable(forall);
   if (!callable)
     return callable.takeError();
+  auto activationSource = sourceBlockReference(prepared, forall.getBody());
+  if (!activationSource)
+    return activationSource.takeError();
 
   mlir::Location location = forall.getLoc();
   auto boundary = createSpatialThreadBoundary(
@@ -738,6 +816,7 @@ llvm::Error materializePreparedForallThreadDomain(
     return boundary.takeError();
 
   mlir::IRMapping mapping;
+  const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
   for (auto [index, liveIn] : llvm::enumerate(prepared.liveIns))
     mapping.map(liveIn, boundary->captureArguments[index]);
   mlir::OpBuilder builder(module.getContext());
@@ -777,6 +856,15 @@ llvm::Error materializePreparedForallThreadDomain(
   }
   for (mlir::Operation &operation : forall.getBody()->without_terminator())
     builder.clone(operation, mapping);
+  if (llvm::Error error =
+          propagateClonedBlockBindings(prepared, mapping, sourceBindingCount))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, &boundary->thread.getBody().front(), *activationSource))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, boundary->spatialEntry, *activationSource))
+    return error;
   loom::SpatialYieldOp::create(builder, location, mlir::ValueRange{},
                                mlir::ValueRange{});
 
@@ -792,11 +880,16 @@ llvm::Error materializePreparedForallThreadDomain(
   return llvm::Error::success();
 }
 
-llvm::Error materializePreparedOperation(mlir::ModuleOp module,
-                                         mlir::Operation *operation) {
+llvm::Error
+materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
+                             mlir::Operation *operation) {
+  mlir::ModuleOp module = prepared.module.get();
   auto callable = eligibleOwningCallable(operation);
   if (!callable)
     return callable.takeError();
+  auto activationSource = sourceBlockReference(prepared, operation->getBlock());
+  if (!activationSource)
+    return activationSource.takeError();
   OperationClosure closure = deriveOperationClosure(operation);
   mlir::Location location = operation->getLoc();
   mlir::MLIRContext *context = module.getContext();
@@ -817,12 +910,22 @@ llvm::Error materializePreparedOperation(mlir::ModuleOp module,
     return boundary.takeError();
 
   mlir::IRMapping mapping;
+  const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
   for (auto [index, liveIn] : llvm::enumerate(closure.liveIns))
     mapping.map(liveIn, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::arith::ConstantOp constant : closure.constants)
     builder.clone(*constant, mapping);
   builder.clone(*operation, mapping);
+  if (llvm::Error error =
+          propagateClonedBlockBindings(prepared, mapping, sourceBindingCount))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, &boundary->thread.getBody().front(), *activationSource))
+    return error;
+  if (llvm::Error error = addSourceBlockBinding(
+          prepared, boundary->spatialEntry, *activationSource))
+    return error;
   llvm::SmallVector<mlir::Value, 4> yieldedValues;
   yieldedValues.reserve(closure.liveOuts.size());
   for (mlir::Value liveOut : closure.liveOuts)
@@ -900,6 +1003,8 @@ llvm::Error requireExactFabricCapabilities(
 struct PrivateSelection {
   mlir::OwningOpRef<mlir::ModuleOp> clone;
   mlir::Operation *operation;
+  std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
+      sourceBlocks;
 };
 
 llvm::Expected<PrivateSelection>
@@ -921,29 +1026,75 @@ cloneSelectedOperation(const StructuredProgramCandidate &parent,
       mapping.lookupOrNull(parentEntity->operation);
   if (!clonedOperation)
     return invalid("selected operation was not mapped into the private clone");
-  return PrivateSelection{std::move(clone), clonedOperation};
+  std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
+      sourceBlocks;
+  sourceBlocks.reserve(
+      parentView->entities(StructuredEntityKind::Block).size());
+  for (const StructuredEntity &entity :
+       parentView->entities(StructuredEntityKind::Block)) {
+    mlir::Block *mapped = mapping.lookupOrNull(entity.block);
+    if (!mapped)
+      return invalid("parent block was not mapped into the private clone");
+    sourceBlocks.push_back({mapped, entity.reference});
+  }
+  return PrivateSelection{std::move(clone), clonedOperation,
+                          std::move(sourceBlocks)};
 }
 
 llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
-    mlir::ModuleOp module, const fabric::FinalizedFabricRoot &fabric,
+    PreparedSpatialOwnershipSelection &prepared,
+    const fabric::FinalizedFabricRoot &fabric,
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  mlir::ModuleOp module = prepared.module.get();
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
-  auto structured = finalizeStructuredProgram(module);
+
+  llvm::DenseSet<mlir::Block *> liveBlocks;
+  module->walk([&](mlir::Operation *operation) {
+    for (mlir::Region &region : operation->getRegions())
+      for (mlir::Block &block : region)
+        liveBlocks.insert(&block);
+  });
+  std::vector<mlir::Block *> trackedBlocks;
+  std::vector<StructuredEntityRef> parentBlocks;
+  trackedBlocks.reserve(prepared.sourceBlocks.size());
+  parentBlocks.reserve(prepared.sourceBlocks.size());
+  for (const PreparedSpatialOwnershipSelection::SourceBlockBinding &binding :
+       prepared.sourceBlocks) {
+    if (!liveBlocks.contains(binding.candidateBlock))
+      continue;
+    trackedBlocks.push_back(binding.candidateBlock);
+    parentBlocks.push_back(binding.parentBlock);
+  }
+  auto structured =
+      finalizeStructuredProgramWithTrackedBlocks(module, trackedBlocks);
   if (!structured)
     return structured.takeError();
+  if (structured->trackedBlocks.size() != parentBlocks.size())
+    return invalid("finalized block activity lineage changed cardinality");
+  auto structuredView = structured->artifact.view();
+  if (!structuredView)
+    return structuredView.takeError();
+  if (structured->trackedBlocks.size() !=
+      structuredView->entities(StructuredEntityKind::Block).size())
+    return invalid("finalized block activity lineage is not total");
+  std::vector<StructuredBlockActivityLineage> blockActivityLineage;
+  blockActivityLineage.reserve(parentBlocks.size());
+  for (auto [child, parent] :
+       llvm::zip_equal(structured->trackedBlocks, parentBlocks))
+    blockActivityLineage.push_back({child, parent});
   auto projected =
       lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-          *structured, loweringOptions);
+          structured->artifact, loweringOptions);
   if (!projected)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   projected.takeError());
   if (llvm::Error error =
           requireExactFabricCapabilities(projected->artifact, fabric))
     return std::move(error);
-  return MaterializedOwnershipCandidate{std::move(*structured),
-                                        std::move(projected->artifact),
-                                        std::move(projected->spatialGraphs)};
+  return MaterializedOwnershipCandidate{
+      std::move(structured->artifact), std::move(projected->artifact),
+      std::move(projected->spatialGraphs), std::move(blockActivityLineage)};
 }
 
 } // namespace
@@ -1115,7 +1266,7 @@ materializeSpatialOwnershipDecision(
 
   if (auto function =
           llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(prepared->operation)) {
-    if (llvm::Error error = materializeThread(prepared->module.get(), function))
+    if (llvm::Error error = materializeThread(*prepared, function))
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   } else if (auto forall = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(
@@ -1127,12 +1278,12 @@ materializeSpatialOwnershipDecision(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   } else {
-    if (llvm::Error error = materializePreparedOperation(prepared->module.get(),
-                                                         prepared->operation))
+    if (llvm::Error error =
+            materializePreparedOperation(*prepared, prepared->operation))
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     std::move(error));
   }
-  return finalizeOwnershipCandidate(prepared->module.get(), fabric, lowering);
+  return finalizeOwnershipCandidate(*prepared, fabric, lowering);
 }
 
 llvm::Expected<PreparedSpatialOwnershipSelection>
@@ -1208,8 +1359,27 @@ prepareSpatialOwnershipSelection(
   if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
           selection->clone.get()))
     return std::move(error);
+  llvm::DenseMap<mlir::Block *, std::size_t> blockLineage;
+  blockLineage.reserve(selection->sourceBlocks.size());
+  for (auto item : llvm::enumerate(selection->sourceBlocks))
+    blockLineage.try_emplace(item.value().candidateBlock, item.index());
+  auto observeBlockReplacement = [&](mlir::Block *source,
+                                     mlir::Block *replacement) -> llvm::Error {
+    auto sourceBinding = blockLineage.find(source);
+    if (sourceBinding == blockLineage.end())
+      return invalid(
+          "address normalization replaced a block without source lineage");
+    const std::size_t bindingIndex = sourceBinding->second;
+    if (blockLineage.contains(replacement))
+      return invalid("address normalization reused a live block lineage");
+    blockLineage.erase(sourceBinding);
+    selection->sourceBlocks[bindingIndex].candidateBlock = replacement;
+    blockLineage.try_emplace(replacement, bindingIndex);
+    return llvm::Error::success();
+  };
   auto normalized = detail::materializeAddressIndexContract(
-      selection->clone.get(), operation, decision.canonicalIndexWidth);
+      selection->clone.get(), operation, decision.canonicalIndexWidth,
+      observeBlockReplacement);
   if (!normalized)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   normalized.takeError());
@@ -1262,10 +1432,13 @@ prepareSpatialOwnershipSelection(
   }
   if (mlir::failed(mlir::verify(selection->clone.get())))
     return invalid("prepared ownership selection does not verify");
-  return PreparedSpatialOwnershipSelection{
-      std::move(selection->clone), operation,
-      std::move(liveIns),          std::move(liveOuts),
-      std::move(sourceInductions), std::move(threadExtents)};
+  return PreparedSpatialOwnershipSelection{std::move(selection->clone),
+                                           operation,
+                                           std::move(liveIns),
+                                           std::move(liveOuts),
+                                           std::move(sourceInductions),
+                                           std::move(threadExtents),
+                                           std::move(selection->sourceBlocks)};
 }
 
 llvm::Expected<MaterializedOwnershipCandidate>

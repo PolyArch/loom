@@ -9,6 +9,7 @@
 #include "Evaluation/ModelProvider.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
@@ -296,6 +297,83 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
   return projection;
 }
 
+llvm::Expected<BlockActivityProjection> projectBlockActivity(
+    const frontend::StructuredProgramCandidate &candidate,
+    const BlockActivityProjection &source,
+    llvm::ArrayRef<frontend::StructuredBlockActivityLineage> lineage) {
+  auto view = candidate.view();
+  if (!view)
+    return view.takeError();
+  BlockActivityProjection projection{
+      std::move(*view), llvm::DenseMap<mlir::Block *, std::uint64_t>(), 0};
+  llvm::DenseSet<std::uint64_t> seenChildren;
+  for (const frontend::StructuredBlockActivityLineage &entry : lineage) {
+    if (entry.childBlock.parent != projection.view.identity() ||
+        entry.childBlock.kind != frontend::StructuredEntityKind::Block ||
+        entry.parentBlock.parent != source.view.identity() ||
+        entry.parentBlock.kind != frontend::StructuredEntityKind::Block)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: block activity lineage has the "
+          "wrong owner or kind");
+    if (!seenChildren.insert(entry.childBlock.ordinal).second)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: block activity lineage is not "
+          "injective");
+    auto child = projection.view.resolve(entry.childBlock);
+    if (!child)
+      return child.takeError();
+    auto parent = source.view.resolve(entry.parentBlock);
+    if (!parent)
+      return parent.takeError();
+    if (!child->block || !parent->block)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: block activity lineage did not "
+          "resolve to blocks");
+    if (!isProfiledStructuredBlock(child->block))
+      continue;
+    auto activation = source.activations.find(parent->block);
+    if (activation == source.activations.end())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: parent block has no dynamic "
+          "activity projection");
+    projection.activations.try_emplace(child->block, activation->second);
+  }
+
+  for (const frontend::StructuredEntity &entity :
+       projection.view.entities(frontend::StructuredEntityKind::Block)) {
+    if (!isProfiledStructuredBlock(entity.block))
+      continue;
+    auto activation = projection.activations.find(entity.block);
+    if (activation == projection.activations.end())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: block activity lineage is not "
+          "total at canonical block %llu owned by %s",
+          static_cast<unsigned long long>(entity.reference.ordinal),
+          entity.block->getParentOp()->getName().getStringRef().str().c_str());
+    const std::uint64_t leaves =
+        llvm::count_if(*entity.block, [](mlir::Operation &operation) {
+          return isModeledHostLeaf(&operation);
+        });
+    auto dynamicLeaves = checkedScaledCount(leaves, activation->second,
+                                            "candidate instruction executions");
+    if (!dynamicLeaves)
+      return dynamicLeaves.takeError();
+    const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(
+        projection.hostInstructionLeafExecutions, *dynamicLeaves);
+    if (!updated)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: candidate instruction total");
+    projection.hostInstructionLeafExecutions = *updated;
+  }
+  return projection;
+}
+
 llvm::Expected<ResolvedScopeActivity>
 resolveScopeActivity(const BlockActivityProjection &projection,
                      const frontend::StructuredEntityRef &sourceScope) {
@@ -417,18 +495,13 @@ accumulateGraphWorkload(detail::AnalyticWorkloadEstimate &destination,
 }
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
-    const frontend::StructuredProgramCandidate &program,
-    const sim::NativeStructuredProgramObservations &observations,
+    const BlockActivityProjection &activity,
     const fabric::FinalizedFabricRoot &fabricRoot,
     const dataflow::CanonicalDataflowProgramView *projectedDataflow,
     llvm::ArrayRef<lowering::StructuredSpatialGraphProjection> spatialGraphs) {
-  auto activity = projectBlockActivity(program, observations);
-  if (!activity)
-    return activity.takeError();
-
   std::size_t spatialRegionCount = 0;
   for (const frontend::StructuredEntity &entity :
-       activity->view.entities(frontend::StructuredEntityKind::Operation))
+       activity.view.entities(frontend::StructuredEntityKind::Operation))
     spatialRegionCount +=
         llvm::isa_and_nonnull<::loom::SpatialRegionOp>(entity.operation);
   if (spatialRegionCount != spatialGraphs.size())
@@ -446,7 +519,7 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
   llvm::DenseSet<mlir::Operation *> visitedLaunches;
   for (const lowering::StructuredSpatialGraphProjection &projection :
        spatialGraphs) {
-    auto region = activity->view.resolve(projection.spatialRegion);
+    auto region = activity.view.resolve(projection.spatialRegion);
     if (!region)
       return region.takeError();
     auto spatial =
@@ -461,8 +534,8 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_invalid: Spatial graph projection is not "
           "injective");
-    auto found = activity->activations.find(&spatial.getBody().front());
-    if (found == activity->activations.end())
+    auto found = activity.activations.find(&spatial.getBody().front());
+    if (found == activity.activations.end())
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_invalid: Spatial owner has no dynamic "
@@ -488,7 +561,7 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
   }
 
   auto metrics = detail::estimateLowConfidenceMetrics(
-      activity->hostInstructionLeafExecutions, pressure, fabricRoot);
+      activity.hostInstructionLeafExecutions, pressure, fabricRoot);
   if (!metrics)
     return metrics.takeError();
   return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));
@@ -592,9 +665,11 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         return view.takeError();
       projectedView.emplace(std::move(*view));
     }
+    auto activity = projectBlockActivity(*program, *observations);
+    if (!activity)
+      return activity.takeError();
     auto computed = estimateMetrics(
-        *program, *observations, *fabricRoot,
-        projectedView ? &*projectedView : nullptr,
+        *activity, *fabricRoot, projectedView ? &*projectedView : nullptr,
         projected
             ? llvm::ArrayRef(projected->spatialGraphs)
             : llvm::ArrayRef<lowering::StructuredSpatialGraphProjection>{});
@@ -845,23 +920,36 @@ llvm::Error primeStructuredFabricAnalyticResult(
       return view.takeError();
     dataflowView.emplace(std::move(*view));
   }
-  std::optional<sim::NativeStructuredProgramObservations> derivedObservations;
-  const sim::NativeStructuredProgramObservations *observations =
-      candidate.observations;
-  if (!observations &&
-      candidate.candidate.identity() == invocation.sourceProgram.identity() &&
-      candidate.spatialGraphs.empty())
-    observations = &invocation.sourceObservations;
-  if (!observations) {
-    auto executed = sim::executeProfiledSelectedStructuredProgram(
-        candidate.candidate, invocation.sourceProgram,
-        invocation.simulationWorkload, invocation.simulationRuntimeInput);
-    if (!executed)
-      return executed.takeError();
-    derivedObservations.emplace(std::move(*executed));
-    observations = &*derivedObservations;
+  auto sourceActivity = projectBlockActivity(invocation.sourceProgram,
+                                             invocation.sourceObservations);
+  if (!sourceActivity)
+    return sourceActivity.takeError();
+  std::optional<BlockActivityProjection> projectedActivity;
+  const BlockActivityProjection *activity = nullptr;
+  if (candidate.observations) {
+    auto observed =
+        projectBlockActivity(candidate.candidate, *candidate.observations);
+    if (!observed)
+      return observed.takeError();
+    projectedActivity.emplace(std::move(*observed));
+    activity = &*projectedActivity;
+  } else if (candidate.candidate.identity() ==
+             invocation.sourceProgram.identity()) {
+    activity = &*sourceActivity;
+  } else {
+    if (candidate.blockActivityLineage.empty())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: candidate has no block activity "
+          "lineage");
+    auto projected = projectBlockActivity(candidate.candidate, *sourceActivity,
+                                          candidate.blockActivityLineage);
+    if (!projected)
+      return projected.takeError();
+    projectedActivity.emplace(std::move(*projected));
+    activity = &*projectedActivity;
   }
-  auto metrics = estimateMetrics(candidate.candidate, *observations, fabricRoot,
+  auto metrics = estimateMetrics(*activity, fabricRoot,
                                  dataflowView ? &*dataflowView : nullptr,
                                  candidate.spatialGraphs);
   if (!metrics)

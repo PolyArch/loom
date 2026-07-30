@@ -28,6 +28,7 @@ class FinalizedFabricRoot;
 }
 
 namespace loom::frontend {
+struct StructuredBlockActivityLineage;
 class StructuredProgramCandidate;
 }
 
@@ -139,15 +140,18 @@ struct StructuredFabricAnalyticInvocation final {
 
 /// One exact complete-candidate projection within the invocation. The
 /// Dataflow owner and every Structured-to-graph relation are absent together
-/// for a candidate with no Spatial ownership. `observations`, when present,
-/// are a removable result of executing this exact candidate against the
-/// invocation's source workload; the provider derives the same result on a
-/// cache miss.
+/// for a candidate with no Spatial ownership. `blockActivityLineage`
+/// mechanically projects one parent execution onto a just-materialized child;
+/// `observations`, when present, are the more expensive removable result of
+/// executing the exact candidate. The provider derives that same normalized
+/// activity on a cache miss.
 struct StructuredFabricAnalyticCandidateProjection final {
   const ::loom::frontend::StructuredProgramCandidate &candidate;
   const ::dataflow::CanonicalDataflowArtifact *canonicalDataflow = nullptr;
   llvm::ArrayRef<::loom::lowering::StructuredSpatialGraphProjection>
       spatialGraphs = {};
+  llvm::ArrayRef<::loom::frontend::StructuredBlockActivityLineage>
+      blockActivityLineage = {};
   const ::loom::sim::NativeStructuredProgramObservations *observations =
       nullptr;
 };

@@ -18,6 +18,16 @@
 
 namespace loom::frontend {
 
+/// Exact one-generation dynamic-activity correspondence created by an
+/// ownership transformation. Both references are block references: the child
+/// block belongs to the materialized candidate, and the parent block belongs
+/// to the exact input candidate whose workload observations drive evaluation.
+/// This lineage is removable and never enters either Artifact identity.
+struct StructuredBlockActivityLineage final {
+  StructuredEntityRef childBlock;
+  StructuredEntityRef parentBlock;
+};
+
 /// One ordinary child Structured Program and its mechanically derived D0
 /// projection. The pair is returned only after both artifact owners finalize
 /// successfully and the exact Fabric admits every canonical actor.
@@ -25,6 +35,7 @@ struct MaterializedOwnershipCandidate final {
   StructuredProgramCandidate structuredProgram;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
   std::vector<lowering::StructuredSpatialGraphProjection> spatialGraphs;
+  std::vector<StructuredBlockActivityLineage> blockActivityLineage;
 };
 
 /// The two ownership shapes of an effect-form scf.forall. GraphParallel keeps
@@ -172,6 +183,11 @@ struct PreparedSpatialOwnershipSelection final {
     std::optional<std::uint64_t> stepInputOrdinal;
   };
 
+  struct SourceBlockBinding final {
+    mlir::Block *candidateBlock = nullptr;
+    StructuredEntityRef parentBlock;
+  };
+
   mlir::OwningOpRef<mlir::ModuleOp> module;
   mlir::Operation *operation = nullptr;
   std::vector<mlir::Value> liveIns;
@@ -184,6 +200,10 @@ struct PreparedSpatialOwnershipSelection final {
   /// source domains compute these in widened integer arithmetic before the
   /// selected forall; no source bound is copied into the thread-domain ABI.
   std::optional<std::vector<mlir::Value>> threadExtents;
+  /// Total one-generation block correspondence after cloning the parent.
+  /// Ownership materialization extends it for generated thread and Spatial
+  /// blocks and for nested regions cloned into the selected boundary.
+  std::vector<SourceBlockBinding> sourceBlocks;
 };
 
 /// Enumerates the complete finite ownership scope domain in the parent

@@ -2,12 +2,16 @@
 #define LOOM_FRONTEND_COMPILATION_STRUCTUREDADDRESSINDEXNARROWING_H
 
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <optional>
 #include <string>
 
 namespace loom::frontend::detail {
+
+using BlockReplacementObserver =
+    llvm::function_ref<llvm::Error(mlir::Block *, mlir::Block *)>;
 
 /// Validate the LLVM module-owned DataLayout and materialize its exact
 /// endianness as the one DLTI projection consumed by Structured/Dataflow
@@ -41,7 +45,8 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation);
 llvm::Expected<mlir::Operation *>
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,
-                                std::optional<unsigned> canonicalIndexWidth);
+                                std::optional<unsigned> canonicalIndexWidth,
+                                BlockReplacementObserver observeReplacement);
 
 } // namespace loom::frontend::detail
 

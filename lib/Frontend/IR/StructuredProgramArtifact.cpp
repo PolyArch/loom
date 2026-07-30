@@ -12,6 +12,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -803,10 +804,29 @@ namespace {
 struct CanonicalizedClone {
   OwningOpRef<ModuleOp> module;
   CanonicalEntityProjection entityProjection;
+  std::vector<std::uint64_t> trackedBlockOrdinals;
 };
 
-llvm::Expected<CanonicalizedClone> canonicalizeClone(ModuleOp source) {
-  auto clone = OwningOpRef<ModuleOp>(cast<ModuleOp>(source->clone()));
+llvm::Expected<CanonicalizedClone>
+canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
+  IRMapping mapping;
+  auto clone = OwningOpRef<ModuleOp>(cast<ModuleOp>(source->clone(mapping)));
+  SmallVector<Block *> tracked;
+  tracked.reserve(trackedBlocks.size());
+  DenseSet<Block *> seen;
+  for (Block *block : trackedBlocks) {
+    Operation *owner = block ? block->getParentOp() : nullptr;
+    ModuleOp module = owner ? owner->getParentOfType<ModuleOp>() : ModuleOp{};
+    if (!block || !owner ||
+        (owner != source.getOperation() && module != source))
+      return invalid("tracked block has the wrong Structured Program owner");
+    if (!seen.insert(block).second)
+      return invalid("tracked block is duplicated");
+    Block *mapped = mapping.lookupOrNull(block);
+    if (!mapped)
+      return invalid("tracked block was not cloned");
+    tracked.push_back(mapped);
+  }
   if (failed(verify(*clone)))
     return invalid("candidate does not verify before canonicalization");
   if (llvm::Error error = removeTransients(*clone))
@@ -826,7 +846,30 @@ llvm::Expected<CanonicalizedClone> canonicalizeClone(ModuleOp source) {
   auto entityProjection = projectCanonicalEntities(*clone, *second);
   if (!entityProjection)
     return entityProjection.takeError();
-  return CanonicalizedClone{std::move(clone), std::move(*entityProjection)};
+
+  EntityTable lexical = collectLexicalEntities(*clone);
+  DenseMap<Block *, std::uint64_t> lexicalOrdinals;
+  for (auto item :
+       llvm::enumerate(lexical[kindIndex(StructuredEntityKind::Block)]))
+    lexicalOrdinals.try_emplace(item.value().block, item.index());
+  const auto &canonicalToLexical =
+      entityProjection
+          ->canonicalToLexical[kindIndex(StructuredEntityKind::Block)];
+  std::vector<std::uint64_t> lexicalToCanonical(canonicalToLexical.size());
+  for (auto item : llvm::enumerate(canonicalToLexical))
+    lexicalToCanonical[item.value()] = item.index();
+  std::vector<std::uint64_t> trackedOrdinals;
+  trackedOrdinals.reserve(tracked.size());
+  for (Block *block : tracked) {
+    auto lexicalOrdinal = lexicalOrdinals.find(block);
+    if (lexicalOrdinal == lexicalOrdinals.end())
+      return invalid("tracked block was removed during canonicalization");
+    if (lexicalOrdinal->second >= lexicalToCanonical.size())
+      return invalid("tracked block is absent from canonical labeling");
+    trackedOrdinals.push_back(lexicalToCanonical[lexicalOrdinal->second]);
+  }
+  return CanonicalizedClone{std::move(clone), std::move(*entityProjection),
+                            std::move(trackedOrdinals)};
 }
 
 } // namespace
@@ -885,7 +928,16 @@ StructuredProgramCandidate::view() const {
 
 llvm::Expected<StructuredProgramCandidate>
 finalizeStructuredProgram(ModuleOp source) {
-  auto clone = canonicalizeClone(source);
+  auto finalized = finalizeStructuredProgramWithTrackedBlocks(source, {});
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->artifact);
+}
+
+llvm::Expected<FinalizedStructuredProgramProjection>
+finalizeStructuredProgramWithTrackedBlocks(ModuleOp source,
+                                           ArrayRef<Block *> trackedBlocks) {
+  auto clone = canonicalizeClone(source, trackedBlocks);
   if (!clone)
     return clone.takeError();
   auto canonical =
@@ -907,9 +959,16 @@ finalizeStructuredProgram(ModuleOp source) {
            carrier.operation, carrier.region, carrier.block, carrier.value});
     }
   }
-  return StructuredProgramCandidate(
-      identity, std::move(semantic), std::move(canonical->context),
-      std::move(canonical->module), std::move(view));
+  std::vector<StructuredEntityRef> trackedReferences;
+  trackedReferences.reserve(clone->trackedBlockOrdinals.size());
+  for (std::uint64_t ordinal : clone->trackedBlockOrdinals)
+    trackedReferences.push_back(
+        {identity, StructuredEntityKind::Block, ordinal});
+  return FinalizedStructuredProgramProjection{
+      StructuredProgramCandidate(identity, std::move(semantic),
+                                 std::move(canonical->context),
+                                 std::move(canonical->module), std::move(view)),
+      std::move(trackedReferences)};
 }
 
 llvm::Expected<StructuredProgramCandidate>

@@ -291,15 +291,18 @@ void requireThreadDomainChoice(
             source, {selected}, threadDecision, fabric));
     dataflow::ThreadOp thread;
     dataflow::ThreadLaunchOp launch;
+    loom::SpatialRegionOp spatial;
     bool retainedForall = false;
     threadDomain.structuredProgram.module().walk([&](mlir::Operation *op) {
       if (auto candidate = llvm::dyn_cast<dataflow::ThreadOp>(op))
         thread = candidate;
       if (auto candidate = llvm::dyn_cast<dataflow::ThreadLaunchOp>(op))
         launch = candidate;
+      if (auto candidate = llvm::dyn_cast<loom::SpatialRegionOp>(op))
+        spatial = candidate;
       retainedForall |= llvm::isa<mlir::scf::ForallOp>(op);
     });
-    if (!thread || !launch)
+    if (!thread || !launch || !spatial)
       fail("logical thread-domain materialization lost its definition or "
            "launch");
     const std::size_t inputCount = thread.getFunctionType().getNumInputs();
@@ -314,6 +317,35 @@ void requireThreadDomainChoice(
     if (retainedForall)
       fail("thread-domain materialization retained the source scf.forall");
     requireSourceInductionDefUse(threadDomain, 1, 2, width);
+
+    auto candidateView = take(threadDomain.structuredProgram.view());
+    auto selectedEntity = take(sourceView.resolve(selected));
+    auto sourceForall =
+        llvm::dyn_cast<mlir::scf::ForallOp>(selectedEntity.operation);
+    if (!sourceForall)
+      fail("selected operation is not the source scf.forall");
+    const auto sourceBlocks =
+        sourceView.entities(loom::frontend::StructuredEntityKind::Block);
+    const auto sourceBlock = llvm::find_if(
+        sourceBlocks, [&](const loom::frontend::StructuredEntity &entity) {
+          return entity.block == sourceForall.getBody();
+        });
+    if (sourceBlock == sourceBlocks.end())
+      fail("selected forall body has no source block reference");
+    bool mappedThreadBody = false;
+    bool mappedSpatialBody = false;
+    for (const loom::frontend::StructuredBlockActivityLineage &lineage :
+         threadDomain.blockActivityLineage) {
+      if (lineage.parentBlock != sourceBlock->reference)
+        continue;
+      auto child = take(candidateView.resolve(lineage.childBlock));
+      mappedThreadBody |= child.block == &thread.getBody().front();
+      mappedSpatialBody |= child.block == &spatial.getBody().front();
+    }
+    if (!mappedThreadBody)
+      fail("logical thread-domain activity lineage lost the thread body");
+    if (!mappedSpatialBody)
+      fail("logical thread-domain activity lineage lost the Spatial body");
 
     auto replay = take(loom::sim::validateSourceBackedDfgReplay(
         source, {selected}, threadDecision, threadDomain, workload, input,
@@ -347,6 +379,7 @@ void requireThreadDomainChoice(
       loom::frontend::MaterializedOwnershipCandidate nonRetiringCandidate{
           std::move(nonRetiring.structuredProgram),
           std::move(nonRetiringDataflow),
+          {},
           {}};
       auto nonRetiringReplay = take(loom::sim::validateSourceBackedDfgReplay(
           source, {selected}, threadDecision, nonRetiringCandidate, workload,
@@ -373,7 +406,7 @@ void requireThreadDomainChoice(
         auto dataflow = take(
             loom::lowering::lowerStructuredProgramToCanonicalDataflow(program));
         return loom::frontend::MaterializedOwnershipCandidate{
-            std::move(program), std::move(dataflow), {}};
+            std::move(program), std::move(dataflow), {}, {}};
       };
 
       auto shortened = withExtent(7);
@@ -430,7 +463,7 @@ void requireThreadDomainChoice(
           loom::lowering::lowerStructuredProgramToCanonicalDataflow(
               repeatedProgram));
       loom::frontend::MaterializedOwnershipCandidate repeated{
-          std::move(repeatedProgram), std::move(repeatedDataflow), {}};
+          std::move(repeatedProgram), std::move(repeatedDataflow), {}, {}};
       auto repeatedMismatch = take(loom::sim::validateSourceBackedDfgReplay(
           source, {selected}, threadDecision, repeated, workload, input,
           {1, 1, 1024 * 1024}));

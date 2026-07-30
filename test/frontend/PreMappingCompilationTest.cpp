@@ -1095,6 +1095,17 @@ void wholeCallableNormalizesPointerInduction() {
   auto selected = take(test, loom::frontend::materializeSpatialOwnership(
                                  compiled.structuredProgram, callable,
                                  design.roots().front(), options));
+  auto sourceStructuredView = take(test, compiled.structuredProgram.view());
+  auto selectedStructuredView = take(test, selected.structuredProgram.view());
+  if (selected.blockActivityLineage.size() !=
+      selectedStructuredView
+          .entities(loom::frontend::StructuredEntityKind::Block)
+          .size())
+    fail(test, "pointer-induction rewrite lost block activity lineage");
+  for (const auto &lineage : selected.blockActivityLineage) {
+    take(test, selectedStructuredView.resolve(lineage.childBlock));
+    take(test, sourceStructuredView.resolve(lineage.parentBlock));
+  }
   auto view = take(test, selected.canonicalDataflow.view());
   bool sawLoad = false;
   bool sawStore = false;

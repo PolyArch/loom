@@ -678,6 +678,9 @@ void runEvaluationAnchor() {
       loom::evaluation::evaluationRequestReference(
           reusedSpatialEvaluation.request))
     fail("invocation-local analytic resolution changed Request identity");
+  auto coldSpatialEvidence = take(loom::evaluation::evaluateRequest(
+      strictSpatialEvaluation.request, strictSpatialEvaluation.resolution,
+      store));
 
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, spatialScope, spatialDecision, spatial,
@@ -768,10 +771,18 @@ void runEvaluationAnchor() {
       inputs.runtimeInput,
       compiled.structuredProgram,
       inputs.observations};
+  auto combinedObservations =
+      take(loom::sim::executeProfiledSelectedStructuredProgram(
+          combined.structuredProgram, compiled.structuredProgram,
+          inputs.workload, inputs.runtimeInput));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               baselineRef,
-              {compiled.structuredProgram, nullptr, {}, &inputs.observations},
+              {compiled.structuredProgram,
+               nullptr,
+               {},
+               {},
+               &inputs.observations},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -779,7 +790,7 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               coldRef,
               {cold.structuredProgram, &cold.canonicalDataflow,
-               cold.spatialGraphs},
+               cold.spatialGraphs, cold.blockActivityLineage},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -787,7 +798,7 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               tinyRef,
               {tiny.structuredProgram, &tiny.canonicalDataflow,
-               tiny.spatialGraphs},
+               tiny.spatialGraphs, tiny.blockActivityLineage},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -795,15 +806,18 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               spatialRef,
               {spatial.structuredProgram, &spatial.canonicalDataflow,
-               spatial.spatialGraphs},
+               spatial.spatialGraphs, spatial.blockActivityLineage},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               combinedRef,
-              {combined.structuredProgram, &combined.canonicalDataflow,
-               combined.spatialGraphs},
+              {combined.structuredProgram,
+               &combined.canonicalDataflow,
+               combined.spatialGraphs,
+               {},
+               &combinedObservations},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -822,6 +836,10 @@ void runEvaluationAnchor() {
   EvaluatedRuntime combinedEvaluation = evaluateStructuredRuntime(
       combinedRef, design.roots().front().reference(), inputs.workloadReference,
       inputs.runtimeInputReference, store);
+  if (metricResult(strictSpatialEvaluation.request, coldSpatialEvidence,
+                   loom::evaluation::MetricKind::Runtime) !=
+      spatialEvaluation.value)
+    fail("source-activity projection changed the exact analytical result");
   EvaluatedFunctional baselineFunctional =
       evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
                                    inputs.runtimeInputReference, store);
