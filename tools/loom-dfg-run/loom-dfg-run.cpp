@@ -12,6 +12,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/FileUtilities.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -30,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -79,6 +81,11 @@ llvm::cl::list<std::string> operatorProtocolSymbols(
                    "operator protocol ownership domain"),
     llvm::cl::value_desc("symbol"), llvm::cl::ZeroOrMore);
 
+llvm::cl::opt<std::int64_t> expectedEntryResult(
+    "expected-entry-result",
+    llvm::cl::desc("required signed i32 result from the source entry oracle"),
+    llvm::cl::value_desc("value"));
+
 llvm::cl::opt<std::uint64_t>
     maxEventSteps("max-event-steps",
                   llvm::cl::desc("maximum aggregate DFG event wavefronts"),
@@ -114,6 +121,29 @@ llvm::Error unsupported(const llvm::Twine &message) {
 int reportError(llvm::Error error) {
   llvm::errs() << "loom-dfg-run: " << llvm::toString(std::move(error)) << '\n';
   return 1;
+}
+
+llvm::Error requireExpectedEntryResult(
+    const loom::sim::SourceBackedDfgValidationResult &replay) {
+  if (expectedEntryResult.getNumOccurrences() == 0)
+    return llvm::Error::success();
+  if (expectedEntryResult < std::numeric_limits<std::int32_t>::min() ||
+      expectedEntryResult > std::numeric_limits<std::int32_t>::max())
+    return invalid("expected entry result is outside signed i32");
+  if (!replay.sourceReturnValue)
+    return invalid("source workload oracle did not return an entry result");
+  const loom::sim::CanonicalValueSequence &value = *replay.sourceReturnValue;
+  if (value.tokenCount != 1 || value.lanes.size() != 1 ||
+      value.lanes.front().state != loom::sim::SemanticState::Defined ||
+      value.lanes.front().bits.getBitWidth() != 32)
+    return invalid("source workload oracle result is not one defined i32");
+  const llvm::APInt expected(
+      32, static_cast<std::uint64_t>(expectedEntryResult), true);
+  if (value.lanes.front().bits != expected)
+    return invalid("source workload oracle rejected the entry: expected " +
+                   llvm::Twine(expectedEntryResult) + ", got " +
+                   llvm::Twine(value.lanes.front().bits.getSExtValue()));
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
@@ -384,6 +414,8 @@ int main(int argc, char **argv) {
     return reportError(
         invalid("selected graph has no equivalent functional replay"));
   const auto &replay = *selected->functionalReplay;
+  if (llvm::Error error = requireExpectedEntryResult(replay))
+    return reportError(std::move(error));
   if (replay.dynamicActivations == 0 ||
       (replay.valueLanesCompared == 0 && replay.memoryBytesCompared == 0) ||
       replay.eventCount == 0 || replay.operationFireCounts.empty())

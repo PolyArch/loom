@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
 
 namespace loom::sim {
 
@@ -34,6 +35,7 @@ struct SourceBackedDfgValidationResult final {
   std::uint64_t eventCount = 0;
   double simulationSeconds = 0.0;
   std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
+  std::optional<CanonicalValueSequence> sourceReturnValue;
 };
 
 struct SourceBackedDfgValidationLimits final {

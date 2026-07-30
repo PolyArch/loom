@@ -472,6 +472,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             harness.protocol_method(workload.executable),
             (workload.producer.test_class, workload.producer.test_method),
         )
+        self.assertIsNone(harness.expected_entry_result(workload.executable))
         compiled_owner, authoritative_owner = harness.protocol_source_owner(
             workload.executable
         )
@@ -557,6 +558,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             harness.protocol_symbols(workload.executable),
             ("loom_corpus_operator_protocol",),
         )
+        self.assertIsNone(harness.expected_entry_result(workload.executable))
         compiled_owner, authoritative_owner = harness.protocol_source_owner(
             workload.executable
         )
@@ -597,6 +599,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             harness.protocol_symbols(workload.executable),
             ("loom_corpus_operator_protocol",),
         )
+        self.assertEqual(harness.expected_entry_result(workload.executable), 0)
         compiled_owner, authoritative_owner = harness.protocol_source_owner(
             workload.executable
         )
@@ -1090,6 +1093,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             15.0,
             protocol,
             config,
+            expected_entry_result=0,
         )
         self.assertEqual(
             command,
@@ -1105,6 +1109,7 @@ class CommandConstructionTest(CorpusGateTestBase):
                 "--max-event-count=500",
                 "--max-capture-bytes=600",
                 "--max-simulation-wall-seconds=15.0",
+                "--expected-entry-result=0",
                 "--operator-protocol-symbol=arm_abs_f32",
                 str(self.out_dir / "target.ll"),
             ],

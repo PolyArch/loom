@@ -746,6 +746,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   if (result.dynamicActivations == 0 &&
       result.status == SourceBackedDfgValidationStatus::Equivalent)
     result.status = SourceBackedDfgValidationStatus::Inapplicable;
+  if (sourceObservations)
+    result.sourceReturnValue = sourceObservations->returnValue;
   return result;
 }
 

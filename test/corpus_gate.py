@@ -567,6 +567,7 @@ def dfg_sim_command(
     simulation_timeout: float,
     protocol_symbols: Sequence[str],
     config_path: Path | None = None,
+    expected_entry_result: int | None = None,
 ) -> list[str]:
     command = [
         toolchain.dfg_run,
@@ -584,6 +585,11 @@ def dfg_sim_command(
     command[-1:-1] = [
         f"--operator-protocol-symbol={symbol}" for symbol in protocol_symbols
     ]
+    if expected_entry_result is not None:
+        command.insert(
+            -1 - len(protocol_symbols),
+            f"--expected-entry-result={expected_entry_result}",
+        )
     if config_path is not None:
         command.insert(2, f"--config={config_path}")
     return command
@@ -1095,6 +1101,9 @@ def prepare_workload_providers(
                     target_executable,
                     protocol_symbols,
                     (harness.protocol_source_owner(case.executable),),
+                    0
+                    if isinstance(harness, CmsisNnHarness)
+                    else harness.expected_entry_result(case.executable),
                 )
                 continue
             if failure is None:
@@ -1186,6 +1195,7 @@ def run_case(
             raise GateConfigError(
                 f"unsupported workload target profile: {case.target_profile}"
             )
+        expected_entry_result: int | None = None
         if case.producer.kind == "direct-source":
             protocol_symbols = tuple(call.symbol for call in case.protocol)
             protocol_source_owners: tuple[tuple[Path, Path], ...] = ()
@@ -1208,6 +1218,7 @@ def run_case(
                 return finish(produced.category, produced.detail)
             protocol_symbols = produced.protocol_symbols
             protocol_source_owners = produced.protocol_source_owners
+            expected_entry_result = produced.expected_entry_result
             prepared = import_produced_workload(
                 produced,
                 toolchain,
@@ -1233,6 +1244,7 @@ def run_case(
                     dfg_simulation_timeout,
                     protocol_symbols,
                     config_path,
+                    expected_entry_result,
                 ),
                 case_dir / "dfg-sim.log",
                 deadline,

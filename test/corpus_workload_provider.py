@@ -57,6 +57,7 @@ class CmsisDspHarness:
     protocol_methods: tuple[tuple[str, str], ...]
     protocol_symbol_sets: tuple[tuple[str, ...], ...]
     protocol_source_owners: tuple[tuple[Path, Path], ...]
+    expected_entry_results: tuple[int | None, ...] = ()
 
     def generated_directory(self, target: str) -> Path:
         return self.source_dir / "generated" / "targets" / self._target(target)
@@ -76,6 +77,12 @@ class CmsisDspHarness:
     def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
         return self.protocol_source_owners[self.targets.index(self._target(target))]
 
+    def expected_entry_result(self, target: str) -> int | None:
+        ordinal = self.targets.index(self._target(target))
+        if not self.expected_entry_results:
+            return None
+        return self.expected_entry_results[ordinal]
+
     def _target(self, target: str) -> str:
         if target not in self.targets:
             raise WorkloadProviderError(f"unknown CMSIS-DSP harness target: {target}")
@@ -88,6 +95,7 @@ class ProducedWorkload:
     target_executable: Path
     protocol_symbols: tuple[str, ...]
     protocol_source_owners: tuple[tuple[Path, Path], ...]
+    expected_entry_result: int | None = None
 
 
 @dataclass(frozen=True)
@@ -567,7 +575,7 @@ def _cmsis_dsp_pattern_segments(path: Path) -> dict[str, bytes]:
                     f"generated CMSIS-DSP pattern byte is invalid: {path}"
                 )
             current.append(value)
-    if not segments or any(not value for value in segments.values()):
+    if not segments:
         raise WorkloadProviderError(
             f"generated CMSIS-DSP pattern segments are incomplete: {path}"
         )
@@ -631,11 +639,14 @@ def _decode_i16_pattern(raw: bytes, name: str) -> tuple[int, ...]:
 
 def _require_pattern_segment(segments: dict[str, bytes], name: str) -> bytes:
     try:
-        return segments[name]
+        value = segments[name]
     except KeyError as exc:
         raise WorkloadProviderError(
             f"generated CMSIS-DSP patterns omit {name}"
         ) from exc
+    if not value:
+        raise WorkloadProviderError(f"generated CMSIS-DSP pattern {name} is empty")
+    return value
 
 
 def _render_stateful_fir_f32_protocol(patterns: Path) -> str:
@@ -987,6 +998,7 @@ def materialize_cmsis_dsp_harness(
     protocol_methods: list[tuple[str, str]] = []
     protocol_symbol_sets: list[tuple[str, ...]] = []
     protocol_source_owners: list[tuple[Path, Path]] = []
+    expected_entry_results: list[int | None] = []
     cmake_targets: list[_CmsisDspCmakeTarget] = []
 
     for workload in workloads:
@@ -1096,6 +1108,7 @@ def materialize_cmsis_dsp_harness(
                 encoding="utf-8",
             )
             protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            expected_entry_results.append(None)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1124,6 +1137,7 @@ def materialize_cmsis_dsp_harness(
                 encoding="utf-8",
             )
             protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            expected_entry_results.append(0)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1158,6 +1172,7 @@ def materialize_cmsis_dsp_harness(
                     f"CMSIS-DSP protocol owner is unavailable: {protocol_source}"
                 )
             protocol_symbol_sets.append(())
+            expected_entry_results.append(None)
             protocol_source_owners.append((protocol_source, protocol_source))
             cmake_targets.append(
                 _CmsisDspCmakeTarget(
@@ -1191,6 +1206,7 @@ int main() { return testmain(patternData); }
         tuple(protocol_methods),
         tuple(protocol_symbol_sets),
         tuple(protocol_source_owners),
+        tuple(expected_entry_results),
     )
 
 
