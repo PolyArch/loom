@@ -7,6 +7,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 
@@ -39,6 +40,8 @@ struct SourceBackedDfgValidationLimits final {
   std::uint64_t maxWavefrontSteps;
   std::uint64_t maxEventCount;
   std::uint64_t maxRetainedCaptureBytes;
+  std::chrono::steady_clock::duration maxSimulationWallTime =
+      std::chrono::steady_clock::duration::max();
 };
 
 /// Reapply one exact parent-local Structured ownership decision, capture every

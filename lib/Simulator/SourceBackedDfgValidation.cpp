@@ -540,7 +540,9 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     SourceBackedDfgValidationLimits limits,
     const NativeStructuredProgramObservations *sourceObservations) {
   if (limits.maxWavefrontSteps == 0 || limits.maxEventCount == 0 ||
-      limits.maxRetainedCaptureBytes == 0)
+      limits.maxRetainedCaptureBytes == 0 ||
+      limits.maxSimulationWallTime <
+          std::chrono::steady_clock::duration::zero())
     return invalid("execution limits must be positive");
   auto prepared = frontend::prepareSpatialOwnershipSelection(sourceProgram,
                                                              scope, decision);
@@ -610,6 +612,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   bool activationMismatch = false;
   SourceBackedDfgValidationResult result;
   result.status = SourceBackedDfgValidationStatus::Equivalent;
+  std::chrono::steady_clock::duration remainingSimulationWallTime =
+      limits.maxSimulationWallTime;
   auto replayActivation =
       [&](NativeSimulationCallCapture &&call) -> llvm::Error {
     if (result.wavefrontSteps >= limits.maxWavefrontSteps)
@@ -634,13 +638,26 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
     if (!replayInput)
       return replayInput.takeError();
+    if (remainingSimulationWallTime ==
+        std::chrono::steady_clock::duration::zero())
+      return executionLimit("aggregate simulation wall-time budget exhausted");
     const auto started = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline;
+    if (remainingSimulationWallTime !=
+        std::chrono::steady_clock::duration::max())
+      executionDeadline = started + remainingSimulationWallTime;
     auto execution = simulateRetiredDfgWorkload(
         *preparedDfg, *replayWorkload, *replayInput,
-        limits.maxWavefrontSteps - result.wavefrontSteps);
+        limits.maxWavefrontSteps - result.wavefrontSteps, executionDeadline);
     const auto stopped = std::chrono::steady_clock::now();
-    result.simulationSeconds +=
-        std::chrono::duration<double>(stopped - started).count();
+    const auto elapsed = stopped - started;
+    result.simulationSeconds += std::chrono::duration<double>(elapsed).count();
+    if (remainingSimulationWallTime !=
+        std::chrono::steady_clock::duration::max())
+      remainingSimulationWallTime =
+          elapsed >= remainingSimulationWallTime
+              ? std::chrono::steady_clock::duration::zero()
+              : remainingSimulationWallTime - elapsed;
     auto accountExecution =
         [&](const DFGSimulationReport &report) -> llvm::Error {
       if (report.eventCount > limits.maxEventCount - result.eventCount)

@@ -102,9 +102,7 @@ TARGET_LTO_MATTR = ",".join(
 TARGET_MABI = "lp64d"
 TARGET_CODE_MODEL = "medany"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
-LLVM_DATALAYOUT_LINE = (
-    'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
-)
+LLVM_DATALAYOUT_LINE = 'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
 MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
 
 # The one exact builtin Fabric target preset resolved by the d0 stage through
@@ -170,7 +168,8 @@ TOOL_FILE_NAMES = {
 LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
-DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 15.0
+DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 30.0
+DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS = 15.0
 DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_MAX_WAVEFRONT_STEPS = 1_000_000
 DEFAULT_DFG_MAX_EVENT_COUNT = 10_000_000
@@ -269,9 +268,7 @@ def run_quiet(command: Sequence[str]) -> str:
         raise GateConfigError(f"cannot run {command[0]}: {exc}") from exc
     if completed.returncode != 0:
         diagnostic = completed.stderr.strip() or "unknown error"
-        raise GateConfigError(
-            f"{shlex.join(command)} failed: {diagnostic}"
-        )
+        raise GateConfigError(f"{shlex.join(command)} failed: {diagnostic}")
     return completed.stdout
 
 
@@ -288,9 +285,7 @@ def derive_from_riscv_gcc(gcc: str) -> tuple[Path, Path]:
     install = Path(install_line.removeprefix("install: ").strip()).resolve()
     # install is <root>/lib/gcc/<machine>/<version>.
     if install.parents[1].name != "gcc" or install.parents[2].name != "lib":
-        raise GateConfigError(
-            f"{gcc}: unexpected GCC install layout: {install}"
-        )
+        raise GateConfigError(f"{gcc}: unexpected GCC install layout: {install}")
     toolchain_root = install.parents[3]
     if sysroot_text:
         sysroot = Path(sysroot_text).resolve()
@@ -344,9 +339,7 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
             if key in LLVM_TOOL_KEYS
             else ROOT / "build" / "bin"
         )
-        candidate = os.environ.get(ENV_TOOL_NAMES[key]) or str(
-            default_root / file_name
-        )
+        candidate = os.environ.get(ENV_TOOL_NAMES[key]) or str(default_root / file_name)
         if not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
             raise GateConfigError(
                 f"{file_name} not found or not executable at: {candidate} "
@@ -556,6 +549,7 @@ def dfg_sim_command(
     report: Path,
     candidate_jobs: int,
     limits: DfgExecutionLimits,
+    simulation_timeout: float,
     config_path: Path | None = None,
 ) -> list[str]:
     command = [
@@ -568,6 +562,7 @@ def dfg_sim_command(
         f"--max-event-steps={limits.max_wavefront_steps}",
         f"--max-event-count={limits.max_event_count}",
         f"--max-capture-bytes={limits.max_capture_bytes}",
+        f"--max-simulation-wall-seconds={simulation_timeout}",
         str(target_llvm_ir),
     ]
     if config_path is not None:
@@ -751,17 +746,13 @@ def prepare_linked_workload(
         target_object = case_dir / f"source-{ordinal:03d}.o"
         clear_artifacts(target_object)
         failure = run_step(
-            target_object_command(
-                toolchain, suite_flags, source, target_object
-            ),
+            target_object_command(toolchain, suite_flags, source, target_object),
             case_dir / f"source-{ordinal:03d}.compile.log",
             deadline,
             CATEGORY_COMPILE,
         )
         if failure is not None:
-            return StepFailure(
-                failure.category, f"{repo_relative}: {failure.detail}"
-            )
+            return StepFailure(failure.category, f"{repo_relative}: {failure.detail}")
         defect = binary_artifact_defect(target_object, "target object")
         if defect is not None:
             return StepFailure(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
@@ -936,9 +927,7 @@ def prepare_workload_providers(
     timeout: float,
 ) -> dict[str, ProducedWorkload | StepFailure]:
     results: dict[str, ProducedWorkload | StepFailure] = {}
-    cmsis_nn = [
-        case for case in cases if case.producer.kind == "cmsis-nn-unit-test"
-    ]
+    cmsis_nn = [case for case in cases if case.producer.kind == "cmsis-nn-unit-test"]
     for case in cases:
         if case.producer.kind not in {"direct-source", "cmsis-nn-unit-test"}:
             results[case.identity] = StepFailure(
@@ -1004,6 +993,7 @@ def run_case(
     candidate_jobs: int,
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
+    dfg_simulation_timeout: float,
     provider_results: dict[str, ProducedWorkload | StepFailure],
     allowed_sources: frozenset[str],
 ) -> CaseResult:
@@ -1024,9 +1014,7 @@ def run_case(
             duration_seconds=time.monotonic() - started,
             graphs=graphs if passed and stage in {"d0", "dfg-sim"} else None,
             actors=actors if passed and stage in {"d0", "dfg-sim"} else None,
-            dfg_simulation=(
-                dfg_totals if passed and stage == "dfg-sim" else None
-            ),
+            dfg_simulation=(dfg_totals if passed and stage == "dfg-sim" else None),
             selected_sources=(
                 selected_sources if passed and stage == "dfg-sim" else None
             ),
@@ -1063,9 +1051,7 @@ def run_case(
                     )
                 defect = llvm_ir_defect(llvm_ir)
                 if defect is not None:
-                    return finish(
-                        CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}"
-                    )
+                    return finish(CATEGORY_LLVM_ARTIFACT, f"{repo_relative}: {defect}")
             return finish(None, None)
 
         assert isinstance(case, corpus_inventory.ProgramWorkload)
@@ -1113,6 +1099,7 @@ def run_case(
                     report_path,
                     candidate_jobs,
                     dfg_limits,
+                    dfg_simulation_timeout,
                     config_path,
                 ),
                 case_dir / "dfg-sim.log",
@@ -1214,6 +1201,7 @@ def run_cases(
     candidate_jobs: int,
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
+    dfg_simulation_timeout: float,
 ) -> list[CaseResult]:
     source_rows = (
         corpus_inventory.load_source_inventory(ROOT) if stage == "dfg-sim" else ()
@@ -1252,6 +1240,7 @@ def run_cases(
                 candidate_jobs,
                 config_path,
                 dfg_limits,
+                dfg_simulation_timeout,
                 provider_results,
                 allowed_sources_by_suite[case.suite],
             ): index
@@ -1312,7 +1301,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=None,
         metavar="SECONDS",
         help="per-case wall-clock deadline; the case process group is killed "
-        "when it expires (default: 15 for dfg-sim, 120 otherwise)",
+        "when it expires (default: 30 for dfg-sim, 120 otherwise)",
+    )
+    parser.add_argument(
+        "--dfg-simulation-timeout",
+        type=float,
+        default=DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help="aggregate DFG event-replay wall-time limit per evaluated "
+        "candidate (default: %(default)s)",
     )
     parser.add_argument(
         "--candidate-jobs",
@@ -1387,6 +1384,7 @@ def render_human(
     candidate_jobs: int,
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
+    dfg_simulation_timeout: float,
     duration_seconds: float,
 ) -> str:
     lines = [
@@ -1397,6 +1395,7 @@ def render_human(
         f"candidate-jobs={candidate_jobs} "
         f"dfg-limits={dfg_limits.max_wavefront_steps}/"
         f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
+        f"dfg-wall-time={dfg_simulation_timeout:g}s "
         f"config={config_path if config_path is not None else '<default>'} "
         f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
     ]
@@ -1447,6 +1446,7 @@ def render_json(
     candidate_jobs: int,
     config_path: Path | None,
     dfg_limits: DfgExecutionLimits,
+    dfg_simulation_timeout: float,
     case_timeout: float,
     duration_seconds: float,
 ) -> str:
@@ -1464,6 +1464,7 @@ def render_json(
         "candidate_jobs": candidate_jobs,
         "config": str(config_path) if config_path is not None else None,
         "dfg_execution_limits": dfg_limits.as_dict(),
+        "dfg_simulation_timeout_seconds": dfg_simulation_timeout,
         "cases": [result.as_dict() for result in results],
         "duration_seconds": round(duration_seconds, 3),
         "failed": len(results) - passed,
@@ -1516,6 +1517,12 @@ def main(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.dfg_simulation_timeout <= 0:
+        print(
+            "[corpus-gate] configuration error: --dfg-simulation-timeout must be > 0",
+            file=sys.stderr,
+        )
+        return 2
     if args.candidate_jobs < 1:
         print(
             "[corpus-gate] configuration error: --candidate-jobs must be >= 1",
@@ -1528,8 +1535,7 @@ def main(argv: Sequence[str]) -> int:
         or args.dfg_max_capture_bytes < 1
     ):
         print(
-            "[corpus-gate] configuration error: DFG execution limits must be "
-            "positive",
+            "[corpus-gate] configuration error: DFG execution limits must be positive",
             file=sys.stderr,
         )
         return 2
@@ -1585,6 +1591,7 @@ def main(argv: Sequence[str]) -> int:
         args.candidate_jobs,
         config_path,
         dfg_limits,
+        args.dfg_simulation_timeout,
     )
     duration = time.monotonic() - started
 
@@ -1597,6 +1604,7 @@ def main(argv: Sequence[str]) -> int:
             args.candidate_jobs,
             config_path,
             dfg_limits,
+            args.dfg_simulation_timeout,
             duration,
         )
     )
@@ -1611,6 +1619,7 @@ def main(argv: Sequence[str]) -> int:
                 args.candidate_jobs,
                 config_path,
                 dfg_limits,
+                args.dfg_simulation_timeout,
                 args.case_timeout,
                 duration,
             )

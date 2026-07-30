@@ -10,9 +10,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -42,6 +44,7 @@ struct DFGSimulationOptions {
   llvm::SmallVector<DFGMemoryArg> memories;
   std::uint64_t invocations = 1;
   std::uint64_t maxEventSteps = 100000;
+  std::optional<std::chrono::steady_clock::time_point> executionDeadline;
 };
 
 struct DFGSimulationReport {
@@ -116,7 +119,8 @@ private:
                       const dataflow::RootedGraphLaunchRef &);
   friend llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
       const PreparedDfgExecution &, const CanonicalSimulationWorkload &,
-      const CanonicalSimulationRuntimeInput &, std::uint64_t);
+      const CanonicalSimulationRuntimeInput &, std::uint64_t,
+      std::optional<std::chrono::steady_clock::time_point>);
 };
 
 llvm::Expected<PreparedDfgExecution>
@@ -136,17 +140,21 @@ simulateDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
                     const CanonicalSimulationRuntimeInput &runtimeInput,
                     std::uint64_t maxEventSteps = 100000);
 
-llvm::Expected<RetiredDFGSimulation>
-simulateRetiredDfgWorkload(const dataflow::CanonicalDataflowArtifact &program,
-                           const CanonicalSimulationWorkload &workload,
-                           const CanonicalSimulationRuntimeInput &runtimeInput,
-                           std::uint64_t maxEventSteps = 100000);
+llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
+    const dataflow::CanonicalDataflowArtifact &program,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps = 100000,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline =
+        std::nullopt);
 
-llvm::Expected<RetiredDFGSimulation>
-simulateRetiredDfgWorkload(const PreparedDfgExecution &prepared,
-                           const CanonicalSimulationWorkload &workload,
-                           const CanonicalSimulationRuntimeInput &runtimeInput,
-                           std::uint64_t maxEventSteps = 100000);
+llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
+    const PreparedDfgExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t maxEventSteps = 100000,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline =
+        std::nullopt);
 
 llvm::Error writeDFGSimulationReportJson(llvm::StringRef outputPath,
                                          const DFGSimulationReport &report);

@@ -45,8 +45,7 @@ VECADD_WORKLOAD_ID = next(
 DSP_UNIMPLEMENTED_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
-    if row.suite == "cmsis-dsp"
-    and row.target_profile == "riscv64-portable-scalar"
+    if row.suite == "cmsis-dsp" and row.target_profile == "riscv64-portable-scalar"
 )
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
     row.operator_id
@@ -62,12 +61,11 @@ VALID_LL = (
     f"{corpus_gate.LLVM_DATALAYOUT_LINE}\n"
     f"{corpus_gate.LLVM_TRIPLE_LINE}\n"
 )
-VALID_S0 = (
-    f"module attributes {{{corpus_gate.MLIR_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
-)
+VALID_S0 = f"module attributes {{{corpus_gate.MLIR_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
 VALID_D0 = VALID_S0
 VALID_COUNTS = '{"actors": 0, "graphs": 0}\n'
-VALID_DFG_REPORT = json.dumps(
+VALID_DFG_REPORT = (
+    json.dumps(
         {
             "actors": 3,
             "dynamic_calls": 1,
@@ -88,7 +86,9 @@ VALID_DFG_REPORT = json.dumps(
             "wavefront_steps_per_second": 1_000_000.0,
         },
         sort_keys=True,
-) + "\n"
+    )
+    + "\n"
+)
 
 
 class CorpusGateExecutionPolicyTest(unittest.TestCase):
@@ -102,6 +102,10 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             corpus_gate.parse_args(["--stage", "dfg-sim"]).case_timeout,
+            30.0,
+        )
+        self.assertEqual(
+            corpus_gate.parse_args(["--stage", "dfg-sim"]).dfg_simulation_timeout,
             15.0,
         )
         self.assertEqual(
@@ -112,6 +116,7 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(dfg_args.dfg_max_wavefront_steps, 1_000_000)
         self.assertEqual(dfg_args.dfg_max_event_count, 10_000_000)
         self.assertEqual(dfg_args.dfg_max_capture_bytes, 256 * 1024 * 1024)
+
 
 STUB = """#!/usr/bin/env python3
 import os
@@ -261,9 +266,9 @@ class CorpusGateTestBase(unittest.TestCase):
         (self.sysroot / "include").mkdir(parents=True)
         (self.sysroot / "include" / "stdint.h").write_text("/* stub */\n")
         self.gcc_toolchain = self.work / "gcc-toolchain"
-        (
-            self.gcc_toolchain / "lib" / "gcc" / corpus_gate.TARGET_TRIPLE
-        ).mkdir(parents=True)
+        (self.gcc_toolchain / "lib" / "gcc" / corpus_gate.TARGET_TRIPLE).mkdir(
+            parents=True
+        )
         self.out_dir = self.work / "out"
         self.log = self.work / "invocations.log"
 
@@ -279,16 +284,26 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_LLVM_DIS": self.tool_paths["llvm_dis"],
             "STUB_LOG": str(self.log),
         }
-        for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
-                     "STUB_FAIL_INPUT_SUFFIX", "STUB_CORRUPT_SUFFIX",
-                     "STUB_PGID_FILE"):
+        for name in (
+            *SYSROOT_ENV,
+            "STUB_BEHAVIOR",
+            "STUB_FAIL_SUFFIX",
+            "STUB_FAIL_INPUT_SUFFIX",
+            "STUB_CORRUPT_SUFFIX",
+            "STUB_PGID_FILE",
+        ):
             environment[name] = ""
         patcher = mock.patch.dict(os.environ, environment)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in (*SYSROOT_ENV, "STUB_BEHAVIOR", "STUB_FAIL_SUFFIX",
-                     "STUB_FAIL_INPUT_SUFFIX", "STUB_CORRUPT_SUFFIX",
-                     "STUB_PGID_FILE"):
+        for name in (
+            *SYSROOT_ENV,
+            "STUB_BEHAVIOR",
+            "STUB_FAIL_SUFFIX",
+            "STUB_FAIL_INPUT_SUFFIX",
+            "STUB_CORRUPT_SUFFIX",
+            "STUB_PGID_FILE",
+        ):
             os.environ.pop(name, None)
 
     def run_gate(self, *arguments: str) -> tuple[int, str, dict[str, object]]:
@@ -487,7 +502,9 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 [case["identity"] for case in summary["cases"]],
                 [case.identity for case in expected],
             )
-            self.assertEqual(summary["suite_counts"], {suite: {"pass": len(expected), "fail": 0}})
+            self.assertEqual(
+                summary["suite_counts"], {suite: {"pass": len(expected), "fail": 0}}
+            )
 
     def test_source_package_compiles_every_translation_unit(self) -> None:
         exit_code, _, summary = self.run_gate(
@@ -513,7 +530,12 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 f"missing compile invocation for {source}",
             )
         # Each source is its own program: nothing links the two mains.
-        self.assertFalse(any("main_func.cpp" in line and "main_inline.cpp" in line for line in invocations))
+        self.assertFalse(
+            any(
+                "main_func.cpp" in line and "main_inline.cpp" in line
+                for line in invocations
+            )
+        )
 
     def test_unknown_case_selector_is_a_configuration_error(self) -> None:
         stdout = io.StringIO()
@@ -545,9 +567,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         linked = [line for line in invocations if "save-temps=resolution" in line]
         imported = [line for line in invocations if "stub-payload " in line]
         disassembled = [line for line in invocations if "stub-llvm-dis " in line]
-        pre_mapped = [
-            line for line in invocations if "stub-pre-mapping " in line
-        ]
+        pre_mapped = [line for line in invocations if "stub-pre-mapping " in line]
         self.assertEqual(len(compiled), 0)
         self.assertEqual(len(linked), 1)
         self.assertEqual(len(imported), 1)
@@ -622,7 +642,13 @@ class CommandConstructionTest(CorpusGateTestBase):
     def test_exact_target_and_sysroot_compile_command(self) -> None:
         toolchain = self.toolchain()
         external_root = self.work / "externals"
-        source = external_root / "cmsis-dsp" / "Source" / "BasicMathFunctions" / "arm_abs_f32.c"
+        source = (
+            external_root
+            / "cmsis-dsp"
+            / "Source"
+            / "BasicMathFunctions"
+            / "arm_abs_f32.c"
+        )
         output = self.out_dir / "arm_abs_f32.ll"
         command = corpus_gate.compile_command(
             toolchain,
@@ -673,6 +699,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "simulation.json",
             3,
             corpus_gate.DfgExecutionLimits(400, 500, 600),
+            15.0,
             config,
         )
         self.assertEqual(
@@ -688,6 +715,7 @@ class CommandConstructionTest(CorpusGateTestBase):
                 "--max-event-steps=400",
                 "--max-event-count=500",
                 "--max-capture-bytes=600",
+                "--max-simulation-wall-seconds=15.0",
                 str(self.out_dir / "target.ll"),
             ],
         )
@@ -842,8 +870,7 @@ class DeterministicResultsTest(CorpusGateTestBase):
     def test_d0_candidate_workers_are_forwarded_and_reported(self) -> None:
         config = self.work / "resolved-config.yaml"
         config.write_text(
-            "dse:\n  structured_ownership:\n"
-            "    scope_expansion_limit: 16\n"
+            "dse:\n  structured_ownership:\n    scope_expansion_limit: 16\n"
         )
         exit_code, human, summary = self.run_gate(
             "--case",
@@ -925,7 +952,9 @@ class NoFailureAsPassTest(CorpusGateTestBase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(summary["passed"], 0)
         self.assertEqual(summary["failed"], summary["case_count"])
-        self.assertEqual(summary["failure_categories"], {category: summary["case_count"]})
+        self.assertEqual(
+            summary["failure_categories"], {category: summary["case_count"]}
+        )
         for case in summary["cases"]:
             self.assertEqual(case["status"], "fail")
             self.assertEqual(case["category"], category)

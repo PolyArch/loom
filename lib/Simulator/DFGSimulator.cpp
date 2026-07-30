@@ -1251,15 +1251,32 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   observeRetirement();
 
   llvm::SmallBitVector candidates(preparedExecution->actorPlans.size(), false);
+  auto reachedExecutionDeadline = [&]() {
+    return options.executionDeadline &&
+           std::chrono::steady_clock::now() >= *options.executionDeadline;
+  };
+  auto stopAtExecutionDeadline = [&]() {
+    report.status = "execution_limit";
+    report.diagnostics.push_back("DFG execution wall-time limit reached");
+  };
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
+    if (reachedExecutionDeadline()) {
+      stopAtExecutionDeadline();
+      break;
+    }
     if (!admitReadyPlainMemoryActions(state))
       break;
     candidates.swap(state.nextActorCandidates);
     state.nextActorCandidates.reset();
     bool fired = false;
+    unsigned actorsVisited = 0;
     for (int ordinal = candidates.find_first(); ordinal >= 0;
          ordinal = candidates.find_next(ordinal)) {
+      if (++actorsVisited % 256 == 0 && reachedExecutionDeadline()) {
+        stopAtExecutionDeadline();
+        break;
+      }
       const ActorExecutionPlan &plan = preparedExecution->actorPlans[ordinal];
       mlir::Operation *op = plan.operation;
       FireOutcome outcome = fireOperation(plan, state);
@@ -1284,8 +1301,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
       }
       fired |= outcome == FireOutcome::Fired;
     }
-    if (report.status == "invalid" || state.failure != RunFailure::None ||
-        !fired)
+    if (report.status != "pass" || state.failure != RunFailure::None || !fired)
       break;
     flushPendingTokens(state);
     ++report.wavefrontSteps;
@@ -1394,6 +1410,8 @@ static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventSteps,
     SpatialFunctionalObservations *retiredObservations,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline =
+        std::nullopt,
     const dataflow::CanonicalDataflowProgramView *preparedView = nullptr,
     const ResolvedLaunchContext *preparedContext = nullptr,
     const PreparedGraphExecution *preparedExecution = nullptr,
@@ -1437,6 +1455,7 @@ static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
       mlir::cast<dataflow::GraphOp>(graph->op).getSymName().str();
   options.workloadName = formatArtifactIdentityHex(workload.identity());
   options.maxEventSteps = maxEventSteps;
+  options.executionDeadline = executionDeadline;
   if (std::optional<std::string> reason =
           unsupportedTypedDfgInput(workload, runtimeInput, *preparedContext)) {
     DFGSimulationReport report;
@@ -1516,6 +1535,8 @@ requireRetiredDfgExecution(llvm::Expected<DFGSimulationReport> report,
   if (report->status == "unsupported")
     return llvm::createStringError(std::errc::not_supported, "%s",
                                    message.c_str());
+  if (report->status == "execution_limit")
+    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
   if (report->status == "blocked" && report->wavefrontSteps == maxEventSteps &&
       llvm::is_contained(report->diagnostics, "maximum event steps reached"))
     return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
@@ -1529,10 +1550,12 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     const dataflow::CanonicalDataflowArtifact &program,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps) {
+    std::uint64_t maxEventSteps,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
   SpatialFunctionalObservations observations;
-  auto report = simulateTypedDfgWorkload(program, workload, runtimeInput,
-                                         maxEventSteps, &observations);
+  auto report =
+      simulateTypedDfgWorkload(program, workload, runtimeInput, maxEventSteps,
+                               &observations, executionDeadline);
   return requireRetiredDfgExecution(std::move(report), std::move(observations),
                                     maxEventSteps);
 }
@@ -1541,15 +1564,17 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     const PreparedDfgExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps) {
+    std::uint64_t maxEventSteps,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
   if (!prepared.impl_)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "prepared DFG execution is empty");
   SpatialFunctionalObservations observations;
   auto report = simulateTypedDfgWorkload(
       *prepared.impl_->program, workload, runtimeInput, maxEventSteps,
-      &observations, &prepared.impl_->view, &prepared.impl_->context,
-      &prepared.impl_->execution, &prepared.impl_->launch);
+      &observations, executionDeadline, &prepared.impl_->view,
+      &prepared.impl_->context, &prepared.impl_->execution,
+      &prepared.impl_->launch);
   return requireRetiredDfgExecution(std::move(report), std::move(observations),
                                     maxEventSteps);
 }

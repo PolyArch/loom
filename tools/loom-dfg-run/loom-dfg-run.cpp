@@ -25,6 +25,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -83,6 +85,11 @@ llvm::cl::opt<std::uint64_t>
     maxCaptureBytes("max-capture-bytes",
                     llvm::cl::desc("maximum retained capture bytes"),
                     llvm::cl::init(256ULL * 1024ULL * 1024ULL));
+
+llvm::cl::opt<double> maxSimulationWallSeconds(
+    "max-simulation-wall-seconds",
+    llvm::cl::desc("maximum aggregate DFG replay wall time"),
+    llvm::cl::init(15.0));
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -182,6 +189,9 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   exploration.ownership.functionalReplayLimits.maxEventCount = maxEventCount;
   exploration.ownership.functionalReplayLimits.maxRetainedCaptureBytes =
       maxCaptureBytes;
+  exploration.ownership.functionalReplayLimits.maxSimulationWallTime =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(maxSimulationWallSeconds));
   auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
       std::move(*source), inputs->workload, inputs->runtimeInput, fabric,
       config, exploration, store);
@@ -308,6 +318,10 @@ int main(int argc, char **argv) {
     return reportError(invalid("max-event-count must be positive"));
   if (maxCaptureBytes == 0)
     return reportError(invalid("max-capture-bytes must be positive"));
+  if (!std::isfinite(maxSimulationWallSeconds) ||
+      maxSimulationWallSeconds <= 0.0)
+    return reportError(
+        invalid("max-simulation-wall-seconds must be finite and positive"));
 
   auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
   if (!preset)

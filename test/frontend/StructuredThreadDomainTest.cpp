@@ -28,6 +28,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -458,10 +459,10 @@ void requireThreadDomainChoice(
           repeatBuilder, repeatedLaunch.getLoc(), lower, upper, step);
       repeatedLaunch->moveBefore(repeat.getBody()->getTerminator());
       repeatedWait->moveBefore(repeat.getBody()->getTerminator());
-      auto repeatedProgram = take(
-          loom::frontend::finalizeStructuredProgram(repeatedModule.get()));
-      auto repeatedDataflow = take(
-          loom::lowering::lowerStructuredProgramToCanonicalDataflow(
+      auto repeatedProgram =
+          take(loom::frontend::finalizeStructuredProgram(repeatedModule.get()));
+      auto repeatedDataflow =
+          take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
               repeatedProgram));
       loom::frontend::MaterializedOwnershipCandidate repeated{
           std::move(repeatedProgram), std::move(repeatedDataflow), {}, {}, {}};
@@ -499,6 +500,10 @@ void requireThreadDomainChoice(
       requireExecutionLimit({1, 1000000, 1024 * 1024},
                             "wavefront execution limit");
       requireExecutionLimit({10000, 1, 1024 * 1024}, "event execution limit");
+      loom::sim::SourceBackedDfgValidationLimits wallLimited{10000, 1000000,
+                                                             1024 * 1024};
+      wallLimited.maxSimulationWallTime = std::chrono::nanoseconds::zero();
+      requireExecutionLimit(wallLimited, "wall-time execution limit");
     }
   }
 }
@@ -1032,7 +1037,7 @@ module attributes {
   }
 }
 )mlir",
-                                                               &context);
+                                                                &context);
   if (!acceptedModule)
     fail("cannot parse the scaled-element-address fixture");
   acceptedModule->getOperation()->setAttr(
@@ -1066,13 +1071,11 @@ module attributes {
                        : mlir::IntegerAttr{};
       if (!value) {
         auto graphConstant = source.getDefiningOp<dataflow::ConstantOp>();
-        value = graphConstant
-                    ? llvm::dyn_cast<mlir::IntegerAttr>(
-                          graphConstant.getConstValue())
-                    : mlir::IntegerAttr{};
+        value = graphConstant ? llvm::dyn_cast<mlir::IntegerAttr>(
+                                    graphConstant.getConstValue())
+                              : mlir::IntegerAttr{};
       }
-      sawElementScale |=
-          value && value.getValue().getSExtValue() == 268435456;
+      sawElementScale |= value && value.getValue().getSExtValue() == 268435456;
     }
   });
   if (!sawElementScale)

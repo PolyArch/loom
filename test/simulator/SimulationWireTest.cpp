@@ -541,6 +541,14 @@ void typedDfgExecution() {
   if (!prepared)
     fail(test, "typed DFG preparation failed: " +
                    llvm::toString(prepared.takeError()));
+  auto expiredExecution =
+      simulateRetiredDfgWorkload(*prepared, *workload, *input, 100000,
+                                 std::chrono::steady_clock::time_point::min());
+  if (expiredExecution)
+    fail(test, "expired DFG execution deadline was ignored");
+  if (llvm::errorToErrorCode(expiredExecution.takeError()) !=
+      std::make_error_code(std::errc::timed_out))
+    fail(test, "expired DFG execution used the wrong failure kind");
   llvm::Expected<RetiredDFGSimulation> firstExecution =
       simulateRetiredDfgWorkload(*prepared, *workload, *input);
   if (!firstExecution)
