@@ -836,6 +836,8 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
     return first.takeError();
   if (llvm::Error error = canonicalizeSymbols(*clone, *first))
     return std::move(error);
+  // Re-label after symbol-table normalization so canonical carriers in
+  // automorphic regions match the byte-stable module used by strict import.
   auto second = label(*clone);
   if (!second)
     return second.takeError();

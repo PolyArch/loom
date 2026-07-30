@@ -5,11 +5,9 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <map>
 #include <numeric>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +37,8 @@ public:
         llvm::ArrayRef<CanonicalRelationEdge> edges) {
     if (vertexIntrinsics.size() > std::numeric_limits<std::uint32_t>::max())
       return invalid("vertex count exceeds the persistent ordinal range");
+    if (edges.size() > std::numeric_limits<std::uint32_t>::max())
+      return invalid("edge count exceeds the internal ordinal range");
 
     Canonicalizer result(vertexIntrinsics, edges);
     for (const CanonicalRelationEdge &edge : edges) {
@@ -47,6 +47,7 @@ public:
         return invalid("edge endpoint is outside the vertex inventory");
     }
     result.buildAdjacency();
+    result.buildEdgeLabelRanks();
     return result;
   }
 
@@ -88,9 +89,28 @@ private:
     }
   }
 
+  void buildEdgeLabelRanks() {
+    std::vector<std::uint32_t> order(edges_.size());
+    std::iota(order.begin(), order.end(), 0);
+    llvm::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
+      return compareEncodedLabel(edges_[lhs].label, edges_[rhs].label) < 0;
+    });
+
+    edgeLabelRanks_.resize(edges_.size());
+    std::uint32_t rank = 0;
+    if (!order.empty())
+      edgeLabelRanks_[order.front()] = rank;
+    for (std::size_t index = 1; index < order.size(); ++index) {
+      if (compareEncodedLabel(edges_[order[index - 1]].label,
+                              edges_[order[index]].label) != 0)
+        ++rank;
+      edgeLabelRanks_[order[index]] = rank;
+    }
+  }
+
   struct RefinementNeighbor {
     std::uint8_t direction;
-    llvm::StringRef label;
+    std::uint32_t labelRank;
     std::uint64_t color;
   };
 
@@ -109,8 +129,8 @@ private:
                              const RefinementNeighbor &rhs) {
     if (lhs.direction != rhs.direction)
       return lhs.direction < rhs.direction ? -1 : 1;
-    if (int labelOrder = compareEncodedLabel(lhs.label, rhs.label))
-      return labelOrder;
+    if (lhs.labelRank != rhs.labelRank)
+      return lhs.labelRank < rhs.labelRank ? -1 : 1;
     if (lhs.color != rhs.color)
       return lhs.color < rhs.color ? -1 : 1;
     return 0;
@@ -139,42 +159,50 @@ private:
         for (std::uint32_t ordinal : outgoing_[vertex]) {
           const CanonicalRelationEdge &edge = edges_[ordinal];
           signature.neighbors.push_back(
-              {0, edge.label, colors[edge.target]});
+              {0, edgeLabelRanks_[ordinal], colors[edge.target]});
         }
         for (std::uint32_t ordinal : incoming_[vertex]) {
           const CanonicalRelationEdge &edge = edges_[ordinal];
           signature.neighbors.push_back(
-              {1, edge.label, colors[edge.source]});
+              {1, edgeLabelRanks_[ordinal], colors[edge.source]});
         }
-        llvm::sort(signature.neighbors,
-                   [](const RefinementNeighbor &lhs,
-                      const RefinementNeighbor &rhs) {
-                     return compareNeighbor(lhs, rhs) < 0;
-                   });
+        llvm::sort(signature.neighbors, [](const RefinementNeighbor &lhs,
+                                           const RefinementNeighbor &rhs) {
+          return compareNeighbor(lhs, rhs) < 0;
+        });
         signatures.push_back(std::move(signature));
       }
-
-      std::vector<std::uint32_t> order(intrinsics_.size());
-      std::iota(order.begin(), order.end(), 0);
-      llvm::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
-        return compareSignature(signatures[lhs], signatures[rhs]) < 0;
-      });
 
       const std::uint64_t previousClassCount =
           colors.empty()
               ? 0
               : *llvm::max_element(colors) + static_cast<std::uint64_t>(1);
+      std::vector<llvm::SmallVector<std::uint32_t>> cells(
+          static_cast<std::size_t>(previousClassCount));
+      for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
+        cells[colors[vertex]].push_back(vertex);
+
       std::vector<std::uint64_t> refined(colors.size());
       std::uint64_t rank = 0;
-      if (!order.empty())
-        refined[order.front()] = rank;
-      for (std::size_t index = 1; index < order.size(); ++index) {
-        if (compareSignature(signatures[order[index - 1]],
-                             signatures[order[index]]) != 0)
+      bool hasRank = false;
+      for (auto &cell : cells) {
+        if (cell.empty())
+          continue;
+        llvm::sort(cell, [&](std::uint32_t lhs, std::uint32_t rhs) {
+          return compareSignature(signatures[lhs], signatures[rhs]) < 0;
+        });
+        if (hasRank)
           ++rank;
-        refined[order[index]] = rank;
+        hasRank = true;
+        refined[cell.front()] = rank;
+        for (std::size_t index = 1; index < cell.size(); ++index) {
+          if (compareSignature(signatures[cell[index - 1]],
+                               signatures[cell[index]]) != 0)
+            ++rank;
+          refined[cell[index]] = rank;
+        }
       }
-      const std::uint64_t next = order.empty() ? 0 : rank + 1;
+      const std::uint64_t next = hasRank ? rank + 1 : 0;
       colors = std::move(refined);
       if (next == previousClassCount)
         return colors;
@@ -207,8 +235,7 @@ private:
     return {bytes.begin(), bytes.end()};
   }
 
-  bool isTranspositionAutomorphism(std::uint32_t lhs,
-                                   std::uint32_t rhs) const {
+  bool isTranspositionAutomorphism(std::uint32_t lhs, std::uint32_t rhs) const {
     if (intrinsics_[lhs] != intrinsics_[rhs])
       return false;
 
@@ -234,8 +261,7 @@ private:
       return a.label.compare(b.label) < 0;
     };
     auto equal = [](const Relation &a, const Relation &b) {
-      return a.source == b.source && a.target == b.target &&
-             a.label == b.label;
+      return a.source == b.source && a.target == b.target && a.label == b.label;
     };
     auto transpose = [&](std::uint32_t vertex) {
       if (vertex == lhs)
@@ -265,14 +291,18 @@ private:
               std::vector<std::uint32_t> &path) const {
     colors = refine(std::move(colors));
 
-    std::map<std::uint64_t, llvm::SmallVector<std::uint32_t>> cells;
+    const std::size_t cellCount =
+        colors.empty()
+            ? 0
+            : static_cast<std::size_t>(*llvm::max_element(colors) + 1);
+    std::vector<llvm::SmallVector<std::uint32_t>> cells(cellCount);
     for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
       cells[colors[vertex]].push_back(vertex);
 
     const llvm::SmallVector<std::uint32_t> *target = nullptr;
     for (const auto &cell : cells)
-      if (cell.second.size() > 1) {
-        target = &cell.second;
+      if (cell.size() > 1) {
+        target = &cell;
         break;
       }
 
@@ -291,14 +321,13 @@ private:
     std::vector<std::uint32_t> parent(intrinsics_.size());
     for (std::uint32_t vertex = 0; vertex < intrinsics_.size(); ++vertex)
       parent[vertex] = vertex;
-    std::function<std::uint32_t(std::uint32_t)> find =
-        [&](std::uint32_t value) {
-          while (parent[value] != value) {
-            parent[value] = parent[parent[value]];
-            value = parent[value];
-          }
-          return value;
-        };
+    auto find = [&](std::uint32_t value) {
+      while (parent[value] != value) {
+        parent[value] = parent[parent[value]];
+        value = parent[value];
+      }
+      return value;
+    };
     auto unite = [&](std::uint32_t lhs, std::uint32_t rhs) {
       parent[find(lhs)] = find(rhs);
     };
@@ -327,10 +356,12 @@ private:
 
     Leaf best;
     bool hasBest = false;
-    std::set<std::uint32_t> exploredOrbits;
+    std::vector<bool> exploredOrbits(intrinsics_.size(), false);
     for (std::uint32_t candidate : *target) {
-      if (!exploredOrbits.insert(find(candidate)).second)
+      const std::uint32_t orbit = find(candidate);
+      if (exploredOrbits[orbit])
         continue;
+      exploredOrbits[orbit] = true;
       std::vector<std::uint64_t> individualized = colors;
       const std::uint64_t targetColor = individualized[candidate];
       for (std::uint64_t &color : individualized)
@@ -356,6 +387,7 @@ private:
 
   std::vector<std::string> intrinsics_;
   std::vector<CanonicalRelationEdge> edges_;
+  std::vector<std::uint32_t> edgeLabelRanks_;
   std::vector<llvm::SmallVector<std::uint32_t>> outgoing_;
   std::vector<llvm::SmallVector<std::uint32_t>> incoming_;
   mutable std::vector<std::vector<std::uint32_t>> automorphisms_;

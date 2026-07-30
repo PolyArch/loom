@@ -83,13 +83,13 @@ module {
 )mlir";
   const char *second = R"mlir(
 module {
-  func.func private @different_name(%arg0: i32) -> i32 {
-    %value = arith.addi %arg0, %arg0 : i32 loc("second")
-    return %value : i32
-  }
   func.func @entry(%arg0: i32) -> i32 {
     %result = call @different_name(%arg0) : (i32) -> i32
     return %result : i32
+  }
+  func.func private @different_name(%arg0: i32) -> i32 {
+    %value = arith.addi %arg0, %arg0 : i32 loc("second")
+    return %value : i32
   }
 }
 )mlir";
@@ -97,7 +97,8 @@ module {
   StructuredProgramCandidate b = finalize(test, second);
   require(
       test, a.identity() == b.identity(),
-      "private symbol spelling or source location changed candidate identity");
+      "private symbol spelling, order, or source location changed candidate "
+      "identity");
 }
 
 void semanticOperationChangesIdentity() {
