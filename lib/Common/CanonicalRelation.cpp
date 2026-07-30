@@ -301,10 +301,8 @@ private:
 
     const llvm::SmallVector<std::uint32_t> *target = nullptr;
     for (const auto &cell : cells)
-      if (cell.size() > 1) {
+      if (cell.size() > 1 && (!target || cell.size() < target->size()))
         target = &cell;
-        break;
-      }
 
     if (!target) {
       Leaf leaf;
