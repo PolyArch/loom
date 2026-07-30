@@ -7,6 +7,7 @@
 
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -169,7 +170,8 @@ bool redactSymbolName(Operation *op) {
 }
 
 void serializeAttribute(llvm::raw_ostream &stream, Attribute attribute,
-                        SmallVectorImpl<SymbolRefAttr> &symbols) {
+                        SmallVectorImpl<SymbolRefAttr> &symbols,
+                        AsmState &asmState) {
   if (isa<LocationAttr>(attribute)) {
     stream << "#location";
     return;
@@ -183,7 +185,7 @@ void serializeAttribute(llvm::raw_ostream &stream, Attribute attribute,
     stream << '{';
     for (NamedAttribute entry : dictionary) {
       stream << entry.getName().getValue() << '=';
-      serializeAttribute(stream, entry.getValue(), symbols);
+      serializeAttribute(stream, entry.getValue(), symbols, asmState);
       stream << ';';
     }
     stream << '}';
@@ -192,19 +194,20 @@ void serializeAttribute(llvm::raw_ostream &stream, Attribute attribute,
   if (auto array = dyn_cast<ArrayAttr>(attribute)) {
     stream << '[';
     for (Attribute entry : array) {
-      serializeAttribute(stream, entry, symbols);
+      serializeAttribute(stream, entry, symbols, asmState);
       stream << ';';
     }
     stream << ']';
     return;
   }
   stream << "#leaf<";
-  attribute.print(stream);
+  attribute.print(stream, asmState);
   stream << '>';
 }
 
 llvm::Expected<std::string>
-operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols) {
+operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols,
+                   AsmState &asmState) {
   std::string result;
   llvm::raw_string_ostream stream(result);
   stream << "OP\x1f" << op->getName().getStringRef() << '\x1e';
@@ -226,7 +229,7 @@ operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols) {
       if (registeredOnly && !registered.contains(name))
         continue;
       stream << name << '=';
-      serializeAttribute(stream, entry.getValue(), symbols);
+      serializeAttribute(stream, entry.getValue(), symbols, asmState);
       stream << '\x1e';
     }
   };
@@ -236,11 +239,11 @@ operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols) {
   return result;
 }
 
-std::string valueIntrinsic(Value value) {
+std::string valueIntrinsic(Value value, AsmState &asmState) {
   std::string result;
   llvm::raw_string_ostream stream(result);
   stream << (isa<BlockArgument>(value) ? "argument" : "result") << ':';
-  value.getType().print(stream);
+  value.getType().print(stream, asmState);
   return result;
 }
 
@@ -278,7 +281,8 @@ class SemanticGraph {
 public:
   static llvm::Expected<SemanticGraph> build(ModuleOp module) {
     SemanticGraph graph;
-    if (llvm::Error error = graph.collect(module.getOperation()))
+    AsmState asmState(module.getContext());
+    if (llvm::Error error = graph.collect(module.getOperation(), asmState))
       return std::move(error);
     if (llvm::Error error = graph.connect(module.getOperation()))
       return std::move(error);
@@ -328,9 +332,9 @@ private:
                                                  value});
   }
 
-  llvm::Error collect(Operation *op) {
+  llvm::Error collect(Operation *op, AsmState &asmState) {
     SmallVector<SymbolRefAttr> symbols;
-    auto intrinsic = operationIntrinsic(op, symbols);
+    auto intrinsic = operationIntrinsic(op, symbols, asmState);
     if (!intrinsic)
       return intrinsic.takeError();
     const std::uint32_t opVertex = add(std::move(*intrinsic));
@@ -350,19 +354,21 @@ private:
         recordEntity(blockVertex, StructuredEntityKind::Block, nullptr, nullptr,
                      &block);
         for (BlockArgument argument : block.getArguments()) {
-          const std::uint32_t valueVertex = add(valueIntrinsic(argument));
+          const std::uint32_t valueVertex =
+              add(valueIntrinsic(argument, asmState));
           valueVertex_[argument] = valueVertex;
           recordEntity(valueVertex, StructuredEntityKind::Value, nullptr,
                        nullptr, nullptr, argument);
         }
         for (Operation &child : block) {
           for (OpResult result : child.getResults()) {
-            const std::uint32_t valueVertex = add(valueIntrinsic(result));
+            const std::uint32_t valueVertex =
+                add(valueIntrinsic(result, asmState));
             valueVertex_[result] = valueVertex;
             recordEntity(valueVertex, StructuredEntityKind::Value, nullptr,
                          nullptr, nullptr, result);
           }
-          if (llvm::Error error = collect(&child))
+          if (llvm::Error error = collect(&child, asmState))
             return error;
         }
       }
@@ -469,7 +475,7 @@ EntityTable collectLexicalEntities(ModuleOp module) {
   return entities;
 }
 
-std::string entityShape(const EntityCarrier &carrier) {
+std::string entityShape(const EntityCarrier &carrier, AsmState &asmState) {
   switch (carrier.kind) {
   case StructuredEntityKind::Operation: {
     std::string result;
@@ -486,7 +492,7 @@ std::string entityShape(const EntityCarrier &carrier) {
   case StructuredEntityKind::Block:
     return blockIntrinsic(*carrier.block);
   case StructuredEntityKind::Value:
-    return valueIntrinsic(carrier.value);
+    return valueIntrinsic(carrier.value, asmState);
   }
   llvm_unreachable("unknown StructuredEntityKind");
 }
@@ -507,6 +513,7 @@ const void *entityPointer(const EntityCarrier &carrier) {
 
 llvm::Expected<CanonicalEntityProjection>
 projectCanonicalEntities(ModuleOp module, const CanonicalLabeling &labeling) {
+  AsmState asmState(module.getContext());
   EntityTable lexical = collectLexicalEntities(module);
   std::array<DenseMap<const void *, std::uint64_t>, 4> lexicalOrdinals;
   for (std::size_t kind = 0; kind != lexical.size(); ++kind)
@@ -521,7 +528,7 @@ projectCanonicalEntities(ModuleOp module, const CanonicalLabeling &labeling) {
     auto &shapes = projection.lexicalShapes[kind];
     shapes.reserve(lexical[kind].size());
     for (const EntityCarrier &carrier : lexical[kind])
-      shapes.push_back(entityShape(carrier));
+      shapes.push_back(entityShape(carrier, asmState));
 
     auto &order = projection.canonicalToLexical[kind];
     order.reserve(labeling.entities[kind].size());
@@ -543,6 +550,7 @@ projectCanonicalEntities(ModuleOp module, const CanonicalLabeling &labeling) {
 llvm::Expected<EntityTable>
 resolveCanonicalEntities(ModuleOp module,
                          const CanonicalEntityProjection &projection) {
+  AsmState asmState(module.getContext());
   EntityTable lexical = collectLexicalEntities(module);
   EntityTable canonical;
   for (std::size_t kind = 0; kind != lexical.size(); ++kind) {
@@ -552,7 +560,7 @@ resolveCanonicalEntities(ModuleOp module,
       return invalid("canonical bytecode changed the Structured Program entity "
                      "domain");
     for (auto item : llvm::enumerate(lexical[kind]))
-      if (entityShape(item.value()) != shapes[item.index()])
+      if (entityShape(item.value(), asmState) != shapes[item.index()])
         return invalid(
             "canonical bytecode changed a Structured Program entity");
 
