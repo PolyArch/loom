@@ -421,25 +421,25 @@ def _cmake_quote(path: Path) -> str:
 
 
 def _render_cmsis_dsp_harness_cmake(
-    targets: Sequence[tuple[str, Path, Path, str]],
+    targets: Sequence[tuple[str, Path, Path, str, str]],
     support_sources: Sequence[Path],
 ) -> str:
-    suite_libraries: dict[Path, tuple[str, str]] = {}
-    for _, _, shared, test_class in targets:
+    suite_libraries: dict[Path, tuple[str, str, str]] = {}
+    for _, _, shared, test_class, source_group in targets:
         suite_libraries.setdefault(
             shared,
-            (f"loom_dsp_{shared.name}", test_class),
+            (f"loom_dsp_{shared.name}", test_class, source_group),
         )
 
     suite_blocks = []
-    for shared, (library, test_class) in suite_libraries.items():
+    for shared, (library, test_class, source_group) in suite_libraries.items():
         shared_include = _cmake_quote(shared / "GeneratedInclude")
         suite_blocks.append(
             f'''add_library({library} OBJECT
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Source/Tests/{test_class}.cpp")
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Source/{source_group}/{test_class}.cpp")
 target_include_directories({library} PRIVATE
   "{shared_include}"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/{source_group}"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude")
 target_compile_definitions({library} PRIVATE EMBEDDED NOTIMING)
 target_compile_options({library} PRIVATE -fno-inline-functions)
@@ -448,7 +448,7 @@ target_link_libraries({library} PRIVATE CMSISDSP)
         )
 
     target_blocks = []
-    for target, generated, shared, _ in targets:
+    for target, generated, shared, _, source_group in targets:
         library = suite_libraries[shared][0]
         generated_source = _cmake_quote(generated / "GeneratedSource")
         generated_include = _cmake_quote(generated / "GeneratedInclude")
@@ -464,7 +464,7 @@ target_include_directories({target} PRIVATE
   "{generated_include}"
   "{shared_include}"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests")
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/{source_group}")
 target_compile_definitions({target} PRIVATE EMBEDDED NOTIMING)
 target_link_libraries({target} PRIVATE
   loom_cmsis_dsp_framework loom_cmsis_dsp_test_support CMSISDSP)
@@ -554,7 +554,7 @@ def materialize_cmsis_dsp_harness(
     shared_directories: list[Path] = []
     protocol_methods: list[tuple[str, str]] = []
     protocol_source_owners: list[tuple[Path, Path]] = []
-    cmake_targets: list[tuple[str, Path, Path, str]] = []
+    cmake_targets: list[tuple[str, Path, Path, str, str]] = []
 
     for workload in workloads:
         if workload.suite != "cmsis-dsp" or not isinstance(
@@ -642,8 +642,15 @@ def materialize_cmsis_dsp_harness(
         protocol_methods.append(
             (workload.producer.test_class, workload.producer.test_method)
         )
+        source_group = {
+            "benchmark-only": "Benchmarks",
+            "official": "Tests",
+        }[workload.producer.selector_kind]
         protocol_source = (
-            testing_root / "Source" / "Tests" / f"{workload.producer.test_class}.cpp"
+            testing_root
+            / "Source"
+            / source_group
+            / f"{workload.producer.test_class}.cpp"
         )
         if not protocol_source.is_file():
             raise WorkloadProviderError(
@@ -656,6 +663,7 @@ def materialize_cmsis_dsp_harness(
                 generated,
                 shared_generated,
                 workload.producer.test_class,
+                source_group,
             )
         )
 

@@ -80,6 +80,19 @@ class DualInventoryContractTest(unittest.TestCase):
             {row.oracle.kind for row in dsp},
             {"cmsis-dsp-patterns", "generated-native-reference"},
         )
+        benchmark = next(
+            row
+            for row in dsp
+            if row.operator_id == "cmsis-dsp:arm-cfft-radix2-f32:131df5e3ff9155ea"
+        )
+        self.assertIsInstance(
+            benchmark.producer,
+            corpus_inventory.CmsisDspWorkloadProducer,
+        )
+        self.assertEqual(benchmark.producer.selector_kind, "benchmark-only")
+        self.assertEqual(benchmark.producer.test_class, "TransformF32")
+        self.assertEqual(benchmark.producer.test_method, "test_cfft_radix2_f32")
+        self.assertEqual(benchmark.producer.vector_ordinal, 0)
 
         nn = [row for row in workloads if row.suite == "cmsis-nn"]
         self.assertEqual(len(nn), 186)

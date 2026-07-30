@@ -105,6 +105,7 @@ class CmsisNnWorkloadProducer:
 class CmsisDspWorkloadProducer:
     definition: str
     variant: str
+    selector_kind: str
     test_class: str
     test_method: str
     vector_ordinal: int
@@ -117,6 +118,7 @@ class CmsisDspWorkloadProducer:
         return {
             "definition": self.definition,
             "kind": self.kind,
+            "selector_kind": self.selector_kind,
             "test_class": self.test_class,
             "test_method": self.test_method,
             "variant": self.variant,
@@ -544,9 +546,12 @@ def _parse_operator_gate_workload(
     selector = _require_mapping(raw_vector["selector"], "vector selector")
     selector_kind = _require_string(selector.get("kind"), "vector selector kind")
 
-    if producer_kind == "cmsis-dsp-operator-harness" and selector_kind == "official":
+    if producer_kind == "cmsis-dsp-operator-harness" and selector_kind in {
+        "benchmark-only",
+        "official",
+    }:
         if set(selector) != {"class", "kind", "method", "ordinal"}:
-            raise InventoryError("CMSIS-DSP official selector has invalid fields")
+            raise InventoryError("CMSIS-DSP descriptor selector has invalid fields")
         ordinal = selector["ordinal"]
         if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
             raise InventoryError("CMSIS-DSP vector ordinal is invalid")
@@ -555,10 +560,9 @@ def _parse_operator_gate_workload(
         ) = CmsisDspWorkloadProducer(
             definition=definitions[0],
             variant=producer_variant,
+            selector_kind=selector_kind,
             test_class=_require_string(selector["class"], "CMSIS-DSP test class"),
-            test_method=_require_string(
-                selector["method"], "CMSIS-DSP test method"
-            ),
+            test_method=_require_string(selector["method"], "CMSIS-DSP test method"),
             vector_ordinal=ordinal,
         )
         executable = operator_workload_target(operator_id)
