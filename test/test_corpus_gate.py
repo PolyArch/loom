@@ -30,7 +30,6 @@ sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
-import corpus_link_ownership  # noqa: E402
 
 
 VALID_LL = (
@@ -45,24 +44,26 @@ VALID_S0 = (
 VALID_D0 = VALID_S0
 VALID_COUNTS = '{"actors": 0, "graphs": 0}\n'
 VALID_DFG_REPORT = json.dumps(
-    {
-        "actors": 3,
-        "dynamic_calls": 1,
-        "event_count": 11,
-        "floating_variance_bytes": 0,
-        "floating_variance_kind": "none",
-        "graphs": 1,
-        "kind": "source_backed_dfg_comparison",
-        "memory_bytes_compared": 64,
-        "operation_firings": {"arith.addi": 4},
-        "selected_source_callables": ["kernel"],
-        "simulation_seconds": 0.0001,
-        "status": "pass",
-        "value_lanes_compared": 0,
-        "wavefront_steps": 100,
-        "wavefront_steps_per_second": 1_000_000.0,
-    },
-    sort_keys=True,
+        {
+            "actors": 3,
+            "dynamic_calls": 1,
+            "event_count": 11,
+            "floating_variance_bytes": 0,
+            "floating_variance_kind": "none",
+            "graphs": 1,
+            "kind": "source_backed_dfg_comparison",
+            "memory_bytes_compared": 64,
+            "operation_firings": {"arith.addi": 4},
+            "selected_source_files": [
+                str(ROOT / "test" / "app" / "axpy" / "main_func.cpp")
+            ],
+            "simulation_seconds": 0.0001,
+            "status": "pass",
+            "value_lanes_compared": 0,
+            "wavefront_steps": 100,
+            "wavefront_steps_per_second": 1_000_000.0,
+        },
+        sort_keys=True,
 ) + "\n"
 
 
@@ -412,22 +413,24 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         self.assertNotIn(str(build_dir), invocation)
 
-    def test_selected_source_projection_uses_prevailing_direct_owner(self) -> None:
-        owner = self.work / "kernel.o"
-        source = ROOT / "test" / "app" / "vecadd" / "main_func.cpp"
-        resolution = self.work / "program.resolution.txt"
-        resolution.write_text(f"{owner}\n-r={owner},kernel,pl\n")
+    def test_selected_source_projection_uses_spatial_provenance(self) -> None:
+        kernel_object = self.work / "kernel.o"
+        wrapper_object = self.work / "wrapper.o"
+        kernel_source = ROOT / "test" / "app" / "vecadd" / "main_func.cpp"
+        wrapper_source = self.work / "generated" / "unity_runner.c"
         linked = corpus_gate.LinkedWorkloadModules(
             target=self.work / "program.ll",
-            resolution=resolution,
+            resolution=self.work / "program.resolution.txt",
             link_root=self.work,
-            object_sources=((owner, source),),
+            object_sources=(
+                (kernel_object, kernel_source),
+                (wrapper_object, wrapper_source),
+            ),
         )
 
         selected, defect = corpus_gate.resolve_selected_corpus_sources(
             linked,
-            ("kernel",),
-            Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+            (str(kernel_source), str(wrapper_source)),
             corpus_inventory.resolve_externals_root(ROOT),
             ROOT,
             frozenset({"test/app/vecadd/main_func.cpp"}),
@@ -436,148 +439,26 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIsNone(defect)
         self.assertEqual(selected, ("test/app/vecadd/main_func.cpp",))
 
-    def test_selected_source_projection_resolves_archive_member_offset(self) -> None:
-        build = self.work / "build"
-        archive = build / "libkernels.a"
-        archive.parent.mkdir()
-        archive.write_bytes(b"archive")
-        obj = build / "obj" / "kernel.c.obj"
-        source = (
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-nn"
-            / "Source"
-            / "BasicMathFunctions"
-            / "arm_elementwise_add_s8.c"
-        )
-        resolution = build / "program.resolution.txt"
-        resolution.write_text(
-            "libkernels.a\n"
-            "-r=libkernels.a(kernel.c.obj at 64),kernel,pl\n"
-        )
-        linked = corpus_gate.LinkedWorkloadModules(
-            target=build / "program.ll",
-            resolution=resolution,
-            link_root=build,
-            object_sources=((obj, source),),
-        )
-        query = (
-            "libkernels.a:\n"
-            "  input: C_STATIC_LIBRARY_LINKER\n"
-            "    obj/kernel.c.obj\n"
-            "  outputs:\n"
-        )
-
-        with mock.patch.object(
-            corpus_link_ownership,
-            "_run_quiet",
-            side_effect=["kernel.c.obj 0x7c\n", query],
-        ):
-            selected, defect = corpus_gate.resolve_selected_corpus_sources(
-                linked,
-                ("kernel",),
-                Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
-                corpus_inventory.resolve_externals_root(ROOT),
-                ROOT,
-                frozenset(
-                    {
-                        "externals/cmsis-nn/Source/BasicMathFunctions/"
-                        "arm_elementwise_add_s8.c"
-                    }
-                ),
-            )
-
-        self.assertIsNone(defect)
-        self.assertEqual(
-            selected,
-            (
-                "externals/cmsis-nn/Source/BasicMathFunctions/"
-                "arm_elementwise_add_s8.c",
-            ),
-        )
-
-    def test_selected_source_projection_resolves_selected_internal_symbol(self) -> None:
-        build = self.work / "build"
-        archive = build / "libkernels.a"
-        archive.parent.mkdir()
-        archive.write_bytes(b"archive")
-        obj = build / "obj" / "kernel.c.obj"
-        source = (
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-nn"
-            / "Source"
-            / "TransposeFunctions"
-            / "arm_transpose_s8.c"
-        )
-        resolution = build / "program.resolution.txt"
-        resolution.write_text("libkernels.a(kernel.c.obj at 64)\n")
-        linked = corpus_gate.LinkedWorkloadModules(
-            target=build / "program.ll",
-            resolution=resolution,
-            link_root=build,
-            object_sources=((obj, source),),
-        )
-        query = (
-            "libkernels.a:\n"
-            "  input: C_STATIC_LIBRARY_LINKER\n"
-            "    obj/kernel.c.obj\n"
-            "  outputs:\n"
-        )
-        nm = "local_kernel t ---------------- 0\n"
-
-        def run_tool(command: Sequence[str]) -> str:
-            if command[0].endswith("llvm-ar"):
-                return "kernel.c.obj 0x7c\n"
-            if command[0].endswith("llvm-nm"):
-                return nm
-            if command[0] == "ninja":
-                return query
-            self.fail(f"unexpected ownership tool invocation: {command}")
-
-        with mock.patch.object(
-            corpus_link_ownership,
-            "_run_quiet",
-            side_effect=run_tool,
-        ):
-            selected, defect = corpus_gate.resolve_selected_corpus_sources(
-                linked,
-                ("local_kernel",),
-                Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
-                corpus_inventory.resolve_externals_root(ROOT),
-                ROOT,
-                frozenset(
-                    {"externals/cmsis-nn/Source/TransposeFunctions/arm_transpose_s8.c"}
-                ),
-            )
-
-        self.assertIsNone(defect)
-        self.assertEqual(
-            selected,
-            ("externals/cmsis-nn/Source/TransposeFunctions/arm_transpose_s8.c",),
-        )
-
-    def test_selected_source_projection_rejects_harness_owner(self) -> None:
-        owner = self.work / "wrapper.o"
-        source = self.work / "generated" / "unity_runner.c"
-        resolution = self.work / "program.resolution.txt"
-        resolution.write_text(f"{owner}\n-r={owner},kernel,pl\n")
+    def test_selected_source_projection_rejects_harness_only(self) -> None:
+        wrapper_object = self.work / "wrapper.o"
+        wrapper_source = self.work / "generated" / "unity_runner.c"
         linked = corpus_gate.LinkedWorkloadModules(
             target=self.work / "program.ll",
-            resolution=resolution,
+            resolution=self.work / "program.resolution.txt",
             link_root=self.work,
-            object_sources=((owner, source),),
+            object_sources=((wrapper_object, wrapper_source),),
         )
 
         selected, defect = corpus_gate.resolve_selected_corpus_sources(
             linked,
-            ("kernel",),
-            Path(self.tool_paths["llvm_dis"]).with_name("llvm-ar"),
+            (str(wrapper_source),),
             corpus_inventory.resolve_externals_root(ROOT),
             ROOT,
             frozenset({"externals/cmsis-nn/Source/kernel.c"}),
         )
 
         self.assertIsNone(selected)
-        self.assertIn("not owned by an exact corpus source row", defect)
+        self.assertIn("does not cover an exact corpus source row", defect)
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
@@ -687,7 +568,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 1)
         self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 64)
         self.assertEqual(
-            result["dfg_simulation"]["selected_source_callables"], ["kernel"]
+            result["dfg_simulation"]["selected_source_files"],
+            [str(ROOT / "test" / "app" / "axpy" / "main_func.cpp")],
         )
         self.assertEqual(result["selected_sources"], ["test/app/axpy/main_func.cpp"])
         self.assertEqual(
@@ -750,6 +632,7 @@ class CommandConstructionTest(CorpusGateTestBase):
                 "-emit-llvm",
                 "-S",
                 "-O1",
+                "-gline-tables-only",
                 str(source),
                 "-o",
                 str(output),

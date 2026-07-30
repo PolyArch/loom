@@ -21,7 +21,7 @@ class DfgSimulationMetrics:
     event_count: int
     simulation_seconds: float
     operation_firings: dict[str, int]
-    selected_source_callables: tuple[str, ...]
+    selected_source_files: tuple[str, ...]
 
     @staticmethod
     def zero() -> "DfgSimulationMetrics":
@@ -54,10 +54,10 @@ class DfgSimulationMetrics:
             event_count=self.event_count + other.event_count,
             simulation_seconds=self.simulation_seconds + other.simulation_seconds,
             operation_firings=firings,
-            selected_source_callables=tuple(
+            selected_source_files=tuple(
                 sorted(
-                    set(self.selected_source_callables)
-                    | set(other.selected_source_callables)
+                    set(self.selected_source_files)
+                    | set(other.selected_source_files)
                 )
             ),
         )
@@ -75,7 +75,7 @@ class DfgSimulationMetrics:
             "value_lanes_compared": self.value_lanes_compared,
             "memory_bytes_compared": self.memory_bytes_compared,
             "operation_firings": dict(sorted(self.operation_firings.items())),
-            "selected_source_callables": list(self.selected_source_callables),
+            "selected_source_files": list(self.selected_source_files),
             "simulation_seconds": self.simulation_seconds,
             "wavefront_steps": self.wavefront_steps,
             "wavefront_steps_per_second": self.wavefront_steps_per_second,
@@ -104,7 +104,7 @@ def parse_dfg_simulation_report(
         "kind",
         "memory_bytes_compared",
         "operation_firings",
-        "selected_source_callables",
+        "selected_source_files",
         "simulation_seconds",
         "status",
         "value_lanes_compared",
@@ -201,15 +201,15 @@ def parse_dfg_simulation_report(
             )
         firings[operation] = count
 
-    raw_callables = payload["selected_source_callables"]
+    raw_source_files = payload["selected_source_files"]
     if (
-        not isinstance(raw_callables, list)
-        or not raw_callables
-        or any(not isinstance(name, str) or not name for name in raw_callables)
-        or raw_callables != sorted(set(raw_callables))
+        not isinstance(raw_source_files, list)
+        or not raw_source_files
+        or any(not isinstance(path, str) or not path for path in raw_source_files)
+        or raw_source_files != sorted(set(raw_source_files))
     ):
         return None, (
-            "DFG simulation report has noncanonical selected source callables: "
+            "DFG simulation report has noncanonical selected source files: "
             f"{path}"
         )
 
@@ -225,7 +225,7 @@ def parse_dfg_simulation_report(
             event_count=integers["event_count"],
             simulation_seconds=float(seconds),
             operation_firings=firings,
-            selected_source_callables=tuple(raw_callables),
+            selected_source_files=tuple(raw_source_files),
         ),
         None,
     )

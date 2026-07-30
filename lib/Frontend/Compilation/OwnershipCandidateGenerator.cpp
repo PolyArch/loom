@@ -31,6 +31,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1007,9 +1008,10 @@ struct PrivateSelection {
       sourceBlocks;
 };
 
-llvm::Expected<PrivateSelection>
-cloneSelectedOperation(const StructuredProgramCandidate &parent,
-                       const StructuredEntityRef &selection) {
+llvm::Expected<PrivateSelection> cloneSelectedOperation(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &selection,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto parentView = parent.view();
   if (!parentView)
     return parentView.takeError();
@@ -1022,6 +1024,33 @@ cloneSelectedOperation(const StructuredProgramCandidate &parent,
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> clone(
       llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  llvm::DenseSet<std::uint64_t> locatedOperations;
+  for (const StructuredOperationSourceProvenance &provenance :
+       sourceProvenance) {
+    if (provenance.operation.parent != parent.identity() ||
+        provenance.operation.kind != StructuredEntityKind::Operation)
+      return invalid("source provenance has the wrong Structured owner");
+    if (provenance.sourceFiles.empty() ||
+        !llvm::is_sorted(provenance.sourceFiles) ||
+        std::adjacent_find(provenance.sourceFiles.begin(),
+                           provenance.sourceFiles.end()) !=
+            provenance.sourceFiles.end())
+      return invalid("source provenance files are not canonical");
+    if (!locatedOperations.insert(provenance.operation.ordinal).second)
+      return invalid("source provenance duplicates an operation");
+    auto parentOperation = parentView->resolve(provenance.operation);
+    if (!parentOperation)
+      return parentOperation.takeError();
+    mlir::Operation *mapped = mapping.lookupOrNull(parentOperation->operation);
+    if (!mapped)
+      return invalid("source-backed operation was not cloned");
+    llvm::SmallVector<mlir::Location> fileLocations;
+    fileLocations.reserve(provenance.sourceFiles.size());
+    for (const std::string &sourceFile : provenance.sourceFiles)
+      fileLocations.push_back(
+          mlir::FileLineColLoc::get(clone->getContext(), sourceFile, 0, 0));
+    mapped->setLoc(mlir::FusedLoc::get(clone->getContext(), fileLocations));
+  }
   mlir::Operation *clonedOperation =
       mapping.lookupOrNull(parentEntity->operation);
   if (!clonedOperation)
@@ -1119,7 +1148,8 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
     return std::move(error);
   return MaterializedOwnershipCandidate{
       std::move(structured->artifact), std::move(projected->artifact),
-      std::move(projected->spatialGraphs), std::move(blockActivityLineage)};
+      std::move(projected->spatialGraphs), std::move(blockActivityLineage),
+      std::move(structured->sourceProvenance)};
 }
 
 } // namespace
@@ -1284,8 +1314,10 @@ materializeSpatialOwnershipDecision(
     const SpatialOwnershipScope &scope,
     const SpatialOwnershipDecisionPoint &decision,
     const fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &lowering) {
-  auto prepared = prepareSpatialOwnershipSelection(parent, scope, decision);
+    const lowering::CanonicalDataflowLoweringOptions &lowering,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
+  auto prepared = prepareSpatialOwnershipSelection(parent, scope, decision,
+                                                   sourceProvenance);
   if (!prepared)
     return prepared.takeError();
 
@@ -1315,7 +1347,8 @@ llvm::Expected<PreparedSpatialOwnershipSelection>
 prepareSpatialOwnershipSelection(
     const StructuredProgramCandidate &parent,
     const SpatialOwnershipScope &scope,
-    const SpatialOwnershipDecisionPoint &decision) {
+    const SpatialOwnershipDecisionPoint &decision,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto domain =
       enumerateSpatialOwnershipDecisionDomain(parent, scope.selection);
   if (!domain)
@@ -1341,7 +1374,8 @@ prepareSpatialOwnershipSelection(
     return invalid("decision is not in the selected scope's typed domain");
   }
 
-  auto selection = cloneSelectedOperation(parent, scope.selection);
+  auto selection =
+      cloneSelectedOperation(parent, scope.selection, sourceProvenance);
   if (!selection)
     return selection.takeError();
   mlir::Operation *operation = selection->operation;

@@ -38,6 +38,14 @@ llvm::Expected<frontend::StructuredProgramCandidate>
 raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
                                    StructuredRaisingOptions options = {});
 
+/// Runs the same mechanical raising transaction while retaining the
+/// invocation-local source provenance projected before finalization erases
+/// locations from canonical bytes.
+llvm::Expected<frontend::FinalizedStructuredProgramProjection>
+raiseLlvmModuleToStructuredProgramWithProjection(
+    std::unique_ptr<llvm::Module> module,
+    StructuredRaisingOptions options = {});
+
 } // namespace loom::raising
 
 #endif // LOOM_FRONTEND_RAISING_STRUCTUREDRAISING_H

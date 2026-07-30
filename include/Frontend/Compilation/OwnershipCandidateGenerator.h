@@ -6,6 +6,7 @@
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Frontend/Raising/Passes.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -36,6 +37,7 @@ struct MaterializedOwnershipCandidate final {
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
   std::vector<lowering::StructuredSpatialGraphProjection> spatialGraphs;
   std::vector<StructuredBlockActivityLineage> blockActivityLineage;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
 /// The two ownership shapes of an effect-form scf.forall. GraphParallel keeps
@@ -232,9 +234,11 @@ enumerateSpatialOwnershipDecisionDomain(
 /// typed decision domain without changing ownership. Candidate publication and
 /// independent execution oracles both consume this single implementation.
 llvm::Expected<PreparedSpatialOwnershipSelection>
-prepareSpatialOwnershipSelection(const StructuredProgramCandidate &parent,
-                                 const SpatialOwnershipScope &scope,
-                                 const SpatialOwnershipDecisionPoint &decision);
+prepareSpatialOwnershipSelection(
+    const StructuredProgramCandidate &parent,
+    const SpatialOwnershipScope &scope,
+    const SpatialOwnershipDecisionPoint &decision,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
 
 /// Materializes one explicit point from one exact scope-local decision domain.
 /// This performs semantic finalization and exact-Fabric hard pruning, but no
@@ -245,7 +249,8 @@ materializeSpatialOwnershipDecision(
     const SpatialOwnershipScope &scope,
     const SpatialOwnershipDecisionPoint &decision,
     const ::loom::fabric::FinalizedFabricRoot &fabric,
-    const lowering::CanonicalDataflowLoweringOptions &lowering = {});
+    const lowering::CanonicalDataflowLoweringOptions &lowering = {},
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
 
 /// Materializes one exact dependency-closed Spatial ownership scope. A
 /// callable selection retains the callable as the LLVM ABI authority; a

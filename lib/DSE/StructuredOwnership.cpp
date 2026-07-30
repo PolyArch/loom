@@ -64,9 +64,12 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
     const sim::NativeStructuredProgramObservations &sourceObservations,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
-    const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem) {
+    const ArtifactStore &artifactStore, const OwnershipWorkItem &workItem,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance) {
   auto candidate = frontend::materializeSpatialOwnershipDecision(
-      parent, workItem.scope, workItem.decision, fabric, options.lowering);
+      parent, workItem.scope, workItem.decision, fabric, options.lowering,
+      sourceProvenance);
   if (!candidate) {
     std::optional<StructuredOwnershipCandidateRejectionRecord> rejection;
     llvm::Error unhandled = llvm::handleErrors(
@@ -109,7 +112,9 @@ generateAndPromoteStructuredOwnership(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance) {
   if (options.candidateWorkerCount == 0)
     return invalid("candidate worker count must be positive");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0)
@@ -269,7 +274,7 @@ generateAndPromoteStructuredOwnership(
     auto result = materializeOwnershipWorkItem(
         workerParent, workload, *workloadReference, runtimeInput,
         *runtimeInputReference, *sourceObservations, fabric, config, options,
-        artifactStore, workItems[index]);
+        artifactStore, workItems[index], sourceProvenance);
     if (!result) {
       results[index].error.emplace(result.takeError());
       return;
@@ -607,7 +612,7 @@ generateAndPromoteStructuredOwnership(
       if (!dataflow)
         return dataflow.takeError();
       materialized.emplace(frontend::MaterializedOwnershipCandidate{
-          std::move(*structured), std::move(*dataflow), {}, {}});
+          std::move(*structured), std::move(*dataflow), {}, {}, {}});
     } else {
       auto cached = functionalCandidates.find(reference);
       if (cached == functionalCandidates.end())
@@ -624,7 +629,8 @@ generateAndPromoteStructuredOwnership(
       materialized.emplace(frontend::MaterializedOwnershipCandidate{
           std::move(cached->second.structuredProgram), std::move(*dataflow),
           std::move(cached->second.spatialGraphs),
-          std::move(cached->second.blockActivityLineage)});
+          std::move(cached->second.blockActivityLineage),
+          std::move(cached->second.sourceProvenance)});
     }
     std::vector<StructuredOwnershipDerivation> derivations;
     for (const StructuredOwnershipCandidateDisposition &disposition :

@@ -23,7 +23,7 @@ exploreStructuredCompilationToPreMapping(
         "references differ");
   auto explored = generateAndPromoteStructuredOwnership(
       compilation.structuredProgram, workload, runtimeInput, fabric, config,
-      options.ownership, artifactStore);
+      options.ownership, artifactStore, compilation.sourceProvenance);
   if (!explored)
     return explored.takeError();
   if (const auto *incomplete = std::get_if<IncompleteSelection>(&*explored))
@@ -40,6 +40,7 @@ exploreStructuredCompilationToPreMapping(
         frontend::PreMappingCompilation{
             compilation.fabric, compilation.staticGlobalMemory,
             std::move(candidate.candidate.structuredProgram),
+            std::move(candidate.candidate.sourceProvenance),
             std::move(candidate.candidate.canonicalDataflow)},
         std::move(candidate.derivations),
         std::move(candidate.functionalReplay)});

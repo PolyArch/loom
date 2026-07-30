@@ -6,6 +6,7 @@
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -108,7 +109,9 @@ generateAndPromoteStructuredOwnership(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
-    const ArtifactStore &artifactStore);
+    const ArtifactStore &artifactStore,
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance = {});
 
 } // namespace loom::dse
 

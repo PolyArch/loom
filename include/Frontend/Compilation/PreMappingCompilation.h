@@ -24,6 +24,7 @@ struct StructuredCompilation final {
   ArtifactRootReference fabric;
   StaticGlobalMemoryCatalog staticGlobalMemory;
   StructuredProgramCandidate structuredProgram;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
 /// The exact non-Mapping result of one front-end invocation. Fabric is an
@@ -33,6 +34,7 @@ struct PreMappingCompilation final {
   ArtifactRootReference fabric;
   StaticGlobalMemoryCatalog staticGlobalMemory;
   StructuredProgramCandidate structuredProgram;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
 };
 

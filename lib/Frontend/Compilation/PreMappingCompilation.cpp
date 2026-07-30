@@ -23,7 +23,8 @@ llvm::Expected<PreMappingCompilation> lowerStructuredCompilationToPreMapping(
     return dataflow.takeError();
   return PreMappingCompilation{
       std::move(compilation.fabric), std::move(compilation.staticGlobalMemory),
-      std::move(compilation.structuredProgram), std::move(*dataflow)};
+      std::move(compilation.structuredProgram),
+      std::move(compilation.sourceProvenance), std::move(*dataflow)};
 }
 
 llvm::Expected<StructuredCompilation>
@@ -37,13 +38,13 @@ raiseLlvmModuleToStructured(std::unique_ptr<llvm::Module> module,
   auto staticGlobalMemory = projectStaticGlobalMemory(*module);
   if (!staticGlobalMemory)
     return staticGlobalMemory.takeError();
-  auto structured =
-      raising::raiseLlvmModuleToStructuredProgram(std::move(module), options);
+  auto structured = raising::raiseLlvmModuleToStructuredProgramWithProjection(
+      std::move(module), options);
   if (!structured)
     return structured.takeError();
-  return StructuredCompilation{fabric.reference(),
-                               std::move(*staticGlobalMemory),
-                               std::move(*structured)};
+  return StructuredCompilation{
+      fabric.reference(), std::move(*staticGlobalMemory),
+      std::move(structured->artifact), std::move(structured->sourceProvenance)};
 }
 
 llvm::Expected<StructuredCompilation>

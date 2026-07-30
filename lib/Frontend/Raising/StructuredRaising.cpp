@@ -159,9 +159,9 @@ void normalizeBulkMemoryIntrinsics(llvm::Module &module) {
 
 } // namespace
 
-llvm::Expected<frontend::StructuredProgramCandidate>
-raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
-                                   StructuredRaisingOptions options) {
+llvm::Expected<frontend::FinalizedStructuredProgramProjection>
+raiseLlvmModuleToStructuredProgramWithProjection(
+    std::unique_ptr<llvm::Module> module, StructuredRaisingOptions options) {
   if (!module)
     return invalid("missing LLVM module");
   if (llvm::Error error = normalizeProvenConstantCallbacks(*module))
@@ -215,7 +215,17 @@ raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
   if (failed(pipeline.run(*raised)))
     return invalid("mechanical LLVM-to-SCF raising failed");
 
-  return frontend::finalizeStructuredProgram(raised.get());
+  return frontend::finalizeStructuredProgramWithTrackedBlocks(raised.get(), {});
+}
+
+llvm::Expected<frontend::StructuredProgramCandidate>
+raiseLlvmModuleToStructuredProgram(std::unique_ptr<llvm::Module> module,
+                                   StructuredRaisingOptions options) {
+  auto finalized = raiseLlvmModuleToStructuredProgramWithProjection(
+      std::move(module), options);
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->artifact);
 }
 
 } // namespace loom::raising

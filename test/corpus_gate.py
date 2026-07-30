@@ -438,6 +438,7 @@ def compile_command(
         "-emit-llvm",
         "-S",
         "-O1",
+        "-gline-tables-only",
         str(source),
         "-o",
         str(output),
@@ -455,6 +456,7 @@ def target_object_command(
         *target_flags(toolchain),
         *suite_flags,
         "-O1",
+        "-gline-tables-only",
         "-flto=full",
         "-ffat-lto-objects",
         "-c",
@@ -897,7 +899,12 @@ def import_produced_workload(
 
 def _cmsis_nn_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
     llvm_bin = Path(toolchain.llvm_dis).parent
-    compiler_flags = [*target_flags(toolchain), "-flto=full", "-ffat-lto-objects"]
+    compiler_flags = [
+        *target_flags(toolchain),
+        "-gline-tables-only",
+        "-flto=full",
+        "-ffat-lto-objects",
+    ]
     linker_flags = [
         f"-fuse-ld={toolchain.lld}",
         "-flto=full",
@@ -1122,8 +1129,7 @@ def run_case(
             assert report is not None
             selected_sources, defect = resolve_selected_corpus_sources(
                 prepared,
-                report.selected_source_callables,
-                Path(toolchain.llvm_dis).with_name("llvm-ar"),
+                report.selected_source_files,
                 external_root,
                 ROOT,
                 allowed_sources,
