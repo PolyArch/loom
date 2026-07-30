@@ -28,6 +28,11 @@ struct StructuredOwnershipExplorationOptions final {
   std::uint32_t candidateWorkerCount = 1;
   sim::SourceBackedDfgValidationLimits functionalReplayLimits{
       100000, 1000000, 256ULL * 1024ULL * 1024ULL};
+  /// Optional invocation-local operator protocol roots. When nonempty, the
+  /// ownership domain contains only these exact defined callables and their
+  /// statically resolved direct callees. The Structured Program remains the
+  /// sole program authority.
+  std::vector<frontend::StructuredEntityRef> protocolCallableRoots{};
 };
 
 /// One exact parent-local ownership decision that produced a child candidate.

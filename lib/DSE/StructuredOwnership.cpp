@@ -159,7 +159,10 @@ generateAndPromoteStructuredOwnership(
     return std::move(error);
   candidateReferences.push_back(*parentReference);
 
-  auto domain = frontend::enumerateSpatialOwnershipScopeDomain(parent);
+  auto domain = options.protocolCallableRoots.empty()
+                    ? frontend::enumerateSpatialOwnershipScopeDomain(parent)
+                    : frontend::enumerateSpatialOwnershipScopeDomain(
+                          parent, options.protocolCallableRoots);
   if (!domain)
     return domain.takeError();
   std::vector<frontend::StructuredEntityRef> scopeReferences;

@@ -193,6 +193,49 @@ exit:
   return module;
 }
 
+std::unique_ptr<llvm::Module>
+parseProtocolRootedModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+target triple = "riscv64-unknown-unknown"
+
+define i32 @operator_helper(i32 %value) {
+entry:
+  %result = add nsw i32 %value, 1
+  ret i32 %result
+}
+
+define i32 @operator(i32 %value) {
+entry:
+  %result = call i32 @operator_helper(i32 %value)
+  ret i32 %result
+}
+
+define i32 @main() {
+entry:
+  br label %initialize
+initialize:
+  %index = phi i32 [ 0, %entry ], [ %next, %initialize ]
+  %next = add nuw nsw i32 %index, 1
+  %more = icmp ult i32 %next, 8
+  br i1 %more, label %initialize, label %invoke
+invoke:
+  %result = call i32 @operator(i32 41)
+  ret i32 %result
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<protocol-rooted>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipAccounting", stream);
+    fail(stream.str());
+  }
+  return module;
+}
+
 loom::dse::CompletedPreMappingSelection
 explore(const loom::fabric::FinalizedFabricRoot &fabric,
         const loom::ArtifactStore &store, std::uint32_t workers,
@@ -422,6 +465,50 @@ void requireUnsupportedPointerStateDoesNotHideInnerScope(
     fail("unsupported outer pointer state hid a graphable inner loop");
 }
 
+void requireProtocolRootsExcludeHarnessScopes(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  llvm::LLVMContext context;
+  auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseProtocolRootedModule(context), fabric));
+  auto view = take(structured.structuredProgram.view());
+  auto roots = take(loom::frontend::resolveDefinedLlvmCallables(
+      structured.structuredProgram, {"operator"}));
+  auto duplicate = loom::frontend::resolveDefinedLlvmCallables(
+      structured.structuredProgram, {"operator", "operator"});
+  if (duplicate)
+    fail("duplicate protocol callable symbols were accepted");
+  llvm::consumeError(duplicate.takeError());
+
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
+      structured.structuredProgram, roots));
+  bool sawProtocol = false;
+  bool sawHelper = false;
+  for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
+    const auto &scope =
+        std::holds_alternative<loom::frontend::SpatialOwnershipScope>(entry)
+            ? std::get<loom::frontend::SpatialOwnershipScope>(entry)
+            : std::get<loom::frontend::RejectedSpatialOwnershipScope>(entry)
+                  .scope;
+    auto entity = take(view.resolve(scope.selection));
+    mlir::Operation *operation = entity.operation;
+    auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(operation);
+    if (!function && operation)
+      function = operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!function)
+      fail("protocol-rooted domain contains an unowned scope");
+    if (function.getSymName() == "main")
+      fail("protocol-rooted domain admitted harness initialization");
+    if (function.getSymName() == "operator")
+      sawProtocol = true;
+    else if (function.getSymName() == "operator_helper")
+      sawHelper = true;
+    else
+      fail("protocol-rooted domain escaped the exact direct-call closure");
+  }
+  if (!sawProtocol || !sawHelper)
+    fail("protocol-rooted domain omitted the operator or its direct helper");
+}
+
 } // namespace
 
 int main() {
@@ -437,6 +524,7 @@ int main() {
   requireEmptyScopeIsCandidateRejection(design.roots().front());
   requireUnsupportedNestedLeafIsPreflightRejection(design.roots().front());
   requireUnsupportedPointerStateDoesNotHideInnerScope(design.roots().front());
+  requireProtocolRootsExcludeHarnessScopes(design.roots().front());
 
   auto serial = explore(design.roots().front(), store, 1);
   requireCompleteAccounting(serial);

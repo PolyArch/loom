@@ -73,6 +73,7 @@ from corpus_workload_provider import (  # noqa: E402
     WorkloadProviderError,
     cmake_build_command,
     cmake_configure_command,
+    materialize_cmsis_dsp_harness,
     materialize_cmsis_nn_harness,
 )
 
@@ -524,6 +525,7 @@ def pre_mapping_command(
     d0_module: Path,
     counts: Path,
     candidate_jobs: int,
+    protocol: tuple[corpus_inventory.OperatorProtocolCall, ...],
     config_path: Path | None = None,
 ) -> list[str]:
     command = [
@@ -535,6 +537,9 @@ def pre_mapping_command(
         str(llvm_ir),
         "-o",
         str(d0_module),
+    ]
+    command[-2:-2] = [
+        f"--operator-protocol-symbol={call.symbol}" for call in protocol
     ]
     if config_path is not None:
         command.insert(2, f"--config={config_path}")
@@ -550,6 +555,7 @@ def dfg_sim_command(
     candidate_jobs: int,
     limits: DfgExecutionLimits,
     simulation_timeout: float,
+    protocol: tuple[corpus_inventory.OperatorProtocolCall, ...],
     config_path: Path | None = None,
 ) -> list[str]:
     command = [
@@ -564,6 +570,9 @@ def dfg_sim_command(
         f"--max-capture-bytes={limits.max_capture_bytes}",
         f"--max-simulation-wall-seconds={simulation_timeout}",
         str(target_llvm_ir),
+    ]
+    command[-1:-1] = [
+        f"--operator-protocol-symbol={call.symbol}" for call in protocol
     ]
     if config_path is not None:
         command.insert(2, f"--config={config_path}")
@@ -889,7 +898,7 @@ def import_produced_workload(
     )
 
 
-def _cmsis_nn_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
+def _cmsis_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
     llvm_bin = Path(toolchain.llvm_dis).parent
     compiler_flags = [
         *target_flags(toolchain),
@@ -927,59 +936,86 @@ def prepare_workload_providers(
     timeout: float,
 ) -> dict[str, ProducedWorkload | StepFailure]:
     results: dict[str, ProducedWorkload | StepFailure] = {}
-    cmsis_nn = [case for case in cases if case.producer.kind == "cmsis-nn-unit-test"]
+    cmsis_nn = [
+        case
+        for case in cases
+        if isinstance(case.producer, corpus_inventory.CmsisNnWorkloadProducer)
+        and case.target_profile == TARGET_PROFILE
+    ]
+    cmsis_dsp = [
+        case
+        for case in cases
+        if isinstance(case.producer, corpus_inventory.CmsisDspWorkloadProducer)
+        and case.target_profile == TARGET_PROFILE
+    ]
+    implemented = {case.identity for case in (*cmsis_nn, *cmsis_dsp)}
     for case in cases:
-        if case.producer.kind not in {"direct-source", "cmsis-nn-unit-test"}:
+        if (
+            case.producer.kind != "direct-source"
+            and case.target_profile == TARGET_PROFILE
+            and case.identity not in implemented
+        ):
             results[case.identity] = StepFailure(
                 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
                 "no linked-workload builder is available for producer kind "
                 f"{case.producer.kind}",
             )
-    if not cmsis_nn:
-        return results
 
-    provider_root = out_root / "_providers" / "cmsis-nn"
+    for provider_name, provider_cases in (
+        ("cmsis-nn", cmsis_nn),
+        ("cmsis-dsp", cmsis_dsp),
+    ):
+        if not provider_cases:
+            continue
+        provider_root = out_root / "_providers" / provider_name
 
-    def fail_all(failure: StepFailure) -> dict[str, ProducedWorkload | StepFailure]:
-        results.update({case.identity: failure for case in cmsis_nn})
-        return results
+        def fail_provider(failure: StepFailure) -> None:
+            results.update({case.identity: failure for case in provider_cases})
 
-    try:
-        if provider_root.exists():
-            shutil.rmtree(provider_root)
-        provider_root.mkdir(parents=True)
-        harness = materialize_cmsis_nn_harness(
-            cmsis_nn, external_root, provider_root / "harness"
+        try:
+            if provider_root.exists():
+                shutil.rmtree(provider_root)
+            provider_root.mkdir(parents=True)
+            if provider_name == "cmsis-nn":
+                harness = materialize_cmsis_nn_harness(
+                    provider_cases, external_root, provider_root / "harness"
+                )
+            else:
+                harness = materialize_cmsis_dsp_harness(
+                    provider_cases, external_root, provider_root / "harness"
+                )
+        except (OSError, WorkloadProviderError) as exc:
+            fail_provider(StepFailure(CATEGORY_FINAL_LINK, str(exc)))
+            continue
+
+        target_build = provider_root / "target"
+        failure = run_step(
+            cmake_configure_command(
+                harness,
+                external_root / provider_name,
+                target_build,
+                _cmsis_cmake_toolchain(toolchain),
+            ),
+            provider_root / "target-configure.log",
+            time.monotonic() + timeout,
+            CATEGORY_FINAL_LINK,
         )
-    except (OSError, WorkloadProviderError) as exc:
-        return fail_all(StepFailure(CATEGORY_FINAL_LINK, str(exc)))
+        if failure is not None:
+            fail_provider(failure)
+            continue
+        failure = run_step(
+            cmake_build_command(target_build, harness.targets, jobs),
+            provider_root / "target-build.log",
+            time.monotonic() + timeout,
+            CATEGORY_FINAL_LINK,
+        )
+        if failure is not None:
+            fail_provider(failure)
+            continue
 
-    target_build = provider_root / "target"
-    failure = run_step(
-        cmake_configure_command(
-            harness,
-            external_root / "cmsis-nn",
-            target_build,
-            _cmsis_nn_cmake_toolchain(toolchain),
-        ),
-        provider_root / "target-configure.log",
-        time.monotonic() + timeout,
-        CATEGORY_FINAL_LINK,
-    )
-    if failure is not None:
-        return fail_all(failure)
-    failure = run_step(
-        cmake_build_command(target_build, harness.targets, jobs),
-        provider_root / "target-build.log",
-        time.monotonic() + timeout,
-        CATEGORY_FINAL_LINK,
-    )
-    if failure is not None:
-        return fail_all(failure)
-
-    for case in cmsis_nn:
-        target_executable = harness.executable(target_build, case.executable)
-        results[case.identity] = ProducedWorkload(target_build, target_executable)
+        for case in provider_cases:
+            target_executable = harness.executable(target_build, case.executable)
+            results[case.identity] = ProducedWorkload(target_build, target_executable)
     return results
 
 
@@ -1100,6 +1136,7 @@ def run_case(
                     candidate_jobs,
                     dfg_limits,
                     dfg_simulation_timeout,
+                    case.protocol,
                     config_path,
                 ),
                 case_dir / "dfg-sim.log",
@@ -1141,6 +1178,7 @@ def run_case(
                     d0_module,
                     counts_path,
                     candidate_jobs,
+                    case.protocol,
                     config_path,
                 ),
                 case_dir / "pre-mapping.log",

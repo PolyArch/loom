@@ -102,6 +102,29 @@ class CmsisNnWorkloadProducer:
 
 
 @dataclass(frozen=True)
+class CmsisDspWorkloadProducer:
+    definition: str
+    variant: str
+    test_class: str
+    test_method: str
+    vector_ordinal: int
+
+    @property
+    def kind(self) -> str:
+        return "cmsis-dsp-operator-harness"
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "definition": self.definition,
+            "kind": self.kind,
+            "test_class": self.test_class,
+            "test_method": self.test_method,
+            "variant": self.variant,
+            "vector_ordinal": self.vector_ordinal,
+        }
+
+
+@dataclass(frozen=True)
 class OperatorProtocolCall:
     symbol: str
     signature: str
@@ -119,7 +142,7 @@ class ProgramWorkload:
     entry_symbol: str
     target_profile: str
     oracle: WorkloadOracle
-    producer: WorkloadProducer | CmsisNnWorkloadProducer
+    producer: WorkloadProducer | CmsisNnWorkloadProducer | CmsisDspWorkloadProducer
     operator_id: str
     vector_identity: str
     protocol: tuple[OperatorProtocolCall, ...]
@@ -521,7 +544,25 @@ def _parse_operator_gate_workload(
     selector = _require_mapping(raw_vector["selector"], "vector selector")
     selector_kind = _require_string(selector.get("kind"), "vector selector kind")
 
-    if producer_kind == "cmsis-nn-operator-harness" and selector_kind == "upstream":
+    if producer_kind == "cmsis-dsp-operator-harness" and selector_kind == "official":
+        if set(selector) != {"class", "kind", "method", "ordinal"}:
+            raise InventoryError("CMSIS-DSP official selector has invalid fields")
+        ordinal = selector["ordinal"]
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
+            raise InventoryError("CMSIS-DSP vector ordinal is invalid")
+        producer: (
+            WorkloadProducer | CmsisNnWorkloadProducer | CmsisDspWorkloadProducer
+        ) = CmsisDspWorkloadProducer(
+            definition=definitions[0],
+            variant=producer_variant,
+            test_class=_require_string(selector["class"], "CMSIS-DSP test class"),
+            test_method=_require_string(
+                selector["method"], "CMSIS-DSP test method"
+            ),
+            vector_ordinal=ordinal,
+        )
+        executable = operator_workload_target(operator_id)
+    elif producer_kind == "cmsis-nn-operator-harness" and selector_kind == "upstream":
         case = _require_string(selector.get("case"), "CMSIS-NN case")
         test_function = _require_string(selector.get("test"), "CMSIS-NN test")
         definition = Path(definitions[0])
@@ -536,19 +577,23 @@ def _parse_operator_gate_workload(
         target = load_cmsis_nn_case_target(
             external_root.joinpath(*definition.parts[1:])
         )
-        producer: WorkloadProducer | CmsisNnWorkloadProducer = CmsisNnWorkloadProducer(
+        producer = CmsisNnWorkloadProducer(
             definition=definitions[0],
             target=target,
             test_function=test_function,
         )
-        executable = cmsis_nn_workload_target(target, test_function)
+        executable = operator_workload_target(operator_id)
     else:
         producer = WorkloadProducer(
             kind=producer_kind,
             definition=definitions[0],
             target=producer_variant,
         )
-        executable = producer_variant if producer_kind == "direct-source" else parts[2]
+        executable = (
+            producer_variant
+            if producer_kind == "direct-source"
+            else operator_workload_target(operator_id)
+        )
 
     return ProgramWorkload(
         suite=suite,
@@ -607,12 +652,11 @@ def load_cmsis_nn_unity_test_functions(case_dir: Path) -> tuple[str, ...]:
     return tests
 
 
-def cmsis_nn_workload_target(target: str, test_function: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_]+", target):
-        raise InventoryError(f"invalid CMSIS-NN target: {target}")
-    if not re.fullmatch(r"test_[A-Za-z0-9_]+", test_function):
-        raise InventoryError(f"invalid CMSIS-NN test function: {test_function}")
-    return f"{target}__{test_function}"
+def operator_workload_target(operator_id: str) -> str:
+    digest = operator_id.rsplit(":", 1)[-1]
+    if not re.fullmatch(r"[0-9a-f]{16}", digest):
+        raise InventoryError(f"invalid operator identity: {operator_id}")
+    return f"workload_{digest}"
 
 
 def require_unique_identities(

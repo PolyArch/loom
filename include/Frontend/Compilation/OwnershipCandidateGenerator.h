@@ -7,6 +7,7 @@
 #include "Frontend/Raising/Passes.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -171,6 +172,10 @@ private:
 
   friend llvm::Expected<SpatialOwnershipScopeDomain>
   enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &);
+  friend llvm::Expected<SpatialOwnershipScopeDomain>
+  enumerateSpatialOwnershipScopeDomain(
+      const StructuredProgramCandidate &,
+      llvm::ArrayRef<StructuredEntityRef> callableRoots);
 };
 
 /// A private clone in which one exact ownership scope has had all selected
@@ -216,6 +221,25 @@ struct PreparedSpatialOwnershipSelection final {
 /// one cross-scope Cartesian product.
 llvm::Expected<SpatialOwnershipScopeDomain>
 enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent);
+
+/// Resolves ordered ABI symbol spellings to exact defined LLVM callable
+/// references in `parent`. Duplicate spellings, absent symbols, declarations,
+/// and non-unique definitions reject at the invocation boundary; downstream
+/// ownership and Evaluation consume only the returned typed references.
+llvm::Expected<std::vector<StructuredEntityRef>>
+resolveDefinedLlvmCallables(const StructuredProgramCandidate &parent,
+                            llvm::ArrayRef<llvm::StringRef> symbols);
+
+/// Enumerates the same finite domain, restricted to the exact defined LLVM
+/// callables rooted at `callableRoots` and their statically resolved direct
+/// callees. The roots are invocation-local typed references into `parent`;
+/// symbol spellings and test harness structure do not enter the domain model.
+/// Indirect or unresolved calls do not expand the closure and remain subject
+/// to ordinary candidate materialization rejection.
+llvm::Expected<SpatialOwnershipScopeDomain>
+enumerateSpatialOwnershipScopeDomain(
+    const StructuredProgramCandidate &parent,
+    llvm::ArrayRef<StructuredEntityRef> callableRoots);
 
 /// Derives the finite typed decision domain for one exact ownership scope.
 /// Canonical address widths come from the closed Fabric index-width schema;

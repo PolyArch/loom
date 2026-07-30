@@ -104,7 +104,7 @@ class DualInventoryContractTest(unittest.TestCase):
         self.assertEqual(batch_matmul.producer.target, "batch_matmul_s16")
         self.assertEqual(
             batch_matmul.executable,
-            "batch_matmul_s16__test_batch_matmul_1_s16",
+            "workload_baf58c6a708ee1e0",
         )
 
 

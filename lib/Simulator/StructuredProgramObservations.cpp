@@ -208,7 +208,11 @@ instrumentBlockActivations(mlir::ModuleOp module,
   for (auto [ordinal, site] : llvm::enumerate(sites)) {
     capture.profileBlocks.push_back(site.reference);
     mlir::OpBuilder builder(module.getContext());
-    builder.setInsertionPointToStart(site.block);
+    if (!site.block->empty() &&
+        llvm::isa<mlir::LLVM::LandingpadOp>(site.block->front()))
+      builder.setInsertionPointAfter(&site.block->front());
+    else
+      builder.setInsertionPointToStart(site.block);
     const mlir::Location location =
         site.block->empty() ? module.getLoc() : site.block->front().getLoc();
     mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(

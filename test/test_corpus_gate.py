@@ -42,10 +42,12 @@ VECADD_WORKLOAD_ID = next(
     for row in _OPERATOR_WORKLOADS
     if row.suite == "loombench" and row.case == "vecadd"
 )
-DSP_UNIMPLEMENTED_WORKLOAD_ID = next(
+DSP_ABS_F32_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
-    if row.suite == "cmsis-dsp" and row.target_profile == "riscv64-portable-scalar"
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-abs-f32"
+    and row.target_profile == "riscv64-portable-scalar"
 )
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
     row.operator_id
@@ -53,6 +55,14 @@ AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
     if isinstance(row.producer, corpus_inventory.CmsisNnWorkloadProducer)
     and row.producer.target == "test_arm_avgpool_s8"
 )[:2]
+DUPLICATE_HARNESS_WORKLOAD_IDS = tuple(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if isinstance(row.producer, corpus_inventory.CmsisNnWorkloadProducer)
+    and row.producer.target == "test_arm_fully_connected_s8"
+    and row.producer.test_function
+    == "test_fc_per_fc_per_ch_arm_fully_connected_s8"
+)
 
 
 VALID_LL = (
@@ -374,6 +384,82 @@ class InventoryAggregationTest(CorpusGateTestBase):
             calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
             self.assertEqual(calls, [workload.producer.test_function])
 
+    def test_cmsis_nn_harness_isolates_profiles_of_the_same_test(self) -> None:
+        workloads = tuple(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity in DUPLICATE_HARNESS_WORKLOAD_IDS
+        )
+        self.assertEqual(len(workloads), 2)
+
+        harness = corpus_gate.materialize_cmsis_nn_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-nn-profile-harness",
+        )
+
+        self.assertEqual(len(harness.targets), 2)
+        self.assertEqual(len(set(harness.targets)), 2)
+        for workload, target in zip(workloads, harness.targets, strict=True):
+            self.assertTrue(target.endswith(workload.identity.rsplit(":", 1)[-1]))
+
+    def test_cmsis_dsp_harness_projects_one_owned_operator_test(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_ABS_F32_WORKLOAD_ID
+        )
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-harness",
+        )
+
+        self.assertEqual(harness.targets, (workload.executable,))
+        descriptor = (
+            harness.generated_directory(workload.executable)
+            / "GeneratedSource"
+            / "TestDesc.cpp"
+        ).read_text()
+        self.assertIn("BasicTestsF32::test_abs_f32", descriptor)
+        self.assertNotIn("BasicTestsF32::test_add_f32", descriptor)
+        self.assertTrue((harness.source_dir / "CMakeLists.txt").is_file())
+        operator_main = (harness.source_dir / "OperatorMain.cpp").read_text()
+        self.assertIn("return testmain(patternData);", operator_main)
+        self.assertNotIn("exit(", operator_main)
+        patterns = (
+            harness.generated_directory(workload.executable)
+            / "GeneratedInclude"
+            / "Patterns.h"
+        )
+        self.assertFalse(patterns.exists())
+        shared_patterns = (
+            harness.shared_directory(workload.executable)
+            / "GeneratedInclude"
+            / "Patterns.h"
+        )
+        self.assertLess(shared_patterns.stat().st_size, 1_000_000)
+        configure = corpus_gate.cmake_configure_command(
+            harness,
+            corpus_inventory.resolve_externals_root(ROOT) / "cmsis-dsp",
+            self.work / "cmsis-dsp-build",
+            corpus_gate.CmakeToolchain(
+                c_compiler="cc",
+                cxx_compiler="c++",
+                archiver=Path("ar"),
+                ranlib=Path("ranlib"),
+                compiler_flags=(),
+                linker_flags=(),
+            ),
+        )
+        self.assertTrue(
+            any(flag.startswith("-DLOOM_CMSIS_DSP_SOURCE=") for flag in configure)
+        )
+        self.assertFalse(
+            any(flag.startswith("-DLOOM_CMSIS_NN_SOURCE=") for flag in configure)
+        )
+
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
             "--case",
@@ -397,21 +483,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 for line in self.invocation_lines()
             )
         )
-
-    def test_unimplemented_workload_producer_fails_closed(self) -> None:
-        exit_code, _, summary = self.run_gate(
-            "--case",
-            DSP_UNIMPLEMENTED_WORKLOAD_ID,
-            "--stage",
-            "d0",
-            "--jobs",
-            "1",
-        )
-        self.assertEqual(exit_code, 1)
-        result = summary["cases"][0]
-        self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["category"], "workload-provider-unavailable")
-        self.assertIn("cmsis-dsp-operator-harness", result["detail"])
 
     def test_produced_workload_import_uses_build_relative_link_records(self) -> None:
         toolchain = self.toolchain()
@@ -691,6 +762,11 @@ class CommandConstructionTest(CorpusGateTestBase):
 
     def test_dfg_sim_command_binds_target_and_outputs(self) -> None:
         config = self.out_dir / "resolved-config.yaml"
+        protocol = (
+            corpus_inventory.OperatorProtocolCall(
+                symbol="arm_abs_f32", signature="void(ptr,ptr,i32)"
+            ),
+        )
         command = corpus_gate.dfg_sim_command(
             self.toolchain(),
             self.out_dir / "target.ll",
@@ -700,6 +776,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             3,
             corpus_gate.DfgExecutionLimits(400, 500, 600),
             15.0,
+            protocol,
             config,
         )
         self.assertEqual(
@@ -716,6 +793,7 @@ class CommandConstructionTest(CorpusGateTestBase):
                 "--max-event-count=500",
                 "--max-capture-bytes=600",
                 "--max-simulation-wall-seconds=15.0",
+                "--operator-protocol-symbol=arm_abs_f32",
                 str(self.out_dir / "target.ll"),
             ],
         )

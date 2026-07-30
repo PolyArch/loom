@@ -4,6 +4,7 @@
 #include "Common/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Raising/StructuredRaising.h"
@@ -11,6 +12,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/FileUtilities.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -70,6 +72,12 @@ llvm::cl::opt<unsigned>
     candidateJobs("candidate-jobs",
                   llvm::cl::desc("parallel ownership-candidate workers"),
                   llvm::cl::value_desc("count"), llvm::cl::init(1));
+
+llvm::cl::list<std::string> operatorProtocolSymbols(
+    "operator-protocol-symbol",
+    llvm::cl::desc("defined LLVM callable that roots the invocation-local "
+                   "operator protocol ownership domain"),
+    llvm::cl::value_desc("symbol"), llvm::cl::ZeroOrMore);
 
 llvm::cl::opt<std::uint64_t>
     maxEventSteps("max-event-steps",
@@ -166,6 +174,17 @@ llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
   return NullaryProgramInputs{std::move(*workload), std::move(*runtimeInput)};
 }
 
+llvm::Expected<std::vector<loom::frontend::StructuredEntityRef>>
+resolveOperatorProtocolRoots(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  llvm::SmallVector<llvm::StringRef> symbols;
+  symbols.reserve(operatorProtocolSymbols.size());
+  for (const std::string &symbol : operatorProtocolSymbols) {
+    symbols.push_back(symbol);
+  }
+  return loom::frontend::resolveDefinedLlvmCallables(candidate, symbols);
+}
+
 llvm::Expected<loom::dse::SelectedPreMappingCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
@@ -179,11 +198,15 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
   if (!inputs)
     return inputs.takeError();
+  auto protocolRoots = resolveOperatorProtocolRoots(source->structuredProgram);
+  if (!protocolRoots)
+    return protocolRoots.takeError();
   loom::dse::PreMappingExplorationOptions exploration{
       {compilation.lowering,
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1},
        candidateJobs}};
+  exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
   exploration.ownership.functionalReplayLimits.maxWavefrontSteps =
       maxEventSteps;
   exploration.ownership.functionalReplayLimits.maxEventCount = maxEventCount;

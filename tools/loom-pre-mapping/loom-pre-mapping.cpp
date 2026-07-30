@@ -37,6 +37,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -109,6 +110,12 @@ namespace {
                      "time only"),
     ::llvm::cl::value_desc("count"), ::llvm::cl::init(1));
 
+::llvm::cl::list<std::string> operatorProtocolSymbols(
+    "operator-protocol-symbol",
+    ::llvm::cl::desc("defined LLVM callable that roots the invocation-local "
+                     "operator protocol ownership domain"),
+    ::llvm::cl::value_desc("symbol"), ::llvm::cl::ZeroOrMore);
+
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
     ::llvm::cl::desc("explicit canonical index width materialized for a "
@@ -136,26 +143,22 @@ int reportError(::llvm::Error error) {
 ::llvm::Expected<loom::frontend::StructuredEntityRef>
 resolveCallable(const loom::frontend::StructuredProgramCandidate &candidate,
                 ::llvm::StringRef symbol) {
-  auto view = candidate.view();
-  if (!view)
-    return view.takeError();
-  std::optional<loom::frontend::StructuredEntityRef> resolved;
-  for (const loom::frontend::StructuredEntity &entity :
-       view->entities(loom::frontend::StructuredEntityKind::Operation)) {
-    auto function =
-        ::llvm::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(entity.operation);
-    if (!function || function.getSymName() != symbol)
-      continue;
-    if (resolved)
-      return ::llvm::createStringError(
-          ::llvm::inconvertibleErrorCode(),
-          "callable symbol is not unique in the Structured Program");
-    resolved = entity.reference;
-  }
+  auto resolved =
+      loom::frontend::resolveDefinedLlvmCallables(candidate, {symbol});
   if (!resolved)
-    return ::llvm::createStringError(::llvm::inconvertibleErrorCode(),
-                                     "callable symbol does not resolve");
-  return *resolved;
+    return resolved.takeError();
+  return resolved->front();
+}
+
+::llvm::Expected<std::vector<loom::frontend::StructuredEntityRef>>
+resolveOperatorProtocolRoots(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  ::llvm::SmallVector<::llvm::StringRef> symbols;
+  symbols.reserve(operatorProtocolSymbols.size());
+  for (const std::string &symbol : operatorProtocolSymbols) {
+    symbols.push_back(symbol);
+  }
+  return loom::frontend::resolveDefinedLlvmCallables(candidate, symbols);
 }
 
 struct NullaryProgramInputs final {
@@ -295,10 +298,9 @@ int main(int argc, char **argv) {
   if (!preset)
     return reportError(preset.takeError());
   ::llvm::Expected<loom::ResolvedConfig> config =
-      configPath.empty()
-          ? ::llvm::Expected<loom::ResolvedConfig>(
-                loom::defaultResolvedConfig())
-          : loom::loadResolvedConfig(configPath);
+      configPath.empty() ? ::llvm::Expected<loom::ResolvedConfig>(
+                               loom::defaultResolvedConfig())
+                         : loom::loadResolvedConfig(configPath);
   if (!config)
     return reportError(config.takeError());
 
@@ -360,11 +362,16 @@ int main(int argc, char **argv) {
     auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
     if (!inputs)
       return reportError(inputs.takeError());
+    auto protocolRoots =
+        resolveOperatorProtocolRoots(source->structuredProgram);
+    if (!protocolRoots)
+      return reportError(protocolRoots.takeError());
     loom::dse::PreMappingExplorationOptions exploration{
         {compilationOptions.lowering,
          {loom::evaluation::MetricRequestOrdinal(0),
           loom::dse::ObjectiveDirection::Minimize, 1},
          candidateJobs}};
+    exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
         std::move(*source), inputs->workload, inputs->runtimeInput,
         design->roots().front(), *config, exploration, store);

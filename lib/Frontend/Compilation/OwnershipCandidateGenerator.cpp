@@ -27,6 +27,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1152,19 +1153,78 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
       std::move(structured->sourceProvenance)};
 }
 
-} // namespace
-
-llvm::Expected<SpatialOwnershipScopeDomain>
-enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
+llvm::Expected<llvm::DenseSet<mlir::Operation *>>
+deriveDirectCallableClosure(const StructuredProgramCandidate &parent,
+                            llvm::ArrayRef<StructuredEntityRef> callableRoots) {
+  if (callableRoots.empty())
+    return invalid("protocol-rooted ownership requires a nonempty root set");
   auto view = parent.view();
   if (!view)
     return view.takeError();
 
-  SpatialOwnershipScopeDomain domain;
+  llvm::DenseSet<mlir::Operation *> closure;
+  llvm::SmallVector<mlir::LLVM::LLVMFuncOp> pending;
+  for (const StructuredEntityRef &reference : callableRoots) {
+    auto entity = view->resolve(reference);
+    if (!entity)
+      return entity.takeError();
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity->operation);
+    if (!function || function.isExternal())
+      return invalid(
+          "protocol root is not a defined LLVM callable in the parent");
+    if (closure.insert(function.getOperation()).second)
+      pending.push_back(function);
+  }
+
+  for (std::size_t index = 0; index < pending.size(); ++index) {
+    pending[index].walk([&](mlir::Operation *operation) {
+      mlir::FlatSymbolRefAttr callee;
+      if (auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(operation))
+        callee = call.getCalleeAttr();
+      else if (auto invoke = llvm::dyn_cast<mlir::LLVM::InvokeOp>(operation))
+        callee = invoke.getCalleeAttr();
+      if (!callee)
+        return;
+      auto resolved =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+              operation, callee);
+      if (!resolved || resolved.isExternal())
+        return;
+      if (closure.insert(resolved.getOperation()).second)
+        pending.push_back(resolved);
+    });
+  }
+  return closure;
+}
+
+struct SpatialOwnershipScopeDomainStorage final {
+  std::vector<SpatialOwnershipScopeDomainEntry> entries;
+  std::vector<std::optional<std::uint64_t>> parentScopeOrdinals;
+};
+
+llvm::Expected<SpatialOwnershipScopeDomainStorage>
+enumerateSpatialOwnershipScopeDomainImpl(
+    const StructuredProgramCandidate &parent,
+    const llvm::DenseSet<mlir::Operation *> *callableClosure) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+
+  SpatialOwnershipScopeDomainStorage domain;
   std::vector<mlir::Operation *> scopeOperations;
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     if (!entity.operation)
+      continue;
+    auto enclosingCallable =
+        llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (!enclosingCallable)
+      enclosingCallable =
+          entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (callableClosure &&
+        (!enclosingCallable ||
+         !callableClosure->contains(enclosingCallable.getOperation())))
       continue;
     if (auto callable =
             llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(entity.operation)) {
@@ -1173,15 +1233,15 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
       SpatialOwnershipScope scope{entity.reference};
       if (std::optional<std::string> rejection =
               callableOwnershipRejection(callable)) {
-        domain.entries_.push_back(
+        domain.entries.push_back(
             RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
       } else if (std::optional<std::string> rejection =
                      detail::explainAddressStateNormalizationRejection(
                          entity.operation)) {
-        domain.entries_.push_back(
+        domain.entries.push_back(
             RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
       } else {
-        domain.entries_.push_back(scope);
+        domain.entries.push_back(scope);
       }
       scopeOperations.push_back(entity.operation);
       continue;
@@ -1192,15 +1252,15 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
     SpatialOwnershipScope scope{entity.reference};
     if (std::optional<std::string> rejection =
             lowering::explainGraphRegionStructuralRejection(entity.operation)) {
-      domain.entries_.push_back(
+      domain.entries.push_back(
           RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
     } else if (std::optional<std::string> rejection =
                    detail::explainAddressStateNormalizationRejection(
                        entity.operation)) {
-      domain.entries_.push_back(
+      domain.entries.push_back(
           RejectedSpatialOwnershipScope{scope, std::move(*rejection)});
     } else {
-      domain.entries_.push_back(scope);
+      domain.entries.push_back(scope);
     }
     scopeOperations.push_back(entity.operation);
   }
@@ -1208,19 +1268,81 @@ enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
   llvm::DenseMap<mlir::Operation *, std::uint64_t> ordinalByOperation;
   for (auto [ordinal, operation] : llvm::enumerate(scopeOperations))
     ordinalByOperation.try_emplace(operation, ordinal);
-  domain.parentScopeOrdinals_.reserve(scopeOperations.size());
+  domain.parentScopeOrdinals.reserve(scopeOperations.size());
   for (mlir::Operation *operation : scopeOperations) {
-    std::optional<std::uint64_t> parent;
+    std::optional<std::uint64_t> parentScope;
     for (mlir::Operation *ancestor = operation->getParentOp(); ancestor;
          ancestor = ancestor->getParentOp()) {
       auto found = ordinalByOperation.find(ancestor);
       if (found == ordinalByOperation.end())
         continue;
-      parent = found->second;
+      parentScope = found->second;
       break;
     }
-    domain.parentScopeOrdinals_.push_back(parent);
+    domain.parentScopeOrdinals.push_back(parentScope);
   }
+  return domain;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<StructuredEntityRef>>
+resolveDefinedLlvmCallables(const StructuredProgramCandidate &parent,
+                            llvm::ArrayRef<llvm::StringRef> symbols) {
+  auto view = parent.view();
+  if (!view)
+    return view.takeError();
+
+  llvm::StringSet<> seen;
+  std::vector<StructuredEntityRef> resolved;
+  resolved.reserve(symbols.size());
+  for (llvm::StringRef symbol : symbols) {
+    if (!seen.insert(symbol).second)
+      return invalid("callable symbol list contains a duplicate");
+    std::optional<StructuredEntityRef> reference;
+    for (const StructuredEntity &entity :
+         view->entities(StructuredEntityKind::Operation)) {
+      auto function =
+          llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+      if (!function || function.getSymName() != symbol)
+        continue;
+      if (reference)
+        return invalid("callable symbol is not unique in the parent");
+      if (function.isExternal())
+        return invalid("callable symbol resolves only to a declaration");
+      reference = entity.reference;
+    }
+    if (!reference)
+      return invalid("callable symbol does not resolve in the parent");
+    resolved.push_back(*reference);
+  }
+  return resolved;
+}
+
+llvm::Expected<SpatialOwnershipScopeDomain>
+enumerateSpatialOwnershipScopeDomain(const StructuredProgramCandidate &parent) {
+  auto storage = enumerateSpatialOwnershipScopeDomainImpl(parent, nullptr);
+  if (!storage)
+    return storage.takeError();
+  SpatialOwnershipScopeDomain domain;
+  domain.entries_ = std::move(storage->entries);
+  domain.parentScopeOrdinals_ = std::move(storage->parentScopeOrdinals);
+  return domain;
+}
+
+llvm::Expected<SpatialOwnershipScopeDomain>
+enumerateSpatialOwnershipScopeDomain(
+    const StructuredProgramCandidate &parent,
+    llvm::ArrayRef<StructuredEntityRef> callableRoots) {
+  auto closure = deriveDirectCallableClosure(parent, callableRoots);
+  if (!closure)
+    return closure.takeError();
+  auto storage = enumerateSpatialOwnershipScopeDomainImpl(parent, &*closure);
+  if (!storage)
+    return storage.takeError();
+  SpatialOwnershipScopeDomain domain;
+  domain.entries_ = std::move(storage->entries);
+  domain.parentScopeOrdinals_ = std::move(storage->parentScopeOrdinals);
   return domain;
 }
 
