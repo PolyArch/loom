@@ -323,6 +323,17 @@ an A-by-B rule matrix, then emits ordinary Dataflow control and memory-event
 edges. This keeps source order semantics while allowing the canonical graph to
 be text-order independent.
 
+LLVM pointers remain valid in the callable ABI and InstructionCore program,
+while a SpatialCore graph needs typed addressable capabilities. Adapting that
+boundary at `dataflow.graph.launch` preserves both owners: the LLVM callable
+keeps its pointer ABI and the graph receives an exact memref view. Encoding the
+adaptation as `builtin.unrealized_conversion_cast` inside the graph would turn
+an incomplete dialect-conversion marker into executable, mappable semantics.
+Introducing a new capability type would instead duplicate memref layout and
+memory-access authority. A launch-derived root-preserving view is the smallest
+complete relation and is mechanically recoverable from the actual, formal,
+and launch ordinal.
+
 ## Why Dataflow Has Its Own Optimization Lineage
 
 The earlier assumption that every optimization could happen in SCF was too

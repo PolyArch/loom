@@ -76,17 +76,22 @@ or graph completion from a hidden effect scan.
 
 Partition identity is local to one `dataflow.graph` lowering run.
 
-A canonical root is found by peeling an accepted side-effect-free view or
-one-input conversion bridge until reaching an explicit storage or boundary
-root. The finalized surface recognizes:
+A canonical root is found by peeling an accepted side-effect-free memref view
+until reaching an explicit storage or boundary root. The finalized surface
+recognizes:
 
 * a graph memory input, whose root identity comes from its launch binding;
 * a fresh `memref.alloc` result, whose root is unique for each invocation;
 * a verified side-effect-free view that preserves the source root. The initial
   accepted set contains `memref.cast`; adding another view form requires one
-  matching root, region, and simulator contract before admission;
-* a one-input `builtin.unrealized_conversion_cast` only as a bridge from an
-  established root, never as a root of its own.
+  matching root, region, and simulator contract before admission.
+
+An enclosing address-space-zero LLVM pointer may bind a canonical linear graph
+memref only through the launch-owned relation in
+`docs/spec-compiler-part-3-dfg.md`. That relation derives a typed structural
+view and does not materialize a graph-body operation.
+`builtin.unrealized_conversion_cast` is never a canonical root, view, actor,
+or boundary bridge.
 
 The Canonical Dataflow finalizer assigns one `LogicalMemoryRootRef` to each
 static imported-memory formal role and canonical fresh-allocation definition.
@@ -116,8 +121,10 @@ to one runtime object through explicit alias topology without merging their
 static IDs. Partition identity below remains local analysis state and is not
 the persistent root catalog.
 
-A memory input binds an established external capability. A null raw pointer is
-not a memory capability and cannot satisfy a graph memory port.
+A memory input binds an established external capability. When its launch
+actual is an LLVM pointer, runtime admission must resolve a non-null pointer to
+one finite object and byte offset. Raw pointer bits and null do not enter the
+graph and cannot satisfy a graph memory port.
 
 Distinct graph memory inputs are conservatively may-alias unless explicit
 no-alias evidence distinguishes them. Distinct fresh allocations are
@@ -436,8 +443,7 @@ per-partition read frontiers; stream, exported-memory, and other async
 producers must contribute their explicit completion witnesses through the same
 segment. It never reconstructs them from operation order or effect metadata.
 Memory exports preserve an imported root or view, or expose a fresh allocation
-root. A fresh export retains a memref result payload; a raw pointer result may
-only re-export an imported root or its verified view. Exports do not copy
+root. Every export retains a memref result payload. Exports do not copy
 contents and do not add a memory token; completion only carries the promised
 visibility and retirement obligation.
 
@@ -460,7 +466,7 @@ store forms are then normalized before recursive region lowering, after which
 the same frontier rules apply. Every residual raw LLVM memory operation fails
 closed. The finalized-graph gate also rejects residual
 `memref.load`/`memref.store`, `memref.get_global`, raw pointer arithmetic,
-pointer-bearing operations other than verified boundary bridges, and unknown
+pointer-bearing operations, `builtin.unrealized_conversion_cast`, and unknown
 memory-capability producers. An unsupported effectful operation inside a
 structured region must likewise fail closed instead of being hoisted.
 

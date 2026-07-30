@@ -38,6 +38,12 @@ than raw host pointers. Treating descriptor fields, call operands, and globals
 as separate pointer authorities would duplicate aliasing facts and make two
 equivalent access paths simulate differently.
 
+The graph launch, rather than a graph-body cast, establishes the typed view of
+that object. DFG-sim can therefore seed one byte object and interpret each
+formal through the exact Dataflow-owned memref relation. Giving a conversion
+marker its own simulator behavior would create semantics that neither the
+source program nor Fabric owns.
+
 Source, selected Structured execution, and DFG replay are intentionally three
 separate observations. Source-versus-selected comparison validates the
 transformation; selected-versus-DFG comparison validates lowering and actor

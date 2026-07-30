@@ -62,6 +62,15 @@ Mapping Artifact nor creates a simulator-local persistent actor catalog.
 Missing, stale, foreign-artifact, or wrong-kind launch, graph, or actor
 references fail admission before execution state exists.
 
+Each graph memory argument is instantiated from its exact memref formal and
+the Dataflow-owned launch memory binding. An imported linear view reuses the
+runtime object and byte offset bound to its `LogicalMemoryRootRef`; exact
+memref bindings reuse their existing root or view. DFG-sim has no
+pointer-to-memref cast event, simulator-private alias bridge, or conversion
+semantics. Residual `builtin.unrealized_conversion_cast` and raw pointer graph
+values are invalid Canonical Dataflow input, not unsupported simulator
+operations.
+
 An admitted actor without implemented semantics is `unsupported`. It must not
 be approximated, skipped, or interpreted through a compatibility path.
 

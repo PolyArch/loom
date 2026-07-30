@@ -292,6 +292,14 @@ root/view relations alone interpret typed accesses. This avoids choosing one
 aliased memref role as a privileged storage type or importing physical memory
 layout into the software input.
 
+For a launch-derived imported linear view, the runtime input still binds only
+the owning `LogicalMemoryRootRef` to an object and byte offset. The simulator
+resolves the Dataflow-owned launch relation and instantiates the graph formal's
+typed view over that same byte object. It does not serialize a native pointer,
+duplicate a view binding, or execute a conversion actor. Several formal views
+may therefore share one object ordinal while retaining their distinct exact
+memref element types.
+
 Objects have no author-selected persistent IDs. Before serialization, roots
 that share one runtime object form an equivalence class. The canonical key for
 that object is the sorted non-empty list of `(LogicalMemoryRootRef,

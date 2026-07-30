@@ -814,8 +814,8 @@ ops.
 
 The graph half of the front-end IR is split into a **definition**
 op (`dataflow.graph`, Section 5.5.1) and a **launcher** op
-(`dataflow.graph.launch`, Section 5.5.2). The definition op is a
-Symbol-bearing, function-like, module-scope callable; the launcher
+([`dataflow.graph.launch`](#graph-launch-operation-contract)). The definition
+op is a Symbol-bearing, function-like, module-scope callable; the launcher
 op references the definition by symbol from inside a
 `dataflow.thread` definition's body, supplies a per-launch
 `ctrl_in : none` operand and user data operands, and produces a
@@ -853,6 +853,12 @@ traits:
   `%start` and launch-facing `done_out` are explicit invocation protocol
   endpoints outside the function type. `graph.return` payload segments match
   all result types, and `graph.return.complete` derives `done_out`.
+* Every graph memory input and result is an established MLIR memref
+  capability. An ordinary LLVM pointer is legal in the enclosing
+  `dataflow.thread` or temporary `loom.spatial_region`, but is never a graph
+  port, graph-body value, or graph result. An addressed memory actor further
+  requires the exact ranked, identity-layout, default-memory-space memref
+  admitted by its operation schema and `CanonicalMemoryAccessView`.
 * `sym_name` is required and module-unique. `sym_visibility` is
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
@@ -900,6 +906,8 @@ traits:
 
 #### 5.5.2 `dataflow.graph.launch`
 
+##### Graph Launch Operation Contract
+
 ```
 arguments:
   FlatSymbolRefAttr:$callee,
@@ -925,6 +933,37 @@ traits:
   bind to consumer or producer `!dataflow.channel<T>` endpoints; they are not
   launch SSA data results. The mandatory trailing `done : none` result is the
   per-launch retirement event.
+
+##### Graph Launch Memory Binding
+
+Value and stream bindings require their exact existing type relations. Memory
+input binding uses the following closed relation, owned solely by this graph
+ABI:
+
+```text
+GraphLaunchMemoryBinding =
+    Identity {
+      actual: ranked or unranked memref<T>
+      formal: the exact same memref<T>
+    }
+  | ImportedLinearView {
+      actual: LLVM pointer in integral address space zero
+      formal: ranked memref<?xT> with identity layout and default memory space
+    }
+```
+
+`ImportedLinearView` requires the actual to resolve to one established logical
+memory root or view. It derives a root-preserving `LogicalMemoryViewRef` from
+the static graph launch, memory-input ordinal, actual root/view, and exact
+callee formal type. The relation is not an attribute, actor, EntityId, cast
+operation, or second capability type. Reusing one actual pointer for several
+formal element types repeats that actual in the launch memory segment and
+derives one typed view per ordinal over the same root. Every other memory type
+mismatch is invalid. Memory results exactly match the callee's memref result
+types; a launch cannot return an LLVM pointer.
+
+##### Graph Launch Stream And Execution Contract
+
 * Each stream input binding carries one symbol-free affine `source_map`. Its
   dimensions are the consumer thread coordinates and its results select the
   producer thread coordinates. Direction is derived from the launch operand
@@ -1896,8 +1935,14 @@ The Canonical Dataflow Program is the single semantic root of the fixed
 Artifact family:
 
 ```text
-loom.canonical_dataflow 1.0
+loom.canonical_dataflow 2.0
 ```
+
+Version 2.0 removes ordinary LLVM pointer graph ports and residual conversion
+bridges. Pointer-to-memref adaptation is represented only by the typed
+[graph launch memory binding](#graph-launch-memory-binding). Version 1.0 bytes
+are not accepted or silently upgraded; a producer must rebuild and finalize
+the program through the current graph ABI.
 
 The family owns its admitted module surface, canonical semantic relation
 graph, canonical writer, artifact-local entity catalog, and importer. Common
@@ -2238,7 +2283,8 @@ complete semantic program, not only the five entity nodes. It includes:
   schema-owned semantic property and attribute projection;
 * explicit operand/result ordinals, SSA def-use, block-successor, containment,
   region, boundary-segment, symbol-use, and launch-callee relations;
-* logical-memory root and root-preserving view relations; and
+* logical-memory root and root-preserving view relations, including every
+  launch-derived imported linear view; and
 * explicit execution order in HostCore and InstructionCore stored-program
   regions.
 
@@ -2305,6 +2351,9 @@ root reference and graph invocation occurrence. If two imported roles alias at
 runtime, the runtime registry relates them to the same object without merging
 their static entity IDs. A memory view remains a typed structural reference
 whose root relation resolves to exactly one `LogicalMemoryRootRef`.
+For an `ImportedLinearView`, the importer derives the view from the exact
+launch binding and callee formal type. It never searches for or executes a
+graph-body conversion operation.
 
 ### Anchor Verification
 
@@ -2325,6 +2374,11 @@ Anchor-level tests cover:
   reached from two root launches;
 * token-plane endpoint rejection for a memory-capability ordinal and
   out-of-range actor or boundary ordinals;
+* acceptance of exact memref launch binding and address-space-zero pointer to
+  canonical linear memref binding, including two typed views over one root;
+* rejection of pointer graph ports, pointer graph results, nonzero or
+  nonintegral pointer address spaces, noncanonical pointer-view formals, and
+  residual `builtin.unrealized_conversion_cast`;
 * complete canonical sink derivation for one multicast channel producer;
 * rejection when a memory exposure is interpreted as a service member or
   assigned a service leg;
@@ -2448,6 +2502,8 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     only application payloads. Normalized `input_segments` and
     `result_segments` classify value, stream, and memory ports. The graph
     start and launch done endpoints are not function-type slots.
+  - Every memory port is a ranked or unranked memref. LLVM pointers and other
+    pointer-bearing capability types are rejected as graph inputs and results.
   - The graph definition's body is `IsolatedFromAbove`: every SSA
     value used in the body and defined outside it is rejected.
   - Entry block arguments are `(%ctrl_in : none, %arg_0 : T0, ...,
@@ -2481,7 +2537,7 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     runtime operations. Supported source forms must be normalized into
     canonical actors and explicit event networks before finalization.
   - Body must not contain `scf.*`, `llvm.func`, `func.func`, `llvm.call`,
-    `func.call`,
+    `func.call`, `builtin.unrealized_conversion_cast`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.wait`, `dataflow.graph.wait`,
     another `dataflow.graph` definition, or a `dataflow.thread`
@@ -2490,11 +2546,16 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     walkers can observe per-callable effects. Launch completion is still
     defined only by the explicit return frontier.
 
-* `dataflow.graph.launch` (Section 5.5.2)
+* [`dataflow.graph.launch`](#graph-launch-operation-contract)
   - `callee` resolves to a `dataflow.graph` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
   - Operand and result segments bind mechanically to the callee's normalized
     value, stream, and memory segments. Stream ports bind channel endpoints.
+    Memory inputs accept only the closed `Identity | ImportedLinearView`
+    [graph launch memory binding](#graph-launch-memory-binding). The
+    finalized-program validator proves the actual root/view relation and
+    derives the root-local view reference. Memory results are exact memref
+    matches.
   - The mandatory trailing `done : none` result is the retirement protocol
     endpoint and equals `all_of(callee.graph.return.complete)`. No effect scan or
     quiescence rule provides an alternate completion authority.

@@ -20,6 +20,14 @@ dependency. Internal constants remain ordinary actors. Residual CFG or nested
 SCF would reintroduce a PC into the SpatialCore graph and is rejected at
 canonical publication.
 
+The same closure rule requires total physical accounting without pretending
+that every graph relation is a compute actor. Compute actors use Fabric
+operation realizations, addressed actors use Fabric memory realizations,
+logical roots use Mapping memory bindings, root-preserving views share their
+root's storage, and launch/results/completion use boundary obligations. An
+unrealized conversion has none of these owners and is therefore invalid rather
+than receiving a simulator-only or Mapping-only exception.
+
 Target-specific actor grouping is not part of the canonical graph. The design
 reason for retiring `dataflow.subgraph` and placing that relation in Mapping is
 owned by [Mapping And PnR](mapping-and-pnr.md).

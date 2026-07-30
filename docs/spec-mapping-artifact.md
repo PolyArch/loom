@@ -796,6 +796,10 @@ For a Dataflow binding, resolution uses the exact
 shadow graph, actor, launch, terminal, service-member, event, memory-view, or
 memory-exposure catalog.
 
+This includes memory views derived by the Dataflow-owned graph-launch binding.
+They resolve through the existing logical-memory and `MemoryBinding` records;
+there is no Mapping record for a pointer conversion or boundary cast.
+
 A SpatialMapping writer first rebuilds and verifies intrinsic base closure
 from `D`, `T`, `F`, and the selected records, then runs separate admission
 against the exact invocation `K`. Only after base verification and admission
