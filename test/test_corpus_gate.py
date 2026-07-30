@@ -64,6 +64,27 @@ DSP_CLIP_F32_WORKLOAD_ID = next(
     and row.case == "arm-clip-f32"
     and row.target_profile == "riscv64-portable-scalar"
 )
+DSP_ADD_Q15_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-add-q15"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_DOT_Q31_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-dot-prod-q31"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_CLIP_Q7_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-clip-q7"
+    and row.target_profile == "riscv64-portable-scalar"
+)
 DSP_MFCC_Q31_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -611,6 +632,56 @@ class InventoryAggregationTest(CorpusGateTestBase):
         clip_source = harness.protocol_source_owner(clip.executable)[0].read_text()
         self.assertIn("constexpr std::uint32_t kSampleCount = 259;", clip_source)
         self.assertIn("input_a, output, -0.5f, -0.1f, kSampleCount", clip_source)
+
+    def test_cmsis_dsp_basic_integer_uses_exact_direct_family(self) -> None:
+        selected = {
+            DSP_ADD_Q15_WORKLOAD_ID,
+            DSP_DOT_Q31_WORKLOAD_ID,
+            DSP_CLIP_Q7_WORKLOAD_ID,
+        }
+        workloads = tuple(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity in selected
+        )
+        by_identity = {workload.identity: workload for workload in workloads}
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-basic-integer-harness",
+        )
+
+        for workload in workloads:
+            self.assertEqual(
+                harness.protocol_symbols(workload.executable),
+                ("loom_corpus_operator_protocol",),
+            )
+            self.assertEqual(harness.expected_entry_result(workload.executable), 0)
+
+        add_source = harness.protocol_source_owner(
+            by_identity[DSP_ADD_Q15_WORKLOAD_ID].executable
+        )[0].read_text()
+        self.assertIn("arm_add_q15(input_a, input_b, output, count)", add_source)
+        self.assertIn("kAbsoluteError = 2;", add_source)
+        self.assertIn("within_absolute_error", add_source)
+
+        dot_source = harness.protocol_source_owner(
+            by_identity[DSP_DOT_Q31_WORKLOAD_ID].executable
+        )[0].read_text()
+        self.assertIn("q63_t *output", dot_source)
+        self.assertIn("arm_dot_prod_q31(input_a, input_b, count", dot_source)
+        self.assertIn("kAbsoluteError = 131072;", dot_source)
+
+        clip_source = harness.protocol_source_owner(
+            by_identity[DSP_CLIP_Q7_WORKLOAD_ID].executable
+        )[0].read_text()
+        self.assertIn("input_a, output, -64, -13, kSampleCount", clip_source)
+
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("Testing/Source/Tests/BasicTestsQ15.cpp", cmake)
+        self.assertNotIn("Testing/Source/Tests/BasicTestsQ31.cpp", cmake)
+        self.assertNotIn("Testing/Source/Tests/BasicTestsQ7.cpp", cmake)
 
     def test_cmsis_dsp_harness_links_upstream_operator_support_data(self) -> None:
         workload = next(
