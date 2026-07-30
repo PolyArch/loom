@@ -64,6 +64,13 @@ DSP_CLARKE_F32_WORKLOAD_ID = next(
     and row.case == "arm-clarke-f32"
     and row.target_profile == "riscv64-portable-scalar"
 )
+DSP_FIR_F32_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-fir-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -572,6 +579,44 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn("float32_t output_a[kSampleCount]{};", source)
         self.assertIn("float32_t output_b[kSampleCount]{};", source)
         self.assertNotIn("ControllerF32", source)
+
+    def test_cmsis_dsp_stateful_fir_keeps_init_and_execution_atomic(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_FIR_F32_WORKLOAD_ID
+        )
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-fir-harness",
+        )
+
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("loom_corpus_operator_protocol",),
+        )
+        compiled_owner, authoritative_owner = harness.protocol_source_owner(
+            workload.executable
+        )
+        self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
+        self.assertEqual(
+            authoritative_owner,
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-dsp"
+            / "Include"
+            / "dsp"
+            / "filtering_functions.h",
+        )
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("Testing/Source/Tests/FIRF32.cpp", cmake)
+        source = compiled_owner.read_text()
+        protocol = source.split("int main()", maxsplit=1)[0]
+        self.assertIn("arm_fir_init_f32", protocol)
+        self.assertEqual(protocol.count("arm_fir_f32("), 2)
+        self.assertIn("kExpected", source)
+        self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
 
     def test_linked_dsp_protocol_boundary_uses_compiler_owned_symbol(self) -> None:
         toolchain = self.toolchain()

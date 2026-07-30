@@ -460,6 +460,17 @@ def _cmsis_dsp_direct_protocol_family(
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
+    if (
+        producer.selector_kind == "official"
+        and producer.test_class == "FIRF32"
+        and producer.test_method == "test_fir_f32"
+        and tuple((call.symbol, call.signature) for call in workload.protocol)
+        == (
+            ("arm_fir_init_f32", "void(ptr,i16,ptr,ptr,i32)"),
+            ("arm_fir_f32", "void(ptr,ptr,ptr,i32)"),
+        )
+    ):
+        return "stateful-fir-f32"
     if producer.selector_kind != "benchmark-only":
         return None
     if producer.test_class not in {"ControllerF32", "ControllerQ31"}:
@@ -508,6 +519,10 @@ def _cmsis_dsp_first_parameter(suite: object) -> int:
 
 
 def _cmsis_dsp_pattern_bytes(path: Path) -> bytes:
+    return b"".join(_cmsis_dsp_pattern_segments(path).values())
+
+
+def _cmsis_dsp_pattern_segments(path: Path) -> dict[str, bytes]:
     try:
         text = path.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeError) as exc:
@@ -519,19 +534,44 @@ def _cmsis_dsp_pattern_bytes(path: Path) -> bytes:
         raise WorkloadProviderError(
             f"generated CMSIS-DSP patterns have no byte array: {path}"
         )
-    body = re.sub(r"//[^\n]*", "", match.group(1))
-    tokens = [token.strip() for token in body.split(",") if token.strip()]
-    try:
-        values = [int(token, 10) for token in tokens]
-    except ValueError as exc:
+
+    segments: dict[str, bytearray] = {}
+    current: bytearray | None = None
+    for line in match.group(1).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("// "):
+            name = Path(stripped[3:]).name
+            if name in segments:
+                raise WorkloadProviderError(
+                    f"generated CMSIS-DSP patterns repeat {name}: {path}"
+                )
+            current = bytearray()
+            segments[name] = current
+            continue
+        for token in stripped.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if current is None:
+                raise WorkloadProviderError(
+                    f"generated CMSIS-DSP pattern bytes have no owner: {path}"
+                )
+            try:
+                value = int(token, 10)
+            except ValueError as exc:
+                raise WorkloadProviderError(
+                    f"generated CMSIS-DSP pattern byte is not decimal: {path}"
+                ) from exc
+            if value < 0 or value > 255:
+                raise WorkloadProviderError(
+                    f"generated CMSIS-DSP pattern byte is invalid: {path}"
+                )
+            current.append(value)
+    if not segments or any(not value for value in segments.values()):
         raise WorkloadProviderError(
-            f"generated CMSIS-DSP pattern byte is not decimal: {path}"
-        ) from exc
-    if not values or any(value < 0 or value > 255 for value in values):
-        raise WorkloadProviderError(
-            f"generated CMSIS-DSP pattern bytes are invalid: {path}"
+            f"generated CMSIS-DSP pattern segments are incomplete: {path}"
         )
-    return bytes(values)
+    return {name: bytes(value) for name, value in segments.items()}
 
 
 def _f32_literal(raw: bytes) -> str:
@@ -570,6 +610,135 @@ def _format_cpp_array(values: Sequence[str]) -> str:
         for index in range(0, len(values), 4)
     ]
     return ",\n".join(lines)
+
+
+def _decode_f32_pattern(raw: bytes, name: str) -> tuple[str, ...]:
+    if len(raw) % 4 != 0:
+        raise WorkloadProviderError(f"CMSIS-DSP {name} is not f32-aligned")
+    return tuple(
+        _f32_literal(raw[offset : offset + 4]) for offset in range(0, len(raw), 4)
+    )
+
+
+def _decode_i16_pattern(raw: bytes, name: str) -> tuple[int, ...]:
+    if len(raw) % 2 != 0:
+        raise WorkloadProviderError(f"CMSIS-DSP {name} is not i16-aligned")
+    return tuple(
+        int.from_bytes(raw[offset : offset + 2], byteorder="little", signed=True)
+        for offset in range(0, len(raw), 2)
+    )
+
+
+def _require_pattern_segment(segments: dict[str, bytes], name: str) -> bytes:
+    try:
+        return segments[name]
+    except KeyError as exc:
+        raise WorkloadProviderError(
+            f"generated CMSIS-DSP patterns omit {name}"
+        ) from exc
+
+
+def _render_stateful_fir_f32_protocol(patterns: Path) -> str:
+    segments = _cmsis_dsp_pattern_segments(patterns)
+    inputs = _decode_f32_pattern(
+        _require_pattern_segment(segments, "FirInput1_f32.txt"), "FIR input"
+    )
+    coefficients = _decode_f32_pattern(
+        _require_pattern_segment(segments, "FirCoefs1_f32.txt"),
+        "FIR coefficients",
+    )
+    expected = _decode_f32_pattern(
+        _require_pattern_segment(segments, "FirRefs1_f32.txt"), "FIR reference"
+    )
+    configs = _decode_i16_pattern(
+        _require_pattern_segment(segments, "FirConfigs1_s16.txt"),
+        "FIR configuration",
+    )
+    if len(configs) % 2 != 0 or not configs:
+        raise WorkloadProviderError("CMSIS-DSP FIR configuration is not paired")
+    pairs = tuple(zip(configs[0::2], configs[1::2], strict=True))
+    if any(block <= 0 or taps <= 0 for block, taps in pairs):
+        raise WorkloadProviderError("CMSIS-DSP FIR configuration is nonpositive")
+    if len(inputs) < 2 * max(block for block, _ in pairs):
+        raise WorkloadProviderError("CMSIS-DSP FIR input does not cover its blocks")
+    coefficient_count = sum(taps for _, taps in pairs)
+    if len(coefficients) < coefficient_count:
+        raise WorkloadProviderError("CMSIS-DSP FIR coefficient projection is not total")
+    coefficients = coefficients[:coefficient_count]
+    if len(expected) != sum(2 * block for block, _ in pairs):
+        raise WorkloadProviderError("CMSIS-DSP FIR reference projection is not total")
+    state_count = max(block + taps - 1 for block, taps in pairs)
+
+    config_literals = tuple(str(value) for value in configs)
+    return f"""#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::size_t kConfigCount = {len(pairs)};
+constexpr std::size_t kOutputCount = {len(expected)};
+constexpr std::size_t kStateCount = {state_count};
+constexpr float32_t kInput[] = {{
+{_format_cpp_array(inputs)}
+}};
+constexpr float32_t kCoefficients[] = {{
+{_format_cpp_array(coefficients)}
+}};
+constexpr std::int16_t kConfigs[] = {{
+{_format_cpp_array(config_literals)}
+}};
+constexpr float32_t kExpected[] = {{
+{_format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const float32_t *output) {{
+  for (std::size_t index = 0; index < kOutputCount; ++index) {{
+    const float32_t expected = kExpected[index];
+    const float32_t difference = output[index] > expected
+                                     ? output[index] - expected
+                                     : expected - output[index];
+    const float32_t magnitude = expected < 0.0f ? -expected : expected;
+    if (difference > 1.0e-6f + 3.0e-5f * magnitude)
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
+    const float32_t *input, const float32_t *coefficients,
+    const std::int16_t *configs, float32_t *state, float32_t *output) {{
+  std::size_t coefficient_offset = 0;
+  std::size_t output_offset = 0;
+  for (std::size_t config = 0; config < kConfigCount; ++config) {{
+    const std::uint32_t block_size = static_cast<std::uint32_t>(configs[2 * config]);
+    const std::uint16_t num_taps = static_cast<std::uint16_t>(configs[2 * config + 1]);
+    arm_fir_instance_f32 instance{{}};
+    arm_fir_init_f32(&instance, num_taps, coefficients + coefficient_offset,
+                     state, block_size);
+    arm_fir_f32(&instance, input, output + output_offset, block_size);
+    arm_fir_f32(&instance, input + block_size,
+                output + output_offset + block_size, block_size);
+    coefficient_offset += num_taps;
+    output_offset += 2 * block_size;
+  }}
+}}
+
+int main() {{
+  float32_t state[kStateCount]{{}};
+  float32_t output[kOutputCount]{{}};
+  {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(kInput, kCoefficients, kConfigs, state,
+                                     output);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
 
 
 def _render_stateless_controller_protocol(
@@ -933,6 +1102,34 @@ def materialize_cmsis_dsp_harness(
                 / "Include"
                 / "dsp"
                 / "controller_functions.h"
+            )
+            if not protocol_owner.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                )
+            protocol_source_owners.append((direct_source, protocol_owner))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    direct_source=direct_source,
+                )
+            )
+        elif direct_family == "stateful-fir-f32":
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                _render_stateful_fir_f32_protocol(shared_patterns),
+                encoding="utf-8",
+            )
+            protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "filtering_functions.h"
             )
             if not protocol_owner.is_file():
                 raise WorkloadProviderError(
