@@ -9,6 +9,7 @@
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/IR/AsmState.h"
+#include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -101,7 +102,28 @@ bool isTransientAttribute(StringRef name) {
          name == "loom.visual_metadata" || name == "graph_name";
 }
 
+void removeLoopDebugLocations(ModuleOp module) {
+  AttrTypeReplacer replacer;
+  replacer.addReplacement([](LLVM::LoopAnnotationAttr annotation)
+                              -> std::pair<Attribute, WalkResult> {
+    if (!annotation.getStartLoc() && !annotation.getEndLoc())
+      return {annotation, WalkResult::advance()};
+    return {LLVM::LoopAnnotationAttr::get(
+                annotation.getContext(), annotation.getDisableNonforced(),
+                annotation.getVectorize(), annotation.getInterleave(),
+                annotation.getUnroll(), annotation.getUnrollAndJam(),
+                annotation.getLicm(), annotation.getDistribute(),
+                annotation.getPipeline(), annotation.getPeeled(),
+                annotation.getUnswitch(), annotation.getMustProgress(),
+                annotation.getIsVectorized(), FusedLoc{}, FusedLoc{},
+                annotation.getParallelAccesses()),
+            WalkResult::advance()};
+  });
+  replacer.recursivelyReplaceElementsIn(module.getOperation());
+}
+
 llvm::Error removeTransients(ModuleOp module) {
+  removeLoopDebugLocations(module);
   llvm::Error result = llvm::Error::success();
   module.walk([&](Operation *op) {
     if (result)

@@ -102,6 +102,54 @@ module {
       "identity");
 }
 
+void loopDebugLocationsDoNotChangeIdentity() {
+  const char *test = __func__;
+  StructuredProgramCandidate first = finalize(test, R"mlir(
+#first_begin = loc("first.c":11:3)
+#first_end = loc("first.c":19:5)
+#first_start = loc(fused[#first_begin, #first_end])
+#first_finish = loc(fused[#first_end, #first_begin])
+#loop = #llvm.loop_annotation<mustProgress = true, startLoc = #first_start, endLoc = #first_finish>
+module {
+  llvm.func @entry() {
+    llvm.br ^bb1 {loop_annotation = #loop}
+  ^bb1:
+    llvm.return
+  }
+}
+)mlir");
+  StructuredProgramCandidate second = finalize(test, R"mlir(
+#second_begin = loc("second.c":101:7)
+#second_end = loc("second.c":137:9)
+#second_start = loc(fused[#second_begin, #second_end])
+#second_finish = loc(fused[#second_end, #second_begin])
+#loop = #llvm.loop_annotation<mustProgress = true, startLoc = #second_start, endLoc = #second_finish>
+module {
+  llvm.func @entry() {
+    llvm.br ^bb1 {loop_annotation = #loop}
+  ^bb1:
+    llvm.return
+  }
+}
+)mlir");
+  require(test, first.identity() == second.identity(),
+          "LLVM loop debug locations changed candidate identity");
+
+  mlir::LLVM::LoopAnnotationAttr projected;
+  first.module().walk([&](mlir::Operation *operation) {
+    auto annotation = operation->getAttrOfType<mlir::LLVM::LoopAnnotationAttr>(
+        "loop_annotation");
+    if (annotation)
+      projected = annotation;
+  });
+  require(test,
+          projected && projected.getMustProgress() &&
+              projected.getMustProgress().getValue(),
+          "loop debug projection removed the semantic must-progress contract");
+  require(test, !projected.getStartLoc() && !projected.getEndLoc(),
+          "loop debug projection retained source locations");
+}
+
 void finalizationProjectsSourceProvenanceOutsideIdentity() {
   const char *test = __func__;
   auto module = parse(test, R"mlir(
@@ -278,6 +326,7 @@ module { func.func @main(%arg0: i32) -> i32 { return %arg0 : i32 } }
 
 int main() {
   privateNamesAndLocationsDoNotChangeIdentity();
+  loopDebugLocationsDoNotChangeIdentity();
   finalizationProjectsSourceProvenanceOutsideIdentity();
   semanticOperationChangesIdentity();
   referencesAreParentAndKindChecked();
