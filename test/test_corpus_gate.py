@@ -68,8 +68,7 @@ DUPLICATE_HARNESS_WORKLOAD_IDS = tuple(
     for row in _OPERATOR_WORKLOADS
     if isinstance(row.producer, corpus_inventory.CmsisNnWorkloadProducer)
     and row.producer.target == "test_arm_fully_connected_s8"
-    and row.producer.test_function
-    == "test_fc_per_fc_per_ch_arm_fully_connected_s8"
+    and row.producer.test_function == "test_fc_per_fc_per_ch_arm_fully_connected_s8"
 )
 
 
@@ -241,6 +240,8 @@ TOOL_ENV = (
     "LOOM_LLD",
     "LOOM_PAYLOAD",
     "LOOM_LLVM_DIS",
+    "LOOM_LLVM_NM",
+    "LOOM_LLVM_CXXFILT",
     "LOOM_LLVM_LINK",
 )
 SYSROOT_ENV = (
@@ -279,6 +280,8 @@ class CorpusGateTestBase(unittest.TestCase):
             ("lld", "stub-lld"),
             ("payload", "stub-payload"),
             ("llvm_dis", "stub-llvm-dis"),
+            ("llvm_nm", "stub-llvm-nm"),
+            ("llvm_cxxfilt", "stub-llvm-cxxfilt"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -303,6 +306,8 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_LLD": self.tool_paths["lld"],
             "LOOM_PAYLOAD": self.tool_paths["payload"],
             "LOOM_LLVM_DIS": self.tool_paths["llvm_dis"],
+            "LOOM_LLVM_NM": self.tool_paths["llvm_nm"],
+            "LOOM_LLVM_CXXFILT": self.tool_paths["llvm_cxxfilt"],
             "STUB_LOG": str(self.log),
         }
         for name in (
@@ -362,6 +367,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
+            llvm_nm=self.tool_paths["llvm_nm"],
+            llvm_cxxfilt=self.tool_paths["llvm_cxxfilt"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -386,6 +393,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
             corpus_inventory.resolve_externals_root(ROOT) / "unity",
         )
         for workload in workloads:
+            self.assertEqual(
+                harness.protocol_symbol(workload.executable),
+                workload.producer.test_function,
+            )
             runner = (
                 harness.source_dir
                 / "TestCases"
@@ -396,6 +407,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ).read_text()
             calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
             self.assertEqual(calls, [workload.producer.test_function])
+        self.assertIn(
+            "target_compile_options(${target} PRIVATE -fno-inline-functions)",
+            (harness.source_dir / "CMakeLists.txt").read_text(),
+        )
 
     def test_cmsis_nn_harness_isolates_profiles_of_the_same_test(self) -> None:
         workloads = tuple(
@@ -430,6 +445,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
 
         self.assertEqual(harness.targets, (workload.executable,))
+        self.assertEqual(
+            harness.protocol_method(workload.executable),
+            (workload.producer.test_class, workload.producer.test_method),
+        )
         descriptor = (
             harness.generated_directory(workload.executable)
             / "GeneratedSource"
@@ -441,6 +460,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
         operator_main = (harness.source_dir / "OperatorMain.cpp").read_text()
         self.assertIn("return testmain(patternData);", operator_main)
         self.assertNotIn("exit(", operator_main)
+        self.assertIn(
+            "target_compile_options(loom_dsp_",
+            (harness.source_dir / "CMakeLists.txt").read_text(),
+        )
         patterns = (
             harness.generated_directory(workload.executable)
             / "GeneratedInclude"
@@ -489,6 +512,32 @@ class InventoryAggregationTest(CorpusGateTestBase):
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         self.assertIn('Testing/Source/Tests/mfccdata.c"', cmake)
 
+    def test_linked_dsp_protocol_boundary_uses_compiler_owned_symbol(self) -> None:
+        toolchain = self.toolchain()
+        bitcode = self.work / "program.bc"
+        with mock.patch.object(
+            corpus_gate,
+            "run_quiet",
+            side_effect=[
+                "_ZN13BasicTestsF3212test_abs_f32Ev\n_Z4mainv\n",
+                "BasicTestsF32::test_abs_f32()\nmain()\n",
+            ],
+        ) as run:
+            symbol = corpus_gate.resolve_cxx_method_symbol(
+                toolchain,
+                bitcode,
+                "BasicTestsF32",
+                "test_abs_f32",
+            )
+
+        self.assertEqual(symbol, "_ZN13BasicTestsF3212test_abs_f32Ev")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0][-1], str(bitcode))
+        self.assertEqual(
+            run.call_args_list[1].args[1],
+            "_ZN13BasicTestsF3212test_abs_f32Ev\n_Z4mainv\n",
+        )
+
     def test_provider_build_failure_is_isolated_to_missing_targets(self) -> None:
         workloads = tuple(
             case
@@ -500,6 +549,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
             self.work / "source",
             tuple(workload.executable for workload in workloads),
             tuple(self.work / f"shared-{index}" for index in range(2)),
+            tuple(
+                (workload.producer.test_class, workload.producer.test_method)
+                for workload in workloads
+            ),
         )
         target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
 
@@ -522,6 +575,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 return_value=harness,
             ),
             mock.patch.object(corpus_gate, "run_step", side_effect=run_provider_step),
+            mock.patch.object(
+                corpus_gate,
+                "resolve_cxx_method_symbol",
+                return_value="_ZN13BasicTestsF3212test_abs_f32Ev",
+            ),
         ):
             results = corpus_gate.prepare_workload_providers(
                 workloads,
@@ -535,9 +593,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIsInstance(
             results[workloads[0].identity], corpus_gate.ProducedWorkload
         )
-        self.assertIsInstance(
-            results[workloads[1].identity], corpus_gate.StepFailure
+        self.assertEqual(
+            results[workloads[0].identity].protocol_symbols,
+            ("_ZN13BasicTestsF3212test_abs_f32Ev",),
         )
+        self.assertIsInstance(results[workloads[1].identity], corpus_gate.StepFailure)
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
@@ -576,7 +636,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         case_dir.mkdir()
 
         prepared = corpus_gate.import_produced_workload(
-            corpus_gate.ProducedWorkload(build_dir, executable),
+            corpus_gate.ProducedWorkload(build_dir, executable, ("protocol",)),
             toolchain,
             case_dir,
             time.monotonic() + 5.0,
@@ -800,6 +860,8 @@ class CommandConstructionTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
+            llvm_nm=self.tool_paths["llvm_nm"],
+            llvm_cxxfilt=self.tool_paths["llvm_cxxfilt"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -856,11 +918,7 @@ class CommandConstructionTest(CorpusGateTestBase):
 
     def test_dfg_sim_command_binds_target_and_outputs(self) -> None:
         config = self.out_dir / "resolved-config.yaml"
-        protocol = (
-            corpus_inventory.OperatorProtocolCall(
-                symbol="arm_abs_f32", signature="void(ptr,ptr,i32)"
-            ),
-        )
+        protocol = ("arm_abs_f32",)
         command = corpus_gate.dfg_sim_command(
             self.toolchain(),
             self.out_dir / "target.ll",

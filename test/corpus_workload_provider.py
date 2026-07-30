@@ -27,11 +27,20 @@ class CmsisNnHarness:
     source_dir: Path
     unity_source: Path
     targets: tuple[str, ...]
+    protocol_symbols: tuple[str, ...]
 
     def executable(self, build_dir: Path, target: str) -> Path:
         if target not in self.targets:
             raise WorkloadProviderError(f"unknown CMSIS-NN harness target: {target}")
         return build_dir / "workloads" / target
+
+    def protocol_symbol(self, target: str) -> str:
+        return self.protocol_symbols[self.targets.index(self._target(target))]
+
+    def _target(self, target: str) -> str:
+        if target not in self.targets:
+            raise WorkloadProviderError(f"unknown CMSIS-NN harness target: {target}")
+        return target
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,7 @@ class CmsisDspHarness:
     source_dir: Path
     targets: tuple[str, ...]
     shared_directories: tuple[Path, ...]
+    protocol_methods: tuple[tuple[str, str], ...]
 
     def generated_directory(self, target: str) -> Path:
         return self.source_dir / "generated" / "targets" / self._target(target)
@@ -48,6 +58,9 @@ class CmsisDspHarness:
 
     def executable(self, build_dir: Path, target: str) -> Path:
         return build_dir / "workloads" / self._target(target)
+
+    def protocol_method(self, target: str) -> tuple[str, str]:
+        return self.protocol_methods[self.targets.index(self._target(target))]
 
     def _target(self, target: str) -> str:
         if target not in self.targets:
@@ -59,6 +72,7 @@ class CmsisDspHarness:
 class ProducedWorkload:
     target_build_dir: Path
     target_executable: Path
+    protocol_symbols: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -142,6 +156,7 @@ endfunction()
 foreach(target IN ITEMS {target_items})
   target_include_directories(${{target}} PRIVATE
     "${{CMAKE_CURRENT_SOURCE_DIR}}/TestCases/Utils")
+  target_compile_options(${{target}} PRIVATE -fno-inline-functions)
   target_link_libraries(${{target}} PRIVATE unity cmsis-nn)
 endforeach()
 """
@@ -211,6 +226,7 @@ def materialize_cmsis_nn_harness(
         (test_cases / name).symlink_to(shared, target_is_directory=True)
 
     targets: list[str] = []
+    protocol_symbols: list[str] = []
     case_directories: list[str] = []
     for workload in workloads:
         if workload.suite != "cmsis-nn" or not isinstance(
@@ -270,12 +286,18 @@ def materialize_cmsis_nn_harness(
             _render_unity_runner(workload.producer.test_function), encoding="utf-8"
         )
         targets.append(target)
+        protocol_symbols.append(workload.producer.test_function)
         case_directories.append(target)
 
     (source_dir / "CMakeLists.txt").write_text(
         _render_harness_cmake(case_directories, targets), encoding="utf-8"
     )
-    return CmsisNnHarness(source_dir, unity_source, tuple(targets))
+    return CmsisNnHarness(
+        source_dir,
+        unity_source,
+        tuple(targets),
+        tuple(protocol_symbols),
+    )
 
 
 def _load_cmsis_dsp_codegen(testing_root: Path) -> tuple[object, object, object]:
@@ -403,6 +425,7 @@ target_include_directories({library} PRIVATE
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude")
 target_compile_definitions({library} PRIVATE EMBEDDED NOTIMING)
+target_compile_options({library} PRIVATE -fno-inline-functions)
 target_link_libraries({library} PRIVATE CMSISDSP)
 '''
         )
@@ -435,7 +458,7 @@ target_link_libraries({target} PRIVATE
         f'  "{_cmake_quote(source)}"' for source in support_sources
     )
 
-    return f'''cmake_minimum_required(VERSION 3.20)
+    return f"""cmake_minimum_required(VERSION 3.20)
 project(loom_cmsis_dsp_workloads C CXX)
 
 if(NOT DEFINED LOOM_CMSIS_DSP_SOURCE)
@@ -485,9 +508,9 @@ target_include_directories(loom_cmsis_dsp_test_support PRIVATE
 target_compile_definitions(loom_cmsis_dsp_test_support PRIVATE EMBEDDED NOTIMING)
 target_link_libraries(loom_cmsis_dsp_test_support PRIVATE CMSISDSP)
 
-{''.join(suite_blocks)}
-{''.join(target_blocks)}
-'''
+{"".join(suite_blocks)}
+{"".join(target_blocks)}
+"""
 
 
 def materialize_cmsis_dsp_harness(
@@ -503,9 +526,7 @@ def materialize_cmsis_dsp_harness(
         )
 
     testing_root = external_root / "cmsis-dsp" / "Testing"
-    parser_module, codegen_module, tree_module = _load_cmsis_dsp_codegen(
-        testing_root
-    )
+    parser_module, codegen_module, tree_module = _load_cmsis_dsp_codegen(testing_root)
     source_dir = destination / "source"
     generated_root = source_dir / "generated" / "targets"
     shared_root = source_dir / "generated" / "shared"
@@ -514,6 +535,7 @@ def materialize_cmsis_dsp_harness(
     shared: dict[tuple[Path, str], Path] = {}
     targets: list[str] = []
     shared_directories: list[Path] = []
+    protocol_methods: list[tuple[str, str]] = []
     cmake_targets: list[tuple[str, Path, Path, str]] = []
 
     for workload in workloads:
@@ -524,9 +546,7 @@ def materialize_cmsis_dsp_harness(
                 f"workload is not owned by the CMSIS-DSP provider: {workload.identity}"
             )
         target = workload.executable
-        if target != corpus_inventory.operator_workload_target(
-            workload.operator_id
-        ):
+        if target != corpus_inventory.operator_workload_target(workload.operator_id):
             raise WorkloadProviderError(
                 f"CMSIS-DSP workload has an invalid target: {workload.identity}"
             )
@@ -601,6 +621,9 @@ def materialize_cmsis_dsp_harness(
         (target_include / f"{workload.producer.test_class}_decl.h").unlink()
         targets.append(target)
         shared_directories.append(shared_generated)
+        protocol_methods.append(
+            (workload.producer.test_class, workload.producer.test_method)
+        )
         cmake_targets.append(
             (
                 target,
@@ -618,17 +641,18 @@ def materialize_cmsis_dsp_harness(
         encoding="utf-8",
     )
     (source_dir / "OperatorMain.cpp").write_text(
-        '''extern int testmain(const char *patterns);
+        """extern int testmain(const char *patterns);
 extern "C" const char *patternData;
 
 int main() { return testmain(patternData); }
-''',
+""",
         encoding="utf-8",
     )
     return CmsisDspHarness(
         source_dir,
         tuple(targets),
         tuple(shared_directories),
+        tuple(protocol_methods),
     )
 
 
