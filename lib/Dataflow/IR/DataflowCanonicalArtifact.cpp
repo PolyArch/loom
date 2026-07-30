@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -141,7 +142,30 @@ readMaterializedId(const detail::EntityCarrier &carrier) {
 
 llvm::Expected<CanonicalDataflowArtifact>
 finalizeCanonicalDataflow(ModuleOp source) {
-  OwningOpRef<ModuleOp> clone(cast<ModuleOp>(source.getOperation()->clone()));
+  auto finalized =
+      finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(source, {});
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->artifact);
+}
+
+llvm::Expected<FinalizedCanonicalDataflowProjection>
+finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
+    ModuleOp source, ArrayRef<Operation *> trackedStaticGraphLaunches) {
+  IRMapping mapping;
+  OwningOpRef<ModuleOp> clone(
+      cast<ModuleOp>(source.getOperation()->clone(mapping)));
+  SmallVector<Operation *> tracked;
+  tracked.reserve(trackedStaticGraphLaunches.size());
+  for (Operation *operation : trackedStaticGraphLaunches) {
+    if (!operation || !isa<GraphLaunchOp>(operation) ||
+        operation->getParentOfType<ModuleOp>() != source)
+      return invalid("canonical dataflow: tracked launch has the wrong owner");
+    Operation *mapped = mapping.lookupOrNull(operation);
+    if (!mapped || !isa<GraphLaunchOp>(mapped))
+      return invalid("canonical dataflow: tracked launch was not cloned");
+    tracked.push_back(mapped);
+  }
 
   stripDerivedIds(clone.get());
   pruneUnreachablePrivateSymbols(clone.get());
@@ -172,8 +196,24 @@ finalizeCanonicalDataflow(ModuleOp source) {
   if (!view)
     return view.takeError();
 
-  return CanonicalDataflowArtifact(identity, std::move(clone), std::move(bytes),
-                                   std::move(*view));
+  std::vector<StaticGraphLaunchRef> trackedReferences;
+  trackedReferences.reserve(tracked.size());
+  for (Operation *operation : tracked) {
+    auto found =
+        llvm::find_if(view->staticGraphLaunches(),
+                      [&](const CanonicalStaticGraphLaunchView &launch) {
+                        return launch.op == operation;
+                      });
+    if (found == view->staticGraphLaunches().end())
+      return invalid(
+          "canonical dataflow: tracked launch is absent after finalization");
+    trackedReferences.push_back(found->ref);
+  }
+
+  return FinalizedCanonicalDataflowProjection{
+      CanonicalDataflowArtifact(identity, std::move(clone), std::move(bytes),
+                                std::move(*view)),
+      std::move(trackedReferences)};
 }
 
 //===----------------------------------------------------------------------===//

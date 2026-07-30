@@ -5,6 +5,7 @@
 #include "Evaluation/Case.h"
 #include "Evaluation/Request.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -34,7 +35,7 @@ namespace loom::sim {
 class CanonicalSimulationRuntimeInput;
 class CanonicalSimulationWorkload;
 struct NativeStructuredProgramObservations;
-}
+} // namespace loom::sim
 
 namespace loom::evaluation::models {
 
@@ -136,13 +137,19 @@ struct StructuredFabricAnalyticInvocation final {
   const ::loom::sim::NativeStructuredProgramObservations &sourceObservations;
 };
 
-/// One exact candidate projection within the invocation. `sourceScope` and
-/// `canonicalDataflow` are both absent only for the unmodified source
-/// baseline; a Spatial candidate requires both.
+/// One exact complete-candidate projection within the invocation. The
+/// Dataflow owner and every Structured-to-graph relation are absent together
+/// for a candidate with no Spatial ownership. `observations`, when present,
+/// are a removable result of executing this exact candidate against the
+/// invocation's source workload; the provider derives the same result on a
+/// cache miss.
 struct StructuredFabricAnalyticCandidateProjection final {
   const ::loom::frontend::StructuredProgramCandidate &candidate;
   const ::dataflow::CanonicalDataflowArtifact *canonicalDataflow = nullptr;
-  std::optional<::loom::frontend::StructuredEntityRef> sourceScope;
+  llvm::ArrayRef<::loom::lowering::StructuredSpatialGraphProjection>
+      spatialGraphs = {};
+  const ::loom::sim::NativeStructuredProgramObservations *observations =
+      nullptr;
 };
 
 /// One descriptor-owned, invocation-local applicability projection for an

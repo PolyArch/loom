@@ -621,11 +621,19 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
 }
 
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
-projectCanonicalDataflowWorkload(
+projectCanonicalDataflowWorkloadImpl(
     const ::dataflow::CanonicalDataflowProgramView &program,
-    const fabric::FinalizedFabricRoot &fabricRoot) {
+    const fabric::FinalizedFabricRoot &fabricRoot,
+    std::optional<::dataflow::GraphRef> selectedGraph) {
+  if (selectedGraph) {
+    auto resolved = program.resolve(*selectedGraph);
+    if (!resolved)
+      return resolved.takeError();
+  }
   std::map<std::vector<std::uint8_t>, ActorDemand> actorDemands;
   for (const dataflow::CanonicalActorView &actor : program.actors()) {
+    if (selectedGraph && actor.graph != *selectedGraph)
+      continue;
     auto projection =
         dataflow::projectRegisteredActorSchemaProjectionBytes(actor.op);
     if (!projection)
@@ -672,8 +680,11 @@ projectCanonicalDataflowWorkload(
         return std::move(error);
   }
 
-  workload.graphActivations = program.staticGraphLaunches().size();
+  workload.graphActivations =
+      selectedGraph ? 1 : program.staticGraphLaunches().size();
   for (const dataflow::CanonicalGraphView &graphView : program.graphs()) {
+    if (selectedGraph && graphView.ref != *selectedGraph)
+      continue;
     auto graph = llvm::dyn_cast_or_null<dataflow::GraphOp>(graphView.op);
     if (!graph)
       return llvm::createStringError(
@@ -716,6 +727,21 @@ projectCanonicalDataflowWorkload(
     }
   }
   return std::optional<AnalyticWorkloadEstimate>(workload);
+}
+
+llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
+projectCanonicalDataflowWorkload(
+    const ::dataflow::CanonicalDataflowProgramView &program,
+    const fabric::FinalizedFabricRoot &fabricRoot) {
+  return projectCanonicalDataflowWorkloadImpl(program, fabricRoot,
+                                              std::nullopt);
+}
+
+llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
+projectCanonicalDataflowGraphWorkload(
+    const ::dataflow::CanonicalDataflowProgramView &program,
+    ::dataflow::GraphRef graph, const fabric::FinalizedFabricRoot &fabricRoot) {
+  return projectCanonicalDataflowWorkloadImpl(program, fabricRoot, graph);
 }
 
 } // namespace loom::evaluation::models::detail

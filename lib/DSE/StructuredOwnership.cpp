@@ -93,7 +93,7 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
           evaluation::models::primeStructuredFabricAnalyticResult(
               *reference,
               {candidate->structuredProgram, &candidate->canonicalDataflow,
-               workItem.scope.selection},
+               candidate->spatialGraphs},
               invocation, fabric, config, artifactStore))
     return std::move(error);
   return OwnershipAttemptResult{MaterializedOwnershipWorkItem{
@@ -149,7 +149,7 @@ generateAndPromoteStructuredOwnership(
           evaluation::models::primeStructuredFabricAnalyticResult(
               *parentReference,
               evaluation::models::StructuredFabricAnalyticCandidateProjection{
-                  parent, nullptr, std::nullopt},
+                  parent, nullptr, {}, &*sourceObservations},
               invocation, fabric, config, artifactStore))
     return std::move(error);
   candidateReferences.push_back(*parentReference);
@@ -607,7 +607,7 @@ generateAndPromoteStructuredOwnership(
       if (!dataflow)
         return dataflow.takeError();
       materialized.emplace(frontend::MaterializedOwnershipCandidate{
-          std::move(*structured), std::move(*dataflow)});
+          std::move(*structured), std::move(*dataflow), {}});
     } else {
       auto cached = functionalCandidates.find(reference);
       if (cached == functionalCandidates.end())
@@ -622,7 +622,8 @@ generateAndPromoteStructuredOwnership(
       if (!dataflow)
         return dataflow.takeError();
       materialized.emplace(frontend::MaterializedOwnershipCandidate{
-          std::move(cached->second.structuredProgram), std::move(*dataflow)});
+          std::move(cached->second.structuredProgram), std::move(*dataflow),
+          std::move(cached->second.spatialGraphs)});
     }
     std::vector<StructuredOwnershipDerivation> derivations;
     for (const StructuredOwnershipCandidateDisposition &disposition :

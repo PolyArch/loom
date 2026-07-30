@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mlir {
 class ModuleOp;
@@ -21,6 +22,20 @@ namespace loom::lowering {
 struct CanonicalDataflowLoweringOptions {
   bool verifyEach = true;
   bool applyPassManagerCommandLineOptions = false;
+};
+
+/// One lowering-owned correspondence between a Structured Spatial ownership
+/// carrier and the exact static graph launch mechanically derived from it.
+/// Both references retain their respective Artifact owners; this disposable
+/// relation is not a persistent identity or schema field.
+struct StructuredSpatialGraphProjection final {
+  frontend::StructuredEntityRef spatialRegion;
+  dataflow::StaticGraphLaunchRef staticGraphLaunch;
+};
+
+struct ProjectedCanonicalDataflow final {
+  dataflow::CanonicalDataflowArtifact artifact;
+  std::vector<StructuredSpatialGraphProjection> spatialGraphs;
 };
 
 /// Returns a lowering-owned reason when `scope` contains a structural
@@ -44,12 +59,17 @@ llvm::Expected<dataflow::CanonicalDataflowArtifact>
 lowerStructuredModuleToCanonicalDataflow(
     mlir::ModuleOp module, CanonicalDataflowLoweringOptions options = {});
 
-inline llvm::Expected<dataflow::CanonicalDataflowArtifact>
+llvm::Expected<dataflow::CanonicalDataflowArtifact>
 lowerStructuredProgramToCanonicalDataflow(
     const frontend::StructuredProgramCandidate &candidate,
-    CanonicalDataflowLoweringOptions options = {}) {
-  return lowerStructuredModuleToCanonicalDataflow(candidate.module(), options);
-}
+    CanonicalDataflowLoweringOptions options = {});
+
+/// Lowers an exact finalized Structured Program and returns the total ordered
+/// correspondence from each loom.spatial_region to its static graph launch.
+llvm::Expected<ProjectedCanonicalDataflow>
+lowerStructuredProgramToCanonicalDataflowWithProjection(
+    const frontend::StructuredProgramCandidate &candidate,
+    CanonicalDataflowLoweringOptions options = {});
 
 } // namespace loom::lowering
 

@@ -54,9 +54,10 @@ struct NativeStructuredBlockActivation {
 struct NativeStructuredProgramObservations {
   std::optional<CanonicalValueSequence> returnValue;
   std::vector<MemoryObservationPayload> memories;
-  /// Total canonical block-order projection over blocks owned by defined
-  /// llvm.func operations. Counts, including zero, are invocation-local and
-  /// all coarser dynamic coverage is derived from this one projection.
+  /// Total canonical block-order projection over executable blocks owned by
+  /// defined llvm.func operations or selected dataflow.thread definitions.
+  /// Counts, including zero, are invocation-local and all coarser dynamic
+  /// coverage is derived from this one projection.
   std::vector<NativeStructuredBlockActivation> blockActivations;
 };
 
@@ -107,6 +108,17 @@ executeNativeStructuredProgram(
 /// or execute the Canonical Dataflow projection in place of the candidate.
 llvm::Expected<NativeStructuredProgramObservations>
 executeSelectedStructuredProgram(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
+
+/// Execute the same selected whole-program projection while profiling the
+/// exact selected candidate before ownership carriers are inlined. This is the
+/// workload-aware input to whole-candidate analytical models; it does not add
+/// a profile Artifact or make block counts persistent candidate state.
+llvm::Expected<NativeStructuredProgramObservations>
+executeProfiledSelectedStructuredProgram(
     const frontend::StructuredProgramCandidate &selectedProgram,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,

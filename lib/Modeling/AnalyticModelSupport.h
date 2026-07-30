@@ -1,6 +1,7 @@
 #ifndef LOOM_MODELING_ANALYTICMODELSUPPORT_H
 #define LOOM_MODELING_ANALYTICMODELSUPPORT_H
 
+#include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
@@ -73,6 +74,14 @@ llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
 projectCanonicalDataflowWorkload(
     const ::dataflow::CanonicalDataflowProgramView &program,
     const fabric::FinalizedFabricRoot &fabricRoot);
+
+/// Projects one exact graph definition from the same canonical owner. This is
+/// used when a complete Structured candidate contains graphs with different
+/// dynamic activation counts.
+llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
+projectCanonicalDataflowGraphWorkload(
+    const ::dataflow::CanonicalDataflowProgramView &program,
+    ::dataflow::GraphRef graph, const fabric::FinalizedFabricRoot &fabricRoot);
 
 } // namespace loom::evaluation::models::detail
 

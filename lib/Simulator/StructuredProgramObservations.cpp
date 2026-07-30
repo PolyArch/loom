@@ -1,5 +1,6 @@
 #include "StructuredProgramNativeExecutionInternal.h"
 
+#include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -38,6 +39,15 @@ mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
     function = owner->getParentOfType<mlir::LLVM::LLVMFuncOp>();
   return function && !function.getBody().empty() ? function
                                                  : mlir::LLVM::LLVMFuncOp{};
+}
+
+bool isProfiledStructuredBlock(mlir::Block *block) {
+  if (enclosingDefinedLlvmFunction(block))
+    return true;
+  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
+  return owner &&
+         (llvm::isa<dataflow::ThreadOp>(owner) ||
+          static_cast<bool>(owner->getParentOfType<dataflow::ThreadOp>()));
 }
 
 std::vector<SemanticMemoryByte>
@@ -180,7 +190,7 @@ instrumentBlockActivations(mlir::ModuleOp module,
   std::vector<ProfileSite> sites;
   for (const frontend::StructuredEntity &entity :
        view->entities(frontend::StructuredEntityKind::Block))
-    if (enclosingDefinedLlvmFunction(entity.block))
+    if (isProfiledStructuredBlock(entity.block))
       sites.push_back({entity.reference, entity.block});
 
   const std::string callbackName =

@@ -1530,8 +1530,8 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
     const frontend::StructuredProgramCandidate &sourceProgram,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    bool profileSourceBlocks, bool projectOwnership,
-    mlir::Operation *selectedOperation = nullptr,
+    const frontend::StructuredProgramCandidate *profileProgram,
+    bool projectOwnership, mlir::Operation *selectedOperation = nullptr,
     const WorkloadBackedSimulationInputCapturePlan *capturePlan = nullptr,
     WorkloadBackedSimulationInputVisitor *captureVisitor = nullptr,
     std::uint64_t maxRetainedCaptureBytes =
@@ -1583,20 +1583,20 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
       return names.takeError();
     workloadCaptureNames.emplace(std::move(*names));
   }
+  std::optional<std::string> blockActivation;
+  if (profileProgram) {
+    auto callback = instrumentBlockActivations(
+        *module, profileProgram->identity(), capture);
+    if (!callback)
+      return callback.takeError();
+    blockActivation = std::move(*callback);
+  }
   std::optional<std::string> invalidThreadExtent;
   if (projectOwnership) {
     auto projection = projectSelectedWholeProgram(*module);
     if (!projection)
       return projection.takeError();
     invalidThreadExtent = std::move(*projection);
-  }
-  std::optional<std::string> blockActivation;
-  if (profileSourceBlocks) {
-    auto callback =
-        instrumentBlockActivations(*module, sourceProgram.identity(), capture);
-    if (!callback)
-      return callback.takeError();
-    blockActivation = std::move(*callback);
   }
   auto native = detail::lowerStructuredModuleToLlvm(std::move(module));
   if (!native)
@@ -1659,7 +1659,7 @@ executeProgramModule(const frontend::StructuredProgramCandidate &program,
       llvm::cast<mlir::ModuleOp>(program.module()->clone()));
   auto result = executePreparedProgramModule(
       std::move(cloned), sourceProgram, workload, runtimeInput,
-      profileSourceBlocks, projectOwnership);
+      profileSourceBlocks ? &program : nullptr, projectOwnership);
   if (!result)
     return result.takeError();
   return std::move(result->observations);
@@ -1686,6 +1686,16 @@ executeSelectedStructuredProgram(
                               runtimeInput, false, true);
 }
 
+llvm::Expected<NativeStructuredProgramObservations>
+executeProfiledSelectedStructuredProgram(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  return executeProgramModule(selectedProgram, sourceProgram, workload,
+                              runtimeInput, true, true);
+}
+
 llvm::Error visitWorkloadBackedSimulationInputCaptures(
     mlir::OwningOpRef<mlir::ModuleOp> preparedModule,
     mlir::Operation *selectedOperation,
@@ -1696,7 +1706,7 @@ llvm::Error visitWorkloadBackedSimulationInputCaptures(
     std::uint64_t maxRetainedCaptureBytes,
     WorkloadBackedSimulationInputVisitor visitor) {
   auto result = executePreparedProgramModule(
-      std::move(preparedModule), sourceProgram, workload, runtimeInput, false,
+      std::move(preparedModule), sourceProgram, workload, runtimeInput, nullptr,
       false, selectedOperation, &plan, &visitor, maxRetainedCaptureBytes);
   if (!result)
     return result.takeError();
@@ -1716,7 +1726,7 @@ loom::sim::native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
     std::uint64_t maxRetainedCaptureBytes,
     WorkloadBackedSimulationInputVisitor visitor) {
   auto result = executePreparedProgramModule(
-      std::move(selectedModule), sourceProgram, workload, runtimeInput, false,
+      std::move(selectedModule), sourceProgram, workload, runtimeInput, nullptr,
       true, selectedOperation, &plan, &visitor, maxRetainedCaptureBytes);
   if (!result)
     return result.takeError();

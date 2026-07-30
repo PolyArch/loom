@@ -929,18 +929,21 @@ llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
-  auto canonical = lowering::lowerStructuredModuleToCanonicalDataflow(
-      module, loweringOptions);
-  if (!canonical)
-    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  canonical.takeError());
-  if (llvm::Error error = requireExactFabricCapabilities(*canonical, fabric))
-    return std::move(error);
   auto structured = finalizeStructuredProgram(module);
   if (!structured)
     return structured.takeError();
+  auto projected =
+      lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+          *structured, loweringOptions);
+  if (!projected)
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  projected.takeError());
+  if (llvm::Error error =
+          requireExactFabricCapabilities(projected->artifact, fabric))
+    return std::move(error);
   return MaterializedOwnershipCandidate{std::move(*structured),
-                                        std::move(*canonical)};
+                                        std::move(projected->artifact),
+                                        std::move(projected->spatialGraphs)};
 }
 
 } // namespace

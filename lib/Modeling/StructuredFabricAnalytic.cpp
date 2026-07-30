@@ -5,6 +5,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Evaluation/ModelProvider.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
@@ -19,6 +20,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
@@ -150,15 +152,10 @@ bool isExecutableLeaf(mlir::Operation *operation) {
   return true;
 }
 
-struct DynamicWorkload final {
-  std::uint64_t instructionLeafExecutions = 0;
-  std::uint64_t spatialActivations = 0;
-};
-
 struct BlockActivityProjection final {
   frontend::StructuredProgramCandidateView view;
   llvm::DenseMap<mlir::Block *, std::uint64_t> activations;
-  std::uint64_t totalInstructionLeafExecutions = 0;
+  std::uint64_t hostInstructionLeafExecutions = 0;
 };
 
 struct ScopeDynamicWork final {
@@ -214,6 +211,30 @@ mlir::LLVM::LLVMFuncOp enclosingDefinedLlvmFunction(mlir::Block *block) {
                                                  : mlir::LLVM::LLVMFuncOp{};
 }
 
+bool isInsideThread(mlir::Block *block) {
+  mlir::Operation *owner = block ? block->getParentOp() : nullptr;
+  return owner &&
+         (llvm::isa<dataflow::ThreadOp>(owner) ||
+          static_cast<bool>(owner->getParentOfType<dataflow::ThreadOp>()));
+}
+
+bool isProfiledStructuredBlock(mlir::Block *block) {
+  return enclosingDefinedLlvmFunction(block) || isInsideThread(block);
+}
+
+bool isInsideSpatialRegion(mlir::Operation *operation) {
+  return operation &&
+         (llvm::isa<::loom::SpatialRegionOp>(operation) ||
+          static_cast<bool>(
+              operation->getParentOfType<::loom::SpatialRegionOp>()));
+}
+
+bool isModeledHostLeaf(mlir::Operation *operation) {
+  return isExecutableLeaf(operation) && !isInsideSpatialRegion(operation) &&
+         !llvm::isa<dataflow::ThreadLaunchOp, dataflow::ThreadWaitOp>(
+             operation);
+}
+
 llvm::Expected<std::uint64_t> checkedScaledCount(std::uint64_t count,
                                                  std::uint64_t activations,
                                                  llvm::StringRef context) {
@@ -236,7 +257,7 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
   std::vector<const frontend::StructuredEntity *> expectedBlocks;
   for (const frontend::StructuredEntity &entity :
        view->entities(frontend::StructuredEntityKind::Block))
-    if (enclosingDefinedLlvmFunction(entity.block))
+    if (isProfiledStructuredBlock(entity.block))
       expectedBlocks.push_back(&entity);
   if (expectedBlocks.size() != observations.blockActivations.size())
     return llvm::createStringError(
@@ -258,19 +279,19 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
     projection.activations[block] = observed.activations;
     const std::uint64_t leaves =
         llvm::count_if(*block, [](mlir::Operation &operation) {
-          return isExecutableLeaf(&operation);
+          return isModeledHostLeaf(&operation);
         });
     llvm::Expected<std::uint64_t> dynamicLeaves = checkedScaledCount(
         leaves, observed.activations, "source instruction executions");
     if (!dynamicLeaves)
       return dynamicLeaves.takeError();
     const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(
-        projection.totalInstructionLeafExecutions, *dynamicLeaves);
+        projection.hostInstructionLeafExecutions, *dynamicLeaves);
     if (!updated)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_overflow: source instruction total");
-    projection.totalInstructionLeafExecutions = *updated;
+    projection.hostInstructionLeafExecutions = *updated;
   }
   return projection;
 }
@@ -341,106 +362,133 @@ projectScopeDynamicWork(const BlockActivityProjection &projection,
   });
   if (failure)
     return std::move(failure);
-  if (coveredLeaves > projection.totalInstructionLeafExecutions)
+  if (coveredLeaves > projection.hostInstructionLeafExecutions)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: selected work exceeds source work");
   return ScopeDynamicWork{coveredLeaves, activity->dynamicActivations};
 }
 
-llvm::Expected<DynamicWorkload> projectDynamicWorkload(
-    const frontend::StructuredProgramCandidate &source,
-    const sim::NativeStructuredProgramObservations &observations,
-    const std::optional<frontend::StructuredEntityRef> &sourceScope) {
-  auto projection = projectBlockActivity(source, observations);
-  if (!projection)
-    return projection.takeError();
-  if (!sourceScope)
-    return DynamicWorkload{projection->totalInstructionLeafExecutions, 0};
-  auto selected = projectScopeDynamicWork(*projection, *sourceScope);
-  if (!selected)
-    return selected.takeError();
-  return DynamicWorkload{projection->totalInstructionLeafExecutions -
-                             selected->instructionLeafExecutions,
-                         selected->dynamicActivations};
+llvm::Error accumulateScaledCount(std::uint64_t &destination,
+                                  std::uint64_t value,
+                                  std::uint64_t activations,
+                                  llvm::StringRef context) {
+  auto scaled = checkedScaledCount(value, activations, context);
+  if (!scaled)
+    return scaled.takeError();
+  const std::optional<std::uint64_t> updated =
+      llvm::checkedAddUnsigned(destination, *scaled);
+  if (!updated)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_overflow: accumulated %s",
+        context.str().c_str());
+  destination = *updated;
+  return llvm::Error::success();
+}
+
+llvm::Error
+accumulateGraphWorkload(detail::AnalyticWorkloadEstimate &destination,
+                        const detail::AnalyticWorkloadEstimate &graph,
+                        std::uint64_t activations) {
+  if (llvm::Error error = accumulateScaledCount(
+          destination.schedulingPressure, graph.schedulingPressure, activations,
+          "Spatial scheduling pressure"))
+    return error;
+  if (llvm::Error error =
+          accumulateScaledCount(destination.activityUnits, graph.activityUnits,
+                                activations, "Spatial activity"))
+    return error;
+  if (llvm::Error error = accumulateScaledCount(
+          destination.graphActivations, graph.graphActivations, activations,
+          "graph activations"))
+    return error;
+  if (llvm::Error error = accumulateScaledCount(
+          destination.boundaryPayloadBytes, graph.boundaryPayloadBytes,
+          activations, "boundary payload bytes"))
+    return error;
+  if (llvm::Error error = accumulateScaledCount(
+          destination.memoryBoundaryBindings, graph.memoryBoundaryBindings,
+          activations, "memory boundary bindings"))
+    return error;
+  return accumulateScaledCount(destination.memoryTransactions,
+                               graph.memoryTransactions, activations,
+                               "memory transactions");
 }
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
     const frontend::StructuredProgramCandidate &program,
-    const frontend::StructuredProgramCandidate &source,
-    const sim::NativeStructuredProgramObservations &sourceObservations,
-    const std::optional<frontend::StructuredEntityRef> &sourceScope,
+    const sim::NativeStructuredProgramObservations &observations,
     const fabric::FinalizedFabricRoot &fabricRoot,
-    const dataflow::CanonicalDataflowProgramView *projectedDataflow = nullptr) {
-  llvm::Expected<DynamicWorkload> workload =
-      projectDynamicWorkload(source, sourceObservations, sourceScope);
-  if (!workload)
-    return workload.takeError();
+    const dataflow::CanonicalDataflowProgramView *projectedDataflow,
+    llvm::ArrayRef<lowering::StructuredSpatialGraphProjection> spatialGraphs) {
+  auto activity = projectBlockActivity(program, observations);
+  if (!activity)
+    return activity.takeError();
+
+  std::size_t spatialRegionCount = 0;
+  for (const frontend::StructuredEntity &entity :
+       activity->view.entities(frontend::StructuredEntityKind::Operation))
+    spatialRegionCount +=
+        llvm::isa_and_nonnull<::loom::SpatialRegionOp>(entity.operation);
+  if (spatialRegionCount != spatialGraphs.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: Spatial graph projection is not "
+        "total");
+  if ((projectedDataflow != nullptr) != !spatialGraphs.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: Dataflow projection is partial");
 
   detail::AnalyticWorkloadEstimate pressure;
-  if (sourceScope) {
-    std::optional<dataflow::CanonicalDataflowArtifact> lowered;
-    std::optional<dataflow::CanonicalDataflowProgramView> loweredView;
-    if (!projectedDataflow) {
-      auto dataflowProgram =
-          lowering::lowerStructuredProgramToCanonicalDataflow(program);
-      if (!dataflowProgram)
-        return dataflowProgram.takeError();
-      lowered.emplace(std::move(*dataflowProgram));
-      auto view = lowered->view();
-      if (!view)
-        return view.takeError();
-      loweredView.emplace(std::move(*view));
-      projectedDataflow = &*loweredView;
-    }
+  llvm::DenseSet<mlir::Operation *> visitedRegions;
+  llvm::DenseSet<mlir::Operation *> visitedLaunches;
+  for (const lowering::StructuredSpatialGraphProjection &projection :
+       spatialGraphs) {
+    auto region = activity->view.resolve(projection.spatialRegion);
+    if (!region)
+      return region.takeError();
+    auto spatial =
+        llvm::dyn_cast_or_null<::loom::SpatialRegionOp>(region->operation);
+    if (!spatial || !spatial.getBody().hasOneBlock())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: projected Spatial owner has the "
+          "wrong shape");
+    if (!visitedRegions.insert(region->operation).second)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: Spatial graph projection is not "
+          "injective");
+    auto found = activity->activations.find(&spatial.getBody().front());
+    if (found == activity->activations.end())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: Spatial owner has no dynamic "
+          "activity projection");
 
-    auto projected = detail::projectCanonicalDataflowWorkload(
-        *projectedDataflow, fabricRoot);
-    if (!projected)
-      return projected.takeError();
-    if (!*projected)
+    auto launch = projectedDataflow->resolve(projection.staticGraphLaunch);
+    if (!launch)
+      return launch.takeError();
+    if (!visitedLaunches.insert(launch->op).second)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: Spatial graph projection is not "
+          "injective");
+    auto graph = detail::projectCanonicalDataflowGraphWorkload(
+        *projectedDataflow, launch->callee, fabricRoot);
+    if (!graph)
+      return graph.takeError();
+    if (!*graph)
       return std::optional<detail::LowConfidenceMetricSet>{};
-    pressure = **projected;
-    llvm::Expected<std::uint64_t> schedulingPressure = checkedScaledCount(
-        pressure.schedulingPressure, workload->spatialActivations,
-        "Spatial scheduling pressure");
-    if (!schedulingPressure)
-      return schedulingPressure.takeError();
-    llvm::Expected<std::uint64_t> activityUnits =
-        checkedScaledCount(pressure.activityUnits, workload->spatialActivations,
-                           "Spatial activity");
-    if (!activityUnits)
-      return activityUnits.takeError();
-    pressure.schedulingPressure = *schedulingPressure;
-    pressure.activityUnits = *activityUnits;
-    llvm::Expected<std::uint64_t> graphActivations =
-        checkedScaledCount(pressure.graphActivations,
-                           workload->spatialActivations, "graph activations");
-    if (!graphActivations)
-      return graphActivations.takeError();
-    llvm::Expected<std::uint64_t> boundaryPayloadBytes = checkedScaledCount(
-        pressure.boundaryPayloadBytes, workload->spatialActivations,
-        "boundary payload bytes");
-    if (!boundaryPayloadBytes)
-      return boundaryPayloadBytes.takeError();
-    llvm::Expected<std::uint64_t> memoryBoundaryBindings = checkedScaledCount(
-        pressure.memoryBoundaryBindings, workload->spatialActivations,
-        "memory boundary bindings");
-    if (!memoryBoundaryBindings)
-      return memoryBoundaryBindings.takeError();
-    llvm::Expected<std::uint64_t> memoryTransactions =
-        checkedScaledCount(pressure.memoryTransactions,
-                           workload->spatialActivations, "memory transactions");
-    if (!memoryTransactions)
-      return memoryTransactions.takeError();
-    pressure.graphActivations = *graphActivations;
-    pressure.boundaryPayloadBytes = *boundaryPayloadBytes;
-    pressure.memoryBoundaryBindings = *memoryBoundaryBindings;
-    pressure.memoryTransactions = *memoryTransactions;
+    if (llvm::Error error =
+            accumulateGraphWorkload(pressure, **graph, found->second))
+      return std::move(error);
   }
 
   auto metrics = detail::estimateLowConfidenceMetrics(
-      workload->instructionLeafExecutions, pressure, fabricRoot);
+      activity->hostInstructionLeafExecutions, pressure, fabricRoot);
   if (!metrics)
     return metrics.takeError();
   return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));
@@ -498,11 +546,18 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         *request.workload(), *request.runtimeInput(), artifactStore);
     if (!inputs)
       return inputs.takeError();
-    if (program->identity() != inputs->structuredProgram.identity())
-      return EvaluationModelResult{
-          {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto observations = sim::executeNativeStructuredProgram(
-        inputs->structuredProgram, inputs->workload, inputs->runtimeInput);
+    bool hasSpatialOwnership = false;
+    program->module().walk(
+        [&](::loom::SpatialRegionOp) { hasSpatialOwnership = true; });
+    auto observations =
+        hasSpatialOwnership ||
+                program->identity() != inputs->structuredProgram.identity()
+            ? sim::executeProfiledSelectedStructuredProgram(
+                  *program, inputs->structuredProgram, inputs->workload,
+                  inputs->runtimeInput)
+            : sim::executeNativeStructuredProgram(inputs->structuredProgram,
+                                                  inputs->workload,
+                                                  inputs->runtimeInput);
     if (!observations) {
       std::error_code code;
       std::string message;
@@ -523,8 +578,26 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       return llvm::createStringError(
           code ? code : llvm::inconvertibleErrorCode(), "%s", message.c_str());
     }
-    auto computed = estimateMetrics(*program, inputs->structuredProgram,
-                                    *observations, std::nullopt, *fabricRoot);
+    std::optional<lowering::ProjectedCanonicalDataflow> projected;
+    std::optional<dataflow::CanonicalDataflowProgramView> projectedView;
+    if (hasSpatialOwnership) {
+      auto lowered =
+          lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+              *program);
+      if (!lowered)
+        return lowered.takeError();
+      projected.emplace(std::move(*lowered));
+      auto view = projected->artifact.view();
+      if (!view)
+        return view.takeError();
+      projectedView.emplace(std::move(*view));
+    }
+    auto computed = estimateMetrics(
+        *program, *observations, *fabricRoot,
+        projectedView ? &*projectedView : nullptr,
+        projected
+            ? llvm::ArrayRef(projected->spatialGraphs)
+            : llvm::ArrayRef<lowering::StructuredSpatialGraphProjection>{});
     if (!computed)
       return computed.takeError();
     metrics = std::move(*computed);
@@ -755,17 +828,11 @@ llvm::Error primeStructuredFabricAnalyticResult(
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: invocation input mismatch");
-  if (candidate.sourceScope.has_value() !=
-      (candidate.canonicalDataflow != nullptr))
+  if ((candidate.canonicalDataflow != nullptr) !=
+      !candidate.spatialGraphs.empty())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: candidate projection is partial");
-  if (!candidate.sourceScope &&
-      candidate.candidate.identity() != invocation.sourceProgram.identity())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "structured_fabric_model_invalid: baseline is not the source "
-        "program");
 
   auto configView =
       ResolvedModelConfigView::project(kModelDescriptor.reference(), config);
@@ -778,10 +845,25 @@ llvm::Error primeStructuredFabricAnalyticResult(
       return view.takeError();
     dataflowView.emplace(std::move(*view));
   }
-  auto metrics =
-      estimateMetrics(candidate.candidate, invocation.sourceProgram,
-                      invocation.sourceObservations, candidate.sourceScope,
-                      fabricRoot, dataflowView ? &*dataflowView : nullptr);
+  std::optional<sim::NativeStructuredProgramObservations> derivedObservations;
+  const sim::NativeStructuredProgramObservations *observations =
+      candidate.observations;
+  if (!observations &&
+      candidate.candidate.identity() == invocation.sourceProgram.identity() &&
+      candidate.spatialGraphs.empty())
+    observations = &invocation.sourceObservations;
+  if (!observations) {
+    auto executed = sim::executeProfiledSelectedStructuredProgram(
+        candidate.candidate, invocation.sourceProgram,
+        invocation.simulationWorkload, invocation.simulationRuntimeInput);
+    if (!executed)
+      return executed.takeError();
+    derivedObservations.emplace(std::move(*executed));
+    observations = &*derivedObservations;
+  }
+  auto metrics = estimateMetrics(candidate.candidate, *observations, fabricRoot,
+                                 dataflowView ? &*dataflowView : nullptr,
+                                 candidate.spatialGraphs);
   if (!metrics)
     return metrics.takeError();
 

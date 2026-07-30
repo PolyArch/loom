@@ -620,6 +620,16 @@ void runEvaluationAnchor() {
   auto warm = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, warmScope, warmDecision,
       design.roots().front()));
+  const loom::frontend::SpatialOwnershipScope combinedWarmScope{
+      findCallable(spatial.structuredProgram, "warm")};
+  auto combinedWarmDecisions =
+      take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+          spatial.structuredProgram, combinedWarmScope.selection));
+  if (combinedWarmDecisions.size() != 1)
+    fail("independent ownership composition changed the decision domain");
+  auto combined = take(loom::frontend::materializeSpatialOwnershipDecision(
+      spatial.structuredProgram, combinedWarmScope,
+      combinedWarmDecisions.front(), design.roots().front()));
   auto tiny = take(loom::frontend::materializeSpatialOwnershipDecision(
       compiled.structuredProgram, tinyScope, tinyDecision,
       design.roots().front()));
@@ -637,6 +647,9 @@ void runEvaluationAnchor() {
       loom::frontend::publishStructuredProgram(cold.structuredProgram, store));
   const loom::ArtifactRootReference warmRef = take(
       loom::frontend::publishStructuredProgram(warm.structuredProgram, store));
+  const loom::ArtifactRootReference combinedRef =
+      take(loom::frontend::publishStructuredProgram(combined.structuredProgram,
+                                                    store));
   const loom::ArtifactRootReference tinyRef = take(
       loom::frontend::publishStructuredProgram(tiny.structuredProgram, store));
   const loom::ArtifactRootReference incorrectRef =
@@ -757,7 +770,8 @@ void runEvaluationAnchor() {
       inputs.observations};
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
-              baselineRef, {compiled.structuredProgram, nullptr, std::nullopt},
+              baselineRef,
+              {compiled.structuredProgram, nullptr, {}, &inputs.observations},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -765,7 +779,7 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               coldRef,
               {cold.structuredProgram, &cold.canonicalDataflow,
-               findCallable(compiled.structuredProgram, "cold")},
+               cold.spatialGraphs},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -773,7 +787,7 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               tinyRef,
               {tiny.structuredProgram, &tiny.canonicalDataflow,
-               findCallable(compiled.structuredProgram, "tiny")},
+               tiny.spatialGraphs},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -781,7 +795,15 @@ void runEvaluationAnchor() {
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               spatialRef,
               {spatial.structuredProgram, &spatial.canonicalDataflow,
-               findCallable(compiled.structuredProgram, "kernel")},
+               spatial.spatialGraphs},
+              invocation, design.roots().front(), loom::defaultResolvedConfig(),
+              store))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          loom::evaluation::models::primeStructuredFabricAnalyticResult(
+              combinedRef,
+              {combined.structuredProgram, &combined.canonicalDataflow,
+               combined.spatialGraphs},
               invocation, design.roots().front(), loom::defaultResolvedConfig(),
               store))
     fail(llvm::toString(std::move(error)));
@@ -796,6 +818,9 @@ void runEvaluationAnchor() {
       inputs.runtimeInputReference, store);
   EvaluatedRuntime tinyEvaluation = evaluateStructuredRuntime(
       tinyRef, design.roots().front().reference(), inputs.workloadReference,
+      inputs.runtimeInputReference, store);
+  EvaluatedRuntime combinedEvaluation = evaluateStructuredRuntime(
+      combinedRef, design.roots().front().reference(), inputs.workloadReference,
       inputs.runtimeInputReference, store);
   EvaluatedFunctional baselineFunctional =
       evaluateStructuredFunctional(baselineRef, inputs.workloadReference,
@@ -825,6 +850,15 @@ void runEvaluationAnchor() {
   if (loom::evaluation::compareDecimalValue(tinyEvaluation.value,
                                             baseline.value) < 0)
     fail("launch overhead did not reject a trivial executed candidate");
+  if (loom::evaluation::compareDecimalValue(combinedEvaluation.value,
+                                            spatialEvaluation.value) >= 0 ||
+      loom::evaluation::compareDecimalValue(
+          combinedEvaluation.value,
+          evaluateStructuredRuntime(warmRef, design.roots().front().reference(),
+                                    inputs.workloadReference,
+                                    inputs.runtimeInputReference, store)
+              .value) >= 0)
+    fail("whole-candidate Evaluation did not compose independent Spatial work");
   if (functionalMismatchResult(baselineFunctional.request,
                                baselineFunctional.evidence) !=
           loom::evaluation::FindingResultForm::Absent ||

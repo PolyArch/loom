@@ -24,6 +24,7 @@ namespace loom::frontend {
 struct MaterializedOwnershipCandidate final {
   StructuredProgramCandidate structuredProgram;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
+  std::vector<lowering::StructuredSpatialGraphProjection> spatialGraphs;
 };
 
 /// The two ownership shapes of an effect-form scf.forall. GraphParallel keeps

@@ -35,6 +35,7 @@ class Operation;
 namespace dataflow {
 
 class CanonicalDataflowArtifact;
+struct FinalizedCanonicalDataflowProjection;
 namespace detail {
 struct CanonicalLabeling;
 } // namespace detail
@@ -231,6 +232,9 @@ private:
   // importer uses.
   friend llvm::Expected<CanonicalDataflowArtifact>
       finalizeCanonicalDataflow(mlir::ModuleOp);
+  friend llvm::Expected<FinalizedCanonicalDataflowProjection>
+      finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>);
 
   // Assemble the typed ID maps and every closed structural inventory from an
   // already-computed canonical labeling. The importer calls this after
@@ -355,6 +359,9 @@ public:
 private:
   friend llvm::Expected<CanonicalDataflowArtifact>
       finalizeCanonicalDataflow(mlir::ModuleOp);
+  friend llvm::Expected<FinalizedCanonicalDataflowProjection>
+      finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>);
   friend llvm::Expected<CanonicalDataflowArtifact>
   importCanonicalDataflow(const ::loom::ArtifactIdentity &,
                           const ::loom::CanonicalSemanticBytes &);
@@ -379,6 +386,15 @@ private:
   CanonicalDataflowProgramView view_;
 };
 
+/// Finalizer-owned ephemeral correspondence for caller-selected static graph
+/// launch operations. The references belong to `artifact`; the correspondence
+/// is not serialized and can always be reconstructed by lowering the exact
+/// owner again.
+struct FinalizedCanonicalDataflowProjection final {
+  CanonicalDataflowArtifact artifact;
+  std::vector<StaticGraphLaunchRef> trackedStaticGraphLaunches;
+};
+
 /// Failure-atomic finalization. Operates on a private clone of `source`, strips
 /// every preexisting derived ID, validates the whole canonical program,
 /// constructs the canonical relation graph, assigns dense artifact-global IDs
@@ -386,6 +402,14 @@ private:
 /// artifact framed by the Common finalizer.
 llvm::Expected<CanonicalDataflowArtifact>
 finalizeCanonicalDataflow(mlir::ModuleOp source);
+
+/// Finalizes one program while carrying an ordered set of source launch
+/// operations through the private clone and canonical labeling transaction.
+/// Every tracked operation must be a live dataflow.graph.launch in `source`.
+llvm::Expected<FinalizedCanonicalDataflowProjection>
+finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
+    mlir::ModuleOp source,
+    llvm::ArrayRef<mlir::Operation *> trackedStaticGraphLaunches);
 
 /// Strictly imports one exact stored canonical Dataflow payload. The family
 /// importer independently rebuilds canonical labels and materialized entity
