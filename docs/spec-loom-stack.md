@@ -367,11 +367,16 @@ product Artifact or a second program authority:
 SourceTranslationUnitInventory
   independently invocable source translation units
 
-ProgramWorkloadInventory
-  exact linked program roots or public-API invocations
-  + target profile
-  + deterministic runtime input
-  + native or official reference oracle
+OperatorWorkloadInventory
+  exact typed operator protocol
+  + exact target profile
+  + exact producer/build variant
+  + ordered WorkloadVector[]
+
+SourceCoverageEdge
+  exact link selection
+  + object or archive-member owner
+  + executable call or data-use provenance
 ```
 
 The source inventory consists of the LoomBench source rows and the complete
@@ -382,14 +387,45 @@ environment are not themselves compiler invocations. Every source row must
 pass ordinary drop-in compilation and, when enabled for separate compilation,
 produce a valid frontend-owned relocatable accelerator payload.
 
+An operator identity is one independently meaningful typed call protocol, not
+one source file, test function, or input-size combination. A stateful protocol
+contains its ordered initialization, execution, and observation calls. Query,
+invalid-parameter, and compute protocols remain distinct when their callable
+contracts differ. A profile group is one operator identity under one exact
+target profile. An operator workload is one profile group under one exact
+producer/build variant and owns an ordered, nonempty vector list. Each vector
+provides deterministic runtime input and a native or official reference
+oracle. Vectors receive independent execution outcomes and limits but do not
+repeat final link, compilation, candidate generation, or top-level DSE.
+
 The workload inventory is derived from real program entries and public API
 invocations. Its exact linker-selected objects and archive members form one
 LLVM module through the final-link contract before S0, Sn, D0, D*, simulation,
-or Mapping is judged. Every source row has at least one workload coverage edge
-under an applicable exact target profile. A data-only translation unit is
-covered through a real consumer that selects its definitions. Alternative
-aggregate and individual-source library builds are distinct producer sets and
-must not be linked together.
+or Mapping is judged. Every source row has at least one SourceCoverageEdge
+under an applicable exact target profile, and every operator workload resolves
+at least one complete producer. A data-only translation unit is covered
+through a real consumer that selects its definitions. Alternative aggregate
+and individual-source library builds are distinct producer variants and must
+not be linked together.
+
+The checked-in conformance inventory implementation mechanically derives its
+current baseline from the exact LoomBench manifest, pinned CMSIS descriptors,
+Clang typed call projection, CMake source selection, package descriptors, and
+gitlinks. For the currently pinned inputs the closed baseline is:
+
+| Derived view | Count |
+| --- | ---: |
+| source translation units | 1,040 |
+| operator identities | 889 |
+| profile groups | 1,204 |
+| operator workloads | 1,916 |
+| profile-local vectors | 3,781 |
+| DFG-sim vector executions | 6,565 |
+
+The derivation and both coverage anti-joins are authoritative, not these
+snapshot numbers. A pinned manifest, descriptor, build, or submodule change
+must regenerate the baseline and review the semantic delta; callers never
+hard-code the snapshot as membership policy.
 
 A target profile is a general typed compiler and provider configuration, not a
 suite exception. The repository conformance profiles cover portable scalar
@@ -415,8 +451,9 @@ LoomBench, CMSIS-DSP, and CMSIS-NN may use different source manifests,
 toolchain flags, runtime oracles, and fast regression selections, but no suite
 has a shallower permanent compiler boundary. Source-stage requests apply to
 selected source rows. Whole-program and later-stage requests apply to selected
-workload rows after final link. Both use the same public driver and in-process
-stage libraries, and the same validity and failure contracts apply.
+operator workload rows after final link, with each owned vector evaluated
+independently. Both use the same public driver and in-process stage libraries,
+and the same validity and failure contracts apply.
 
 Stage checkpoints are diagnostic and regression boundaries, not suite
 capabilities. A checkpoint can stop after ordinary execution, Structured
@@ -458,13 +495,14 @@ requiring a software input or an RTL provider.
 
 The next product gate has two jointly required parts. The source gate compiles
 every selected source row through the ordinary object and relocatable-payload
-boundary. The pre-Mapping workload gate final-links every selected workload
-row, then uses the same `loom-cc` or `loom-c++` contract to produce LLVM IR,
-Structured candidates, and a finalized Canonical Dataflow Program while
-resolving one exact Fabric target and using central Evaluation where required.
-Mapping is outside this gate. The harness verifies total source-to-workload
-coverage separately from stage success. A typed unsupported outcome remains a
-tool or target limitation; it is not success and cannot be made
+boundary. The pre-Mapping workload gate final-links every selected operator
+workload once, then uses the same `loom-cc` or `loom-c++` contract to produce
+LLVM IR, Structured candidates, and a finalized Canonical Dataflow Program
+while resolving one exact Fabric target and using central Evaluation where
+required. Every owned vector then executes through the semantic gate with its
+own limit and oracle. Mapping is outside this gate. The harness verifies both
+coverage anti-joins separately from stage success. A typed unsupported outcome
+remains a tool or target limitation; it is not success and cannot be made
 suite-specific.
 
 Frontend and non-Mapping Evaluation capabilities advance together after at

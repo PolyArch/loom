@@ -131,18 +131,31 @@ closure, profile, inputs, and oracle needed by optimization, simulation, and
 Mapping. Data-only units receive honest coverage through real consumers rather
 than synthetic computation.
 
-CMSIS-NN already owns executable test cases and their expected values through
-Unity wrappers. Replacing those wrappers with a Loom-authored operator catalog
-would create a second workload and oracle authority. The wrapper itself can,
-however, be projected mechanically into one exact workload per owned test
-function: membership, order, setup, assertions, inputs, and expected values all
-remain upstream-owned, while each generated runner merely selects one member.
-This avoids repeating an entire independent regression suite for every DSE
-candidate and gives each semantic witness an independent resource limit. Loom
-pins the Unity runtime selected upstream and lets the upstream CMake targets
+CMSIS already owns executable tests, call sequences, patterns, and expected
+values. Replacing them with a Loom-authored operator catalog would create a
+second workload and oracle authority. Treating each test vector as a top-level
+workload would instead repeat final link and DSE for mere input-size changes;
+treating a whole descriptor or suite as one workload would hide independent
+operator semantics behind a giant wrapper.
+
+The smallest stable middle ground is the typed operator protocol. Unity
+wrappers and DSP descriptors mechanically project to ordered public-call
+protocols. Equal protocols under one target profile share compilation and DSE,
+while each upstream test contributes an ordered vector with an independent
+oracle and execution limit. Stateful initialization and execution remain
+together because splitting them would change semantics. Query and failure-path
+protocols remain separate because merging them with compute would erase a real
+callable distinction. Aggregate and individual builds are producer variants,
+not new operators or a blanket multiplication rule. This granularity preserves
+upstream ownership, keeps work modular, and prevents both giant-wrapper and
+per-vector fragmentation.
+
+Loom pins the Unity runtime selected upstream and lets upstream build metadata
 select library sources and archive members. Staging generated files outside the
 submodule keeps external sources immutable while preserving the real test
-semantics.
+semantics. Exact SourceCoverageEdges separately prove that code and data owners
+participate in at least one executable protocol, so a table translation unit
+does not need fabricated computation.
 
 Fast tests may stop at stage checkpoints to localize regressions, and smoke
 selections may keep routine execution affordable. Those are invocation choices,

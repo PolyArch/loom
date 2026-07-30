@@ -191,13 +191,14 @@ The target CMSIS scope includes:
 
 The two global corpus inventories and their coverage relation are owned by
 `docs/spec-loom-stack.md`. This document owns their CMSIS-DSP and CMSIS-NN
-derivation. The CMSIS source inventory is the independently invocable tracked
-C translation-unit set in the pinned submodules. The CMSIS workload inventory
-contains real public-API invocations linked from exact selected objects and
-archive members, with one applicable target profile, deterministic input, and
-a native or official reference oracle. Explicit smoke selections exercise real
-compiler paths while support expands, but they do not redefine either
-inventory or act as per-source status records.
+derivation. The CMSIS source inventory is the union of independently invocable
+C translation units selected by the pinned package descriptor and supported
+upstream build configurations. The CMSIS operator workload inventory contains
+real typed public-API protocols linked from exact selected objects and archive
+members, with one applicable target profile, one producer/build variant, and
+ordered deterministic vectors with native or official reference oracles.
+Explicit smoke selections exercise real compiler paths while support expands,
+but they do not redefine either inventory or act as per-source status records.
 
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
@@ -284,16 +285,18 @@ the schema, mutate source trees or vendored inputs, or become DSE inputs.
 
 ## Canonical Source Inventory
 
-Canonical CMSIS membership comes from every independently invocable tracked C
-translation unit under `Source` at the submodule commits pinned by the parent
-repository. CMSIS reserves a leading underscore on a source basename for
-private implementation fragments that require an including translation unit's
-macro environment; those fragments are not independent compiler invocations.
-They remain covered through their including translation units and the
-target-feature configurations that select them. `test/corpus_inventory.py`
-derives these rows directly from each verified submodule commit tree, reports
-their counts mechanically, and verifies that the checked-out submodule
-revisions match the parent repository gitlinks.
+Canonical CMSIS membership comes from the exact C translation units selected
+by the pinned package descriptor or an admitted upstream build configuration.
+This includes selected provider sources outside `Source` and package-owned
+aggregate sources that a single default CMake configuration can omit. CMSIS
+reserves a leading underscore on a source basename for private implementation
+fragments that require an including translation unit's macro environment;
+those fragments are not independent compiler invocations. They remain covered
+through their including translation units and target-feature configurations.
+`test/corpus_inventory.py` derives these rows from fresh upstream build
+configuration, the package descriptor, and verified submodule commits. Every
+source-selection guard is explicit; a persistent CMake cache or ambient option
+cannot alter membership.
 LoomBench membership is defined by its own manifest rather than by this CMSIS
 contract.
 
@@ -320,24 +323,39 @@ data-only unit, replace a feature-gated implementation, or stand in for a
 missing provider.
 
 The CMSIS-NN workload provider consumes the pinned `externals/unity` source,
-the selected upstream case `CMakeLists.txt`, its Unity wrapper, and the
-CMSIS-NN library CMake target as one build description. Generated Unity runners
-and CMake build trees are ephemeral harness products. Each test function in the
-upstream wrapper defines one exact workload row, in wrapper source order. Its
-generated runner invokes exactly that function while preserving the upstream
-setup, teardown, assertions, sources, compile definitions, and linked CMSIS-NN
-target. The same exact program is compiled for the Loom target and the native
-oracle. Generated runners never become program, input, or oracle authority.
-Both builds use the LLVM tools pinned by Loom; a host `ar`, `ranlib`, or linker
-from another LLVM revision is not admissible.
+selected upstream case build descriptions, Unity wrappers, public headers, and
+CMSIS-NN library CMake target. Clang AST projection recursively resolves each
+wrapper-owned test helper to its ordered typed public-call protocol. Test
+functions with the same normalized protocol and target profile contribute
+ordered WorkloadVectors to one profile group. Distinct compute, query,
+invalid-parameter, and stateful protocols do not merge merely because they
+share a case directory. Public protocols absent from upstream wrappers receive
+one deterministic Loom-owned invocation only when it calls the real public API
+and has an independent oracle. Generated runners and CMake build trees are
+ephemeral projections; they never become program, input, or oracle authority.
 
-The DFG semantic gate gives each exact workload a 15-second wall-time execution
-limit by default. Provider configuration and shared target construction occur
-outside that per-workload limit. The workload must be compact enough to execute
-its meaningful firing and state-transition behavior within the limit; combining
-independent Unity test functions into one DFG workload is invalid. Exceeding the
-limit reports an incomplete execution and cannot change candidate semantics,
-prove graph-free legality, or authorize a passing result.
+The CMSIS-DSP provider applies the same model to its pinned test and benchmark
+descriptors. A descriptor method projects to an ordered typed call protocol;
+input patterns become vectors. Initialization and execution calls that form one
+stateful operation remain in one protocol. Aggregate and individual-source
+builds are separate producer variants when both own the complete required
+source closure. A producer variant missing any required owner is absent rather
+than repaired or counted by multiplication. Package-descriptor-only sources
+and target-specific providers participate through the same exact source and
+link closure.
+
+Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
+`ranlib`, or linker from another LLVM revision is not admissible.
+
+The DFG semantic gate gives each WorkloadVector a 15-second wall-time execution
+limit by default. Provider configuration, final link, compilation, candidate
+generation, and shared target construction occur outside that simulation
+limit and have separate bounded execution controls. A vector must be compact
+enough to execute meaningful firing and state-transition behavior within the
+limit. Vectors sharing one operator workload reuse final link and DSE but keep
+independent inputs, oracle comparison, outcome, and timeout. Exceeding a limit
+reports an incomplete execution and cannot change candidate semantics, prove
+graph-free legality, or authorize a passing result.
 
 The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public
@@ -352,20 +370,22 @@ source used by a smoke run.
 
 Core CMSIS regression coverage requires:
 
-* the inventory count comes directly from independently invocable tracked C
-  translation units in each pinned `Source` tree;
+* the inventory count comes directly from independently invocable C
+  translation units selected by pinned build and package owners;
 * every selected source compiles without modifying the external source trees
   and any emitted relocatable accelerator payload passes its owner verifier;
-* every selected workload final-links only its selected objects and archive
-  members, then compiles through LLVM IR, raised MLIR, and dataflow MLIR;
+* every selected operator workload final-links only its selected objects and
+  archive members once, then compiles through LLVM IR, raised MLIR, and
+  dataflow MLIR;
 * generated workload MLIR reparses, preserves the linked program semantics,
   and contains definitions associated with its real entry or public API;
 * validation rejects a dataflow artifact whose definitions are unrelated to
   the selected workload entry;
-* every source row has at least one mechanically verified workload coverage
-  edge under an applicable profile;
-* workload execution is checked against its deterministic native or official
-  reference oracle; and
+* every source row has at least one mechanically verified SourceCoverageEdge
+  under an applicable profile and every operator workload has a complete
+  producer closure;
+* every WorkloadVector executes independently against its deterministic native
+  or official reference oracle; and
 * ordinary compiler compatibility and acceleration-specific behavior are
   tested at their owning driver and pipeline boundaries.
 
@@ -373,10 +393,11 @@ A complete-suite source invocation attempts every requested translation unit
 through the public driver and the same in-process source-stage libraries used
 for LoomBench. Every unit must satisfy ordinary drop-in compilation when its
 underlying compiler target is supported. A complete-suite workload invocation
-operates on final-linked program rows rather than pretending each object is a
-whole program. Canonical Dataflow, Mapping, simulation, and later stages use
-those exact linked rows and the same owner contracts without a CMSIS-specific
-stopping rule. Graph-free legality is exactly the complete evidence contract in
+operates on final-linked operator workloads and their vectors rather than
+pretending each object or each input vector is a whole program. Canonical
+Dataflow, Mapping, simulation, and later stages use those exact linked rows and
+the same owner contracts without a CMSIS-specific stopping rule. Graph-free
+legality is exactly the complete evidence contract in
 `docs/spec-loom-stack.md`; a per-TU empty module or target-profile stub is not
 such evidence.
 

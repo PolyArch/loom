@@ -46,8 +46,10 @@ that stage into success.
 
 Every emitted source-suite identity is exactly one of `loombench`,
 `cmsis-dsp`, or `cmsis-nn`. A repository case emits `suite=loombench` and its
-manifest case name. The pair is unique. Counts are always derived from the
-manifest or pinned external source tree and never become specification
+manifest case name as its operator identity. Each listed source/executable pair
+is an independently invocable source translation unit and producer variant.
+The source path and workload identity are unique. Counts are always derived
+from the manifest or pinned external source tree and never become specification
 constants.
 
 ## Case Contract
@@ -135,8 +137,10 @@ evidence.
 
 `test/corpus_inventory.py` is the shared derived inventory view. It validates
 the LoomBench manifest and pinned CMSIS owners, emits separate source and
-workload views, preserves their identities, and supports complete-suite or
-explicit-row selection. It does not maintain a competing membership list.
+operator-workload views, preserves their identities, and supports
+complete-suite or explicit-row selection. One LoomBench manifest case is one
+operator protocol with its ordered input vector and separate `func` and
+`inline` producer variants. It does not maintain a competing membership list.
 
 Runners discover cases from that structured view. Empty selections, duplicate
 case/source identities, missing sources, malformed manifest records, stale
