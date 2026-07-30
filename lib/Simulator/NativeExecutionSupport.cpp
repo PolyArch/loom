@@ -51,37 +51,43 @@ llvm::Error invalid(const llvm::Twine &message);
 llvm::Error executionFailed(const llvm::Twine &message);
 llvm::Error unsupported(const llvm::Twine &message);
 
-constexpr llvm::StringLiteral cosineF16Symbol =
-    "__loom_native_math_cos_f16_1_0";
-constexpr llvm::StringLiteral cosineBF16Symbol =
-    "__loom_native_math_cos_bf16_1_0";
-constexpr llvm::StringLiteral cosineF32Symbol =
-    "__loom_native_math_cos_f32_1_0";
-constexpr llvm::StringLiteral cosineF64Symbol =
-    "__loom_native_math_cos_f64_1_0";
+constexpr llvm::StringLiteral unaryMathF16Symbol =
+    "__loom_native_unary_math_f16_1_0";
+constexpr llvm::StringLiteral unaryMathBF16Symbol =
+    "__loom_native_unary_math_bf16_1_0";
+constexpr llvm::StringLiteral unaryMathF32Symbol =
+    "__loom_native_unary_math_f32_1_0";
+constexpr llvm::StringLiteral unaryMathF64Symbol =
+    "__loom_native_unary_math_f64_1_0";
 
 template <typename Bits>
-Bits deterministicCosineBits(const llvm::fltSemantics &semantics, Bits bits) {
+Bits deterministicUnaryMathBits(const llvm::fltSemantics &semantics,
+                                std::uint32_t schemaOrdinal, Bits bits) {
   llvm::APFloat input(semantics, llvm::APInt(sizeof(Bits) * 8,
                                              static_cast<std::uint64_t>(bits)));
-  llvm::APFloat result = llvm::cantFail(evaluateDeterministicCosine(input));
+  llvm::APFloat result = llvm::cantFail(evaluateDeterministicUnaryMath(
+      static_cast<dataflow::OperationSchemaId>(schemaOrdinal), input));
   return static_cast<Bits>(result.bitcastToAPInt().getZExtValue());
 }
 
-std::uint16_t deterministicCosineF16(std::uint16_t bits) {
-  return deterministicCosineBits(llvm::APFloat::IEEEhalf(), bits);
+std::uint16_t deterministicUnaryMathF16(std::uint32_t schema,
+                                        std::uint16_t bits) {
+  return deterministicUnaryMathBits(llvm::APFloat::IEEEhalf(), schema, bits);
 }
 
-std::uint16_t deterministicCosineBF16(std::uint16_t bits) {
-  return deterministicCosineBits(llvm::APFloat::BFloat(), bits);
+std::uint16_t deterministicUnaryMathBF16(std::uint32_t schema,
+                                         std::uint16_t bits) {
+  return deterministicUnaryMathBits(llvm::APFloat::BFloat(), schema, bits);
 }
 
-std::uint32_t deterministicCosineF32(std::uint32_t bits) {
-  return deterministicCosineBits(llvm::APFloat::IEEEsingle(), bits);
+std::uint32_t deterministicUnaryMathF32(std::uint32_t schema,
+                                        std::uint32_t bits) {
+  return deterministicUnaryMathBits(llvm::APFloat::IEEEsingle(), schema, bits);
 }
 
-std::uint64_t deterministicCosineF64(std::uint64_t bits) {
-  return deterministicCosineBits(llvm::APFloat::IEEEdouble(), bits);
+std::uint64_t deterministicUnaryMathF64(std::uint32_t schema,
+                                        std::uint64_t bits) {
+  return deterministicUnaryMathBits(llvm::APFloat::IEEEdouble(), schema, bits);
 }
 
 struct DeterministicMathCallback final {
@@ -91,71 +97,103 @@ struct DeterministicMathCallback final {
 };
 
 std::optional<DeterministicMathCallback>
-cosineCallback(llvm::Type *scalarType) {
+unaryMathCallback(llvm::Type *scalarType) {
   if (scalarType->isHalfTy())
     return DeterministicMathCallback{
-        cosineF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF16), 16};
+        unaryMathF16Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF16), 16};
   if (scalarType->isBFloatTy())
     return DeterministicMathCallback{
-        cosineBF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineBF16), 16};
+        unaryMathBF16Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathBF16), 16};
   if (scalarType->isFloatTy())
     return DeterministicMathCallback{
-        cosineF32Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF32), 32};
+        unaryMathF32Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF32), 32};
   if (scalarType->isDoubleTy())
     return DeterministicMathCallback{
-        cosineF64Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF64), 64};
+        unaryMathF64Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF64), 64};
   return std::nullopt;
 }
 
-std::optional<DeterministicMathCallback> cosineCallback(mlir::Type scalarType) {
-  if (llvm::isa<mlir::Float16Type>(scalarType))
-    return DeterministicMathCallback{
-        cosineF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF16), 16};
-  if (llvm::isa<mlir::BFloat16Type>(scalarType))
-    return DeterministicMathCallback{
-        cosineBF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineBF16), 16};
-  if (llvm::isa<mlir::Float32Type>(scalarType))
-    return DeterministicMathCallback{
-        cosineF32Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF32), 32};
-  if (llvm::isa<mlir::Float64Type>(scalarType))
-    return DeterministicMathCallback{
-        cosineF64Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicCosineF64), 64};
-  return std::nullopt;
+std::optional<dataflow::OperationSchemaId>
+unaryMathSchema(llvm::Intrinsic::ID intrinsic) {
+  using Schema = dataflow::OperationSchemaId;
+  switch (intrinsic) {
+  case llvm::Intrinsic::sin:
+    return Schema::MathSin;
+  case llvm::Intrinsic::cos:
+    return Schema::MathCos;
+  case llvm::Intrinsic::tan:
+    return Schema::MathTan;
+  case llvm::Intrinsic::sinh:
+    return Schema::MathSinh;
+  case llvm::Intrinsic::cosh:
+    return Schema::MathCosh;
+  case llvm::Intrinsic::tanh:
+    return Schema::MathTanh;
+  case llvm::Intrinsic::exp:
+    return Schema::MathExp;
+  case llvm::Intrinsic::exp2:
+    return Schema::MathExp2;
+  case llvm::Intrinsic::log:
+    return Schema::MathLog;
+  case llvm::Intrinsic::log2:
+    return Schema::MathLog2;
+  case llvm::Intrinsic::log10:
+    return Schema::MathLog10;
+  case llvm::Intrinsic::sqrt:
+    return Schema::MathSqrt;
+  default:
+    return std::nullopt;
+  }
 }
 
-llvm::Error materializeDeterministicMathMlir(mlir::ModuleOp module) {
-  llvm::SmallVector<mlir::math::CosOp> cosineOps;
-  module.walk([&](mlir::math::CosOp cosine) { cosineOps.push_back(cosine); });
-  if (cosineOps.empty())
-    return llvm::Error::success();
-
-  for (mlir::math::CosOp cosine : cosineOps) {
-    mlir::Type type = cosine.getType();
+template <typename SourceOp, typename TargetOp>
+llvm::Error materializeDeterministicUnaryMath(mlir::ModuleOp module) {
+  llvm::SmallVector<SourceOp> operations;
+  module.walk([&](SourceOp operation) { operations.push_back(operation); });
+  for (SourceOp operation : operations) {
+    mlir::Type type = operation.getType();
     auto vector = llvm::dyn_cast<mlir::VectorType>(type);
     if (vector && vector.isScalable())
       return unsupported(
-          "deterministic native cosine does not support scalable vectors");
+          "deterministic native unary math does not support scalable vectors");
     mlir::Type scalarType = vector ? vector.getElementType() : type;
-    auto callback = cosineCallback(scalarType);
-    if (!callback)
+    if (!llvm::isa<mlir::Float16Type, mlir::BFloat16Type, mlir::Float32Type,
+                   mlir::Float64Type>(scalarType))
       return unsupported(
-          "deterministic native cosine has an unsupported scalar type");
-    mlir::OpBuilder builder(cosine);
-    mlir::LLVM::CosOp replacement = mlir::LLVM::CosOp::create(
-        builder, cosine.getLoc(), type, cosine.getOperand(),
+          "deterministic native unary math has an unsupported scalar type");
+    mlir::OpBuilder builder(operation);
+    TargetOp replacement = TargetOp::create(
+        builder, operation.getLoc(), type, operation.getOperand(),
         mlir::arith::convertArithFastMathAttrToLLVM(
-            cosine.getFastMathFlagsAttr()));
-    cosine.replaceAllUsesWith(replacement.getResult());
-    cosine.erase();
+            operation.getFastMathFlagsAttr()));
+    operation.replaceAllUsesWith(replacement.getResult());
+    operation.erase();
   }
+  return llvm::Error::success();
+}
+
+llvm::Error materializeDeterministicMathMlir(mlir::ModuleOp module) {
+#define LOOM_MATERIALIZE_UNARY_MATH(SourceOp, TargetOp)                        \
+  if (llvm::Error error =                                                      \
+          materializeDeterministicUnaryMath<SourceOp, TargetOp>(module))       \
+  return error
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::SinOp, mlir::LLVM::SinOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::CosOp, mlir::LLVM::CosOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::TanOp, mlir::LLVM::TanOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::SinhOp, mlir::LLVM::SinhOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::CoshOp, mlir::LLVM::CoshOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::TanhOp, mlir::LLVM::TanhOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::ExpOp, mlir::LLVM::ExpOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::Exp2Op, mlir::LLVM::Exp2Op);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::LogOp, mlir::LLVM::LogOp);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::Log2Op, mlir::LLVM::Log2Op);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::Log10Op, mlir::LLVM::Log10Op);
+  LOOM_MATERIALIZE_UNARY_MATH(mlir::math::SqrtOp, mlir::LLVM::SqrtOp);
+#undef LOOM_MATERIALIZE_UNARY_MATH
   if (mlir::failed(mlir::verify(module)))
     return invalid("deterministic native math projection does not verify");
   return llvm::Error::success();
@@ -364,23 +402,27 @@ llvm::Error retargetStructuredOracle(llvm::Module &module,
 
 llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
                                            llvm::orc::LLJIT &jit) {
-  std::vector<llvm::IntrinsicInst *> cosineCalls;
+  using MathCall =
+      std::pair<llvm::IntrinsicInst *, dataflow::OperationSchemaId>;
+  std::vector<MathCall> mathCalls;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
         if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
-            intrinsic && intrinsic->getIntrinsicID() == llvm::Intrinsic::cos)
-          cosineCalls.push_back(intrinsic);
+            intrinsic)
+          if (auto schema = unaryMathSchema(intrinsic->getIntrinsicID()))
+            mathCalls.emplace_back(intrinsic, *schema);
   llvm::DenseMap<llvm::StringRef, DeterministicMathCallback> callbacks;
-  for (llvm::IntrinsicInst *intrinsic : cosineCalls) {
+  for (const auto &[intrinsic, schema] : mathCalls) {
+    (void)schema;
     llvm::Type *type = intrinsic->getType();
     if (type->isScalableTy())
       return unsupported(
-          "deterministic native cosine does not support scalable vectors");
-    auto callback = cosineCallback(type->getScalarType());
+          "deterministic native unary math does not support scalable vectors");
+    auto callback = unaryMathCallback(type->getScalarType());
     if (!callback)
       return unsupported(
-          "deterministic native cosine has an unsupported scalar type");
+          "deterministic native unary math has an unsupported scalar type");
     callbacks.try_emplace(callback->symbol, *callback);
   }
   if (callbacks.empty())
@@ -393,15 +435,17 @@ llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
   for (const auto &[symbol, callback] : callbacks) {
     llvm::IntegerType *bits =
         llvm::IntegerType::get(module.getContext(), callback.bitWidth);
+    llvm::IntegerType *schema = llvm::Type::getInt32Ty(module.getContext());
     llvm::FunctionCallee declaration = module.getOrInsertFunction(
-        symbol, llvm::FunctionType::get(bits, {bits}, false));
+        symbol, llvm::FunctionType::get(bits, {schema, bits}, false));
     declarations.try_emplace(symbol, declaration);
   }
 
-  for (llvm::IntrinsicInst *intrinsic : cosineCalls) {
+  for (const auto &[intrinsic, schema] : mathCalls) {
     llvm::Type *type = intrinsic->getType();
     const DeterministicMathCallback callback =
-        *cosineCallback(type->getScalarType());
+        *unaryMathCallback(type->getScalarType());
+    const std::uint32_t schemaValue = static_cast<std::uint32_t>(schema);
     llvm::FunctionCallee declaration = declarations.lookup(callback.symbol);
     llvm::IRBuilder<> builder(intrinsic);
     builder.SetCurrentDebugLocation(intrinsic->getDebugLoc());
@@ -409,7 +453,10 @@ llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
       llvm::IntegerType *bits =
           llvm::IntegerType::get(module.getContext(), callback.bitWidth);
       llvm::Value *inputBits = builder.CreateBitCast(value, bits);
-      llvm::Value *resultBits = builder.CreateCall(declaration, {inputBits});
+      llvm::Value *schemaOrdinal = llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(module.getContext()), schemaValue);
+      llvm::Value *resultBits =
+          builder.CreateCall(declaration, {schemaOrdinal, inputBits});
       return builder.CreateBitCast(resultBits, value->getType());
     };
 

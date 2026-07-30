@@ -1,7 +1,7 @@
 // RUN: loom-dfg-sim %s --graph math_abs_float --output %t.abs.json
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.json
-// RUN: loom-dfg-sim %s --graph math_provider_absence --output %t.absent.json
-// RUN: FileCheck %s --check-prefix=ABSENT < %t.absent.json
+// RUN: loom-dfg-sim %s --graph math_sine --output %t.sin.json
+// RUN: FileCheck %s --check-prefix=SIN < %t.sin.json
 // RUN: loom-dfg-sim %s --graph math_rounding_float --output %t.round.json
 // RUN: FileCheck %s --check-prefix=ROUND < %t.round.json
 // RUN: loom-dfg-sim %s --graph math_roundeven_edges --output %t.roundeven.json
@@ -16,10 +16,10 @@
 // ABS-DAG: "math.absf": 1
 // ABS-DAG: "f32:3"
 
-// ABSENT-DAG: "workload": "math_provider_absence"
-// ABSENT-DAG: "status": "unsupported"
-// ABSENT-DAG: "event_count": 0
-// ABSENT-DAG: "unsupported op: math.sin"
+// SIN-DAG: "workload": "math_sine"
+// SIN-DAG: "status": "pass"
+// SIN-DAG: "math.sin": 1
+// SIN-DAG: "f32:0"
 
 // ROUND: "final_outputs": [
 // ROUND-NEXT: "none",
@@ -68,7 +68,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
-  dataflow.graph private @math_provider_absence(%ctrl: none) -> (f32)
+  dataflow.graph private @math_sine(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0.000000e+00 : f32} : f32

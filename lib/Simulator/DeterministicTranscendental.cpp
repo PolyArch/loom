@@ -31,28 +31,74 @@ bool isSupportedSemantic(const llvm::fltSemantics &semantics) {
          &semantics == &llvm::APFloat::IEEEdouble();
 }
 
+using MpfrUnaryOperation = int (*)(mpfr_ptr, mpfr_srcptr, mpfr_rnd_t);
+
+MpfrUnaryOperation mpfrOperation(dataflow::OperationSchemaId schema) {
+  using Schema = dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::MathSin:
+    return &mpfr_sin;
+  case Schema::MathCos:
+    return &mpfr_cos;
+  case Schema::MathTan:
+    return &mpfr_tan;
+  case Schema::MathSinh:
+    return &mpfr_sinh;
+  case Schema::MathCosh:
+    return &mpfr_cosh;
+  case Schema::MathTanh:
+    return &mpfr_tanh;
+  case Schema::MathExp:
+    return &mpfr_exp;
+  case Schema::MathExp2:
+    return &mpfr_exp2;
+  case Schema::MathExpM1:
+    return &mpfr_expm1;
+  case Schema::MathLog:
+    return &mpfr_log;
+  case Schema::MathLog2:
+    return &mpfr_log2;
+  case Schema::MathLog10:
+    return &mpfr_log10;
+  case Schema::MathLog1p:
+    return &mpfr_log1p;
+  case Schema::MathSqrt:
+    return &mpfr_sqrt;
+  case Schema::MathRsqrt:
+    return &mpfr_rec_sqrt;
+  case Schema::MathErf:
+    return &mpfr_erf;
+  default:
+    return nullptr;
+  }
+}
+
 } // namespace
 
 llvm::Expected<llvm::APFloat>
-evaluateDeterministicCosine(const llvm::APFloat &operand) {
+evaluateDeterministicUnaryMath(dataflow::OperationSchemaId schema,
+                               const llvm::APFloat &operand) {
   static_assert(std::numeric_limits<double>::is_iec559 &&
                 std::numeric_limits<double>::digits == 53);
 
+  MpfrUnaryOperation operation = mpfrOperation(schema);
+  if (!operation)
+    return llvm::createStringError(
+        std::errc::not_supported, "%s is not deterministic unary math",
+        dataflow::operationSchemaSpelling(schema).str().c_str());
   const llvm::fltSemantics &semantics = operand.getSemantics();
   if (!isSupportedSemantic(semantics))
     return llvm::createStringError(
         std::errc::not_supported,
-        "deterministic cosine supports only f16, bf16, f32, and f64");
+        "deterministic unary math supports only f16, bf16, f32, and f64");
   if (operand.isNaN())
     return operand.makeQuiet();
-  if (operand.isInfinity())
-    return llvm::APFloat::getNaN(semantics);
 
   MpfrValue input(
       llvm::APFloat::semanticsPrecision(llvm::APFloat::IEEEdouble()));
   MpfrValue result(llvm::APFloat::semanticsPrecision(semantics));
   mpfr_set_d(input.get(), operand.convertToDouble(), MPFR_RNDN);
-  mpfr_cos(result.get(), input.get(), MPFR_RNDN);
+  operation(result.get(), input.get(), MPFR_RNDN);
 
   llvm::APFloat rounded(mpfr_get_d(result.get(), MPFR_RNDN));
   if (&semantics != &llvm::APFloat::IEEEdouble()) {

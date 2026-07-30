@@ -517,10 +517,27 @@ struct LLVMArithToArithPass
         FloatBinaryAlias<::mlir::LLVM::MaximumOp, ::mlir::arith::MaximumFOp>,
         FloatBinaryAlias<::mlir::LLVM::MinimumOp, ::mlir::arith::MinimumFOp>,
 
-        // floating negation, absolute value, and typed transcendental aliases
+        // floating negation, absolute value, and typed elementary-math
+        // aliases. Every pair is the exact inverse of the pinned
+        // math-to-LLVM lowering. Intrinsics such as rint and exp10 stay in
+        // LLVM form because the standard Math dialect has no operation with
+        // the same contract.
         UnaryFloatAlias<::mlir::LLVM::FNegOp, ::mlir::arith::NegFOp>,
         UnaryFloatAlias<::mlir::LLVM::FAbsOp, ::mlir::math::AbsFOp>,
         UnaryFloatAlias<::mlir::LLVM::CosOp, ::mlir::math::CosOp>,
+        UnaryFloatAlias<::mlir::LLVM::CoshOp, ::mlir::math::CoshOp>,
+        UnaryFloatAlias<::mlir::LLVM::ExpOp, ::mlir::math::ExpOp>,
+        UnaryFloatAlias<::mlir::LLVM::Exp2Op, ::mlir::math::Exp2Op>,
+        UnaryFloatAlias<::mlir::LLVM::LogOp, ::mlir::math::LogOp>,
+        UnaryFloatAlias<::mlir::LLVM::Log2Op, ::mlir::math::Log2Op>,
+        UnaryFloatAlias<::mlir::LLVM::Log10Op, ::mlir::math::Log10Op>,
+        UnaryFloatAlias<::mlir::LLVM::RoundOp, ::mlir::math::RoundOp>,
+        UnaryFloatAlias<::mlir::LLVM::RoundEvenOp, ::mlir::math::RoundEvenOp>,
+        UnaryFloatAlias<::mlir::LLVM::SinOp, ::mlir::math::SinOp>,
+        UnaryFloatAlias<::mlir::LLVM::SinhOp, ::mlir::math::SinhOp>,
+        UnaryFloatAlias<::mlir::LLVM::SqrtOp, ::mlir::math::SqrtOp>,
+        UnaryFloatAlias<::mlir::LLVM::TanOp, ::mlir::math::TanOp>,
+        UnaryFloatAlias<::mlir::LLVM::TanhOp, ::mlir::math::TanhOp>,
 
         // exact fused multiply-add
         FMAAlias,

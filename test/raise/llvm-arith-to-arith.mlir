@@ -200,6 +200,23 @@ llvm.func @typed_cosine(%single: f32, %double: f64) {
     llvm.return
 }
 
+// Typed LLVM elementary-math intrinsics already state the complete operation
+// identity and floating-point contract. They therefore use the existing math
+// schemas rather than surviving as LLVM aliases in a selected graph.
+// CHECK-LABEL: llvm.func @typed_elementary_math
+llvm.func @typed_elementary_math(%single: f32, %double: f64) {
+    // CHECK: %{{.*}} = math.sqrt %arg0 : f32
+    %0 = llvm.intr.sqrt(%single) : (f32) -> f32
+    // CHECK: %{{.*}} = math.exp %arg0 fastmath<afn> : f32
+    %1 = llvm.intr.exp(%single) {fastmathFlags = #llvm.fastmath<afn>} : (f32) -> f32
+    // CHECK: %{{.*}} = math.log %arg1 : f64
+    %2 = llvm.intr.log(%double) : (f64) -> f64
+    // CHECK-NOT: llvm.intr.sqrt
+    // CHECK-NOT: llvm.intr.exp
+    // CHECK-NOT: llvm.intr.log
+    llvm.return
+}
+
 // A fixed-shape vector of a builtin element type is exactly what arith
 // consumes, so shape, element semantics and flags all survive.
 // CHECK-LABEL: func.func @fixed_vector_arith

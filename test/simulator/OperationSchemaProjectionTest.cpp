@@ -345,8 +345,8 @@ void checkTypedProviderAvailability() {
       !loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::LLVMFreeze),
       "freeze was accepted without its deterministic execution key");
   require(__func__,
-          !loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathSin),
-          "host transcendental math was exposed as exact simulation");
+          loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathSin),
+          "registered sine has no deterministic primitive provider");
   require(__func__,
           loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::UBPoison),
           "registered poison value has no primitive provider");
@@ -391,6 +391,34 @@ void checkDeterministicCosineProvider() {
   }
 }
 
+void checkDeterministicElementaryMathProvider() {
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::Type f32 = mlir::Float32Type::get(&context);
+  mlir::FunctionType unaryF32 = mlir::FunctionType::get(&context, {f32}, {f32});
+  const struct MathCase {
+    OperationSchemaId schema;
+    std::uint32_t input;
+    std::uint32_t expected;
+  } cases[] = {
+      {OperationSchemaId::MathSqrt, 0x40000000U, 0x3fb504f3U},
+      {OperationSchemaId::MathExp, 0x3f800000U, 0x402df854U},
+      {OperationSchemaId::MathLog, 0x40000000U, 0x3f317218U},
+  };
+
+  for (const MathCase &entry : cases) {
+    require(__func__, loom::sim::isSupportedPrimitiveOperation(entry.schema),
+            "registered elementary math has no deterministic provider");
+    PrimitiveOperationDescriptor operation = descriptor(
+        entry.schema, unaryF32, dataflow::FloatingPointPayload{}, 32, 32);
+    PrimitiveValue result =
+        takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                                operation, {floating32(entry.input)}));
+    require(__func__,
+            definedBits(__func__, result) == llvm::APInt(32, entry.expected),
+            "elementary math produced the wrong IEEE result");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -401,5 +429,6 @@ int main() {
   checkLazySelectionAndFusedFma();
   checkTypedProviderAvailability();
   checkDeterministicCosineProvider();
+  checkDeterministicElementaryMathProvider();
   return EXIT_SUCCESS;
 }

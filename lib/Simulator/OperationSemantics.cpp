@@ -69,13 +69,28 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::ArithFPToSI:
   case Schema::ArithFPToUI:
   case Schema::MathAbsF:
+  case Schema::MathSin:
   case Schema::MathCos:
+  case Schema::MathTan:
+  case Schema::MathSinh:
+  case Schema::MathCosh:
+  case Schema::MathTanh:
+  case Schema::MathExp:
+  case Schema::MathExp2:
+  case Schema::MathExpM1:
+  case Schema::MathLog:
+  case Schema::MathLog2:
+  case Schema::MathLog10:
+  case Schema::MathLog1p:
   case Schema::MathAbsI:
   case Schema::MathFloor:
   case Schema::MathCeil:
   case Schema::MathRound:
   case Schema::MathTrunc:
   case Schema::MathRoundEven:
+  case Schema::MathSqrt:
+  case Schema::MathRsqrt:
+  case Schema::MathErf:
   case Schema::MathFma:
   case Schema::MathCountLeadingZeros:
   case Schema::MathCountTrailingZeros:
@@ -774,12 +789,27 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
 
   case Schema::ArithNegF:
   case Schema::MathAbsF:
+  case Schema::MathSin:
   case Schema::MathCos:
+  case Schema::MathTan:
+  case Schema::MathSinh:
+  case Schema::MathCosh:
+  case Schema::MathTanh:
+  case Schema::MathExp:
+  case Schema::MathExp2:
+  case Schema::MathExpM1:
+  case Schema::MathLog:
+  case Schema::MathLog2:
+  case Schema::MathLog10:
+  case Schema::MathLog1p:
   case Schema::MathFloor:
   case Schema::MathCeil:
   case Schema::MathRound:
   case Schema::MathTrunc:
-  case Schema::MathRoundEven: {
+  case Schema::MathRoundEven:
+  case Schema::MathSqrt:
+  case Schema::MathRsqrt:
+  case Schema::MathErf: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
     auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
@@ -803,8 +833,24 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     case Schema::MathAbsF:
       value->clearSign();
       break;
-    case Schema::MathCos: {
-      auto result = loom::sim::detail::evaluateDeterministicCosine(*value);
+    case Schema::MathSin:
+    case Schema::MathCos:
+    case Schema::MathTan:
+    case Schema::MathSinh:
+    case Schema::MathCosh:
+    case Schema::MathTanh:
+    case Schema::MathExp:
+    case Schema::MathExp2:
+    case Schema::MathExpM1:
+    case Schema::MathLog:
+    case Schema::MathLog2:
+    case Schema::MathLog10:
+    case Schema::MathLog1p:
+    case Schema::MathSqrt:
+    case Schema::MathRsqrt:
+    case Schema::MathErf: {
+      auto result =
+          loom::sim::detail::evaluateDeterministicUnaryMath(schema, *value);
       if (!result)
         return result.takeError();
       return PrimitiveValue::floating(*result);
