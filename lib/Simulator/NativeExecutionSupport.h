@@ -34,6 +34,13 @@ llvm::Error admitNativeHostModule(llvm::Module &module,
 llvm::Error retargetStructuredOracle(llvm::Module &module,
                                      const llvm::orc::LLJIT &jit);
 
+/// Replace exact typed LLVM math intrinsics in an ephemeral native oracle with
+/// callbacks that implement the same deterministic semantics as DFG-sim. This
+/// never matches an external library symbol or modifies the persistent
+/// Structured Program.
+llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
+                                           llvm::orc::LLJIT &jit);
+
 CanonicalValueSequence
 readDefinedNativeValue(llvm::ArrayRef<std::uint8_t> bytes,
                        std::uint64_t lanesPerToken, std::uint32_t laneBitWidth,

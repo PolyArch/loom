@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -47,7 +48,7 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
                     mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
-                    mlir::scf::SCFDialect>();
+                    mlir::math::MathDialect, mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -287,6 +288,58 @@ void nonDefinedInputsFailClosed() {
   const std::string error = llvm::toString(execution.takeError());
   require(test, error.find("_unsupported:") != std::string::npos,
           "unsupported semantic input used the wrong failure class");
+}
+
+void typedCosineUsesCanonicalNativeSemantics() {
+  const char *test = __func__;
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail(test, "cannot initialize the native target");
+  auto target = take(test, llvm::orc::JITTargetMachineBuilder::detectHost());
+  llvm::DataLayout layout = take(test, target.getDefaultDataLayoutForTarget());
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func @kernel() -> f32 {
+    %input = arith.constant 0x3E3D4952 : f32
+    %result = math.cos %input : f32
+    llvm.return %result : f32
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail(test, "cannot parse the typed cosine program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+
+  auto program =
+      take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+  auto view = take(test, program.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      entryRef(test, view)};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(test, loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              inputDraft, workload, view));
+
+  auto execution =
+      take(test,
+           loom::sim::executeNativeStructuredProgram(program, workload, input));
+  require(test,
+          execution.returnValue && execution.returnValue->tokenCount == 1 &&
+              execution.returnValue->lanes.size() == 1 &&
+              execution.returnValue->lanes.front().state ==
+                  loom::sim::SemanticState::Defined &&
+              execution.returnValue->lanes.front().bits ==
+                  llvm::APInt(32, 0x3f7ba384),
+          "typed cosine used the ambient host libm result");
 }
 
 void selectedOwnershipCarriersExecuteAsWholeProgram() {
@@ -629,6 +682,7 @@ module {
 int main() {
   exactEntryPreservesAliasingAndObservations();
   nonDefinedInputsFailClosed();
+  typedCosineUsesCanonicalNativeSemantics();
   selectedOwnershipCarriersExecuteAsWholeProgram();
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();

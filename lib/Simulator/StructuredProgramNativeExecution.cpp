@@ -1622,6 +1622,9 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
         if (!names)
           return names.takeError();
         callbackNames = std::move(*names);
+        if (llvm::Error error =
+                detail::prepareDeterministicMathOracle(module, *targetJit))
+          return error;
         callbackNames.invalidThreadExtent = std::move(invalidThreadExtent);
         callbackNames.blockActivation = std::move(blockActivation);
         if (capturePlan) {

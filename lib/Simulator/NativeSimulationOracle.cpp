@@ -257,9 +257,8 @@ void captureBefore(std::uint64_t objectOrdinal, void *base,
   ++active.nextBefore;
 }
 
-void captureMemoryRoot(std::uint64_t rootOrdinal,
-                       std::uint64_t objectOrdinal, void *view,
-                       void *objectBase, std::uint64_t byteCount) {
+void captureMemoryRoot(std::uint64_t rootOrdinal, std::uint64_t objectOrdinal,
+                       void *view, void *objectBase, std::uint64_t byteCount) {
   CaptureContext *enabled = enabledCapture();
   if (!enabled)
     return;
@@ -284,14 +283,13 @@ void captureMemoryRoot(std::uint64_t rootOrdinal,
   const std::uintptr_t viewAddress = reinterpret_cast<std::uintptr_t>(view);
   const std::uintptr_t baseAddress =
       reinterpret_cast<std::uintptr_t>(objectBase);
-  if (viewAddress < baseAddress ||
-      viewAddress - baseAddress >= byteCount) {
+  if (viewAddress < baseAddress || viewAddress - baseAddress >= byteCount) {
     recordCaptureError(
         "memory-root view lies outside its finite backing object");
     return;
   }
-  context.result.calls[active.captureIndex]
-      .memoryRootByteOffsets[rootOrdinal] = viewAddress - baseAddress;
+  context.result.calls[active.captureIndex].memoryRootByteOffsets[rootOrdinal] =
+      viewAddress - baseAddress;
   ++active.nextRoot;
 }
 
@@ -798,9 +796,9 @@ instrumentStructuredCapture(mlir::ModuleOp module,
       mlir::LLVM::LLVMVoidType::get(context), {i64, pointer, i64});
   mlir::Type objectBaseLookupType =
       mlir::LLVM::LLVMFunctionType::get(pointer, {i64, i64});
-  mlir::Type memoryRootCallbackType = mlir::LLVM::LLVMFunctionType::get(
-      mlir::LLVM::LLVMVoidType::get(context),
-      {i64, i64, pointer, pointer, i64});
+  mlir::Type memoryRootCallbackType =
+      mlir::LLVM::LLVMFunctionType::get(mlir::LLVM::LLVMVoidType::get(context),
+                                        {i64, i64, pointer, pointer, i64});
   std::string beginName =
       uniqueCallbackName(module, "__loom_native_capture_begin");
   std::string endName = uniqueCallbackName(module, "__loom_native_capture_end");
@@ -978,8 +976,7 @@ instrumentStructuredCapture(mlir::ModuleOp module,
     mlir::Value rootOrdinal = mlir::LLVM::ConstantOp::create(
         before, location, i64, before.getI64IntegerAttr(ordinal));
     mlir::Value objectOrdinal = mlir::LLVM::ConstantOp::create(
-        before, location, i64,
-        before.getI64IntegerAttr(binding.objectIndex));
+        before, location, i64, before.getI64IntegerAttr(binding.objectIndex));
     mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
         before, location, i64, before.getI64IntegerAttr(object.byteCount));
     mlir::LLVM::CallOp::create(
@@ -1160,6 +1157,9 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
         if (!names)
           return names.takeError();
         callbackNames = std::move(*names);
+        if (llvm::Error error =
+                detail::prepareDeterministicMathOracle(native, *jit))
+          return error;
         return llvm::Error::success();
       });
   if (preparation)
