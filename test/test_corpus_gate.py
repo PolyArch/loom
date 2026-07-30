@@ -99,6 +99,34 @@ DSP_HAMMING_F64_WORKLOAD_ID = next(
     and row.case == "arm-hamming-f64"
     and row.target_profile == "riscv64-portable-scalar"
 )
+DSP_VEXP_F32_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-vexp-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_ENTROPY_F32_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-entropy-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_KL_F64_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-kullback-leibler-f64"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_SQRT_F32_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-sqrt-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
 DSP_MFCC_Q31_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -744,6 +772,77 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         self.assertNotIn("Testing/Source/Tests/WindowTestsF32.cpp", cmake)
         self.assertNotIn("Testing/Source/Tests/WindowTestsF64.cpp", cmake)
+
+    def test_cmsis_dsp_elementary_math_uses_exact_direct_family(self) -> None:
+        selected = {
+            DSP_VEXP_F32_WORKLOAD_ID,
+            DSP_ENTROPY_F32_WORKLOAD_ID,
+            DSP_KL_F64_WORKLOAD_ID,
+            DSP_SQRT_F32_WORKLOAD_ID,
+        }
+        workloads = tuple(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity in selected
+        )
+        by_identity = {workload.identity: workload for workload in workloads}
+        for workload in workloads:
+            self.assertEqual(workload.compiler_flags, ("-fno-math-errno",))
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-elementary-math-harness",
+        )
+
+        for workload in workloads:
+            self.assertEqual(
+                harness.protocol_symbols(workload.executable),
+                ("loom_corpus_operator_protocol",),
+            )
+            self.assertEqual(harness.expected_entry_result(workload.executable), 0)
+
+        vexp = by_identity[DSP_VEXP_F32_WORKLOAD_ID]
+        vexp_compiled, vexp_owner = harness.protocol_source_owner(vexp.executable)
+        vexp_source = vexp_compiled.read_text()
+        self.assertIn("arm_vexp_f32(input, output, count)", vexp_source)
+        self.assertIn("constexpr float32_t kExpected[]", vexp_source)
+        self.assertEqual(vexp_owner.name, "fast_math_functions.h")
+
+        entropy = by_identity[DSP_ENTROPY_F32_WORKLOAD_ID]
+        entropy_source = harness.protocol_source_owner(entropy.executable)[0].read_text()
+        self.assertIn("arm_entropy_f32(input + offset, dimensions[index])", entropy_source)
+        self.assertIn("constexpr std::uint32_t kDimensions[]", entropy_source)
+
+        divergence = by_identity[DSP_KL_F64_WORKLOAD_ID]
+        divergence_source = harness.protocol_source_owner(
+            divergence.executable
+        )[0].read_text()
+        self.assertIn(
+            "arm_kullback_leibler_f64(input_a + offset, input_b + offset,",
+            divergence_source,
+        )
+        self.assertEqual(
+            harness.protocol_source_owner(divergence.executable)[1].name,
+            "statistics_functions.h",
+        )
+
+        sqrt = by_identity[DSP_SQRT_F32_WORKLOAD_ID]
+        sqrt_source = harness.protocol_source_owner(sqrt.executable)[0].read_text()
+        self.assertIn("arm_sqrt_f32(input[index], &output[index])", sqrt_source)
+        self.assertIn("status[index]", sqrt_source)
+        self.assertIn("ARM_MATH_ARGUMENT_ERROR", sqrt_source)
+
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("Testing/Source/Tests/FastMathF32.cpp", cmake)
+        self.assertNotIn("Testing/Source/Tests/StatsTestsF32.cpp", cmake)
+        self.assertNotIn("Testing/Source/Tests/StatsTestsF64.cpp", cmake)
+        for workload in workloads:
+            self.assertIn(
+                f"target_compile_options({workload.executable} PRIVATE "
+                "-fno-inline-functions -fno-math-errno)",
+                cmake,
+            )
 
     def test_cmsis_dsp_harness_links_upstream_operator_support_data(self) -> None:
         workload = next(

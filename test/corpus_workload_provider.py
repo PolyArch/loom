@@ -117,6 +117,7 @@ class _CmsisDspCmakeTarget:
     test_class: str
     source_group: str | None = None
     direct_source: Path | None = None
+    compiler_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.source_group is None) == (self.direct_source is None):
@@ -741,6 +742,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateless-basic-integer"
     if corpus_dsp_protocol.window_protocol(workload) is not None:
         return "stateless-window"
+    if corpus_dsp_protocol.elementary_math_protocol(workload) is not None:
+        return "stateless-elementary-math"
     if (
         producer.selector_kind == "official"
         and producer.test_class == "FIRF32"
@@ -955,65 +958,6 @@ int main() {{
 """
 
 
-def _render_stateless_abs_f32_protocol(patterns: Path, sample_count: int) -> str:
-    segments = corpus_dsp_protocol.pattern_segments(patterns)
-    inputs = corpus_dsp_protocol.decode_f32_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "Input1_f32.txt"),
-        "absolute input",
-    )
-    expected = corpus_dsp_protocol.decode_f32_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "Reference10_f32.txt"),
-        "absolute reference",
-    )
-    if sample_count <= 0 or len(inputs) < sample_count or len(expected) < sample_count:
-        raise WorkloadProviderError(
-            "CMSIS-DSP absolute pattern does not cover its workload extent"
-        )
-    inputs = inputs[:sample_count]
-    expected = expected[:sample_count]
-
-    return f"""#include <cstddef>
-#include <cstdint>
-#include <cstring>
-
-#include "arm_math.h"
-
-#if defined(__clang__) || defined(__GNUC__)
-#define LOOM_NOINLINE __attribute__((noinline))
-#else
-#define LOOM_NOINLINE
-#endif
-
-namespace {{
-constexpr std::uint32_t kSampleCount = {sample_count};
-constexpr float32_t kInput[] = {{
-{corpus_dsp_protocol.format_cpp_array(inputs)}
-}};
-constexpr float32_t kExpected[] = {{
-{corpus_dsp_protocol.format_cpp_array(expected)}
-}};
-
-bool oracle_matches(const float32_t *output) {{
-  return std::memcmp(output, kExpected, sizeof(kExpected)) == 0;
-}}
-}} // namespace
-
-extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
-    const float32_t *input, float32_t *output, std::uint32_t count) {{
-  arm_abs_f32(input, output, count);
-}}
-
-int main() {{
-  float32_t input[kSampleCount];
-  float32_t output[kSampleCount]{{}};
-  for (std::uint32_t index = 0; index < kSampleCount; ++index)
-    input[index] = kInput[index];
-  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(input, output, kSampleCount);
-  return oracle_matches(output) ? 0 : 1;
-}}
-"""
-
-
 def _render_basic_f32_protocol(
     workload: corpus_inventory.ProgramWorkload,
     patterns: Path,
@@ -1190,13 +1134,16 @@ target_link_libraries({library} PRIVATE CMSISDSP)
     target_blocks = []
     for item in targets:
         if item.direct_source is not None:
+            compile_options = " ".join(
+                ("-fno-inline-functions", *item.compiler_flags)
+            )
             target_blocks.append(
                 f'''add_executable({item.target}
   "{_cmake_quote(item.direct_source)}")
 target_include_directories({item.target} PRIVATE
   "${{LOOM_CMSIS_DSP_SOURCE}}/Include")
 target_compile_definitions({item.target} PRIVATE EMBEDDED NOTIMING)
-target_compile_options({item.target} PRIVATE -fno-inline-functions)
+target_compile_options({item.target} PRIVATE {compile_options})
 target_link_libraries({item.target} PRIVATE CMSISDSP)
 '''
             )
@@ -1323,6 +1270,33 @@ def materialize_cmsis_dsp_harness(
     cmake_targets: list[_CmsisDspCmakeTarget] = []
     operator_compile_options: dict[Path, tuple[str, ...]] = {}
 
+    def record_direct_protocol(
+        workload: corpus_inventory.ProgramWorkload,
+        target: str,
+        generated: Path,
+        shared_generated: Path,
+        direct_source: Path,
+        protocol_owner: Path,
+        expected_entry_result: int | None,
+    ) -> None:
+        if not protocol_owner.is_file():
+            raise WorkloadProviderError(
+                f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+            )
+        protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
+        expected_entry_results.append(expected_entry_result)
+        protocol_source_owners.append((direct_source, protocol_owner))
+        cmake_targets.append(
+            _CmsisDspCmakeTarget(
+                target=target,
+                generated=generated,
+                shared=shared_generated,
+                test_class=workload.producer.test_class,
+                direct_source=direct_source,
+                compiler_flags=workload.compiler_flags,
+            )
+        )
+
     for workload in workloads:
         if workload.suite != "cmsis-dsp" or not isinstance(
             workload.producer, corpus_inventory.CmsisDspWorkloadProducer
@@ -1442,7 +1416,7 @@ def materialize_cmsis_dsp_harness(
             )[-1]
             direct_source = generated / "OperatorProtocol.cpp"
             direct_source.write_text(
-                _render_stateless_abs_f32_protocol(
+                corpus_dsp_protocol.render_stateless_abs_f32_protocol(
                     shared_patterns,
                     _cmsis_dsp_literal_test_extent(
                         suite,
@@ -1450,11 +1424,10 @@ def materialize_cmsis_dsp_harness(
                         workload.producer.test_method,
                         workload.producer.vector_ordinal,
                     ),
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
                 ),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(0)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1462,19 +1435,14 @@ def materialize_cmsis_dsp_harness(
                 / "dsp"
                 / "basic_math_functions.h"
             )
-            if not protocol_owner.is_file():
-                raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
-                )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         elif direct_family == "stateless-basic-f32":
             suite = _cmsis_dsp_suite_chain(
@@ -1495,8 +1463,6 @@ def materialize_cmsis_dsp_harness(
                 _render_basic_f32_protocol(workload, shared_patterns, sample_count),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(0)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1504,19 +1470,14 @@ def materialize_cmsis_dsp_harness(
                 / "dsp"
                 / "basic_math_functions.h"
             )
-            if not protocol_owner.is_file():
-                raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
-                )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         elif direct_family == "stateless-basic-integer":
             protocol = corpus_dsp_protocol.basic_integer_protocol(workload)
@@ -1546,8 +1507,6 @@ def materialize_cmsis_dsp_harness(
                 ),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(0)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1555,19 +1514,14 @@ def materialize_cmsis_dsp_harness(
                 / "dsp"
                 / "basic_math_functions.h"
             )
-            if not protocol_owner.is_file():
-                raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
-                )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         elif direct_family == "stateless-window":
             suite = _cmsis_dsp_suite_chain(
@@ -1590,24 +1544,49 @@ def materialize_cmsis_dsp_harness(
                 ),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(0)
             protocol_owner = (
                 external_root / "cmsis-dsp" / "Include" / "dsp" / "window_functions.h"
             )
-            if not protocol_owner.is_file():
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateless-elementary-math":
+            protocol = corpus_dsp_protocol.elementary_math_protocol(workload)
+            if protocol is None:
                 raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                    "CMSIS-DSP elementary math protocol is inconsistent"
                 )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_protocol.render_elementary_math_protocol(
+                    workload,
+                    shared_patterns,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            owner_header = (
+                "statistics_functions.h"
+                if protocol.kind in {"reduction", "binary-reduction"}
+                else "fast_math_functions.h"
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         elif direct_family == "stateless-controller":
             suite = _cmsis_dsp_suite_chain(
@@ -1625,8 +1604,6 @@ def materialize_cmsis_dsp_harness(
                 ),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(None)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1634,19 +1611,14 @@ def materialize_cmsis_dsp_harness(
                 / "dsp"
                 / "controller_functions.h"
             )
-            if not protocol_owner.is_file():
-                raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
-                )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                None,
             )
         elif direct_family == "stateful-fir-f32":
             direct_source = generated / "OperatorProtocol.cpp"
@@ -1654,8 +1626,6 @@ def materialize_cmsis_dsp_harness(
                 _render_stateful_fir_f32_protocol(shared_patterns),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
-            expected_entry_results.append(0)
             protocol_owner = (
                 external_root
                 / "cmsis-dsp"
@@ -1663,19 +1633,14 @@ def materialize_cmsis_dsp_harness(
                 / "dsp"
                 / "filtering_functions.h"
             )
-            if not protocol_owner.is_file():
-                raise WorkloadProviderError(
-                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
-                )
-            protocol_source_owners.append((direct_source, protocol_owner))
-            cmake_targets.append(
-                _CmsisDspCmakeTarget(
-                    target=target,
-                    generated=generated,
-                    shared=shared_generated,
-                    test_class=workload.producer.test_class,
-                    direct_source=direct_source,
-                )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         else:
             source_group = "Tests"

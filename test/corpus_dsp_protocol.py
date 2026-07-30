@@ -38,6 +38,26 @@ class WindowType:
     relative_error: str
 
 
+@dataclass(frozen=True)
+class ElementaryMathType:
+    suffix: str
+    value_type: str
+    absolute_error: str
+    relative_error: str
+
+
+@dataclass(frozen=True)
+class ElementaryMathProtocol:
+    type_spec: ElementaryMathType
+    kind: str
+    symbol: str
+    signature: str
+    input_a: str
+    expected: str
+    input_b: str | None = None
+    dimensions: str | None = None
+
+
 _BASIC_INTEGER_TYPES = {
     "BasicTestsQ31": BasicIntegerType(
         suffix="q31",
@@ -115,6 +135,118 @@ _WINDOW_TYPES = {
         relative_error="3.0e-15",
     ),
 }
+_ELEMENTARY_MATH_F32 = ElementaryMathType(
+    suffix="f32",
+    value_type="float32_t",
+    absolute_error="1.0e-5f",
+    relative_error="1.0e-6f",
+)
+_ELEMENTARY_MATH_F64 = ElementaryMathType(
+    suffix="f64",
+    value_type="float64_t",
+    absolute_error="2.0e-16",
+    relative_error="2.0e-16",
+)
+_ELEMENTARY_MATH_PROTOCOLS = {
+    ("FastMathF32", "test_sqrt_f32"): ElementaryMathProtocol(
+        type_spec=_ELEMENTARY_MATH_F32,
+        kind="sqrt-status",
+        symbol="arm_sqrt_f32",
+        signature="i32(float,ptr)",
+        input_a="SqrtInput1_f32.txt",
+        expected="Sqrt1_f32.txt",
+    ),
+    ("FastMathF32", "test_vexp_f32"): ElementaryMathProtocol(
+        type_spec=_ELEMENTARY_MATH_F32,
+        kind="vector",
+        symbol="arm_vexp_f32",
+        signature="void(ptr,ptr,i32)",
+        input_a="ExpInput1_f32.txt",
+        expected="Exp1_f32.txt",
+    ),
+    ("FastMathF32", "test_vlog_f32"): ElementaryMathProtocol(
+        type_spec=_ELEMENTARY_MATH_F32,
+        kind="vector",
+        symbol="arm_vlog_f32",
+        signature="void(ptr,ptr,i32)",
+        input_a="LogInput1_f32.txt",
+        expected="Log1_f32.txt",
+    ),
+    ("FastMathF64", "test_vexp_f64"): ElementaryMathProtocol(
+        type_spec=_ELEMENTARY_MATH_F64,
+        kind="vector",
+        symbol="arm_vexp_f64",
+        signature="void(ptr,ptr,i32)",
+        input_a="ExpInput1_f64.txt",
+        expected="Exp1_f64.txt",
+    ),
+    ("FastMathF64", "test_vlog_f64"): ElementaryMathProtocol(
+        type_spec=_ELEMENTARY_MATH_F64,
+        kind="vector",
+        symbol="arm_vlog_f64",
+        signature="void(ptr,ptr,i32)",
+        input_a="LogInput1_f64.txt",
+        expected="Log1_f64.txt",
+    ),
+    ("StatsTestsF32", "test_entropy_f32"): ElementaryMathProtocol(
+        type_spec=ElementaryMathType(
+            suffix="f32",
+            value_type="float32_t",
+            absolute_error="0.0f",
+            relative_error="1.0e-5f",
+        ),
+        kind="reduction",
+        symbol="arm_entropy_f32",
+        signature="float(ptr,i32)",
+        input_a="Input22_f32.txt",
+        dimensions="Dims22_s16.txt",
+        expected="RefEntropy22_f32.txt",
+    ),
+    ("StatsTestsF64", "test_entropy_f64"): ElementaryMathProtocol(
+        type_spec=ElementaryMathType(
+            suffix="f64",
+            value_type="float64_t",
+            absolute_error="0.0",
+            relative_error="4.0e-15",
+        ),
+        kind="reduction",
+        symbol="arm_entropy_f64",
+        signature="double(ptr,i32)",
+        input_a="Input22_f64.txt",
+        dimensions="Dims22_s16.txt",
+        expected="RefEntropy22_f64.txt",
+    ),
+    ("StatsTestsF32", "test_kullback_leibler_f32"): ElementaryMathProtocol(
+        type_spec=ElementaryMathType(
+            suffix="f32",
+            value_type="float32_t",
+            absolute_error="0.0f",
+            relative_error="1.0e-5f",
+        ),
+        kind="binary-reduction",
+        symbol="arm_kullback_leibler_f32",
+        signature="float(ptr,ptr,i32)",
+        input_a="InputA24_f32.txt",
+        input_b="InputB24_f32.txt",
+        dimensions="Dims24_s16.txt",
+        expected="RefKL24_f32.txt",
+    ),
+    ("StatsTestsF64", "test_kullback_leibler_f64"): ElementaryMathProtocol(
+        type_spec=ElementaryMathType(
+            suffix="f64",
+            value_type="float64_t",
+            absolute_error="0.0",
+            relative_error="4.0e-15",
+        ),
+        kind="binary-reduction",
+        symbol="arm_kullback_leibler_f64",
+        signature="double(ptr,ptr,i32)",
+        input_a="InputA24_f64.txt",
+        input_b="InputB24_f64.txt",
+        dimensions="Dims24_s16.txt",
+        expected="RefKL24_f64.txt",
+    ),
+}
 
 
 def basic_integer_protocol(
@@ -178,6 +310,26 @@ def window_protocol(
     ):
         return None
     return type_spec
+
+
+def elementary_math_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> ElementaryMathProtocol | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    if producer.selector_kind != "official" or producer.vector_ordinal != 0:
+        return None
+    protocol = _ELEMENTARY_MATH_PROTOCOLS.get(
+        (producer.test_class, producer.test_method)
+    )
+    if protocol is None or workload.compiler_flags != ("-fno-math-errno",):
+        return None
+    if tuple((call.symbol, call.signature) for call in workload.protocol) != (
+        (protocol.symbol, protocol.signature),
+    ):
+        return None
+    return protocol
 
 
 def window_reference_name(
@@ -412,6 +564,67 @@ def require_pattern_segment(segments: dict[str, bytes], name: str) -> bytes:
     if not value:
         raise WorkloadProviderError(f"generated CMSIS-DSP pattern {name} is empty")
     return value
+
+
+def render_stateless_abs_f32_protocol(
+    patterns: Path, sample_count: int, protocol_symbol: str
+) -> str:
+    segments = pattern_segments(patterns)
+    inputs = decode_f32_pattern(
+        require_pattern_segment(segments, "Input1_f32.txt"),
+        "absolute input",
+    )
+    expected = decode_f32_pattern(
+        require_pattern_segment(segments, "Reference10_f32.txt"),
+        "absolute reference",
+    )
+    if sample_count <= 0 or len(inputs) < sample_count or len(expected) < sample_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP absolute pattern does not cover its workload extent"
+        )
+    inputs = inputs[:sample_count]
+    expected = expected[:sample_count]
+
+    return f"""#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {sample_count};
+constexpr float32_t kInput[] = {{
+{format_cpp_array(inputs)}
+}};
+constexpr float32_t kExpected[] = {{
+{format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const float32_t *output) {{
+  return std::memcmp(output, kExpected, sizeof(kExpected)) == 0;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    const float32_t *input, float32_t *output, std::uint32_t count) {{
+  arm_abs_f32(input, output, count);
+}}
+
+int main() {{
+  float32_t input[kSampleCount];
+  float32_t output[kSampleCount]{{}};
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input[index] = kInput[index];
+  {protocol_symbol}(input, output, kSampleCount);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
 
 
 def render_basic_integer_protocol(
@@ -806,5 +1019,216 @@ int main() {{
   {type_spec.value_type} output[kSampleCount]{{}};
   {protocol_symbol}(output, kSampleCount);
   return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def _decode_elementary_float_pattern(
+    raw: bytes, type_spec: ElementaryMathType, name: str
+) -> tuple[str, ...]:
+    if type_spec.suffix == "f32":
+        return decode_f32_pattern(raw, name)
+    if type_spec.suffix == "f64":
+        return decode_f64_pattern(raw, name)
+    raise WorkloadProviderError(
+        f"CMSIS-DSP elementary math type is unsupported: {type_spec.suffix}"
+    )
+
+
+def _elementary_dimensions(
+    segments: dict[str, bytes], protocol: ElementaryMathProtocol, input_count: int
+) -> tuple[int, ...]:
+    if protocol.dimensions is None:
+        raise WorkloadProviderError(
+            "CMSIS-DSP elementary reduction omits its dimensions"
+        )
+    dimensions = decode_i16_pattern(
+        require_pattern_segment(segments, protocol.dimensions),
+        "elementary math dimensions",
+    )
+    if not dimensions or dimensions[0] <= 0:
+        raise WorkloadProviderError(
+            "CMSIS-DSP elementary reduction has no workload vectors"
+        )
+    pattern_count = dimensions[0]
+    extents = dimensions[1:]
+    if len(extents) != pattern_count or any(extent <= 0 for extent in extents):
+        raise WorkloadProviderError(
+            "CMSIS-DSP elementary reduction dimensions are noncanonical"
+        )
+    if sum(extents) != input_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP elementary reduction dimensions do not cover the input"
+        )
+    return extents
+
+
+def render_elementary_math_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    protocol_symbol: str,
+) -> str:
+    protocol = elementary_math_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError("unsupported CMSIS-DSP elementary math protocol")
+    segments = pattern_segments(patterns)
+    type_spec = protocol.type_spec
+    input_a = _decode_elementary_float_pattern(
+        require_pattern_segment(segments, protocol.input_a),
+        type_spec,
+        "elementary math input",
+    )
+    expected = _decode_elementary_float_pattern(
+        require_pattern_segment(segments, protocol.expected),
+        type_spec,
+        "elementary math reference",
+    )
+
+    input_b: tuple[str, ...] = ()
+    if protocol.input_b is not None:
+        input_b = _decode_elementary_float_pattern(
+            require_pattern_segment(segments, protocol.input_b),
+            type_spec,
+            "elementary math second input",
+        )
+        if len(input_b) != len(input_a):
+            raise WorkloadProviderError(
+                "CMSIS-DSP elementary math inputs have different extents"
+            )
+
+    dimensions: tuple[int, ...] = ()
+    if protocol.kind in {"reduction", "binary-reduction"}:
+        dimensions = _elementary_dimensions(segments, protocol, len(input_a))
+        if len(expected) != len(dimensions):
+            raise WorkloadProviderError(
+                "CMSIS-DSP elementary reduction reference has the wrong extent"
+            )
+    elif len(input_a) != len(expected):
+        raise WorkloadProviderError(
+            "CMSIS-DSP elementary math input and reference extents differ"
+        )
+
+    input_b_declaration = ""
+    input_b_initialization = ""
+    if input_b:
+        input_b_declaration = f"""constexpr {type_spec.value_type} kInputB[] = {{
+{format_cpp_array(input_b)}
+}};
+"""
+        input_b_initialization = f"""
+  {type_spec.value_type} input_b[kInputCount];
+  for (std::uint32_t index = 0; index < kInputCount; ++index)
+    input_b[index] = kInputB[index];"""
+
+    dimensions_declaration = ""
+    if dimensions:
+        dimensions_declaration = f"""constexpr std::uint32_t kDimensions[] = {{
+{format_cpp_array(tuple(str(value) for value in dimensions))}
+}};
+"""
+
+    status_parameter = ""
+    status_declaration = ""
+    status_argument = ""
+    status_oracle = ""
+    if protocol.kind == "sqrt-status":
+        status_parameter = ", std::int32_t *status"
+        status_declaration = "  std::int32_t status[kOutputCount]{};\n"
+        status_argument = ", status"
+        status_oracle = """
+    const std::int32_t expected_status =
+        kInputA[index] < 0.0f ? ARM_MATH_ARGUMENT_ERROR : ARM_MATH_SUCCESS;
+    if (status[index] != expected_status)
+      return false;"""
+
+    if protocol.kind == "vector":
+        wrapper_parameters = f"""const {type_spec.value_type} *input,
+    {type_spec.value_type} *output, std::uint32_t count"""
+        wrapper_body = f"{protocol.symbol}(input, output, count);"
+        main_arguments = "input_a, output, kInputCount"
+    elif protocol.kind == "sqrt-status":
+        wrapper_parameters = f"""const {type_spec.value_type} *input,
+    {type_spec.value_type} *output, std::int32_t *status,
+    std::uint32_t count"""
+        wrapper_body = f"""for (std::uint32_t index = 0; index < count; ++index) {{
+    status[index] = static_cast<std::int32_t>(
+        {protocol.symbol}(input[index], &output[index]));
+  }}"""
+        main_arguments = "input_a, output, status, kInputCount"
+    elif protocol.kind == "reduction":
+        wrapper_parameters = f"""const {type_spec.value_type} *input,
+    const std::uint32_t *dimensions, {type_spec.value_type} *output,
+    std::uint32_t pattern_count"""
+        wrapper_body = f"""std::uint32_t offset = 0;
+  for (std::uint32_t index = 0; index < pattern_count; ++index) {{
+    output[index] = {protocol.symbol}(input + offset, dimensions[index]);
+    offset += dimensions[index];
+  }}"""
+        main_arguments = "input_a, kDimensions, output, kOutputCount"
+    elif protocol.kind == "binary-reduction":
+        wrapper_parameters = f"""const {type_spec.value_type} *input_a,
+    const {type_spec.value_type} *input_b,
+    const std::uint32_t *dimensions, {type_spec.value_type} *output,
+    std::uint32_t pattern_count"""
+        wrapper_body = f"""std::uint32_t offset = 0;
+  for (std::uint32_t index = 0; index < pattern_count; ++index) {{
+    output[index] = {protocol.symbol}(input_a + offset, input_b + offset,
+                                      dimensions[index]);
+    offset += dimensions[index];
+  }}"""
+        main_arguments = "input_a, input_b, kDimensions, output, kOutputCount"
+    else:
+        raise WorkloadProviderError(
+            f"unknown CMSIS-DSP elementary math protocol kind: {protocol.kind}"
+        )
+
+    return f"""#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kInputCount = {len(input_a)};
+constexpr std::uint32_t kOutputCount = {len(expected)};
+constexpr {type_spec.value_type} kInputA[] = {{
+{format_cpp_array(input_a)}
+}};
+{input_b_declaration}{dimensions_declaration}constexpr {type_spec.value_type} kExpected[] = {{
+{format_cpp_array(expected)}
+}};
+constexpr {type_spec.value_type} kAbsoluteError = {type_spec.absolute_error};
+constexpr {type_spec.value_type} kRelativeError = {type_spec.relative_error};
+
+bool oracle_matches(const {type_spec.value_type} *output{status_parameter}) {{
+  for (std::uint32_t index = 0; index < kOutputCount; ++index) {{{status_oracle}
+    const {type_spec.value_type} expected = kExpected[index];
+    const {type_spec.value_type} difference = std::fabs(output[index] - expected);
+    if (!std::isfinite(output[index]) ||
+        difference > kAbsoluteError + kRelativeError * std::fabs(expected))
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {wrapper_parameters}) {{
+  {wrapper_body}
+}}
+
+int main() {{
+  {type_spec.value_type} input_a[kInputCount];
+  {type_spec.value_type} output[kOutputCount]{{}};
+  for (std::uint32_t index = 0; index < kInputCount; ++index)
+    input_a[index] = kInputA[index];{input_b_initialization}
+{status_declaration}  {protocol_symbol}({main_arguments});
+  return oracle_matches(output{status_argument}) ? 0 : 1;
 }}
 """
