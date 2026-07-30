@@ -85,6 +85,20 @@ DSP_CLIP_Q7_WORKLOAD_ID = next(
     and row.case == "arm-clip-q7"
     and row.target_profile == "riscv64-portable-scalar"
 )
+DSP_WELCH_F32_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-welch-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_HAMMING_F64_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-hamming-f64"
+    and row.target_profile == "riscv64-portable-scalar"
+)
 DSP_MFCC_Q31_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -682,6 +696,48 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertNotIn("Testing/Source/Tests/BasicTestsQ15.cpp", cmake)
         self.assertNotIn("Testing/Source/Tests/BasicTestsQ31.cpp", cmake)
         self.assertNotIn("Testing/Source/Tests/BasicTestsQ7.cpp", cmake)
+
+    def test_cmsis_dsp_window_uses_exact_direct_family(self) -> None:
+        selected = {
+            DSP_WELCH_F32_WORKLOAD_ID,
+            DSP_HAMMING_F64_WORKLOAD_ID,
+        }
+        workloads = tuple(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity in selected
+        )
+        by_identity = {workload.identity: workload for workload in workloads}
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-window-harness",
+        )
+
+        for workload in workloads:
+            self.assertEqual(
+                harness.protocol_symbols(workload.executable),
+                ("loom_corpus_operator_protocol",),
+            )
+            self.assertEqual(harness.expected_entry_result(workload.executable), 0)
+
+        welch_source = harness.protocol_source_owner(
+            by_identity[DSP_WELCH_F32_WORKLOAD_ID].executable
+        )[0].read_text()
+        self.assertIn("arm_welch_f32(output, count)", welch_source)
+        self.assertIn("kAbsoluteError = 2.0e-6f", welch_source)
+        self.assertIn("kSampleCount = 128", welch_source)
+
+        hamming_source = harness.protocol_source_owner(
+            by_identity[DSP_HAMMING_F64_WORKLOAD_ID].executable
+        )[0].read_text()
+        self.assertIn("arm_hamming_f64(output, count)", hamming_source)
+        self.assertIn("kAbsoluteError = 3.0e-15", hamming_source)
+
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("Testing/Source/Tests/WindowTestsF32.cpp", cmake)
+        self.assertNotIn("Testing/Source/Tests/WindowTestsF64.cpp", cmake)
 
     def test_cmsis_dsp_harness_links_upstream_operator_support_data(self) -> None:
         workload = next(

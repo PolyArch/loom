@@ -739,6 +739,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateless-basic-f32"
     if corpus_dsp_protocol.basic_integer_protocol(workload) is not None:
         return "stateless-basic-integer"
+    if corpus_dsp_protocol.window_protocol(workload) is not None:
+        return "stateless-window"
     if (
         producer.selector_kind == "official"
         and producer.test_class == "FIRF32"
@@ -1519,6 +1521,46 @@ def materialize_cmsis_dsp_harness(
                 / "Include"
                 / "dsp"
                 / "basic_math_functions.h"
+            )
+            if not protocol_owner.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                )
+            protocol_source_owners.append((direct_source, protocol_owner))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    direct_source=direct_source,
+                )
+            )
+        elif direct_family == "stateless-window":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            reference_name = corpus_dsp_protocol.window_reference_name(
+                suite,
+                tree_module.TreeElem.TEST,
+                workload,
+            )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_protocol.render_window_protocol(
+                    workload,
+                    shared_patterns,
+                    reference_name,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
+            expected_entry_results.append(0)
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / "window_functions.h"
             )
             if not protocol_owner.is_file():
                 raise WorkloadProviderError(

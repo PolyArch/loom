@@ -29,6 +29,15 @@ class BasicIntegerType:
     dot_tolerance: int
 
 
+@dataclass(frozen=True)
+class WindowType:
+    test_class: str
+    suffix: str
+    value_type: str
+    absolute_error: str
+    relative_error: str
+
+
 _BASIC_INTEGER_TYPES = {
     "BasicTestsQ31": BasicIntegerType(
         suffix="q31",
@@ -90,6 +99,22 @@ _BASIC_INTEGER_OPERATIONS = {
     "clip": ("clip", "Reference28_{suffix}.txt"),
 }
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_WINDOW_TYPES = {
+    "WindowTestsF32": WindowType(
+        test_class="WindowTestsF32",
+        suffix="f32",
+        value_type="float32_t",
+        absolute_error="2.0e-6f",
+        relative_error="1.0e-6f",
+    ),
+    "WindowTestsF64": WindowType(
+        test_class="WindowTestsF64",
+        suffix="f64",
+        value_type="float64_t",
+        absolute_error="3.0e-15",
+        relative_error="3.0e-15",
+    ),
+}
 
 
 def basic_integer_protocol(
@@ -129,6 +154,66 @@ def basic_integer_protocol(
             return None
         return type_spec, operation, kind, reference
     return None
+
+
+def window_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> WindowType | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    type_spec = _WINDOW_TYPES.get(producer.test_class)
+    if (
+        type_spec is None
+        or producer.selector_kind != "official"
+        or producer.vector_ordinal != 0
+        or not producer.test_method.startswith("test_")
+    ):
+        return None
+    symbol = "arm_" + producer.test_method.removeprefix("test_")
+    if _C_IDENTIFIER.fullmatch(symbol) is None:
+        return None
+    if tuple((call.symbol, call.signature) for call in workload.protocol) != (
+        (symbol, "void(ptr,i32)"),
+    ):
+        return None
+    return type_spec
+
+
+def window_reference_name(
+    suite: object,
+    test_kind: int,
+    workload: corpus_inventory.ProgramWorkload,
+) -> str:
+    producer = workload.producer
+    type_spec = window_protocol(workload)
+    if type_spec is None or not isinstance(
+        producer, corpus_inventory.CmsisDspWorkloadProducer
+    ):
+        raise WorkloadProviderError("CMSIS-DSP window workload owner is invalid")
+    tests = [child for child in suite.children if child.kind == test_kind]
+    matching = [
+        index
+        for index, child in enumerate(tests)
+        if child.data.get("class") == producer.test_method
+    ]
+    patterns = tuple(suite.patterns)
+    if len(matching) != 1 or len(patterns) != len(tests):
+        raise WorkloadProviderError(
+            "CMSIS-DSP window descriptor does not define a total test/reference map"
+        )
+    ordinal = matching[0]
+    pattern_id, reference_name = patterns[ordinal]
+    if (
+        not isinstance(pattern_id, str)
+        or not pattern_id.startswith(f"REF{ordinal + 1}_")
+        or not isinstance(reference_name, str)
+        or not reference_name.endswith(f"_{ordinal + 1}_{type_spec.suffix}.txt")
+    ):
+        raise WorkloadProviderError(
+            "CMSIS-DSP window descriptor test/reference order is noncanonical"
+        )
+    return reference_name
 
 
 def source_payload_size(path: Path) -> int:
@@ -285,6 +370,18 @@ def decode_i16_pattern(raw: bytes, name: str) -> tuple[int, ...]:
         int.from_bytes(raw[offset : offset + 2], byteorder="little", signed=True)
         for offset in range(0, len(raw), 2)
     )
+
+
+def decode_f64_pattern(raw: bytes, name: str) -> tuple[str, ...]:
+    if len(raw) % 8 != 0:
+        raise WorkloadProviderError(f"CMSIS-DSP {name} is not f64-aligned")
+    values = tuple(
+        struct.unpack("<d", raw[offset : offset + 8])[0]
+        for offset in range(0, len(raw), 8)
+    )
+    if any(not math.isfinite(value) for value in values):
+        raise WorkloadProviderError(f"CMSIS-DSP {name} requires finite float input")
+    return tuple(value.hex() for value in values)
 
 
 def decode_integer_pattern(
@@ -643,5 +740,71 @@ int main() {{
   const std::uint32_t first = digest(output_a, sizeof(output_a));
   const std::uint32_t second = digest(output_b, sizeof(output_b));
   return static_cast<int>(first ^ (second * 16777619u));
+}}
+"""
+
+
+def render_window_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    reference_name: str,
+    protocol_symbol: str,
+) -> str:
+    type_spec = window_protocol(workload)
+    if type_spec is None:
+        raise WorkloadProviderError("unsupported CMSIS-DSP window protocol")
+    segments = pattern_segments(patterns)
+    raw_reference = require_pattern_segment(segments, reference_name)
+    expected = (
+        decode_f32_pattern(raw_reference, "window reference")
+        if type_spec.suffix == "f32"
+        else decode_f64_pattern(raw_reference, "window reference")
+    )
+    if not expected:
+        raise WorkloadProviderError("CMSIS-DSP window reference is empty")
+    call = workload.protocol[0]
+
+    return f"""#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {len(expected)};
+constexpr {type_spec.value_type} kExpected[] = {{
+{format_cpp_array(expected)}
+}};
+constexpr {type_spec.value_type} kAbsoluteError = {type_spec.absolute_error};
+constexpr {type_spec.value_type} kRelativeError = {type_spec.relative_error};
+
+bool oracle_matches(const {type_spec.value_type} *output) {{
+  for (std::size_t index = 0; index < kSampleCount; ++index) {{
+    const {type_spec.value_type} expected = kExpected[index];
+    const {type_spec.value_type} difference = std::fabs(output[index] - expected);
+    const {type_spec.value_type} magnitude = std::fabs(expected);
+    if (!std::isfinite(output[index]) ||
+        difference > kAbsoluteError + kRelativeError * magnitude)
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {type_spec.value_type} *output, std::uint32_t count) {{
+  {call.symbol}(output, count);
+}}
+
+int main() {{
+  {type_spec.value_type} output[kSampleCount]{{}};
+  {protocol_symbol}(output, kSampleCount);
+  return oracle_matches(output) ? 0 : 1;
 }}
 """
