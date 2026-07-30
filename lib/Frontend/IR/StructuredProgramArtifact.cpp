@@ -35,7 +35,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -267,6 +266,14 @@ struct CanonicalLabeling {
   std::array<std::vector<EntityCarrier>, 4> entities;
 };
 
+using EntityCarrier = CanonicalLabeling::EntityCarrier;
+using EntityTable = std::array<std::vector<EntityCarrier>, 4>;
+
+struct CanonicalEntityProjection {
+  std::array<std::vector<std::uint64_t>, 4> canonicalToLexical;
+  std::array<std::vector<std::string>, 4> lexicalShapes;
+};
+
 class SemanticGraph {
 public:
   static llvm::Expected<SemanticGraph> build(ModuleOp module) {
@@ -435,6 +442,133 @@ llvm::Expected<CanonicalLabeling> label(ModuleOp module) {
   return graph->canonicalize();
 }
 
+void collectLexicalEntities(Operation *operation, EntityTable &entities) {
+  entities[kindIndex(StructuredEntityKind::Operation)].push_back(
+      {StructuredEntityKind::Operation, operation, nullptr, nullptr, {}});
+  for (OpResult result : operation->getResults())
+    entities[kindIndex(StructuredEntityKind::Value)].push_back(
+        {StructuredEntityKind::Value, nullptr, nullptr, nullptr, result});
+  for (Region &region : operation->getRegions()) {
+    entities[kindIndex(StructuredEntityKind::Region)].push_back(
+        {StructuredEntityKind::Region, nullptr, &region, nullptr, {}});
+    for (Block &block : region) {
+      entities[kindIndex(StructuredEntityKind::Block)].push_back(
+          {StructuredEntityKind::Block, nullptr, nullptr, &block, {}});
+      for (BlockArgument argument : block.getArguments())
+        entities[kindIndex(StructuredEntityKind::Value)].push_back(
+            {StructuredEntityKind::Value, nullptr, nullptr, nullptr, argument});
+      for (Operation &child : block)
+        collectLexicalEntities(&child, entities);
+    }
+  }
+}
+
+EntityTable collectLexicalEntities(ModuleOp module) {
+  EntityTable entities;
+  collectLexicalEntities(module.getOperation(), entities);
+  return entities;
+}
+
+std::string entityShape(const EntityCarrier &carrier) {
+  switch (carrier.kind) {
+  case StructuredEntityKind::Operation: {
+    std::string result;
+    llvm::raw_string_ostream stream(result);
+    Operation *operation = carrier.operation;
+    stream << operation->getName().getStringRef() << ':'
+           << operation->getNumOperands() << ':' << operation->getNumResults()
+           << ':' << operation->getNumRegions() << ':'
+           << operation->getNumSuccessors();
+    return result;
+  }
+  case StructuredEntityKind::Region:
+    return regionIntrinsic(*carrier.region);
+  case StructuredEntityKind::Block:
+    return blockIntrinsic(*carrier.block);
+  case StructuredEntityKind::Value:
+    return valueIntrinsic(carrier.value);
+  }
+  llvm_unreachable("unknown StructuredEntityKind");
+}
+
+const void *entityPointer(const EntityCarrier &carrier) {
+  switch (carrier.kind) {
+  case StructuredEntityKind::Operation:
+    return carrier.operation;
+  case StructuredEntityKind::Region:
+    return carrier.region;
+  case StructuredEntityKind::Block:
+    return carrier.block;
+  case StructuredEntityKind::Value:
+    return carrier.value.getAsOpaquePointer();
+  }
+  llvm_unreachable("unknown StructuredEntityKind");
+}
+
+llvm::Expected<CanonicalEntityProjection>
+projectCanonicalEntities(ModuleOp module, const CanonicalLabeling &labeling) {
+  EntityTable lexical = collectLexicalEntities(module);
+  std::array<DenseMap<const void *, std::uint64_t>, 4> lexicalOrdinals;
+  for (std::size_t kind = 0; kind != lexical.size(); ++kind)
+    for (auto item : llvm::enumerate(lexical[kind]))
+      lexicalOrdinals[kind].try_emplace(entityPointer(item.value()),
+                                        item.index());
+
+  CanonicalEntityProjection projection;
+  for (std::size_t kind = 0; kind != lexical.size(); ++kind) {
+    if (labeling.entities[kind].size() != lexical[kind].size())
+      return invalid("canonical labeling omitted a Structured Program entity");
+    auto &shapes = projection.lexicalShapes[kind];
+    shapes.reserve(lexical[kind].size());
+    for (const EntityCarrier &carrier : lexical[kind])
+      shapes.push_back(entityShape(carrier));
+
+    auto &order = projection.canonicalToLexical[kind];
+    order.reserve(labeling.entities[kind].size());
+    std::vector<bool> seen(lexical[kind].size());
+    for (const EntityCarrier &carrier : labeling.entities[kind]) {
+      if (kindIndex(carrier.kind) != kind)
+        return invalid("canonical labeling changed an entity kind");
+      auto found = lexicalOrdinals[kind].find(entityPointer(carrier));
+      if (found == lexicalOrdinals[kind].end() ||
+          found->second >= seen.size() || seen[found->second])
+        return invalid("canonical entity projection is not a bijection");
+      seen[found->second] = true;
+      order.push_back(found->second);
+    }
+  }
+  return projection;
+}
+
+llvm::Expected<EntityTable>
+resolveCanonicalEntities(ModuleOp module,
+                         const CanonicalEntityProjection &projection) {
+  EntityTable lexical = collectLexicalEntities(module);
+  EntityTable canonical;
+  for (std::size_t kind = 0; kind != lexical.size(); ++kind) {
+    const auto &shapes = projection.lexicalShapes[kind];
+    const auto &order = projection.canonicalToLexical[kind];
+    if (lexical[kind].size() != shapes.size() || order.size() != shapes.size())
+      return invalid("canonical bytecode changed the Structured Program entity "
+                     "domain");
+    for (auto item : llvm::enumerate(lexical[kind]))
+      if (entityShape(item.value()) != shapes[item.index()])
+        return invalid(
+            "canonical bytecode changed a Structured Program entity");
+
+    auto &target = canonical[kind];
+    target.reserve(order.size());
+    std::vector<bool> seen(order.size());
+    for (std::uint64_t ordinal : order) {
+      if (ordinal >= lexical[kind].size() || seen[ordinal])
+        return invalid("canonical entity projection is not a bijection");
+      seen[ordinal] = true;
+      target.push_back(lexical[kind][ordinal]);
+    }
+  }
+  return canonical;
+}
+
 llvm::Error renameSymbol(Operation *symbol, StringAttr replacement,
                          Operation *symbolTable) {
   StringAttr old = SymbolTable::getSymbolName(symbol);
@@ -569,9 +703,12 @@ struct CanonicalModule {
   std::unique_ptr<MLIRContext> context;
   OwningOpRef<ModuleOp> module;
   std::vector<std::uint8_t> bytecode;
+  EntityTable entities;
 };
 
-llvm::Expected<CanonicalModule> canonicalModule(ModuleOp source) {
+llvm::Expected<CanonicalModule>
+canonicalModule(ModuleOp source,
+                const CanonicalEntityProjection &entityProjection) {
   auto initial = writeBytecodeOnce(source.getOperation());
   if (!initial)
     return initial.takeError();
@@ -593,8 +730,13 @@ llvm::Expected<CanonicalModule> canonicalModule(ModuleOp source) {
     return rewritten.takeError();
   if (*canonical != *rewritten)
     return invalid("the Structured Program bytecode writer is not byte stable");
+  auto entities =
+      resolveCanonicalEntities(verified->module.get(), entityProjection);
+  if (!entities)
+    return entities.takeError();
   return CanonicalModule{std::move(verified->context),
-                         std::move(verified->module), std::move(*canonical)};
+                         std::move(verified->module), std::move(*canonical),
+                         std::move(*entities)};
 }
 
 CanonicalSemanticBytes frameSemanticBytes(ArrayRef<std::uint8_t> bytecode) {
@@ -650,7 +792,12 @@ buildStructuredProgramCandidateView(ModuleOp module,
 
 namespace {
 
-llvm::Expected<OwningOpRef<ModuleOp>> canonicalizeClone(ModuleOp source) {
+struct CanonicalizedClone {
+  OwningOpRef<ModuleOp> module;
+  CanonicalEntityProjection entityProjection;
+};
+
+llvm::Expected<CanonicalizedClone> canonicalizeClone(ModuleOp source) {
   auto clone = OwningOpRef<ModuleOp>(cast<ModuleOp>(source->clone()));
   if (failed(verify(*clone)))
     return invalid("candidate does not verify before canonicalization");
@@ -668,7 +815,10 @@ llvm::Expected<OwningOpRef<ModuleOp>> canonicalizeClone(ModuleOp source) {
     return std::move(error);
   if (failed(verify(*clone)))
     return invalid("candidate does not verify after canonicalization");
-  return clone;
+  auto entityProjection = projectCanonicalEntities(*clone, *second);
+  if (!entityProjection)
+    return entityProjection.takeError();
+  return CanonicalizedClone{std::move(clone), std::move(*entityProjection)};
 }
 
 } // namespace
@@ -730,19 +880,28 @@ finalizeStructuredProgram(ModuleOp source) {
   auto clone = canonicalizeClone(source);
   if (!clone)
     return clone.takeError();
-  auto canonical = canonicalModule(clone->get());
+  auto canonical =
+      canonicalModule(clone->module.get(), clone->entityProjection);
   if (!canonical)
     return canonical.takeError();
   CanonicalSemanticBytes semantic = frameSemanticBytes(canonical->bytecode);
   ArtifactIdentity identity =
       finalizeArtifactIdentity(structuredProgramArtifactSchema, semantic);
-  auto view =
-      buildStructuredProgramCandidateView(canonical->module.get(), identity);
-  if (!view)
-    return view.takeError();
+  StructuredProgramCandidateView view(identity);
+  for (std::size_t index = 0; index != canonical->entities.size(); ++index) {
+    auto &target = view.entities_[index];
+    target.reserve(canonical->entities[index].size());
+    for (auto item : llvm::enumerate(canonical->entities[index])) {
+      const EntityCarrier &carrier = item.value();
+      target.push_back(
+          {StructuredEntityRef{identity, carrier.kind,
+                               static_cast<std::uint64_t>(item.index())},
+           carrier.operation, carrier.region, carrier.block, carrier.value});
+    }
+  }
   return StructuredProgramCandidate(
       identity, std::move(semantic), std::move(canonical->context),
-      std::move(canonical->module), std::move(*view));
+      std::move(canonical->module), std::move(view));
 }
 
 llvm::Expected<StructuredProgramCandidate>

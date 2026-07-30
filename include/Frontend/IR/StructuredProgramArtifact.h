@@ -27,6 +27,9 @@ class Region;
 
 namespace loom::frontend {
 
+class StructuredProgramCandidate;
+class StructuredProgramCandidateView;
+
 inline constexpr ArtifactSchemaDescriptor structuredProgramArtifactSchema{
     "loom.structured_program", {1, 0}};
 
@@ -61,7 +64,7 @@ encodeStructuredEntityRef(const StructuredEntityRef &reference);
 llvm::Expected<StructuredEntityRef>
 decodeStructuredEntityRef(llvm::ArrayRef<std::uint8_t> bytes);
 
-llvm::Expected<class StructuredProgramCandidateView>
+llvm::Expected<StructuredProgramCandidateView>
 buildStructuredProgramCandidateView(mlir::ModuleOp, const ArtifactIdentity &);
 
 struct StructuredEntity {
@@ -92,6 +95,8 @@ private:
   friend class StructuredProgramCandidate;
   friend llvm::Expected<StructuredProgramCandidateView>
   buildStructuredProgramCandidateView(mlir::ModuleOp, const ArtifactIdentity &);
+  friend llvm::Expected<StructuredProgramCandidate>
+      finalizeStructuredProgram(mlir::ModuleOp);
 };
 
 /// A complete immutable S0/Sn snapshot. The family owns one canonical MLIR

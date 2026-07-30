@@ -14,6 +14,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -44,8 +45,8 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::LLVM::LLVMDialect>();
-    auto *created = new mlir::MLIRContext(
-        registry, mlir::MLIRContext::Threading::DISABLED);
+    auto *created =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
     return created;
   }();
@@ -164,6 +165,47 @@ module { func.func @entry(%arg0: i32) -> i32 { return %arg0 : i32 } }
           imported.canonicalBytes().bytes() ==
               candidate.canonicalBytes().bytes(),
           "strict import did not preserve canonical bytes");
+
+  auto finalizedView = take(test, candidate.view());
+  auto importedView = take(test, imported.view());
+  constexpr std::array kinds{
+      StructuredEntityKind::Operation, StructuredEntityKind::Region,
+      StructuredEntityKind::Block, StructuredEntityKind::Value};
+  for (StructuredEntityKind kind : kinds) {
+    auto finalizedEntities = finalizedView.entities(kind);
+    auto importedEntities = importedView.entities(kind);
+    require(test, finalizedEntities.size() == importedEntities.size(),
+            "strict import changed a canonical entity domain");
+    for (auto pair : llvm::zip(finalizedEntities, importedEntities)) {
+      const auto &finalized = std::get<0>(pair);
+      const auto &reimported = std::get<1>(pair);
+      require(test, finalized.reference == reimported.reference,
+              "strict import changed a canonical entity reference");
+      require(test,
+              static_cast<bool>(finalized.operation) ==
+                      static_cast<bool>(reimported.operation) &&
+                  static_cast<bool>(finalized.region) ==
+                      static_cast<bool>(reimported.region) &&
+                  static_cast<bool>(finalized.block) ==
+                      static_cast<bool>(reimported.block) &&
+                  static_cast<bool>(finalized.value) ==
+                      static_cast<bool>(reimported.value),
+              "strict import changed a canonical entity carrier");
+      if (finalized.operation)
+        require(test,
+                finalized.operation->getName().getStringRef() ==
+                    reimported.operation->getName().getStringRef(),
+                "strict import changed a canonical operation entity");
+      if (finalized.value) {
+        std::string finalizedType;
+        std::string reimportedType;
+        llvm::raw_string_ostream(finalizedType) << finalized.value.getType();
+        llvm::raw_string_ostream(reimportedType) << reimported.value.getType();
+        require(test, finalizedType == reimportedType,
+                "strict import changed a canonical value entity");
+      }
+    }
+  }
 }
 
 void graphFreeInstructionCoreProgramPublishesDataflowArtifact() {
