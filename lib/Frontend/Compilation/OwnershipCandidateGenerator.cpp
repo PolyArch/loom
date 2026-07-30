@@ -1041,6 +1041,31 @@ cloneSelectedOperation(const StructuredProgramCandidate &parent,
                           std::move(sourceBlocks)};
 }
 
+llvm::Error retainLiveBlockLineage(PrivateSelection &selection) {
+  llvm::DenseSet<mlir::Block *> liveBlocks;
+  selection.clone->walk([&](mlir::Operation *operation) {
+    for (mlir::Region &region : operation->getRegions())
+      for (mlir::Block &block : region)
+        liveBlocks.insert(&block);
+  });
+
+  llvm::DenseSet<mlir::Block *> trackedBlocks;
+  std::vector<PreparedSpatialOwnershipSelection::SourceBlockBinding>
+      retainedBindings;
+  retainedBindings.reserve(selection.sourceBlocks.size());
+  for (const auto &binding : selection.sourceBlocks) {
+    if (!liveBlocks.contains(binding.candidateBlock))
+      continue;
+    if (!trackedBlocks.insert(binding.candidateBlock).second)
+      return invalid("call specialization duplicated a live block lineage");
+    retainedBindings.push_back(binding);
+  }
+  if (trackedBlocks.size() != liveBlocks.size())
+    return invalid("call specialization created an untracked block lineage");
+  selection.sourceBlocks = std::move(retainedBindings);
+  return llvm::Error::success();
+}
+
 llvm::Expected<MaterializedOwnershipCandidate> finalizeOwnershipCandidate(
     PreparedSpatialOwnershipSelection &prepared,
     const fabric::FinalizedFabricRoot &fabric,
@@ -1355,6 +1380,9 @@ prepareSpatialOwnershipSelection(
       return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                     specialized.takeError());
     operation = *specialized;
+    if (llvm::Error error = retainLiveBlockLineage(*selection))
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    std::move(error));
   }
   if (llvm::Error error = detail::materializeDataLayoutEndiannessProjection(
           selection->clone.get()))

@@ -18,6 +18,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
@@ -365,6 +366,22 @@ void exactUniformCallArgumentsAreCandidateLocal() {
   if (baselineLoads != 1 || selectedLoads != 0 ||
       !selectedFunction.getBody().front().getArgument(0).use_empty())
     fail("uniform null specialization retained the unreachable memory path");
+
+  llvm::DenseSet<mlir::Block *> liveBlocks;
+  selected.module->walk([&](mlir::Operation *operation) {
+    for (mlir::Region &region : operation->getRegions())
+      for (mlir::Block &block : region)
+        liveBlocks.insert(&block);
+  });
+  llvm::DenseSet<mlir::Block *> trackedBlocks;
+  for (const auto &binding : selected.sourceBlocks) {
+    if (!liveBlocks.contains(binding.candidateBlock))
+      fail("call specialization retained a dead block lineage");
+    if (!trackedBlocks.insert(binding.candidateBlock).second)
+      fail("call specialization duplicated a live block lineage");
+  }
+  if (trackedBlocks.size() != liveBlocks.size())
+    fail("call specialization did not preserve total live block lineage");
 
   const loom::frontend::StructuredEntityRef conflicting =
       findCallable(compiled.structuredProgram, "conflicting_core");
