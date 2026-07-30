@@ -707,6 +707,16 @@ _CMSIS_DSP_STATELESS_CONTROLLER_SIGNATURES = {
     "void(i32,i32,ptr,ptr,i32,i32)",
     "void(i32,ptr,ptr)",
 }
+_CMSIS_DSP_BASIC_F32_PROTOCOLS = {
+    "test_add_f32": ("arm_add_f32", "void(ptr,ptr,ptr,i32)"),
+    "test_clip_f32": ("arm_clip_f32", "void(ptr,ptr,float,float,i32)"),
+    "test_dot_prod_f32": ("arm_dot_prod_f32", "void(ptr,ptr,i32,ptr)"),
+    "test_mult_f32": ("arm_mult_f32", "void(ptr,ptr,ptr,i32)"),
+    "test_negate_f32": ("arm_negate_f32", "void(ptr,ptr,i32)"),
+    "test_offset_f32": ("arm_offset_f32", "void(ptr,float,ptr,i32)"),
+    "test_scale_f32": ("arm_scale_f32", "void(ptr,float,ptr,i32)"),
+    "test_sub_f32": ("arm_sub_f32", "void(ptr,ptr,ptr,i32)"),
+}
 
 
 def _cmsis_dsp_direct_protocol_family(
@@ -723,6 +733,15 @@ def _cmsis_dsp_direct_protocol_family(
         == (("arm_abs_f32", "void(ptr,ptr,i32)"),)
     ):
         return "stateless-abs-f32"
+    basic_f32 = _CMSIS_DSP_BASIC_F32_PROTOCOLS.get(producer.test_method)
+    if (
+        producer.selector_kind == "official"
+        and producer.test_class == "BasicTestsF32"
+        and basic_f32 is not None
+        and tuple((call.symbol, call.signature) for call in workload.protocol)
+        == (basic_f32,)
+    ):
+        return "stateless-basic-f32"
     if (
         producer.selector_kind == "official"
         and producer.test_class == "FIRF32"
@@ -811,6 +830,34 @@ def _cmsis_dsp_pattern_bytes(path: Path) -> bytes:
     return b"".join(_cmsis_dsp_pattern_segments(path).values())
 
 
+def _cmsis_dsp_source_payload_size(path: Path) -> int:
+    sample_sizes = {"B": 1, "H": 2, "W": 4, "D": 8}
+    try:
+        with path.open(encoding="utf-8", errors="strict") as source:
+            first = source.readline().strip()
+            if first in sample_sizes:
+                sample_size = sample_sizes[first]
+                count_text = source.readline().strip()
+            else:
+                sample_size = 4
+                count_text = first
+    except (OSError, UnicodeError) as exc:
+        raise WorkloadProviderError(
+            f"cannot read CMSIS-DSP pattern source {path}: {exc}"
+        ) from exc
+    try:
+        count = int(count_text, 10)
+    except ValueError as exc:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP pattern source has an invalid count: {path}"
+        ) from exc
+    if count < 0:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP pattern source has a negative count: {path}"
+        )
+    return sample_size * count
+
+
 def _cmsis_dsp_pattern_segments(path: Path) -> dict[str, bytes]:
     try:
         text = path.read_text(encoding="utf-8", errors="strict")
@@ -826,10 +873,28 @@ def _cmsis_dsp_pattern_segments(path: Path) -> dict[str, bytes]:
 
     segments: dict[str, bytearray] = {}
     current: bytearray | None = None
+    current_source: Path | None = None
+
+    def finish_segment() -> None:
+        if current is None or current_source is None:
+            return
+        if not current:
+            return
+        payload_size = _cmsis_dsp_source_payload_size(current_source)
+        padded_size = (payload_size + 7) & ~7
+        if len(current) != padded_size or any(current[payload_size:]):
+            raise WorkloadProviderError(
+                "generated CMSIS-DSP pattern does not match its source extent: "
+                f"{current_source}"
+            )
+        del current[payload_size:]
+
     for line in match.group(1).splitlines():
         stripped = line.strip()
         if stripped.startswith("// "):
-            name = Path(stripped[3:]).name
+            finish_segment()
+            current_source = Path(stripped[3:])
+            name = current_source.name
             if name in segments:
                 raise WorkloadProviderError(
                     f"generated CMSIS-DSP patterns repeat {name}: {path}"
@@ -856,6 +921,7 @@ def _cmsis_dsp_pattern_segments(path: Path) -> dict[str, bytes]:
                     f"generated CMSIS-DSP pattern byte is invalid: {path}"
                 )
             current.append(value)
+    finish_segment()
     if not segments:
         raise WorkloadProviderError(
             f"generated CMSIS-DSP pattern segments are incomplete: {path}"
@@ -1086,6 +1152,147 @@ int main() {{
   for (std::uint32_t index = 0; index < kSampleCount; ++index)
     input[index] = kInput[index];
   {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(input, output, kSampleCount);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def _render_basic_f32_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    sample_count: int | None,
+) -> str:
+    call = workload.protocol[0]
+    specs = {
+        "arm_add_f32": ("Reference1_f32.txt", "binary"),
+        "arm_sub_f32": ("Reference2_f32.txt", "binary"),
+        "arm_mult_f32": ("Reference3_f32.txt", "binary"),
+        "arm_negate_f32": ("Reference4_f32.txt", "unary"),
+        "arm_offset_f32": ("Reference5_f32.txt", "scalar"),
+        "arm_scale_f32": ("Reference6_f32.txt", "scalar"),
+        "arm_dot_prod_f32": ("Reference7_f32.txt", "dot"),
+        "arm_clip_f32": ("Reference12_f32.txt", "clip"),
+    }
+    try:
+        reference_name, kind = specs[call.symbol]
+    except KeyError as exc:
+        raise WorkloadProviderError(
+            f"unsupported CMSIS-DSP BasicTestsF32 protocol: {call.symbol}"
+        ) from exc
+    segments = _cmsis_dsp_pattern_segments(patterns)
+    input_name = "Input12_f32.txt" if kind == "clip" else "Input1_f32.txt"
+    input_a = _decode_f32_pattern(
+        _require_pattern_segment(segments, input_name), "basic f32 input"
+    )
+    expected = _decode_f32_pattern(
+        _require_pattern_segment(segments, reference_name), "basic f32 reference"
+    )
+    if sample_count is None:
+        sample_count = len(expected)
+    if sample_count <= 0 or len(input_a) < sample_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP basic f32 input does not cover its workload extent"
+        )
+    input_a = input_a[:sample_count]
+    input_b: tuple[str, ...] = ()
+    if kind in {"binary", "dot"}:
+        input_b = _decode_f32_pattern(
+            _require_pattern_segment(segments, "Input2_f32.txt"),
+            "basic f32 second input",
+        )
+        if len(input_b) < sample_count:
+            raise WorkloadProviderError(
+                "CMSIS-DSP basic f32 second input is incomplete"
+            )
+        input_b = input_b[:sample_count]
+    output_count = len(expected) if kind == "dot" else sample_count
+    if len(expected) < output_count:
+        raise WorkloadProviderError("CMSIS-DSP basic f32 reference is incomplete")
+    expected = expected[:output_count]
+
+    if kind == "binary":
+        parameters = """const float32_t *input_a, const float32_t *input_b,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input_a, input_b, output, count);"
+        main_arguments = "input_a, input_b, output, kSampleCount"
+    elif kind == "unary":
+        parameters = "const float32_t *input, float32_t *output, std::uint32_t count"
+        invocation = f"{call.symbol}(input, output, count);"
+        main_arguments = "input_a, output, kSampleCount"
+    elif kind == "scalar":
+        parameters = """const float32_t *input, float32_t scalar,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input, scalar, output, count);"
+        main_arguments = "input_a, 0.5f, output, kSampleCount"
+    elif kind == "dot":
+        parameters = """const float32_t *input_a, const float32_t *input_b,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input_a, input_b, count, &output[0]);"
+        main_arguments = "input_a, input_b, output, kSampleCount"
+    else:
+        parameters = """const float32_t *input, float32_t *output,
+    float32_t lower, float32_t upper, std::uint32_t count"""
+        invocation = f"{call.symbol}(input, output, lower, upper, count);"
+        main_arguments = "input_a, output, -0.5f, -0.1f, kSampleCount"
+
+    input_b_declaration = ""
+    input_b_initialization = ""
+    if input_b:
+        input_b_declaration = f"""constexpr float32_t kInputB[] = {{
+{_format_cpp_array(input_b)}
+}};
+"""
+        input_b_initialization = """
+  float32_t input_b[kSampleCount];
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input_b[index] = kInputB[index];"""
+
+    return f"""#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {sample_count};
+constexpr std::size_t kOutputCount = {output_count};
+constexpr float32_t kInputA[] = {{
+{_format_cpp_array(input_a)}
+}};
+{input_b_declaration}constexpr float32_t kExpected[] = {{
+{_format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const float32_t *output) {{
+  for (std::size_t index = 0; index < kOutputCount; ++index) {{
+    const float32_t expected = kExpected[index];
+    const float32_t difference = std::fabs(output[index] - expected);
+    const float32_t magnitude = std::fabs(expected);
+    if (!std::isfinite(output[index]) ||
+        difference > 1.0e-6f + 5.0e-5f * magnitude)
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
+    {parameters}) {{
+  {invocation}
+}}
+
+int main() {{
+  float32_t input_a[kSampleCount];
+  float32_t output[kOutputCount]{{}};
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input_a[index] = kInputA[index];{input_b_initialization}
+  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}({main_arguments});
   return oracle_matches(output) ? 0 : 1;
 }}
 """
@@ -1448,6 +1655,48 @@ def materialize_cmsis_dsp_harness(
                         workload.producer.vector_ordinal,
                     ),
                 ),
+                encoding="utf-8",
+            )
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
+            expected_entry_results.append(0)
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "basic_math_functions.h"
+            )
+            if not protocol_owner.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                )
+            protocol_source_owners.append((direct_source, protocol_owner))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    direct_source=direct_source,
+                )
+            )
+        elif direct_family == "stateless-basic-f32":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            sample_count = None
+            if workload.protocol[0].symbol != "arm_clip_f32":
+                sample_count = _cmsis_dsp_literal_test_extent(
+                    suite,
+                    tree_module.TreeElem.TEST,
+                    workload.producer.test_method,
+                    workload.producer.vector_ordinal,
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                _render_basic_f32_protocol(workload, shared_patterns, sample_count),
                 encoding="utf-8",
             )
             protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
