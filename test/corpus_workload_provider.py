@@ -7,8 +7,10 @@ import contextlib
 import copy
 import hashlib
 import importlib
+import math
 import re
 import shutil
+import struct
 import sys
 import warnings
 from dataclasses import dataclass
@@ -53,6 +55,7 @@ class CmsisDspHarness:
     targets: tuple[str, ...]
     shared_directories: tuple[Path, ...]
     protocol_methods: tuple[tuple[str, str], ...]
+    protocol_symbol_sets: tuple[tuple[str, ...], ...]
     protocol_source_owners: tuple[tuple[Path, Path], ...]
 
     def generated_directory(self, target: str) -> Path:
@@ -66,6 +69,9 @@ class CmsisDspHarness:
 
     def protocol_method(self, target: str) -> tuple[str, str]:
         return self.protocol_methods[self.targets.index(self._target(target))]
+
+    def protocol_symbols(self, target: str) -> tuple[str, ...]:
+        return self.protocol_symbol_sets[self.targets.index(self._target(target))]
 
     def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
         return self.protocol_source_owners[self.targets.index(self._target(target))]
@@ -93,6 +99,22 @@ class CmakeToolchain:
     compiler_flags: tuple[str, ...]
     linker_flags: tuple[str, ...]
     system_name: str | None = None
+
+
+@dataclass(frozen=True)
+class _CmsisDspCmakeTarget:
+    target: str
+    generated: Path
+    shared: Path
+    test_class: str
+    source_group: str | None = None
+    direct_source: Path | None = None
+
+    def __post_init__(self) -> None:
+        if (self.source_group is None) == (self.direct_source is None):
+            raise ValueError(
+                "CMSIS-DSP target must select one descriptor or direct source"
+            )
 
 
 def _render_unity_runner(test_function: str) -> str:
@@ -420,15 +442,243 @@ def _cmake_quote(path: Path) -> str:
     return path.as_posix().replace('"', '\\"')
 
 
+_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL = "loom_corpus_operator_protocol"
+_CMSIS_DSP_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_CMSIS_DSP_STATELESS_CONTROLLER_SIGNATURES = {
+    "void(float,float,ptr,ptr)",
+    "void(float,float,ptr,ptr,float,float)",
+    "void(float,ptr,ptr)",
+    "void(i32,i32,ptr,ptr)",
+    "void(i32,i32,ptr,ptr,i32,i32)",
+    "void(i32,ptr,ptr)",
+}
+
+
+def _cmsis_dsp_direct_protocol_family(
+    workload: corpus_inventory.ProgramWorkload,
+) -> str | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    if producer.selector_kind != "benchmark-only":
+        return None
+    if producer.test_class not in {"ControllerF32", "ControllerQ31"}:
+        return None
+    if len(workload.protocol) != 1:
+        return None
+    if workload.protocol[0].signature not in _CMSIS_DSP_STATELESS_CONTROLLER_SIGNATURES:
+        return None
+    return "stateless-controller"
+
+
+def supports_cmsis_dsp_harness(
+    workload: corpus_inventory.ProgramWorkload,
+) -> bool:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return False
+    return producer.selector_kind == "official" or (
+        _cmsis_dsp_direct_protocol_family(workload) is not None
+    )
+
+
+def _cmsis_dsp_first_parameter(suite: object) -> int:
+    parameter_id = suite.data.get("PARAMID")
+    matching = [values for _, name, values in suite.parameters if name == parameter_id]
+    if len(matching) != 1 or len(matching[0]) != 1:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol requires one parameter row"
+        )
+    parameter_names = tuple(suite.params.full)
+    if len(parameter_names) != 1:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol requires one parameter dimension"
+        )
+    values = matching[0][0].get("INTS")
+    if not isinstance(values, list) or not values:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol has no integer workload vector"
+        )
+    first = values[0]
+    if not isinstance(first, int) or isinstance(first, bool) or first <= 0:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol has an invalid workload extent"
+        )
+    return first
+
+
+def _cmsis_dsp_pattern_bytes(path: Path) -> bytes:
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError) as exc:
+        raise WorkloadProviderError(
+            f"cannot read generated CMSIS-DSP patterns {path}: {exc}"
+        ) from exc
+    match = re.search(r"const\s+char\s+patterns\[\]\s*=\s*\{(.*?)\};", text, re.S)
+    if match is None:
+        raise WorkloadProviderError(
+            f"generated CMSIS-DSP patterns have no byte array: {path}"
+        )
+    body = re.sub(r"//[^\n]*", "", match.group(1))
+    tokens = [token.strip() for token in body.split(",") if token.strip()]
+    try:
+        values = [int(token, 10) for token in tokens]
+    except ValueError as exc:
+        raise WorkloadProviderError(
+            f"generated CMSIS-DSP pattern byte is not decimal: {path}"
+        ) from exc
+    if not values or any(value < 0 or value > 255 for value in values):
+        raise WorkloadProviderError(
+            f"generated CMSIS-DSP pattern bytes are invalid: {path}"
+        )
+    return bytes(values)
+
+
+def _f32_literal(raw: bytes) -> str:
+    value = struct.unpack("<f", raw)[0]
+    if not math.isfinite(value):
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol requires finite float input"
+        )
+    return f"{value.hex()}f"
+
+
+def _cmsis_dsp_scalar_literals(
+    pattern_bytes: bytes, scalar: str, count: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    byte_count = count * 2 * 4
+    if len(pattern_bytes) < byte_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol pattern is smaller than its input extent"
+        )
+    chunks = tuple(
+        pattern_bytes[offset : offset + 4] for offset in range(0, byte_count, 4)
+    )
+    if scalar == "float32_t":
+        values = tuple(_f32_literal(chunk) for chunk in chunks)
+    else:
+        values = tuple(
+            str(int.from_bytes(chunk, byteorder="little", signed=True))
+            for chunk in chunks
+        )
+    return values[:count], values[count:]
+
+
+def _format_cpp_array(values: Sequence[str]) -> str:
+    lines = [
+        "  " + ", ".join(values[index : index + 4])
+        for index in range(0, len(values), 4)
+    ]
+    return ",\n".join(lines)
+
+
+def _render_stateless_controller_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    pattern_bytes: bytes,
+    sample_count: int,
+) -> str:
+    call = workload.protocol[0]
+    if _CMSIS_DSP_C_IDENTIFIER.fullmatch(call.symbol) is None:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP protocol symbol is not a C identifier: {call.symbol}"
+        )
+    is_float = call.signature.startswith("void(float")
+    scalar = "float32_t" if is_float else "q31_t"
+    input_a, input_b = _cmsis_dsp_scalar_literals(pattern_bytes, scalar, sample_count)
+
+    if call.signature in {"void(float,float,ptr,ptr)", "void(i32,i32,ptr,ptr)"}:
+        wrapper_parameters = f"""const {scalar} *input_a,
+    const {scalar} *input_b, {scalar} *output_a, {scalar} *output_b,
+    std::uint32_t count"""
+        call_arguments = (
+            "input_a[index], input_b[index], &output_a[index], &output_b[index]"
+        )
+        main_arguments = "kInputA, kInputB, output_a, output_b, kSampleCount"
+    elif call.signature in {
+        "void(float,float,ptr,ptr,float,float)",
+        "void(i32,i32,ptr,ptr,i32,i32)",
+    }:
+        wrapper_parameters = f"""const {scalar} *input_a,
+    const {scalar} *input_b, {scalar} *output_a, {scalar} *output_b,
+    std::uint32_t count, {scalar} coefficient_a,
+    {scalar} coefficient_b"""
+        call_arguments = (
+            "input_a[index], input_b[index], &output_a[index], &output_b[index], "
+            "coefficient_a, coefficient_b"
+        )
+        main_arguments = (
+            "kInputA, kInputB, output_a, output_b, kSampleCount, kInputA[0], kInputB[0]"
+        )
+    elif call.signature in {"void(float,ptr,ptr)", "void(i32,ptr,ptr)"}:
+        wrapper_parameters = f"""const {scalar} *input,
+    {scalar} *output_a, {scalar} *output_b, std::uint32_t count"""
+        call_arguments = "input[index], &output_a[index], &output_b[index]"
+        main_arguments = "kInputA, output_a, output_b, kSampleCount"
+    else:
+        raise WorkloadProviderError(
+            f"unsupported stateless controller signature: {call.signature}"
+        )
+
+    return f"""#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {sample_count};
+constexpr {scalar} kInputA[] = {{
+{_format_cpp_array(input_a)}
+}};
+constexpr {scalar} kInputB[] = {{
+{_format_cpp_array(input_b)}
+}};
+
+std::uint32_t digest(const void *data, std::size_t size) {{
+  const auto *bytes = static_cast<const unsigned char *>(data);
+  std::uint32_t value = 2166136261u;
+  for (std::size_t index = 0; index < size; ++index) {{
+    value ^= bytes[index];
+    value *= 16777619u;
+  }}
+  return value;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
+    {wrapper_parameters}) {{
+  for (std::uint32_t index = 0; index < count; ++index) {{
+    {call.symbol}({call_arguments});
+  }}
+}}
+
+int main() {{
+  {scalar} output_a[kSampleCount]{{}};
+  {scalar} output_b[kSampleCount]{{}};
+  {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}({main_arguments});
+  const std::uint32_t first = digest(output_a, sizeof(output_a));
+  const std::uint32_t second = digest(output_b, sizeof(output_b));
+  return static_cast<int>(first ^ (second * 16777619u));
+}}
+"""
+
+
 def _render_cmsis_dsp_harness_cmake(
-    targets: Sequence[tuple[str, Path, Path, str, str]],
+    targets: Sequence[_CmsisDspCmakeTarget],
     support_sources: Sequence[Path],
 ) -> str:
     suite_libraries: dict[Path, tuple[str, str, str]] = {}
-    for _, _, shared, test_class, source_group in targets:
+    for item in targets:
+        if item.source_group is None:
+            continue
         suite_libraries.setdefault(
-            shared,
-            (f"loom_dsp_{shared.name}", test_class, source_group),
+            item.shared,
+            (f"loom_dsp_{item.shared.name}", item.test_class, item.source_group),
         )
 
     suite_blocks = []
@@ -448,25 +698,38 @@ target_link_libraries({library} PRIVATE CMSISDSP)
         )
 
     target_blocks = []
-    for target, generated, shared, _, source_group in targets:
-        library = suite_libraries[shared][0]
-        generated_source = _cmake_quote(generated / "GeneratedSource")
-        generated_include = _cmake_quote(generated / "GeneratedInclude")
-        shared_include = _cmake_quote(shared / "GeneratedInclude")
+    for item in targets:
+        if item.direct_source is not None:
+            target_blocks.append(
+                f'''add_executable({item.target}
+  "{_cmake_quote(item.direct_source)}")
+target_include_directories({item.target} PRIVATE
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Include")
+target_compile_definitions({item.target} PRIVATE EMBEDDED NOTIMING)
+target_compile_options({item.target} PRIVATE -fno-inline-functions)
+target_link_libraries({item.target} PRIVATE CMSISDSP)
+'''
+            )
+            continue
+        assert item.source_group is not None
+        library = suite_libraries[item.shared][0]
+        generated_source = _cmake_quote(item.generated / "GeneratedSource")
+        generated_include = _cmake_quote(item.generated / "GeneratedInclude")
+        shared_include = _cmake_quote(item.shared / "GeneratedInclude")
         target_blocks.append(
-            f'''add_executable({target}
+            f'''add_executable({item.target}
   "${{CMAKE_CURRENT_SOURCE_DIR}}/OperatorMain.cpp"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/patterndata.c"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/testmain.cpp"
   "{generated_source}/TestDesc.cpp"
   $<TARGET_OBJECTS:{library}>)
-target_include_directories({target} PRIVATE
+target_include_directories({item.target} PRIVATE
   "{generated_include}"
   "{shared_include}"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/{source_group}")
-target_compile_definitions({target} PRIVATE EMBEDDED NOTIMING)
-target_link_libraries({target} PRIVATE
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/{item.source_group}")
+target_compile_definitions({item.target} PRIVATE EMBEDDED NOTIMING)
+target_link_libraries({item.target} PRIVATE
   loom_cmsis_dsp_framework loom_cmsis_dsp_test_support CMSISDSP)
 '''
         )
@@ -553,8 +816,9 @@ def materialize_cmsis_dsp_harness(
     targets: list[str] = []
     shared_directories: list[Path] = []
     protocol_methods: list[tuple[str, str]] = []
+    protocol_symbol_sets: list[tuple[str, ...]] = []
     protocol_source_owners: list[tuple[Path, Path]] = []
-    cmake_targets: list[tuple[str, Path, Path, str, str]] = []
+    cmake_targets: list[_CmsisDspCmakeTarget] = []
 
     for workload in workloads:
         if workload.suite != "cmsis-dsp" or not isinstance(
@@ -562,6 +826,10 @@ def materialize_cmsis_dsp_harness(
         ):
             raise WorkloadProviderError(
                 f"workload is not owned by the CMSIS-DSP provider: {workload.identity}"
+            )
+        if not supports_cmsis_dsp_harness(workload):
+            raise WorkloadProviderError(
+                f"CMSIS-DSP workload has no exact harness provider: {workload.identity}"
             )
         target = workload.executable
         if target != corpus_inventory.operator_workload_target(workload.operator_id):
@@ -642,30 +910,67 @@ def materialize_cmsis_dsp_harness(
         protocol_methods.append(
             (workload.producer.test_class, workload.producer.test_method)
         )
-        source_group = {
-            "benchmark-only": "Benchmarks",
-            "official": "Tests",
-        }[workload.producer.selector_kind]
-        protocol_source = (
-            testing_root
-            / "Source"
-            / source_group
-            / f"{workload.producer.test_class}.cpp"
-        )
-        if not protocol_source.is_file():
-            raise WorkloadProviderError(
-                f"CMSIS-DSP protocol owner is unavailable: {protocol_source}"
-            )
-        protocol_source_owners.append((protocol_source, protocol_source))
-        cmake_targets.append(
-            (
-                target,
-                generated,
-                shared_generated,
+        direct_family = _cmsis_dsp_direct_protocol_family(workload)
+        if direct_family == "stateless-controller":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
                 workload.producer.test_class,
-                source_group,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                _render_stateless_controller_protocol(
+                    workload,
+                    _cmsis_dsp_pattern_bytes(shared_patterns),
+                    _cmsis_dsp_first_parameter(suite),
+                ),
+                encoding="utf-8",
             )
-        )
+            protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "controller_functions.h"
+            )
+            if not protocol_owner.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                )
+            protocol_source_owners.append((direct_source, protocol_owner))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    direct_source=direct_source,
+                )
+            )
+        else:
+            source_group = "Tests"
+            protocol_source = (
+                testing_root
+                / "Source"
+                / source_group
+                / f"{workload.producer.test_class}.cpp"
+            )
+            if not protocol_source.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_source}"
+                )
+            protocol_symbol_sets.append(())
+            protocol_source_owners.append((protocol_source, protocol_source))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    source_group=source_group,
+                )
+            )
 
     (source_dir / "CMakeLists.txt").write_text(
         _render_cmsis_dsp_harness_cmake(
@@ -687,6 +992,7 @@ int main() { return testmain(patternData); }
         tuple(targets),
         tuple(shared_directories),
         tuple(protocol_methods),
+        tuple(protocol_symbol_sets),
         tuple(protocol_source_owners),
     )
 

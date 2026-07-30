@@ -57,11 +57,11 @@ DSP_MFCC_Q31_WORKLOAD_ID = next(
     and row.case == "arm-mfcc-q31"
     and row.target_profile == "riscv64-portable-scalar"
 )
-DSP_CFFT_RADIX2_F32_WORKLOAD_ID = next(
+DSP_CLARKE_F32_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
     if row.suite == "cmsis-dsp"
-    and row.case == "arm-cfft-radix2-f32"
+    and row.case == "arm-clarke-f32"
     and row.target_profile == "riscv64-portable-scalar"
 )
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
@@ -533,35 +533,45 @@ class InventoryAggregationTest(CorpusGateTestBase):
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         self.assertIn('Testing/Source/Tests/mfccdata.c"', cmake)
 
-    def test_cmsis_dsp_benchmark_harness_uses_benchmark_owner(self) -> None:
+    def test_cmsis_dsp_benchmark_vector_generates_direct_protocol(self) -> None:
         workload = next(
             case
             for case in corpus_inventory.load_workload_inventory(ROOT)
-            if case.identity == DSP_CFFT_RADIX2_F32_WORKLOAD_ID
+            if case.identity == DSP_CLARKE_F32_WORKLOAD_ID
         )
 
         harness = corpus_gate.materialize_cmsis_dsp_harness(
             (workload,),
             corpus_inventory.resolve_externals_root(ROOT),
-            self.work / "cmsis-dsp-benchmark-harness",
+            self.work / "cmsis-dsp-direct-harness",
         )
 
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("loom_corpus_operator_protocol",),
+        )
         compiled_owner, authoritative_owner = harness.protocol_source_owner(
             workload.executable
         )
-        self.assertEqual(compiled_owner, authoritative_owner)
+        self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
         self.assertEqual(
             authoritative_owner,
             corpus_inventory.resolve_externals_root(ROOT)
             / "cmsis-dsp"
-            / "Testing"
-            / "Source"
-            / "Benchmarks"
-            / "TransformF32.cpp",
+            / "Include"
+            / "dsp"
+            / "controller_functions.h",
         )
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
-        self.assertIn("Testing/Source/Benchmarks/TransformF32.cpp", cmake)
-        self.assertIn("Testing/Include/Benchmarks", cmake)
+        self.assertNotIn("Testing/Source/Benchmarks/ControllerF32.cpp", cmake)
+        source = compiled_owner.read_text()
+        self.assertIn('extern "C" LOOM_NOINLINE void', source)
+        self.assertIn("arm_clarke_f32(input_a[index], input_b[index]", source)
+        self.assertIn("output_a[index]", source)
+        self.assertIn("output_b[index]", source)
+        self.assertIn("float32_t output_a[kSampleCount]{};", source)
+        self.assertIn("float32_t output_b[kSampleCount]{};", source)
+        self.assertNotIn("ControllerF32", source)
 
     def test_linked_dsp_protocol_boundary_uses_compiler_owned_symbol(self) -> None:
         toolchain = self.toolchain()
@@ -604,6 +614,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 (workload.producer.test_class, workload.producer.test_method)
                 for workload in workloads
             ),
+            ((), ()),
             tuple(
                 (self.work / f"protocol-{index}.cpp",) * 2
                 for index in range(len(workloads))

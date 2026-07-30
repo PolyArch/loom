@@ -75,6 +75,7 @@ from corpus_workload_provider import (  # noqa: E402
     cmake_configure_command,
     materialize_cmsis_dsp_harness,
     materialize_cmsis_nn_harness,
+    supports_cmsis_dsp_harness,
 )
 
 
@@ -1001,6 +1002,7 @@ def prepare_workload_providers(
         for case in cases
         if isinstance(case.producer, corpus_inventory.CmsisDspWorkloadProducer)
         and case.target_profile == TARGET_PROFILE
+        and supports_cmsis_dsp_harness(case)
     ]
     implemented = {case.identity for case in (*cmsis_nn, *cmsis_dsp)}
     for case in cases:
@@ -1070,17 +1072,19 @@ def prepare_workload_providers(
                     if isinstance(harness, CmsisNnHarness):
                         protocol_symbols = (harness.protocol_symbol(case.executable),)
                     else:
-                        test_class, test_method = harness.protocol_method(
-                            case.executable
-                        )
-                        protocol_symbols = (
-                            resolve_cxx_method_symbol(
-                                toolchain,
-                                Path(f"{target_executable}.0.5.precodegen.bc"),
-                                test_class,
-                                test_method,
-                            ),
-                        )
+                        protocol_symbols = harness.protocol_symbols(case.executable)
+                        if not protocol_symbols:
+                            test_class, test_method = harness.protocol_method(
+                                case.executable
+                            )
+                            protocol_symbols = (
+                                resolve_cxx_method_symbol(
+                                    toolchain,
+                                    Path(f"{target_executable}.0.5.precodegen.bc"),
+                                    test_class,
+                                    test_method,
+                                ),
+                            )
                 except (GateConfigError, WorkloadProviderError) as exc:
                     results[case.identity] = StepFailure(
                         CATEGORY_FINAL_LINK_ARTIFACT, str(exc)
