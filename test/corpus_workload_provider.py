@@ -28,6 +28,7 @@ class CmsisNnHarness:
     unity_source: Path
     targets: tuple[str, ...]
     protocol_symbols: tuple[str, ...]
+    protocol_source_owners: tuple[tuple[Path, Path], ...]
 
     def executable(self, build_dir: Path, target: str) -> Path:
         if target not in self.targets:
@@ -36,6 +37,9 @@ class CmsisNnHarness:
 
     def protocol_symbol(self, target: str) -> str:
         return self.protocol_symbols[self.targets.index(self._target(target))]
+
+    def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
+        return self.protocol_source_owners[self.targets.index(self._target(target))]
 
     def _target(self, target: str) -> str:
         if target not in self.targets:
@@ -49,6 +53,7 @@ class CmsisDspHarness:
     targets: tuple[str, ...]
     shared_directories: tuple[Path, ...]
     protocol_methods: tuple[tuple[str, str], ...]
+    protocol_source_owners: tuple[tuple[Path, Path], ...]
 
     def generated_directory(self, target: str) -> Path:
         return self.source_dir / "generated" / "targets" / self._target(target)
@@ -62,6 +67,9 @@ class CmsisDspHarness:
     def protocol_method(self, target: str) -> tuple[str, str]:
         return self.protocol_methods[self.targets.index(self._target(target))]
 
+    def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
+        return self.protocol_source_owners[self.targets.index(self._target(target))]
+
     def _target(self, target: str) -> str:
         if target not in self.targets:
             raise WorkloadProviderError(f"unknown CMSIS-DSP harness target: {target}")
@@ -73,6 +81,7 @@ class ProducedWorkload:
     target_build_dir: Path
     target_executable: Path
     protocol_symbols: tuple[str, ...]
+    protocol_source_owners: tuple[tuple[Path, Path], ...]
 
 
 @dataclass(frozen=True)
@@ -227,6 +236,7 @@ def materialize_cmsis_nn_harness(
 
     targets: list[str] = []
     protocol_symbols: list[str] = []
+    protocol_source_owners: list[tuple[Path, Path]] = []
     case_directories: list[str] = []
     for workload in workloads:
         if workload.suite != "cmsis-nn" or not isinstance(
@@ -270,6 +280,11 @@ def materialize_cmsis_nn_harness(
                 f"CMSIS-NN case must own one Unity wrapper: {case_source}"
             )
         wrapper = wrappers[0]
+        original_wrapper = case_source / "Unity" / wrapper.name
+        if not original_wrapper.is_file():
+            raise WorkloadProviderError(
+                f"CMSIS-NN protocol owner is unavailable: {original_wrapper}"
+            )
         try:
             test_functions = corpus_inventory.load_cmsis_nn_unity_test_functions(
                 case_destination
@@ -287,6 +302,7 @@ def materialize_cmsis_nn_harness(
         )
         targets.append(target)
         protocol_symbols.append(workload.producer.test_function)
+        protocol_source_owners.append((wrapper, original_wrapper))
         case_directories.append(target)
 
     (source_dir / "CMakeLists.txt").write_text(
@@ -297,6 +313,7 @@ def materialize_cmsis_nn_harness(
         unity_source,
         tuple(targets),
         tuple(protocol_symbols),
+        tuple(protocol_source_owners),
     )
 
 
@@ -536,6 +553,7 @@ def materialize_cmsis_dsp_harness(
     targets: list[str] = []
     shared_directories: list[Path] = []
     protocol_methods: list[tuple[str, str]] = []
+    protocol_source_owners: list[tuple[Path, Path]] = []
     cmake_targets: list[tuple[str, Path, Path, str]] = []
 
     for workload in workloads:
@@ -624,6 +642,14 @@ def materialize_cmsis_dsp_harness(
         protocol_methods.append(
             (workload.producer.test_class, workload.producer.test_method)
         )
+        protocol_source = (
+            testing_root / "Source" / "Tests" / f"{workload.producer.test_class}.cpp"
+        )
+        if not protocol_source.is_file():
+            raise WorkloadProviderError(
+                f"CMSIS-DSP protocol owner is unavailable: {protocol_source}"
+            )
+        protocol_source_owners.append((protocol_source, protocol_source))
         cmake_targets.append(
             (
                 target,
@@ -653,6 +679,7 @@ int main() { return testmain(patternData); }
         tuple(targets),
         tuple(shared_directories),
         tuple(protocol_methods),
+        tuple(protocol_source_owners),
     )
 
 

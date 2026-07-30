@@ -113,8 +113,33 @@ def resolve_selected_corpus_sources(
     external_root: Path,
     repo_root: Path,
     allowed_sources: frozenset[str],
+    protocol_source_owners: Sequence[tuple[Path, Path]] = (),
 ) -> tuple[tuple[str, ...] | None, str | None]:
     known_sources = frozenset(source.resolve() for _, source in linked.object_sources)
+    owner_projection: dict[Path, str] = {}
+    for compiled_source, authoritative_source in protocol_source_owners:
+        compiled = compiled_source.resolve()
+        if compiled not in known_sources:
+            return None, (
+                "protocol owner source is absent from the exact linked "
+                f"compilation closure: {compiled_source}"
+            )
+        canonical = _canonical_corpus_source(
+            authoritative_source, external_root, repo_root
+        )
+        if canonical is None:
+            return None, (
+                "protocol owner source has no repository identity: "
+                f"{authoritative_source}"
+            )
+        previous = owner_projection.get(compiled)
+        if previous is not None and previous != canonical:
+            return None, (
+                "compiled protocol source has multiple authoritative owners: "
+                f"{compiled_source}"
+            )
+        owner_projection[compiled] = canonical
+
     selected_sources: set[str] = set()
     for source_file in selected_source_files:
         source = _resolve_provenance_path(
@@ -122,11 +147,16 @@ def resolve_selected_corpus_sources(
         )
         if source is None:
             continue
+        protocol_owner = owner_projection.get(source)
+        if protocol_owner is not None:
+            selected_sources.add(protocol_owner)
+            continue
         canonical = _canonical_corpus_source(source, external_root, repo_root)
         if canonical is not None and canonical in allowed_sources:
             selected_sources.add(canonical)
     if not selected_sources:
         return None, (
-            "selected graph source provenance does not cover an exact corpus source row"
+            "selected graph source provenance does not cover an exact corpus source "
+            "row or protocol owner"
         )
     return tuple(sorted(selected_sources)), None

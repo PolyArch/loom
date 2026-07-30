@@ -397,16 +397,25 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 harness.protocol_symbol(workload.executable),
                 workload.producer.test_function,
             )
-            runner = (
+            runner_path = (
                 harness.source_dir
                 / "TestCases"
                 / workload.executable
                 / "Unity"
                 / "TestRunner"
                 / "unity_test_arm_avgpool_s8_runner.c"
-            ).read_text()
+            )
+            runner = runner_path.read_text()
             calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
             self.assertEqual(calls, [workload.producer.test_function])
+            compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                workload.executable
+            )
+            self.assertEqual(
+                compiled_owner,
+                runner_path.parent.parent / runner_path.name.replace("_runner", ""),
+            )
+            self.assertTrue(authoritative_owner.is_file())
         self.assertIn(
             "target_compile_options(${target} PRIVATE -fno-inline-functions)",
             (harness.source_dir / "CMakeLists.txt").read_text(),
@@ -449,6 +458,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
             harness.protocol_method(workload.executable),
             (workload.producer.test_class, workload.producer.test_method),
         )
+        compiled_owner, authoritative_owner = harness.protocol_source_owner(
+            workload.executable
+        )
+        self.assertEqual(compiled_owner, authoritative_owner)
+        self.assertTrue(authoritative_owner.is_file())
         descriptor = (
             harness.generated_directory(workload.executable)
             / "GeneratedSource"
@@ -553,6 +567,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 (workload.producer.test_class, workload.producer.test_method)
                 for workload in workloads
             ),
+            tuple(
+                (self.work / f"protocol-{index}.cpp",) * 2
+                for index in range(len(workloads))
+            ),
         )
         target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
 
@@ -597,6 +615,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
             results[workloads[0].identity].protocol_symbols,
             ("_ZN13BasicTestsF3212test_abs_f32Ev",),
         )
+        self.assertEqual(
+            results[workloads[0].identity].protocol_source_owners,
+            ((self.work / "protocol-0.cpp", self.work / "protocol-0.cpp"),),
+        )
         self.assertIsInstance(results[workloads[1].identity], corpus_gate.StepFailure)
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
@@ -636,7 +658,12 @@ class InventoryAggregationTest(CorpusGateTestBase):
         case_dir.mkdir()
 
         prepared = corpus_gate.import_produced_workload(
-            corpus_gate.ProducedWorkload(build_dir, executable, ("protocol",)),
+            corpus_gate.ProducedWorkload(
+                build_dir,
+                executable,
+                ("protocol",),
+                (),
+            ),
             toolchain,
             case_dir,
             time.monotonic() + 5.0,
@@ -698,6 +725,46 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         self.assertIsNone(selected)
         self.assertIn("does not cover an exact corpus source row", defect)
+
+    def test_selected_source_projection_accepts_exact_protocol_owner(self) -> None:
+        wrapper_object = self.work / "wrapper.o"
+        wrapper_source = self.work / "generated" / "unity_test_kernel.c"
+        wrapper_source.parent.mkdir()
+        wrapper_source.write_text("void test_kernel(void) {}\n")
+        upstream_owner = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Tests"
+            / "UnitTest"
+            / "TestCases"
+            / "test_kernel"
+            / "Unity"
+            / "unity_test_kernel.c"
+        )
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=self.work / "program.resolution.txt",
+            link_root=self.work,
+            object_sources=((wrapper_object, wrapper_source),),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            (str(wrapper_source),),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset({"externals/cmsis-nn/Source/kernel.c"}),
+            ((wrapper_source, upstream_owner),),
+        )
+
+        self.assertIsNone(defect)
+        self.assertEqual(
+            selected,
+            (
+                "externals/cmsis-nn/Tests/UnitTest/TestCases/"
+                "test_kernel/Unity/unity_test_kernel.c",
+            ),
+        )
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
