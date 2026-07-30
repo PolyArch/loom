@@ -17,8 +17,8 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowOps.h"
 
-#include "DataflowCanonicalLabeling.h"
 #include "DataflowCanonicalBytecodeInternal.h"
+#include "DataflowCanonicalLabeling.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -31,8 +31,11 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <optional>
+#include <string>
 #include <utility>
 
 using namespace mlir;
@@ -42,6 +45,30 @@ namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+}
+
+std::string
+describeCanonicalByteMismatch(llvm::ArrayRef<std::uint8_t> stored,
+                              llvm::ArrayRef<std::uint8_t> rewritten) {
+  const std::size_t commonSize = std::min(stored.size(), rewritten.size());
+  std::size_t mismatch = 0;
+  while (mismatch != commonSize && stored[mismatch] == rewritten[mismatch])
+    ++mismatch;
+
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  stream << "canonical dataflow: stored bytes are noncanonical at byte "
+         << mismatch << " (stored size " << stored.size() << ", rewritten size "
+         << rewritten.size() << "; stored";
+  const std::size_t begin = mismatch > 8 ? mismatch - 8 : 0;
+  const std::size_t end = std::min(commonSize, mismatch + 16);
+  for (std::size_t index = begin; index != end; ++index)
+    stream << ' ' << llvm::format_hex_no_prefix(stored[index], 2, true);
+  stream << "; rewritten";
+  for (std::size_t index = begin; index != end; ++index)
+    stream << ' ' << llvm::format_hex_no_prefix(rewritten[index], 2, true);
+  stream << ')';
+  return stream.str();
 }
 
 // The derived entity-id carrier is a finalizer output, never trusted on input.
@@ -171,15 +198,63 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
   pruneUnreachablePrivateSymbols(clone.get());
   if (llvm::Error error = validateProgram(clone.get()))
     return std::move(error);
+
+  // MLIR importers may materialize an optional property as an explicitly empty
+  // value while the parser represents the same assembly form as an absent
+  // property. Normalize through the pinned parser before canonical labeling so
+  // the relation graph and family-owned text have one representation. Track
+  // caller-selected launches only by their ephemeral walk ordinal across this
+  // semantics-preserving parser round trip.
+  llvm::DenseMap<Operation *, unsigned> launchOrdinal;
+  unsigned nextLaunchOrdinal = 0;
+  clone->walk([&](GraphLaunchOp launch) {
+    launchOrdinal[launch.getOperation()] = nextLaunchOrdinal++;
+  });
+  SmallVector<unsigned> trackedOrdinals;
+  trackedOrdinals.reserve(tracked.size());
+  for (Operation *operation : tracked) {
+    auto found = launchOrdinal.find(operation);
+    if (found == launchOrdinal.end())
+      return invalid(
+          "canonical dataflow: tracked launch is not live after pruning");
+    trackedOrdinals.push_back(found->second);
+  }
+
+  clone->walk([&](Operation *operation) {
+    operation->setLoc(UnknownLoc::get(clone.get().getContext()));
+  });
+  auto authoringText = detail::writeCanonicalizedDataflowBytecode(clone.get());
+  if (!authoringText)
+    return authoringText.takeError();
+  auto normalized = detail::parseCanonicalDataflowBytecode(*authoringText);
+  if (!normalized)
+    return normalized.takeError();
+  if (llvm::Error error = validateProgram(normalized->module.get()))
+    return std::move(error);
+
+  SmallVector<Operation *> normalizedLaunches;
+  normalized->module->walk([&](GraphLaunchOp launch) {
+    normalizedLaunches.push_back(launch.getOperation());
+  });
+  tracked.clear();
+  tracked.reserve(trackedOrdinals.size());
+  for (unsigned ordinal : trackedOrdinals) {
+    if (ordinal >= normalizedLaunches.size())
+      return invalid(
+          "canonical dataflow: tracked launch was lost during normalization");
+    tracked.push_back(normalizedLaunches[ordinal]);
+  }
+
   llvm::Expected<detail::CanonicalLabeling> labeling =
-      detail::canonicalizeDataflowPresentation(clone.get());
+      detail::canonicalizeDataflowPresentation(normalized->module.get());
   if (!labeling)
     return labeling.takeError();
 
   for (const detail::EntityCarrier &carrier : labeling->carriers)
-    materialize(carrier, clone.get().getContext());
+    materialize(carrier, normalized->module.get().getContext());
 
-  auto bytecode = detail::writeCanonicalizedDataflowBytecode(clone.get());
+  auto bytecode =
+      detail::writeCanonicalizedDataflowBytecode(normalized->module.get());
   if (!bytecode)
     return bytecode.takeError();
   ::loom::CanonicalSemanticBytes bytes =
@@ -191,8 +266,8 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
   // reusing the labeling already computed rather than recomputing it. Any
   // unresolved memory root, exposure, or owner relation fails finalization here
   // so a defective artifact is never published.
-  auto view = CanonicalDataflowProgramView::buildView(clone.get(), identity,
-                                                       *labeling);
+  auto view = CanonicalDataflowProgramView::buildView(normalized->module.get(),
+                                                      identity, *labeling);
   if (!view)
     return view.takeError();
 
@@ -211,8 +286,9 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
   }
 
   return FinalizedCanonicalDataflowProjection{
-      CanonicalDataflowArtifact(identity, std::move(clone), std::move(bytes),
-                                std::move(*view)),
+      CanonicalDataflowArtifact(identity, std::move(normalized->module),
+                                std::move(bytes), std::move(*view),
+                                std::move(normalized->context)),
       std::move(trackedReferences)};
 }
 
@@ -369,8 +445,7 @@ CanonicalDataflowProgramView::buildView(
 
 llvm::Expected<CanonicalDataflowProgramView>
 CanonicalDataflowProgramView::import(
-    ModuleOp finalizedModule,
-    const ::loom::ArtifactIdentity &expectedIdentity,
+    ModuleOp finalizedModule, const ::loom::ArtifactIdentity &expectedIdentity,
     const ::loom::CanonicalSemanticBytes &canonicalBytes) {
   if (llvm::Error error = validateProgram(finalizedModule))
     return std::move(error);
@@ -447,15 +522,16 @@ importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
                         const ::loom::CanonicalSemanticBytes &canonicalBytes) {
   if (::loom::finalizeArtifactIdentity(canonicalDataflowSchema,
                                        canonicalBytes) != identity)
-    return invalid("canonical dataflow: identity does not match canonical bytes");
+    return invalid(
+        "canonical dataflow: identity does not match canonical bytes");
   auto bytecode = detail::extractCanonicalDataflowBytecode(canonicalBytes);
   if (!bytecode)
     return bytecode.takeError();
   auto parsed = detail::parseCanonicalDataflowBytecode(*bytecode);
   if (!parsed)
     return parsed.takeError();
-  auto view = CanonicalDataflowProgramView::import(parsed->module.get(), identity,
-                                                    canonicalBytes);
+  auto view = CanonicalDataflowProgramView::import(parsed->module.get(),
+                                                   identity, canonicalBytes);
   if (!view)
     return view.takeError();
   auto rewritten =
@@ -465,10 +541,10 @@ importCanonicalDataflow(const ::loom::ArtifactIdentity &identity,
   ::loom::CanonicalSemanticBytes reencoded =
       detail::frameCanonicalDataflowBytes(*rewritten);
   if (!reencoded.bytes().equals(canonicalBytes.bytes()))
-    return invalid("canonical dataflow: stored bytes are noncanonical");
-  return CanonicalDataflowArtifact(
-      identity, std::move(parsed->module), canonicalBytes, std::move(*view),
-      std::move(parsed->context));
+    return invalid(describeCanonicalByteMismatch(*bytecode, *rewritten));
+  return CanonicalDataflowArtifact(identity, std::move(parsed->module),
+                                   canonicalBytes, std::move(*view),
+                                   std::move(parsed->context));
 }
 
 llvm::Expected<::loom::ArtifactRootReference>
@@ -478,9 +554,11 @@ publishCanonicalDataflow(const CanonicalDataflowArtifact &candidate,
   if (!stored)
     return stored.takeError();
   if (*stored != candidate.identity())
-    return invalid("ArtifactStore returned a different Canonical Dataflow identity");
+    return invalid(
+        "ArtifactStore returned a different Canonical Dataflow identity");
   return ::loom::ArtifactRootReference{canonicalDataflowSchema.identity.str(),
-                                       canonicalDataflowSchema.version, *stored};
+                                       canonicalDataflowSchema.version,
+                                       *stored};
 }
 
 llvm::Expected<CanonicalDataflowArtifact>

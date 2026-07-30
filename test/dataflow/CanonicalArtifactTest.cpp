@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -72,8 +73,8 @@ mlir::MLIRContext &context() {
     registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
                     mlir::arith::ArithDialect, mlir::DLTIDialect,
                     mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
-    auto *c = new mlir::MLIRContext(
-        registry, mlir::MLIRContext::Threading::DISABLED);
+    auto *c =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     c->loadAllAvailableDialects();
     return c;
   }();
@@ -174,10 +175,10 @@ std::string reconvergentControlGraph(unsigned depth) {
     %v1 = dataflow.invariant %phase, %one : i32
 )mlir";
   for (unsigned i = 2; i < depth; ++i)
-    os << "    %v" << i << " = arith.addi %v" << i - 1 << ", %v"
-       << i - 2 << " : i32\n";
-  os << "    %selected = arith.cmpi sgt, %v" << depth - 1 << ", %v"
-     << depth - 2 << " : i32\n"
+    os << "    %v" << i << " = arith.addi %v" << i - 1 << ", %v" << i - 2
+       << " : i32\n";
+  os << "    %selected = arith.cmpi sgt, %v" << depth - 1 << ", %v" << depth - 2
+     << " : i32\n"
      << R"mlir(    %branches:2 = dataflow.demux %selected, %lanes#1
         : (i1, none) -> (none, none)
     %body = dataflow.mux %selected, %branches#0, %branches#1
@@ -294,8 +295,8 @@ void artifactStoreRoundTrip() {
   CanonicalDataflowArtifact artifact =
       finalize(test, computeGraph("g", 3, 4, "arith.addi", "a", "b"));
   llvm::SmallString<128> directory;
-  std::error_code error = llvm::sys::fs::createUniqueDirectory(
-      "loom-dataflow-artifact", directory);
+  std::error_code error =
+      llvm::sys::fs::createUniqueDirectory("loom-dataflow-artifact", directory);
   if (error)
     fail(test, "cannot create artifact store directory: " + error.message());
   ArtifactStore store(directory);
@@ -305,17 +306,52 @@ void artifactStoreRoundTrip() {
   auto imported = importCanonicalDataflow(*reference, store);
   if (!imported)
     fail(test, "strict import failed: " + llvm::toString(imported.takeError()));
-  require(test, imported->identity() == artifact.identity() &&
-                    bytesOf(*imported) == bytesOf(artifact),
+  require(test,
+          imported->identity() == artifact.identity() &&
+              bytesOf(*imported) == bytesOf(artifact),
           "ArtifactStore import must preserve canonical Dataflow bytes");
-  require(test, isRejected(importCanonicalDataflow(
-                    ArtifactRootReference{"loom.foreign", {1, 0},
-                                          artifact.identity()},
-                    store)),
-          "foreign artifact schema must reject before import");
+  require(
+      test,
+      isRejected(importCanonicalDataflow(
+          ArtifactRootReference{"loom.foreign", {1, 0}, artifact.identity()},
+          store)),
+      "foreign artifact schema must reject before import");
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
     fail(test, "cannot remove artifact store directory: " + cleanup.message());
+}
+
+void importerConstructedOperationRoundTrip() {
+  const char *test = "importerConstructedOperationRoundTrip";
+  const char *assumeProgram = R"mlir(
+module {
+  llvm.func @entry(%condition: i1) {
+    llvm.intr.assume %condition : i1
+    llvm.return
+  }
+}
+)mlir";
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(test, assumeProgram);
+  mlir::LLVM::AssumeOp parsedAssume;
+  module->walk([&](mlir::LLVM::AssumeOp assume) { parsedAssume = assume; });
+  require(test, static_cast<bool>(parsedAssume), "fixture has one assume op");
+
+  mlir::OpBuilder builder(parsedAssume);
+  mlir::LLVM::AssumeOp::create(
+      builder, parsedAssume.getLoc(), parsedAssume.getCond(),
+      llvm::ArrayRef<mlir::ValueRange>{}, builder.getArrayAttr({}));
+  parsedAssume.erase();
+
+  llvm::Expected<CanonicalDataflowArtifact> finalized =
+      finalizeCanonicalDataflow(module.get());
+  if (!finalized)
+    fail(test, "finalize failed: " + llvm::toString(finalized.takeError()));
+  llvm::Expected<CanonicalDataflowArtifact> imported = importCanonicalDataflow(
+      finalized->identity(), finalized->canonicalBytes());
+  if (!imported)
+    fail(test, "strict import failed: " + llvm::toString(imported.takeError()));
+  require(test, imported->identity() == finalized->identity(),
+          "strict import preserves an importer-built operation identity");
 }
 
 // (b) Semantic differences
@@ -376,7 +412,8 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
-       << "  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) { %a, %d = "
+       << "  dataflow.thread private @t "
+          "domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) { %a, %d = "
           "dataflow.graph.launch @g deps(%c) values() stream_inputs() "
           "memories() stream_outputs() : (none) -> (i32, none)\n"
           "    dataflow.thread.yield %d : none }\n"
@@ -414,7 +451,8 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
-       << "  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) {\n"
+       << "  dataflow.thread private @t "
+          "domain(#dataflow.thread_domain<dense>)() ctrl (%c: none) {\n"
        << "    %a, %da = dataflow.graph.launch @" << first
        << " deps(%c) values() stream_inputs() memories() stream_outputs() : "
           "(none) -> (i32, none)\n"
@@ -956,6 +994,7 @@ int main() {
   canonicalInvariance();
   reconvergentCardinalityRejection();
   artifactStoreRoundTrip();
+  importerConstructedOperationRoundTrip();
   semanticDifferences();
   storedProgramOperationsAreNotActors();
   finalizeImportRejections();
