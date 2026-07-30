@@ -501,7 +501,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         for source_path in workload.sources:
             self.assertIn(source_path.removeprefix("externals/cmsis-nn/"), cmake)
 
-    def test_cmsis_dsp_harness_projects_one_owned_operator_test(self) -> None:
+    def test_cmsis_dsp_abs_uses_direct_protocol_and_official_oracle(self) -> None:
         workload = next(
             case
             for case in corpus_inventory.load_workload_inventory(ROOT)
@@ -516,42 +516,33 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         self.assertEqual(harness.targets, (workload.executable,))
         self.assertEqual(
-            harness.protocol_method(workload.executable),
-            (workload.producer.test_class, workload.producer.test_method),
+            harness.protocol_symbols(workload.executable),
+            ("loom_corpus_operator_protocol",),
         )
-        self.assertIsNone(harness.expected_entry_result(workload.executable))
+        self.assertEqual(harness.expected_entry_result(workload.executable), 0)
         compiled_owner, authoritative_owner = harness.protocol_source_owner(
             workload.executable
         )
-        self.assertEqual(compiled_owner, authoritative_owner)
-        self.assertTrue(authoritative_owner.is_file())
-        descriptor = (
-            harness.generated_directory(workload.executable)
-            / "GeneratedSource"
-            / "TestDesc.cpp"
-        ).read_text()
-        self.assertIn("BasicTestsF32::test_abs_f32", descriptor)
-        self.assertNotIn("BasicTestsF32::test_add_f32", descriptor)
-        self.assertTrue((harness.source_dir / "CMakeLists.txt").is_file())
-        operator_main = (harness.source_dir / "OperatorMain.cpp").read_text()
-        self.assertIn("return testmain(patternData);", operator_main)
-        self.assertNotIn("exit(", operator_main)
+        self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
+        self.assertEqual(
+            authoritative_owner,
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-dsp"
+            / "Include"
+            / "dsp"
+            / "basic_math_functions.h",
+        )
+        source = compiled_owner.read_text()
+        protocol = source.split("int main()", maxsplit=1)[0]
+        self.assertIn("arm_abs_f32(input, output, count)", protocol)
         self.assertIn(
-            "target_compile_options(loom_dsp_",
-            (harness.source_dir / "CMakeLists.txt").read_text(),
+            "for (std::uint32_t index = 0; index < kSampleCount; ++index)", source
         )
-        patterns = (
-            harness.generated_directory(workload.executable)
-            / "GeneratedInclude"
-            / "Patterns.h"
-        )
-        self.assertFalse(patterns.exists())
-        shared_patterns = (
-            harness.shared_directory(workload.executable)
-            / "GeneratedInclude"
-            / "Patterns.h"
-        )
-        self.assertLess(shared_patterns.stat().st_size, 1_000_000)
+        self.assertIn("std::memcmp(output, kExpected, sizeof(kExpected))", source)
+        self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("Testing/Source/Tests/BasicTestsF32.cpp", cmake)
+        self.assertNotIn("Testing/testmain.cpp", cmake)
         configure = corpus_gate.cmake_configure_command(
             harness,
             corpus_inventory.resolve_externals_root(ROOT) / "cmsis-dsp",

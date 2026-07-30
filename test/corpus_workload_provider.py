@@ -717,6 +717,14 @@ def _cmsis_dsp_direct_protocol_family(
         return None
     if (
         producer.selector_kind == "official"
+        and producer.test_class == "BasicTestsF32"
+        and producer.test_method == "test_abs_f32"
+        and tuple((call.symbol, call.signature) for call in workload.protocol)
+        == (("arm_abs_f32", "void(ptr,ptr,i32)"),)
+    ):
+        return "stateless-abs-f32"
+    if (
+        producer.selector_kind == "official"
         and producer.test_class == "FIRF32"
         and producer.test_method == "test_fir_f32"
         and tuple((call.symbol, call.signature) for call in workload.protocol)
@@ -771,6 +779,32 @@ def _cmsis_dsp_first_parameter(suite: object) -> int:
             "CMSIS-DSP direct protocol has an invalid workload extent"
         )
     return first
+
+
+def _cmsis_dsp_literal_test_extent(
+    suite: object, test_kind: int, test_class: str, vector_ordinal: int
+) -> int:
+    matching = [
+        child
+        for child in suite.children
+        if child.kind == test_kind and child.data.get("class") == test_class
+    ]
+    if vector_ordinal >= len(matching):
+        raise WorkloadProviderError(
+            f"CMSIS-DSP descriptor has no vector {vector_ordinal} for {test_class}"
+        )
+    message = matching[vector_ordinal].data.get("message")
+    if not isinstance(message, str):
+        raise WorkloadProviderError("CMSIS-DSP test vector has no descriptor message")
+    extent = re.search(r"\bnb=(\d+)\b", message)
+    if extent is None:
+        raise WorkloadProviderError(
+            "CMSIS-DSP direct protocol requires a literal test extent"
+        )
+    value = int(extent.group(1), 10)
+    if value <= 0:
+        raise WorkloadProviderError("CMSIS-DSP test extent is nonpositive")
+    return value
 
 
 def _cmsis_dsp_pattern_bytes(path: Path) -> bytes:
@@ -994,6 +1028,64 @@ int main() {{
   float32_t output[kOutputCount]{{}};
   {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(kInput, kCoefficients, kConfigs, state,
                                      output);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def _render_stateless_abs_f32_protocol(patterns: Path, sample_count: int) -> str:
+    segments = _cmsis_dsp_pattern_segments(patterns)
+    inputs = _decode_f32_pattern(
+        _require_pattern_segment(segments, "Input1_f32.txt"), "absolute input"
+    )
+    expected = _decode_f32_pattern(
+        _require_pattern_segment(segments, "Reference10_f32.txt"),
+        "absolute reference",
+    )
+    if sample_count <= 0 or len(inputs) < sample_count or len(expected) < sample_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP absolute pattern does not cover its workload extent"
+        )
+    inputs = inputs[:sample_count]
+    expected = expected[:sample_count]
+
+    return f"""#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {sample_count};
+constexpr float32_t kInput[] = {{
+{_format_cpp_array(inputs)}
+}};
+constexpr float32_t kExpected[] = {{
+{_format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const float32_t *output) {{
+  return std::memcmp(output, kExpected, sizeof(kExpected)) == 0;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
+    const float32_t *input, float32_t *output, std::uint32_t count) {{
+  arm_abs_f32(input, output, count);
+}}
+
+int main() {{
+  float32_t input[kSampleCount];
+  float32_t output[kSampleCount]{{}};
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input[index] = kInput[index];
+  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(input, output, kSampleCount);
   return oracle_matches(output) ? 0 : 1;
 }}
 """
@@ -1339,7 +1431,49 @@ def materialize_cmsis_dsp_harness(
             (workload.producer.test_class, workload.producer.test_method)
         )
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
-        if direct_family == "stateless-controller":
+        if direct_family == "stateless-abs-f32":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                _render_stateless_abs_f32_protocol(
+                    shared_patterns,
+                    _cmsis_dsp_literal_test_extent(
+                        suite,
+                        tree_module.TreeElem.TEST,
+                        workload.producer.test_method,
+                        workload.producer.vector_ordinal,
+                    ),
+                ),
+                encoding="utf-8",
+            )
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
+            expected_entry_results.append(0)
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "basic_math_functions.h"
+            )
+            if not protocol_owner.is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP protocol owner is unavailable: {protocol_owner}"
+                )
+            protocol_source_owners.append((direct_source, protocol_owner))
+            cmake_targets.append(
+                _CmsisDspCmakeTarget(
+                    target=target,
+                    generated=generated,
+                    shared=shared_generated,
+                    test_class=workload.producer.test_class,
+                    direct_source=direct_source,
+                )
+            )
+        elif direct_family == "stateless-controller":
             suite = _cmsis_dsp_suite_chain(
                 root,
                 tree_module.TreeElem.SUITE,
