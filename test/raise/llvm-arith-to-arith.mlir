@@ -187,6 +187,19 @@ llvm.func @fused_multiply_add(%f: f32) {
     llvm.return
 }
 
+// A frontend that has explicitly removed the libm errno contract emits the
+// typed LLVM cosine intrinsic. The standard math operation carries the same
+// operand, result, and fast-math contract without consulting a symbol name.
+// CHECK-LABEL: llvm.func @typed_cosine
+llvm.func @typed_cosine(%single: f32, %double: f64) {
+    // CHECK: %{{.*}} = math.cos %arg0 : f32
+    %0 = llvm.intr.cos(%single) : (f32) -> f32
+    // CHECK: %{{.*}} = math.cos %arg1 fastmath<afn> : f64
+    %1 = llvm.intr.cos(%double) {fastmathFlags = #llvm.fastmath<afn>} : (f64) -> f64
+    // CHECK-NOT: llvm.intr.cos
+    llvm.return
+}
+
 // A fixed-shape vector of a builtin element type is exactly what arith
 // consumes, so shape, element semantics and flags all survive.
 // CHECK-LABEL: func.func @fixed_vector_arith

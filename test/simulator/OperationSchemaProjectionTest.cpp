@@ -68,6 +68,11 @@ PrimitiveValue floating64(std::uint64_t bits) {
       llvm::APFloat(llvm::APFloat::IEEEdouble(), llvm::APInt(64, bits)));
 }
 
+PrimitiveValue floating32(std::uint32_t bits) {
+  return PrimitiveValue::floating(
+      llvm::APFloat(llvm::APFloat::IEEEsingle(), llvm::APInt(32, bits)));
+}
+
 PrimitiveOperationDescriptor descriptor(OperationSchemaId schema,
                                         mlir::FunctionType type,
                                         dataflow::SemanticPayload payload,
@@ -357,6 +362,35 @@ void checkTypedProviderAvailability() {
           "ub.poison did not produce a poison value");
 }
 
+void checkDeterministicCosineProvider() {
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  const struct CosineCase {
+    mlir::Type type;
+    PrimitiveValue zero;
+    llvm::APInt one;
+  } cases[] = {
+      {mlir::Float32Type::get(&context), floating32(0),
+       llvm::APInt(32, 0x3f800000U)},
+      {mlir::Float64Type::get(&context), floating64(0),
+       llvm::APInt(64, 0x3ff0000000000000ULL)},
+  };
+
+  require(__func__,
+          loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathCos),
+          "typed cosine has no deterministic primitive provider");
+  for (const CosineCase &entry : cases) {
+    PrimitiveOperationDescriptor cosine = descriptor(
+        OperationSchemaId::MathCos,
+        mlir::FunctionType::get(&context, {entry.type}, {entry.type}),
+        dataflow::FloatingPointPayload{}, entry.one.getBitWidth(),
+        entry.one.getBitWidth());
+    PrimitiveValue result = takeValue(
+        __func__, loom::sim::evaluatePrimitiveOperation(cosine, {entry.zero}));
+    require(__func__, definedBits(__func__, result) == entry.one,
+            "typed cosine produced the wrong exact value at zero");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -366,5 +400,6 @@ int main() {
   checkSaturatingIntegerFamily();
   checkLazySelectionAndFusedFma();
   checkTypedProviderAvailability();
+  checkDeterministicCosineProvider();
   return EXIT_SUCCESS;
 }

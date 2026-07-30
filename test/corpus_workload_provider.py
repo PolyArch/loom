@@ -1160,6 +1160,7 @@ int main() {{
 def _render_cmsis_dsp_harness_cmake(
     targets: Sequence[_CmsisDspCmakeTarget],
     support_sources: Sequence[Path],
+    operator_compile_options: dict[Path, tuple[str, ...]],
 ) -> str:
     suite_libraries: dict[Path, tuple[str, str, str]] = {}
     for item in targets:
@@ -1226,6 +1227,16 @@ target_link_libraries({item.target} PRIVATE
     support_items = "\n".join(
         f'  "{_cmake_quote(source)}"' for source in support_sources
     )
+    operator_option_blocks = []
+    for source, options in sorted(operator_compile_options.items()):
+        for option in options:
+            escaped_option = option.replace('"', '\\"')
+            operator_option_blocks.append(
+                "set_property(SOURCE "
+                f'"${{LOOM_CMSIS_DSP_SOURCE}}/{_cmake_quote(source)}" '
+                "TARGET_DIRECTORY CMSISDSP APPEND PROPERTY COMPILE_OPTIONS "
+                f'"{escaped_option}")\n'
+            )
 
     return f"""cmake_minimum_required(VERSION 3.20)
 project(loom_cmsis_dsp_workloads C CXX)
@@ -1253,6 +1264,7 @@ target_compile_definitions(CMSISDSP PRIVATE ARM_DSP_CUSTOM_CONFIG)
 target_compile_definitions(CMSISDSP PUBLIC ARM_DSP_TESTING)
 target_include_directories(CMSISDSP PRIVATE
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing")
+{"".join(operator_option_blocks)}
 
 add_library(loom_cmsis_dsp_framework STATIC
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/ArrayMemory.cpp"
@@ -1309,6 +1321,7 @@ def materialize_cmsis_dsp_harness(
     protocol_source_owners: list[tuple[Path, Path]] = []
     expected_entry_results: list[int | None] = []
     cmake_targets: list[_CmsisDspCmakeTarget] = []
+    operator_compile_options: dict[Path, tuple[str, ...]] = {}
 
     for workload in workloads:
         if workload.suite != "cmsis-dsp" or not isinstance(
@@ -1321,6 +1334,26 @@ def materialize_cmsis_dsp_harness(
             raise WorkloadProviderError(
                 f"CMSIS-DSP workload has no exact harness provider: {workload.identity}"
             )
+        for source_name in workload.sources:
+            source = Path(source_name)
+            try:
+                relative_source = source.relative_to("externals/cmsis-dsp")
+            except ValueError as exc:
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP operator source escapes its owner: {source}"
+                ) from exc
+            if not (external_root / "cmsis-dsp" / relative_source).is_file():
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP operator source is unavailable: {source}"
+                )
+            previous = operator_compile_options.setdefault(
+                relative_source, workload.compiler_flags
+            )
+            if previous != workload.compiler_flags:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP workloads assign conflicting compiler flags to "
+                    f"operator source {source}"
+                )
         target = workload.executable
         if target != corpus_inventory.operator_workload_target(workload.operator_id):
             raise WorkloadProviderError(
@@ -1673,6 +1706,7 @@ def materialize_cmsis_dsp_harness(
         _render_cmsis_dsp_harness_cmake(
             cmake_targets,
             tuple(sorted((testing_root / "Source" / "Tests").glob("*.c"))),
+            operator_compile_options,
         ),
         encoding="utf-8",
     )

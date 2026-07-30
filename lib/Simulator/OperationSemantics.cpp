@@ -1,5 +1,7 @@
 #include "Simulator/OperationSemantics.h"
 
+#include "DeterministicTranscendental.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APSInt.h"
@@ -67,6 +69,7 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::ArithFPToSI:
   case Schema::ArithFPToUI:
   case Schema::MathAbsF:
+  case Schema::MathCos:
   case Schema::MathAbsI:
   case Schema::MathFloor:
   case Schema::MathCeil:
@@ -152,8 +155,7 @@ strictExceptionalResult(llvm::ArrayRef<PrimitiveValue> operands) {
   return std::nullopt;
 }
 
-bool samePrimitiveValue(const PrimitiveValue &lhs,
-                        const PrimitiveValue &rhs) {
+bool samePrimitiveValue(const PrimitiveValue &lhs, const PrimitiveValue &rhs) {
   if (lhs.state != rhs.state)
     return false;
   if (lhs.state != PrimitiveValueState::Defined)
@@ -171,21 +173,20 @@ requireIntegerPair(dataflow::OperationSchemaId schema,
   if (!rhs)
     return rhs.takeError();
   if ((*lhs)->getBitWidth() != (*rhs)->getBitWidth())
-    return llvm::createStringError(
-        std::errc::invalid_argument, "%s operand bit widths do not match",
-        spelling(schema).str().c_str());
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s operand bit widths do not match",
+                                   spelling(schema).str().c_str());
   return std::make_pair(*lhs, *rhs);
 }
 
-std::optional<unsigned>
-checkedShiftAmount(const llvm::APInt &amount, unsigned bitWidth) {
+std::optional<unsigned> checkedShiftAmount(const llvm::APInt &amount,
+                                           unsigned bitWidth) {
   if (amount.getActiveBits() > 64 || amount.uge(bitWidth))
     return std::nullopt;
   return static_cast<unsigned>(amount.getZExtValue());
 }
 
-llvm::RoundingMode
-roundingMode(const dataflow::FloatingPointPayload &payload) {
+llvm::RoundingMode roundingMode(const dataflow::FloatingPointPayload &payload) {
   if (!payload.roundingMode)
     return llvm::RoundingMode::NearestTiesToEven;
   using Mode = mlir::arith::RoundingMode;
@@ -241,9 +242,9 @@ floatResultType(const PrimitiveOperationDescriptor &descriptor) {
   return type;
 }
 
-llvm::Expected<llvm::APFloat>
-asFloat(dataflow::OperationSchemaId schema, const PrimitiveValue &value,
-        mlir::FloatType type) {
+llvm::Expected<llvm::APFloat> asFloat(dataflow::OperationSchemaId schema,
+                                      const PrimitiveValue &value,
+                                      mlir::FloatType type) {
   auto bits = requireDefinedBits(schema, value);
   if (!bits)
     return bits.takeError();
@@ -255,9 +256,8 @@ asFloat(dataflow::OperationSchemaId schema, const PrimitiveValue &value,
   return llvm::APFloat(type.getFloatSemantics(), **bits);
 }
 
-bool violatesFloatingAssumptions(
-    const dataflow::FloatingPointPayload &payload,
-    llvm::ArrayRef<llvm::APFloat> operands) {
+bool violatesFloatingAssumptions(const dataflow::FloatingPointPayload &payload,
+                                 llvm::ArrayRef<llvm::APFloat> operands) {
   using Flags = mlir::arith::FastMathFlags;
   if (mlir::arith::bitEnumContainsAll(payload.flags, Flags::nnan) &&
       llvm::any_of(operands,
@@ -269,9 +269,9 @@ bool violatesFloatingAssumptions(
          });
 }
 
-llvm::Expected<PrimitiveValue> evaluateIntegerArithmetic(
-    const PrimitiveOperationDescriptor &descriptor,
-    llvm::ArrayRef<PrimitiveValue> operands) {
+llvm::Expected<PrimitiveValue>
+evaluateIntegerArithmetic(const PrimitiveOperationDescriptor &descriptor,
+                          llvm::ArrayRef<PrimitiveValue> operands) {
   using Flags = mlir::arith::IntegerOverflowFlags;
   using Schema = dataflow::OperationSchemaId;
   const Schema schema = descriptor.actor.schema;
@@ -312,9 +312,9 @@ llvm::Expected<PrimitiveValue> evaluateIntegerArithmetic(
   return PrimitiveValue::integer(std::move(result));
 }
 
-llvm::Expected<PrimitiveValue> evaluateFloatBinary(
-    const PrimitiveOperationDescriptor &descriptor,
-    llvm::ArrayRef<PrimitiveValue> operands) {
+llvm::Expected<PrimitiveValue>
+evaluateFloatBinary(const PrimitiveOperationDescriptor &descriptor,
+                    llvm::ArrayRef<PrimitiveValue> operands) {
   using Schema = dataflow::OperationSchemaId;
   const Schema schema = descriptor.actor.schema;
   auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
@@ -423,7 +423,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   if (schema == Schema::UBPoison) {
     if (llvm::Error arity = requireArity(schema, operands, 0))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     return PrimitiveValue::poison();
   }
@@ -431,7 +432,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   if (schema == Schema::ArithSelect) {
     if (llvm::Error arity = requireArity(schema, operands, 3))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     const PrimitiveValue &condition = operands[0];
     if (condition.state == PrimitiveValueState::Poison)
@@ -462,7 +464,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::ArithXOrI: {
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -579,26 +582,22 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
                                      spelling(schema).str().c_str());
     if (schema == Schema::ArithDivSI && lhs.isMinSignedValue() &&
         rhs.isAllOnes())
-      return llvm::createStringError(
-          std::errc::result_out_of_range,
-          "%s signed division overflow is undefined",
-          spelling(schema).str().c_str());
+      return llvm::createStringError(std::errc::result_out_of_range,
+                                     "%s signed division overflow is undefined",
+                                     spelling(schema).str().c_str());
     if (schema == Schema::ArithDivSI || schema == Schema::ArithDivUI) {
       auto payload = requirePayload<dataflow::ExactPayload>(descriptor);
       if (!payload)
         return payload.takeError();
-      const llvm::APInt remainder = schema == Schema::ArithDivSI
-                                        ? lhs.srem(rhs)
-                                        : lhs.urem(rhs);
+      const llvm::APInt remainder =
+          schema == Schema::ArithDivSI ? lhs.srem(rhs) : lhs.urem(rhs);
       if ((*payload)->isExact && !remainder.isZero())
         return PrimitiveValue::poison();
-      return PrimitiveValue::integer(schema == Schema::ArithDivSI
-                                         ? lhs.sdiv(rhs)
-                                         : lhs.udiv(rhs));
+      return PrimitiveValue::integer(
+          schema == Schema::ArithDivSI ? lhs.sdiv(rhs) : lhs.udiv(rhs));
     }
-    return PrimitiveValue::integer(schema == Schema::ArithRemSI
-                                       ? lhs.srem(rhs)
-                                       : lhs.urem(rhs));
+    return PrimitiveValue::integer(
+        schema == Schema::ArithRemSI ? lhs.srem(rhs) : lhs.urem(rhs));
   }
 
   case Schema::ArithMinSI:
@@ -607,7 +606,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::ArithMaxUI: {
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -616,17 +616,17 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
       return pair.takeError();
     switch (schema) {
     case Schema::ArithMinSI:
-      return PrimitiveValue::integer(llvm::APIntOps::smin(*pair->first,
-                                                          *pair->second));
+      return PrimitiveValue::integer(
+          llvm::APIntOps::smin(*pair->first, *pair->second));
     case Schema::ArithMaxSI:
-      return PrimitiveValue::integer(llvm::APIntOps::smax(*pair->first,
-                                                          *pair->second));
+      return PrimitiveValue::integer(
+          llvm::APIntOps::smax(*pair->first, *pair->second));
     case Schema::ArithMinUI:
-      return PrimitiveValue::integer(llvm::APIntOps::umin(*pair->first,
-                                                          *pair->second));
+      return PrimitiveValue::integer(
+          llvm::APIntOps::umin(*pair->first, *pair->second));
     case Schema::ArithMaxUI:
-      return PrimitiveValue::integer(llvm::APIntOps::umax(*pair->first,
-                                                          *pair->second));
+      return PrimitiveValue::integer(
+          llvm::APIntOps::umax(*pair->first, *pair->second));
     default:
       llvm_unreachable("integer min/max provider received another schema");
     }
@@ -690,7 +690,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
     if (schema == Schema::ArithExtUI || schema == Schema::ArithIndexCastUI) {
-      if (auto payload = requirePayload<dataflow::NonNegativePayload>(descriptor);
+      if (auto payload =
+              requirePayload<dataflow::NonNegativePayload>(descriptor);
           !payload)
         return payload.takeError();
     } else if (schema == Schema::ArithTruncI) {
@@ -724,8 +725,7 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
             "arith.extsi result must be wider than its operand");
       return PrimitiveValue::integer((*input)->sext(*resultWidth));
     }
-    if (schema == Schema::ArithExtUI ||
-        schema == Schema::ArithIndexCastUI) {
+    if (schema == Schema::ArithExtUI || schema == Schema::ArithIndexCastUI) {
       auto payload = requirePayload<dataflow::NonNegativePayload>(descriptor);
       if (!payload)
         return payload.takeError();
@@ -774,6 +774,7 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
 
   case Schema::ArithNegF:
   case Schema::MathAbsF:
+  case Schema::MathCos:
   case Schema::MathFloor:
   case Schema::MathCeil:
   case Schema::MathRound:
@@ -802,6 +803,12 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     case Schema::MathAbsF:
       value->clearSign();
       break;
+    case Schema::MathCos: {
+      auto result = loom::sim::detail::evaluateDeterministicCosine(*value);
+      if (!result)
+        return result.takeError();
+      return PrimitiveValue::floating(*result);
+    }
     case Schema::MathFloor:
       (void)value->roundToIntegral(llvm::RoundingMode::TowardNegative);
       break;
@@ -840,8 +847,7 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
       return lhs.takeError();
     if (!rhs)
       return rhs.takeError();
-    dataflow::FloatingPointPayload assumptions{(*payload)->flags,
-                                                std::nullopt};
+    dataflow::FloatingPointPayload assumptions{(*payload)->flags, std::nullopt};
     llvm::APFloat values[] = {*lhs, *rhs};
     if (violatesFloatingAssumptions(assumptions, values))
       return PrimitiveValue::poison();
@@ -868,8 +874,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (!value)
       return value.takeError();
     bool losesInfo = false;
-    (void)value->convert(resultType->getFloatSemantics(), roundingMode(**payload),
-                         &losesInfo);
+    (void)value->convert(resultType->getFloatSemantics(),
+                         roundingMode(**payload), &losesInfo);
     return PrimitiveValue::floating(*value);
   }
 
@@ -878,7 +884,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
     if (schema == Schema::ArithUIToFP) {
-      if (auto payload = requirePayload<dataflow::NonNegativePayload>(descriptor);
+      if (auto payload =
+              requirePayload<dataflow::NonNegativePayload>(descriptor);
           !payload)
         return payload.takeError();
     } else if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
@@ -900,7 +907,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     auto resultType = floatResultType(descriptor);
     if (!resultType)
       return resultType.takeError();
-    llvm::APFloat result = llvm::APFloat::getZero(resultType->getFloatSemantics());
+    llvm::APFloat result =
+        llvm::APFloat::getZero(resultType->getFloatSemantics());
     (void)result.convertFromAPInt(**input, schema == Schema::ArithSIToFP,
                                   llvm::RoundingMode::NearestTiesToEven);
     return PrimitiveValue::floating(result);
@@ -910,7 +918,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::ArithFPToUI: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -925,8 +934,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
       return value.takeError();
     llvm::APSInt result(*width, schema == Schema::ArithFPToUI);
     bool exact = false;
-    llvm::APFloat::opStatus status = value->convertToInteger(
-        result, llvm::RoundingMode::TowardZero, &exact);
+    llvm::APFloat::opStatus status =
+        value->convertToInteger(result, llvm::RoundingMode::TowardZero, &exact);
     if ((status & llvm::APFloat::opInvalidOp) != 0)
       return PrimitiveValue::poison();
     return PrimitiveValue::integer(result);
@@ -962,7 +971,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::MathAbsI: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -977,7 +987,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::LLVMFshl: {
     if (llvm::Error arity = requireArity(schema, operands, 3))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -1000,7 +1011,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::LLVMByteSwap: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -1020,7 +1032,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::LLVMUSubSat: {
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
-    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor); !payload)
+    if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
+        !payload)
       return payload.takeError();
     if (auto exceptional = strictExceptionalResult(operands))
       return *exceptional;
@@ -1037,7 +1050,8 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     case Schema::LLVMUSubSat:
       return PrimitiveValue::integer(pair->first->usub_sat(*pair->second));
     default:
-      llvm_unreachable("saturating arithmetic provider received another schema");
+      llvm_unreachable(
+          "saturating arithmetic provider received another schema");
     }
   }
 
@@ -1047,11 +1061,11 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   case Schema::LLVMCountTrailingZeros: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
-    const bool llvmPoisonForm =
-        schema == Schema::LLVMCountLeadingZeros ||
-        schema == Schema::LLVMCountTrailingZeros;
+    const bool llvmPoisonForm = schema == Schema::LLVMCountLeadingZeros ||
+                                schema == Schema::LLVMCountTrailingZeros;
     if (llvmPoisonForm) {
-      if (auto payload = requirePayload<dataflow::ZeroPoisonPayload>(descriptor);
+      if (auto payload =
+              requirePayload<dataflow::ZeroPoisonPayload>(descriptor);
           !payload)
         return payload.takeError();
     } else if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
@@ -1074,8 +1088,7 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
                                    schema == Schema::LLVMCountTrailingZeros
                                ? (*value)->countr_zero()
                                : (*value)->countl_zero();
-    return PrimitiveValue::integer(
-        llvm::APInt((*value)->getBitWidth(), count));
+    return PrimitiveValue::integer(llvm::APInt((*value)->getBitWidth(), count));
   }
 
   case Schema::LLVMAbs: {

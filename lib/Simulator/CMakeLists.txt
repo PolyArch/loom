@@ -1,4 +1,5 @@
 add_mlir_library(LoomSimulator
+  DeterministicTranscendental.cpp
   DFGSimulator.cpp
   DFGSimulatorActors.cpp
   DFGSimulatorFunctionalObservations.cpp
@@ -39,6 +40,12 @@ add_mlir_library(LoomSimulator
   MLIRSupport
   LLVMSupport
 )
+
+find_path(LOOM_MPFR_INCLUDE_DIR NAMES mpfr.h REQUIRED)
+find_library(LOOM_MPFR_LIBRARY NAMES mpfr REQUIRED)
+mark_as_advanced(LOOM_MPFR_INCLUDE_DIR LOOM_MPFR_LIBRARY)
+target_include_directories(LoomSimulator PRIVATE ${LOOM_MPFR_INCLUDE_DIR})
+target_link_libraries(LoomSimulator PRIVATE ${LOOM_MPFR_LIBRARY})
 
 if(LLVM_LINK_LLVM_DYLIB AND TARGET LLVM)
   set(loom_native_oracle_llvm_libs LLVM)

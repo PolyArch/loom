@@ -708,6 +708,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
             if case.identity in selected
         )
         by_identity = {workload.identity: workload for workload in workloads}
+        self.assertEqual(by_identity[DSP_WELCH_F32_WORKLOAD_ID].compiler_flags, ())
+        self.assertEqual(
+            by_identity[DSP_HAMMING_F64_WORKLOAD_ID].compiler_flags,
+            ("-fno-math-errno",),
+        )
 
         harness = corpus_gate.materialize_cmsis_dsp_harness(
             workloads,
@@ -736,6 +741,15 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn("kAbsoluteError = 3.0e-15", hamming_source)
 
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        hamming_operator_source = Path(
+            by_identity[DSP_HAMMING_F64_WORKLOAD_ID].sources[0]
+        ).relative_to("externals/cmsis-dsp")
+        self.assertIn(
+            f'"${{LOOM_CMSIS_DSP_SOURCE}}/{hamming_operator_source.as_posix()}" '
+            "TARGET_DIRECTORY CMSISDSP APPEND PROPERTY "
+            'COMPILE_OPTIONS "-fno-math-errno")',
+            cmake,
+        )
         self.assertNotIn("Testing/Source/Tests/WindowTestsF32.cpp", cmake)
         self.assertNotIn("Testing/Source/Tests/WindowTestsF64.cpp", cmake)
 

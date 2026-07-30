@@ -172,8 +172,7 @@ struct BinaryAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
-  matchAndRewrite(LLVMOp op,
-                  ::mlir::PatternRewriter &rewriter) const override {
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
     if (!restatesExactly(op, Floating))
       return ::mlir::failure();
 
@@ -273,7 +272,7 @@ struct IntegerAbsExpansion
     if (!zeroAttr)
       return ::mlir::failure();
     auto zero = ::mlir::arith::ConstantOp::create(rewriter, op.getLoc(), type,
-                                                   zeroAttr);
+                                                  zeroAttr);
     auto isNegative = ::mlir::arith::CmpIOp::create(
         rewriter, op.getLoc(), ::mlir::arith::CmpIPredicate::slt, op.getIn(),
         zero);
@@ -281,8 +280,8 @@ struct IntegerAbsExpansion
                                                  zero, op.getIn());
     if (op.getIsIntMinPoison())
       negated.setOverflowFlags(::mlir::arith::IntegerOverflowFlags::nsw);
-    rewriter.replaceOpWithNewOp<::mlir::arith::SelectOp>(
-        op, type, isNegative, negated, op.getIn());
+    rewriter.replaceOpWithNewOp<::mlir::arith::SelectOp>(op, type, isNegative,
+                                                         negated, op.getIn());
     return ::mlir::success();
   }
 };
@@ -518,9 +517,10 @@ struct LLVMArithToArithPass
         FloatBinaryAlias<::mlir::LLVM::MaximumOp, ::mlir::arith::MaximumFOp>,
         FloatBinaryAlias<::mlir::LLVM::MinimumOp, ::mlir::arith::MinimumFOp>,
 
-        // floating negation and absolute value
+        // floating negation, absolute value, and typed transcendental aliases
         UnaryFloatAlias<::mlir::LLVM::FNegOp, ::mlir::arith::NegFOp>,
         UnaryFloatAlias<::mlir::LLVM::FAbsOp, ::mlir::math::AbsFOp>,
+        UnaryFloatAlias<::mlir::LLVM::CosOp, ::mlir::math::CosOp>,
 
         // exact fused multiply-add
         FMAAlias,
