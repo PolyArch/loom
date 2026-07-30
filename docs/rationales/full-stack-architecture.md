@@ -150,6 +150,17 @@ not new operators or a blanket multiplication rule. This granularity preserves
 upstream ownership, keeps work modular, and prevents both giant-wrapper and
 per-vector fragmentation.
 
+The protocol boundary must also exclude the test harness itself. Starting
+candidate discovery from a Unity or descriptor test method admits pattern
+loaders, assertions, statistics, and error-comparison loops that happen to be
+in the same static call closure but are not the operator being evaluated. A
+minimal generated wrapper is useful only when it preserves an ordered
+multi-call protocol such as initialization followed by execution. A single
+public call needs no synthetic ownership authority. This is why the normative
+[Canonical Source Inventory](../spec-cmsis-dropin-compiler.md#canonical-source-inventory)
+allows an exact public symbol for one-call protocols, requires an atomic wrapper
+for multi-call protocols, and rejects test-method fallback.
+
 The primary semantic-alignment gate needs breadth across operator protocols,
 not a Cartesian product of every profile, build alias, and input vector. It
 therefore chooses one real producer, one applicable profile, and one

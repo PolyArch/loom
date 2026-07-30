@@ -306,8 +306,6 @@ TOOL_ENV = (
     "LOOM_LLD",
     "LOOM_PAYLOAD",
     "LOOM_LLVM_DIS",
-    "LOOM_LLVM_NM",
-    "LOOM_LLVM_CXXFILT",
     "LOOM_LLVM_LINK",
 )
 SYSROOT_ENV = (
@@ -346,8 +344,6 @@ class CorpusGateTestBase(unittest.TestCase):
             ("lld", "stub-lld"),
             ("payload", "stub-payload"),
             ("llvm_dis", "stub-llvm-dis"),
-            ("llvm_nm", "stub-llvm-nm"),
-            ("llvm_cxxfilt", "stub-llvm-cxxfilt"),
         ):
             path = self.tools / name
             make_executable(path, stubbed)
@@ -372,8 +368,6 @@ class CorpusGateTestBase(unittest.TestCase):
             "LOOM_LLD": self.tool_paths["lld"],
             "LOOM_PAYLOAD": self.tool_paths["payload"],
             "LOOM_LLVM_DIS": self.tool_paths["llvm_dis"],
-            "LOOM_LLVM_NM": self.tool_paths["llvm_nm"],
-            "LOOM_LLVM_CXXFILT": self.tool_paths["llvm_cxxfilt"],
             "STUB_LOG": str(self.log),
         }
         for name in (
@@ -433,8 +427,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
-            llvm_nm=self.tool_paths["llvm_nm"],
-            llvm_cxxfilt=self.tool_paths["llvm_cxxfilt"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )
@@ -849,32 +841,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn("kExpected", source)
         self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
 
-    def test_linked_dsp_protocol_boundary_uses_compiler_owned_symbol(self) -> None:
-        toolchain = self.toolchain()
-        bitcode = self.work / "program.bc"
-        with mock.patch.object(
-            corpus_gate,
-            "run_quiet",
-            side_effect=[
-                "_ZN13BasicTestsF3212test_abs_f32Ev\n_Z4mainv\n",
-                "BasicTestsF32::test_abs_f32()\nmain()\n",
-            ],
-        ) as run:
-            symbol = corpus_gate.resolve_cxx_method_symbol(
-                toolchain,
-                bitcode,
-                "BasicTestsF32",
-                "test_abs_f32",
-            )
-
-        self.assertEqual(symbol, "_ZN13BasicTestsF3212test_abs_f32Ev")
-        self.assertEqual(run.call_count, 2)
-        self.assertEqual(run.call_args_list[0].args[0][-1], str(bitcode))
-        self.assertEqual(
-            run.call_args_list[1].args[1],
-            "_ZN13BasicTestsF3212test_abs_f32Ev\n_Z4mainv\n",
-        )
-
     def test_provider_build_failure_is_isolated_to_missing_targets(self) -> None:
         workloads = tuple(
             case
@@ -917,11 +883,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 return_value=harness,
             ),
             mock.patch.object(corpus_gate, "run_step", side_effect=run_provider_step),
-            mock.patch.object(
-                corpus_gate,
-                "resolve_cxx_method_symbol",
-                return_value="_ZN13BasicTestsF3212test_abs_f32Ev",
-            ),
         ):
             results = corpus_gate.prepare_workload_providers(
                 workloads,
@@ -937,13 +898,59 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         self.assertEqual(
             results[workloads[0].identity].protocol_symbols,
-            ("_ZN13BasicTestsF3212test_abs_f32Ev",),
+            tuple(call.symbol for call in workloads[0].protocol),
         )
         self.assertEqual(
             results[workloads[0].identity].protocol_source_owners,
             ((self.work / "protocol-0.cpp", self.work / "protocol-0.cpp"),),
         )
         self.assertIsInstance(results[workloads[1].identity], corpus_gate.StepFailure)
+
+    def test_provider_requires_an_atomic_wrapper_for_multi_call_protocol(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_FIR_F32_WORKLOAD_ID
+        )
+        self.assertGreater(len(workload.protocol), 1)
+        harness = corpus_workload_provider.CmsisDspHarness(
+            self.work / "source",
+            (workload.executable,),
+            (self.work / "shared",),
+            ((workload.producer.test_class, workload.producer.test_method),),
+            ((),),
+            (((self.work / "protocol.cpp"),) * 2,),
+        )
+        target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
+
+        def run_provider_step(command, log_path, deadline, category):
+            del log_path, deadline, category
+            if "--build" in command:
+                executable = harness.executable(target_build, workload.executable)
+                executable.parent.mkdir(parents=True)
+                executable.write_bytes(b"elf")
+            return None
+
+        with (
+            mock.patch.object(
+                corpus_gate,
+                "materialize_cmsis_dsp_harness",
+                return_value=harness,
+            ),
+            mock.patch.object(corpus_gate, "run_step", side_effect=run_provider_step),
+        ):
+            result = corpus_gate.prepare_workload_providers(
+                (workload,),
+                self.toolchain(),
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.out_dir,
+                jobs=2,
+                timeout=5.0,
+            )[workload.identity]
+
+        self.assertIsInstance(result, corpus_gate.StepFailure)
+        self.assertEqual(result.category, corpus_gate.CATEGORY_FINAL_LINK_ARTIFACT)
+        self.assertIn("atomic protocol wrapper", result.detail)
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
@@ -1251,8 +1258,6 @@ class CommandConstructionTest(CorpusGateTestBase):
             lld=self.tool_paths["lld"],
             payload=self.tool_paths["payload"],
             llvm_dis=self.tool_paths["llvm_dis"],
-            llvm_nm=self.tool_paths["llvm_nm"],
-            llvm_cxxfilt=self.tool_paths["llvm_cxxfilt"],
             sysroot=self.sysroot,
             gcc_toolchain=self.gcc_toolchain,
         )

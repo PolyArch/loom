@@ -344,6 +344,19 @@ than repaired or counted by multiplication. Package-descriptor-only sources
 and target-specific providers participate through the same exact source and
 link closure.
 
+The ownership domain starts at the typed public-call protocol, never at an
+upstream test method. A generated protocol wrapper is admissible only when its
+body is the mechanical ordered invocation of that exact public protocol; test
+framework setup, pattern loading, assertions, statistics, and oracle comparison
+remain outside the wrapper and outside its direct-callee closure. When no
+wrapper is needed, a one-call protocol may use its exact manifest-owned public
+symbol directly. A protocol containing multiple ordered calls requires one
+atomic wrapper and fails closed when that wrapper is unavailable. The provider
+must not recover a C++ test-method symbol or expand the ownership domain to a
+test framework as a fallback. This boundary is consumed by
+[StructuredProgramCandidate](spec-compiler-part-2-scf.md#structuredprogramcandidate)
+without creating a CMSIS-specific candidate mechanism.
+
 Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
 `ranlib`, or linker from another LLVM revision is not admissible.
 

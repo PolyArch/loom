@@ -155,8 +155,6 @@ ENV_TOOL_NAMES = {
     "lld": "LOOM_LLD",
     "payload": "LOOM_PAYLOAD",
     "llvm_dis": "LOOM_LLVM_DIS",
-    "llvm_nm": "LOOM_LLVM_NM",
-    "llvm_cxxfilt": "LOOM_LLVM_CXXFILT",
 }
 TOOL_FILE_NAMES = {
     "cc": "loom-cc",
@@ -168,10 +166,8 @@ TOOL_FILE_NAMES = {
     "lld": "ld.lld",
     "payload": "loom-payload",
     "llvm_dis": "llvm-dis",
-    "llvm_nm": "llvm-nm",
-    "llvm_cxxfilt": "llvm-cxxfilt",
 }
-LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis", "llvm_nm", "llvm_cxxfilt"})
+LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 30.0
@@ -199,8 +195,6 @@ class Toolchain:
     lld: str
     payload: str
     llvm_dis: str
-    llvm_nm: str
-    llvm_cxxfilt: str
     sysroot: Path
     gcc_toolchain: Path
 
@@ -376,8 +370,6 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
         lld=tools["lld"],
         payload=tools["payload"],
         llvm_dis=tools["llvm_dis"],
-        llvm_nm=tools["llvm_nm"],
-        llvm_cxxfilt=tools["llvm_cxxfilt"],
         sysroot=sysroot,
         gcc_toolchain=gcc_toolchain,
     )
@@ -943,51 +935,6 @@ def _cmsis_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
     )
 
 
-def resolve_cxx_method_symbol(
-    toolchain: Toolchain,
-    bitcode: Path,
-    class_name: str,
-    method_name: str,
-) -> str:
-    raw_symbols = tuple(
-        symbol
-        for symbol in run_quiet(
-            [
-                toolchain.llvm_nm,
-                "--defined-only",
-                "--format=just-symbols",
-                str(bitcode),
-            ]
-        ).splitlines()
-        if symbol
-    )
-    if not raw_symbols:
-        raise GateConfigError(f"linked bitcode defines no symbols: {bitcode}")
-    demangled_symbols = tuple(
-        run_quiet(
-            [toolchain.llvm_cxxfilt],
-            "\n".join(raw_symbols) + "\n",
-        ).splitlines()
-    )
-    if len(demangled_symbols) != len(raw_symbols):
-        raise GateConfigError(
-            "C++ symbol projection changed symbol cardinality for "
-            f"{bitcode}: {len(raw_symbols)} names became "
-            f"{len(demangled_symbols)}"
-        )
-    expected = f"{class_name}::{method_name}()"
-    matches = tuple(
-        raw
-        for raw, demangled in zip(raw_symbols, demangled_symbols, strict=True)
-        if demangled == expected
-    )
-    if len(matches) != 1:
-        raise GateConfigError(
-            f"linked bitcode resolves {len(matches)} symbols for {expected}: {bitcode}"
-        )
-    return matches[0]
-
-
 def prepare_workload_providers(
     cases: Sequence[corpus_inventory.ProgramWorkload],
     toolchain: Toolchain,
@@ -1081,17 +1028,12 @@ def prepare_workload_providers(
                             raise WorkloadProviderError(
                                 "CMSIS-NN provider produced an empty protocol"
                             )
-                        test_class, test_method = harness.protocol_method(
-                            case.executable
-                        )
-                        protocol_symbols = (
-                            resolve_cxx_method_symbol(
-                                toolchain,
-                                Path(f"{target_executable}.0.5.precodegen.bc"),
-                                test_class,
-                                test_method,
-                            ),
-                        )
+                        if len(case.protocol) != 1:
+                            raise WorkloadProviderError(
+                                "multi-call CMSIS-DSP workload requires an atomic "
+                                "protocol wrapper"
+                            )
+                        protocol_symbols = (case.protocol[0].symbol,)
                 except (GateConfigError, WorkloadProviderError) as exc:
                     results[case.identity] = StepFailure(
                         CATEGORY_FINAL_LINK_ARTIFACT, str(exc)
@@ -1639,8 +1581,6 @@ def render_json(
             "dfg_run": toolchain.dfg_run,
             "lld": toolchain.lld,
             "llvm_dis": toolchain.llvm_dis,
-            "llvm_nm": toolchain.llvm_nm,
-            "llvm_cxxfilt": toolchain.llvm_cxxfilt,
             "payload": toolchain.payload,
             "pre_mapping": toolchain.pre_mapping,
             "raise": toolchain.raise_tool,
