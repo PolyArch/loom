@@ -16,8 +16,7 @@ test/corpus_inventory.py and run through production compiler tools:
   finalizers included) against the exact builtin Fabric target resolved
   through a per-case ArtifactStore; the finalized Canonical Dataflow module
   must carry the exact target triple attribute and its structured
-  graph/actor counts must parse, so a graph-free whole-program result is
-  distinguishable from a nonempty Spatial graph.
+  graph/actor counts must describe at least one nonempty Spatial graph.
 - stage ``dfg-sim``: runs the production pre-Mapping path and typed DFG
   simulator in one invocation. Each exact Spatial invocation is compared with
   the source program under the workload-owned runtime input. Graph-free,
@@ -1206,6 +1205,11 @@ def run_case(
             assert counts is not None
             graphs = counts["graphs"]
             actors = counts["actors"]
+            if graphs == 0 or actors == 0:
+                return finish(
+                    CATEGORY_PRE_MAPPING,
+                    "pre-Mapping selected no nonempty Spatial graph",
+                )
             return finish(None, None)
 
         s0_module = case_dir / "program.scf.mlir"

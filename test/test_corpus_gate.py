@@ -81,7 +81,7 @@ VALID_LL = (
 )
 VALID_S0 = f"module attributes {{{corpus_gate.MLIR_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
 VALID_D0 = VALID_S0
-VALID_COUNTS = '{"actors": 0, "graphs": 0}\n'
+VALID_COUNTS = '{"actors": 3, "graphs": 1}\n'
 VALID_DFG_REPORT = (
     json.dumps(
         {
@@ -207,11 +207,14 @@ if bitcode_output:
     with open(bitcode_output, "wb") as handle:
         handle.write(b"stub bitcode")
 if counts:
-    content = (
-        "garbage\\n"
-        if corrupt and counts.endswith(corrupt)
-        else VALID_COUNTS
-    )
+    if os.environ.get("STUB_GRAPH_FREE"):
+        content = '{"actors": 0, "graphs": 0}\\n'
+    else:
+        content = (
+            "garbage\\n"
+            if corrupt and counts.endswith(corrupt)
+            else VALID_COUNTS
+        )
     with open(counts, "w") as handle:
         handle.write(content)
 if canonical:
@@ -309,6 +312,7 @@ class CorpusGateTestBase(unittest.TestCase):
             "STUB_FAIL_INPUT_SUFFIX",
             "STUB_CORRUPT_SUFFIX",
             "STUB_PGID_FILE",
+            "STUB_GRAPH_FREE",
         ):
             environment[name] = ""
         patcher = mock.patch.dict(os.environ, environment)
@@ -321,6 +325,7 @@ class CorpusGateTestBase(unittest.TestCase):
             "STUB_FAIL_INPUT_SUFFIX",
             "STUB_CORRUPT_SUFFIX",
             "STUB_PGID_FILE",
+            "STUB_GRAPH_FREE",
         ):
             os.environ.pop(name, None)
 
@@ -702,10 +707,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(summary["case_count"], 1)
         result = summary["cases"][0]
         self.assertEqual(result["status"], "pass")
-        # The structured counts keep a graph-free whole-program result
-        # distinguishable from a nonempty Spatial graph.
-        self.assertEqual(result["graphs"], 0)
-        self.assertEqual(result["actors"], 0)
+        self.assertEqual(result["graphs"], 1)
+        self.assertEqual(result["actors"], 3)
 
         invocations = self.invocation_lines()
         compiled = [line for line in invocations if "-emit-llvm" in line]
@@ -729,6 +732,23 @@ class InventoryAggregationTest(CorpusGateTestBase):
         # production pre-Mapping path.
         self.assertFalse(any("stub-raise " in line for line in invocations))
         self.assertFalse(any("stub-opt " in line for line in invocations))
+
+    def test_d0_stage_rejects_graph_free_workload(self) -> None:
+        with mock.patch.dict(os.environ, {"STUB_GRAPH_FREE": "1"}):
+            exit_code, _, summary = self.run_gate(
+                "--case",
+                AXPY_WORKLOAD_ID,
+                "--stage",
+                "d0",
+                "--jobs",
+                "1",
+            )
+
+        self.assertEqual(exit_code, 1)
+        result = summary["cases"][0]
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["category"], corpus_gate.CATEGORY_PRE_MAPPING)
+        self.assertIn("no nonempty Spatial graph", result["detail"])
 
     def test_dfg_sim_stage_runs_source_backed_comparison_per_workload(self) -> None:
         exit_code, _, summary = self.run_gate(
