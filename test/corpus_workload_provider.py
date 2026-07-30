@@ -27,21 +27,25 @@ class WorkloadProviderError(ValueError):
 @dataclass(frozen=True)
 class CmsisNnHarness:
     source_dir: Path
-    unity_source: Path
+    unity_source: Path | None
     targets: tuple[str, ...]
-    protocol_symbols: tuple[str, ...]
+    protocol_symbol_sets: tuple[tuple[str, ...], ...]
     protocol_source_owners: tuple[tuple[Path, Path], ...]
+    expected_entry_results: tuple[int, ...]
 
     def executable(self, build_dir: Path, target: str) -> Path:
         if target not in self.targets:
             raise WorkloadProviderError(f"unknown CMSIS-NN harness target: {target}")
         return build_dir / "workloads" / target
 
-    def protocol_symbol(self, target: str) -> str:
-        return self.protocol_symbols[self.targets.index(self._target(target))]
+    def protocol_symbols(self, target: str) -> tuple[str, ...]:
+        return self.protocol_symbol_sets[self.targets.index(self._target(target))]
 
     def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
         return self.protocol_source_owners[self.targets.index(self._target(target))]
+
+    def expected_entry_result(self, target: str) -> int:
+        return self.expected_entry_results[self.targets.index(self._target(target))]
 
     def _target(self, target: str) -> str:
         if target not in self.targets:
@@ -125,6 +129,22 @@ class _CmsisDspCmakeTarget:
             )
 
 
+@dataclass(frozen=True)
+class _CmsisNnCmakeTarget:
+    target: str
+    case_directory: str | None = None
+    direct_source: Path | None = None
+    operator_sources: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (self.case_directory is None) == (self.direct_source is None):
+            raise ValueError(
+                "CMSIS-NN target must select one Unity case or direct source"
+            )
+        if self.direct_source is not None and not self.operator_sources:
+            raise ValueError("direct CMSIS-NN target has no operator sources")
+
+
 def _render_unity_runner(test_function: str) -> str:
     return (
         '#include "unity.h"\n\n'
@@ -164,24 +184,17 @@ def _case_source(
     )
 
 
-def _render_harness_cmake(
-    case_directories: Sequence[str], targets: Sequence[str]
-) -> str:
+def _render_harness_cmake(targets: Sequence[_CmsisNnCmakeTarget]) -> str:
+    unity_targets = tuple(item for item in targets if item.case_directory is not None)
     add_cases = "\n".join(
-        f'add_subdirectory("TestCases/{case}" "cases/{case}")'
-        for case in case_directories
+        f'add_subdirectory("TestCases/{item.case_directory}" '
+        f'"cases/{item.case_directory}")'
+        for item in unity_targets
     )
-    target_items = " ".join(targets)
-    return f"""cmake_minimum_required(VERSION 3.20)
-project(loom_cmsis_nn_workloads C CXX)
-
-if(NOT DEFINED LOOM_CMSIS_NN_SOURCE OR NOT DEFINED LOOM_UNITY_SOURCE)
-  message(FATAL_ERROR "CMSIS-NN and Unity source roots are required")
-endif()
-
-set(CMSISNN_BUILD_PYBIND OFF CACHE BOOL "" FORCE)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/workloads")
-add_subdirectory("${{LOOM_CMSIS_NN_SOURCE}}" cmsis-nn)
+    unity_target_items = " ".join(item.target for item in unity_targets)
+    unity_setup = ""
+    if unity_targets:
+        unity_setup = f"""add_subdirectory("${{LOOM_CMSIS_NN_SOURCE}}" cmsis-nn)
 add_subdirectory("${{LOOM_UNITY_SOURCE}}" unity)
 
 function(add_cmsis_nn_unit_test_executable)
@@ -192,12 +205,46 @@ endfunction()
 
 {add_cases}
 
-foreach(target IN ITEMS {target_items})
+foreach(target IN ITEMS {unity_target_items})
   target_include_directories(${{target}} PRIVATE
     "${{CMAKE_CURRENT_SOURCE_DIR}}/TestCases/Utils")
   target_compile_options(${{target}} PRIVATE -fno-inline-functions)
   target_link_libraries(${{target}} PRIVATE unity cmsis-nn)
 endforeach()
+"""
+
+    direct_blocks: list[str] = []
+    for item in targets:
+        if item.direct_source is None:
+            continue
+        operator_sources = "\n".join(
+            f'  "${{LOOM_CMSIS_NN_SOURCE}}/{_cmake_quote(source)}"'
+            for source in item.operator_sources
+        )
+        direct_blocks.append(
+            f'''add_executable({item.target}
+  "{_cmake_quote(item.direct_source)}"
+{operator_sources})
+target_include_directories({item.target} PRIVATE
+  "${{LOOM_CMSIS_NN_SOURCE}}/Include"
+  "${{CMAKE_CURRENT_SOURCE_DIR}}")
+target_compile_options({item.target} PRIVATE -fno-inline-functions)
+'''
+        )
+
+    unity_requirement = " OR NOT DEFINED LOOM_UNITY_SOURCE" if unity_targets else ""
+    return f"""cmake_minimum_required(VERSION 3.20)
+project(loom_cmsis_nn_workloads C CXX)
+
+if(NOT DEFINED LOOM_CMSIS_NN_SOURCE{unity_requirement})
+  message(FATAL_ERROR "CMSIS-NN workload source roots are required")
+endif()
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/workloads")
+{unity_setup}
+{"".join(direct_blocks)}
 """
 
 
@@ -230,6 +277,147 @@ def _rename_staged_cmake_target(
         raise WorkloadProviderError(f"cannot write {cmake_path}: {exc}") from exc
 
 
+def _cmsis_nn_operator_sources(
+    workload: corpus_inventory.ProgramWorkload, external_root: Path
+) -> tuple[Path, ...]:
+    owner = Path("externals/cmsis-nn")
+    sources: list[Path] = []
+    for raw_source in workload.sources:
+        source = Path(raw_source)
+        try:
+            relative = source.relative_to(owner)
+        except ValueError as exc:
+            raise WorkloadProviderError(
+                f"CMSIS-NN operator source escapes its owner: {source}"
+            ) from exc
+        if not (external_root / "cmsis-nn" / relative).is_file():
+            raise WorkloadProviderError(
+                f"CMSIS-NN operator source is unavailable: {source}"
+            )
+        sources.append(relative)
+    if not sources:
+        raise WorkloadProviderError(
+            f"CMSIS-NN direct protocol has no implementation sources: {workload.identity}"
+        )
+    return tuple(sources)
+
+
+def _render_cmsis_nn_convolution_protocol() -> str:
+    return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "TestCases/TestData/kernel1x1/test_data.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+static int oracle_matches(const int8_t *output)
+{{
+    for (size_t index = 0; index < KERNEL1X1_DST_SIZE; ++index)
+    {{
+        if (output[index] != kernel1x1_output_ref[index])
+        {{
+            return 0;
+        }}
+    }}
+    return 1;
+}}
+
+LOOM_NOINLINE arm_cmsis_nn_status {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
+    const int8_t *input,
+    const int8_t *weights,
+    const int32_t *biases,
+    const int32_t *multipliers,
+    const int32_t *shifts,
+    void *scratch,
+    size_t scratch_capacity,
+    int8_t *output)
+{{
+    cmsis_nn_context context = {{0}};
+    cmsis_nn_conv_params convolution = {{0}};
+    cmsis_nn_per_channel_quant_params quantization = {{0}};
+    cmsis_nn_dims input_dims = {{0}};
+    cmsis_nn_dims filter_dims = {{0}};
+    cmsis_nn_dims bias_dims = {{0}};
+    cmsis_nn_dims output_dims = {{0}};
+
+    input_dims.n = KERNEL1X1_INPUT_BATCHES;
+    input_dims.h = KERNEL1X1_INPUT_H;
+    input_dims.w = KERNEL1X1_INPUT_W;
+    input_dims.c = KERNEL1X1_IN_CH;
+    filter_dims.n = KERNEL1X1_OUT_CH;
+    filter_dims.h = KERNEL1X1_FILTER_Y;
+    filter_dims.w = KERNEL1X1_FILTER_X;
+    filter_dims.c = KERNEL1X1_IN_CH;
+    bias_dims.n = 1;
+    bias_dims.h = 1;
+    bias_dims.w = 1;
+    bias_dims.c = KERNEL1X1_OUT_CH;
+    output_dims.n = KERNEL1X1_INPUT_BATCHES;
+    output_dims.h = KERNEL1X1_OUTPUT_H;
+    output_dims.w = KERNEL1X1_OUTPUT_W;
+    output_dims.c = KERNEL1X1_OUT_CH;
+
+    convolution.padding.h = KERNEL1X1_PAD_Y;
+    convolution.padding.w = KERNEL1X1_PAD_X;
+    convolution.stride.h = KERNEL1X1_STRIDE_Y;
+    convolution.stride.w = KERNEL1X1_STRIDE_X;
+    convolution.dilation.h = KERNEL1X1_DILATION_Y;
+    convolution.dilation.w = KERNEL1X1_DILATION_X;
+    convolution.input_offset = KERNEL1X1_INPUT_OFFSET;
+    convolution.output_offset = KERNEL1X1_OUTPUT_OFFSET;
+    convolution.activation.min = KERNEL1X1_OUT_ACTIVATION_MIN;
+    convolution.activation.max = KERNEL1X1_OUT_ACTIVATION_MAX;
+    quantization.multiplier = (int32_t *)multipliers;
+    quantization.shift = (int32_t *)shifts;
+
+    const int32_t required =
+        arm_convolve_1x1_s8_fast_get_buffer_size(&input_dims);
+    if (required < 0 || (size_t)required > scratch_capacity)
+    {{
+        return ARM_CMSIS_NN_ARG_ERROR;
+    }}
+    context.buf = required == 0 ? NULL : scratch;
+    context.size = required;
+    return arm_convolve_1x1_s8_fast(&context,
+                                    &convolution,
+                                    &quantization,
+                                    &input_dims,
+                                    input,
+                                    &filter_dims,
+                                    weights,
+                                    &bias_dims,
+                                    biases,
+                                    &output_dims,
+                                    output);
+}}
+
+int main(void)
+{{
+    int8_t output[KERNEL1X1_DST_SIZE] = {{0}};
+    uint8_t scratch[2 * KERNEL1X1_IN_CH * sizeof(int16_t)] = {{0}};
+    const arm_cmsis_nn_status status = {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
+        kernel1x1_input,
+        kernel1x1_weights,
+        kernel1x1_biases,
+        kernel1x1_output_mult,
+        kernel1x1_output_shift,
+        scratch,
+        sizeof(scratch),
+        output);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+    return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
 def materialize_cmsis_nn_harness(
     workloads: Sequence[corpus_inventory.ProgramWorkload],
     external_root: Path,
@@ -242,15 +430,19 @@ def materialize_cmsis_nn_harness(
             f"CMSIS-NN harness destination already exists: {destination}"
         )
 
-    unity_source = external_root / "unity"
-    for required in (
-        unity_source / "src" / "unity.c",
-        unity_source / "src" / "unity.h",
-    ):
-        if not required.is_file():
-            raise WorkloadProviderError(
-                f"pinned Unity source is unavailable: {required}"
-            )
+    uses_unity = any(
+        workload.identity != _CMSIS_NN_DIRECT_CONVOLUTION_ID for workload in workloads
+    )
+    unity_source = external_root / "unity" if uses_unity else None
+    if unity_source is not None:
+        for required in (
+            unity_source / "src" / "unity.c",
+            unity_source / "src" / "unity.h",
+        ):
+            if not required.is_file():
+                raise WorkloadProviderError(
+                    f"pinned Unity source is unavailable: {required}"
+                )
 
     source_dir = destination / "source"
     test_cases = source_dir / "TestCases"
@@ -265,9 +457,10 @@ def materialize_cmsis_nn_harness(
         (test_cases / name).symlink_to(shared, target_is_directory=True)
 
     targets: list[str] = []
-    protocol_symbols: list[str] = []
+    protocol_symbol_sets: list[tuple[str, ...]] = []
     protocol_source_owners: list[tuple[Path, Path]] = []
-    case_directories: list[str] = []
+    expected_entry_results: list[int] = []
+    cmake_targets: list[_CmsisNnCmakeTarget] = []
     for workload in workloads:
         if workload.suite != "cmsis-nn" or not isinstance(
             workload.producer, corpus_inventory.CmsisNnWorkloadProducer
@@ -287,12 +480,63 @@ def materialize_cmsis_nn_harness(
             raise WorkloadProviderError(
                 f"CMSIS-NN workload has an invalid target: {workload.identity}"
             )
+        if target in targets:
+            raise WorkloadProviderError(
+                f"CMSIS-NN harness repeats a target: {workload.identity}"
+            )
+
+        if workload.identity == _CMSIS_NN_DIRECT_CONVOLUTION_ID:
+            protocol = tuple(
+                (call.symbol, call.signature) for call in workload.protocol
+            )
+            if protocol != (
+                (
+                    "arm_convolve_1x1_s8_fast_get_buffer_size",
+                    "int32_t (const cmsis_nn_dims *)",
+                ),
+                (
+                    "arm_convolve_1x1_s8_fast",
+                    "arm_cmsis_nn_status (const cmsis_nn_context *, const "
+                    "cmsis_nn_conv_params *, const "
+                    "cmsis_nn_per_channel_quant_params *, const cmsis_nn_dims "
+                    "*, const int8_t *, const cmsis_nn_dims *, const int8_t *, "
+                    "const cmsis_nn_dims *, const int32_t *, const cmsis_nn_dims "
+                    "*, int8_t *)",
+                ),
+            ):
+                raise WorkloadProviderError(
+                    "CMSIS-NN convolution protocol no longer matches its manifest"
+                )
+            generated = source_dir / "generated" / "targets" / target
+            generated.mkdir(parents=True)
+            direct_source = generated / "OperatorProtocol.c"
+            direct_source.write_text(
+                _render_cmsis_nn_convolution_protocol(), encoding="utf-8"
+            )
+            authoritative_owner = (
+                external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h"
+            )
+            if not authoritative_owner.is_file():
+                raise WorkloadProviderError(
+                    "CMSIS-NN convolution protocol declaration is unavailable"
+                )
+            targets.append(target)
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
+            protocol_source_owners.append((direct_source, authoritative_owner))
+            expected_entry_results.append(0)
+            cmake_targets.append(
+                _CmsisNnCmakeTarget(
+                    target,
+                    direct_source=direct_source,
+                    operator_sources=_cmsis_nn_operator_sources(
+                        workload, external_root
+                    ),
+                )
+            )
+            continue
+
         case_source = _case_source(workload, external_root)
         case_destination = test_cases / target
-        if target in case_directories or target in targets:
-            raise WorkloadProviderError(
-                f"CMSIS-NN harness repeats a case or target: {workload.identity}"
-            )
         try:
             shutil.copytree(case_source, case_destination)
         except OSError as exc:
@@ -331,19 +575,21 @@ def materialize_cmsis_nn_harness(
             _render_unity_runner(workload.producer.test_function), encoding="utf-8"
         )
         targets.append(target)
-        protocol_symbols.append(workload.producer.test_function)
+        protocol_symbol_sets.append((workload.producer.test_function,))
         protocol_source_owners.append((wrapper, original_wrapper))
-        case_directories.append(target)
+        expected_entry_results.append(0)
+        cmake_targets.append(_CmsisNnCmakeTarget(target, case_directory=target))
 
     (source_dir / "CMakeLists.txt").write_text(
-        _render_harness_cmake(case_directories, targets), encoding="utf-8"
+        _render_harness_cmake(cmake_targets), encoding="utf-8"
     )
     return CmsisNnHarness(
         source_dir,
         unity_source,
         tuple(targets),
-        tuple(protocol_symbols),
+        tuple(protocol_symbol_sets),
         tuple(protocol_source_owners),
+        tuple(expected_entry_results),
     )
 
 
@@ -450,7 +696,8 @@ def _cmake_quote(path: Path) -> str:
     return path.as_posix().replace('"', '\\"')
 
 
-_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL = "loom_corpus_operator_protocol"
+_CORPUS_OPERATOR_PROTOCOL_SYMBOL = "loom_corpus_operator_protocol"
+_CMSIS_NN_DIRECT_CONVOLUTION_ID = "cmsis-nn:arm-convolve-1x1-s8-fast:e4fc696adf47aaf4"
 _CMSIS_DSP_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _CMSIS_DSP_STATELESS_CONTROLLER_SIGNATURES = {
     "void(float,float,ptr,ptr)",
@@ -723,7 +970,7 @@ bool oracle_matches(const float32_t *output) {{
 }}
 }} // namespace
 
-extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
+extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
     const float32_t *input, const float32_t *coefficients,
     const std::int16_t *configs, float32_t *state, float32_t *output) {{
   std::size_t coefficient_offset = 0;
@@ -745,7 +992,7 @@ extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
 int main() {{
   float32_t state[kStateCount]{{}};
   float32_t output[kOutputCount]{{}};
-  {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(kInput, kCoefficients, kConfigs, state,
+  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(kInput, kCoefficients, kConfigs, state,
                                      output);
   return oracle_matches(output) ? 0 : 1;
 }}
@@ -830,7 +1077,7 @@ std::uint32_t digest(const void *data, std::size_t size) {{
 }}
 }} // namespace
 
-extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
+extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
     {wrapper_parameters}) {{
   for (std::uint32_t index = 0; index < count; ++index) {{
     {call.symbol}({call_arguments});
@@ -840,7 +1087,7 @@ extern "C" LOOM_NOINLINE void {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}(
 int main() {{
   {scalar} output_a[kSampleCount]{{}};
   {scalar} output_b[kSampleCount]{{}};
-  {_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL}({main_arguments});
+  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}({main_arguments});
   const std::uint32_t first = digest(output_a, sizeof(output_a));
   const std::uint32_t second = digest(output_b, sizeof(output_b));
   return static_cast<int>(first ^ (second * 16777619u));
@@ -1107,7 +1354,7 @@ def materialize_cmsis_dsp_harness(
                 ),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
             expected_entry_results.append(None)
             protocol_owner = (
                 external_root
@@ -1136,7 +1383,7 @@ def materialize_cmsis_dsp_harness(
                 _render_stateful_fir_f32_protocol(shared_patterns),
                 encoding="utf-8",
             )
-            protocol_symbol_sets.append((_CMSIS_DSP_DIRECT_PROTOCOL_SYMBOL,))
+            protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
             expected_entry_results.append(0)
             protocol_owner = (
                 external_root
@@ -1217,10 +1464,9 @@ def cmake_configure_command(
     toolchain: CmakeToolchain,
 ) -> list[str]:
     if isinstance(harness, CmsisNnHarness):
-        owner_definitions = [
-            f"-DLOOM_CMSIS_NN_SOURCE={external_source}",
-            f"-DLOOM_UNITY_SOURCE={harness.unity_source}",
-        ]
+        owner_definitions = [f"-DLOOM_CMSIS_NN_SOURCE={external_source}"]
+        if harness.unity_source is not None:
+            owner_definitions.append(f"-DLOOM_UNITY_SOURCE={harness.unity_source}")
     elif isinstance(harness, CmsisDspHarness):
         owner_definitions = [f"-DLOOM_CMSIS_DSP_SOURCE={external_source}"]
     else:

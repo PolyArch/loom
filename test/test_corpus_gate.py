@@ -71,6 +71,9 @@ DSP_FIR_F32_WORKLOAD_ID = next(
     and row.case == "arm-fir-f32"
     and row.target_profile == "riscv64-portable-scalar"
 )
+NN_CONVOLVE_1X1_S8_FAST_WORKLOAD_ID = (
+    "cmsis-nn:arm-convolve-1x1-s8-fast:e4fc696adf47aaf4"
+)
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -408,8 +411,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         for workload in workloads:
             self.assertEqual(
-                harness.protocol_symbol(workload.executable),
-                workload.producer.test_function,
+                harness.protocol_symbols(workload.executable),
+                (workload.producer.test_function,),
             )
             runner_path = (
                 harness.source_dir
@@ -453,6 +456,50 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(len(set(harness.targets)), 2)
         for workload, target in zip(workloads, harness.targets, strict=True):
             self.assertTrue(target.endswith(workload.identity.rsplit(":", 1)[-1]))
+
+    def test_cmsis_nn_convolution_uses_direct_protocol_and_official_oracle(
+        self,
+    ) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == NN_CONVOLVE_1X1_S8_FAST_WORKLOAD_ID
+        )
+
+        harness = corpus_gate.materialize_cmsis_nn_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-nn-convolution-harness",
+        )
+
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("loom_corpus_operator_protocol",),
+        )
+        self.assertEqual(harness.expected_entry_result(workload.executable), 0)
+        compiled_owner, authoritative_owner = harness.protocol_source_owner(
+            workload.executable
+        )
+        self.assertEqual(compiled_owner.name, "OperatorProtocol.c")
+        self.assertEqual(
+            authoritative_owner,
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Include"
+            / "arm_nnfunctions.h",
+        )
+        source = compiled_owner.read_text()
+        protocol = source.split("int main(void)", maxsplit=1)[0]
+        self.assertIn("arm_convolve_1x1_s8_fast_get_buffer_size", protocol)
+        self.assertIn("arm_convolve_1x1_s8_fast", protocol)
+        self.assertIn('"TestCases/TestData/kernel1x1/test_data.h"', source)
+        self.assertIn("kernel1x1_output_ref", source)
+        self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertNotIn("LOOM_UNITY_SOURCE", cmake)
+        self.assertNotIn("target_link_libraries", cmake)
+        for source_path in workload.sources:
+            self.assertIn(source_path.removeprefix("externals/cmsis-nn/"), cmake)
 
     def test_cmsis_dsp_harness_projects_one_owned_operator_test(self) -> None:
         workload = next(

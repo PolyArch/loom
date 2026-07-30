@@ -68,7 +68,7 @@ from corpus_link_ownership import (  # noqa: E402
 )
 from corpus_workload_provider import (  # noqa: E402
     CmakeToolchain,
-    CmsisNnHarness,
+    CmsisDspHarness,
     ProducedWorkload,
     WorkloadProviderError,
     cmake_build_command,
@@ -1075,22 +1075,23 @@ def prepare_workload_providers(
             target_executable = harness.executable(target_build, case.executable)
             if target_executable.is_file():
                 try:
-                    if isinstance(harness, CmsisNnHarness):
-                        protocol_symbols = (harness.protocol_symbol(case.executable),)
-                    else:
-                        protocol_symbols = harness.protocol_symbols(case.executable)
-                        if not protocol_symbols:
-                            test_class, test_method = harness.protocol_method(
-                                case.executable
+                    protocol_symbols = harness.protocol_symbols(case.executable)
+                    if not protocol_symbols:
+                        if not isinstance(harness, CmsisDspHarness):
+                            raise WorkloadProviderError(
+                                "CMSIS-NN provider produced an empty protocol"
                             )
-                            protocol_symbols = (
-                                resolve_cxx_method_symbol(
-                                    toolchain,
-                                    Path(f"{target_executable}.0.5.precodegen.bc"),
-                                    test_class,
-                                    test_method,
-                                ),
-                            )
+                        test_class, test_method = harness.protocol_method(
+                            case.executable
+                        )
+                        protocol_symbols = (
+                            resolve_cxx_method_symbol(
+                                toolchain,
+                                Path(f"{target_executable}.0.5.precodegen.bc"),
+                                test_class,
+                                test_method,
+                            ),
+                        )
                 except (GateConfigError, WorkloadProviderError) as exc:
                     results[case.identity] = StepFailure(
                         CATEGORY_FINAL_LINK_ARTIFACT, str(exc)
@@ -1101,9 +1102,7 @@ def prepare_workload_providers(
                     target_executable,
                     protocol_symbols,
                     (harness.protocol_source_owner(case.executable),),
-                    0
-                    if isinstance(harness, CmsisNnHarness)
-                    else harness.expected_entry_result(case.executable),
+                    harness.expected_entry_result(case.executable),
                 )
                 continue
             if failure is None:
