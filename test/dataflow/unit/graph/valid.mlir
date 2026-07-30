@@ -52,6 +52,25 @@ dataflow.thread private @t_demo domain(#dataflow.thread_domain<dense>)(%x: i32) 
   dataflow.thread.yield
 }
 
+// An address-space-zero LLVM pointer remains in the InstructionCore-facing
+// thread ABI while graph launch derives the canonical linear memref view.
+// CHECK-LABEL: dataflow.thread private @t_pointer_import
+// CHECK: dataflow.graph.launch @g_pointer_import deps(%{{.*}}) values() stream_inputs() memories(%{{.*}}) stream_outputs() : (none, !llvm.ptr) -> none
+dataflow.graph private @g_pointer_import(%start: none,
+                                         %memory: memref<?xf32>) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %start : none
+}
+dataflow.thread private @t_pointer_import
+    domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr)
+    ctrl (%ctrl: none) {
+  %done = dataflow.graph.launch @g_pointer_import deps(%ctrl) values()
+      stream_inputs() memories(%pointer) stream_outputs()
+      : (none, !llvm.ptr) -> none
+  dataflow.thread.yield %done : none
+}
+
 // Stream payloads remain graph-local SSA values and bind to thread channel
 // endpoints only at launch sites.
 // CHECK-LABEL: dataflow.graph private @g_stream

@@ -16,18 +16,17 @@ module {
   }
 
   dataflow.graph private @sum_ptr_load(%ctrl: none, %lb: i64, %ub: i64,
-                                            %step: i64, %init: f32,
-                                            %ptr: !llvm.ptr) -> (f32)
+                                      %step: i64, %init: f32,
+                                      %memory: memref<?xf32>) -> (f32)
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xf32>
     %iv, %phase = dataflow.stream %lb, %ub, %step
         step add while slt : i64
     %read_frontier = dataflow.carry %phase, %ctrl, %done : none
     %read_lane:2 = dataflow.demux %phase, %read_frontier
         : (i1, none) -> (none, none)
     %idx = arith.index_cast %iv : i64 to index
-    %data, %done = dataflow.load %mem[%idx] %read_lane#1 : memref<?xf32>
+    %data, %done = dataflow.load %memory[%idx] %read_lane#1 : memref<?xf32>
     %carry = dataflow.carry %phase, %init, %next : f32
     %body_phase, %body_carry = dataflow.gate %phase, %carry : f32
     %exit:2 = dataflow.demux %phase, %carry : (i1, f32) -> (f32, f32)

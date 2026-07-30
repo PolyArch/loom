@@ -191,8 +191,7 @@ mlir::Value getActivationSource(mlir::Value value,
                 dataflow::GateOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
                 dataflow::SerializeOp, dataflow::UnpackOp>(def))
     return {};
-  if (!dataflow::isCanonicalDataflowActor(def) &&
-      !llvm::isa<mlir::UnrealizedConversionCastOp>(def))
+  if (!dataflow::isCanonicalDataflowActor(def))
     return {};
 
   mlir::Value common;

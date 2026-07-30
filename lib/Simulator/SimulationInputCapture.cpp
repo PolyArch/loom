@@ -90,11 +90,6 @@ void collectFloatingWrites(mlir::Value memory,
         collectFloatingWrites(cast.getResult(), visited, projection);
       continue;
     }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(owner)) {
-      if (cast.getInputs().size() == 1 && cast.getResults().size() == 1 &&
-          cast.getInputs().front() == memory)
-        collectFloatingWrites(cast.getResults().front(), visited, projection);
-    }
   }
 }
 
@@ -147,14 +142,6 @@ void collectInitialStateReads(mlir::Value memory,
     if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(owner)) {
       if (cast.getSource() == memory) {
         collectInitialStateReads(cast.getResult(), visited,
-                                 requiresInitialState);
-        continue;
-      }
-    }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(owner)) {
-      if (cast.getInputs().size() == 1 && cast.getResults().size() == 1 &&
-          cast.getInputs().front() == memory) {
-        collectInitialStateReads(cast.getResults().front(), visited,
                                  requiresInitialState);
         continue;
       }
@@ -893,10 +880,9 @@ llvm::Error collectOperationPointerRoots(
       return offset.takeError();
     if (staticByteOffset > std::numeric_limits<std::uint64_t>::max() - *offset)
       return invalid("descriptor pointer byte offset overflows uint64");
-    return collectOperationPointerRoots(gep.getBase(), visited, roots,
-                                        invocationPath, returnProjectionCalls,
-                                        captureBase,
-                                        staticByteOffset + *offset);
+    return collectOperationPointerRoots(
+        gep.getBase(), visited, roots, invocationPath, returnProjectionCalls,
+        captureBase, staticByteOffset + *offset);
   }
   if (auto cast = pointer.getDefiningOp<mlir::LLVM::BitcastOp>())
     return collect(cast.getArg());
@@ -915,8 +901,7 @@ llvm::Error collectOperationPointerRoots(
       return error;
     return collectOperationPointerRoots(select.getFalseValue(), visited, roots,
                                         invocationPath, returnProjectionCalls,
-                                        captureBase,
-                                        staticByteOffset);
+                                        captureBase, staticByteOffset);
   }
   if (auto select = pointer.getDefiningOp<mlir::LLVM::SelectOp>()) {
     if (llvm::Error error = collectOperationPointerRoots(
@@ -925,8 +910,7 @@ llvm::Error collectOperationPointerRoots(
       return error;
     return collectOperationPointerRoots(select.getFalseValue(), visited, roots,
                                         invocationPath, returnProjectionCalls,
-                                        captureBase,
-                                        staticByteOffset);
+                                        captureBase, staticByteOffset);
   }
   if (auto load = pointer.getDefiningOp<mlir::LLVM::LoadOp>()) {
     if (!llvm::isa<mlir::LLVM::LLVMPointerType>(load.getResult().getType()))
@@ -935,10 +919,9 @@ llvm::Error collectOperationPointerRoots(
         reachingStoredPointer(load, invocationPath);
     if (!stored)
       return stored.takeError();
-    return collectOperationPointerRoots(*stored, visited, roots, invocationPath,
-                                        returnProjectionCalls,
-                                        captureBase ? captureBase : pointer,
-                                        staticByteOffset);
+    return collectOperationPointerRoots(
+        *stored, visited, roots, invocationPath, returnProjectionCalls,
+        captureBase ? captureBase : pointer, staticByteOffset);
   }
 
   if (auto call = pointer.getDefiningOp<mlir::LLVM::CallOp>()) {
@@ -962,8 +945,8 @@ llvm::Error collectOperationPointerRoots(
     projectedCalls.push_back(call);
     bool sawReturn = false;
     for (mlir::Block &block : callee.getBody()) {
-      auto returned = llvm::dyn_cast<mlir::LLVM::ReturnOp>(
-          block.getTerminator());
+      auto returned =
+          llvm::dyn_cast<mlir::LLVM::ReturnOp>(block.getTerminator());
       if (!returned)
         continue;
       sawReturn = true;
@@ -999,8 +982,8 @@ llvm::Error collectOperationPointerRoots(
     auto callable = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
         argument.getOwner()->getParentOp());
     if (callable && argument.getOwner() == &callable.getBody().front()) {
-      mlir::LLVM::CallOp incomingCall = returnProjectionBinding(
-          callable, returnProjectionCalls);
+      mlir::LLVM::CallOp incomingCall =
+          returnProjectionBinding(callable, returnProjectionCalls);
       if (!incomingCall) {
         for (mlir::LLVM::CallOp call : invocationPath) {
           if (!call.getCalleeAttr())

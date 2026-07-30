@@ -185,12 +185,6 @@ importedRootOfValue(
       value = cast.getSource();
       continue;
     }
-    if (auto bridge = dyn_cast<UnrealizedConversionCastOp>(definition)) {
-      if (bridge.getNumOperands() != 1 || bridge.getNumResults() != 1)
-        return invalid("simulation wire: non-canonical conversion bridge");
-      value = bridge.getOperand(0);
-      continue;
-    }
     if (auto earlier = dyn_cast<dataflow::GraphLaunchOp>(definition)) {
       auto found = staticLaunchByOp.find(earlier.getOperation());
       if (found == staticLaunchByOp.end())

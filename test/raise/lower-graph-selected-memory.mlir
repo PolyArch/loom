@@ -1,35 +1,46 @@
-// RUN: loom-raise-opt --canonicalize --loom-lower-graph-memory %s \
-// RUN:   | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
-// A branch-selected pointer does not become a dynamic memory capability.
-// The canonicalizer projects this source shape to an arith.select. Memory
-// lowering must restore selected execution around the load so exactly one
-// branch performs a memory effect and each load retains a graph-memory owner.
+// A branch-selected pointer becomes two launch-owned typed memory views. The
+// graph selects execution around the loads, not a dynamic memory capability.
 
-// CHECK-LABEL: dataflow.graph private @branch_selected_load
+// CHECK-LABEL: dataflow.thread private @branch_selected_load
+// CHECK: dataflow.graph.launch @branch_selected_load_graph
+// CHECK-SAME: memories(%arg0, %arg1)
+// CHECK-LABEL: dataflow.graph private @branch_selected_load_graph(
+// CHECK-SAME: [[A:%[^, )]+]]: memref<?xf32>, [[B:%[^, )]+]]: memref<?xf32>)
 // CHECK-COUNT-2: dataflow.load
 // CHECK: dataflow.mux
+// CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
+
 module attributes {
   llvm.data_layout = "e-p:64:64",
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
 } {
-  dataflow.graph private @branch_selected_load(
-      %ctrl: none, %choose_a: i1, %ordinal: i64,
-      %a: !llvm.ptr, %b: !llvm.ptr) -> f32
-      attributes {input_segments = array<i32: 2, 0, 2>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %a_ptr = llvm.getelementptr inbounds %a[%ordinal]
-        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
-    %b_ptr = llvm.getelementptr inbounds %b[%ordinal]
-        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
-    %selected = scf.if %choose_a -> (!llvm.ptr) {
-      scf.yield %a_ptr : !llvm.ptr
-    } else {
-      scf.yield %b_ptr : !llvm.ptr
-    }
-    %value = llvm.load %selected : !llvm.ptr -> f32
-    dataflow.graph.return %ctrl, %value : none, f32
+  dataflow.thread private @branch_selected_load
+      domain(#dataflow.thread_domain<dense>)(
+          %a: !llvm.ptr, %b: !llvm.ptr, %choose_a: i1, %ordinal: i64)
+      ctrl (%ctrl: none) {
+    %value = "loom.spatial_region"(%choose_a, %ordinal, %a, %b)
+        <{operandSegmentSizes = array<i32: 2, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 1, 0>}> ({
+      ^bb0(%choose: i1, %index: i64, %a_base: !llvm.ptr,
+           %b_base: !llvm.ptr):
+        %a_ptr = llvm.getelementptr inbounds %a_base[%index]
+            : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+        %b_ptr = llvm.getelementptr inbounds %b_base[%index]
+            : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+        %selected = scf.if %choose -> (!llvm.ptr) {
+          scf.yield %a_ptr : !llvm.ptr
+        } else {
+          scf.yield %b_ptr : !llvm.ptr
+        }
+        %loaded = llvm.load %selected : !llvm.ptr -> f32
+        "loom.spatial_yield"(%loaded)
+            <{operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> ()
+    }) {graph_name = "branch_selected_load_graph", source_maps = []} :
+        (i1, i64, !llvm.ptr, !llvm.ptr) -> f32
+    dataflow.thread.yield
   }
 }

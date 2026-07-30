@@ -45,6 +45,30 @@ dataflow.graph private @g_scalar_memory(%ctrl: none, %x: i32) -> ()
 }
 
 // -----
+// LLVM pointers remain legal in threads but are not canonical graph memory
+// ports.
+// expected-error @+1 {{memory input #0 must be a memref capability, but got '!llvm.ptr'}}
+dataflow.graph private @g_pointer_memory(%ctrl: none, %memory: !llvm.ptr) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Graph memory results likewise expose typed memrefs, never raw pointers.
+// expected-error @+1 {{memory result #0 must be a memref capability, but got '!llvm.ptr'}}
+dataflow.graph private @g_pointer_memory_result(%ctrl: none,
+                                                 %memory: memref<?xi32>)
+    -> !llvm.ptr
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 1>} {
+  %raw = builtin.unrealized_conversion_cast %memory
+      : memref<?xi32> to !llvm.ptr
+  dataflow.graph.return values() streams() memories(%raw : !llvm.ptr)
+      complete(%ctrl : none)
+}
+
+// -----
 // A memory capability cannot be declared as an application value.
 // expected-error @+1 {{value input #0 contains memory capability type 'memref<?xi32>'}}
 dataflow.graph private @g_memory_value(%ctrl: none,
@@ -117,6 +141,42 @@ func.func @launch_outside_thread() {
   %d = dataflow.graph.launch @g_target deps(%ctrl) values()
       stream_inputs() memories() stream_outputs() : (none) -> none
   return
+}
+
+// -----
+// Pointer import is restricted to integral address space zero.
+dataflow.graph private @g_linear_import(%ctrl: none, %memory: memref<?xf32>)
+    -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+dataflow.thread private @t_nonzero_pointer_import
+    domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr<1>)
+    ctrl (%ctrl: none) {
+  // expected-error @+1 {{memory input #0 cannot bind pointer address space 1 to canonical graph memref 'memref<?xf32>'}}
+  %done = dataflow.graph.launch @g_linear_import deps(%ctrl) values()
+      stream_inputs() memories(%pointer) stream_outputs()
+      : (none, !llvm.ptr<1>) -> none
+  dataflow.thread.yield
+}
+
+// -----
+// Pointer import cannot invent a static or shaped extent at the graph boundary.
+dataflow.graph private @g_static_import(%ctrl: none, %memory: memref<4xf32>)
+    -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+dataflow.thread private @t_static_pointer_import
+    domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr)
+    ctrl (%ctrl: none) {
+  // expected-error @+1 {{memory input #0 pointer view target 'memref<4xf32>' must be a rank-one dynamic identity-layout memref in the default memory space}}
+  %done = dataflow.graph.launch @g_static_import deps(%ctrl) values()
+      stream_inputs() memories(%pointer) stream_outputs()
+      : (none, !llvm.ptr) -> none
+  dataflow.thread.yield
 }
 
 // -----

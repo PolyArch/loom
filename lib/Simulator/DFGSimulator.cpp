@@ -449,7 +449,7 @@ primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
 
 static bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp, mlir::memref::AllocOp,
-                   mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(op);
+                   mlir::memref::CastOp>(op);
 }
 
 enum class FireOutcome {
@@ -793,38 +793,13 @@ static llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
 
 static llvm::Error propagateMemoryAliases(mlir::Block &entry,
                                           SimulatorState &state) {
-  llvm::DenseMap<mlir::Value, mlir::Type> fixtureElementTypes;
-  for (mlir::Operation &op : entry.getOperations()) {
-    if (!mlir::isa<mlir::UnrealizedConversionCastOp>(op) ||
-        op.getNumOperands() != 1 || op.getNumResults() != 1)
-      continue;
-    mlir::Value source = op.getOperand(0);
-    auto targetMemref =
-        mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType());
-    if (!targetMemref || !state.rawMemoryFixtures.contains(source))
-      continue;
-    auto [it, inserted] =
-        fixtureElementTypes.try_emplace(source, targetMemref.getElementType());
-    if (!inserted && it->second != targetMemref.getElementType())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "memory fixture type mismatch: existing %s, requested %s",
-          typeToString(it->second).c_str(),
-          typeToString(targetMemref.getElementType()).c_str());
-  }
-
   bool changed = true;
   while (changed) {
     changed = false;
     for (mlir::Operation &op : entry.getOperations()) {
       mlir::Value source;
       mlir::Value target;
-      if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
-        if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
-          continue;
-        source = cast.getInputs().front();
-        target = cast.getResults().front();
-      } else if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(op)) {
+      if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(op)) {
         source = cast.getSource();
         target = cast.getDest();
       } else {

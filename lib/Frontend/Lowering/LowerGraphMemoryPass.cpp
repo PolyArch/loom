@@ -1,10 +1,7 @@
-// Tokenize residual `llvm.load` / `llvm.store` ops inside
-// `dataflow.graph` bodies into the streaming-memory primitives
-// `dataflow.load` / `dataflow.store`. The resulting ops bind the
-// pointer to a memref via `unrealized_conversion_cast`, drive the
-// address port from an `index`-typed offset, and accept the graph
-// body's `thread_ctrl` block argument as the `none`-typed firing
-// token.
+// Tokenize residual `llvm.load` / `llvm.store` ops inside construction-local
+// `dataflow.graph` bodies into `dataflow.load` / `dataflow.store`. LLVM pointer
+// ABI roots are projected into canonical graph-owned memref ports; no pointer
+// reinterpretation operation survives publication.
 //
 // Two recognition modes:
 //   * Top-level (load/store sits directly in the graph entry block):
@@ -14,12 +11,9 @@
 //        - dataflow.carry init=arg_ptr  -> (carry_result, null)
 //        - graph block-arg !llvm.ptr   -> (block_arg, null)
 //
-//   * Nested (load/store sits inside an scf.for / scf.if region of
-//     the graph body): apply a permissive fallback that accepts any
-//     !llvm.ptr SSA value as a per-iteration bridge target. The
-//     bridge cast is emitted at the load/store site rather than
-//     hoisted, so the per-iteration pointer is reinterpreted as a
-//     memref<?xT> and read at offset 0 (or at the gep's idx).
+//   * Nested (load/store sits inside an scf.for / scf.if region): the address
+//     analysis must still resolve to the same graph memory root. Dynamic
+//     pointer values never become independent graph memory capabilities.
 //
 // Loads whose pointer is none of the above (e.g. derived from
 // `llvm.alloca` or `llvm.mlir.addressof` at the top level) remain untouched
@@ -31,12 +25,14 @@
 #include "Frontend/Lowering/Passes.h"
 
 #include "GraphMemoryAddressing.h"
+#include "GraphMemoryLowering.h"
 #include "GraphRegionLowering.h"
 #include "StreamOrdinal.h"
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -48,13 +44,19 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DataLayout.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <vector>
 
 namespace {
 
@@ -90,33 +92,37 @@ getModuleLLVMDataLayout(::mlir::Operation *scope) {
                                                         : ::mlir::Value{};
 }
 
-struct BridgeKey {
+struct ImportedViewKey {
   ::mlir::Value ptr;
   ::mlir::Type elem;
-  bool operator==(const BridgeKey &o) const {
+  bool operator==(const ImportedViewKey &o) const {
     return ptr == o.ptr && elem == o.elem;
   }
 };
 
-struct BridgeKeyInfo {
-  static BridgeKey getEmptyKey() { return {{}, {}}; }
-  static BridgeKey getTombstoneKey() {
+struct ImportedViewKeyInfo {
+  static ImportedViewKey getEmptyKey() {
+    return {{}, {}};
+  }
+  static ImportedViewKey getTombstoneKey() {
     return {::mlir::Value::getFromOpaquePointer((void *)1),
             ::mlir::Type::getFromOpaquePointer((void *)1)};
   }
-  static unsigned getHashValue(const BridgeKey &k) {
+  static unsigned getHashValue(const ImportedViewKey &k) {
     return ::llvm::hash_combine(::mlir::hash_value(k.ptr),
                                 ::mlir::hash_value(k.elem));
   }
-  static bool isEqual(const BridgeKey &a, const BridgeKey &b) { return a == b; }
+  static bool isEqual(const ImportedViewKey &a, const ImportedViewKey &b) {
+    return a == b;
+  }
 };
 
 using ScopedValueCache =
     ::llvm::DenseMap<::mlir::Block *,
                      ::llvm::DenseMap<::mlir::Value, ::mlir::Value>>;
-using ScopedBridgeCache =
-    ::llvm::DenseMap<::mlir::Block *,
-                     ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo>>;
+using ScopedBridgeCache = ::llvm::DenseMap<
+    ::mlir::Block *,
+    ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>>;
 
 // Result of resolving one llvm.load / llvm.store address. Every GEP in a
 // supported chain contributes either one typed linear term or constant bias;
@@ -307,7 +313,9 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
     }
     return std::nullopt;
   }
-  // Nested permissive fallback.
+  // MLIR may use an index-typed dynamic GEP operand before an LLVM DataLayout
+  // exists. Accept only the exact one-element-step form rooted at the graph
+  // memory formal; every other nested pointer remains unnormalized.
   if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(loadStorePtr.getType()))
     return std::nullopt;
   if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
@@ -328,15 +336,15 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
       }
     }
   }
-  AddrResolution resolution;
-  resolution.ptr = loadStorePtr;
-  return resolution;
+  return std::nullopt;
 }
 
-// Materialize (or look up) an unrealized_conversion_cast bridging
-// `ptr : !llvm.ptr` to `memref<?xElem>`. Graph-root pointers are hoisted and
-// cached at graph entry; genuinely dynamic pointers are bridged at the access.
-bool isSupportedBridgePointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
+// A launch-owned imported view can only originate at an address-space-zero
+// graph memory formal. Derived pointers are normalized into integer offsets;
+// they never become additional capability roots.
+bool isSupportedImportedViewRoot(::mlir::Value ptr, ::dataflow::GraphOp graph) {
+  if (!isGraphPtrBlockArg(ptr, graph))
+    return false;
   auto ptrTy = ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(ptr.getType());
   if (!ptrTy)
     return false;
@@ -345,35 +353,154 @@ bool isSupportedBridgePointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
       getModuleLLVMDataLayout(graph);
   if (llvmDataLayout && llvmDataLayout->isNonIntegralAddressSpace(addressSpace))
     return false;
-  // The bridge does not preserve LLVM address spaces in the memref type.
+  // Canonical graph memrefs have the default memory space.
   return addressSpace == 0;
 }
 
-::mlir::Value getMemrefBridge(
-    ::mlir::OpBuilder &builder, ::dataflow::GraphOp graph,
-    ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo> &cache,
-    ::mlir::Value ptr, ::mlir::Type elem, ::mlir::Location loc, bool topLevel,
-    ::mlir::Operation *insertBeforeIfNested) {
-  if (!isSupportedBridgePointer(ptr, graph))
+::mlir::Value getImportedMemrefView(
+    ::dataflow::GraphOp graph,
+    ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>
+        &cache,
+    ::mlir::Value ptr, ::mlir::Type elem, ::mlir::Location loc) {
+  if (!isSupportedImportedViewRoot(ptr, graph))
     return {};
-  if (topLevel) {
-    BridgeKey key{ptr, elem};
-    if (auto it = cache.find(key); it != cache.end())
-      return it->second;
-  }
-  ::mlir::OpBuilder::InsertionGuard g(builder);
-  if (topLevel)
-    builder.setInsertionPointToStart(&graph.getBody().front());
-  else
-    builder.setInsertionPoint(insertBeforeIfNested);
+  ImportedViewKey key{ptr, elem};
+  if (auto it = cache.find(key); it != cache.end())
+    return it->second;
   auto memrefTy = ::mlir::MemRefType::get({::mlir::ShapedType::kDynamic}, elem);
-  ::mlir::Value bridge =
-      ::mlir::UnrealizedConversionCastOp::create(
-          builder, loc, ::mlir::TypeRange{memrefTy}, ::mlir::ValueRange{ptr})
-          .getResult(0);
-  if (topLevel)
-    cache.try_emplace(BridgeKey{ptr, elem}, bridge);
-  return bridge;
+  ::mlir::BlockArgument view =
+      graph.getBody().front().addArgument(memrefTy, loc);
+  cache.try_emplace(key, view);
+  return view;
+}
+
+struct CanonicalMemoryPort {
+  unsigned sourceOrdinal = 0;
+  ::mlir::Type type;
+  ::mlir::Value transientValue;
+  ::mlir::DictionaryAttr attrs;
+  std::vector<std::uint8_t> typeKey;
+};
+
+::mlir::LogicalResult normalizeGraphMemoryPorts(
+    ::dataflow::GraphOp graph,
+    const ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>
+        &importedViews,
+    ::llvm::SmallVectorImpl<unsigned> *sourceOrdinals) {
+  ::llvm::ArrayRef<int32_t> segments = graph.getInputSegmentSizes();
+  unsigned valueCount = static_cast<unsigned>(segments[0]);
+  unsigned streamCount = static_cast<unsigned>(segments[1]);
+  unsigned memoryCount = static_cast<unsigned>(segments[2]);
+  unsigned firstMemoryInput = valueCount + streamCount;
+  ::mlir::Block &entry = graph.getBody().front();
+
+  ::llvm::SmallVector<::mlir::BlockArgument, 4> oldMemoryArgs;
+  oldMemoryArgs.reserve(memoryCount);
+  for (unsigned ordinal = 0; ordinal < memoryCount; ++ordinal)
+    oldMemoryArgs.push_back(entry.getArgument(1 + firstMemoryInput + ordinal));
+
+  ::mlir::Builder builder(graph.getContext());
+  ::llvm::SmallVector<CanonicalMemoryPort, 4> ports;
+  for (unsigned ordinal = 0; ordinal < memoryCount; ++ordinal) {
+    ::mlir::BlockArgument source = oldMemoryArgs[ordinal];
+    ::mlir::DictionaryAttr attrs =
+        ::mlir::function_interface_impl::getArgAttrDict(
+            graph, firstMemoryInput + ordinal);
+    if (!attrs)
+      attrs = builder.getDictionaryAttr({});
+
+    auto appendPort = [&](::mlir::Type type,
+                          ::mlir::Value transient) -> ::mlir::LogicalResult {
+      ::llvm::Expected<::loom::CanonicalSemanticBytes> encoded =
+          ::dataflow::encodeCanonicalType(type);
+      if (!encoded)
+        return graph.emitError("cannot encode canonical graph memory type ")
+               << type << ": " << ::llvm::toString(encoded.takeError());
+      ports.push_back({ordinal, type, transient, attrs,
+                       std::vector<std::uint8_t>(encoded->bytes().begin(),
+                                                 encoded->bytes().end())});
+      return ::mlir::success();
+    };
+
+    if (::llvm::isa<::mlir::MemRefType, ::mlir::UnrankedMemRefType>(
+            source.getType())) {
+      if (::mlir::failed(appendPort(source.getType(), source)))
+        return ::mlir::failure();
+      continue;
+    }
+    if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(source.getType()))
+      return graph.emitError("memory input #")
+             << ordinal << " has unsupported transient type "
+             << source.getType();
+
+    for (const auto &entry : importedViews) {
+      if (entry.first.ptr != source)
+        continue;
+      if (::mlir::failed(appendPort(entry.second.getType(), entry.second)))
+        return ::mlir::failure();
+    }
+  }
+
+  ::llvm::sort(ports, [](const CanonicalMemoryPort &lhs,
+                         const CanonicalMemoryPort &rhs) {
+    if (lhs.sourceOrdinal != rhs.sourceOrdinal)
+      return lhs.sourceOrdinal < rhs.sourceOrdinal;
+    return std::lexicographical_compare(lhs.typeKey.begin(), lhs.typeKey.end(),
+                                        rhs.typeKey.begin(), rhs.typeKey.end());
+  });
+
+  // Every raw pointer use must have been absorbed into an integer address
+  // function before the pointer formal can be removed.
+  for (auto source : oldMemoryArgs)
+    if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(source.getType()) &&
+        !source.use_empty())
+      return graph.emitError("memory pointer input remains after graph memory "
+                             "normalization: ")
+             << source.getType();
+
+  ::llvm::SmallVector<::mlir::DictionaryAttr, 8> argumentAttrs;
+  argumentAttrs.reserve(firstMemoryInput + ports.size());
+  for (unsigned index = 0; index < firstMemoryInput; ++index) {
+    ::mlir::DictionaryAttr attrs =
+        ::mlir::function_interface_impl::getArgAttrDict(graph, index);
+    argumentAttrs.push_back(attrs ? attrs : builder.getDictionaryAttr({}));
+  }
+
+  for (auto [index, port] : ::llvm::enumerate(ports)) {
+    auto arg = entry.insertArgument(1 + firstMemoryInput + index, port.type,
+                                    graph.getLoc());
+    port.transientValue.replaceAllUsesWith(arg);
+    argumentAttrs.push_back(port.attrs);
+  }
+
+  ::llvm::BitVector erase(entry.getNumArguments());
+  for (::mlir::BlockArgument arg : oldMemoryArgs)
+    erase.set(arg.getArgNumber());
+  for (const auto &view : importedViews)
+    erase.set(::llvm::cast<::mlir::BlockArgument>(view.second).getArgNumber());
+  entry.eraseArguments(erase);
+
+  ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
+  inputTypes.reserve(firstMemoryInput + ports.size());
+  ::llvm::ArrayRef<::mlir::Type> oldInputs =
+      graph.getFunctionType().getInputs();
+  inputTypes.append(oldInputs.begin(), oldInputs.begin() + firstMemoryInput);
+  for (const CanonicalMemoryPort &port : ports)
+    inputTypes.push_back(port.type);
+  graph.setFunctionType(builder.getFunctionType(
+      inputTypes, graph.getFunctionType().getResults()));
+  ::llvm::SmallVector<int32_t, 3> normalizedSegments{
+      static_cast<int32_t>(valueCount), static_cast<int32_t>(streamCount),
+      static_cast<int32_t>(ports.size())};
+  graph.setInputSegments(normalizedSegments);
+  ::mlir::function_interface_impl::setAllArgAttrDicts(graph, argumentAttrs);
+
+  if (sourceOrdinals) {
+    sourceOrdinals->clear();
+    for (const CanonicalMemoryPort &port : ports)
+      sourceOrdinals->push_back(port.sourceOrdinal);
+  }
+  return ::mlir::success();
 }
 
 // `indexBits` is the canonical index width the pass boundary already
@@ -429,10 +556,12 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
   return {};
 }
 
-::mlir::Value getLinearElementIndex(
-    ::mlir::OpBuilder &builder, ::llvm::ArrayRef<LinearElementTerm> terms,
-    ::mlir::Type indexType, std::int64_t elementBias, ::mlir::Location loc,
-    ::mlir::Operation *insertBefore) {
+::mlir::Value getLinearElementIndex(::mlir::OpBuilder &builder,
+                                    ::llvm::ArrayRef<LinearElementTerm> terms,
+                                    ::mlir::Type indexType,
+                                    std::int64_t elementBias,
+                                    ::mlir::Location loc,
+                                    ::mlir::Operation *insertBefore) {
   auto canonicalType = ::llvm::dyn_cast<::mlir::IntegerType>(indexType);
   if (!canonicalType || !canonicalType.isSignless())
     return {};
@@ -451,29 +580,28 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
       if (!source || !source.isSignless() ||
           source.getWidth() >= canonicalType.getWidth())
         return {};
-      contribution = ::mlir::arith::ExtSIOp::create(
-                         builder, loc, canonicalType, contribution)
+      contribution = ::mlir::arith::ExtSIOp::create(builder, loc, canonicalType,
+                                                    contribution)
                          .getResult();
     }
     if (term.exactSignedDivideShift != 0) {
-      auto shiftAttr = builder.getIntegerAttr(
-          canonicalType, term.exactSignedDivideShift);
+      auto shiftAttr =
+          builder.getIntegerAttr(canonicalType, term.exactSignedDivideShift);
       ::mlir::Value shift = ::mlir::arith::ConstantOp::create(
                                 builder, loc, canonicalType, shiftAttr)
                                 .getResult();
-      contribution = ::mlir::arith::ShRSIOp::create(
-                         builder, loc, contribution, shift)
-                         .getResult();
+      contribution =
+          ::mlir::arith::ShRSIOp::create(builder, loc, contribution, shift)
+              .getResult();
     }
     if (term.scale != 1) {
       ::mlir::TypedAttr scaleAttr =
           getIntegerLikeAttr(builder, canonicalType, term.scale);
       if (!scaleAttr)
         return {};
-      ::mlir::Value scale =
-          ::mlir::arith::ConstantOp::create(builder, loc, canonicalType,
-                                            scaleAttr)
-              .getResult();
+      ::mlir::Value scale = ::mlir::arith::ConstantOp::create(
+                                builder, loc, canonicalType, scaleAttr)
+                                .getResult();
       contribution =
           ::mlir::arith::MulIOp::create(builder, loc, contribution, scale)
               .getResult();
@@ -489,8 +617,7 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
     if (!biasAttr)
       return {};
     ::mlir::Value bias =
-        ::mlir::arith::ConstantOp::create(builder, loc, canonicalType,
-                                          biasAttr)
+        ::mlir::arith::ConstantOp::create(builder, loc, canonicalType, biasAttr)
             .getResult();
     result = result ? ::mlir::arith::AddIOp::create(builder, loc, result, bias)
                           .getResult()
@@ -498,8 +625,8 @@ bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
   }
   if (!result)
     return {};
-  return ::mlir::arith::IndexCastOp::create(
-             builder, loc, builder.getIndexType(), result)
+  return ::mlir::arith::IndexCastOp::create(builder, loc,
+                                            builder.getIndexType(), result)
       .getResult();
 }
 
@@ -565,7 +692,8 @@ struct RewriteCtx {
   ::mlir::Value ctrl;
   // Resolved once at the pass boundary and read-only from here on.
   unsigned indexBits = 0;
-  ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo> bridgeCache;
+  ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>
+      importedViews;
   ScopedValueCache indexCastCache;
   ScopedBridgeCache addressCache;
   ::mlir::Value zeroIdx;
@@ -601,7 +729,7 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
       resolvePointer(ptrArg, ctx.graph, topLevel, elemTy, ctx.indexBits);
   if (!resolved)
     return false;
-  if (!isSupportedBridgePointer(resolved->ptr, ctx.graph))
+  if (!isSupportedImportedViewRoot(resolved->ptr, ctx.graph))
     return false;
   if (resolved->ordinalStream &&
       !canMaterializeIndex(resolved->ordinalStream.getIv().getType(),
@@ -617,7 +745,7 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   ::mlir::Value addr;
   auto &addressCache =
       ctx.addressCache.try_emplace(op->getBlock()).first->second;
-  BridgeKey addressKey{ptrArg, elemTy};
+  ImportedViewKey addressKey{ptrArg, elemTy};
   if (auto it = addressCache.find(addressKey); it != addressCache.end()) {
     addr = it->second;
   } else {
@@ -631,13 +759,13 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
                                        ctx.ctrl, loc, op);
       if (!ordinal)
         return false;
-      addr = getIndexCast(builder, ctx.graph, ctx.indexCastCache,
-                          ctx.indexBits, ordinal, loc, topLevel, op);
+      addr = getIndexCast(builder, ctx.graph, ctx.indexCastCache, ctx.indexBits,
+                          ordinal, loc, topLevel, op);
     } else if (!resolved->linearElementTerms.empty() ||
                resolved->linearElementBias != 0) {
-      addr = getLinearElementIndex(
-          builder, resolved->linearElementTerms, resolved->linearIndexType,
-          resolved->linearElementBias, loc, op);
+      addr = getLinearElementIndex(builder, resolved->linearElementTerms,
+                                   resolved->linearIndexType,
+                                   resolved->linearElementBias, loc, op);
     } else {
       addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
     }
@@ -645,10 +773,8 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
       return false;
     addressCache.try_emplace(addressKey, addr);
   }
-  bool staticBinding = topLevel || isGraphPtrBlockArg(resolved->ptr, ctx.graph);
-  ::mlir::Value mem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, resolved->ptr,
-                      elemTy, loc, staticBinding, op);
+  ::mlir::Value mem = getImportedMemrefView(ctx.graph, ctx.importedViews,
+                                            resolved->ptr, elemTy, loc);
   if (!mem)
     return false;
   if (isLoad) {
@@ -769,21 +895,23 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
   return ::loom::lowering::checkGraphRegionLoweringPreconditions(*scratch);
 }
 
-unsigned rewriteOneGraph(::dataflow::GraphOp graph,
-                         ::mlir::OpBuilder &builder) {
+::mlir::LogicalResult
+rewriteOneGraph(::dataflow::GraphOp graph, ::mlir::OpBuilder &builder,
+                ::llvm::SmallVectorImpl<unsigned> *sourceOrdinals = nullptr) {
   ::mlir::Value ctrl = getThreadCtrl(graph);
   if (!ctrl)
-    return 0;
+    return graph.emitError(
+        "loom-lower-graph-memory: graph entry has no start token");
   std::optional<unsigned> indexBits = getGraphIndexBits(graph);
   if (!indexBits)
-    return 0;
+    return ::mlir::failure();
 
   RewriteCtx ctx;
   ctx.graph = graph;
   ctx.ctrl = ctrl;
   ctx.indexBits = *indexBits;
 
-  unsigned rewrites = sinkBranchSelectedLoads(graph, builder);
+  (void)sinkBranchSelectedLoads(graph, builder);
 
   // Collect rewrite targets up front so the walk is independent of
   // mutations performed by tryRewriteOne.
@@ -800,8 +928,7 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
   });
 
   for (auto &t : targets) {
-    if (tryRewriteOne(t.op, t.topLevel, builder, ctx))
-      ++rewrites;
+    (void)tryRewriteOne(t.op, t.topLevel, builder, ctx);
   }
   // Erase orphan geps (those whose only uses were the rewritten
   // load/store ops). Some may have other live uses -- skip those
@@ -815,7 +942,7 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
       gep->erase();
     }
   }
-  return rewrites;
+  return normalizeGraphMemoryPorts(graph, ctx.importedViews, sourceOrdinals);
 }
 
 ::mlir::LogicalResult checkResidualMemoryEffects(::dataflow::GraphOp graph) {
@@ -861,8 +988,8 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
   ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
   scratch->walk([&](::dataflow::GraphOp graph) { graphs.push_back(graph); });
   for (auto graph : graphs) {
-    if (!graph.isExternal())
-      (void)rewriteOneGraph(graph, builder);
+    if (!graph.isExternal() && ::mlir::failed(rewriteOneGraph(graph, builder)))
+      return ::mlir::failure();
   }
   for (auto graph : graphs) {
     if (!graph.isExternal() &&
@@ -893,49 +1020,8 @@ struct LowerGraphMemoryPass
   }
 
   void runOnOperation() final {
-    ::mlir::ModuleOp module = getOperation();
-    ::mlir::OpBuilder builder(&getContext());
-
-    // Every graph's canonical index width is resolved at its own scope,
-    // before anything is normalized or mutated, so an unusable declaration is
-    // reported with its owner's reason instead of degrading into a later
-    // residual memory error.
-    if (::mlir::failed(checkGraphIndexWidths(module))) {
+    if (::mlir::failed(::loom::lowering::lowerGraphMemory(getOperation())))
       signalPassFailure();
-      return;
-    }
-
-    if (::mlir::failed(
-            checkGraphRegionLoweringPreconditionsAfterLoadSinking(module))) {
-      signalPassFailure();
-      return;
-    }
-    if (::mlir::failed(checkNormalizedMemoryEffects(module))) {
-      signalPassFailure();
-      return;
-    }
-
-    ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
-    module.walk([&](::dataflow::GraphOp graph) { graphs.push_back(graph); });
-
-    for (::dataflow::GraphOp graph : graphs) {
-      if (graph.isExternal())
-        continue;
-      (void)rewriteOneGraph(graph, builder);
-    }
-
-    for (::dataflow::GraphOp graph : graphs) {
-      if (graph.isExternal())
-        continue;
-      std::optional<unsigned> indexBits = getGraphIndexBits(graph);
-      if (!indexBits)
-        continue;
-      if (::mlir::failed(
-              ::loom::lowering::lowerGraphRegions(graph, *indexBits))) {
-        signalPassFailure();
-        return;
-      }
-    }
   }
 };
 
@@ -943,6 +1029,46 @@ struct LowerGraphMemoryPass
 
 namespace loom {
 namespace lowering {
+
+::mlir::LogicalResult lowerGraphMemory(
+    ::mlir::ModuleOp module,
+    ::llvm::SmallVectorImpl<GraphMemoryInputProjection> *projections) {
+  ::mlir::OpBuilder builder(module.getContext());
+
+  // Resolve each graph's canonical index width before mutation, then prove the
+  // complete lowering on a scratch module. The production mutation below is
+  // therefore failure-atomic at its caller's publication boundary.
+  if (::mlir::failed(checkGraphIndexWidths(module)) ||
+      ::mlir::failed(
+          checkGraphRegionLoweringPreconditionsAfterLoadSinking(module)) ||
+      ::mlir::failed(checkNormalizedMemoryEffects(module)))
+    return ::mlir::failure();
+
+  ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
+  module.walk([&](::dataflow::GraphOp graph) { graphs.push_back(graph); });
+
+  if (projections)
+    projections->clear();
+  for (::dataflow::GraphOp graph : graphs) {
+    if (graph.isExternal())
+      continue;
+    ::llvm::SmallVector<unsigned, 4> sourceOrdinals;
+    if (::mlir::failed(rewriteOneGraph(
+            graph, builder, projections ? &sourceOrdinals : nullptr)))
+      return ::mlir::failure();
+    if (projections)
+      projections->push_back({graph, std::move(sourceOrdinals)});
+  }
+
+  for (::dataflow::GraphOp graph : graphs) {
+    if (graph.isExternal())
+      continue;
+    std::optional<unsigned> indexBits = getGraphIndexBits(graph);
+    if (!indexBits || ::mlir::failed(lowerGraphRegions(graph, *indexBits)))
+      return ::mlir::failure();
+  }
+  return ::mlir::success();
+}
 
 std::unique_ptr<::mlir::Pass> createLowerGraphMemoryPass() {
   return std::make_unique<LowerGraphMemoryPass>();

@@ -6,6 +6,7 @@
 
 #include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Lowering/Passes.h"
+#include "GraphMemoryLowering.h"
 #include "GraphRegionLowering.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
@@ -938,6 +939,71 @@ struct LowerForToGraphPass
   // from its uses. Only when the existing pipeline succeeds does each staged
   // graph replace its original, which keeps the signature changes finalization
   // makes. The complete outer module is validated afterwards.
+  ::mlir::LogicalResult
+  updateGraphLaunches(::mlir::ModuleOp module, ::dataflow::GraphOp original,
+                      ::dataflow::GraphOp finalized,
+                      ::llvm::ArrayRef<unsigned> sourceMemoryOrdinals) {
+    ::llvm::ArrayRef<int32_t> finalizedInputs =
+        finalized.getInputSegmentSizes();
+    ::llvm::ArrayRef<int32_t> finalizedResults =
+        finalized.getResultSegmentSizes();
+    if (sourceMemoryOrdinals.size() != static_cast<size_t>(finalizedInputs[2]))
+      return finalized.emitError(
+          "graph memory projection does not cover the finalized signature");
+
+    ::llvm::SmallVector<::dataflow::GraphLaunchOp, 4> launches;
+    module.walk([&](::dataflow::GraphLaunchOp launch) {
+      if (launch.getCallee() == original.getSymName())
+        launches.push_back(launch);
+    });
+
+    ::llvm::ArrayRef<::mlir::Type> resultTypes =
+        finalized.getFunctionType().getResults();
+    unsigned valueResultCount = static_cast<unsigned>(finalizedResults[0]);
+    unsigned streamResultCount = static_cast<unsigned>(finalizedResults[1]);
+    unsigned memoryResultCount = static_cast<unsigned>(finalizedResults[2]);
+    ::mlir::TypeRange valueResultTypes =
+        resultTypes.take_front(valueResultCount);
+    ::mlir::TypeRange memoryResultTypes = resultTypes.slice(
+        valueResultCount + streamResultCount, memoryResultCount);
+
+    ::mlir::OpBuilder builder(module.getContext());
+    for (::dataflow::GraphLaunchOp launch : launches) {
+      ::llvm::SmallVector<::mlir::Value, 4> memoryInputs;
+      memoryInputs.reserve(sourceMemoryOrdinals.size());
+      for (unsigned sourceOrdinal : sourceMemoryOrdinals) {
+        if (sourceOrdinal >= launch.getMemoryInputs().size())
+          return launch.emitOpError("graph memory projection source #")
+                 << sourceOrdinal << " is out of range";
+        memoryInputs.push_back(launch.getMemoryInputs()[sourceOrdinal]);
+      }
+
+      builder.setInsertionPoint(launch);
+      auto replacement = ::dataflow::GraphLaunchOp::create(
+          builder, launch.getLoc(), valueResultTypes, memoryResultTypes,
+          builder.getNoneType(), launch.getCalleeAttr(), launch.getSourceMaps(),
+          launch.getDependencies(), launch.getValueInputs(),
+          launch.getStreamInputs(), memoryInputs, launch.getStreamOutputs());
+      for (::mlir::NamedAttribute attr : launch->getAttrs())
+        if (!replacement->hasAttr(attr.getName()))
+          replacement->setAttr(attr.getName(), attr.getValue());
+
+      if (launch->getNumResults() != replacement->getNumResults())
+        return launch.emitOpError(
+            "finalized graph changed launch result cardinality");
+      for (auto [oldResult, newResult] :
+           ::llvm::zip_equal(launch->getResults(), replacement->getResults())) {
+        if (oldResult.getType() != newResult.getType())
+          return launch.emitOpError("finalized graph changed launch result ")
+                 << oldResult.getResultNumber() << " type from "
+                 << oldResult.getType() << " to " << newResult.getType();
+        oldResult.replaceAllUsesWith(newResult);
+      }
+      launch.erase();
+    }
+    return ::mlir::success();
+  }
+
   ::mlir::LogicalResult finalizePublishedModule(::mlir::ModuleOp module) {
     ::llvm::SmallVector<::dataflow::GraphOp, 4> pending;
     for (auto graph : module.getOps<::dataflow::GraphOp>()) {
@@ -979,11 +1045,24 @@ struct LowerForToGraphPass
         staged.push_back(::mlir::cast<::dataflow::GraphOp>(
             builder.clone(*graph.getOperation())));
 
-      if (::mlir::failed(lowerPendingGraphs(*staging)))
+      ::llvm::SmallVector<::loom::lowering::GraphMemoryInputProjection, 4>
+          projections;
+      if (::mlir::failed(lowerPendingGraphs(*staging, projections)))
         return ::mlir::failure();
 
       for (auto [graph, finalized] : ::llvm::zip_equal(pending, staged)) {
-        finalized->moveBefore(graph);
+        ::dataflow::GraphOp finalizedGraph = finalized;
+        auto projection =
+            ::llvm::find_if(projections, [&](const auto &candidate) {
+              return candidate.graph == finalizedGraph;
+            });
+        if (projection == projections.end())
+          return finalizedGraph.emitError(
+              "graph memory finalization produced no input projection");
+        if (::mlir::failed(updateGraphLaunches(module, graph, finalizedGraph,
+                                               projection->sourceOrdinals)))
+          return ::mlir::failure();
+        finalizedGraph->moveBefore(graph);
         graph.erase();
       }
     }
@@ -996,7 +1075,10 @@ struct LowerForToGraphPass
     return ::mlir::success();
   }
 
-  ::mlir::LogicalResult lowerPendingGraphs(::mlir::ModuleOp module) {
+  ::mlir::LogicalResult lowerPendingGraphs(
+      ::mlir::ModuleOp module,
+      ::llvm::SmallVectorImpl<::loom::lowering::GraphMemoryInputProjection>
+          &projections) {
     // Stream endpoints temporarily retain channel block arguments in the
     // scratch module until graph-region lowering replaces them with ports.
     // The first canonicalizer owns the upstream memref.copy folds, so the
@@ -1010,8 +1092,10 @@ struct LowerForToGraphPass
     lowerer.addPass(::mlir::createCanonicalizerPass());
     lowerer.addPass(::loom::lowering::createExpandGraphMemrefCopyPass());
     lowerer.addPass(::mlir::createCanonicalizerPass());
-    lowerer.addPass(::loom::lowering::createLowerGraphMemoryPass());
-    if (::mlir::failed(lowerer.run(module)) || ::mlir::failed(verify(module)))
+    if (::mlir::failed(lowerer.run(module)) ||
+        ::mlir::failed(
+            ::loom::lowering::lowerGraphMemory(module, &projections)) ||
+        ::mlir::failed(verify(module)))
       return ::mlir::failure();
 
     ::mlir::PassManager finalizer(module.getContext());

@@ -72,12 +72,6 @@ std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
       value = cast.getSource();
       continue;
     }
-    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() != 1)
-        return {};
-      value = cast.getInputs().front();
-      continue;
-    }
     return {};
   }
   return {};
@@ -92,12 +86,6 @@ static std::optional<std::uint64_t> memoryRootIdForValue(SimulatorState &state,
       return root->second;
     if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
       value = cast.getSource();
-      continue;
-    }
-    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() != 1)
-        return std::nullopt;
-      value = cast.getInputs().front();
       continue;
     }
     return std::nullopt;

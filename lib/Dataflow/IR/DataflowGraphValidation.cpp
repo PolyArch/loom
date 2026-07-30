@@ -12,9 +12,9 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
 
 #include <cstdint>
@@ -75,12 +75,6 @@ bool isProtocolEstablishedMemory(dataflow::GraphOp graph, mlir::Value value) {
       value = mlir::cast<mlir::ViewLikeOpInterface>(def).getViewSource();
       continue;
     }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
-        return false;
-      value = cast.getInputs().front();
-      continue;
-    }
     return false;
   }
   return false;
@@ -98,29 +92,9 @@ bool isFreshMemoryRoot(mlir::Value value) {
       value = mlir::cast<mlir::ViewLikeOpInterface>(def).getViewSource();
       continue;
     }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
-        return false;
-      value = cast.getInputs().front();
-      continue;
-    }
     return false;
   }
   return false;
-}
-
-bool isCanonicalMemoryBridge(dataflow::GraphOp graph, mlir::Operation *op) {
-  auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op);
-  if (!cast || cast.getInputs().size() != 1 || cast.getResults().size() != 1)
-    return false;
-  mlir::Type inputType = cast.getInputs().front().getType();
-  mlir::Type resultType = cast.getResults().front().getType();
-  const bool inputPointer = mlir::isa<mlir::LLVM::LLVMPointerType>(inputType);
-  const bool resultPointer = mlir::isa<mlir::LLVM::LLVMPointerType>(resultType);
-  if (inputPointer == resultPointer || (!isMemoryCapabilityType(inputType) ||
-                                        !isMemoryCapabilityType(resultType)))
-    return false;
-  return isProtocolEstablishedMemory(graph, cast.getInputs().front());
 }
 
 bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
@@ -304,8 +278,9 @@ private:
   }
 
   bool reachesAnyResult(mlir::Operation *operation, unsigned state) {
-    return llvm::any_of(operation->getResults(),
-                        [&](mlir::Value result) { return reaches(result, state); });
+    return llvm::any_of(operation->getResults(), [&](mlir::Value result) {
+      return reaches(result, state);
+    });
   }
 
   bool compute(mlir::Value value, unsigned state) {
@@ -369,8 +344,8 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   std::optional<mlir::Value> insertedSelector;
   if (auto result = llvm::dyn_cast<mlir::OpResult>(witness)) {
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
-      auto [it, inserted] = selectorLanes.try_emplace(
-          demux.getSel(), result.getResultNumber());
+      auto [it, inserted] =
+          selectorLanes.try_emplace(demux.getSel(), result.getResultNumber());
       if (!inserted && it->second != result.getResultNumber())
         return false;
       if (inserted)
@@ -681,7 +656,7 @@ struct CardinalitySharedState {
   CardinalityAssumptionSetId
   internAssumptions(const llvm::DenseSet<mlir::Value> &assumptions) {
     llvm::SmallVector<mlir::Value, 8> normalized(assumptions.begin(),
-                                                assumptions.end());
+                                                 assumptions.end());
     llvm::sort(normalized, [](mlir::Value lhs, mlir::Value rhs) {
       return reinterpret_cast<std::uintptr_t>(lhs.getAsOpaquePointer()) <
              reinterpret_cast<std::uintptr_t>(rhs.getAsOpaquePointer());
@@ -707,7 +682,8 @@ struct CardinalitySharedState {
       selectedNestedActive;
 
 private:
-  static std::uint64_t hashAssumptions(llvm::ArrayRef<mlir::Value> assumptions) {
+  static std::uint64_t
+  hashAssumptions(llvm::ArrayRef<mlir::Value> assumptions) {
     llvm::hash_code hash = assumptions.size();
     for (mlir::Value assumption : assumptions)
       hash = llvm::hash_combine(hash, assumption.getAsOpaquePointer());
@@ -874,9 +850,10 @@ private:
     return branch.isExactOne(value);
   }
 
-  bool isExactOneWhenSelectedAndAligned(
-      mlir::Value value, mlir::Value selector, unsigned lane, mlir::Value phase,
-      mlir::Value assumption, bool truePhaseOnly) {
+  bool isExactOneWhenSelectedAndAligned(mlir::Value value, mlir::Value selector,
+                                        unsigned lane, mlir::Value phase,
+                                        mlir::Value assumption,
+                                        bool truePhaseOnly) {
     GraphCardinalityAnalysis branch(graph, sharedState);
     auto demuxes = graphIndex->demuxesBySelector.find(selector);
     if (demuxes != graphIndex->demuxesBySelector.end()) {
@@ -929,7 +906,7 @@ private:
             def))
       return false;
     if (!dataflow::isCanonicalDataflowActor(def) &&
-        !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
+        !llvm::isa<mlir::memref::CastOp>(def))
       return false;
     return llvm::all_of(def->getOperands(), [&](mlir::Value operand) {
       return availableWhenSelected(operand, selector, lane, visited);
@@ -1004,14 +981,14 @@ private:
       return false;
     }
     if (llvm::isa<dataflow::MuxOp>(def))
-      return isExactOneWhenSelectedAndAligned(
-          value, selector, lane, phase, assumption, truePhaseOnly);
+      return isExactOneWhenSelectedAndAligned(value, selector, lane, phase,
+                                              assumption, truePhaseOnly);
     if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp, dataflow::InvariantOp,
                   dataflow::GateOp, dataflow::ParallelizeOp, dataflow::PackOp,
                   dataflow::UnpackOp, dataflow::SerializeOp>(def))
       return false;
     if (!dataflow::isCanonicalDataflowActor(def) &&
-        !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
+        !llvm::isa<mlir::memref::CastOp>(def))
       return false;
     bool hasSelectedOperand = false;
     for (mlir::Value operand : def->getOperands()) {
@@ -1379,8 +1356,7 @@ private:
                     dataflow::DemuxOp>(def))
         return false;
       if (!dataflow::isCanonicalDataflowActor(def) &&
-          !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(
-              def))
+          !llvm::isa<mlir::memref::CastOp>(def))
         return false;
 
       bool hasRequiredOperand = false;
@@ -1573,9 +1549,6 @@ private:
       return true;
     if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(def))
       return isExactOne(cast.getSource());
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def))
-      return llvm::all_of(cast.getInputs(),
-                          [&](mlir::Value input) { return isExactOne(input); });
     if (dataflow::isCanonicalDataflowActor(def))
       return allOperandsExact(def);
     return false;
@@ -1656,31 +1629,20 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
           op->getName().getStringRef() + "'");
       return mlir::WalkResult::interrupt();
     }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
-      bool hasMemoryCapability =
-          llvm::any_of(cast.getInputs(),
-                       [](mlir::Value value) {
-                         return isMemoryCapabilityType(value.getType());
-                       }) ||
-          llvm::any_of(cast.getResults(), [](mlir::Value value) {
-            return isMemoryCapabilityType(value.getType());
-          });
-      if (hasMemoryCapability && !isCanonicalMemoryBridge(graph, op)) {
-        structuralError = graphError(
-            "finalized graph contains unsupported memory capability bridge");
-        return mlir::WalkResult::interrupt();
-      }
+    if (llvm::isa<mlir::UnrealizedConversionCastOp>(op)) {
+      structuralError =
+          graphError("finalized graph contains forbidden operation "
+                     "'builtin.unrealized_conversion_cast'");
+      return mlir::WalkResult::interrupt();
     }
-    if (hasRawPointerUse(op) && !llvm::isa<GraphReturnOp>(op) &&
-        !isCanonicalMemoryBridge(graph, op)) {
+    if (hasRawPointerUse(op)) {
       structuralError = graphError(
           llvm::Twine("finalized graph contains residual pointer operation '") +
           op->getName().getStringRef() + "'");
       return mlir::WalkResult::interrupt();
     }
     if (llvm::any_of(op->getResultTypes(), isMemoryCapabilityType) &&
-        !llvm::isa<mlir::memref::AllocOp>(op) && !isSupportedMemoryView(op) &&
-        !isCanonicalMemoryBridge(graph, op)) {
+        !llvm::isa<mlir::memref::AllocOp>(op) && !isSupportedMemoryView(op)) {
       structuralError = graphError(
           llvm::Twine("finalized graph contains unsupported memory capability "
                       "producer '") +
@@ -1688,8 +1650,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
       return mlir::WalkResult::interrupt();
     }
     if (!dataflow::isCanonicalDataflowActor(op) &&
-        !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op) &&
-        !isCanonicalMemoryBridge(graph, op)) {
+        !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op)) {
       structuralError = graphError(
           llvm::Twine("finalized graph contains unregistered actor '") +
           op->getName().getStringRef() + "'");
@@ -1702,8 +1663,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 
   bool hasRealWork =
       llvm::any_of(entry.without_terminator(), [&](mlir::Operation &op) {
-        return !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op) &&
-               !isCanonicalMemoryBridge(graph, &op);
+        return !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op);
       });
   if (hasRealWork && llvm::is_contained(ret.getComplete(), graph.getStart()))
     return graphError(

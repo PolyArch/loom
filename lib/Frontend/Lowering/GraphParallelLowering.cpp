@@ -249,13 +249,6 @@ public:
         value = gep.getBase();
         continue;
       }
-      if (auto cast =
-              ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
-        if (cast.getInputs().size() != 1)
-          return std::nullopt;
-        value = cast.getInputs().front();
-        continue;
-      }
       return std::nullopt;
     }
     return std::nullopt;
@@ -458,9 +451,9 @@ private:
     return std::nullopt;
   }
 
-  std::optional<LinearExpression>
-  projectIndexCast(::mlir::Value input, ::mlir::Type resultType,
-                   bool unsignedExtension) {
+  std::optional<LinearExpression> projectIndexCast(::mlir::Value input,
+                                                   ::mlir::Type resultType,
+                                                   bool unsignedExtension) {
     auto sourceWidth = integerWidth(input.getType());
     auto destinationWidth = integerWidth(resultType);
     auto expression = build(input);
@@ -727,10 +720,9 @@ bool hasRepresentableCanonicalElementArithmetic(
         evaluateLaneConstant(term.index, point).sextOrTrunc(comparisonWidth);
     if (term.exactSignedDivideShift != 0)
       contribution = contribution.ashr(term.exactSignedDivideShift);
-    contribution *=
-        ::llvm::APInt(comparisonWidth,
-                      static_cast<std::uint64_t>(term.elementScale),
-                      /*isSigned=*/true);
+    contribution *= ::llvm::APInt(comparisonWidth,
+                                  static_cast<std::uint64_t>(term.elementScale),
+                                  /*isSigned=*/true);
     if (!contribution.isSignedIntN(canonicalWidth))
       return false;
     result += contribution;
@@ -911,25 +903,25 @@ struct ParallelCheckInfo {
             return access->op->emitError(
                 "loom-lower-graph-memory: LLVM byte address has no affine "
                 "lane projection");
-          address.terms.push_back(
-              {std::move(*expression), byteTerm.byteStride,
-               elementTerm.scale, elementTerm.exactSignedDivideShift});
+          address.terms.push_back({std::move(*expression), byteTerm.byteStride,
+                                   elementTerm.scale,
+                                   elementTerm.exactSignedDivideShift});
         }
         byteAddresses.push_back(std::move(address));
       }
 
       if (!info.domain) {
-        if (::llvm::any_of(byteAddresses, [](const ByteAccessExpression &value) {
-              return !value.exactCanonicalElementProjection;
-            }))
+        if (::llvm::any_of(byteAddresses,
+                           [](const ByteAccessExpression &value) {
+                             return !value.exactCanonicalElementProjection;
+                           }))
           return info.op->emitError(
               "loom-lower-graph-memory: dynamic LLVM element address has no "
               "exact canonical-index projection");
         if (rootWrites && !rootAtomic &&
             (byteAddresses.size() != 1 ||
-             !hasDynamicByteLaneSeparation(byteAddresses.front(),
-                                           inductionVars.size(),
-                                           comparisonWidth)))
+             !hasDynamicByteLaneSeparation(
+                 byteAddresses.front(), inductionVars.size(), comparisonWidth)))
           return info.op->emitError(
               "loom-lower-graph-memory: dynamic parallel LLVM memory effect "
               "has no exact byte-disjoint lane projection");

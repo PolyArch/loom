@@ -90,7 +90,10 @@ llvm::Expected<Ref> decodeDataflowArtifactLocalReference(
       reference.artifact.schemaVersion != canonicalDataflowSchema.version)
     return makeDataflowReferenceError(
         DataflowReferenceErrorKind::ForeignArtifact,
-        "the local reference is not owned by loom.canonical_dataflow 1.0");
+        llvm::Twine("the local reference is not owned by ") +
+            canonicalDataflowSchema.identity + " " +
+            llvm::Twine(canonicalDataflowSchema.version.major) + "." +
+            llvm::Twine(canonicalDataflowSchema.version.minor));
 
   const std::uint32_t expected = dataflowArtifactLocalReferenceKindOrdinal(
       DataflowArtifactLocalReferenceKindTraits<Ref>::kind);

@@ -24,25 +24,22 @@
 // CHECK: dataflow.graph.return
 dataflow.graph private @g_conditional_store_result_loop(
     %ctrl: none, %lb: i64, %ub: i64, %step: i64, %zero: i32,
-    %one: i32, %init: i32, %input: !llvm.ptr, %output: !llvm.ptr)
+    %one: i32, %init: i32, %input: memref<?xi32>,
+    %output: memref<?xi32>)
     -> (i32)
     attributes {input_segments = array<i32: 6, 0, 2>,
                 result_segments = array<i32: 1, 0, 0>} {
   %r = scf.for %i = %lb to %ub step %step iter_args(%cursor = %init)
       -> (i32) : i64 {
-    %in_mem = builtin.unrealized_conversion_cast %input
-        : !llvm.ptr to memref<?xi32>
     %in_idx = arith.index_cast %i : i64 to index
-    %data, %done = dataflow.load %in_mem[%in_idx] %ctrl : memref<?xi32>
+    %data, %done = dataflow.load %input[%in_idx] %ctrl : memref<?xi32>
     %is_zero = arith.cmpi eq, %data, %zero : i32
     %next = scf.if %is_zero -> (i32) {
       scf.yield %cursor : i32
     } else {
       %cursor64 = arith.extui %cursor : i32 to i64
-      %out_mem = builtin.unrealized_conversion_cast %output
-          : !llvm.ptr to memref<?xi32>
       %out_idx_pre = arith.index_cast %cursor64 : i64 to index
-      %store = dataflow.store %out_mem[%out_idx_pre] %data %ctrl
+      %store = dataflow.store %output[%out_idx_pre] %data %ctrl
           : memref<?xi32>
       %inc = arith.addi %cursor, %one : i32
       scf.yield %inc : i32
@@ -71,23 +68,20 @@ dataflow.graph private @g_conditional_store_result_loop(
 // CHECK: dataflow.graph.return
 dataflow.graph private @g_conditional_store_result_then_loop(
     %ctrl: none, %lb: i64, %ub: i64, %step: i64, %zero: i32,
-    %one: i32, %init: i32, %input: !llvm.ptr, %output: !llvm.ptr)
+    %one: i32, %init: i32, %input: memref<?xi32>,
+    %output: memref<?xi32>)
     -> (i32)
     attributes {input_segments = array<i32: 6, 0, 2>,
                 result_segments = array<i32: 1, 0, 0>} {
   %r = scf.for %i = %lb to %ub step %step iter_args(%cursor = %init)
       -> (i32) : i64 {
-    %in_mem = builtin.unrealized_conversion_cast %input
-        : !llvm.ptr to memref<?xi32>
     %in_idx = arith.index_cast %i : i64 to index
-    %data, %done = dataflow.load %in_mem[%in_idx] %ctrl : memref<?xi32>
+    %data, %done = dataflow.load %input[%in_idx] %ctrl : memref<?xi32>
     %is_zero = arith.cmpi eq, %data, %zero : i32
     %next = scf.if %is_zero -> (i32) {
       %cursor64 = arith.extui %cursor : i32 to i64
-      %out_mem = builtin.unrealized_conversion_cast %output
-          : !llvm.ptr to memref<?xi32>
       %out_idx_pre = arith.index_cast %cursor64 : i64 to index
-      %store = dataflow.store %out_mem[%out_idx_pre] %data %ctrl
+      %store = dataflow.store %output[%out_idx_pre] %data %ctrl
           : memref<?xi32>
       %inc = arith.addi %cursor, %one : i32
       scf.yield %inc : i32

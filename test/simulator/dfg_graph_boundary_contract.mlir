@@ -6,8 +6,6 @@
 // RUN: FileCheck %s --check-prefix=MEMORY < %t.memory.json
 // RUN: loom-dfg-sim %s --graph view_memory_export --memref 0=2,5 --output %t.view.json
 // RUN: FileCheck %s --check-prefix=VIEW < %t.view.json
-// RUN: loom-dfg-sim %s --graph pointer_memory_export --memref 0=2,5 --output %t.pointer.json
-// RUN: FileCheck %s --check-prefix=POINTER < %t.pointer.json
 // RUN: loom-dfg-sim %s --graph fresh_memory_export --arg 0=7 --output %t.fresh.json
 // RUN: FileCheck %s --check-prefix=FRESH < %t.fresh.json
 // RUN: loom-dfg-sim %s --graph fresh_memory_export --invocations 2 --arg 0=7 --arg 0=9 --output %t.fresh-reentry.json
@@ -47,10 +45,6 @@
 // VIEW-NEXT: "i32:2"
 // VIEW-NEXT: "i32:5"
 // VIEW: "status": "pass"
-
-// POINTER: "arg0": "memory_root0"
-// POINTER: "memory_result0": "memory_root0"
-// POINTER: "status": "pass"
 
 // FRESH: "memory_result0": [
 // FRESH-NEXT: "i32:7"
@@ -126,14 +120,6 @@ module {
     %view = memref.cast %memory : memref<2xi32> to memref<?xi32>
     dataflow.graph.return values() streams()
         memories(%view : memref<?xi32>) complete(%start : none)
-  }
-
-  dataflow.graph private @pointer_memory_export(
-      %start: none, %memory: !llvm.ptr) -> (!llvm.ptr)
-      attributes {input_segments = array<i32: 0, 0, 1>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    dataflow.graph.return values() streams()
-        memories(%memory : !llvm.ptr) complete(%start : none)
   }
 
   dataflow.graph private @fresh_memory_export(

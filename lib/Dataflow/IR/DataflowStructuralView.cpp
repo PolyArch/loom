@@ -58,15 +58,10 @@ bool isMemoryCapability(Type type) {
          DataflowDialect::containsMemoryCapability(type);
 }
 
-// The viewed base of a root-preserving memory view op (a memref.cast or a
-// one-input memory unrealized_conversion_cast bridge), or a null Value.
+// The viewed base of a root-preserving memory view op, or a null Value.
 Value viewBase(Operation *op) {
   if (auto cast = dyn_cast<memref::CastOp>(op))
     return cast.getOperand();
-  if (auto bridge = dyn_cast<UnrealizedConversionCastOp>(op))
-    if (bridge->getNumOperands() == 1 && bridge->getNumResults() == 1 &&
-        isMemoryCapability(bridge->getResult(0).getType()))
-      return bridge->getOperand(0);
   return Value();
 }
 
@@ -478,12 +473,20 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
           return invalid(
               "canonical dataflow: graph memory formal has no launch "
               "binding");
-        llvm::Expected<unsigned> role =
-            resolveThreadValue(launch.getMemoryInputs()[j]);
+        Value actual = launch.getMemoryInputs()[j];
+        llvm::Expected<unsigned> role = resolveThreadValue(actual);
         if (!role)
           return role.takeError();
-        siteCache[m] = *role;
-        return *role;
+        if (actual.getType() == arg.getType()) {
+          siteCache[m] = *role;
+          return *role;
+        }
+        // A pointer-valued thread ABI binding to a canonical graph memref is
+        // one launch-owned imported view under the pointer's logical root.
+        // GraphLaunchOp verification owns the exact admissible type relation.
+        unsigned viewRole = makeViewRole(rootSlotOf(*role));
+        siteCache[m] = viewRole;
+        return viewRole;
       }
       if (Operation *def = m.getDefiningOp())
         if (Value base = viewBase(def)) {
@@ -505,6 +508,12 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
         }
       return invalid("canonical dataflow: unresolved graph memory value role");
     };
+    for (unsigned ordinal = 0; ordinal < static_cast<unsigned>(inSeg[2]);
+         ++ordinal)
+      if (llvm::Expected<unsigned> idx = resolveInContext(
+              graph.getBody().front().getArgument(firstMemory + ordinal));
+          !idx)
+        return idx.takeError();
     if (auto it = graphBodyViews.find(graph.getOperation());
         it != graphBodyViews.end())
       for (Value v : it->second)

@@ -53,29 +53,6 @@ dataflow.graph private @frontier_boundary_args_may_alias(
 
 // -----
 
-// CHECK-LABEL: dataflow.graph private @frontier_unknown
-// CHECK: %[[UNKNOWN:.*]] = builtin.unrealized_conversion_cast %arg3, %arg4 : memref<?xi32>, memref<?xi32> to memref<?xi32>
-// CHECK: %[[RA:.*]], %[[DA:.*]] = dataflow.load %arg3[%arg1] %arg0 : memref<?xi32>
-// CHECK: %[[RB:.*]], %[[DB:.*]] = dataflow.load %arg4[%arg1] %arg0 : memref<?xi32>
-// CHECK: %[[READS:.*]]:2 = dataflow.sync %[[DA]], %[[DB]] : (none, none) -> (none, none)
-// CHECK: %[[WRITE:.*]] = dataflow.store %[[UNKNOWN]][%arg1] %arg2 %[[READS]]#0 : memref<?xi32>
-// CHECK: dataflow.load %arg3[%arg1] %[[WRITE]] : memref<?xi32>
-dataflow.graph private @frontier_unknown(
-    %start: none, %index: index, %value: i32,
-    %a: memref<?xi32>, %b: memref<?xi32>) -> ()
-    attributes {input_segments = array<i32: 2, 0, 2>,
-                result_segments = array<i32: 0, 0, 0>} {
-  %unknown = builtin.unrealized_conversion_cast %a, %b
-      : memref<?xi32>, memref<?xi32> to memref<?xi32>
-  %ra = memref.load %a[%index] : memref<?xi32>
-  %rb = memref.load %b[%index] : memref<?xi32>
-  memref.store %value, %unknown[%index] : memref<?xi32>
-  %after = memref.load %a[%index] : memref<?xi32>
-  dataflow.graph.return %start : none
-}
-
-// -----
-
 // CHECK-LABEL: dataflow.graph private @frontier_if_identity
 // CHECK: %[[E:.*]]:2 = dataflow.demux %arg1, %arg0 : (i1, none) -> (none, none)
 // CHECK: %[[W:.*]]:2 = dataflow.demux %arg1, %arg0 : (i1, none) -> (none, none)
@@ -402,21 +379,4 @@ dataflow.graph private @frontier_nested_for_if(
     }
   }
   dataflow.graph.return %start : none
-}
-
-// -----
-
-// Pointer payloads are graph-boundary capability bookkeeping. Their
-// establishment is covered by the structural frontier, but the pointer itself
-// must not become a transport-bearing typed sync.
-
-// CHECK-LABEL: dataflow.graph private @frontier_pointer_payload
-// CHECK-NOT: dataflow.sync {{.*}}!llvm.ptr
-// CHECK: dataflow.graph.return values() streams() memories(%arg1 : !llvm.ptr) complete(%arg0 : none)
-dataflow.graph private @frontier_pointer_payload(
-    %start: none, %pointer: !llvm.ptr) -> (!llvm.ptr)
-    attributes {input_segments = array<i32: 0, 0, 1>,
-                result_segments = array<i32: 0, 0, 1>} {
-  dataflow.graph.return values() streams() memories(%pointer : !llvm.ptr)
-      complete(%start : none)
 }

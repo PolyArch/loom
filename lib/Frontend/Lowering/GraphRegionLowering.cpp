@@ -50,9 +50,8 @@ namespace {
 // them as ordinary frontier values rather than rewriting them, so they carry
 // no completion event of their own.
 bool isGraphMemoryAddressLeaf(::mlir::Operation *op) {
-  return ::llvm::isa<::mlir::UnrealizedConversionCastOp, ::mlir::memref::CastOp,
-                     ::mlir::memref::GetGlobalOp, ::mlir::LLVM::AddressOfOp,
-                     ::mlir::LLVM::GEPOp>(op);
+  return ::llvm::isa<::mlir::memref::CastOp, ::mlir::memref::GetGlobalOp,
+                     ::mlir::LLVM::AddressOfOp, ::mlir::LLVM::GEPOp>(op);
 }
 
 // The graph frontier: the entry block of the enclosing `dataflow.graph` body.
@@ -588,13 +587,6 @@ private:
         value = view.getViewSource();
         continue;
       }
-      if (auto cast =
-              ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
-        if (cast.getInputs().size() != 1)
-          return std::nullopt;
-        value = cast.getInputs().front();
-        continue;
-      }
       return std::nullopt;
     }
     return std::nullopt;
@@ -622,13 +614,6 @@ private:
         return true;
       if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
         value = view.getViewSource();
-        continue;
-      }
-      if (auto cast =
-              ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
-        if (cast.getInputs().size() != 1)
-          return true;
-        value = cast.getInputs().front();
         continue;
       }
       if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {

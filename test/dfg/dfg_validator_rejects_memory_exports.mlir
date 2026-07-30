@@ -3,12 +3,10 @@
 // RUN: not loom-dfg-sim %t.dir/post-done.mlir --graph post_done_state --output %t.post.json 2>&1 | FileCheck %s --check-prefix=POST
 // RUN: not loom-dfg-sim %t.dir/dynamic.mlir --graph invalid_dynamic_memory_export --arg 0=13 --output %t.dynamic.json 2>&1 | FileCheck %s --check-prefix=DYNAMIC
 // RUN: not loom-dfg-sim %t.dir/import.mlir --graph invalid_memory_export --output %t.import.json 2>&1 | FileCheck %s --check-prefix=IMPORT
-// RUN: not loom-dfg-sim %t.dir/pointer.mlir --graph invalid_fresh_pointer_export --output %t.pointer.json 2>&1 | FileCheck %s --check-prefix=POINTER
 
 // POST: retirement frontier does not cover close/reset of 'dataflow.stream'
 // DYNAMIC: memref.alloc dynamic extent must be a graph value input
 // IMPORT: nontrivial graph uses raw start as a retirement completion witness
-// POINTER: fresh memory export must use a memref result
 
 //--- post-done.mlir
 module {
@@ -50,18 +48,5 @@ module {
     %unused = dataflow.constant %start {const_value = 1 : i32} : i32
     dataflow.graph.return values() streams()
         memories(%memory : memref<?xi32>) complete(%start : none)
-  }
-}
-
-//--- pointer.mlir
-module {
-  dataflow.graph private @invalid_fresh_pointer_export(%start: none)
-      -> !llvm.ptr
-      attributes {input_segments = array<i32: 0, 0, 0>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %slot = memref.alloc() : memref<1xi32>
-    %raw = builtin.unrealized_conversion_cast %slot : memref<1xi32> to !llvm.ptr
-    dataflow.graph.return values() streams()
-        memories(%raw : !llvm.ptr) complete(%start : none)
   }
 }
