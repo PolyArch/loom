@@ -580,24 +580,48 @@ llvm::Error registerStructuredFabricAnalyticModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
-llvm::Expected<PreparedStructuredFabricEvaluation>
-prepareStructuredFabricEvaluation(
-    const ArtifactRootReference &structuredProgram,
+llvm::Expected<StructuredFabricAnalyticRequestContext>
+prepareStructuredFabricAnalyticInvocation(
+    llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot> structuredPrograms,
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactRootReference &runtimeInput,
     const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerStructuredFabricAnalyticModel())
     return std::move(error);
+  if (structuredPrograms.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: analytic invocation has no "
+        "Structured candidates");
 
-  auto modelBinding =
-      ResolvedModelBinding::project(kModelDescriptor.reference(), {}, config);
-  if (!modelBinding)
-    return modelBinding.takeError();
-  auto program =
-      frontend::importStructuredProgram(structuredProgram, artifactStore);
-  if (!program)
-    return program.takeError();
+  std::vector<ArtifactRootReference> candidates;
+  candidates.reserve(structuredPrograms.size());
+  for (const StructuredFabricAnalyticCandidateRoot &root : structuredPrograms) {
+    if (!root.candidate ||
+        root.reference.schemaIdentity !=
+            frontend::structuredProgramArtifactSchema.identity ||
+        root.reference.schemaVersion !=
+            frontend::structuredProgramArtifactSchema.version ||
+        root.reference.artifact != root.candidate->identity())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: analytic invocation contains an "
+          "unsealed or foreign Structured candidate");
+    auto stored = artifactStore.get(root.reference);
+    if (!stored)
+      return stored.takeError();
+    if (!stored->bytes().equals(root.candidate->canonicalBytes().bytes()))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: published candidate bytes differ "
+          "from the sealed owner view");
+    candidates.push_back(root.reference);
+  }
+  llvm::sort(candidates, artifactRootReferenceLess);
+  candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                   candidates.end());
+
   auto inputs = sim::importStructuredProgramSimulationInputs(
       workload, runtimeInput, artifactStore);
   if (!inputs)
@@ -607,22 +631,71 @@ prepareStructuredFabricEvaluation(
       frontend::structuredProgramArtifactSchema.version,
       inputs->structuredProgram.identity()};
 
+  std::vector<CaseArtifactResolution::Entry> additionalEntries;
+  additionalEntries.reserve(candidates.size() + 3);
+  additionalEntries.push_back({sourceReference, {}});
+  additionalEntries.push_back({workload, {sourceReference}});
+  additionalEntries.push_back({runtimeInput, {sourceReference, workload}});
+  for (const ArtifactRootReference &candidate : candidates)
+    additionalEntries.push_back({candidate, {}});
+
   auto resolution = detail::resolveSingleSubjectFabricCase(
-      structuredProgram, fabricReference, artifactStore,
-      {{sourceReference, {}},
-       {workload, {sourceReference}},
-       {runtimeInput, {sourceReference, workload}}});
+      candidates.front(), fabricReference, artifactStore, additionalEntries);
   if (!resolution)
     return resolution.takeError();
+  return StructuredFabricAnalyticRequestContext(
+      std::move(candidates), fabricReference, workload, runtimeInput,
+      std::move(*resolution));
+}
+
+llvm::Expected<PreparedStructuredFabricEvaluation>
+prepareStructuredFabricEvaluation(
+    const ArtifactRootReference &structuredProgram,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore) {
+  auto program =
+      frontend::importStructuredProgram(structuredProgram, artifactStore);
+  if (!program)
+    return program.takeError();
+  auto invocation = prepareStructuredFabricAnalyticInvocation(
+      {{structuredProgram, &*program}}, fabricReference, workload, runtimeInput,
+      artifactStore);
+  if (!invocation)
+    return invocation.takeError();
+  return prepareStructuredFabricEvaluation(structuredProgram, *invocation,
+                                           config, artifactStore);
+}
+
+llvm::Expected<PreparedStructuredFabricEvaluation>
+prepareStructuredFabricEvaluation(
+    const ArtifactRootReference &structuredProgram,
+    const StructuredFabricAnalyticRequestContext &invocation,
+    const ResolvedConfig &config, const ArtifactStore &artifactStore) {
+  if (llvm::Error error = registerStructuredFabricAnalyticModel())
+    return std::move(error);
+  if (!std::binary_search(invocation.candidates_.begin(),
+                          invocation.candidates_.end(), structuredProgram,
+                          artifactRootReferenceLess))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: candidate is outside the analytic "
+        "invocation");
+
+  auto modelBinding =
+      ResolvedModelBinding::project(kModelDescriptor.reference(), {}, config);
+  if (!modelBinding)
+    return modelBinding.takeError();
 
   auto bindings = EvaluationSubjectBindings::get(
       {{kStructuredProgramRole, {structuredProgram}},
-       {kFabricRole, {fabricReference}}});
+       {kFabricRole, {invocation.fabric_}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase =
-      EvaluationCase::get(caseSignatureRef(), std::move(*bindings), workload,
-                          runtimeInput, {}, *resolution, artifactStore);
+  auto evaluationCase = EvaluationCase::get(
+      caseSignatureRef(), std::move(*bindings), invocation.workload_,
+      invocation.runtimeInput_, {}, invocation.resolution_, artifactStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   std::vector<MetricRequest> metrics;
@@ -630,21 +703,21 @@ prepareStructuredFabricEvaluation(
   for (const MetricCapability &capability : kMetricCapabilities) {
     auto metric = MetricRequest::get(
         MetricQuery{capability.kind, EvaluationScope{ScopeFormRef(0), {}}}, {},
-        *evaluationCase, *resolution, artifactStore);
+        *evaluationCase, invocation.resolution_, artifactStore);
     if (!metric)
       return metric.takeError();
     metrics.push_back(std::move(*metric));
   }
   auto request = EvaluationRequest::get(*evaluationCase, metrics, {},
                                         std::move(*modelBinding), 0,
-                                        *resolution, artifactStore);
+                                        invocation.resolution_, artifactStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);
   if (!published)
     return published.takeError();
   return PreparedStructuredFabricEvaluation{
-      std::move(*request), std::move(*resolution), kStructuredProgramRole};
+      std::move(*request), invocation.resolution_, kStructuredProgramRole};
 }
 
 llvm::Error primeStructuredFabricAnalyticResult(
@@ -667,14 +740,18 @@ llvm::Error primeStructuredFabricAnalyticResult(
     return stored.takeError();
   if (auto stored = artifactStore.get(fabricRoot.reference()); !stored)
     return stored.takeError();
-  auto inputs = sim::importStructuredProgramSimulationInputs(
-      invocation.workload, invocation.runtimeInput, artifactStore);
-  if (!inputs)
-    return inputs.takeError();
-  if (inputs->structuredProgram.identity() !=
-          invocation.sourceProgram.identity() ||
-      inputs->workload.identity() != invocation.workload.artifact ||
-      inputs->runtimeInput.identity() != invocation.runtimeInput.artifact)
+  const sim::StructuredProgramSimulationWorkload *workload =
+      invocation.simulationWorkload.structuredProgram();
+  const sim::StructuredProgramSimulationRuntimeInput *runtimeInput =
+      invocation.simulationRuntimeInput.structuredProgram();
+  if (!workload || !runtimeInput ||
+      invocation.simulationWorkload.identity() !=
+          invocation.workload.artifact ||
+      invocation.simulationRuntimeInput.identity() !=
+          invocation.runtimeInput.artifact ||
+      workload->entryRef.parent != invocation.sourceProgram.identity() ||
+      runtimeInput->workloadIdentity !=
+          invocation.simulationWorkload.identity())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: invocation input mismatch");

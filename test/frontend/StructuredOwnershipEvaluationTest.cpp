@@ -644,6 +644,28 @@ void runEvaluationAnchor() {
                                                     store));
   const loom::ArtifactRootReference dataflowRef = take(
       dataflow::publishCanonicalDataflow(spatial.canonicalDataflow, store));
+
+  auto analyticInvocation =
+      take(loom::evaluation::models::prepareStructuredFabricAnalyticInvocation(
+          {{baselineRef, &compiled.structuredProgram},
+           {spatialRef, &spatial.structuredProgram}},
+          design.roots().front().reference(), inputs.workloadReference,
+          inputs.runtimeInputReference, store));
+  auto strictSpatialEvaluation =
+      take(loom::evaluation::models::prepareStructuredFabricEvaluation(
+          spatialRef, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference,
+          loom::defaultResolvedConfig(), store));
+  auto reusedSpatialEvaluation =
+      take(loom::evaluation::models::prepareStructuredFabricEvaluation(
+          spatialRef, analyticInvocation, loom::defaultResolvedConfig(),
+          store));
+  if (loom::evaluation::evaluationRequestReference(
+          strictSpatialEvaluation.request) !=
+      loom::evaluation::evaluationRequestReference(
+          reusedSpatialEvaluation.request))
+    fail("invocation-local analytic resolution changed Request identity");
+
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
       compiled.structuredProgram, spatialScope, spatialDecision, spatial,
       inputs.workload, inputs.runtimeInput,
@@ -727,8 +749,12 @@ void runEvaluationAnchor() {
               store))
     fail(llvm::toString(std::move(error)));
   const loom::evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      inputs.workloadReference, inputs.runtimeInputReference,
-      compiled.structuredProgram, inputs.observations};
+      inputs.workloadReference,
+      inputs.runtimeInputReference,
+      inputs.workload,
+      inputs.runtimeInput,
+      compiled.structuredProgram,
+      inputs.observations};
   if (llvm::Error error =
           loom::evaluation::models::primeStructuredFabricAnalyticResult(
               baselineRef, {compiled.structuredProgram, nullptr, std::nullopt},

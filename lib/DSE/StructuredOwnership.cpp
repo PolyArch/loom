@@ -39,7 +39,8 @@ struct OwnershipWorkItem final {
 };
 
 struct MaterializedOwnershipWorkItem final {
-  ArtifactRootReference candidate;
+  ArtifactRootReference reference;
+  frontend::MaterializedOwnershipCandidate candidate;
 };
 
 using OwnershipAttemptResult =
@@ -86,7 +87,8 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
   if (!reference)
     return reference.takeError();
   const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      workloadReference, runtimeInputReference, parent, sourceObservations};
+      workloadReference, runtimeInputReference, workload, runtimeInput, parent,
+      sourceObservations};
   if (llvm::Error error =
           evaluation::models::primeStructuredFabricAnalyticResult(
               *reference,
@@ -94,8 +96,8 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
                workItem.scope.selection},
               invocation, fabric, config, artifactStore))
     return std::move(error);
-  return OwnershipAttemptResult{
-      MaterializedOwnershipWorkItem{std::move(*reference)}};
+  return OwnershipAttemptResult{MaterializedOwnershipWorkItem{
+      std::move(*reference), std::move(*candidate)}};
 }
 
 } // namespace
@@ -137,7 +139,12 @@ generateAndPromoteStructuredOwnership(
   if (!sourceObservations)
     return sourceObservations.takeError();
   const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-      *workloadReference, *runtimeInputReference, parent, *sourceObservations};
+      *workloadReference,
+      *runtimeInputReference,
+      workload,
+      runtimeInput,
+      parent,
+      *sourceObservations};
   if (llvm::Error error =
           evaluation::models::primeStructuredFabricAnalyticResult(
               *parentReference,
@@ -272,6 +279,10 @@ generateAndPromoteStructuredOwnership(
 
   const std::size_t workerCount =
       std::min<std::size_t>(options.candidateWorkerCount, workItems.size());
+  // Finalized Dataflow modules produced by a worker borrow that worker's MLIR
+  // context. Keep the immutable worker parents alive for the complete DSE
+  // invocation so retained typed candidates remain valid until selection.
+  std::vector<frontend::StructuredProgramCandidate> workerParents;
   if (workerCount <= 1) {
     for (std::size_t index = 0; index < workItems.size(); ++index)
       execute(parent, index);
@@ -280,7 +291,6 @@ generateAndPromoteStructuredOwnership(
     // thread-confined MLIRContext. Explicit DSE parallelism must not depend on
     // enabling an MLIRContext's implicit all-host thread pool or concurrently
     // mutate IR interned in another worker's context.
-    std::vector<frontend::StructuredProgramCandidate> workerParents;
     workerParents.reserve(workerCount);
     for (std::size_t worker = 0; worker < workerCount; ++worker) {
       auto imported = frontend::importStructuredProgram(
@@ -317,6 +327,9 @@ generateAndPromoteStructuredOwnership(
 
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   dispositions.reserve(plannedDispositions.size());
+  std::map<ArtifactRootReference, frontend::MaterializedOwnershipCandidate,
+           decltype(&artifactRootReferenceLess)>
+      materializedCandidates(&artifactRootReferenceLess);
   for (const PlannedDisposition &planned : plannedDispositions) {
     if (const auto *rejection =
             std::get_if<StructuredOwnershipCandidateRejectionRecord>(
@@ -327,11 +340,13 @@ generateAndPromoteStructuredOwnership(
     const std::size_t workIndex = std::get<std::size_t>(planned.source);
     if (workIndex >= results.size() || !results[workIndex].attempt)
       return invalid("candidate work completed without a disposition");
-    const OwnershipAttemptResult &attempt = *results[workIndex].attempt;
-    if (const auto *materialized =
+    OwnershipAttemptResult &attempt = *results[workIndex].attempt;
+    if (auto *materialized =
             std::get_if<MaterializedOwnershipWorkItem>(&attempt)) {
-      candidateReferences.push_back(materialized->candidate);
-      dispositions.push_back({planned.coordinate, materialized->candidate});
+      candidateReferences.push_back(materialized->reference);
+      dispositions.push_back({planned.coordinate, materialized->reference});
+      materializedCandidates.try_emplace(materialized->reference,
+                                         std::move(materialized->candidate));
     } else {
       dispositions.push_back(
           {planned.coordinate,
@@ -344,13 +359,34 @@ generateAndPromoteStructuredOwnership(
   if (!candidateSet)
     return candidateSet.takeError();
 
+  std::vector<evaluation::models::StructuredFabricAnalyticCandidateRoot>
+      analyticCandidates;
+  analyticCandidates.reserve(candidateSet->candidates().size());
+  for (const ArtifactRootReference &candidate : candidateSet->candidates()) {
+    if (candidate == *parentReference) {
+      analyticCandidates.push_back({candidate, &parent});
+      continue;
+    }
+    auto materialized = materializedCandidates.find(candidate);
+    if (materialized == materializedCandidates.end())
+      return invalid("analytic ownership candidate has no retained "
+                     "materialization");
+    analyticCandidates.push_back(
+        {candidate, &materialized->second.structuredProgram});
+  }
+  auto analyticInvocation =
+      evaluation::models::prepareStructuredFabricAnalyticInvocation(
+          analyticCandidates, fabric.reference(), *workloadReference,
+          *runtimeInputReference, artifactStore);
+  if (!analyticInvocation)
+    return analyticInvocation.takeError();
+
   std::vector<PromotionEvidence> costEvidence;
   costEvidence.reserve(candidateSet->candidates().size());
   std::optional<evaluation::CaseSubjectRoleRef> costCandidateRole;
   for (const ArtifactRootReference &candidate : candidateSet->candidates()) {
     auto prepared = evaluation::models::prepareStructuredFabricEvaluation(
-        candidate, fabric.reference(), *workloadReference,
-        *runtimeInputReference, config, artifactStore);
+        candidate, *analyticInvocation, config, artifactStore);
     if (!prepared)
       return prepared.takeError();
     if (costCandidateRole && *costCandidateRole != prepared->candidateRole)
@@ -382,16 +418,10 @@ generateAndPromoteStructuredOwnership(
     if (llvm::is_contained(semanticCandidates, candidate))
       return llvm::Error::success();
     if (candidate != *parentReference) {
-      auto structured =
-          frontend::importStructuredProgram(candidate, artifactStore);
-      if (!structured)
-        return structured.takeError();
-      auto dataflow = lowering::lowerStructuredProgramToCanonicalDataflow(
-          *structured, options.lowering);
-      if (!dataflow)
-        return dataflow.takeError();
-      frontend::MaterializedOwnershipCandidate materialized{
-          std::move(*structured), std::move(*dataflow)};
+      auto cached = materializedCandidates.find(candidate);
+      if (cached == materializedCandidates.end())
+        return invalid("cost-ranked ownership candidate has no retained "
+                       "materialization");
       bool hasDerivation = false;
       for (const StructuredOwnershipCandidateDisposition &disposition :
            dispositions) {
@@ -406,7 +436,7 @@ generateAndPromoteStructuredOwnership(
                     candidate,
                     {*workloadReference, *runtimeInputReference, parent,
                      disposition.coordinate.scope,
-                     *disposition.coordinate.decision, materialized, workload,
+                     *disposition.coordinate.decision, cached->second, workload,
                      runtimeInput, *sourceObservations,
                      options.functionalReplayLimits},
                     artifactStore))
@@ -414,7 +444,8 @@ generateAndPromoteStructuredOwnership(
       }
       if (!hasDerivation)
         return invalid("cost-ranked ownership candidate has no derivation");
-      functionalCandidates.try_emplace(candidate, std::move(materialized));
+      functionalCandidates.try_emplace(candidate, std::move(cached->second));
+      materializedCandidates.erase(cached);
     }
 
     auto prepared =
@@ -582,7 +613,16 @@ generateAndPromoteStructuredOwnership(
       if (cached == functionalCandidates.end())
         return invalid("selected ownership candidate has no functional "
                        "invocation-local projection");
-      materialized.emplace(std::move(cached->second));
+      // The retained canonical module borrows a candidate-worker context.
+      // Crossing the invocation boundary therefore requires one owned strict
+      // import for each selected result, not one import per explored candidate.
+      auto dataflow = dataflow::importCanonicalDataflow(
+          cached->second.canonicalDataflow.identity(),
+          cached->second.canonicalDataflow.canonicalBytes());
+      if (!dataflow)
+        return dataflow.takeError();
+      materialized.emplace(frontend::MaterializedOwnershipCandidate{
+          std::move(cached->second.structuredProgram), std::move(*dataflow)});
     }
     std::vector<StructuredOwnershipDerivation> derivations;
     for (const StructuredOwnershipCandidateDisposition &disposition :

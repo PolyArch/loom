@@ -31,6 +31,8 @@ class StructuredProgramCandidate;
 }
 
 namespace loom::sim {
+class CanonicalSimulationRuntimeInput;
+class CanonicalSimulationWorkload;
 struct NativeStructuredProgramObservations;
 }
 
@@ -42,9 +44,65 @@ struct PreparedStructuredFabricEvaluation final {
   CaseSubjectRoleRef candidateRole;
 };
 
+/// One already sealed candidate and its exact published root. This ephemeral
+/// pair lets an owner-local DSE invocation prove publication without importing
+/// a candidate it has just finalized.
+struct StructuredFabricAnalyticCandidateRoot final {
+  ArtifactRootReference reference;
+  const ::loom::frontend::StructuredProgramCandidate *candidate = nullptr;
+};
+
+/// One invocation-local resolution of the exact source inputs, Fabric closure,
+/// and finite Structured candidate set. It is derived from published roots,
+/// carries no semantic identity, and may be discarded and rebuilt at any time.
+class StructuredFabricAnalyticRequestContext final {
+public:
+  const ArtifactRootReference &fabric() const { return fabric_; }
+  const ArtifactRootReference &workload() const { return workload_; }
+  const ArtifactRootReference &runtimeInput() const { return runtimeInput_; }
+
+private:
+  StructuredFabricAnalyticRequestContext(
+      std::vector<ArtifactRootReference> candidates,
+      ArtifactRootReference fabric, ArtifactRootReference workload,
+      ArtifactRootReference runtimeInput, CaseArtifactResolution resolution)
+      : candidates_(std::move(candidates)), fabric_(std::move(fabric)),
+        workload_(std::move(workload)), runtimeInput_(std::move(runtimeInput)),
+        resolution_(std::move(resolution)) {}
+
+  std::vector<ArtifactRootReference> candidates_;
+  ArtifactRootReference fabric_;
+  ArtifactRootReference workload_;
+  ArtifactRootReference runtimeInput_;
+  CaseArtifactResolution resolution_;
+
+  friend llvm::Expected<StructuredFabricAnalyticRequestContext>
+  prepareStructuredFabricAnalyticInvocation(
+      llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot>,
+      const ArtifactRootReference &, const ArtifactRootReference &,
+      const ArtifactRootReference &, const ArtifactStore &);
+  friend llvm::Expected<PreparedStructuredFabricEvaluation>
+  prepareStructuredFabricEvaluation(
+      const ArtifactRootReference &,
+      const StructuredFabricAnalyticRequestContext &, const ResolvedConfig &,
+      const ArtifactStore &);
+};
+
 /// Registers the exact low-fidelity StructuredProgram/Fabric analytic model.
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredFabricAnalyticModel();
+
+/// Validates the already sealed and published candidates, then strictly
+/// resolves the immutable workload, runtime input, and Fabric closure shared
+/// by one finite central DSE candidate set. Every candidate remains identified
+/// only by its exact ArtifactRootReference.
+llvm::Expected<StructuredFabricAnalyticRequestContext>
+prepareStructuredFabricAnalyticInvocation(
+    llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot> structuredPrograms,
+    const ::loom::ArtifactRootReference &fabric,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ::loom::ArtifactStore &artifactStore);
 
 /// Constructs and publishes the complete low-confidence metric request for the
 /// exact S/F pair. The returned resolution is the complete transient case
@@ -58,11 +116,22 @@ prepareStructuredFabricEvaluation(
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);
 
+/// Constructs the same exact Request using roots already resolved for this
+/// invocation. A candidate outside the finite resolved set is rejected.
+llvm::Expected<PreparedStructuredFabricEvaluation>
+prepareStructuredFabricEvaluation(
+    const ::loom::ArtifactRootReference &structuredProgram,
+    const StructuredFabricAnalyticRequestContext &invocation,
+    const ::loom::ResolvedConfig &config,
+    const ::loom::ArtifactStore &artifactStore);
+
 /// Invocation-local typed input used to derive workload-aware metrics without
 /// adding a profile Artifact or copying source coverage into a candidate.
 struct StructuredFabricAnalyticInvocation final {
   const ::loom::ArtifactRootReference &workload;
   const ::loom::ArtifactRootReference &runtimeInput;
+  const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
+  const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;
   const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
   const ::loom::sim::NativeStructuredProgramObservations &sourceObservations;
 };
