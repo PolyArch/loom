@@ -10,6 +10,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -99,6 +100,34 @@ module {
       test, a.identity() == b.identity(),
       "private symbol spelling, order, or source location changed candidate "
       "identity");
+}
+
+void finalizationProjectsSourceProvenanceOutsideIdentity() {
+  const char *test = __func__;
+  auto module = parse(test, R"mlir(
+module {
+  func.func @entry(%arg0: i32) -> i32 {
+    %sum = arith.addi %arg0, %arg0 : i32 loc("kernel.c":11:7)
+    %product = arith.muli %sum, %arg0 : i32 loc("wrapper.c":19:3)
+    return %product : i32
+  }
+}
+)mlir");
+  auto finalized =
+      take(test, loom::frontend::finalizeStructuredProgramWithTrackedBlocks(
+                     module.get(), {}));
+  bool foundKernel = false;
+  bool foundWrapper = false;
+  for (const auto &provenance : finalized.sourceProvenance) {
+    require(test, provenance.operation.parent == finalized.artifact.identity(),
+            "source provenance is not keyed by the finalized artifact");
+    require(test, provenance.operation.kind == StructuredEntityKind::Operation,
+            "source provenance is not keyed by operation references");
+    foundKernel |= llvm::is_contained(provenance.sourceFiles, "kernel.c");
+    foundWrapper |= llvm::is_contained(provenance.sourceFiles, "wrapper.c");
+  }
+  require(test, foundKernel && foundWrapper,
+          "source provenance did not preserve canonical source paths");
 }
 
 void semanticOperationChangesIdentity() {
@@ -249,6 +278,7 @@ module { func.func @main(%arg0: i32) -> i32 { return %arg0 : i32 } }
 
 int main() {
   privateNamesAndLocationsDoNotChangeIdentity();
+  finalizationProjectsSourceProvenanceOutsideIdentity();
   semanticOperationChangesIdentity();
   referencesAreParentAndKindChecked();
   importedCandidateReencodesExactly();

@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -55,6 +56,14 @@ struct StructuredEntityRef {
                          const StructuredEntityRef &rhs) {
     return !(lhs == rhs);
   }
+};
+
+/// Invocation-local source provenance projected from standard MLIR locations
+/// and imported LLVM debug scopes before canonical serialization erases them.
+/// The exact Structured Program remains the only persistent owner.
+struct StructuredOperationSourceProvenance final {
+  StructuredEntityRef operation;
+  std::vector<std::string> sourceFiles;
 };
 
 inline constexpr std::size_t structuredEntityRefWireSize =
@@ -158,6 +167,7 @@ private:
 struct FinalizedStructuredProgramProjection final {
   StructuredProgramCandidate artifact;
   std::vector<StructuredEntityRef> trackedBlocks;
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
 /// Finalizes a private clone of one complete mixed-dialect S0/Sn module.

@@ -7,6 +7,7 @@
 
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -30,6 +31,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -805,7 +807,63 @@ struct CanonicalizedClone {
   OwningOpRef<ModuleOp> module;
   CanonicalEntityProjection entityProjection;
   std::vector<std::uint64_t> trackedBlockOrdinals;
+  std::vector<std::vector<std::string>> operationSourceFiles;
 };
+
+void addDebugFile(LLVM::DIFileAttr file, std::set<std::string> &paths) {
+  StringRef name = file.getName().getValue();
+  if (name.empty())
+    return;
+  if (llvm::sys::path::is_absolute(name) ||
+      file.getDirectory().getValue().empty()) {
+    paths.insert(name.str());
+    return;
+  }
+  llvm::SmallString<256> path(file.getDirectory().getValue());
+  llvm::sys::path::append(path, name);
+  paths.insert(path.str().str());
+}
+
+void collectDebugFiles(Attribute root, std::set<std::string> &paths) {
+  SmallVector<Attribute> pending;
+  DenseSet<Attribute> visited;
+  if (root)
+    pending.push_back(root);
+  while (!pending.empty()) {
+    Attribute current = pending.pop_back_val();
+    if (!current || !visited.insert(current).second)
+      continue;
+    if (auto file = dyn_cast<LLVM::DIFileAttr>(current))
+      addDebugFile(file, paths);
+    if (auto distinct = dyn_cast<DistinctAttr>(current))
+      pending.push_back(distinct.getReferencedAttr());
+    current.walkImmediateSubElements(
+        [&](Attribute nested) { pending.push_back(nested); }, [](Type) {});
+  }
+}
+
+std::vector<std::string> sourceFiles(Location location) {
+  std::set<std::string> debugFiles;
+  std::set<std::string> locationFiles;
+  location->walk([&](Location nested) {
+    if (auto file = dyn_cast<FileLineColLoc>(nested))
+      locationFiles.insert(file.getFilename().getValue().str());
+    if (auto fused = dyn_cast<FusedLoc>(nested))
+      collectDebugFiles(fused.getMetadata(), debugFiles);
+    return WalkResult::advance();
+  });
+
+  for (const std::string &locationFile : locationFiles) {
+    bool representedByDebugFile =
+        llvm::any_of(debugFiles, [&](const std::string &debugFile) {
+          return debugFile == locationFile ||
+                 llvm::sys::path::filename(debugFile) == locationFile;
+        });
+    if (!representedByDebugFile)
+      debugFiles.insert(locationFile);
+  }
+  return {debugFiles.begin(), debugFiles.end()};
+}
 
 llvm::Expected<CanonicalizedClone>
 canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
@@ -850,6 +908,20 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
     return entityProjection.takeError();
 
   EntityTable lexical = collectLexicalEntities(*clone);
+  const auto &canonicalOperations =
+      entityProjection
+          ->canonicalToLexical[kindIndex(StructuredEntityKind::Operation)];
+  std::vector<std::vector<std::string>> operationSourceFiles;
+  operationSourceFiles.reserve(canonicalOperations.size());
+  for (std::uint32_t lexicalOrdinal : canonicalOperations) {
+    if (lexicalOrdinal >=
+        lexical[kindIndex(StructuredEntityKind::Operation)].size())
+      return invalid("canonical operation projection is out of range");
+    Operation *operation =
+        lexical[kindIndex(StructuredEntityKind::Operation)][lexicalOrdinal]
+            .operation;
+    operationSourceFiles.push_back(sourceFiles(operation->getLoc()));
+  }
   DenseMap<Block *, std::uint64_t> lexicalOrdinals;
   for (auto item :
        llvm::enumerate(lexical[kindIndex(StructuredEntityKind::Block)]))
@@ -871,7 +943,8 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
     trackedOrdinals.push_back(lexicalToCanonical[lexicalOrdinal->second]);
   }
   return CanonicalizedClone{std::move(clone), std::move(*entityProjection),
-                            std::move(trackedOrdinals)};
+                            std::move(trackedOrdinals),
+                            std::move(operationSourceFiles)};
 }
 
 } // namespace
@@ -966,11 +1039,19 @@ finalizeStructuredProgramWithTrackedBlocks(ModuleOp source,
   for (std::uint64_t ordinal : clone->trackedBlockOrdinals)
     trackedReferences.push_back(
         {identity, StructuredEntityKind::Block, ordinal});
+  std::vector<StructuredOperationSourceProvenance> sourceProvenance;
+  for (auto item : llvm::enumerate(clone->operationSourceFiles)) {
+    if (item.value().empty())
+      continue;
+    sourceProvenance.push_back({{identity, StructuredEntityKind::Operation,
+                                 static_cast<std::uint64_t>(item.index())},
+                                std::move(item.value())});
+  }
   return FinalizedStructuredProgramProjection{
       StructuredProgramCandidate(identity, std::move(semantic),
                                  std::move(canonical->context),
                                  std::move(canonical->module), std::move(view)),
-      std::move(trackedReferences)};
+      std::move(trackedReferences), std::move(sourceProvenance)};
 }
 
 llvm::Expected<StructuredProgramCandidate>
