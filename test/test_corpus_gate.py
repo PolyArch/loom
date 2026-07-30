@@ -29,6 +29,7 @@ sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
+import corpus_workload_provider  # noqa: E402
 
 
 _OPERATOR_WORKLOADS = corpus_inventory.load_workload_inventory(ROOT)
@@ -47,6 +48,13 @@ DSP_ABS_F32_WORKLOAD_ID = next(
     for row in _OPERATOR_WORKLOADS
     if row.suite == "cmsis-dsp"
     and row.case == "arm-abs-f32"
+    and row.target_profile == "riscv64-portable-scalar"
+)
+DSP_MFCC_Q31_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-mfcc-q31"
     and row.target_profile == "riscv64-portable-scalar"
 )
 AVGPOOL_HARNESS_WORKLOAD_IDS = tuple(
@@ -458,6 +466,72 @@ class InventoryAggregationTest(CorpusGateTestBase):
         )
         self.assertFalse(
             any(flag.startswith("-DLOOM_CMSIS_NN_SOURCE=") for flag in configure)
+        )
+
+    def test_cmsis_dsp_harness_links_upstream_operator_support_data(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_MFCC_Q31_WORKLOAD_ID
+        )
+
+        harness = corpus_gate.materialize_cmsis_dsp_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "cmsis-dsp-mfcc-harness",
+        )
+
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertIn('Testing/Source/Tests/mfccdata.c"', cmake)
+
+    def test_provider_build_failure_is_isolated_to_missing_targets(self) -> None:
+        workloads = tuple(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity in (DSP_ABS_F32_WORKLOAD_ID, DSP_MFCC_Q31_WORKLOAD_ID)
+        )
+        self.assertEqual(len(workloads), 2)
+        harness = corpus_workload_provider.CmsisDspHarness(
+            self.work / "source",
+            tuple(workload.executable for workload in workloads),
+            tuple(self.work / f"shared-{index}" for index in range(2)),
+        )
+        target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
+
+        def run_provider_step(command, log_path, deadline, category):
+            del log_path, deadline, category
+            if "--build" not in command:
+                return None
+            executable = harness.executable(target_build, workloads[0].executable)
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"elf")
+            return corpus_gate.StepFailure(
+                corpus_gate.CATEGORY_FINAL_LINK,
+                "one provider target failed",
+            )
+
+        with (
+            mock.patch.object(
+                corpus_gate,
+                "materialize_cmsis_dsp_harness",
+                return_value=harness,
+            ),
+            mock.patch.object(corpus_gate, "run_step", side_effect=run_provider_step),
+        ):
+            results = corpus_gate.prepare_workload_providers(
+                workloads,
+                self.toolchain(),
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.out_dir,
+                jobs=2,
+                timeout=5.0,
+            )
+
+        self.assertIsInstance(
+            results[workloads[0].identity], corpus_gate.ProducedWorkload
+        )
+        self.assertIsInstance(
+            results[workloads[1].identity], corpus_gate.StepFailure
         )
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:

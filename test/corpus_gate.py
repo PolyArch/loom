@@ -1009,13 +1009,23 @@ def prepare_workload_providers(
             time.monotonic() + timeout,
             CATEGORY_FINAL_LINK,
         )
-        if failure is not None:
-            fail_provider(failure)
-            continue
-
         for case in provider_cases:
             target_executable = harness.executable(target_build, case.executable)
-            results[case.identity] = ProducedWorkload(target_build, target_executable)
+            if target_executable.is_file():
+                results[case.identity] = ProducedWorkload(
+                    target_build, target_executable
+                )
+                continue
+            if failure is None:
+                results[case.identity] = StepFailure(
+                    CATEGORY_FINAL_LINK,
+                    f"provider did not produce target {case.executable}",
+                )
+                continue
+            results[case.identity] = StepFailure(
+                failure.category,
+                f"provider did not produce target {case.executable}: {failure.detail}",
+            )
     return results
 
 

@@ -383,6 +383,7 @@ def _cmake_quote(path: Path) -> str:
 
 def _render_cmsis_dsp_harness_cmake(
     targets: Sequence[tuple[str, Path, Path, str]],
+    support_sources: Sequence[Path],
 ) -> str:
     suite_libraries: dict[Path, tuple[str, str]] = {}
     for _, _, shared, test_class in targets:
@@ -425,9 +426,14 @@ target_include_directories({target} PRIVATE
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude"
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests")
 target_compile_definitions({target} PRIVATE EMBEDDED NOTIMING)
-target_link_libraries({target} PRIVATE loom_cmsis_dsp_framework CMSISDSP)
+target_link_libraries({target} PRIVATE
+  loom_cmsis_dsp_framework loom_cmsis_dsp_test_support CMSISDSP)
 '''
         )
+
+    support_items = "\n".join(
+        f'  "{_cmake_quote(source)}"' for source in support_sources
+    )
 
     return f'''cmake_minimum_required(VERSION 3.20)
 project(loom_cmsis_dsp_workloads C CXX)
@@ -471,6 +477,13 @@ target_include_directories(loom_cmsis_dsp_framework PUBLIC
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude")
 target_compile_definitions(loom_cmsis_dsp_framework PRIVATE EMBEDDED NOTIMING)
 target_link_libraries(loom_cmsis_dsp_framework PUBLIC CMSISDSP)
+
+add_library(loom_cmsis_dsp_test_support STATIC
+{support_items})
+target_include_directories(loom_cmsis_dsp_test_support PRIVATE
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests")
+target_compile_definitions(loom_cmsis_dsp_test_support PRIVATE EMBEDDED NOTIMING)
+target_link_libraries(loom_cmsis_dsp_test_support PRIVATE CMSISDSP)
 
 {''.join(suite_blocks)}
 {''.join(target_blocks)}
@@ -598,7 +611,11 @@ def materialize_cmsis_dsp_harness(
         )
 
     (source_dir / "CMakeLists.txt").write_text(
-        _render_cmsis_dsp_harness_cmake(cmake_targets), encoding="utf-8"
+        _render_cmsis_dsp_harness_cmake(
+            cmake_targets,
+            tuple(sorted((testing_root / "Source" / "Tests").glob("*.c"))),
+        ),
+        encoding="utf-8",
     )
     (source_dir / "OperatorMain.cpp").write_text(
         '''extern int testmain(const char *patterns);
@@ -665,4 +682,7 @@ def cmake_build_command(
         *targets,
         "-j",
         str(jobs),
+        "--",
+        "-k",
+        "0",
     ]
