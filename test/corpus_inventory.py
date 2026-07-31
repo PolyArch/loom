@@ -617,6 +617,7 @@ def _parse_operator_gate_workload(
         )
         executable = operator_workload_target(operator_id)
     elif producer_kind == "cmsis-dsp-operator-harness" and selector_kind in {
+        "filter-completion",
         "lifecycle-completion",
         "transform-query",
     }:
@@ -624,11 +625,12 @@ def _parse_operator_gate_workload(
             raise InventoryError(
                 "generated CMSIS-DSP workload must select its sole protocol vector"
             )
-        if len(protocol) != 1:
+        if selector_kind != "filter-completion" and len(protocol) != 1:
             raise InventoryError(
                 "generated CMSIS-DSP workload must own one public call"
             )
-        if vector_identity != f"{selector_kind}:{protocol[0].symbol}:0":
+        protocol_identity = "+".join(call.symbol for call in protocol)
+        if vector_identity != f"{selector_kind}:{protocol_identity}:0":
             raise InventoryError(
                 "generated CMSIS-DSP identity does not match its public call"
             )

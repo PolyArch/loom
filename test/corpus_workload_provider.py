@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 import corpus_inventory
+import corpus_dsp_filter_generated
 import corpus_dsp_generated
 import corpus_dsp_protocol
 import corpus_dsp_stateful
@@ -775,6 +776,8 @@ _CMSIS_DSP_BASIC_F32_PROTOCOLS = {
 def _cmsis_dsp_direct_protocol_family(
     workload: corpus_inventory.ProgramWorkload,
 ) -> str | None:
+    if corpus_dsp_filter_generated.sequence_protocol(workload) is not None:
+        return "generated-sequence"
     if corpus_dsp_generated.transform_query_protocol(workload) is not None:
         return "generated-transform-query"
     if corpus_dsp_generated.lifecycle_protocol(workload) is not None:
@@ -830,7 +833,11 @@ def supports_cmsis_dsp_harness(
     producer = workload.producer
     family = _cmsis_dsp_direct_protocol_family(workload)
     if isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer):
-        return family in {"generated-lifecycle", "generated-transform-query"}
+        return family in {
+            "generated-lifecycle",
+            "generated-sequence",
+            "generated-transform-query",
+        }
     return isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer) and (
         producer.selector_kind == "official" or family is not None
     )
@@ -1174,18 +1181,31 @@ def materialize_cmsis_dsp_harness(
                 f"CMSIS-DSP harness repeats a target: {workload.identity}"
             )
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
-        if direct_family in {"generated-lifecycle", "generated-transform-query"}:
+        if direct_family in {
+            "generated-lifecycle",
+            "generated-sequence",
+            "generated-transform-query",
+        }:
+            sequence = corpus_dsp_filter_generated.sequence_protocol(workload)
             transform_query = corpus_dsp_generated.transform_query_protocol(workload)
             lifecycle = corpus_dsp_generated.lifecycle_protocol(workload)
-            if (transform_query is None) == (lifecycle is None):
+            protocols = tuple(
+                protocol
+                for protocol in (sequence, transform_query, lifecycle)
+                if protocol is not None
+            )
+            if len(protocols) != 1:
                 raise WorkloadProviderError("CMSIS-DSP generated protocol is ambiguous")
-            protocol = transform_query or lifecycle
-            assert protocol is not None
+            protocol = protocols[0]
             generated = generated_root / target
             generated.mkdir()
             direct_source = generated / "OperatorProtocol.cpp"
             rendered = (
-                corpus_dsp_generated.render_transform_query_protocol(
+                corpus_dsp_filter_generated.render_sequence_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                )
+                if sequence is not None
+                else corpus_dsp_generated.render_transform_query_protocol(
                     workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
                 )
                 if transform_query is not None

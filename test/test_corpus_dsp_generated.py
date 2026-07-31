@@ -38,6 +38,18 @@ LIFECYCLE_CASES = {
     "arm-pid-reset-q15",
     "arm-pid-reset-q31",
 }
+CONVOLUTION_CORRELATION_CASES = {
+    "arm-conv-fast-opt-q15",
+    "arm-conv-fast-q15",
+    "arm-conv-fast-q31",
+    "arm-conv-opt-q15",
+    "arm-conv-opt-q7",
+    "arm-correlate-fast-opt-q15",
+    "arm-correlate-fast-q15",
+    "arm-correlate-fast-q31",
+    "arm-correlate-opt-q15",
+    "arm-correlate-opt-q7",
+}
 
 
 class CmsisDspGeneratedProtocolTests(unittest.TestCase):
@@ -185,6 +197,68 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         self.assertIn("arm_pid_reset_q15(&instance)", rendered_reset)
         self.assertIn("instance.state[index] != 0", rendered_reset)
         self.assertIn("int main()", rendered_reset)
+
+    def test_convolution_protocols_have_one_typed_generated_owner(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in CONVOLUTION_CORRELATION_CASES
+        )
+
+        self.assertEqual(len(workloads), len(CONVOLUTION_CORRELATION_CASES))
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                self.assertIsInstance(
+                    workload.producer,
+                    corpus_inventory.CmsisDspGeneratedWorkloadProducer,
+                )
+                self.assertEqual(workload.producer.selector_kind, "filter-completion")
+                self.assertTrue(
+                    corpus_workload_provider.supports_cmsis_dsp_harness(workload)
+                )
+
+    def test_convolution_provider_keeps_oracle_outside_protocol(self) -> None:
+        selected_cases = {
+            "arm-conv-fast-q31",
+            "arm-conv-opt-q7",
+            "arm-correlate-fast-opt-q15",
+            "arm-correlate-opt-q7",
+        }
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp" and workload.case in selected_cases
+        )
+        self.assertEqual(len(workloads), len(selected_cases))
+
+        harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "convolution-harness",
+        )
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                source_path, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
+                )
+                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source = source_path.read_text(encoding="utf-8")
+                protocol, oracle = source.split("int main()", maxsplit=1)
+                symbol = workload.protocol[0].symbol
+                self.assertEqual(protocol.count(f"{symbol}("), 1)
+                baseline = (
+                    symbol.replace("_fast_opt_", "_")
+                    .replace("_fast_", "_")
+                    .replace("_opt_", "_")
+                )
+                self.assertNotIn(f"{baseline}(", protocol)
+                self.assertIn(f"{baseline}(", oracle)
+                self.assertIn("output_matches_reference", oracle)
+                if "opt" in symbol:
+                    self.assertIn("scratch1", protocol)
+                if symbol in {"arm_conv_opt_q7", "arm_correlate_opt_q7"}:
+                    self.assertIn("scratch2", protocol)
 
 
 if __name__ == "__main__":
