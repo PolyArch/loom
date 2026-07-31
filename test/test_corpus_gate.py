@@ -1156,12 +1156,45 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIsNone(selected)
         self.assertIn("does not cover an exact corpus source row", defect)
 
-    def test_selected_source_projection_accepts_exact_protocol_owner(self) -> None:
+    def test_selected_source_projection_accepts_production_protocol_owner(self) -> None:
+        wrapper_object = self.work / "wrapper.o"
+        wrapper_source = self.work / "generated" / "operator_protocol.c"
+        wrapper_source.parent.mkdir()
+        wrapper_source.write_text("void test_kernel(void) {}\n")
+        upstream_owner = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Include"
+            / "arm_nnsupportfunctions.h"
+        )
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=self.work / "program.resolution.txt",
+            link_root=self.work,
+            object_sources=((wrapper_object, wrapper_source),),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            (str(wrapper_source),),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset({"externals/cmsis-nn/Source/kernel.c"}),
+            ((wrapper_source, upstream_owner),),
+        )
+
+        self.assertIsNone(defect)
+        self.assertEqual(
+            selected,
+            ("externals/cmsis-nn/Include/arm_nnsupportfunctions.h",),
+        )
+
+    def test_selected_source_projection_rejects_test_protocol_owner(self) -> None:
         wrapper_object = self.work / "wrapper.o"
         wrapper_source = self.work / "generated" / "unity_test_kernel.c"
         wrapper_source.parent.mkdir()
         wrapper_source.write_text("void test_kernel(void) {}\n")
-        upstream_owner = (
+        test_owner = (
             corpus_inventory.resolve_externals_root(ROOT)
             / "cmsis-nn"
             / "Tests"
@@ -1184,17 +1217,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
             corpus_inventory.resolve_externals_root(ROOT),
             ROOT,
             frozenset({"externals/cmsis-nn/Source/kernel.c"}),
-            ((wrapper_source, upstream_owner),),
+            ((wrapper_source, test_owner),),
         )
 
-        self.assertIsNone(defect)
-        self.assertEqual(
-            selected,
-            (
-                "externals/cmsis-nn/Tests/UnitTest/TestCases/"
-                "test_kernel/Unity/unity_test_kernel.c",
-            ),
-        )
+        self.assertIsNone(selected)
+        self.assertIn("test harness source cannot own", defect)
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
