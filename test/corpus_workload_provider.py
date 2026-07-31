@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 import corpus_inventory
+import corpus_dsp_fft
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
 import corpus_dsp_lms
@@ -793,6 +794,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateful-pid"
     if corpus_dsp_lms.lms_protocol(workload) is not None:
         return "stateful-lms"
+    if corpus_dsp_fft.legacy_cfft_protocol(workload) is not None:
+        return "legacy-cfft"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -914,6 +917,53 @@ def _cmsis_dsp_named_dimensions(
     return tuple(dimensions)
 
 
+def _cmsis_dsp_legacy_cfft_length(
+    suite: object, test_kind: int, test_method: str
+) -> int:
+    if tuple(suite.params.full) != ("NB", "IFFT", "BITREV"):
+        raise WorkloadProviderError(
+            "CMSIS-DSP legacy CFFT protocol has an invalid parameter schema"
+        )
+    matching_tests = [
+        child
+        for child in suite.children
+        if child.kind == test_kind and child.data.get("class") == test_method
+    ]
+    if len(matching_tests) != 1:
+        raise WorkloadProviderError(
+            "CMSIS-DSP legacy CFFT protocol requires one descriptor test"
+        )
+    parameter_id = matching_tests[0].data.get("PARAMID")
+    matching_rows = [
+        values for _, name, values in suite.parameters if name == parameter_id
+    ]
+    if len(matching_rows) != 1 or len(matching_rows[0]) != 3:
+        raise WorkloadProviderError(
+            "CMSIS-DSP legacy CFFT protocol requires one parameter row"
+        )
+    names = tuple(column.get("NAME") for column in matching_rows[0])
+    if names != ("NB", "IFFT", "REV"):
+        raise WorkloadProviderError(
+            "CMSIS-DSP legacy CFFT protocol has invalid parameter columns"
+        )
+    lengths, directions, bit_reversal = (
+        column.get("INTS") for column in matching_rows[0]
+    )
+    if (
+        not isinstance(lengths, list)
+        or not lengths
+        or any(not isinstance(value, int) or value <= 0 for value in lengths)
+        or not isinstance(directions, list)
+        or 0 not in directions
+        or not isinstance(bit_reversal, list)
+        or 1 not in bit_reversal
+    ):
+        raise WorkloadProviderError(
+            "CMSIS-DSP legacy CFFT protocol has invalid parameter values"
+        )
+    return min(lengths)
+
+
 def _cmsis_dsp_literal_test_extent(
     suite: object, test_kind: int, test_class: str, vector_ordinal: int
 ) -> int:
@@ -971,6 +1021,7 @@ def _render_cmsis_dsp_harness_cmake(
     operator_compile_options: dict[Path, tuple[str, ...]],
     *,
     enable_float16: bool,
+    enable_wrapper: bool,
 ) -> str:
     suite_libraries: dict[Path, tuple[str, str, str]] = {}
     for item in targets:
@@ -1075,6 +1126,7 @@ set(MVEF OFF CACHE BOOL "" FORCE)
 set(MVEI OFF CACHE BOOL "" FORCE)
 set(NEON OFF CACHE BOOL "" FORCE)
 set(NEONEXPERIMENTAL OFF CACHE BOOL "" FORCE)
+set(WRAPPER {"ON" if enable_wrapper else "OFF"} CACHE BOOL "" FORCE)
 add_subdirectory("${{LOOM_CMSIS_DSP_SOURCE}}/Source" cmsis-dsp)
 target_compile_definitions(CMSISDSP PRIVATE ARM_DSP_CUSTOM_CONFIG)
 target_compile_definitions(CMSISDSP PUBLIC ARM_DSP_TESTING)
@@ -1705,6 +1757,43 @@ def materialize_cmsis_dsp_harness(
                 protocol_owner,
                 0,
             )
+        elif direct_family == "legacy-cfft":
+            protocol = corpus_dsp_fft.legacy_cfft_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP legacy CFFT protocol is inconsistent"
+                )
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_fft.render_legacy_cfft_protocol(
+                    workload,
+                    shared_patterns,
+                    _cmsis_dsp_legacy_cfft_length(
+                        suite,
+                        tree_module.TreeElem.TEST,
+                        workload.producer.test_method,
+                    ),
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
         elif direct_family == "stateful-svm":
             protocol = corpus_dsp_stateful.svm_protocol(workload)
             if protocol is None:
@@ -1822,6 +1911,11 @@ def materialize_cmsis_dsp_harness(
             operator_compile_options,
             enable_float16=(
                 target_profile == corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE
+            ),
+            enable_wrapper=any(
+                (protocol := corpus_dsp_fft.legacy_cfft_protocol(workload)) is not None
+                and protocol.radix == 2
+                for workload in workloads
             ),
         ),
         encoding="utf-8",

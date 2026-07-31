@@ -85,6 +85,16 @@ LMS_CASES = {
     "arm-lms-q15",
     "arm-lms-q31",
 }
+LEGACY_CFFT_CASES = {
+    "arm-cfft-radix2-f16",
+    "arm-cfft-radix2-f32",
+    "arm-cfft-radix2-q15",
+    "arm-cfft-radix2-q31",
+    "arm-cfft-radix4-f16",
+    "arm-cfft-radix4-f32",
+    "arm-cfft-radix4-q15",
+    "arm-cfft-radix4-q31",
+}
 
 
 class CmsisDspGeneratedProtocolTests(unittest.TestCase):
@@ -480,6 +490,58 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                     self.assertNotIn(f"{call.symbol}(", oracle)
                 self.assertIn("error_matches_reference", oracle)
                 self.assertIn("coefficients_changed", oracle)
+
+    def test_legacy_cfft_protocols_have_one_typed_owner(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in LEGACY_CFFT_CASES
+            and workload.producer.selector_kind == "benchmark-only"
+        )
+
+        self.assertEqual(len(workloads), len(LEGACY_CFFT_CASES))
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                self.assertTrue(
+                    corpus_workload_provider.supports_cmsis_dsp_harness(workload)
+                )
+
+    def test_legacy_cfft_provider_keeps_transform_protocol_atomic(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in LEGACY_CFFT_CASES
+            and workload.producer.selector_kind == "benchmark-only"
+        )
+        self.assertEqual(len(workloads), len(LEGACY_CFFT_CASES))
+
+        profiles = sorted({workload.target_profile for workload in workloads})
+        for profile in profiles:
+            selected = tuple(
+                workload for workload in workloads if workload.target_profile == profile
+            )
+            harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+                selected,
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.work / f"legacy-cfft-harness-{profile}",
+            )
+            for workload in selected:
+                with self.subTest(case=workload.case):
+                    source_path, authoritative_owner = harness.protocol_source_owner(
+                        workload.executable
+                    )
+                    self.assertIn(
+                        authoritative_owner.name,
+                        {"transform_functions.h", "transform_functions_f16.h"},
+                    )
+                    source = source_path.read_text(encoding="utf-8")
+                    protocol, oracle = source.split("int main()", maxsplit=1)
+                    for call in workload.protocol:
+                        self.assertEqual(protocol.count(f"{call.symbol}("), 1)
+                        self.assertNotIn(f"{call.symbol}(", oracle)
+                    self.assertIn("output_matches_independent_dft", oracle)
 
 
 if __name__ == "__main__":

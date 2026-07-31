@@ -418,6 +418,11 @@ def pattern_segments(path: Path) -> dict[str, bytes]:
             return
         if not current:
             return
+        name = current_source.name
+        if name in segments:
+            raise WorkloadProviderError(
+                f"generated CMSIS-DSP patterns repeat {name}: {path}"
+            )
         payload_size = source_payload_size(current_source)
         padded_size = (payload_size + 7) & ~7
         if len(current) != padded_size or any(current[payload_size:]):
@@ -426,19 +431,19 @@ def pattern_segments(path: Path) -> dict[str, bytes]:
                 f"{current_source}"
             )
         del current[payload_size:]
+        segments[name] = current
 
     for line in match.group(1).splitlines():
         stripped = line.strip()
         if stripped.startswith("// "):
             finish_segment()
-            current_source = Path(stripped[3:])
-            name = current_source.name
-            if name in segments:
-                raise WorkloadProviderError(
-                    f"generated CMSIS-DSP patterns repeat {name}: {path}"
-                )
+            candidate_source = Path(stripped[3:])
+            if candidate_source.is_dir():
+                current = None
+                current_source = None
+                continue
+            current_source = candidate_source
             current = bytearray()
-            segments[name] = current
             continue
         for token in stripped.split(","):
             token = token.strip()
