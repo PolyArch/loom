@@ -18,6 +18,7 @@ from typing import Sequence
 import corpus_inventory
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
+import corpus_dsp_matrix
 import corpus_dsp_protocol
 import corpus_dsp_stateful
 import corpus_nn_protocol
@@ -784,6 +785,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "generated-transform-query"
     if corpus_dsp_generated.lifecycle_protocol(workload) is not None:
         return "generated-lifecycle"
+    if corpus_dsp_matrix.matrix_multiplication_protocol(workload) is not None:
+        return "stateless-matrix-multiplication"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -869,6 +872,40 @@ def _cmsis_dsp_first_parameter(suite: object) -> int:
             "CMSIS-DSP direct protocol has an invalid workload extent"
         )
     return first
+
+
+def _cmsis_dsp_matrix_dimensions(
+    suite: object, vector_ordinal: int
+) -> tuple[int, int, int]:
+    parameter_id = suite.data.get("PARAMID")
+    matching = [values for _, name, values in suite.parameters if name == parameter_id]
+    if len(matching) != 1 or len(matching[0]) != 3:
+        raise WorkloadProviderError(
+            "CMSIS-DSP matrix protocol requires one parameter row"
+        )
+    if tuple(suite.params.full) != ("NBR", "NBI", "NBC"):
+        raise WorkloadProviderError(
+            "CMSIS-DSP matrix protocol has an invalid dimension schema"
+        )
+    dimensions = []
+    for expected_name, column in zip(suite.params.full, matching[0], strict=True):
+        if column.get("NAME") != expected_name:
+            raise WorkloadProviderError(
+                "CMSIS-DSP matrix protocol has an invalid dimension column"
+            )
+        values = column.get("INTS")
+        if (
+            not isinstance(values, list)
+            or vector_ordinal >= len(values)
+            or not isinstance(values[vector_ordinal], int)
+            or isinstance(values[vector_ordinal], bool)
+            or values[vector_ordinal] <= 0
+        ):
+            raise WorkloadProviderError(
+                "CMSIS-DSP matrix protocol has invalid dimensions"
+            )
+        dimensions.append(values[vector_ordinal])
+    return dimensions[0], dimensions[1], dimensions[2]
 
 
 def _cmsis_dsp_literal_test_extent(
@@ -1552,6 +1589,36 @@ def materialize_cmsis_dsp_harness(
             )
             protocol_owner = (
                 external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateless-matrix-multiplication":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_matrix.render_matrix_multiplication_protocol(
+                    workload,
+                    shared_patterns,
+                    _cmsis_dsp_matrix_dimensions(
+                        suite, workload.producer.vector_ordinal
+                    ),
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / "matrix_functions.h"
             )
             record_direct_protocol(
                 workload,
