@@ -25,6 +25,7 @@ import corpus_dsp_matrix
 import corpus_dsp_pid
 import corpus_dsp_protocol
 import corpus_dsp_stateful
+import corpus_dsp_transform
 import corpus_nn_protocol
 from corpus_workload_errors import WorkloadProviderError
 
@@ -126,6 +127,8 @@ class _CmsisDspCmakeTarget:
     test_class: str | None = None
     source_group: str | None = None
     direct_source: Path | None = None
+    direct_support_sources: tuple[Path, ...] = ()
+    direct_include_directories: tuple[Path, ...] = ()
     compiler_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -783,6 +786,8 @@ def _cmsis_dsp_direct_protocol_family(
 ) -> str | None:
     if corpus_dsp_atomic.atomic_protocol(workload) is not None:
         return "atomic-multicall"
+    if corpus_dsp_transform.transform_protocol(workload) is not None:
+        return "atomic-transform"
     if corpus_dsp_filter_generated.stateful_filter_protocol(workload) is not None:
         return "generated-stateful-filter"
     if corpus_dsp_filter_generated.sequence_protocol(workload) is not None:
@@ -1063,11 +1068,19 @@ target_link_libraries({library} PRIVATE CMSISDSP)
     for item in targets:
         if item.direct_source is not None:
             compile_options = " ".join(("-fno-inline-functions", *item.compiler_flags))
+            direct_sources = "".join(
+                f'\n  "{_cmake_quote(source)}"'
+                for source in item.direct_support_sources
+            )
+            direct_includes = "".join(
+                f'\n  "{_cmake_quote(directory)}"'
+                for directory in item.direct_include_directories
+            )
             target_blocks.append(
                 f'''add_executable({item.target}
-  "{_cmake_quote(item.direct_source)}")
+  "{_cmake_quote(item.direct_source)}"{direct_sources})
 target_include_directories({item.target} PRIVATE
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Include")
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Include"{direct_includes})
 target_compile_definitions({item.target} PRIVATE EMBEDDED NOTIMING)
 target_compile_options({item.target} PRIVATE {compile_options})
 target_link_libraries({item.target} PRIVATE CMSISDSP)
@@ -1216,6 +1229,8 @@ def materialize_cmsis_dsp_harness(
         direct_source: Path,
         protocol_owner: Path,
         expected_entry_result: int | None,
+        support_sources: tuple[Path, ...] = (),
+        include_directories: tuple[Path, ...] = (),
     ) -> None:
         if not protocol_owner.is_file():
             raise WorkloadProviderError(
@@ -1236,6 +1251,8 @@ def materialize_cmsis_dsp_harness(
                     else None
                 ),
                 direct_source=direct_source,
+                direct_support_sources=support_sources,
+                direct_include_directories=include_directories,
                 compiler_flags=workload.compiler_flags,
             )
         )
@@ -1679,9 +1696,7 @@ def materialize_cmsis_dsp_harness(
         elif direct_family == "atomic-multicall":
             protocol = corpus_dsp_atomic.atomic_protocol(workload)
             if protocol is None:
-                raise WorkloadProviderError(
-                    "CMSIS-DSP atomic protocol is inconsistent"
-                )
+                raise WorkloadProviderError("CMSIS-DSP atomic protocol is inconsistent")
             direct_source = generated / "OperatorProtocol.cpp"
             direct_source.write_text(
                 corpus_dsp_atomic.render_atomic_protocol(
@@ -1690,11 +1705,7 @@ def materialize_cmsis_dsp_harness(
                 encoding="utf-8",
             )
             protocol_owner = (
-                external_root
-                / "cmsis-dsp"
-                / "Include"
-                / "dsp"
-                / protocol.owner_header
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
             )
             record_direct_protocol(
                 workload,
@@ -1704,6 +1715,41 @@ def materialize_cmsis_dsp_harness(
                 direct_source,
                 protocol_owner,
                 0,
+            )
+        elif direct_family == "atomic-transform":
+            protocol = corpus_dsp_transform.transform_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP transform protocol is inconsistent"
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_transform.render_transform_protocol(
+                    workload,
+                    shared_patterns,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+                support_sources=(
+                    testing_root / "Source" / "Tests" / protocol.data_source,
+                )
+                if isinstance(protocol, corpus_dsp_transform.MfccProtocol)
+                else (),
+                include_directories=(testing_root / "Include" / "Tests",)
+                if isinstance(protocol, corpus_dsp_transform.MfccProtocol)
+                else (),
             )
         elif direct_family == "stateless-matrix-multiplication":
             suite = _cmsis_dsp_suite_chain(

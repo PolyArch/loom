@@ -26,6 +26,23 @@ ATOMIC_CASES = {
     "arm-spline-f32",
 }
 
+TRANSFORM_CASES = {
+    "arm-cfft-f16",
+    "arm-cfft-f32",
+    "arm-cfft-f64",
+    "arm-cfft-q15",
+    "arm-cfft-q31",
+    "arm-mfcc-f16",
+    "arm-mfcc-f32",
+    "arm-mfcc-q15",
+    "arm-mfcc-q31",
+    "arm-rfft-fast-f16",
+    "arm-rfft-fast-f32",
+    "arm-rfft-fast-f64",
+    "arm-rfft-q15",
+    "arm-rfft-q31",
+}
+
 
 class CmsisDspAtomicProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -70,6 +87,52 @@ class CmsisDspAtomicProtocolTests(unittest.TestCase):
                 self.assertEqual(positions, sorted(positions))
                 self.assertNotIn("testmain", source)
                 self.assertNotIn("Testing::", source)
+
+    def test_transform_lifecycles_use_one_atomic_operator_wrapper(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in TRANSFORM_CASES
+            and workload.target_profile
+            in {
+                corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+                corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE,
+            }
+        )
+        self.assertEqual({workload.case for workload in workloads}, TRANSFORM_CASES)
+
+        for profile_ordinal, profile in enumerate(
+            sorted({workload.target_profile for workload in workloads})
+        ):
+            selected = tuple(
+                workload for workload in workloads if workload.target_profile == profile
+            )
+            harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+                selected,
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.work / f"transform-harness-{profile_ordinal}",
+            )
+            for workload in selected:
+                with self.subTest(case=workload.case):
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        ("loom_corpus_operator_protocol",),
+                    )
+                    compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                        workload.executable
+                    )
+                    self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
+                    self.assertIn("transform_functions", authoritative_owner.name)
+                    source = compiled_owner.read_text(encoding="utf-8")
+                    protocol = source.split("int main()", maxsplit=1)[0]
+                    positions = []
+                    for call in workload.protocol:
+                        self.assertEqual(protocol.count(f"{call.symbol}("), 1)
+                        positions.append(protocol.index(f"{call.symbol}("))
+                    self.assertEqual(positions, sorted(positions))
+                    self.assertNotIn("testmain", source)
+                    self.assertNotIn("Testing::", source)
 
 
 if __name__ == "__main__":

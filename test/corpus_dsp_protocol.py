@@ -520,6 +520,18 @@ def decode_f32_pattern(raw: bytes, name: str) -> tuple[str, ...]:
     )
 
 
+def decode_f16_pattern(raw: bytes, name: str) -> tuple[str, ...]:
+    if len(raw) % 2 != 0:
+        raise WorkloadProviderError(f"CMSIS-DSP {name} is not f16-aligned")
+    values = tuple(
+        struct.unpack("<e", raw[offset : offset + 2])[0]
+        for offset in range(0, len(raw), 2)
+    )
+    if any(not math.isfinite(value) for value in values):
+        raise WorkloadProviderError(f"CMSIS-DSP {name} requires finite float input")
+    return tuple(f"static_cast<float16_t>({value.hex()}f)" for value in values)
+
+
 def decode_i16_pattern(raw: bytes, name: str) -> tuple[int, ...]:
     if len(raw) % 2 != 0:
         raise WorkloadProviderError(f"CMSIS-DSP {name} is not i16-aligned")
