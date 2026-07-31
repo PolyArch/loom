@@ -25,9 +25,14 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Target/LLVMIR/TypeToLLVM.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <array>
@@ -40,7 +45,7 @@ namespace {
 
 constexpr std::size_t kSchemaCount = 0
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   +1
 #include "Dataflow/IR/OperationSchemas.inc"
     ;
@@ -52,23 +57,69 @@ constexpr std::size_t kSemanticsCaseCount = 0
 
 struct SchemaRecord {
   llvm::StringRef spelling;
+  llvm::StringRef operationName;
+  enum class SelectorKind : std::uint8_t {
+    WholeOperationClass,
+    LLVMIntrinsic
+  } selectorKind;
+  llvm::Intrinsic::ID intrinsicId;
   dataflow::CanonicalDataflowActorKind actorKind;
   dataflow::OperationSemanticsCase semantics;
 };
+
+#define LOOM_SELECTOR_KIND_IMPL(Kind) LOOM_SELECTOR_KIND_##Kind
+#define LOOM_SELECTOR_KIND(Kind) LOOM_SELECTOR_KIND_IMPL(Kind)
+#define LOOM_SELECTOR_KIND_WholeOperationClass                                 \
+  SchemaRecord::SelectorKind::WholeOperationClass
+#define LOOM_SELECTOR_KIND_LLVMIntrinsic                                       \
+  SchemaRecord::SelectorKind::LLVMIntrinsic
+
+#define LOOM_SELECTOR_INTRINSIC_IMPL(Kind, Value)                              \
+  LOOM_SELECTOR_INTRINSIC_##Kind(Value)
+#define LOOM_SELECTOR_INTRINSIC(Kind, Value)                                   \
+  LOOM_SELECTOR_INTRINSIC_IMPL(Kind, Value)
+#define LOOM_SELECTOR_INTRINSIC_WholeOperationClass(Value)                     \
+  llvm::Intrinsic::not_intrinsic
+#define LOOM_SELECTOR_INTRINSIC_LLVMIntrinsic(Value) llvm::Intrinsic::Value
+
+#define LOOM_SELECTOR_SPELLING_IMPL(Kind, Value, OpClass)                      \
+  LOOM_SELECTOR_SPELLING_##Kind(Value, OpClass)
+#define LOOM_SELECTOR_SPELLING(Kind, Value, OpClass)                           \
+  LOOM_SELECTOR_SPELLING_IMPL(Kind, Value, OpClass)
+#define LOOM_SELECTOR_SPELLING_WholeOperationClass(Value, OpClass)             \
+  OpClass::getOperationName()
+#define LOOM_SELECTOR_SPELLING_LLVMIntrinsic(Value, OpClass)                   \
+  llvm::Intrinsic::getBaseName(llvm::Intrinsic::Value)
 
 /// The dense schema table. Its order is the generated id order, so the id is
 /// the index and no search is ever needed.
 const std::array<SchemaRecord, kSchemaCount> &schemaTable() {
   static const std::array<SchemaRecord, kSchemaCount> table = {{
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
-  SchemaRecord{OpClass::getOperationName(),                                    \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
+  SchemaRecord{LOOM_SELECTOR_SPELLING(SelectorKind, SelectorValue, OpClass),   \
+               OpClass::getOperationName(),                                    \
+               LOOM_SELECTOR_KIND(SelectorKind),                               \
+               LOOM_SELECTOR_INTRINSIC(SelectorKind, SelectorValue),           \
                dataflow::CanonicalDataflowActorKind::ActorKind,                \
                dataflow::OperationSemanticsCase::SemanticsCase},
 #include "Dataflow/IR/OperationSchemas.inc"
   }};
   return table;
 }
+
+#undef LOOM_SELECTOR_SPELLING_LLVMIntrinsic
+#undef LOOM_SELECTOR_SPELLING_WholeOperationClass
+#undef LOOM_SELECTOR_SPELLING
+#undef LOOM_SELECTOR_SPELLING_IMPL
+#undef LOOM_SELECTOR_INTRINSIC_LLVMIntrinsic
+#undef LOOM_SELECTOR_INTRINSIC_WholeOperationClass
+#undef LOOM_SELECTOR_INTRINSIC
+#undef LOOM_SELECTOR_INTRINSIC_IMPL
+#undef LOOM_SELECTOR_KIND_LLVMIntrinsic
+#undef LOOM_SELECTOR_KIND_WholeOperationClass
+#undef LOOM_SELECTOR_KIND
+#undef LOOM_SELECTOR_KIND_IMPL
 
 const std::array<llvm::StringRef, kSemanticsCaseCount> &semanticsCaseTable() {
   static const std::array<llvm::StringRef, kSemanticsCaseCount> table = {{
@@ -90,6 +141,75 @@ const llvm::StringMap<dataflow::OperationSchemaId> &spellingIndex() {
     return built;
   }();
   return index;
+}
+
+using SchemaCandidates = llvm::SmallVector<dataflow::OperationSchemaId, 2>;
+
+/// Operation-class-to-schema candidates. Generic carriers retain a short
+/// selector list; ordinary operations still resolve through one entry.
+const llvm::StringMap<SchemaCandidates> &operationIndex() {
+  static const llvm::StringMap<SchemaCandidates> index = [] {
+    llvm::StringMap<SchemaCandidates> built;
+    for (auto [position, record] : llvm::enumerate(schemaTable()))
+      built[record.operationName].push_back(
+          static_cast<dataflow::OperationSchemaId>(position));
+    return built;
+  }();
+  return index;
+}
+
+bool matchesLLVMIntrinsic(Operation *op, llvm::Intrinsic::ID expected) {
+  auto actor = llvm::dyn_cast<LLVM::CallIntrinsicOp>(op);
+  if (!actor ||
+      llvm::Intrinsic::lookupIntrinsicID(actor.getIntrin()) != expected ||
+      actor.getFastmathFlags() != LLVM::FastmathFlags::none ||
+      actor.getArgAttrsAttr() || actor.getResAttrsAttr() ||
+      actor.getOpBundleTagsAttr())
+    return false;
+  for (auto bundle : actor.getOpBundleOperands())
+    if (!bundle.empty())
+      return false;
+
+  llvm::LLVMContext llvmContext;
+  LLVM::TypeToLLVMIRTranslator translator(llvmContext);
+  llvm::SmallVector<llvm::Type *, 4> argumentTypes;
+  argumentTypes.reserve(op->getNumOperands());
+  for (Type type : op->getOperandTypes()) {
+    if (!LLVM::isCompatibleType(type))
+      return false;
+    llvm::Type *translated = translator.translateType(type);
+    if (!translated)
+      return false;
+    argumentTypes.push_back(translated);
+  }
+
+  llvm::Type *resultType = nullptr;
+  if (op->getNumResults() == 0) {
+    resultType = llvm::Type::getVoidTy(llvmContext);
+  } else if (op->getNumResults() == 1 &&
+             LLVM::isCompatibleType(op->getResult(0).getType())) {
+    resultType = translator.translateType(op->getResult(0).getType());
+  }
+  if (!resultType)
+    return false;
+
+  llvm::FunctionType *functionType =
+      llvm::FunctionType::get(resultType, argumentTypes, false);
+  llvm::SmallVector<llvm::Type *, 4> overloadTypes;
+  if (!llvm::Intrinsic::isSignatureValid(expected, functionType, overloadTypes))
+    return false;
+  return actor.getIntrin() ==
+         llvm::Intrinsic::getNameNoUnnamedTypes(expected, overloadTypes);
+}
+
+bool matchesSelector(Operation *op, const SchemaRecord &record) {
+  switch (record.selectorKind) {
+  case SchemaRecord::SelectorKind::WholeOperationClass:
+    return true;
+  case SchemaRecord::SelectorKind::LLVMIntrinsic:
+    return matchesLLVMIntrinsic(op, record.intrinsicId);
+  }
+  llvm_unreachable("unknown operation instance selector");
 }
 
 llvm::Error mismatch(Operation *op, dataflow::OperationSemanticsCase kind) {
@@ -203,7 +323,8 @@ llvm::Expected<dataflow::SemanticPayload> readConstantValue(Operation *op) {
 /// requires the exact operation class or interface that case names, so a row
 /// that pairs a schema with the wrong case fails closed here.
 llvm::Expected<dataflow::SemanticPayload>
-readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
+readPayload(Operation *op, dataflow::OperationSchemaId schema) {
+  const dataflow::OperationSemanticsCase kind = dataflow::semanticsCase(schema);
   using Case = dataflow::OperationSemanticsCase;
   for (NamedAttribute attr : op->getDiscardableAttrDictionary()) {
     if (attr.getName().getValue() != dataflow::kEntityIdAttrName ||
@@ -229,6 +350,10 @@ readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
       return mismatch(op, kind);
     return dataflow::SemanticPayload{dataflow::NoPayload{}};
   }
+  case Case::LLVMRegisteredIntrinsic:
+    if (!llvm::isa<LLVM::CallIntrinsicOp>(op))
+      return mismatch(op, kind);
+    return dataflow::SemanticPayload{dataflow::NoPayload{}};
   case Case::ArithFloatingPoint: {
     auto fastMath = llvm::dyn_cast<arith::ArithFastMathInterface>(op);
     auto rounding = llvm::dyn_cast<arith::ArithRoundingModeInterface>(op);
@@ -400,8 +525,19 @@ std::optional<dataflow::OperationSchemaId>
 dataflow::operationSchemaOf(Operation *op) {
   if (!op)
     return std::nullopt;
-  std::optional<OperationSchemaId> schema =
-      findOperationSchema(op->getName().getStringRef());
+  const auto &index = operationIndex();
+  auto candidates = index.find(op->getName().getStringRef());
+  if (candidates == index.end())
+    return std::nullopt;
+  std::optional<OperationSchemaId> schema;
+  for (OperationSchemaId candidate : candidates->second) {
+    if (!matchesSelector(op,
+                         schemaTable()[static_cast<std::size_t>(candidate)]))
+      continue;
+    if (schema)
+      return std::nullopt;
+    schema = candidate;
+  }
   if (!schema)
     return std::nullopt;
   switch (semanticsCase(*schema)) {
@@ -496,8 +632,7 @@ dataflow::projectRegisteredActorSchemaProjection(Operation *op) {
         std::errc::invalid_argument,
         "'%s' is not a registered canonical Dataflow actor",
         op->getName().getStringRef().str().c_str());
-  llvm::Expected<SemanticPayload> payload =
-      readPayload(op, semanticsCase(*schema));
+  llvm::Expected<SemanticPayload> payload = readPayload(op, *schema);
   if (!payload)
     return payload.takeError();
   FunctionType type = FunctionType::get(op->getContext(), op->getOperandTypes(),
@@ -530,7 +665,7 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
   context.getOrLoadDialect<vector::VectorDialect>();
 
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   attachActorModel<OpClass>(context);
 #include "Dataflow/IR/OperationSchemas.inc"
 }

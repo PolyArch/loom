@@ -25,7 +25,7 @@ namespace dataflow {
 /// identity uses the registry-owned wire codec, never these numeric values.
 enum class OperationSchemaId : std::uint32_t {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   Name = Id,
 #include "Dataflow/IR/OperationSchemas.inc"
 };
@@ -47,8 +47,9 @@ enum class CanonicalDataflowActorKind : std::uint32_t {
 /// Count of registered schemas. Every schema id is in `[0, count)`.
 std::uint32_t operationSchemaCount();
 
-/// The stable spelling of one schema. It is the registered operation name
-/// owned by the operation's own definition, never a second string table.
+/// The stable readable spelling of one schema. A whole-class schema derives
+/// it from the registered operation name; a generic carrier derives it from
+/// the selected source-owner registry. It is never a hand-written alias.
 llvm::StringRef operationSchemaSpelling(OperationSchemaId schema);
 
 /// The stable spelling of one semantic case, used only for diagnostics.

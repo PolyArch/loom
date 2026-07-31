@@ -5,15 +5,15 @@
 //
 // Both outputs are X-macro row files. A row carries only the facts its
 // declaration owns: the record name is the C++ enumerator and, for a family,
-// the one attribute keyword. A schema's stable spelling is never restated
-// here; the emitted row names the operation class and the reader expands
-// `OpClass::getOperationName()`.
+// the one attribute keyword. A schema row names its operation carrier and one
+// closed instance selector. Whole-class rows derive their spelling from the
+// operation class; LLVM intrinsic rows derive it from LLVM's own registry.
 //
-// Generation fails closed on a duplicate id, record name, or stable wire tag,
-// on an actor kind or semantic case outside its closed C++ enum, on an empty
-// or repeated family member list, and on any id domain that is not dense
-// `[0, N)`. Rows are emitted in numeric-id order, while persistent codecs use
-// only the explicit wire tags carried by those rows.
+// Generation fails closed on a duplicate id, record name, stable wire tag, or
+// overlapping selector, on an actor kind or semantic case outside its closed
+// C++ enum, on an empty or repeated family member list, and on any id domain
+// that is not dense `[0, N)`. Rows are emitted in numeric-id order, while
+// persistent codecs use only the explicit wire tags carried by those rows.
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,6 +50,8 @@ struct SchemaRow {
   StringRef opClass;
   StringRef actorKind;
   StringRef semanticsCase;
+  StringRef selectorKind;
+  StringRef selectorValue;
 };
 
 struct FamilyRow {
@@ -151,18 +153,44 @@ readSchemas(const RecordKeeper &records,
     if (!caseNames.contains(semantics))
       PrintFatalError(record->getName() + " names semantics case '" +
                       semantics + "', which is not declared");
+    const Record *selector = record->getValueAsDef("instanceSelector");
+    const int64_t selectorId = selector->getValueAsInt("selectorId");
+    StringRef selectorKind = selector->getValueAsString("selectorKind");
+    StringRef selectorValue = selector->getValueAsString("selectorValue");
+    if ((selectorId == 0 && selectorKind != "WholeOperationClass") ||
+        (selectorId == 1 && selectorKind != "LLVMIntrinsic") ||
+        (selectorId != 0 && selectorId != 1))
+      PrintFatalError(record->getName() +
+                      " names an unknown operation instance selector");
+    if (selectorKind == "WholeOperationClass" &&
+        selectorValue != "not_intrinsic")
+      PrintFatalError(record->getName() +
+                      " gives the whole-class selector a value");
+    if (selectorKind == "LLVMIntrinsic" &&
+        record->getValueAsString("opClass") != "::mlir::LLVM::CallIntrinsicOp")
+      PrintFatalError(record->getName() +
+                      " applies an LLVM intrinsic selector to a non-LLVM "
+                      "carrier");
     rows.push_back({record->getValueAsInt("schemaId"),
                     record->getValueAsInt("stableWireTag"), record->getName(),
-                    record->getValueAsString("opClass"), actorKind, semantics});
+                    record->getValueAsString("opClass"), actorKind, semantics,
+                    selectorKind, selectorValue});
   }
   requireDenseDomain(rows, "operation schema");
   requireUniqueWireTags(rows, "operation schema");
 
-  StringSet<> classes;
-  for (const SchemaRow &row : rows)
-    if (!classes.insert(row.opClass).second)
-      PrintFatalError("two operation schemas name the same operation class " +
-                      row.opClass);
+  for (auto [leftIndex, left] : llvm::enumerate(rows)) {
+    for (const SchemaRow &right : llvm::drop_begin(rows, leftIndex + 1)) {
+      if (left.opClass != right.opClass)
+        continue;
+      if (left.selectorKind == "WholeOperationClass" ||
+          right.selectorKind == "WholeOperationClass" ||
+          (left.selectorKind == right.selectorKind &&
+           left.selectorValue == right.selectorValue))
+        PrintFatalError("operation schemas for " + left.opClass +
+                        " have overlapping instance selectors");
+    }
+  }
   return rows;
 }
 
@@ -242,7 +270,8 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
   emitHeader(os, "The canonical operation schema rows.");
   emitMacroGuard(os, "LOOM_OPERATION_SEMANTICS_CASE", "Name, Id, WireTag");
   emitMacroGuard(os, "LOOM_OPERATION_SCHEMA",
-                 "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase");
+                 "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase, "
+                 "SelectorKind, SelectorValue");
   os << "\n";
 
   for (const WireVocabularyRow &row : cases)
@@ -252,7 +281,8 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
   for (const SchemaRow &row : schemas)
     os << "LOOM_OPERATION_SCHEMA(" << row.name << ", " << row.id << ", "
        << row.wireTag << ", " << row.opClass << ", " << row.actorKind << ", "
-       << row.semanticsCase << ")\n";
+       << row.semanticsCase << ", " << row.selectorKind << ", "
+       << row.selectorValue << ")\n";
 
   os << "\n";
   emitMacroUndef(os, "LOOM_OPERATION_SEMANTICS_CASE");

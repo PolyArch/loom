@@ -101,7 +101,7 @@ bool expectValidationFailure(llvm::ArrayRef<std::uint8_t> bytes,
 bool checkVocabularyCodecs() {
   constexpr OperationSchemaId schemas[] = {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   OperationSchemaId::Name,
 #include "Dataflow/IR/OperationSchemas.inc"
   };
@@ -322,9 +322,9 @@ bool checkOwnedAtomCodecs(MLIRContext &context) {
                         "trailing bytes");
   }
 
-  Type aggregateBody[] = {IntegerType::get(&context, 32),
-                          LLVM::LLVMArrayType::get(
-                              IntegerType::get(&context, 16), 4)};
+  Type aggregateBody[] = {
+      IntegerType::get(&context, 32),
+      LLVM::LLVMArrayType::get(IntegerType::get(&context, 16), 4)};
   Type namedAggregateA = LLVM::LLVMStructType::getNewIdentified(
       &context, "private.aggregate.a", aggregateBody, false);
   Type namedAggregateB = LLVM::LLVMStructType::getNewIdentified(

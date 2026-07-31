@@ -112,9 +112,9 @@ floatPredicate(const CanonicalActorSchemaProjection &actor);
 llvm::Error admitScalarOrdinaryIntegerAdmission(
     const FamilyCapabilityParams &capability,
     const CanonicalActorSchemaProjection &actor);
-llvm::Error admitScalarUnaryIntegerAdmission(
-    const FamilyCapabilityParams &capability,
-    const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitScalarUnaryIntegerAdmission(const FamilyCapabilityParams &capability,
+                                 const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
@@ -1373,6 +1373,8 @@ llvm::Error admitScalarIntegerFloatConversionAdmission(
     break;
   case OperationSchemaId::ArithFPToSI:
   case OperationSchemaId::ArithFPToUI:
+  case OperationSchemaId::LLVMFPToSISat:
+  case OperationSchemaId::LLVMFPToUISat:
     floatType = actor.type.getInput(0);
     integerType = actor.type.getResult(0);
     break;
@@ -1699,9 +1701,9 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
   return admitUniformInteger(actor, params.integerWidths, 2);
 }
 
-llvm::Error admitScalarUnaryIntegerAdmission(
-    const FamilyCapabilityParams &capability,
-    const CanonicalActorSchemaProjection &actor) {
+llvm::Error
+admitScalarUnaryIntegerAdmission(const FamilyCapabilityParams &capability,
+                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarIntegerParams>(capability);
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))

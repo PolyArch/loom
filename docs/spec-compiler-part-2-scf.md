@@ -130,6 +130,12 @@ The signed and unsigned saturating add and subtract intrinsics are such
 registered operations: no standard `arith` operation states their exact
 saturation semantics, so mechanical raising preserves
 `llvm.intr.{s,u}{add,sub}.sat` rather than expanding a private clamp graph.
+The overloaded `llvm.fptosi.sat` and `llvm.fptoui.sat` intrinsics follow the
+same rule. They remain exact `llvm.call_intrinsic` operations because no
+standard operation states their NaN-to-zero and range-clamping semantics.
+Their full overloaded spelling and function type must remain unchanged until
+the Canonical Dataflow actor projection validates them against LLVM's
+intrinsic registry.
 
 The LLVM dialect `passthrough` function attribute is an importer-owned lossless
 container, not a floating-point-environment authority. Mechanical raising uses

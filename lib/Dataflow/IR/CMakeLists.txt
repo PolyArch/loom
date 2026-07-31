@@ -67,6 +67,7 @@ mlir_target_link_libraries(MLIRDataflow PUBLIC
   MLIRMathDialect
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRTargetLLVMIRExport
   MLIRUBDialect
   MLIRVectorDialect
 )

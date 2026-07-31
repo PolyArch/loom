@@ -61,6 +61,7 @@ def ArithNonNegative : SemanticsCase<12, 0x4c53010d>;
 def VectorStaticPosition : SemanticsCase<13, 0x4c53010e>;
 def VectorShuffleMask : SemanticsCase<14, 0x4c53010f>;
 def LLVMDisjoint : SemanticsCase<15, 0x4c530110>;
+def LLVMRegisteredIntrinsic : SemanticsCase<16, 0x4c530111>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -307,6 +308,11 @@ def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Co
 // spelling. Their aggregate position is projected through one closed typed
 // case. `llvm.shufflevector` on a fixed vector with a constant mask is exactly
 // `vector.shuffle`, so it has no schema of its own.
+//
+// `llvm.call_intrinsic` is a generic carrier rather than one semantic
+// operation. Only exact source-owned intrinsic IDs with registered disjoint
+// selectors may enter Canonical Dataflow. Their overloaded spelling and
+// signature are validated against LLVM's intrinsic registry.
 //===----------------------------------------------------------------------===//
 
 def UBPoison : ActorSchema<67, 0x4c530244, "::mlir::ub::PoisonOp", "Compute",
@@ -337,6 +343,12 @@ def LLVMUAddSat : ActorSchema<99, 0x4c530264, "::mlir::LLVM::UAddSat", "Compute"
     NoSemanticPayload>;
 def LLVMSSubSat : ActorSchema<100, 0x4c530265, "::mlir::LLVM::SSubSat", "Compute",
     NoSemanticPayload>;
+def LLVMFPToSISat : ActorSchema<103, 0x4c530268,
+    "::mlir::LLVM::CallIntrinsicOp", "Compute", LLVMRegisteredIntrinsic,
+    LLVMIntrinsicSelector<"fptosi_sat">>;
+def LLVMFPToUISat : ActorSchema<104, 0x4c530269,
+    "::mlir::LLVM::CallIntrinsicOp", "Compute", LLVMRegisteredIntrinsic,
+    LLVMIntrinsicSelector<"fptoui_sat">>;
 
 //===----------------------------------------------------------------------===//
 // Canonical Dataflow control and memory actor schemas
@@ -415,7 +427,7 @@ def ScalarIntegerToFloat : ImplementationFamily<11,
     [ArithSIToFP, ArithUIToFP],
     ScalarIntegerFloatConversionParams, ScalarIntegerFloatConversionAdmission>;
 def ScalarFloatToInteger : ImplementationFamily<12,
-    [ArithFPToSI, ArithFPToUI],
+    [ArithFPToSI, ArithFPToUI, LLVMFPToSISat, LLVMFPToUISat],
     ScalarIntegerFloatConversionParams, ScalarIntegerFloatConversionAdmission>;
 def ScalarIntegerMultiply : ImplementationFamily<13, [ArithMulI],
     ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;

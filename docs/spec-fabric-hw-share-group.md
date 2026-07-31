@@ -118,7 +118,7 @@ relations:
 | `ScalarFloatCompareMinMax` | `arith.cmpf`, `arith.minimumf`, `arith.maximumf`, `arith.minnumf`, `arith.maxnumf` |
 | `ScalarFloatWidthCast` | `arith.extf`, `arith.truncf` |
 | `ScalarIntegerToFloat` | `arith.sitofp`, `arith.uitofp` |
-| `ScalarFloatToInteger` | `arith.fptosi`, `arith.fptoui` |
+| `ScalarFloatToInteger` | `arith.fptosi`, `arith.fptoui`, `llvm.fptosi.sat`, `llvm.fptoui.sat` |
 | `ScalarIntegerMultiply` | `arith.muli` |
 | `ScalarFloatMultiply` | `arith.mulf` |
 | `ScalarFloatFma` | `math.fma` |
@@ -129,6 +129,16 @@ also belong to a separately registered fixed-vector family. Basic LLVM-dialect
 aliases are normalized before Canonical Dataflow and are not duplicate
 members. An irreducible LLVM compute intrinsic requires its own registered
 operation schema and a physically justified family admission.
+
+The saturating and ordinary floating-to-integer schemas belong to one
+`ScalarFloatToInteger` implementation family because the saturation path is
+an optional extension of the same converter datapath. Family membership does
+not claim that every concrete converter contains that extension. A concrete
+resource enables exactly its implemented subset through `op_list`; no
+`supports_saturation` parameter, second converter family, or backend-private
+mode repeats that fact. The typed integer/float relation and floating behavior
+profile still determine the supported format pairs and exceptional-value
+contract.
 
 `ScalarValueSelect` is a runtime scalar value selector and is not the
 stream-token semantics of `dataflow.mux`. `ScalarBitReinterpret` requires equal

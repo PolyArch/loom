@@ -22,15 +22,33 @@ class SemanticsCase<int id, int wireTag> {
   int stableWireTag = wireTag;
 }
 
+// One closed selector for an instance carried by an operation class. Most
+// schemas select the whole class. A generic carrier may instead select one
+// source-owner identity, but selectors for one class must remain disjoint.
+class OperationInstanceSelector<int id, string kind, string value> {
+  int selectorId = id;
+  string selectorKind = kind;
+  string selectorValue = value;
+}
+
+def WholeOperationClass : OperationInstanceSelector<
+    0, "WholeOperationClass", "not_intrinsic">;
+
+class LLVMIntrinsicSelector<string intrinsic> : OperationInstanceSelector<
+    1, "LLVMIntrinsic", intrinsic>;
+
 // One registered canonical actor operation schema. `cls` is the operation
-// class that owns the source semantics and the stable spelling.
+// class that carries the source semantics. `selector` identifies the exact
+// source-owned instance when that class is a generic carrier.
 class ActorSchema<int id, int wireTag, string cls, string kind,
-                  SemanticsCase case> {
+                  SemanticsCase case,
+                  OperationInstanceSelector selector = WholeOperationClass> {
   int schemaId = id;
   int stableWireTag = wireTag;
   string opClass = cls;
   string actorKind = kind;
   SemanticsCase semantics = case;
+  OperationInstanceSelector instanceSelector = selector;
 }
 
 // One closed typed `hw_params` record schema an implementation family selects.

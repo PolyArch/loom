@@ -53,6 +53,14 @@ overflow, exactness, fast-math, rounding, and predicates remain explicit. A
 single generated OperationSchema projection prevents frontend, Dataflow,
 simulator, Fabric, and backend from maintaining separate name tables.
 
+Some native operations, notably `llvm.call_intrinsic`, are generic carriers
+rather than one semantic operation. Rewriting every irreducible intrinsic as
+a new Dataflow operation would duplicate the source owner's semantics, while
+registering the carrier wholesale would admit unrelated intrinsics. Finite,
+disjoint typed instance selectors preserve the exact LLVM operation and use
+LLVM's own intrinsic registry as the semantic authority. Loom then owns only
+the stable typed projection needed by downstream components.
+
 Source-backed execution and region extraction need finite call lineage, while
 ordinary C harnesses often pass a compile-time constant callback through one
 internal dispatcher. Treating that call as permanently opaque loses a fact

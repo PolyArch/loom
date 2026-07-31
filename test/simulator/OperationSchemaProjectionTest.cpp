@@ -299,6 +299,57 @@ void checkSaturatingIntegerFamily() {
   }
 }
 
+void checkSaturatingFloatToInteger() {
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::Type f32 = mlir::Float32Type::get(&context);
+  mlir::Type i8 = mlir::IntegerType::get(&context, 8);
+  mlir::FunctionType conversion =
+      mlir::FunctionType::get(&context, {f32}, {i8});
+  PrimitiveOperationDescriptor signedSaturating =
+      descriptor(OperationSchemaId::LLVMFPToSISat, conversion,
+                 dataflow::NoPayload{}, 8, 32);
+  PrimitiveOperationDescriptor unsignedSaturating =
+      descriptor(OperationSchemaId::LLVMFPToUISat, conversion,
+                 dataflow::NoPayload{}, 8, 32);
+
+  require(__func__,
+          loom::sim::isSupportedPrimitiveOperation(
+              OperationSchemaId::LLVMFPToSISat),
+          "registered signed saturating conversion has no primitive provider");
+  require(
+      __func__,
+      loom::sim::isSupportedPrimitiveOperation(
+          OperationSchemaId::LLVMFPToUISat),
+      "registered unsigned saturating conversion has no primitive provider");
+
+  PrimitiveValue signedOverflow =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              signedSaturating, {floating32(0x4302c000U)}));
+  require(__func__,
+          definedBits(__func__, signedOverflow) == llvm::APInt(8, 127),
+          "signed saturating conversion did not clamp its upper bound");
+
+  PrimitiveValue unsignedUnderflow =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              unsignedSaturating, {floating32(0xbf800000U)}));
+  require(__func__, definedBits(__func__, unsignedUnderflow).isZero(),
+          "unsigned saturating conversion did not clamp a negative input");
+
+  PrimitiveValue nan = PrimitiveValue::floating(
+      llvm::APFloat::getNaN(llvm::APFloat::IEEEsingle(), /*Negative=*/false,
+                            /*Payload=*/0));
+  PrimitiveValue nanResult = takeValue(
+      __func__, loom::sim::evaluatePrimitiveOperation(signedSaturating, {nan}));
+  require(__func__, definedBits(__func__, nanResult).isZero(),
+          "saturating conversion did not map NaN to zero");
+
+  PrimitiveValue poisonResult =
+      takeValue(__func__, loom::sim::evaluatePrimitiveOperation(
+                              signedSaturating, {PrimitiveValue::poison()}));
+  require(__func__, poisonResult.state == PrimitiveValueState::Poison,
+          "saturating conversion did not propagate poison");
+}
+
 void checkLazySelectionAndFusedFma() {
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   mlir::Type i1 = mlir::IntegerType::get(&context, 1);
@@ -426,6 +477,7 @@ int main() {
   checkTypedLLVMExceptionalPolicies();
   checkTypedIntegerPolicies();
   checkSaturatingIntegerFamily();
+  checkSaturatingFloatToInteger();
   checkLazySelectionAndFusedFma();
   checkTypedProviderAvailability();
   checkDeterministicCosineProvider();

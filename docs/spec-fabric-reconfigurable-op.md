@@ -94,6 +94,15 @@ Fabric therefore contains the complete enabled subset but no workload-selected
 member. A singleton `op_list` requires no operation selector; its configured
 field set may contain only another necessary parameter or may be empty.
 
+An additive circuit feature is represented by the additional operation
+schemas it actually enables, not by a parallel feature flag. For example, an
+ordinary floating-to-integer converter may list only `arith.fptosi` and
+`arith.fptoui`, while a converter with real clamp and NaN handling may also
+list `llvm.fptosi.sat` and `llvm.fptoui.sat`. Both bind the same
+`ScalarFloatToInteger` implementation family and use the same typed
+integer/float format relation. `op_list` is the sole enabled-member authority;
+the parameter record must not repeat saturation support.
+
 Verification must reject:
 
 * an `op_list` member outside the selected implementation family;

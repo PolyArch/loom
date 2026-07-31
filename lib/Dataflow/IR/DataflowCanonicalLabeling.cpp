@@ -203,8 +203,7 @@ void appendFunctionArgResAttrs(llvm::raw_ostream &os, StringRef name,
 // relations, keyed by their pre-order position.
 llvm::Expected<std::string>
 opIntrinsic(Operation *op, llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
-  if (op->getParentOfType<GraphOp>() &&
-      findOperationSchema(op->getName().getStringRef())) {
+  if (op->getParentOfType<GraphOp>() && operationSchemaOf(op)) {
     llvm::Expected<::loom::CanonicalSemanticBytes> projection =
         projectRegisteredActorSchemaProjectionBytes(op);
     if (!projection) {

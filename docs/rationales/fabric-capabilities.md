@@ -28,6 +28,15 @@ A software operation may be admitted by several physical families, but one
 concrete capability template selects one family. This preserves genuine
 hardware alternatives without making family selection ambiguous.
 
+Ordinary and saturating floating-to-integer conversion share most of one real
+converter datapath. Treating saturation as a separate implementation family
+would hide that physical sharing; adding a `supports_saturation` flag would
+repeat the enabled-member fact already owned by `op_list`. The existing
+converter family therefore admits both semantic forms, while each concrete
+resource lists only the forms its circuitry implements. This keeps physical
+sharing in the HSG, exact semantics in OperationSchema, and the installed
+feature subset in one concrete capability.
+
 ## Why Capability Is Parameterized
 
 The earlier model enumerated every exact semantic mode and took Cartesian

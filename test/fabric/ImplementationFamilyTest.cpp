@@ -198,8 +198,8 @@ bool checkMembership() {
       ok = false;
     }
   }
-  const std::array zeroCountSpellings = {
-      "math.ctlz", "math.cttz", "llvm.intr.ctlz", "llvm.intr.cttz"};
+  const std::array zeroCountSpellings = {"math.ctlz", "math.cttz",
+                                         "llvm.intr.ctlz", "llvm.intr.cttz"};
   if (!scalarCountZeros || !vectorCountZeros) {
     llvm::errs() << "the integer zero-count families are not registered\n";
     ok = false;
@@ -354,9 +354,8 @@ bool checkIntegerAdmission(MLIRContext &context) {
       ok &= expectAdmission(family, params, *projection, admitted, reason);
   };
   check(add8, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, true, {});
-  check(saturatingAdd,
-        ImplementationFamilyId::ScalarIntegerSaturatingAddSub, &ordinary,
-        true, {});
+  check(saturatingAdd, ImplementationFamilyId::ScalarIntegerSaturatingAddSub,
+        &ordinary, true, {});
   check(saturatingAdd, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary,
         false, "actor schema is not admitted");
   check(add7, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, false,
@@ -500,6 +499,14 @@ bool checkCastRelations(MLIRContext &context) {
                                                 i64, fixture.poison(f64));
   Operation *f64ToI32 = arith::FPToSIOp::create(fixture.builder, fixture.loc,
                                                 i32, fixture.poison(f64));
+  Operation *saturatingF32ToI16 = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptosi.sat.i16.f32"),
+      ValueRange{fixture.poison(f32)});
+  Operation *saturatingF16ToI16 = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptosi.sat.i16.f16"),
+      ValueRange{fixture.poison(f16)});
   Operation *bitcast = arith::BitcastOp::create(fixture.builder, fixture.loc,
                                                 f32, fixture.poison(i32));
   Operation *wideBitcast = arith::BitcastOp::create(
@@ -520,7 +527,8 @@ bool checkCastRelations(MLIRContext &context) {
                                 {FloatFormat::F32, FloatFormat::F64}}),
       FloatBehaviorProfile::strictIEEE()};
   IntegerFloatFormatRelation conversionPairs =
-      IntegerFloatFormatRelation::get({{IntegerWidth::I32, FloatFormat::F32},
+      IntegerFloatFormatRelation::get({{IntegerWidth::I16, FloatFormat::F32},
+                                       {IntegerWidth::I32, FloatFormat::F32},
                                        {IntegerWidth::I64, FloatFormat::F64}});
   FamilyCapabilityParams conversions = ScalarIntegerFloatConversionParams{
       conversionPairs, FloatBehaviorProfile::strictIEEE()};
@@ -558,6 +566,10 @@ bool checkCastRelations(MLIRContext &context) {
         true, {});
   check(f64ToI32, ImplementationFamilyId::ScalarFloatToInteger, conversions,
         false, "integer and floating relation");
+  check(saturatingF32ToI16, ImplementationFamilyId::ScalarFloatToInteger,
+        conversions, true, {});
+  check(saturatingF16ToI16, ImplementationFamilyId::ScalarFloatToInteger,
+        conversions, false, "integer and floating relation");
   check(bitcast, ImplementationFamilyId::ScalarBitReinterpret, reinterpretation,
         true, {});
   check(wideBitcast, ImplementationFamilyId::ScalarBitReinterpret,

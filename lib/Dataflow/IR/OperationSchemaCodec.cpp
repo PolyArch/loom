@@ -8,8 +8,8 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -208,7 +208,7 @@ llvm::Expected<std::uint32_t>
 schemaWireTag(dataflow::OperationSchemaId schema) {
   switch (schema) {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   case dataflow::OperationSchemaId::Name:                                      \
     return WireTag;
 #include "Dataflow/IR/OperationSchemas.inc"
@@ -220,7 +220,7 @@ llvm::Expected<dataflow::OperationSchemaId>
 schemaFromWireTag(std::uint32_t wireTag) {
   switch (wireTag) {
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   case WireTag:                                                                \
     return dataflow::OperationSchemaId::Name;
 #include "Dataflow/IR/OperationSchemas.inc"
@@ -405,7 +405,7 @@ llvm::Expected<std::uint32_t> floatFormatWireTag(FloatType type) {
 }
 
 llvm::Expected<FloatType> floatTypeFromWireTag(std::uint32_t wireTag,
-                                                MLIRContext *context) {
+                                               MLIRContext *context) {
   switch (wireTag) {
   case 1:
     return Float8E5M2Type::get(context);
@@ -622,12 +622,11 @@ llvm::Expected<TypeSummary> validateType(Reader &reader, unsigned depth);
 llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
                                 unsigned depth);
 
-llvm::Expected<std::uint64_t>
-readCount(Reader &reader, const llvm::Twine &what,
-          std::size_t minimumBytes);
+llvm::Expected<std::uint64_t> readCount(Reader &reader, const llvm::Twine &what,
+                                        std::size_t minimumBytes);
 
-llvm::Expected<SmallVector<std::int64_t>>
-decodeShape(Reader &reader, bool requirePositive) {
+llvm::Expected<SmallVector<std::int64_t>> decodeShape(Reader &reader,
+                                                      bool requirePositive) {
   auto rank = readCount(reader, "type rank", 8);
   if (!rank)
     return rank.takeError();
@@ -655,9 +654,8 @@ decodeShape(Reader &reader, bool requirePositive) {
   return shape;
 }
 
-llvm::Expected<SmallVector<Type>> decodeTypeList(Reader &reader,
-                                                 MLIRContext *context,
-                                                 unsigned depth) {
+llvm::Expected<SmallVector<Type>>
+decodeTypeList(Reader &reader, MLIRContext *context, unsigned depth) {
   auto count = readCount(reader, "type count", 4);
   if (!count)
     return count.takeError();
@@ -1308,6 +1306,7 @@ llvm::Error encodePayload(Writer &writer,
   using Case = dataflow::OperationSemanticsCase;
   switch (semanticCase) {
   case Case::NoSemanticPayload:
+  case Case::LLVMRegisteredIntrinsic:
     if (!std::holds_alternative<dataflow::NoPayload>(payload))
       break;
     return llvm::Error::success();
@@ -1451,6 +1450,7 @@ llvm::Error validatePayload(Reader &reader,
   using Case = dataflow::OperationSemanticsCase;
   switch (semanticCase) {
   case Case::NoSemanticPayload:
+  case Case::LLVMRegisteredIntrinsic:
     return llvm::Error::success();
   case Case::ArithFloatingPoint: {
     auto flags = reader.u32("fast-math flags");

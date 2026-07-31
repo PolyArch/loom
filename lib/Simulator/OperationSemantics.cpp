@@ -68,6 +68,8 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::ArithUIToFP:
   case Schema::ArithFPToSI:
   case Schema::ArithFPToUI:
+  case Schema::LLVMFPToSISat:
+  case Schema::LLVMFPToUISat:
   case Schema::MathAbsF:
   case Schema::MathSin:
   case Schema::MathCos:
@@ -961,7 +963,9 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
   }
 
   case Schema::ArithFPToSI:
-  case Schema::ArithFPToUI: {
+  case Schema::ArithFPToUI:
+  case Schema::LLVMFPToSISat:
+  case Schema::LLVMFPToUISat: {
     if (llvm::Error arity = requireArity(schema, operands, 1))
       return std::move(arity);
     if (auto payload = requirePayload<dataflow::NoPayload>(descriptor);
@@ -978,11 +982,15 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     auto value = asFloat(schema, operands[0], *type);
     if (!value)
       return value.takeError();
-    llvm::APSInt result(*width, schema == Schema::ArithFPToUI);
+    const bool isUnsigned =
+        schema == Schema::ArithFPToUI || schema == Schema::LLVMFPToUISat;
+    const bool isSaturating =
+        schema == Schema::LLVMFPToSISat || schema == Schema::LLVMFPToUISat;
+    llvm::APSInt result(*width, isUnsigned);
     bool exact = false;
     llvm::APFloat::opStatus status =
         value->convertToInteger(result, llvm::RoundingMode::TowardZero, &exact);
-    if ((status & llvm::APFloat::opInvalidOp) != 0)
+    if (!isSaturating && (status & llvm::APFloat::opInvalidOp) != 0)
       return PrimitiveValue::poison();
     return PrimitiveValue::integer(result);
   }

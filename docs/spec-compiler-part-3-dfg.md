@@ -494,6 +494,18 @@ CanonicalActorSchemaProjection {
 }
 ```
 
+The registry normally selects the complete native operation class. A native
+operation that is intentionally a generic semantic carrier may instead own a
+finite set of disjoint typed instance selectors. `llvm.call_intrinsic` uses
+this mechanism for irreducible LLVM intrinsics: LLVM's intrinsic ID and
+signature registry select the schema, and the reconstructed canonical
+overloaded spelling must equal the stored spelling byte for byte. Fast-math,
+operand bundles, argument or result attributes, unknown intrinsic IDs,
+invalid signatures, and noncanonical overload spellings fail closed unless
+the selected schema explicitly owns that state. A generic carrier name alone
+is never an actor identity, and no consumer may maintain an intrinsic-name
+table.
+
 This notation describes one registered typed projection, not an IR operation,
 attribute, Artifact, or second semantic language. The projection must classify
 every property and attribute that can affect one firing. Unknown or

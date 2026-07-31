@@ -703,7 +703,7 @@ one independently editable backend mode table.
 | `ScalarFloatCompareMinMax` | formats `{f16, bf16, f32, f64}`, all registered schema-valid floating comparison predicates, and the strict floating behavior profile |
 | `ScalarFloatWidthCast` | source and destination formats `{f16, bf16, f32, f64}` under the registered schema-valid widening or narrowing relation |
 | `ScalarIntegerToFloat` | integer widths `{8, 16, 32, 64}`, formats `{f16, bf16, f32, f64}`, and the strict floating behavior profile |
-| `ScalarFloatToInteger` | formats `{f16, bf16, f32, f64}`, integer widths `{8, 16, 32, 64}`, and the strict floating behavior profile |
+| `ScalarFloatToInteger` | formats `{f16, bf16, f32, f64}`, integer widths `{8, 16, 32, 64}`, the strict floating behavior profile, and ordinary plus saturating conversion schemas |
 | `ScalarIntegerMultiply` | integer widths `{8, 16, 32, 64}` |
 | `ScalarFloatMultiply` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
 | `ScalarFloatFma` | formats `{f16, bf16, f32, f64}` and exact single-rounding strict fused semantics |
@@ -725,6 +725,13 @@ the set of actor permissions required by the implementation, so the builtin
 strict profile uses the empty mask and refines every actor relaxation. Operation
 identity continues to distinguish the different floating min/max NaN
 contracts.
+
+The builtin `CoreAluFu` constructs one `ScalarFloatToInteger` resource. Its
+enabled operation list contains ordinary signed and unsigned conversion plus
+the signed and unsigned LLVM saturating conversion schemas. This is one
+converter with an enabled clamp extension, not two independently routed
+resources. A custom ADG may omit the saturating schemas from that resource
+when the physical converter omits the clamp and NaN-to-zero logic.
 
 Each concrete operation uses 64-bit untagged scalar data ports. Conditions are
 one-bit ports. A comparison result occupies the low bit of a 64-bit physical

@@ -67,7 +67,7 @@ bool nativeSemanticInterfacesAreClassified(OperationSemanticsCase semantics) {
 bool checkRegistry(MLIRContext &context) {
   bool ok = true;
 #define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
-                              SemanticsCase)                                   \
+                              SemanticsCase, SelectorKind, SelectorValue)      \
   if (!nativeSemanticInterfacesAreClassified<OpClass>(                         \
           OperationSemanticsCase::SemanticsCase)) {                            \
     llvm::errs() << OpClass::getOperationName()                                \
@@ -437,6 +437,77 @@ bool checkPoisonAndAggregateState(MLIRContext &context) {
   return ok;
 }
 
+bool checkRegisteredLLVMIntrinsicSelectors(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type f32 = fixture.builder.getF32Type();
+  Type i16 = fixture.builder.getI16Type();
+  Value input = fixture.poison(f32);
+
+  Operation *signedSaturating = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptosi.sat.i16.f32"),
+      ValueRange{input});
+  Operation *unsignedSaturating = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptoui.sat.i16.f32"),
+      ValueRange{input});
+  Operation *wrongOverload = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptosi.sat.i32.f32"),
+      ValueRange{input});
+  Operation *relaxed = LLVM::CallIntrinsicOp::create(
+      fixture.builder, fixture.loc, i16,
+      fixture.builder.getStringAttr("llvm.fptosi.sat.i16.f32"),
+      ValueRange{input});
+  llvm::cast<LLVM::CallIntrinsicOp>(relaxed).setFastmathFlags(
+      LLVM::FastmathFlags::nnan);
+
+  bool ok = true;
+  std::optional<OperationSchemaId> signedSchema =
+      findOperationSchema("llvm.fptosi.sat");
+  std::optional<OperationSchemaId> unsignedSchema =
+      findOperationSchema("llvm.fptoui.sat");
+  if (!signedSchema || !unsignedSchema || signedSchema == unsignedSchema) {
+    llvm::errs() << "saturating conversion selectors are not distinct "
+                    "registered schemas\n";
+    ok = false;
+  }
+  if (signedSchema && operationSchemaOf(signedSaturating) != signedSchema) {
+    llvm::errs() << "llvm.fptosi.sat did not resolve through its exact "
+                    "intrinsic selector\n";
+    ok = false;
+  }
+  if (unsignedSchema &&
+      operationSchemaOf(unsignedSaturating) != unsignedSchema) {
+    llvm::errs() << "llvm.fptoui.sat did not resolve through its exact "
+                    "intrinsic selector\n";
+    ok = false;
+  }
+  if (operationSchemaOf(wrongOverload)) {
+    llvm::errs() << "a noncanonical overloaded intrinsic spelling was "
+                    "admitted\n";
+    ok = false;
+  }
+  if (operationSchemaOf(relaxed)) {
+    llvm::errs() << "a saturating intrinsic with unregistered semantic state "
+                    "was admitted\n";
+    ok = false;
+  }
+
+  if (signedSchema) {
+    std::optional<CanonicalActorSchemaProjection> projection =
+        projectActor(signedSaturating, ok);
+    if (projection &&
+        (projection->schema != *signedSchema ||
+         projection->type != fixture.builder.getFunctionType({f32}, {i16}) ||
+         !std::holds_alternative<NoPayload>(projection->payload))) {
+      llvm::errs() << "llvm.fptosi.sat lost its exact typed projection\n";
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 bool checkFailClosedProjection(MLIRContext &context) {
   OpFixture fixture(context);
   Value lhs = fixture.poison(fixture.builder.getI32Type());
@@ -596,6 +667,7 @@ int main() {
   ok &= checkSemanticProjection(context);
   ok &= checkVectorStructure(context);
   ok &= checkPoisonAndAggregateState(context);
+  ok &= checkRegisteredLLVMIntrinsicSelectors(context);
   ok &= checkFailClosedProjection(context);
   ok &= checkMemorySourceAlignmentIdentity(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

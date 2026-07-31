@@ -7,6 +7,7 @@
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "Common/ArtifactStore.h"
 
@@ -1032,6 +1033,29 @@ void importedPointerCreatesLogicalView() {
           "two typed bindings of one pointer derive two logical views");
 }
 
+void registeredIntrinsicCarrierFinalizes() {
+  const char *test = "registeredIntrinsicCarrierFinalizes";
+  CanonicalDataflowArtifact artifact = finalize(test, R"mlir(
+module {
+  dataflow.graph private @saturating(%start: none) -> i16
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = dataflow.constant %start {const_value = 1.300000e+02 : f32} : f32
+    %converted = llvm.call_intrinsic "llvm.fptosi.sat.i16.f32"(%value)
+        : (f32) -> i16
+    %result:2 = dataflow.sync %start, %converted
+        : (none, i16) -> (none, i16)
+    dataflow.graph.return values(%result#1 : i16) streams() memories()
+        complete(%result#0 : none)
+  }
+}
+)mlir");
+  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  CanonicalActorView actor = actorByName(test, view, "llvm.call_intrinsic");
+  require(test, operationSchemaOf(actor.op) == OperationSchemaId::LLVMFPToSISat,
+          "canonical import lost the intrinsic instance selector");
+}
+
 } // namespace
 
 int main() {
@@ -1046,6 +1070,7 @@ int main() {
   channelMulticastTerminals();
   memoryViewExposureService();
   importedPointerCreatesLogicalView();
+  registeredIntrinsicCarrierFinalizes();
   llvm::outs() << "all canonical dataflow artifact tests passed\n";
   return EXIT_SUCCESS;
 }
