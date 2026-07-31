@@ -327,6 +327,9 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "arm-nn-divide-by-power-of-two": "964506",
             "arm-nn-requantize": "3520317",
             "arm-nn-requantize-s64": "134213632",
+            "arm-nn-mult-by-power-of-two": "2147483640",
+            "arm-nn-exp-on-negative-values": "1672462419",
+            "arm-nn-one-over-one-plus-x-for-x-in-0-1": "1431655762",
         }
         external_root = corpus_inventory.resolve_externals_root(ROOT)
 
