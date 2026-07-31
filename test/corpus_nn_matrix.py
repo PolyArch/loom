@@ -71,6 +71,23 @@ _S4_VEC_MAT_CALL = (
     "const int32_t, const int32_t, const int32_t, const int32_t, "
     "const int32_t, const int32_t)",
 )
+_NT_T_MATRIX_CALLS = {
+    (
+        "arm_nn_mat_mult_nt_t_s8",
+        "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+        "const int32_t *, int8_t *, const int32_t *, const int32_t *, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t)",
+    ): ("arm_nn_mat_mult_nt_t_s8", False),
+    (
+        "arm_nn_mat_mult_nt_t_s4",
+        "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+        "const int32_t *, int8_t *, const int32_t *, const int32_t *, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): ("arm_nn_mat_mult_nt_t_s4", True),
+}
 
 
 def _render_s32_nt_t(_wrapper_symbol: str) -> str:
@@ -536,6 +553,122 @@ int main(void)
 """
 
 
+def _nt_t_matrix_renderer(symbol: str, packed: bool) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        if packed:
+            rhs_declaration = """static const int8_t kRhs[(kRhsRows * kRhsColumns) / 2] = {
+    (int8_t)0xe3, 0x15,
+    0x7a, (int8_t)0xd2,
+    0x17, 0x6b,
+};"""
+            unpack_helper = """static int32_t unpack_s4(const int8_t *packed, size_t index)
+{
+    const uint8_t byte = (uint8_t)packed[index / 2];
+    const uint8_t nibble =
+        (index & 1) == 0 ? (byte & 0x0f) : (byte >> 4);
+    return nibble < 8 ? (int32_t)nibble : (int32_t)nibble - 16;
+}"""
+            rhs_expression = (
+                "unpack_s4(kRhs, rhs_row * kRhsColumns + column)"
+            )
+            trailing_arguments = "kActivationMax, kLhsStride"
+        else:
+            rhs_declaration = """static const int8_t kRhs[kRhsRows * kRhsColumns] = {
+    3, -2, 5, 1,
+    -6, 7, 2, -3,
+    7, 1, -5, 6,
+};"""
+            unpack_helper = ""
+            rhs_expression = "kRhs[rhs_row * kRhsColumns + column]"
+            trailing_arguments = "kActivationMax, 1, kLhsStride"
+
+        template = """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {
+    kLhsRows = 3,
+    kRhsRows = 3,
+    kRhsColumns = 4,
+    kLhsStride = 6,
+    kInputOffset = 3,
+    kOutputOffset = 5,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -100,
+    kActivationMax = 100,
+    kOutputCount = kLhsRows * kRhsRows,
+};
+
+static const int8_t kLhs[kLhsRows * kLhsStride] = {
+    7, -3, 12, -5, 101, 102,
+    -6, 8, 2, 4, 103, 104,
+    9, 1, -7, 5, 105, 106,
+};
+@RHS_DECLARATION@
+static const int32_t kBias[kRhsRows] = {11, -23, 37};
+static const int32_t kMultipliers[kRhsRows] = {
+    kMultiplier, kMultiplier, kMultiplier,
+};
+static const int32_t kShifts[kRhsRows] = {kShift, kShift, kShift};
+
+@UNPACK_HELPER@
+
+int main(void)
+{
+    int8_t output[kOutputCount] = {0};
+    const arm_cmsis_nn_status status = @SYMBOL@(
+        kLhs, kRhs, kBias, output, kMultipliers, kShifts,
+        kLhsRows, kRhsRows, kRhsColumns, kInputOffset, kOutputOffset,
+        kActivationMin, @TRAILING_ARGUMENTS@);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+
+    for (size_t lhs_row = 0; lhs_row < kLhsRows; ++lhs_row)
+    {
+        for (size_t rhs_row = 0; rhs_row < kRhsRows; ++rhs_row)
+        {
+            int32_t expected = kBias[rhs_row];
+            for (size_t column = 0; column < kRhsColumns; ++column)
+            {
+                const int32_t lhs =
+                    kLhs[lhs_row * kLhsStride + column] + kInputOffset;
+                const int32_t rhs = @RHS_EXPRESSION@;
+                expected += lhs * rhs;
+            }
+            expected += kOutputOffset;
+            if (expected < kActivationMin)
+            {
+                expected = kActivationMin;
+            }
+            if (expected > kActivationMax)
+            {
+                expected = kActivationMax;
+            }
+            const size_t output_index = lhs_row * kRhsRows + rhs_row;
+            if (output[output_index] != expected)
+            {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+"""
+        return (
+            template.replace("@RHS_DECLARATION@", rhs_declaration)
+            .replace("@UNPACK_HELPER@", unpack_helper)
+            .replace("@SYMBOL@", symbol)
+            .replace("@TRAILING_ARGUMENTS@", trailing_arguments)
+            .replace("@RHS_EXPRESSION@", rhs_expression)
+        )
+
+    return render
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _S32_NT_T_CALL:
         return _render_s32_nt_t
@@ -552,4 +685,7 @@ def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
         return _render_svdf_s8
     if call == _S4_VEC_MAT_CALL:
         return _render_s4_vec_mat
+    nt_t_matrix = _NT_T_MATRIX_CALLS.get(call)
+    if nt_t_matrix is not None:
+        return _nt_t_matrix_renderer(*nt_t_matrix)
     return None
