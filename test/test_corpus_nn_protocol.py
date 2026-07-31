@@ -207,6 +207,33 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_s32_matrix_protocol_uses_strided_reference(self) -> None:
+        workload = _workload("arm-nn-mat-mult-nt-t-s8-s32")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+            self.assertIn("arm_nn_mat_mult_nt_t_s8_s32(", source)
+            self.assertIn("kDstIndexOffset = 2", source)
+            self.assertIn("(kLhs[row * kRhsRows + depth] + kLhsOffset)", source)
+            self.assertIn("kRhs[column * kRhsRows + depth]", source)
+            self.assertIn("expected[destination] +=", source)
+            self.assertEqual(
+                harness.protocol_symbols(workload.executable),
+                ("arm_nn_mat_mult_nt_t_s8_s32",),
+            )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",

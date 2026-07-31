@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 import corpus_inventory
+import corpus_nn_matrix
 from corpus_workload_errors import WorkloadProviderError
 
 
@@ -1668,7 +1669,7 @@ def _renderer_for(
         or workload.oracle.path != producer.public_symbol
     ):
         return None
-    return _RENDERERS.get(calls[0])
+    return _RENDERERS.get(calls[0]) or corpus_nn_matrix.renderer_for(calls[0])
 
 
 def supports_generated_cmsis_nn_protocol(
