@@ -745,6 +745,9 @@ std::optional<SignedRange> signedIndexRange(mlir::Value value) {
         llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
     if (!source)
       return std::nullopt;
+    if (std::optional<SignedRange> range = signedIndexRange(extension.getIn()))
+      return SignedRange{range->minimum.sext(width),
+                         range->maximum.sext(width)};
     return SignedRange{
         llvm::APInt::getSignedMinValue(source.getWidth()).sext(width),
         llvm::APInt::getSignedMaxValue(source.getWidth()).sext(width)};
@@ -754,6 +757,10 @@ std::optional<SignedRange> signedIndexRange(mlir::Value value) {
         llvm::dyn_cast<mlir::IntegerType>(extension.getIn().getType());
     if (!source)
       return std::nullopt;
+    if (std::optional<SignedRange> range = signedIndexRange(extension.getIn());
+        range && !range->minimum.isNegative())
+      return SignedRange{range->minimum.zext(width),
+                         range->maximum.zext(width)};
     return SignedRange{llvm::APInt(width, 0),
                        llvm::APInt::getMaxValue(source.getWidth()).zext(width)};
   }

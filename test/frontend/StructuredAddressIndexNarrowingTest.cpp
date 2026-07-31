@@ -160,11 +160,69 @@ module attributes {
     fail("dynamic byte stride lost its exact element projection");
 }
 
+void preservesNarrowSourceRangeThroughStrideWidening() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  llvm.data_layout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+} {
+  llvm.func @widened_complex_stride(%input: !llvm.ptr, %rows: i16) {
+    %c0_i32 = arith.constant 0 : i32
+    %c-1_i32 = arith.constant -1 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %rows_i32 = arith.extui %rows : i16 to i32
+    %stride_i32 = arith.shli %rows_i32, %c1_i32
+        overflow<nsw, nuw> : i32
+    %stride_i64 = arith.extui %stride_i32 nneg : i32 to i64
+    %result:2 = scf.while (%cursor = %input, %remaining = %rows_i32)
+        : (!llvm.ptr, i32) -> (!llvm.ptr, i32) {
+      %value = llvm.load %cursor : !llvm.ptr -> f32
+      %next_cursor = llvm.getelementptr inbounds %cursor[%stride_i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %next_remaining = arith.addi %remaining, %c-1_i32 : i32
+      %more = arith.cmpi ne, %next_remaining, %c0_i32 : i32
+      scf.condition(%more) %next_cursor, %next_remaining : !llvm.ptr, i32
+    } do {
+    ^bb0(%cursor: !llvm.ptr, %remaining: i32):
+      scf.yield %cursor, %remaining : !llvm.ptr, i32
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the widened stride-range fixture");
+  auto function =
+      module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("widened_complex_stride");
+  if (!function)
+    fail("widened stride-range fixture omitted its function");
+
+  auto normalized = loom::frontend::detail::materializeAddressIndexContract(
+      *module, function.getOperation(), 64,
+      [](mlir::Block *, mlir::Block *) { return llvm::Error::success(); });
+  if (!normalized)
+    fail(llvm::toString(normalized.takeError()));
+
+  mlir::scf::WhileOp loop;
+  function.walk([&](mlir::scf::WhileOp candidate) { loop = candidate; });
+  if (!loop)
+    fail("widened stride-range normalization removed the counted loop");
+  for (mlir::Value init : loop.getInits())
+    if (llvm::isa<mlir::LLVM::LLVMPointerType>(init.getType()))
+      fail("widened stride-range retained raw pointer induction");
+}
+
 } // namespace
 
 int main() {
   normalizesAsymmetricPointerInduction();
   normalizesInvariantDynamicByteStride();
+  preservesNarrowSourceRangeThroughStrideWidening();
   llvm::outs() << "structured address index narrowing anchor passed\n";
   return EXIT_SUCCESS;
 }
