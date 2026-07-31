@@ -17,6 +17,7 @@ from typing import Sequence
 
 import corpus_inventory
 import corpus_dsp_protocol
+import corpus_nn_protocol
 from corpus_workload_errors import WorkloadProviderError
 
 
@@ -428,7 +429,12 @@ def materialize_cmsis_nn_harness(
         )
 
     uses_unity = any(
-        workload.identity != _CMSIS_NN_DIRECT_CONVOLUTION_ID for workload in workloads
+        workload.identity != _CMSIS_NN_DIRECT_CONVOLUTION_ID
+        and not isinstance(
+            workload.producer,
+            corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+        )
+        for workload in workloads
     )
     unity_source = external_root / "unity" if uses_unity else None
     if unity_source is not None:
@@ -460,12 +466,15 @@ def materialize_cmsis_nn_harness(
     cmake_targets: list[_CmsisNnCmakeTarget] = []
     for workload in workloads:
         if workload.suite != "cmsis-nn" or not isinstance(
-            workload.producer, corpus_inventory.CmsisNnWorkloadProducer
+            workload.producer,
+            (
+                corpus_inventory.CmsisNnWorkloadProducer,
+                corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+            ),
         ):
             raise WorkloadProviderError(
                 f"workload is not owned by the CMSIS-NN provider: {workload.identity}"
             )
-        owner_target = workload.producer.target
         target = workload.executable
         try:
             expected_target = corpus_inventory.operator_workload_target(
@@ -481,6 +490,36 @@ def materialize_cmsis_nn_harness(
             raise WorkloadProviderError(
                 f"CMSIS-NN harness repeats a target: {workload.identity}"
             )
+
+        if isinstance(
+            workload.producer,
+            corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+        ):
+            projection = corpus_nn_protocol.render_generated_cmsis_nn_protocol(
+                workload, external_root
+            )
+            generated = source_dir / "generated" / "targets" / target
+            generated.mkdir(parents=True)
+            direct_source = generated / "OperatorProtocol.c"
+            direct_source.write_text(projection.source, encoding="utf-8")
+            targets.append(target)
+            protocol_symbol_sets.append((projection.protocol_symbol,))
+            protocol_source_owners.append(
+                (projection.compiled_owner, projection.authoritative_owner)
+            )
+            expected_entry_results.append(0)
+            cmake_targets.append(
+                _CmsisNnCmakeTarget(
+                    target,
+                    direct_source=direct_source,
+                    operator_sources=_cmsis_nn_operator_sources(
+                        workload, external_root
+                    ),
+                )
+            )
+            continue
+
+        owner_target = workload.producer.target
 
         if workload.identity == _CMSIS_NN_DIRECT_CONVOLUTION_ID:
             protocol = tuple(
@@ -588,6 +627,14 @@ def materialize_cmsis_nn_harness(
         tuple(protocol_source_owners),
         tuple(expected_entry_results),
     )
+
+
+def supports_cmsis_nn_harness(
+    workload: corpus_inventory.ProgramWorkload,
+) -> bool:
+    if isinstance(workload.producer, corpus_inventory.CmsisNnWorkloadProducer):
+        return True
+    return corpus_nn_protocol.supports_generated_cmsis_nn_protocol(workload)
 
 
 def _load_cmsis_dsp_codegen(testing_root: Path) -> tuple[object, object, object]:

@@ -104,6 +104,25 @@ class CmsisNnWorkloadProducer:
 
 
 @dataclass(frozen=True)
+class CmsisNnGeneratedWorkloadProducer:
+    definitions: tuple[str, ...]
+    variant: str
+    public_symbol: str
+
+    @property
+    def kind(self) -> str:
+        return "cmsis-nn-generated-public"
+
+    def as_dict(self) -> dict[str, str | list[str]]:
+        return {
+            "definitions": list(self.definitions),
+            "kind": self.kind,
+            "public_symbol": self.public_symbol,
+            "variant": self.variant,
+        }
+
+
+@dataclass(frozen=True)
 class CmsisDspWorkloadProducer:
     definition: str
     variant: str
@@ -146,7 +165,12 @@ class ProgramWorkload:
     entry_symbol: str
     target_profile: str
     oracle: WorkloadOracle
-    producer: WorkloadProducer | CmsisNnWorkloadProducer | CmsisDspWorkloadProducer
+    producer: (
+        WorkloadProducer
+        | CmsisNnWorkloadProducer
+        | CmsisNnGeneratedWorkloadProducer
+        | CmsisDspWorkloadProducer
+    )
     operator_id: str
     vector_identity: str
     protocol: tuple[OperatorProtocolCall, ...]
@@ -558,7 +582,10 @@ def _parse_operator_gate_workload(
         if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
             raise InventoryError("CMSIS-DSP vector ordinal is invalid")
         producer: (
-            WorkloadProducer | CmsisNnWorkloadProducer | CmsisDspWorkloadProducer
+            WorkloadProducer
+            | CmsisNnWorkloadProducer
+            | CmsisNnGeneratedWorkloadProducer
+            | CmsisDspWorkloadProducer
         ) = CmsisDspWorkloadProducer(
             definition=definitions[0],
             variant=producer_variant,
@@ -587,6 +614,35 @@ def _parse_operator_gate_workload(
             definition=definitions[0],
             target=target,
             test_function=test_function,
+        )
+        executable = operator_workload_target(operator_id)
+    elif (
+        producer_kind == "cmsis-nn-operator-harness"
+        and selector_kind == "generated-public"
+    ):
+        if set(selector) != {"body", "case", "kind", "test"}:
+            raise InventoryError("generated CMSIS-NN selector has invalid fields")
+        if len(protocol) != 1:
+            raise InventoryError("generated CMSIS-NN workload must own one public call")
+        public_symbol = protocol[0].symbol
+        if any(
+            _require_string(selector[field], f"CMSIS-NN selector {field}")
+            != public_symbol
+            for field in ("body", "test")
+        ) or _require_string(selector["case"], "CMSIS-NN selector case") != (
+            "generated-public"
+        ):
+            raise InventoryError(
+                "generated CMSIS-NN selector does not match its public call"
+            )
+        if vector_identity != f"generated-public:{public_symbol}":
+            raise InventoryError(
+                "generated CMSIS-NN vector identity does not match its public call"
+            )
+        producer = CmsisNnGeneratedWorkloadProducer(
+            definitions=definitions,
+            variant=producer_variant,
+            public_symbol=public_symbol,
         )
         executable = operator_workload_target(operator_id)
     else:

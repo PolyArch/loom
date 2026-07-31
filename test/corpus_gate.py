@@ -75,6 +75,7 @@ from corpus_workload_provider import (  # noqa: E402
     cmake_configure_command,
     materialize_cmsis_dsp_harness,
     materialize_cmsis_nn_harness,
+    supports_cmsis_nn_harness,
     supports_cmsis_dsp_harness,
 )
 
@@ -983,8 +984,15 @@ def prepare_workload_providers(
     cmsis_nn = [
         case
         for case in cases
-        if isinstance(case.producer, corpus_inventory.CmsisNnWorkloadProducer)
+        if isinstance(
+            case.producer,
+            (
+                corpus_inventory.CmsisNnWorkloadProducer,
+                corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+            ),
+        )
         and has_target_profile_provider(case.suite, case.target_profile)
+        and supports_cmsis_nn_harness(case)
     ]
     cmsis_dsp = [
         case
