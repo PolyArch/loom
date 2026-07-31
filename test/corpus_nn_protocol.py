@@ -11,6 +11,7 @@ from typing import Callable
 import corpus_inventory
 import corpus_nn_matrix
 import corpus_nn_matrix_kernel
+import corpus_nn_transpose
 from corpus_workload_errors import WorkloadProviderError
 
 
@@ -1674,6 +1675,7 @@ def _renderer_for(
         _RENDERERS.get(calls[0])
         or corpus_nn_matrix.renderer_for(calls[0])
         or corpus_nn_matrix_kernel.renderer_for(calls[0])
+        or corpus_nn_transpose.renderer_for(calls[0])
     )
 
 

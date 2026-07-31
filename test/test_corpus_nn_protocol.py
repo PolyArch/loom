@@ -459,6 +459,33 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             ("arm_nn_mat_mult_kernel_s4_s16",),
         )
 
+    def test_generated_transpose_convolution_row_accumulates_overlap(self) -> None:
+        workload = _workload("arm-nn-transpose-conv-row-s8-s32")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+
+        self.assertIn("arm_nn_transpose_conv_row_s8_s32(", source)
+        self.assertIn("input_x * kStrideX + filter_x", source)
+        self.assertIn("expected[output_index] +=", source)
+        self.assertIn("output[index] != expected[index]", source)
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("arm_nn_transpose_conv_row_s8_s32",),
+        )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
