@@ -1,6 +1,7 @@
 #include "StructuredAddressIndexNarrowing.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -403,6 +404,7 @@ struct PointerInductionStride final {
   std::optional<llvm::APInt> constantElements;
   mlir::Value invariantIndex;
   uint64_t elementScale = 1;
+  unsigned exactSignedDivideShift = 0;
 };
 
 struct PointerInductionLane final {
@@ -634,15 +636,17 @@ std::optional<llvm::APInt> constantElementStride(mlir::LLVM::GEPOp update,
   return byteStride.sdiv(divisor);
 }
 
-std::optional<uint64_t> dynamicElementScale(mlir::LLVM::GEPOp update,
-                                            mlir::Type accessElementType) {
+std::optional<loom::lowering::ExactElementStrideScale>
+dynamicElementScale(mlir::LLVM::GEPOp update, mlir::Value invariantIndex,
+                    mlir::Type accessElementType) {
   std::optional<uint64_t> gepBytes =
       fixedByteSize(update, update.getElemType());
   std::optional<uint64_t> accessBytes =
       fixedByteSize(update, accessElementType);
-  if (!gepBytes || !accessBytes || *gepBytes % *accessBytes != 0)
+  if (!gepBytes || !accessBytes || !invariantIndex)
     return std::nullopt;
-  return *gepBytes / *accessBytes;
+  return loom::lowering::resolveExactElementStrideScale(
+      invariantIndex, *gepBytes, *accessBytes);
 }
 
 std::optional<PointerInductionLoop>
@@ -696,11 +700,13 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
         return std::nullopt;
     } else {
       stride.invariantIndex = invariantGepIndex(update, loop);
-      std::optional<uint64_t> scale =
-          dynamicElementScale(update, *accessElementType);
+      std::optional<loom::lowering::ExactElementStrideScale> scale =
+          dynamicElementScale(update, stride.invariantIndex,
+                              *accessElementType);
       if (!stride.invariantIndex || !scale)
         return std::nullopt;
-      stride.elementScale = *scale;
+      stride.elementScale = static_cast<uint64_t>(scale->scale);
+      stride.exactSignedDivideShift = scale->exactSignedDivideShift;
     }
     result.lanes.push_back(PointerInductionLane{lane, loop.getInits()[lane],
                                                 update, *accessElementType,
@@ -751,6 +757,19 @@ std::optional<SignedRange> signedIndexRange(mlir::Value value) {
     return SignedRange{llvm::APInt(width, 0),
                        llvm::APInt::getMaxValue(source.getWidth()).zext(width)};
   }
+  if (auto shift = value.getDefiningOp<mlir::arith::ShLIOp>()) {
+    mlir::IntegerAttr amount = integerConstant(shift.getRhs());
+    std::optional<SignedRange> source = signedIndexRange(shift.getLhs());
+    if (!amount || !source || !amount.getValue().ult(width))
+      return std::nullopt;
+    const unsigned shiftAmount = amount.getValue().getZExtValue();
+    bool minimumOverflow = false;
+    bool maximumOverflow = false;
+    llvm::APInt minimum = source->minimum.sshl_ov(shiftAmount, minimumOverflow);
+    llvm::APInt maximum = source->maximum.sshl_ov(shiftAmount, maximumOverflow);
+    if (!minimumOverflow && !maximumOverflow)
+      return SignedRange{std::move(minimum), std::move(maximum)};
+  }
   return SignedRange{llvm::APInt::getSignedMinValue(width),
                      llvm::APInt::getSignedMaxValue(width)};
 }
@@ -792,6 +811,10 @@ bool pointerOffsetsFit(const PointerInductionLoop &loop, unsigned width) {
       if (!dynamic)
         return false;
       range = std::move(*dynamic);
+      if (lane.stride.exactSignedDivideShift != 0) {
+        range.minimum = range.minimum.ashr(lane.stride.exactSignedDivideShift);
+        range.maximum = range.maximum.ashr(lane.stride.exactSignedDivideShift);
+      }
     }
     if (!scaledAccumulationFits(range, scale, loop.iterationStateWidth, width))
       return false;
@@ -840,6 +863,15 @@ mlir::Value materializeElementStride(mlir::OpBuilder &builder,
         mlir::arith::TruncIOp::create(builder, location, offsetType, stride);
     trunc.setOverflowFlags(mlir::arith::IntegerOverflowFlags::nsw);
     stride = trunc;
+  }
+  if (lane.stride.exactSignedDivideShift != 0) {
+    auto shiftAmount = mlir::arith::ConstantOp::create(
+        builder, location, offsetType,
+        builder.getIntegerAttr(offsetType, lane.stride.exactSignedDivideShift));
+    auto divide = mlir::arith::ShRSIOp::create(builder, location, stride,
+                                               shiftAmount.getResult());
+    divide.setIsExact(true);
+    stride = divide;
   }
   if (lane.stride.elementScale == 1)
     return stride;

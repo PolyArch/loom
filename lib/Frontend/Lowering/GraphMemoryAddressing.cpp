@@ -1,4 +1,4 @@
-#include "GraphMemoryAddressing.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -136,10 +136,6 @@ private:
   llvm::SmallDenseSet<mlir::Value, 16> active;
 };
 
-bool isKnownMultipleOfPowerOfTwo(mlir::Value value, unsigned shift) {
-  return PowerOfTwoMultipleProof(shift).prove(value);
-}
-
 bool isSupportedElementType(mlir::Type type) {
   if (llvm::isa<mlir::IntegerType, mlir::Float16Type, mlir::BFloat16Type,
                 mlir::Float32Type, mlir::Float64Type, mlir::Float80Type,
@@ -248,6 +244,32 @@ getStructElementOffset(const mlir::DataLayout &layout,
 }
 
 } // namespace
+
+std::optional<ExactElementStrideScale>
+resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
+                               std::uint64_t elementBytes) {
+  constexpr std::uint64_t maxSigned =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  if (!index || byteStride == 0 || byteStride > maxSigned ||
+      elementBytes == 0 || elementBytes > maxSigned ||
+      !llvm::isPowerOf2_64(elementBytes))
+    return std::nullopt;
+  const unsigned elementShift = llvm::Log2_64(elementBytes);
+  const unsigned strideShift =
+      std::min<unsigned>(elementShift, llvm::countr_zero(byteStride));
+  const unsigned exactSignedDivideShift = elementShift - strideShift;
+  if (exactSignedDivideShift != 0) {
+    auto indexType = llvm::dyn_cast<mlir::IntegerType>(index.getType());
+    if (!indexType || !indexType.isSignless() ||
+        exactSignedDivideShift >= indexType.getWidth())
+      return std::nullopt;
+  }
+  if (!PowerOfTwoMultipleProof(exactSignedDivideShift).prove(index))
+    return std::nullopt;
+  return ExactElementStrideScale{
+      static_cast<std::int64_t>(byteStride >> strideShift),
+      exactSignedDivideShift};
+}
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
@@ -395,15 +417,14 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
             mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
         if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
           return std::nullopt;
-        unsigned strideShift =
-            std::min<unsigned>(elementShift, llvm::countr_zero(*strideBytes));
-        if (!isKnownMultipleOfPowerOfTwo(index, elementShift - strideShift))
+        std::optional<ExactElementStrideScale> elementScale =
+            resolveExactElementStrideScale(index, *strideBytes, *elementBytes);
+        if (!elementScale)
           return std::nullopt;
         result.terms.push_back(
             {index, static_cast<std::int64_t>(*strideBytes)});
         result.elementTerms.push_back(
-            {index, static_cast<std::int64_t>(*strideBytes >> strideShift),
-             elementShift - strideShift});
+            {index, elementScale->scale, elementScale->exactSignedDivideShift});
         continue;
       }
 

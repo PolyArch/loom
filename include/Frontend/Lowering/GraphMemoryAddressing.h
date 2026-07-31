@@ -13,6 +13,15 @@
 
 namespace loom::lowering {
 
+struct ExactElementStrideScale {
+  std::int64_t scale = 1;
+  unsigned exactSignedDivideShift = 0;
+};
+
+std::optional<ExactElementStrideScale>
+resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
+                               std::uint64_t elementBytes);
+
 struct LinearByteTerm {
   mlir::Value index;
   std::int64_t byteStride = 1;

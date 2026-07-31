@@ -24,7 +24,7 @@
 
 #include "Frontend/Lowering/Passes.h"
 
-#include "GraphMemoryAddressing.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 #include "GraphMemoryLowering.h"
 #include "GraphRegionLowering.h"
 #include "StreamOrdinal.h"
@@ -101,9 +101,7 @@ struct ImportedViewKey {
 };
 
 struct ImportedViewKeyInfo {
-  static ImportedViewKey getEmptyKey() {
-    return {{}, {}};
-  }
+  static ImportedViewKey getEmptyKey() { return {{}, {}}; }
   static ImportedViewKey getTombstoneKey() {
     return {::mlir::Value::getFromOpaquePointer((void *)1),
             ::mlir::Type::getFromOpaquePointer((void *)1)};

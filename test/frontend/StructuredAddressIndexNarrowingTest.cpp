@@ -78,10 +78,93 @@ module attributes {
     fail("pointer induction did not materialize the selected offset width");
 }
 
+void normalizesInvariantDynamicByteStride() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  llvm.data_layout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+} {
+  llvm.func @complex_stride(%input: !llvm.ptr, %output: !llvm.ptr,
+                            %rows: i16) {
+    %c0_i16 = arith.constant 0 : i16
+    %c-1_i16 = arith.constant -1 : i16
+    %c3_i64 = arith.constant 3 : i64
+    %c4_i64 = arith.constant 4 : i64
+    %c8_i64 = arith.constant 8 : i64
+    %row_count = arith.extui %rows : i16 to i64
+    %output_stride = arith.shli %row_count, %c3_i64
+        overflow<nsw, nuw> : i64
+    %result:3 = scf.while (%input_cursor = %input, %remaining = %rows,
+                           %output_cursor = %output)
+        : (!llvm.ptr, i16, !llvm.ptr) -> (!llvm.ptr, i16, !llvm.ptr) {
+      %imaginary_input = llvm.getelementptr inbounds %input_cursor[%c4_i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %real = llvm.load %input_cursor : !llvm.ptr -> f32
+      %imaginary = llvm.load %imaginary_input : !llvm.ptr -> f32
+      llvm.store %real, %output_cursor : f32, !llvm.ptr
+      %imaginary_output = llvm.getelementptr inbounds %output_cursor[%c4_i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %imaginary, %imaginary_output : f32, !llvm.ptr
+      %next_input = llvm.getelementptr inbounds %input_cursor[%c8_i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %next_output = llvm.getelementptr inbounds %output_cursor[%output_stride]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %next_remaining = arith.addi %remaining, %c-1_i16 : i16
+      %more = arith.cmpi ne, %next_remaining, %c0_i16 : i16
+      scf.condition(%more) %next_input, %next_remaining, %next_output
+          : !llvm.ptr, i16, !llvm.ptr
+    } do {
+    ^bb0(%input_cursor: !llvm.ptr, %remaining: i16,
+         %output_cursor: !llvm.ptr):
+      scf.yield %input_cursor, %remaining, %output_cursor
+          : !llvm.ptr, i16, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the dynamic byte-stride fixture");
+  auto function =
+      module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("complex_stride");
+  if (!function)
+    fail("dynamic byte-stride fixture omitted complex_stride");
+
+  auto normalized = loom::frontend::detail::materializeAddressIndexContract(
+      *module, function.getOperation(), 64,
+      [](mlir::Block *, mlir::Block *) { return llvm::Error::success(); });
+  if (!normalized)
+    fail(llvm::toString(normalized.takeError()));
+
+  mlir::scf::WhileOp loop;
+  function.walk([&](mlir::scf::WhileOp candidate) { loop = candidate; });
+  if (!loop)
+    fail("dynamic byte-stride normalization removed the counted loop");
+  for (mlir::Value init : loop.getInits())
+    if (llvm::isa<mlir::LLVM::LLVMPointerType>(init.getType()))
+      fail("dynamic byte stride retained raw pointer induction");
+  bool sawExactElementProjection = false;
+  function.walk([&](mlir::arith::ShRSIOp shift) {
+    auto amount = shift.getRhs().getDefiningOp<mlir::arith::ConstantOp>();
+    auto integer = amount ? llvm::dyn_cast<mlir::IntegerAttr>(amount.getValue())
+                          : mlir::IntegerAttr{};
+    sawExactElementProjection |=
+        shift.getIsExact() && integer && integer.getValue() == 2;
+  });
+  if (!sawExactElementProjection)
+    fail("dynamic byte stride lost its exact element projection");
+}
+
 } // namespace
 
 int main() {
   normalizesAsymmetricPointerInduction();
+  normalizesInvariantDynamicByteStride();
   llvm::outs() << "structured address index narrowing anchor passed\n";
   return EXIT_SUCCESS;
 }

@@ -1,5 +1,5 @@
 #include "Frontend/Lowering/GraphParallelLowering.h"
-#include "GraphMemoryAddressing.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 #include "GraphRegionLowering.h"
 
 #include "Common/IndexWidth.h"
