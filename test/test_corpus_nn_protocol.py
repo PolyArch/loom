@@ -388,6 +388,38 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         ("loom_corpus_operator_protocol",),
                     )
 
+    def test_header_defined_shape_predicates_cover_true_and_false_cases(self) -> None:
+        cases = (
+            "arm-check-broadcast-required",
+            "arm-nn-is-convolve-1-x-n",
+            "arm-nn-is-convolve-1x1-fast",
+            "arm-nn-is-convolve-1x1",
+        )
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn("expected_true", source)
+                    self.assertIn("expected_false", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        ("loom_corpus_operator_protocol",),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

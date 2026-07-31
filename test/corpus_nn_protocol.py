@@ -720,6 +720,150 @@ int main(void)
     return render
 
 
+def _render_broadcast_required(wrapper_symbol: str) -> str:
+    return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+enum {{ expected_false = 0, expected_true = 1 }};
+
+typedef struct
+{{
+    cmsis_nn_dims left;
+    cmsis_nn_dims right;
+    int32_t expected;
+}} TestVector;
+
+static const TestVector kVectors[] = {{
+    {{{{1, 3, 5, 7}}, {{1, 3, 5, 7}}, expected_false}},
+    {{{{2, 3, 5, 7}}, {{1, 3, 5, 7}}, expected_true}},
+    {{{{1, 4, 5, 7}}, {{1, 3, 5, 7}}, expected_true}},
+    {{{{1, 3, 6, 7}}, {{1, 3, 5, 7}}, expected_true}},
+    {{{{1, 3, 5, 8}}, {{1, 3, 5, 7}}, expected_true}},
+}};
+
+LOOM_NOINLINE int32_t {wrapper_symbol}(
+    const cmsis_nn_dims *left, const cmsis_nn_dims *right)
+{{
+    return arm_check_broadcast_required(left, right);
+}}
+
+int main(void)
+{{
+    for (size_t index = 0; index < sizeof(kVectors) / sizeof(kVectors[0]); ++index)
+    {{
+        const TestVector *vector = &kVectors[index];
+        if ({wrapper_symbol}(&vector->left, &vector->right) != vector->expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+
+def _render_convolution_shape_predicate(
+    wrapper_symbol: str,
+    symbol: str,
+) -> str:
+    if symbol == "arm_nn_is_convolve_1x1_fast":
+        vectors = """    {{.stride = {1, 1}}, expected_true},
+    {{.stride = {2, 1}}, expected_false},
+    {{.stride = {1, 2}}, expected_false},"""
+        vector_type = """typedef struct
+{
+    cmsis_nn_conv_params params;
+    int32_t expected;
+} TestVector;"""
+        wrapper_parameters = "const cmsis_nn_conv_params *params"
+        operation_arguments = "params"
+        main_arguments = "&vector->params"
+    else:
+        base = """.params = {
+            .stride = {1, 1}, .padding = {0, 0}, .dilation = {1, 1}},
+        .input = {1, %s, 8, 8},
+        .filter = {16, 1, %s, %s},"""
+        if symbol == "arm_nn_is_convolve_1x1":
+            vectors = f"""    {{{base % (4, 1, 8)}
+        .expected = expected_true}},
+    {{{base % (4, 1, 8)}
+        .params.padding = {{1, 0}}, .expected = expected_false}},
+    {{{base % (4, 3, 8)}
+        .expected = expected_false}},
+    {{{base % (4, 1, 4)}
+        .expected = expected_false}},"""
+        elif symbol == "arm_nn_is_convolve_1_x_n":
+            vectors = f"""    {{{base % (1, 5, 8)}
+        .expected = expected_true}},
+    {{{base % (2, 5, 8)}
+        .expected = expected_false}},
+    {{{base % (1, 5, 8)}
+        .params.dilation.w = 2, .expected = expected_false}},
+    {{{base % (1, 5, 6)}
+        .expected = expected_false}},"""
+        else:
+            raise ValueError(f"unsupported convolution shape predicate: {symbol}")
+        vector_type = """typedef struct
+{
+    cmsis_nn_conv_params params;
+    cmsis_nn_dims input;
+    cmsis_nn_dims filter;
+    int32_t expected;
+} TestVector;"""
+        wrapper_parameters = (
+            "const cmsis_nn_conv_params *params, const cmsis_nn_dims *input, "
+            "const cmsis_nn_dims *filter"
+        )
+        operation_arguments = "params, input, filter"
+        main_arguments = "&vector->params, &vector->input, &vector->filter"
+
+    return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+enum {{ expected_false = 0, expected_true = 1 }};
+
+{vector_type}
+
+static const TestVector kVectors[] = {{
+{vectors}
+}};
+
+LOOM_NOINLINE bool {wrapper_symbol}({wrapper_parameters})
+{{
+    return {symbol}({operation_arguments});
+}}
+
+int main(void)
+{{
+    for (size_t index = 0; index < sizeof(kVectors) / sizeof(kVectors[0]); ++index)
+    {{
+        const TestVector *vector = &kVectors[index];
+        if ((int32_t){wrapper_symbol}({main_arguments}) != vector->expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -994,6 +1138,28 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "arm_nn_write_s8x4_ia",
         "void (int8_t **, int32_t)",
     ): _header_packed_write_renderer("arm_nn_write_s8x4_ia", "int8_t", "uint8_t", 4),
+    (
+        "arm_check_broadcast_required",
+        "int32_t (const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): _render_broadcast_required,
+    (
+        "arm_nn_is_convolve_1_x_n",
+        "bool (const cmsis_nn_conv_params *, const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): lambda wrapper_symbol: _render_convolution_shape_predicate(
+        wrapper_symbol, "arm_nn_is_convolve_1_x_n"
+    ),
+    (
+        "arm_nn_is_convolve_1x1_fast",
+        "bool (const cmsis_nn_conv_params *)",
+    ): lambda wrapper_symbol: _render_convolution_shape_predicate(
+        wrapper_symbol, "arm_nn_is_convolve_1x1_fast"
+    ),
+    (
+        "arm_nn_is_convolve_1x1",
+        "bool (const cmsis_nn_conv_params *, const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): lambda wrapper_symbol: _render_convolution_shape_predicate(
+        wrapper_symbol, "arm_nn_is_convolve_1x1"
+    ),
 }
 
 
@@ -1009,6 +1175,10 @@ _HEADER_ONLY_PROTOCOLS = {
     "arm_nn_read_s8x4_ia",
     "arm_nn_write_q15x2_ia",
     "arm_nn_write_s8x4_ia",
+    "arm_check_broadcast_required",
+    "arm_nn_is_convolve_1_x_n",
+    "arm_nn_is_convolve_1x1",
+    "arm_nn_is_convolve_1x1_fast",
     "arm_memcpy_s8",
     "arm_memcpy_q15",
     "arm_memset_s8",
