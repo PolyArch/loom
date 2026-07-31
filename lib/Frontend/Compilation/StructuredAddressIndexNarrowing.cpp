@@ -15,6 +15,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
@@ -1034,6 +1035,230 @@ rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
   return replacement;
 }
 
+mlir::scf::YieldOp selectionYield(mlir::Region &region) {
+  if (!region.hasOneBlock())
+    return {};
+  return llvm::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
+}
+
+std::optional<mlir::Value>
+findPointerCapabilityRoot(mlir::Value pointer,
+                          llvm::DenseSet<mlir::Value> &visiting) {
+  if (!pointer || !llvm::isa<mlir::LLVM::LLVMPointerType>(pointer.getType()) ||
+      !visiting.insert(pointer).second)
+    return std::nullopt;
+
+  auto finish = [&](std::optional<mlir::Value> result) {
+    visiting.erase(pointer);
+    return result;
+  };
+  if (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
+    return finish(findPointerCapabilityRoot(gep.getBase(), visiting));
+
+  auto result = llvm::dyn_cast<mlir::OpResult>(pointer);
+  if (!result)
+    return finish(pointer);
+  if (auto loop = llvm::dyn_cast<mlir::scf::WhileOp>(result.getOwner())) {
+    std::optional<PointerInductionLoop> plan =
+        analyzePointerInductionLoop(loop);
+    if (!plan)
+      return finish(std::nullopt);
+    const PointerInductionLane *lane =
+        findPointerLane(*plan, result.getResultNumber());
+    return finish(lane ? findPointerCapabilityRoot(lane->base, visiting)
+                       : std::nullopt);
+  }
+  if (!llvm::isa<mlir::scf::IfOp, mlir::scf::IndexSwitchOp>(result.getOwner()))
+    return finish(pointer);
+
+  std::optional<mlir::Value> common;
+  for (mlir::Region &region : result.getOwner()->getRegions()) {
+    mlir::scf::YieldOp yield = selectionYield(region);
+    if (!yield || result.getResultNumber() >= yield.getNumOperands())
+      return finish(std::nullopt);
+    llvm::DenseSet<mlir::Value> pathVisiting = visiting;
+    std::optional<mlir::Value> root = findPointerCapabilityRoot(
+        yield.getOperand(result.getResultNumber()), pathVisiting);
+    if (!root || (common && *common != *root))
+      return finish(std::nullopt);
+    common = *root;
+  }
+  return finish(common);
+}
+
+bool hasNormalizablePointerSelectionRoots(mlir::Operation *selection) {
+  for (mlir::Value result : selection->getResults()) {
+    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(result.getType()))
+      continue;
+    llvm::DenseSet<mlir::Value> visiting;
+    if (!findPointerCapabilityRoot(result, visiting))
+      return false;
+  }
+  return true;
+}
+
+struct PointerSelectionPath final {
+  mlir::Value base;
+  std::optional<mlir::OpFoldResult> offset;
+  mlir::Type elementType;
+  mlir::LLVM::GEPNoWrapFlags noWrapFlags = mlir::LLVM::GEPNoWrapFlags::none;
+  mlir::LLVM::GEPOp sourceGep;
+};
+
+std::optional<PointerSelectionPath>
+decomposePointerSelectionPath(mlir::Value pointer) {
+  auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>();
+  if (!gep)
+    return PointerSelectionPath{
+        pointer, std::nullopt, {}, mlir::LLVM::GEPNoWrapFlags::none, {}};
+  auto indices = gep.getIndices();
+  if (indices.size() != 1)
+    return std::nullopt;
+  auto index = indices[0];
+  mlir::OpFoldResult offset;
+  if (mlir::Value value = llvm::dyn_cast_if_present<mlir::Value>(index))
+    offset = value;
+  else if (mlir::IntegerAttr constant =
+               llvm::dyn_cast_if_present<mlir::IntegerAttr>(index))
+    offset = constant;
+  else
+    return std::nullopt;
+  return PointerSelectionPath{gep.getBase(), offset, gep.getElemType(),
+                              gep.getNoWrapFlags(), gep};
+}
+
+mlir::Value materializeSelectedOffset(mlir::OpBuilder &builder,
+                                      const PointerSelectionPath &path,
+                                      mlir::IntegerType offsetType,
+                                      mlir::Location location) {
+  if (!path.offset)
+    return mlir::arith::ConstantOp::create(
+        builder, location, offsetType, builder.getIntegerAttr(offsetType, 0));
+  mlir::IntegerAttr constant;
+  if (llvm::isa<mlir::Attribute>(*path.offset))
+    constant = llvm::dyn_cast<mlir::IntegerAttr>(
+        llvm::cast<mlir::Attribute>(*path.offset));
+  if (constant) {
+    llvm::APInt value = constant.getValue().sextOrTrunc(offsetType.getWidth());
+    return mlir::arith::ConstantOp::create(
+        builder, location, offsetType,
+        mlir::IntegerAttr::get(offsetType, value));
+  }
+
+  mlir::Value value = llvm::cast<mlir::Value>(*path.offset);
+  auto integer = llvm::cast<mlir::IntegerType>(value.getType());
+  if (integer.getWidth() < offsetType.getWidth())
+    return mlir::arith::ExtSIOp::create(builder, location, offsetType, value);
+  if (integer.getWidth() > offsetType.getWidth()) {
+    auto trunc =
+        mlir::arith::TruncIOp::create(builder, location, offsetType, value);
+    trunc.setOverflowFlags(mlir::arith::IntegerOverflowFlags::nsw);
+    return trunc;
+  }
+  return value;
+}
+
+llvm::Expected<bool> rewritePointerSelection(mlir::Operation *selection,
+                                             unsigned width) {
+  bool changed = false;
+  mlir::IntegerType offsetType =
+      mlir::IntegerType::get(selection->getContext(), width);
+  for (unsigned ordinal = 0; ordinal < selection->getNumResults(); ++ordinal) {
+    mlir::Value result = selection->getResult(ordinal);
+    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(result.getType()))
+      continue;
+
+    llvm::SmallVector<mlir::scf::YieldOp, 4> yields;
+    llvm::SmallVector<PointerSelectionPath, 4> paths;
+    for (mlir::Region &region : selection->getRegions()) {
+      mlir::scf::YieldOp yield = selectionYield(region);
+      if (!yield || ordinal >= yield.getNumOperands())
+        return invalid("requires single-block pointer selection regions");
+      std::optional<PointerSelectionPath> path =
+          decomposePointerSelectionPath(yield.getOperand(ordinal));
+      if (!path)
+        return invalid("cannot express selected pointer as one capability "
+                       "plus one integer offset");
+      yields.push_back(yield);
+      paths.push_back(*path);
+    }
+
+    if (paths.empty())
+      return invalid("requires at least one pointer selection path");
+    auto derivedExemplar = llvm::find_if(
+        paths, [](const PointerSelectionPath &path) { return path.offset; });
+    PointerSelectionPath exemplar =
+        derivedExemplar == paths.end() ? paths.front() : *derivedExemplar;
+    if (!exemplar.offset)
+      exemplar.elementType = mlir::IntegerType::get(selection->getContext(), 8);
+    for (const PointerSelectionPath &path : paths) {
+      if (path.base != exemplar.base)
+        return invalid("selected pointer paths do not share one capability");
+      if (!path.offset)
+        continue;
+      if (path.elementType != exemplar.elementType ||
+          path.noWrapFlags != exemplar.noWrapFlags)
+        return invalid("selected pointer paths disagree on their exact "
+                       "address contract");
+      mlir::Type type;
+      mlir::IntegerAttr constant;
+      if (llvm::isa<mlir::Attribute>(*path.offset))
+        constant = llvm::dyn_cast<mlir::IntegerAttr>(
+            llvm::cast<mlir::Attribute>(*path.offset));
+      if (constant)
+        type = constant.getType();
+      else if (mlir::Value value =
+                   llvm::dyn_cast_if_present<mlir::Value>(*path.offset))
+        type = value.getType();
+      if (!llvm::isa<mlir::IntegerType>(type))
+        return invalid("selected pointer offset is not integer-typed");
+    }
+
+    llvm::SmallVector<mlir::OpOperand *, 8> oldUses;
+    mlir::Type pointerType = result.getType();
+    for (mlir::OpOperand &use : result.getUses())
+      oldUses.push_back(&use);
+    for (auto [yield, path] : llvm::zip_equal(yields, paths)) {
+      mlir::OpBuilder builder(yield);
+      mlir::Value offset =
+          materializeSelectedOffset(builder, path, offsetType, yield.getLoc());
+      yield->setOperand(ordinal, offset);
+    }
+    result.setType(offsetType);
+
+    mlir::OpBuilder builder(selection);
+    builder.setInsertionPointAfter(selection);
+    auto pointer = mlir::LLVM::GEPOp::create(
+        builder, selection->getLoc(), pointerType, exemplar.elementType,
+        exemplar.base, mlir::ValueRange{result}, exemplar.noWrapFlags);
+    if (exemplar.sourceGep)
+      pointer->setDiscardableAttrs(
+          exemplar.sourceGep->getDiscardableAttrDictionary());
+    for (mlir::OpOperand *use : oldUses)
+      use->set(pointer.getResult());
+    changed = true;
+  }
+  return changed;
+}
+
+llvm::Error rewritePointerSelections(mlir::Operation *operation,
+                                     unsigned width) {
+  llvm::SmallVector<mlir::Operation *, 4> selections;
+  operation->walk([&](mlir::Operation *nested) {
+    if (llvm::isa<mlir::scf::IfOp, mlir::scf::IndexSwitchOp>(nested) &&
+        llvm::any_of(nested->getResultTypes(), [](mlir::Type type) {
+          return llvm::isa<mlir::LLVM::LLVMPointerType>(type);
+        }))
+      selections.push_back(nested);
+  });
+  for (mlir::Operation *selection : llvm::reverse(selections)) {
+    llvm::Expected<bool> rewritten = rewritePointerSelection(selection, width);
+    if (!rewritten)
+      return rewritten.takeError();
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error materializeDataLayoutEndiannessProjection(mlir::ModuleOp module) {
@@ -1100,14 +1325,16 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation) {
         return mlir::WalkResult::interrupt();
       }
     } else if (auto select = llvm::dyn_cast<mlir::scf::IfOp>(operation)) {
-      if (containsMemoryCapability(select.getResultTypes())) {
+      if (containsMemoryCapability(select.getResultTypes()) &&
+          !hasNormalizablePointerSelectionRoots(operation)) {
         rejection = "selected memory capability has no canonical "
                     "capability-plus-offset normalization";
         return mlir::WalkResult::interrupt();
       }
     } else if (auto select =
                    llvm::dyn_cast<mlir::scf::IndexSwitchOp>(operation)) {
-      if (containsMemoryCapability(select.getResultTypes())) {
+      if (containsMemoryCapability(select.getResultTypes()) &&
+          !hasNormalizablePointerSelectionRoots(operation)) {
         rejection = "selected memory capability has no canonical "
                     "capability-plus-offset normalization";
         return mlir::WalkResult::interrupt();
@@ -1218,6 +1445,9 @@ materializeAddressIndexContract(mlir::ModuleOp module,
         return invalid("cannot prove a pointer induction offset fits the "
                        "selected signed width");
   }
+  if (llvm::Error error =
+          rewritePointerSelections(selectedOperation, *effectiveWidth))
+    return std::move(error);
   if (mlir::failed(mlir::verify(module)))
     return invalid("produced an invalid pointer-induction normalization");
   return selectedOperation;

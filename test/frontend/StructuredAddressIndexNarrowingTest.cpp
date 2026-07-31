@@ -217,12 +217,83 @@ module attributes {
       fail("widened stride-range retained raw pointer induction");
 }
 
+void normalizesConditionallyExecutedPointerInduction() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  llvm.data_layout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+} {
+  llvm.func @conditional_induction(%base: !llvm.ptr, %count: i32) {
+    %c0_i32 = arith.constant 0 : i32
+    %c-1_i32 = arith.constant -1 : i32
+    %c4_i64 = arith.constant 4 : i64
+    %skip = arith.cmpi eq, %count, %c0_i32 : i32
+    %selected = scf.if %skip -> (!llvm.ptr) {
+      scf.yield %base : !llvm.ptr
+    } else {
+      %result:2 = scf.while (%cursor = %base, %remaining = %count)
+          : (!llvm.ptr, i32) -> (!llvm.ptr, i32) {
+        %value = llvm.load %cursor : !llvm.ptr -> i32
+        %next_cursor = llvm.getelementptr inbounds %cursor[%c4_i64]
+            : (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %next_remaining = arith.addi %remaining, %c-1_i32 : i32
+        %more = arith.cmpi ne, %next_remaining, %c0_i32 : i32
+        scf.condition(%more) %next_cursor, %next_remaining
+            : !llvm.ptr, i32
+      } do {
+      ^bb0(%cursor: !llvm.ptr, %remaining: i32):
+        scf.yield %cursor, %remaining : !llvm.ptr, i32
+      }
+      scf.yield %result#0 : !llvm.ptr
+    }
+    %tail = llvm.load %selected : !llvm.ptr -> i32
+    %same = scf.if %skip -> (!llvm.ptr) {
+      scf.yield %base : !llvm.ptr
+    } else {
+      scf.yield %base : !llvm.ptr
+    }
+    %same_value = llvm.load %same : !llvm.ptr -> i32
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the conditional pointer-induction fixture");
+  auto function =
+      module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("conditional_induction");
+  if (!function)
+    fail("conditional pointer-induction fixture omitted its function");
+
+  auto normalized = loom::frontend::detail::materializeAddressIndexContract(
+      *module, function.getOperation(), 64,
+      [](mlir::Block *, mlir::Block *) { return llvm::Error::success(); });
+  if (!normalized)
+    fail(llvm::toString(normalized.takeError()));
+
+  function.walk([&](mlir::scf::WhileOp loop) {
+    for (mlir::Value init : loop.getInits())
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(init.getType()))
+        fail("conditional normalization retained raw pointer induction");
+  });
+  function.walk([&](mlir::scf::IfOp select) {
+    for (mlir::Type type : select.getResultTypes())
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(type))
+        fail("conditional normalization retained a selected capability");
+  });
+}
+
 } // namespace
 
 int main() {
   normalizesAsymmetricPointerInduction();
   normalizesInvariantDynamicByteStride();
   preservesNarrowSourceRangeThroughStrideWidening();
+  normalizesConditionallyExecutedPointerInduction();
   llvm::outs() << "structured address index narrowing anchor passed\n";
   return EXIT_SUCCESS;
 }
