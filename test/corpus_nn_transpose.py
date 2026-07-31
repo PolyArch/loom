@@ -13,6 +13,15 @@ _ROW_S8_S32_CALL = (
     "const int32_t, const int32_t, const int32_t, const int32_t, "
     "const int32_t, const int32_t, const int32_t, const int32_t)",
 )
+_TRANSPOSE_S8_CALL = (
+    "arm_transpose_conv_s8",
+    "arm_cmsis_nn_status (const cmsis_nn_context *, "
+    "const cmsis_nn_context *, const cmsis_nn_transpose_conv_params *, "
+    "const cmsis_nn_per_channel_quant_params *, const cmsis_nn_dims *, "
+    "const int8_t *, const cmsis_nn_dims *, const int8_t *, "
+    "const cmsis_nn_dims *, const int32_t *, const cmsis_nn_dims *, "
+    "int8_t *)",
+)
 
 
 def _render_row_s8_s32(_wrapper_symbol: str) -> str:
@@ -110,7 +119,167 @@ int main(void)
 """
 
 
+def _render_transpose_s8(_wrapper_symbol: str) -> str:
+    return """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+
+enum {
+    kInputHeight = 2,
+    kInputWidth = 3,
+    kInputChannels = 2,
+    kOutputHeight = 3,
+    kOutputWidth = 4,
+    kOutputChannels = 2,
+    kFilterHeight = 2,
+    kFilterWidth = 2,
+    kInputOffset = 3,
+    kOutputOffset = 5,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -120,
+    kActivationMax = 120,
+    kOutputCount = kOutputHeight * kOutputWidth * kOutputChannels,
+    kScratchElements =
+        kFilterHeight * kOutputWidth * kOutputChannels,
+};
+
+static const int8_t kInput[
+    kInputHeight * kInputWidth * kInputChannels] = {
+    7, -3, -5, 9, 2, 4,
+    -8, 6, -1, 11, 3, -7,
+};
+static const int8_t kFilter[
+    kOutputChannels * kFilterHeight * kFilterWidth * kInputChannels] = {
+    3, -2, 5, 1, -4, 6, 2, -3,
+    -6, 7, 1, -5, 4, -2, 3, 5,
+};
+static const int32_t kBias[kOutputChannels] = {11, -23};
+static int32_t kMultipliers[kOutputChannels] = {
+    kMultiplier, kMultiplier,
+};
+static int32_t kShifts[kOutputChannels] = {kShift, kShift};
+
+int main(void)
+{
+    int32_t scratch[kScratchElements];
+    int8_t output[kOutputCount] = {0};
+    int32_t expected[kOutputCount];
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {
+        expected[index] = kBias[index % kOutputChannels];
+    }
+
+    cmsis_nn_context context = {
+        .buf = scratch,
+        .size = sizeof(scratch),
+    };
+    const cmsis_nn_transpose_conv_params parameters = {
+        .input_offset = kInputOffset,
+        .output_offset = kOutputOffset,
+        .stride = {.w = 1, .h = 1},
+        .padding = {.w = 0, .h = 0},
+        .padding_offsets = {.w = 0, .h = 0},
+        .dilation = {.w = 1, .h = 1},
+        .activation = {.min = kActivationMin, .max = kActivationMax},
+    };
+    const cmsis_nn_per_channel_quant_params quantization = {
+        .multiplier = kMultipliers,
+        .shift = kShifts,
+    };
+    const cmsis_nn_dims input_dimensions = {
+        .n = 1, .h = kInputHeight, .w = kInputWidth, .c = kInputChannels,
+    };
+    const cmsis_nn_dims filter_dimensions = {
+        .n = kOutputChannels,
+        .h = kFilterHeight,
+        .w = kFilterWidth,
+        .c = kInputChannels,
+    };
+    const cmsis_nn_dims bias_dimensions = {0};
+    const cmsis_nn_dims output_dimensions = {
+        .n = 1,
+        .h = kOutputHeight,
+        .w = kOutputWidth,
+        .c = kOutputChannels,
+    };
+
+    const arm_cmsis_nn_status status = arm_transpose_conv_s8(
+        &context, NULL, &parameters, &quantization, &input_dimensions,
+        kInput, &filter_dimensions, kFilter, &bias_dimensions, kBias,
+        &output_dimensions, output);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+
+    for (size_t input_y = 0; input_y < kInputHeight; ++input_y)
+    {
+        for (size_t input_x = 0; input_x < kInputWidth; ++input_x)
+        {
+            for (size_t filter_y = 0; filter_y < kFilterHeight; ++filter_y)
+            {
+                for (size_t filter_x = 0; filter_x < kFilterWidth; ++filter_x)
+                {
+                    const size_t output_y = input_y + filter_y;
+                    const size_t output_x = input_x + filter_x;
+                    for (size_t output_channel = 0;
+                         output_channel < kOutputChannels;
+                         ++output_channel)
+                    {
+                        const size_t output_index =
+                            (output_y * kOutputWidth + output_x) *
+                                kOutputChannels +
+                            output_channel;
+                        for (size_t input_channel = 0;
+                             input_channel < kInputChannels;
+                             ++input_channel)
+                        {
+                            const size_t input_index =
+                                (input_y * kInputWidth + input_x) *
+                                    kInputChannels +
+                                input_channel;
+                            const size_t filter_index =
+                                ((output_channel * kFilterHeight + filter_y) *
+                                     kFilterWidth +
+                                 filter_x) *
+                                    kInputChannels +
+                                input_channel;
+                            expected[output_index] +=
+                                (kInput[input_index] + kInputOffset) *
+                                kFilter[filter_index];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {
+        int32_t value = expected[index] + kOutputOffset;
+        if (value < kActivationMin)
+        {
+            value = kActivationMin;
+        }
+        if (value > kActivationMax)
+        {
+            value = kActivationMax;
+        }
+        if (output[index] != value)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+"""
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _ROW_S8_S32_CALL:
         return _render_row_s8_s32
+    if call == _TRANSPOSE_S8_CALL:
+        return _render_transpose_s8
     return None

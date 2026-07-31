@@ -486,6 +486,34 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             ("arm_nn_transpose_conv_row_s8_s32",),
         )
 
+    def test_generated_transpose_convolution_protocol_has_direct_oracle(self) -> None:
+        workload = _workload("arm-transpose-conv-s8")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+
+        self.assertIn("arm_transpose_conv_s8(", source)
+        self.assertIn("input_y + filter_y", source)
+        self.assertIn("input_x + filter_x", source)
+        self.assertIn("expected[output_index] +=", source)
+        self.assertNotIn("arm_transpose_conv_wrapper_s8(", source)
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("arm_transpose_conv_s8",),
+        )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
