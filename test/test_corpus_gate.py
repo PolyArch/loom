@@ -50,6 +50,13 @@ DSP_ABS_F32_WORKLOAD_ID = next(
     and row.case == "arm-abs-f32"
     and row.target_profile == "riscv64-portable-scalar"
 )
+DSP_ABS_F16_WORKLOAD_ID = next(
+    row.operator_id
+    for row in _OPERATOR_WORKLOADS
+    if row.suite == "cmsis-dsp"
+    and row.case == "arm-abs-f16"
+    and row.target_profile == "riscv64-standard-float16"
+)
 DSP_ADD_F32_WORKLOAD_ID = next(
     row.operator_id
     for row in _OPERATOR_WORKLOADS
@@ -163,6 +170,9 @@ DUPLICATE_HARNESS_WORKLOAD_IDS = tuple(
     if isinstance(row.producer, corpus_inventory.CmsisNnWorkloadProducer)
     and row.producer.target == "test_arm_fully_connected_s8"
     and row.producer.test_function == "test_fc_per_fc_per_ch_arm_fully_connected_s8"
+)
+UNSUPPORTED_MVE_WORKLOAD_ID = next(
+    row.operator_id for row in _OPERATOR_WORKLOADS if row.target_profile == "mve"
 )
 
 
@@ -810,14 +820,18 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(vexp_owner.name, "fast_math_functions.h")
 
         entropy = by_identity[DSP_ENTROPY_F32_WORKLOAD_ID]
-        entropy_source = harness.protocol_source_owner(entropy.executable)[0].read_text()
-        self.assertIn("arm_entropy_f32(input + offset, dimensions[index])", entropy_source)
+        entropy_source = harness.protocol_source_owner(entropy.executable)[
+            0
+        ].read_text()
+        self.assertIn(
+            "arm_entropy_f32(input + offset, dimensions[index])", entropy_source
+        )
         self.assertIn("constexpr std::uint32_t kDimensions[]", entropy_source)
 
         divergence = by_identity[DSP_KL_F64_WORKLOAD_ID]
-        divergence_source = harness.protocol_source_owner(
-            divergence.executable
-        )[0].read_text()
+        divergence_source = harness.protocol_source_owner(divergence.executable)[
+            0
+        ].read_text()
         self.assertIn(
             "arm_kullback_leibler_f64(input_a + offset, input_b + offset,",
             divergence_source,
@@ -1050,6 +1064,92 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIsInstance(result, corpus_gate.StepFailure)
         self.assertEqual(result.category, corpus_gate.CATEGORY_FINAL_LINK_ARTIFACT)
         self.assertIn("atomic protocol wrapper", result.detail)
+
+    def test_standard_float16_provider_uses_an_isolated_profile_build(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_ABS_F16_WORKLOAD_ID
+        )
+        harness = corpus_workload_provider.CmsisDspHarness(
+            self.work / "source",
+            (workload.executable,),
+            (self.work / "shared",),
+            ((workload.producer.test_class, workload.producer.test_method),),
+            ((workload.protocol[0].symbol,),),
+            (((self.work / "protocol.cpp"),) * 2,),
+        )
+        configure_commands: list[list[str]] = []
+
+        def run_provider_step(command, log_path, deadline, category):
+            del log_path, deadline, category
+            if "--build" not in command:
+                configure_commands.append(command)
+                return None
+            build_dir = Path(command[command.index("--build") + 1])
+            executable = harness.executable(build_dir, workload.executable)
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"elf")
+            return None
+
+        with (
+            mock.patch.object(
+                corpus_gate,
+                "materialize_cmsis_dsp_harness",
+                return_value=harness,
+            ),
+            mock.patch.object(corpus_gate, "run_step", side_effect=run_provider_step),
+        ):
+            result = corpus_gate.prepare_workload_providers(
+                (workload,),
+                self.toolchain(),
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.out_dir,
+                jobs=2,
+                timeout=5.0,
+            )[workload.identity]
+
+        self.assertIsInstance(result, corpus_gate.ProducedWorkload)
+        self.assertEqual(len(configure_commands), 1)
+        configure = configure_commands[0]
+        self.assertTrue(
+            any("-D__ARM_FP16_FORMAT_IEEE=1" in argument for argument in configure)
+        )
+        self.assertTrue(any("-D__fp16=_Float16" in argument for argument in configure))
+
+    def test_standard_float16_harness_enables_float16_library_sources(self) -> None:
+        workload = next(
+            case
+            for case in corpus_inventory.load_workload_inventory(ROOT)
+            if case.identity == DSP_ABS_F16_WORKLOAD_ID
+        )
+
+        harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+            (workload,),
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "f16-harness",
+        )
+
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        self.assertIn('set(DISABLEFLOAT16 OFF CACHE BOOL "" FORCE)', cmake)
+        self.assertNotIn('set(DISABLEFLOAT16 ON CACHE BOOL "" FORCE)', cmake)
+
+    def test_unimplemented_target_profile_is_provider_unavailable(self) -> None:
+        exit_code, _, summary = self.run_gate(
+            "--case",
+            UNSUPPORTED_MVE_WORKLOAD_ID,
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            summary["cases"][0]["category"],
+            corpus_gate.CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+        )
+        self.assertIn("target profile provider", summary["cases"][0]["detail"])
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
@@ -1437,6 +1537,35 @@ class CommandConstructionTest(CorpusGateTestBase):
             self.out_dir / "main_func.ll",
         )
         self.assertEqual(command[0], self.tool_paths["cxx"])
+
+    def test_standard_float16_profile_preserves_target_and_uses_standard_type(
+        self,
+    ) -> None:
+        toolchain = self.toolchain()
+        external_root = self.work / "externals"
+        source = (
+            external_root
+            / "cmsis-dsp"
+            / "Source"
+            / "BasicMathFunctions"
+            / "arm_abs_f16.c"
+        )
+        command = corpus_gate.compile_command(
+            toolchain,
+            corpus_gate.suite_compile_flags(
+                "cmsis-dsp",
+                external_root,
+                target_profile="riscv64-standard-float16",
+            ),
+            source,
+            self.out_dir / "arm_abs_f16.ll",
+        )
+
+        self.assertIn("--target=riscv64-unknown-elf", command)
+        self.assertIn("-march=rv64imafdc_zicsr_zifencei", command)
+        self.assertIn("-mabi=lp64d", command)
+        self.assertIn("-D__ARM_FP16_FORMAT_IEEE=1", command)
+        self.assertIn("-D__fp16=_Float16", command)
 
     def test_dfg_sim_command_binds_target_and_outputs(self) -> None:
         config = self.out_dir / "resolved-config.yaml"

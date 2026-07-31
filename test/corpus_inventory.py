@@ -34,6 +34,8 @@ CMSIS_WORKLOAD_SUPPORT_SUBMODULES = (
     Path("externals/unity"),
 )
 OPERATOR_GATE_MANIFEST = Path("test/data/corpus-operator-gate-v1.jsonl")
+PORTABLE_SCALAR_TARGET_PROFILE = "riscv64-portable-scalar"
+STANDARD_FLOAT16_TARGET_PROFILE = "riscv64-standard-float16"
 
 
 class InventoryError(ValueError):
@@ -475,9 +477,9 @@ def _load_operator_gate_document(repo_root: Path) -> dict[str, object]:
 
 def _execution_target_profile(profile: str) -> str:
     if profile in {"portable-scalar", "scalar"}:
-        return "riscv64-portable-scalar"
+        return PORTABLE_SCALAR_TARGET_PROFILE
     if profile == "f16":
-        return "riscv64-standard-float16"
+        return STANDARD_FLOAT16_TARGET_PROFILE
     return profile
 
 

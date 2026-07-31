@@ -113,7 +113,8 @@ BUILTIN_TARGET_PRESET = "small"
 
 STAGES = ("llvm", "s0", "d0", "dfg-sim")
 WORKLOAD_STAGES = frozenset({"s0", "d0", "dfg-sim"})
-TARGET_PROFILE = "riscv64-portable-scalar"
+TARGET_PROFILE = corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE
+STANDARD_FLOAT16_TARGET_PROFILE = corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE
 
 # Honest failure categories. "compile"/"raise"/"verify"/"pre-mapping" are
 # nonzero exits from the production tools; "*-artifact" categories mean the
@@ -386,22 +387,48 @@ def target_flags(toolchain: Toolchain) -> list[str]:
     ]
 
 
-def suite_compile_flags(suite: str, external_root: Path) -> list[str]:
+def target_profile_compile_flags(suite: str, target_profile: str) -> list[str]:
+    if target_profile == TARGET_PROFILE:
+        return []
+    if target_profile == STANDARD_FLOAT16_TARGET_PROFILE and suite == "cmsis-dsp":
+        return ["-D__ARM_FP16_FORMAT_IEEE=1", "-D__fp16=_Float16"]
+    raise GateConfigError(
+        f"target profile provider unavailable for {suite}: {target_profile}"
+    )
+
+
+def has_target_profile_provider(suite: str, target_profile: str) -> bool:
+    try:
+        target_profile_compile_flags(suite, target_profile)
+    except GateConfigError:
+        return False
+    return True
+
+
+def suite_compile_flags(
+    suite: str,
+    external_root: Path,
+    *,
+    target_profile: str = TARGET_PROFILE,
+) -> list[str]:
     """Uniform per-suite source configuration; never per-source overrides."""
     if suite == "loombench":
-        return []
-    if suite == "cmsis-dsp":
+        flags: list[str] = []
+    elif suite == "cmsis-dsp":
         root = external_root / "cmsis-dsp"
         # __GNUC_PYTHON__ is the official CMSIS-DSP non-Arm scalar source
         # configuration; it disables the CMSIS-Core dependency.
-        return [
+        flags = [
             "-D__GNUC_PYTHON__",
             f"-I{root / 'Include'}",
             f"-I{root / 'PrivateInclude'}",
         ]
-    if suite == "cmsis-nn":
-        return [f"-I{external_root / 'cmsis-nn' / 'Include'}"]
-    raise GateConfigError(f"unknown suite: {suite}")
+    elif suite == "cmsis-nn":
+        flags = [f"-I{external_root / 'cmsis-nn' / 'Include'}"]
+    else:
+        raise GateConfigError(f"unknown suite: {suite}")
+    flags.extend(target_profile_compile_flags(suite, target_profile))
+    return flags
 
 
 def resolve_source(repo_relative: str, external_root: Path) -> Path:
@@ -753,7 +780,11 @@ def prepare_linked_workload(
             "direct-source workload has no source inputs",
         )
 
-    suite_flags = suite_compile_flags(case.suite, external_root)
+    suite_flags = suite_compile_flags(
+        case.suite,
+        external_root,
+        target_profile=case.target_profile,
+    )
     suite_flags.extend(case.compiler_flags)
     sources = [resolve_source(path, external_root) for path in case.sources]
     target_objects: list[Path] = []
@@ -906,10 +937,15 @@ def import_produced_workload(
     )
 
 
-def _cmsis_cmake_toolchain(toolchain: Toolchain) -> CmakeToolchain:
+def _cmsis_cmake_toolchain(
+    toolchain: Toolchain,
+    suite: str,
+    target_profile: str,
+) -> CmakeToolchain:
     llvm_bin = Path(toolchain.llvm_dis).parent
     compiler_flags = [
         *target_flags(toolchain),
+        *target_profile_compile_flags(suite, target_profile),
         "-gline-tables-only",
         "-flto=full",
         "-ffat-lto-objects",
@@ -948,115 +984,129 @@ def prepare_workload_providers(
         case
         for case in cases
         if isinstance(case.producer, corpus_inventory.CmsisNnWorkloadProducer)
-        and case.target_profile == TARGET_PROFILE
+        and has_target_profile_provider(case.suite, case.target_profile)
     ]
     cmsis_dsp = [
         case
         for case in cases
         if isinstance(case.producer, corpus_inventory.CmsisDspWorkloadProducer)
-        and case.target_profile == TARGET_PROFILE
+        and has_target_profile_provider(case.suite, case.target_profile)
         and supports_cmsis_dsp_harness(case)
     ]
     implemented = {case.identity for case in (*cmsis_nn, *cmsis_dsp)}
     for case in cases:
-        if (
-            case.producer.kind != "direct-source"
-            and case.target_profile == TARGET_PROFILE
-            and case.identity not in implemented
-        ):
+        if not has_target_profile_provider(case.suite, case.target_profile):
+            results[case.identity] = StepFailure(
+                CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+                "target profile provider unavailable for "
+                f"{case.suite}: {case.target_profile}",
+            )
+        elif case.producer.kind != "direct-source" and case.identity not in implemented:
             results[case.identity] = StepFailure(
                 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
                 "no linked-workload builder is available for producer kind "
                 f"{case.producer.kind}",
             )
 
-    for provider_name, provider_cases in (
+    for provider_name, all_provider_cases in (
         ("cmsis-nn", cmsis_nn),
         ("cmsis-dsp", cmsis_dsp),
     ):
-        if not provider_cases:
-            continue
-        provider_root = out_root / "_providers" / provider_name
+        profiles = sorted({case.target_profile for case in all_provider_cases})
+        for target_profile in profiles:
+            provider_cases = [
+                case
+                for case in all_provider_cases
+                if case.target_profile == target_profile
+            ]
+            provider_root = out_root / "_providers" / provider_name
+            if target_profile != TARGET_PROFILE:
+                provider_root /= target_profile
 
-        def fail_provider(failure: StepFailure) -> None:
-            results.update({case.identity: failure for case in provider_cases})
+            def fail_provider(failure: StepFailure) -> None:
+                results.update({case.identity: failure for case in provider_cases})
 
-        try:
-            if provider_root.exists():
-                shutil.rmtree(provider_root)
-            provider_root.mkdir(parents=True)
-            if provider_name == "cmsis-nn":
-                harness = materialize_cmsis_nn_harness(
-                    provider_cases, external_root, provider_root / "harness"
-                )
-            else:
-                harness = materialize_cmsis_dsp_harness(
-                    provider_cases, external_root, provider_root / "harness"
-                )
-        except (OSError, WorkloadProviderError) as exc:
-            fail_provider(StepFailure(CATEGORY_FINAL_LINK, str(exc)))
-            continue
+            try:
+                if provider_root.exists():
+                    shutil.rmtree(provider_root)
+                provider_root.mkdir(parents=True)
+                if provider_name == "cmsis-nn":
+                    harness = materialize_cmsis_nn_harness(
+                        provider_cases, external_root, provider_root / "harness"
+                    )
+                else:
+                    harness = materialize_cmsis_dsp_harness(
+                        provider_cases, external_root, provider_root / "harness"
+                    )
+            except (OSError, WorkloadProviderError) as exc:
+                fail_provider(StepFailure(CATEGORY_FINAL_LINK, str(exc)))
+                continue
 
-        target_build = provider_root / "target"
-        failure = run_step(
-            cmake_configure_command(
-                harness,
-                external_root / provider_name,
-                target_build,
-                _cmsis_cmake_toolchain(toolchain),
-            ),
-            provider_root / "target-configure.log",
-            time.monotonic() + timeout,
-            CATEGORY_FINAL_LINK,
-        )
-        if failure is not None:
-            fail_provider(failure)
-            continue
-        failure = run_step(
-            cmake_build_command(target_build, harness.targets, jobs),
-            provider_root / "target-build.log",
-            time.monotonic() + timeout,
-            CATEGORY_FINAL_LINK,
-        )
-        for case in provider_cases:
-            target_executable = harness.executable(target_build, case.executable)
-            if target_executable.is_file():
-                try:
-                    protocol_symbols = harness.protocol_symbols(case.executable)
-                    if not protocol_symbols:
-                        if not isinstance(harness, CmsisDspHarness):
-                            raise WorkloadProviderError(
-                                "CMSIS-NN provider produced an empty protocol"
-                            )
-                        if len(case.protocol) != 1:
-                            raise WorkloadProviderError(
-                                "multi-call CMSIS-DSP workload requires an atomic "
-                                "protocol wrapper"
-                            )
-                        protocol_symbols = (case.protocol[0].symbol,)
-                except (GateConfigError, WorkloadProviderError) as exc:
-                    results[case.identity] = StepFailure(
-                        CATEGORY_FINAL_LINK_ARTIFACT, str(exc)
+            target_build = provider_root / "target"
+            failure = run_step(
+                cmake_configure_command(
+                    harness,
+                    external_root / provider_name,
+                    target_build,
+                    _cmsis_cmake_toolchain(
+                        toolchain,
+                        provider_name,
+                        target_profile,
+                    ),
+                ),
+                provider_root / "target-configure.log",
+                time.monotonic() + timeout,
+                CATEGORY_FINAL_LINK,
+            )
+            if failure is not None:
+                fail_provider(failure)
+                continue
+            failure = run_step(
+                cmake_build_command(target_build, harness.targets, jobs),
+                provider_root / "target-build.log",
+                time.monotonic() + timeout,
+                CATEGORY_FINAL_LINK,
+            )
+            for case in provider_cases:
+                target_executable = harness.executable(target_build, case.executable)
+                if target_executable.is_file():
+                    try:
+                        protocol_symbols = harness.protocol_symbols(case.executable)
+                        if not protocol_symbols:
+                            if not isinstance(harness, CmsisDspHarness):
+                                raise WorkloadProviderError(
+                                    "CMSIS-NN provider produced an empty protocol"
+                                )
+                            if len(case.protocol) != 1:
+                                raise WorkloadProviderError(
+                                    "multi-call CMSIS-DSP workload requires an "
+                                    "atomic protocol wrapper"
+                                )
+                            protocol_symbols = (case.protocol[0].symbol,)
+                    except (GateConfigError, WorkloadProviderError) as exc:
+                        results[case.identity] = StepFailure(
+                            CATEGORY_FINAL_LINK_ARTIFACT, str(exc)
+                        )
+                        continue
+                    results[case.identity] = ProducedWorkload(
+                        target_build,
+                        target_executable,
+                        protocol_symbols,
+                        (harness.protocol_source_owner(case.executable),),
+                        harness.expected_entry_result(case.executable),
                     )
                     continue
-                results[case.identity] = ProducedWorkload(
-                    target_build,
-                    target_executable,
-                    protocol_symbols,
-                    (harness.protocol_source_owner(case.executable),),
-                    harness.expected_entry_result(case.executable),
-                )
-                continue
-            if failure is None:
+                if failure is None:
+                    results[case.identity] = StepFailure(
+                        CATEGORY_FINAL_LINK,
+                        f"provider did not produce target {case.executable}",
+                    )
+                    continue
                 results[case.identity] = StepFailure(
-                    CATEGORY_FINAL_LINK,
-                    f"provider did not produce target {case.executable}",
+                    failure.category,
+                    f"provider did not produce target {case.executable}: "
+                    f"{failure.detail}",
                 )
-                continue
-            results[case.identity] = StepFailure(
-                failure.category,
-                f"provider did not produce target {case.executable}: {failure.detail}",
-            )
     return results
 
 
@@ -1132,9 +1182,11 @@ def run_case(
             return finish(None, None)
 
         assert isinstance(case, corpus_inventory.ProgramWorkload)
-        if case.target_profile != TARGET_PROFILE:
-            raise GateConfigError(
-                f"unsupported workload target profile: {case.target_profile}"
+        if not has_target_profile_provider(case.suite, case.target_profile):
+            return finish(
+                CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+                "target profile provider unavailable for "
+                f"{case.suite}: {case.target_profile}",
             )
         expected_entry_result: int | None = None
         if case.producer.kind == "direct-source":

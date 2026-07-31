@@ -1105,6 +1105,8 @@ def _render_cmsis_dsp_harness_cmake(
     targets: Sequence[_CmsisDspCmakeTarget],
     support_sources: Sequence[Path],
     operator_compile_options: dict[Path, tuple[str, ...]],
+    *,
+    enable_float16: bool,
 ) -> str:
     suite_libraries: dict[Path, tuple[str, str, str]] = {}
     for item in targets:
@@ -1134,9 +1136,7 @@ target_link_libraries({library} PRIVATE CMSISDSP)
     target_blocks = []
     for item in targets:
         if item.direct_source is not None:
-            compile_options = " ".join(
-                ("-fno-inline-functions", *item.compiler_flags)
-            )
+            compile_options = " ".join(("-fno-inline-functions", *item.compiler_flags))
             target_blocks.append(
                 f'''add_executable({item.target}
   "{_cmake_quote(item.direct_source)}")
@@ -1198,7 +1198,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/workloads")
 set(CMSISDSP_INSTALL OFF CACHE BOOL "" FORCE)
-set(DISABLEFLOAT16 ON CACHE BOOL "" FORCE)
+set(DISABLEFLOAT16 {"OFF" if enable_float16 else "ON"} CACHE BOOL "" FORCE)
 set(FASTBUILD OFF CACHE BOOL "" FORCE)
 set(HELIUM OFF CACHE BOOL "" FORCE)
 set(HOST ON CACHE BOOL "" FORCE)
@@ -1248,6 +1248,17 @@ def materialize_cmsis_dsp_harness(
 ) -> CmsisDspHarness:
     if not workloads:
         raise WorkloadProviderError("CMSIS-DSP harness selection is empty")
+    target_profiles = {workload.target_profile for workload in workloads}
+    if len(target_profiles) != 1:
+        raise WorkloadProviderError("CMSIS-DSP harness selection mixes target profiles")
+    target_profile = next(iter(target_profiles))
+    if target_profile not in {
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+        corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE,
+    }:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP target profile provider is unavailable: {target_profile}"
+        )
     if destination.exists():
         raise WorkloadProviderError(
             f"CMSIS-DSP harness destination already exists: {destination}"
@@ -1672,6 +1683,9 @@ def materialize_cmsis_dsp_harness(
             cmake_targets,
             tuple(sorted((testing_root / "Source" / "Tests").glob("*.c"))),
             operator_compile_options,
+            enable_float16=(
+                target_profile == corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE
+            ),
         ),
         encoding="utf-8",
     )
