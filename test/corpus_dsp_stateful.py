@@ -112,6 +112,34 @@ class BiquadProtocol:
         )
 
 
+@dataclass(frozen=True)
+class RateConversionProtocol:
+    test_class: str
+    kind: str
+    suffix: str
+    value_type: str
+    bits: int | None
+    absolute_error: str | None = None
+    relative_error: str | None = None
+    integer_error: int | None = None
+
+    @property
+    def test_method(self) -> str:
+        return f"test_fir_{self.kind}_{self.suffix}"
+
+    @property
+    def calls(self) -> tuple[tuple[str, str], ...]:
+        init_signature = (
+            "i32(ptr,i16,i8,ptr,ptr,i32)"
+            if self.kind == "decimate"
+            else "i32(ptr,i8,i16,ptr,ptr,i32)"
+        )
+        return (
+            (f"arm_fir_{self.kind}_init_{self.suffix}", init_signature),
+            (f"arm_fir_{self.kind}_{self.suffix}", "void(ptr,ptr,ptr,i32)"),
+        )
+
+
 _FIR_PROTOCOLS = {
     ("FIRF16", "test_fir_f16"): FirProtocol(
         test_class="FIRF16",
@@ -367,6 +395,67 @@ _BIQUAD_PROTOCOLS = {
         integer_error=25,
     ),
 }
+_RATE_CONVERSION_PROTOCOLS = {
+    ("DECIMF32", "test_fir_decimate_f32"): RateConversionProtocol(
+        test_class="DECIMF32",
+        kind="decimate",
+        suffix="f32",
+        value_type="float32_t",
+        bits=None,
+        absolute_error="0.0f",
+        relative_error="8.0e-4f",
+    ),
+    ("DECIMF64", "test_fir_decimate_f64"): RateConversionProtocol(
+        test_class="DECIMF64",
+        kind="decimate",
+        suffix="f64",
+        value_type="float64_t",
+        bits=None,
+        absolute_error="0.0",
+        relative_error="8.0e-4",
+    ),
+    ("DECIMQ15", "test_fir_decimate_q15"): RateConversionProtocol(
+        test_class="DECIMQ15",
+        kind="decimate",
+        suffix="q15",
+        value_type="q15_t",
+        bits=16,
+        integer_error=5,
+    ),
+    ("DECIMQ31", "test_fir_decimate_q31"): RateConversionProtocol(
+        test_class="DECIMQ31",
+        kind="decimate",
+        suffix="q31",
+        value_type="q31_t",
+        bits=32,
+        integer_error=2,
+    ),
+    ("DECIMF32", "test_fir_interpolate_f32"): RateConversionProtocol(
+        test_class="DECIMF32",
+        kind="interpolate",
+        suffix="f32",
+        value_type="float32_t",
+        bits=None,
+        absolute_error="0.0f",
+        relative_error="8.0e-4f",
+    ),
+    ("DECIMQ15", "test_fir_interpolate_q15"): RateConversionProtocol(
+        test_class="DECIMQ15",
+        kind="interpolate",
+        suffix="q15",
+        value_type="q15_t",
+        bits=16,
+        integer_error=5,
+    ),
+    ("DECIMQ31", "test_fir_interpolate_q31"): RateConversionProtocol(
+        test_class="DECIMQ31",
+        kind="interpolate",
+        suffix="q31",
+        value_type="q31_t",
+        bits=32,
+        integer_error=2,
+    ),
+}
 
 
 def fir_protocol(
@@ -419,6 +508,26 @@ def biquad_protocol(
     if producer.selector_kind != "official":
         return None
     protocol = _BIQUAD_PROTOCOLS.get((producer.test_class, producer.test_method))
+    if protocol is None:
+        return None
+    if tuple((call.symbol, call.signature) for call in workload.protocol) != (
+        protocol.calls
+    ):
+        return None
+    return protocol
+
+
+def rate_conversion_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> RateConversionProtocol | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    if producer.selector_kind != "official":
+        return None
+    protocol = _RATE_CONVERSION_PROTOCOLS.get(
+        (producer.test_class, producer.test_method)
+    )
     if protocol is None:
         return None
     if tuple((call.symbol, call.signature) for call in workload.protocol) != (
@@ -943,6 +1052,204 @@ extern "C" LOOM_NOINLINE void {protocol_symbol}(
 
 int main() {{
   {protocol.state_type} state[kStateCount];
+  {protocol.value_type} output[kOutputCount];
+  {protocol_symbol}(kInput, kCoefficients, kConfigs, state, output);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def _decode_u32_pattern(raw: bytes, name: str) -> tuple[int, ...]:
+    if len(raw) % 4 != 0:
+        raise WorkloadProviderError(f"CMSIS-DSP {name} is not u32-aligned")
+    return tuple(
+        struct.unpack("<I", raw[offset : offset + 4])[0]
+        for offset in range(0, len(raw), 4)
+    )
+
+
+def _rate_conversion_oracle_body(protocol: RateConversionProtocol) -> str:
+    if protocol.integer_error is not None:
+        return f"""    const std::int64_t actual = output[index];
+    const std::int64_t expected = kExpected[index];
+    const std::int64_t difference =
+        actual > expected ? actual - expected : expected - actual;
+    if (difference > {protocol.integer_error})
+      return false;"""
+    if protocol.absolute_error is None or protocol.relative_error is None:
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion float tolerance is incomplete"
+        )
+    comparison_type = "float64_t" if protocol.suffix == "f64" else "float32_t"
+    return f"""    const {comparison_type} actual =
+        static_cast<{comparison_type}>(output[index]);
+    const {comparison_type} expected =
+        static_cast<{comparison_type}>(kExpected[index]);
+    if (!(actual == actual))
+      return false;
+    const {comparison_type} difference =
+        actual > expected ? actual - expected : expected - actual;
+    const {comparison_type} magnitude = expected < 0 ? -expected : expected;
+    if (difference > {protocol.absolute_error} +
+                         {protocol.relative_error} * magnitude)
+      return false;"""
+
+
+def render_rate_conversion_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    protocol_symbol: str,
+) -> str:
+    protocol = rate_conversion_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion protocol is inconsistent"
+        )
+    segments = corpus_dsp_protocol.pattern_segments(patterns)
+    ordinal = 2 if protocol.kind == "decimate" else 3
+    suffix = protocol.suffix
+    config_values = _decode_u32_pattern(
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Configs{ordinal}_u32.txt"
+        ),
+        "rate-conversion configuration",
+    )
+    if len(config_values) % 4 != 0 or not config_values:
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion configuration is not grouped by four"
+        )
+    configs = tuple(
+        tuple(config_values[offset : offset + 4])
+        for offset in range(0, len(config_values), 4)
+    )
+    for factor, num_taps, block_size, reference_size in configs:
+        if factor == 0 or num_taps == 0 or block_size == 0 or reference_size == 0:
+            raise WorkloadProviderError(
+                "CMSIS-DSP rate-conversion configuration is nonpositive"
+            )
+        if protocol.kind == "decimate":
+            valid = block_size % factor == 0 and reference_size == block_size // factor
+        else:
+            valid = num_taps % factor == 0 and reference_size == block_size * factor
+        if not valid:
+            raise WorkloadProviderError(
+                "CMSIS-DSP rate-conversion configuration violates its rate"
+            )
+
+    inputs = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Input{ordinal}_{suffix}.txt"
+        ),
+        "rate-conversion input",
+    )
+    coefficients = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Coefs{ordinal}_{suffix}.txt"
+        ),
+        "rate-conversion coefficients",
+    )
+    expected = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Reference{ordinal}_{suffix}.txt"
+        ),
+        "rate-conversion reference",
+    )
+    if len(inputs) != sum(config[2] for config in configs):
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion input projection is not total"
+        )
+    if len(coefficients) != sum(config[1] for config in configs):
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion coefficient projection is not total"
+        )
+    if len(expected) != sum(config[3] for config in configs):
+        raise WorkloadProviderError(
+            "CMSIS-DSP rate-conversion reference projection is not total"
+        )
+    if protocol.kind == "decimate":
+        state_count = max(
+            num_taps + block_size - 1 for _, num_taps, block_size, _ in configs
+        )
+    else:
+        state_count = max(
+            num_taps // factor + block_size - 1
+            for factor, num_taps, block_size, _ in configs
+        )
+    init_symbol, process_symbol = (call[0] for call in protocol.calls)
+    init_arguments = (
+        "num_taps, factor" if protocol.kind == "decimate" else "factor, num_taps"
+    )
+
+    return f"""#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::size_t kConfigCount = {len(configs)};
+constexpr std::size_t kOutputCount = {len(expected)};
+constexpr std::size_t kStateCount = {state_count};
+constexpr {protocol.value_type} kInput[] = {{
+{corpus_dsp_protocol.format_cpp_array(inputs)}
+}};
+constexpr {protocol.value_type} kCoefficients[] = {{
+{corpus_dsp_protocol.format_cpp_array(coefficients)}
+}};
+constexpr std::uint32_t kConfigs[] = {{
+{corpus_dsp_protocol.format_cpp_array(tuple(str(value) for value in config_values))}
+}};
+constexpr {protocol.value_type} kExpected[] = {{
+{corpus_dsp_protocol.format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const {protocol.value_type} *output) {{
+  for (std::size_t index = 0; index < kOutputCount; ++index) {{
+{_rate_conversion_oracle_body(protocol)}
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    const {protocol.value_type} *input,
+    const {protocol.value_type} *coefficients,
+    const std::uint32_t *configs, {protocol.value_type} *state,
+    {protocol.value_type} *output) {{
+  std::size_t input_offset = 0;
+  std::size_t coefficient_offset = 0;
+  std::size_t output_offset = 0;
+  for (std::size_t config = 0; config < kConfigCount; ++config) {{
+    const std::uint8_t factor =
+        static_cast<std::uint8_t>(configs[4 * config]);
+    const std::uint16_t num_taps =
+        static_cast<std::uint16_t>(configs[4 * config + 1]);
+    const std::uint32_t block_size = configs[4 * config + 2];
+    const std::uint32_t reference_size = configs[4 * config + 3];
+    arm_fir_{protocol.kind}_instance_{suffix} instance;
+    (void){init_symbol}(&instance, {init_arguments},
+                        coefficients + coefficient_offset, state, block_size);
+    {process_symbol}(&instance, input + input_offset,
+                     output + output_offset, block_size);
+    input_offset += block_size;
+    coefficient_offset += num_taps;
+    output_offset += reference_size;
+  }}
+}}
+
+int main() {{
+  {protocol.value_type} state[kStateCount];
   {protocol.value_type} output[kOutputCount];
   {protocol_symbol}(kInput, kCoefficients, kConfigs, state, output);
   return oracle_matches(output) ? 0 : 1;

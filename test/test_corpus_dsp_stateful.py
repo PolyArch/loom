@@ -140,6 +140,39 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                 self.assertEqual(protocol.count(f"{workload.protocol[1].symbol}("), 1)
                 self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
 
+    def test_rate_conversion_keeps_init_and_processing_atomic(self) -> None:
+        cases = {
+            "arm-fir-decimate-f64",
+            "arm-fir-interpolate-q15",
+        }
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp" and workload.case in cases
+        )
+        self.assertEqual(len(workloads), len(cases))
+
+        for ordinal, workload in enumerate(workloads):
+            with self.subTest(case=workload.case):
+                harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+                    (workload,),
+                    corpus_inventory.resolve_externals_root(ROOT),
+                    self.work / f"rate-conversion-harness-{ordinal}",
+                )
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable),
+                    ("loom_corpus_operator_protocol",),
+                )
+                compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
+                )
+                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source = compiled_owner.read_text(encoding="utf-8")
+                protocol = source.split("int main()", maxsplit=1)[0]
+                self.assertEqual(protocol.count(f"{workload.protocol[0].symbol}("), 1)
+                self.assertEqual(protocol.count(f"{workload.protocol[1].symbol}("), 1)
+                self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
+
 
 if __name__ == "__main__":
     unittest.main()

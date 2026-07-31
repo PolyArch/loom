@@ -804,6 +804,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateful-svm"
     if corpus_dsp_stateful.biquad_protocol(workload) is not None:
         return "stateful-biquad"
+    if corpus_dsp_stateful.rate_conversion_protocol(workload) is not None:
+        return "stateful-rate-conversion"
     if producer.selector_kind != "benchmark-only":
         return None
     if producer.test_class not in {"ControllerF32", "ControllerQ31"}:
@@ -1644,6 +1646,37 @@ def materialize_cmsis_dsp_harness(
             )
             protocol_owner = (
                 external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateful-rate-conversion":
+            protocol = corpus_dsp_stateful.rate_conversion_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP rate-conversion protocol is inconsistent"
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_stateful.render_rate_conversion_protocol(
+                    workload,
+                    shared_patterns,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "filtering_functions.h"
             )
             record_direct_protocol(
                 workload,
