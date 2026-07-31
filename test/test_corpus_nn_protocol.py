@@ -267,6 +267,42 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_accumulating_vec_mat_protocols_preserve_batches(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        cases = (
+            "arm-nn-vec-mat-mul-result-acc-s16",
+            "arm-nn-vec-mat-mul-result-acc-s8-s16",
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(f"{workload.protocol[0].symbol}(", source)
+                    self.assertIn("kBatchCount = 2", source)
+                    self.assertIn("kBatchOffset = 2", source)
+                    self.assertIn("expected[batch * kRowCount + row] +=", source)
+                    self.assertIn(
+                        "kLhs[batch * kColumnCount * kBatchOffset + column]",
+                        source,
+                    )
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",

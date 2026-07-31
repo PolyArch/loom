@@ -26,6 +26,20 @@ _S16_VEC_MAT_CALLS = {
         "const int32_t, const int32_t, const int32_t, const int32_t)",
     ): ("arm_nn_vec_mat_mult_t_s16_s16", "int16_t"),
 }
+_ACCUMULATING_VEC_MAT_CALLS = {
+    (
+        "arm_nn_vec_mat_mul_result_acc_s16",
+        "arm_cmsis_nn_status (const int16_t *, const int8_t *, "
+        "const int64_t *, int16_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): ("arm_nn_vec_mat_mul_result_acc_s16", "int16_t", "int64_t"),
+    (
+        "arm_nn_vec_mat_mul_result_acc_s8_s16",
+        "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+        "const int32_t *, int16_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): ("arm_nn_vec_mat_mul_result_acc_s8_s16", "int8_t", "int32_t"),
+}
 
 
 def _render_s32_nt_t(_wrapper_symbol: str) -> str:
@@ -167,10 +181,98 @@ int main(void)
     return render
 
 
+def _accumulating_vec_mat_renderer(
+    symbol: str, lhs_type: str, bias_type: str
+) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {{
+    kColumnCount = 5,
+    kRowCount = 3,
+    kBatchCount = 2,
+    kBatchOffset = 2,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kOutputCount = kBatchCount * kRowCount,
+}};
+
+static const {lhs_type} kLhs[
+    kColumnCount * (1 + (kBatchCount - 1) * kBatchOffset)] = {{
+    7, -3, 12, -5, 9, 2, -8, 4, 11, -6, 5, 1, -9, 3, 10,
+}};
+static const int8_t kRhs[kRowCount * kColumnCount] = {{
+    3, -2, 5, 1, -4,
+    -6, 7, 2, -3, 4,
+    8, 1, -5, 6, -2,
+}};
+static const {bias_type} kBias[kRowCount] = {{11, -23, 37}};
+
+int main(void)
+{{
+    int16_t output[kOutputCount] = {{5, -7, 9, -11, 13, -15}};
+    int16_t expected[kOutputCount];
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        expected[index] = output[index];
+    }}
+
+    const arm_cmsis_nn_status status = {symbol}(
+        kLhs, kRhs, kBias, output, kMultiplier, kShift,
+        kColumnCount, kRowCount, kBatchCount, kBatchOffset);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+
+    for (size_t batch = 0; batch < kBatchCount; ++batch)
+    {{
+        for (size_t row = 0; row < kRowCount; ++row)
+        {{
+            int64_t accumulated = kBias[row];
+            for (size_t column = 0; column < kColumnCount; ++column)
+            {{
+                accumulated +=
+                    kLhs[batch * kColumnCount * kBatchOffset + column] *
+                    kRhs[row * kColumnCount + column];
+            }}
+            const size_t destination = batch * kRowCount + row;
+            expected[batch * kRowCount + row] += (int16_t)accumulated;
+            if (expected[destination] < -32768)
+            {{
+                expected[destination] = -32768;
+            }}
+            if (expected[destination] > 32767)
+            {{
+                expected[destination] = 32767;
+            }}
+        }}
+    }}
+
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        if (output[index] != expected[index])
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _S32_NT_T_CALL:
         return _render_s32_nt_t
     vec_mat = _S16_VEC_MAT_CALLS.get(call)
     if vec_mat is not None:
         return _s16_vec_mat_renderer(*vec_mat)
+    accumulating = _ACCUMULATING_VEC_MAT_CALLS.get(call)
+    if accumulating is not None:
+        return _accumulating_vec_mat_renderer(*accumulating)
     return None
