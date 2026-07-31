@@ -14,6 +14,7 @@ TEST_ROOT = ROOT / "test"
 sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_inventory  # noqa: E402
+import corpus_dsp_generated  # noqa: E402
 import corpus_workload_provider  # noqa: E402
 
 
@@ -25,6 +26,17 @@ TRANSFORM_QUERY_CASES = {
     "arm-rfft-output-buffer-size",
     "arm-rfft-tmp-buffer-size",
     "arm-rifft-input-buffer-size",
+}
+LIFECYCLE_CASES = {
+    "arm-mat-init-f16",
+    "arm-mat-init-f32",
+    "arm-mat-init-f64",
+    "arm-mat-init-q15",
+    "arm-mat-init-q31",
+    "arm-mat-init-q7",
+    "arm-pid-reset-f32",
+    "arm-pid-reset-q15",
+    "arm-pid-reset-q31",
 }
 
 
@@ -111,6 +123,68 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         self.assertIn("use_cfft", mfcc_source)
         self.assertIn("buf_id", mfcc_source)
         self.assertIn("2 * sample_count", mfcc_source)
+
+    def test_lifecycle_protocols_have_one_typed_generated_owner(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp" and workload.case in LIFECYCLE_CASES
+        )
+
+        self.assertEqual(len(workloads), len(LIFECYCLE_CASES))
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                self.assertIsInstance(
+                    workload.producer,
+                    corpus_inventory.CmsisDspGeneratedWorkloadProducer,
+                )
+                self.assertEqual(
+                    workload.producer.selector_kind, "lifecycle-completion"
+                )
+                self.assertTrue(
+                    corpus_workload_provider.supports_cmsis_dsp_harness(workload)
+                )
+                if workload.case == "arm-mat-init-f16":
+                    protocol = corpus_dsp_generated.lifecycle_protocol(workload)
+                    self.assertIsNotNone(protocol)
+                    self.assertEqual(protocol.owner_header, "matrix_functions_f16.h")
+
+    def test_lifecycle_provider_observes_structural_effects(self) -> None:
+        selected_cases = {"arm-mat-init-f32", "arm-pid-reset-q15"}
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp" and workload.case in selected_cases
+        )
+        self.assertEqual(len(workloads), len(selected_cases))
+
+        harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "lifecycle-harness",
+        )
+        by_case = {workload.case: workload for workload in workloads}
+
+        matrix = by_case["arm-mat-init-f32"]
+        matrix_source, matrix_owner = harness.protocol_source_owner(matrix.executable)
+        self.assertEqual(matrix_owner.name, "matrix_functions.h")
+        rendered_matrix = matrix_source.read_text(encoding="utf-8")
+        self.assertIn(
+            "arm_mat_init_f32(&instance, rows, columns, data)", rendered_matrix
+        )
+        self.assertIn("instance.numRows != rows", rendered_matrix)
+        self.assertIn("instance.numCols != columns", rendered_matrix)
+        self.assertIn("instance.pData != data", rendered_matrix)
+        self.assertIn("data[6];", rendered_matrix)
+        self.assertNotIn("data[6]{}", rendered_matrix)
+
+        reset = by_case["arm-pid-reset-q15"]
+        reset_source, reset_owner = harness.protocol_source_owner(reset.executable)
+        self.assertEqual(reset_owner.name, "controller_functions.h")
+        rendered_reset = reset_source.read_text(encoding="utf-8")
+        self.assertIn("arm_pid_reset_q15(&instance)", rendered_reset)
+        self.assertIn("instance.state[index] != 0", rendered_reset)
+        self.assertIn("int main()", rendered_reset)
 
 
 if __name__ == "__main__":

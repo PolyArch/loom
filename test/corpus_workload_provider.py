@@ -777,6 +777,8 @@ def _cmsis_dsp_direct_protocol_family(
 ) -> str | None:
     if corpus_dsp_generated.transform_query_protocol(workload) is not None:
         return "generated-transform-query"
+    if corpus_dsp_generated.lifecycle_protocol(workload) is not None:
+        return "generated-lifecycle"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -828,7 +830,7 @@ def supports_cmsis_dsp_harness(
     producer = workload.producer
     family = _cmsis_dsp_direct_protocol_family(workload)
     if isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer):
-        return family == "generated-transform-query"
+        return family in {"generated-lifecycle", "generated-transform-query"}
     return isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer) and (
         producer.selector_kind == "official" or family is not None
     )
@@ -1172,21 +1174,26 @@ def materialize_cmsis_dsp_harness(
                 f"CMSIS-DSP harness repeats a target: {workload.identity}"
             )
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
-        if direct_family == "generated-transform-query":
-            protocol = corpus_dsp_generated.transform_query_protocol(workload)
-            if protocol is None:
-                raise WorkloadProviderError(
-                    "CMSIS-DSP transform query protocol is inconsistent"
-                )
+        if direct_family in {"generated-lifecycle", "generated-transform-query"}:
+            transform_query = corpus_dsp_generated.transform_query_protocol(workload)
+            lifecycle = corpus_dsp_generated.lifecycle_protocol(workload)
+            if (transform_query is None) == (lifecycle is None):
+                raise WorkloadProviderError("CMSIS-DSP generated protocol is ambiguous")
+            protocol = transform_query or lifecycle
+            assert protocol is not None
             generated = generated_root / target
             generated.mkdir()
             direct_source = generated / "OperatorProtocol.cpp"
-            direct_source.write_text(
+            rendered = (
                 corpus_dsp_generated.render_transform_query_protocol(
                     workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
-                ),
-                encoding="utf-8",
+                )
+                if transform_query is not None
+                else corpus_dsp_generated.render_lifecycle_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                )
             )
+            direct_source.write_text(rendered, encoding="utf-8")
             protocol_owner = (
                 external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
             )

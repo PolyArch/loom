@@ -20,6 +20,11 @@ class TransformQueryKind(Enum):
     RIFFT_INPUT = "rifft-input"
 
 
+class LifecycleKind(Enum):
+    MATRIX_INIT = "matrix-init"
+    PID_RESET = "pid-reset"
+
+
 @dataclass(frozen=True)
 class TransformQueryProtocol:
     kind: TransformQueryKind
@@ -29,6 +34,17 @@ class TransformQueryProtocol:
     @property
     def owner_header(self) -> str:
         return "transform_functions.h"
+
+
+@dataclass(frozen=True)
+class LifecycleProtocol:
+    kind: LifecycleKind
+    symbol: str
+    signature: str
+    instance_type: str
+    value_type: str
+    owner_header: str
+    target_profile: str
 
 
 _TRANSFORM_QUERY_PROTOCOLS = (
@@ -73,6 +89,93 @@ _TRANSFORM_QUERY_BY_CALL = {
     for protocol in _TRANSFORM_QUERY_PROTOCOLS
 }
 
+_LIFECYCLE_PROTOCOLS = (
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_f16",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_f16",
+        "float16_t",
+        "matrix_functions_f16.h",
+        corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_f32",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_f32",
+        "float32_t",
+        "matrix_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_f64",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_f64",
+        "float64_t",
+        "matrix_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_q15",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_q15",
+        "q15_t",
+        "matrix_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_q31",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_q31",
+        "q31_t",
+        "matrix_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.MATRIX_INIT,
+        "arm_mat_init_q7",
+        "void(ptr,i16,i16,ptr)",
+        "arm_matrix_instance_q7",
+        "q7_t",
+        "matrix_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.PID_RESET,
+        "arm_pid_reset_f32",
+        "void(ptr)",
+        "arm_pid_instance_f32",
+        "float32_t",
+        "controller_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.PID_RESET,
+        "arm_pid_reset_q15",
+        "void(ptr)",
+        "arm_pid_instance_q15",
+        "q15_t",
+        "controller_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+    LifecycleProtocol(
+        LifecycleKind.PID_RESET,
+        "arm_pid_reset_q31",
+        "void(ptr)",
+        "arm_pid_instance_q31",
+        "q31_t",
+        "controller_functions.h",
+        corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE,
+    ),
+)
+_LIFECYCLE_BY_CALL = {
+    (protocol.symbol, protocol.signature): protocol for protocol in _LIFECYCLE_PROTOCOLS
+}
+
 
 def transform_query_protocol(
     workload: corpus_inventory.ProgramWorkload,
@@ -92,6 +195,27 @@ def transform_query_protocol(
     if protocol is None:
         return None
     if workload.vector_identity != f"transform-query:{protocol.symbol}:0":
+        return None
+    return protocol
+
+
+def lifecycle_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> LifecycleProtocol | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer):
+        return None
+    if (
+        workload.suite != "cmsis-dsp"
+        or producer.selector_kind != "lifecycle-completion"
+        or len(workload.protocol) != 1
+    ):
+        return None
+    call = workload.protocol[0]
+    protocol = _LIFECYCLE_BY_CALL.get((call.symbol, call.signature))
+    if protocol is None or workload.target_profile != protocol.target_profile:
+        return None
+    if workload.vector_identity != f"lifecycle-completion:{protocol.symbol}:0":
         return None
     return protocol
 
@@ -193,3 +317,74 @@ int main() {{
   return {protocol_symbol}(loom_corpus_sample_count);
 }}
 """
+
+
+def render_lifecycle_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    protocol_symbol: str,
+) -> str:
+    protocol = lifecycle_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP workload has no lifecycle provider: {workload.identity}"
+        )
+    if protocol.kind is LifecycleKind.MATRIX_INIT:
+        body = f"""  {protocol.value_type} data[6];
+  {protocol.instance_type} instance;
+  {protocol.symbol}(&instance, rows, columns, data);
+  int failures = 0;
+  failures += instance.numRows != rows;
+  failures += instance.numCols != columns;
+  failures += instance.pData != data;
+  return failures != 0;
+"""
+        parameters = "std::uint16_t rows, std::uint16_t columns"
+        globals_and_main = f"""extern "C" {{
+std::uint16_t loom_corpus_rows = 2U;
+std::uint16_t loom_corpus_columns = 3U;
+}}
+
+int main() {{
+  return {protocol_symbol}(loom_corpus_rows, loom_corpus_columns);
+}}
+"""
+    elif protocol.kind is LifecycleKind.PID_RESET:
+        body = f"""  {protocol.instance_type} instance;
+  for (std::size_t index = 0; index < 3; ++index) {{
+    instance.state[index] = static_cast<{protocol.value_type}>(state_seed + index);
+  }}
+  {protocol.symbol}(&instance);
+  for (std::size_t index = 0; index < 3; ++index) {{
+    if (instance.state[index] != 0) {{
+      return 1;
+    }}
+  }}
+  return 0;
+"""
+        parameters = "std::int32_t state_seed"
+        globals_and_main = f"""extern "C" {{
+std::int32_t loom_corpus_state_seed = 1;
+}}
+
+int main() {{
+  return {protocol_symbol}(loom_corpus_state_seed);
+}}
+"""
+    else:
+        raise WorkloadProviderError(f"unknown lifecycle kind: {protocol.kind.value}")
+
+    return f"""#include <cstddef>
+#include <cstdint>
+
+#include "dsp/{protocol.owner_header}"
+
+#if defined(__GNUC__) || defined(__clang__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+extern "C" LOOM_NOINLINE int {protocol_symbol}({parameters}) {{
+{body}}}
+
+{globals_and_main}"""
