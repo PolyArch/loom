@@ -398,6 +398,40 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     (workload.protocol[0].symbol,),
                 )
 
+    def test_generated_convolution_matrix_kernels_validate_two_vectors(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        cases = (
+            "arm-nn-mat-mult-kernel-s8-s16",
+            "arm-nn-mat-mult-kernel-row-offset-s8-s16",
+            "arm-nn-mat-mult-kernel-s16",
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+
+                self.assertIn(f"{workload.protocol[0].symbol}(", source)
+                self.assertIn("kInputB[vector * kAlignedColumns + column]", source)
+                self.assertIn("returned != output + kOutputSpan", source)
+                self.assertIn("output[index] != expected[index]", source)
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable),
+                    (workload.protocol[0].symbol,),
+                )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
