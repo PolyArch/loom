@@ -17,6 +17,7 @@ from typing import Sequence
 
 import corpus_inventory
 import corpus_dsp_protocol
+import corpus_dsp_stateful
 import corpus_nn_protocol
 from corpus_workload_errors import WorkloadProviderError
 
@@ -797,17 +798,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateless-window"
     if corpus_dsp_protocol.elementary_math_protocol(workload) is not None:
         return "stateless-elementary-math"
-    if (
-        producer.selector_kind == "official"
-        and producer.test_class == "FIRF32"
-        and producer.test_method == "test_fir_f32"
-        and tuple((call.symbol, call.signature) for call in workload.protocol)
-        == (
-            ("arm_fir_init_f32", "void(ptr,i16,ptr,ptr,i32)"),
-            ("arm_fir_f32", "void(ptr,ptr,ptr,i32)"),
-        )
-    ):
-        return "stateful-fir-f32"
+    if corpus_dsp_stateful.fir_protocol(workload) is not None:
+        return "stateful-fir"
     if producer.selector_kind != "benchmark-only":
         return None
     if producer.test_class not in {"ControllerF32", "ControllerQ31"}:
@@ -904,111 +896,6 @@ def _cmsis_dsp_basic_integer_extent(
         producer.test_method,
         producer.vector_ordinal,
     )
-
-
-def _render_stateful_fir_f32_protocol(patterns: Path) -> str:
-    segments = corpus_dsp_protocol.pattern_segments(patterns)
-    inputs = corpus_dsp_protocol.decode_f32_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "FirInput1_f32.txt"),
-        "FIR input",
-    )
-    coefficients = corpus_dsp_protocol.decode_f32_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "FirCoefs1_f32.txt"),
-        "FIR coefficients",
-    )
-    expected = corpus_dsp_protocol.decode_f32_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "FirRefs1_f32.txt"),
-        "FIR reference",
-    )
-    configs = corpus_dsp_protocol.decode_i16_pattern(
-        corpus_dsp_protocol.require_pattern_segment(segments, "FirConfigs1_s16.txt"),
-        "FIR configuration",
-    )
-    if len(configs) % 2 != 0 or not configs:
-        raise WorkloadProviderError("CMSIS-DSP FIR configuration is not paired")
-    pairs = tuple(zip(configs[0::2], configs[1::2], strict=True))
-    if any(block <= 0 or taps <= 0 for block, taps in pairs):
-        raise WorkloadProviderError("CMSIS-DSP FIR configuration is nonpositive")
-    if len(inputs) < 2 * max(block for block, _ in pairs):
-        raise WorkloadProviderError("CMSIS-DSP FIR input does not cover its blocks")
-    coefficient_count = sum(taps for _, taps in pairs)
-    if len(coefficients) < coefficient_count:
-        raise WorkloadProviderError("CMSIS-DSP FIR coefficient projection is not total")
-    coefficients = coefficients[:coefficient_count]
-    if len(expected) != sum(2 * block for block, _ in pairs):
-        raise WorkloadProviderError("CMSIS-DSP FIR reference projection is not total")
-    state_count = max(block + taps - 1 for block, taps in pairs)
-
-    config_literals = tuple(str(value) for value in configs)
-    return f"""#include <cstddef>
-#include <cstdint>
-
-#include "arm_math.h"
-
-#if defined(__clang__) || defined(__GNUC__)
-#define LOOM_NOINLINE __attribute__((noinline))
-#else
-#define LOOM_NOINLINE
-#endif
-
-namespace {{
-constexpr std::size_t kConfigCount = {len(pairs)};
-constexpr std::size_t kOutputCount = {len(expected)};
-constexpr std::size_t kStateCount = {state_count};
-constexpr float32_t kInput[] = {{
-{corpus_dsp_protocol.format_cpp_array(inputs)}
-}};
-constexpr float32_t kCoefficients[] = {{
-{corpus_dsp_protocol.format_cpp_array(coefficients)}
-}};
-constexpr std::int16_t kConfigs[] = {{
-{corpus_dsp_protocol.format_cpp_array(config_literals)}
-}};
-constexpr float32_t kExpected[] = {{
-{corpus_dsp_protocol.format_cpp_array(expected)}
-}};
-
-bool oracle_matches(const float32_t *output) {{
-  for (std::size_t index = 0; index < kOutputCount; ++index) {{
-    const float32_t expected = kExpected[index];
-    const float32_t difference = output[index] > expected
-                                     ? output[index] - expected
-                                     : expected - output[index];
-    const float32_t magnitude = expected < 0.0f ? -expected : expected;
-    if (difference > 1.0e-6f + 3.0e-5f * magnitude)
-      return false;
-  }}
-  return true;
-}}
-}} // namespace
-
-extern "C" LOOM_NOINLINE void {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(
-    const float32_t *input, const float32_t *coefficients,
-    const std::int16_t *configs, float32_t *state, float32_t *output) {{
-  std::size_t coefficient_offset = 0;
-  std::size_t output_offset = 0;
-  for (std::size_t config = 0; config < kConfigCount; ++config) {{
-    const std::uint32_t block_size = static_cast<std::uint32_t>(configs[2 * config]);
-    const std::uint16_t num_taps = static_cast<std::uint16_t>(configs[2 * config + 1]);
-    arm_fir_instance_f32 instance{{}};
-    arm_fir_init_f32(&instance, num_taps, coefficients + coefficient_offset,
-                     state, block_size);
-    arm_fir_f32(&instance, input, output + output_offset, block_size);
-    arm_fir_f32(&instance, input + block_size,
-                output + output_offset + block_size, block_size);
-    coefficient_offset += num_taps;
-    output_offset += 2 * block_size;
-  }}
-}}
-
-int main() {{
-  float32_t state[kStateCount]{{}};
-  float32_t output[kOutputCount]{{}};
-  {_CORPUS_OPERATOR_PROTOCOL_SYMBOL}(kInput, kCoefficients, kConfigs, state,
-                                     output);
-  return oracle_matches(output) ? 0 : 1;
-}}
-"""
 
 
 def _render_basic_f32_protocol(
@@ -1684,18 +1571,21 @@ def materialize_cmsis_dsp_harness(
                 protocol_owner,
                 None,
             )
-        elif direct_family == "stateful-fir-f32":
+        elif direct_family == "stateful-fir":
+            protocol = corpus_dsp_stateful.fir_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError("CMSIS-DSP FIR protocol is inconsistent")
             direct_source = generated / "OperatorProtocol.cpp"
             direct_source.write_text(
-                _render_stateful_fir_f32_protocol(shared_patterns),
+                corpus_dsp_stateful.render_fir_protocol(
+                    workload,
+                    shared_patterns,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
                 encoding="utf-8",
             )
             protocol_owner = (
-                external_root
-                / "cmsis-dsp"
-                / "Include"
-                / "dsp"
-                / "filtering_functions.h"
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
             )
             record_direct_protocol(
                 workload,
