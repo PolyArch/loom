@@ -120,6 +120,24 @@ class DualInventoryContractTest(unittest.TestCase):
             "workload_baf58c6a708ee1e0",
         )
 
+    def test_generated_depthwise_mve_query_owns_its_link_closure(self) -> None:
+        workload = next(
+            row
+            for row in corpus_inventory.load_workload_inventory(ROOT)
+            if row.operator_id
+            == "cmsis-nn:arm-depthwise-conv-wrapper-s8-get-buffer-size-mve:09b81b4183a4df78"
+        )
+
+        self.assertEqual(
+            workload.sources,
+            (
+                "externals/cmsis-nn/Source/ConvolutionFunctions/"
+                "arm_convolve_get_buffer_sizes_s8.c",
+                "externals/cmsis-nn/Source/ConvolutionFunctions/"
+                "arm_depthwise_conv_get_buffer_sizes_s8.c",
+            ),
+        )
+
 
 def git_output(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(

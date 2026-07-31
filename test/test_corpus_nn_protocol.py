@@ -257,6 +257,20 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "arm-convolve-s8-get-buffer-size-mve": "704",
             "arm-depthwise-conv-s8-opt-get-buffer-size-dsp": "330",
             "arm-depthwise-conv-s8-opt-get-buffer-size-mve": "7440",
+            "arm-convolve-1-x-n-s4-get-buffer-size": "660",
+            "arm-convolve-wrapper-s16-get-buffer-size-dsp": "660",
+            "arm-convolve-wrapper-s16-get-buffer-size-mve": "1344",
+            "arm-convolve-wrapper-s4-get-buffer-size-dsp": "660",
+            "arm-convolve-wrapper-s4-get-buffer-size-mve": "704",
+            "arm-convolve-wrapper-s8-get-buffer-size-dsp": "672",
+            "arm-convolve-wrapper-s8-get-buffer-size-mve": "704",
+            "arm-depthwise-conv-wrapper-s16-get-buffer-size-dsp": "330",
+            "arm-depthwise-conv-wrapper-s16-get-buffer-size-mve": "1328",
+            "arm-depthwise-conv-wrapper-s4-get-buffer-size-dsp": "330",
+            "arm-depthwise-conv-wrapper-s4-get-buffer-size-mve": "7440",
+            "arm-depthwise-conv-wrapper-s8-get-buffer-size-dsp": "330",
+            "arm-depthwise-conv-wrapper-s8-get-buffer-size-mve": "7440",
+            "arm-transpose-conv-s8-get-buffer-size-mve": "3588",
         }
         external_root = corpus_inventory.resolve_externals_root(ROOT)
 

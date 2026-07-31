@@ -402,6 +402,58 @@ int main(void)
     return render
 
 
+def _structured_query_renderer(
+    symbol: str,
+    parameter_type: str,
+    expected: int,
+) -> Callable[[str], str]:
+    if parameter_type == "cmsis_nn_conv_params":
+        parameter_initializer = (
+            ".stride = {1, 1}, .padding = {0, 0}, .dilation = {1, 1}"
+        )
+        output_channels = 11
+    elif parameter_type == "cmsis_nn_dw_conv_params":
+        parameter_initializer = (
+            ".ch_mult = 1, .stride = {1, 1}, .padding = {0, 0}, .dilation = {1, 1}"
+        )
+        output_channels = 11
+    elif parameter_type == "cmsis_nn_transpose_conv_params":
+        parameter_initializer = (
+            ".stride = {3, 3}, .padding = {0, 0}, .dilation = {1, 1}"
+        )
+        output_channels = 13
+    else:
+        raise ValueError(f"unsupported query parameter type: {parameter_type}")
+
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "arm_nnsupportfunctions.h"
+
+static const {parameter_type} kParameters = {{{parameter_initializer}}};
+static const cmsis_nn_dims kInputDimensions = {{
+    .n = 1, .h = 5, .w = 7, .c = 11,
+}};
+static const cmsis_nn_dims kFilterDimensions = {{
+    .n = 13, .h = 3, .w = 5, .c = 11,
+}};
+static const cmsis_nn_dims kOutputDimensions = {{
+    .n = 1, .h = 5, .w = 7, .c = {output_channels},
+}};
+
+int main(void)
+{{
+    const int32_t result = {symbol}(
+        &kParameters, &kInputDimensions, &kFilterDimensions, &kOutputDimensions);
+    const int32_t expected = {expected};
+    return result == expected ? 0 : 1;
+}}
+"""
+
+    return render
+
+
 def _render_elementwise_mul_batch(
     symbol: str,
     output_type: str,
@@ -1262,6 +1314,75 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
 }
 
 
+_STRUCTURED_QUERY_PROTOCOLS = (
+    (
+        "arm_convolve_1_x_n_s4_get_buffer_size",
+        "cmsis_nn_conv_params",
+        660,
+    ),
+    ("arm_convolve_wrapper_s16_get_buffer_size_dsp", "cmsis_nn_conv_params", 660),
+    (
+        "arm_convolve_wrapper_s16_get_buffer_size_mve",
+        "cmsis_nn_conv_params",
+        1344,
+    ),
+    ("arm_convolve_wrapper_s4_get_buffer_size_dsp", "cmsis_nn_conv_params", 660),
+    ("arm_convolve_wrapper_s4_get_buffer_size_mve", "cmsis_nn_conv_params", 704),
+    ("arm_convolve_wrapper_s8_get_buffer_size_dsp", "cmsis_nn_conv_params", 672),
+    ("arm_convolve_wrapper_s8_get_buffer_size_mve", "cmsis_nn_conv_params", 704),
+    (
+        "arm_depthwise_conv_wrapper_s16_get_buffer_size_dsp",
+        "cmsis_nn_dw_conv_params",
+        330,
+    ),
+    (
+        "arm_depthwise_conv_wrapper_s16_get_buffer_size_mve",
+        "cmsis_nn_dw_conv_params",
+        1328,
+    ),
+    (
+        "arm_depthwise_conv_wrapper_s4_get_buffer_size_dsp",
+        "cmsis_nn_dw_conv_params",
+        330,
+    ),
+    (
+        "arm_depthwise_conv_wrapper_s4_get_buffer_size_mve",
+        "cmsis_nn_dw_conv_params",
+        7440,
+    ),
+    (
+        "arm_depthwise_conv_wrapper_s8_get_buffer_size_dsp",
+        "cmsis_nn_dw_conv_params",
+        330,
+    ),
+    (
+        "arm_depthwise_conv_wrapper_s8_get_buffer_size_mve",
+        "cmsis_nn_dw_conv_params",
+        7440,
+    ),
+    (
+        "arm_transpose_conv_s8_get_buffer_size_mve",
+        "cmsis_nn_transpose_conv_params",
+        3588,
+    ),
+)
+
+for (
+    _query_symbol,
+    _query_parameter_type,
+    _query_expected,
+) in _STRUCTURED_QUERY_PROTOCOLS:
+    _RENDERERS[
+        (
+            _query_symbol,
+            f"int32_t (const {_query_parameter_type} *, const cmsis_nn_dims *, "
+            "const cmsis_nn_dims *, const cmsis_nn_dims *)",
+        )
+    ] = _structured_query_renderer(
+        _query_symbol, _query_parameter_type, _query_expected
+    )
+
+
 _HEADER_ONLY_PROTOCOLS = {
     "arm_nn_divide_by_power_of_two",
     "arm_nn_doubling_high_mult",
@@ -1325,6 +1446,27 @@ def _declaration_owner(
     return owners[0]
 
 
+def _compiled_definition_owner(
+    producer: corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+    source_owners: tuple[Path, ...],
+) -> Path:
+    definition = re.compile(
+        rf"\b{re.escape(producer.public_symbol)}\s*\([^;{{}}]*\)\s*{{",
+        re.DOTALL,
+    )
+    owners = [
+        owner
+        for owner in source_owners
+        if definition.search(owner.read_text(encoding="utf-8"))
+    ]
+    if len(owners) != 1:
+        raise WorkloadProviderError(
+            "generated CMSIS-NN protocol must resolve one compiled definition: "
+            f"{producer.public_symbol}"
+        )
+    return owners[0]
+
+
 def render_generated_cmsis_nn_protocol(
     workload: corpus_inventory.ProgramWorkload,
     external_root: Path,
@@ -1341,14 +1483,21 @@ def render_generated_cmsis_nn_protocol(
             f"generated CMSIS-NN protocol is unsupported: {workload.identity}"
         )
     header_only = producer.public_symbol in _HEADER_ONLY_PROTOCOLS
-    expected_sources = 0 if header_only else 1
-    if len(workload.sources) != expected_sources:
+    if header_only and workload.sources:
         raise WorkloadProviderError(
             "generated CMSIS-NN protocol has an invalid implementation closure: "
             f"{workload.identity}"
         )
+    if not header_only and not workload.sources:
+        raise WorkloadProviderError(
+            "generated CMSIS-NN protocol has an empty implementation closure: "
+            f"{workload.identity}"
+        )
+    source_owners = tuple(
+        _owned_path(source, external_root) for source in workload.sources
+    )
     compiled_owner = (
-        None if header_only else _owned_path(workload.sources[0], external_root)
+        None if header_only else _compiled_definition_owner(producer, source_owners)
     )
     return GeneratedCmsisNnProtocol(
         source=renderer(wrapper_symbol),
