@@ -1232,3 +1232,147 @@ int main() {{
   return oracle_matches(output{status_argument}) ? 0 : 1;
 }}
 """
+
+
+def render_basic_f32_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    sample_count: int | None,
+    protocol_symbol: str,
+) -> str:
+    call = workload.protocol[0]
+    specs = {
+        "arm_add_f32": ("Reference1_f32.txt", "binary"),
+        "arm_sub_f32": ("Reference2_f32.txt", "binary"),
+        "arm_mult_f32": ("Reference3_f32.txt", "binary"),
+        "arm_negate_f32": ("Reference4_f32.txt", "unary"),
+        "arm_offset_f32": ("Reference5_f32.txt", "scalar"),
+        "arm_scale_f32": ("Reference6_f32.txt", "scalar"),
+        "arm_dot_prod_f32": ("Reference7_f32.txt", "dot"),
+        "arm_clip_f32": ("Reference12_f32.txt", "clip"),
+    }
+    try:
+        reference_name, kind = specs[call.symbol]
+    except KeyError as exc:
+        raise WorkloadProviderError(
+            f"unsupported CMSIS-DSP BasicTestsF32 protocol: {call.symbol}"
+        ) from exc
+    segments = pattern_segments(patterns)
+    input_name = "Input12_f32.txt" if kind == "clip" else "Input1_f32.txt"
+    input_a = decode_f32_pattern(
+        require_pattern_segment(segments, input_name),
+        "basic f32 input",
+    )
+    expected = decode_f32_pattern(
+        require_pattern_segment(segments, reference_name),
+        "basic f32 reference",
+    )
+    if sample_count is None:
+        sample_count = len(expected)
+    if sample_count <= 0 or len(input_a) < sample_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP basic f32 input does not cover its workload extent"
+        )
+    input_a = input_a[:sample_count]
+    input_b: tuple[str, ...] = ()
+    if kind in {"binary", "dot"}:
+        input_b = decode_f32_pattern(
+            require_pattern_segment(segments, "Input2_f32.txt"),
+            "basic f32 second input",
+        )
+        if len(input_b) < sample_count:
+            raise WorkloadProviderError(
+                "CMSIS-DSP basic f32 second input is incomplete"
+            )
+        input_b = input_b[:sample_count]
+    output_count = len(expected) if kind == "dot" else sample_count
+    if len(expected) < output_count:
+        raise WorkloadProviderError("CMSIS-DSP basic f32 reference is incomplete")
+    expected = expected[:output_count]
+
+    if kind == "binary":
+        parameters = """const float32_t *input_a, const float32_t *input_b,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input_a, input_b, output, count);"
+        main_arguments = "input_a, input_b, output, kSampleCount"
+    elif kind == "unary":
+        parameters = "const float32_t *input, float32_t *output, std::uint32_t count"
+        invocation = f"{call.symbol}(input, output, count);"
+        main_arguments = "input_a, output, kSampleCount"
+    elif kind == "scalar":
+        parameters = """const float32_t *input, float32_t scalar,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input, scalar, output, count);"
+        main_arguments = "input_a, 0.5f, output, kSampleCount"
+    elif kind == "dot":
+        parameters = """const float32_t *input_a, const float32_t *input_b,
+    float32_t *output, std::uint32_t count"""
+        invocation = f"{call.symbol}(input_a, input_b, count, &output[0]);"
+        main_arguments = "input_a, input_b, output, kSampleCount"
+    else:
+        parameters = """const float32_t *input, float32_t *output,
+    float32_t lower, float32_t upper, std::uint32_t count"""
+        invocation = f"{call.symbol}(input, output, lower, upper, count);"
+        main_arguments = "input_a, output, -0.5f, -0.1f, kSampleCount"
+
+    input_b_declaration = ""
+    input_b_initialization = ""
+    if input_b:
+        input_b_declaration = f"""constexpr float32_t kInputB[] = {{
+{format_cpp_array(input_b)}
+}};
+"""
+        input_b_initialization = """
+  float32_t input_b[kSampleCount];
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input_b[index] = kInputB[index];"""
+
+    return f"""#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "arm_math.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::uint32_t kSampleCount = {sample_count};
+constexpr std::size_t kOutputCount = {output_count};
+constexpr float32_t kInputA[] = {{
+{format_cpp_array(input_a)}
+}};
+{input_b_declaration}constexpr float32_t kExpected[] = {{
+{format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const float32_t *output) {{
+  for (std::size_t index = 0; index < kOutputCount; ++index) {{
+    const float32_t expected = kExpected[index];
+    const float32_t difference = std::fabs(output[index] - expected);
+    const float32_t magnitude = std::fabs(expected);
+    if (!std::isfinite(output[index]) ||
+        difference > 1.0e-6f + 5.0e-5f * magnitude)
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {parameters}) {{
+  {invocation}
+}}
+
+int main() {{
+  float32_t input_a[kSampleCount];
+  float32_t output[kOutputCount]{{}};
+  for (std::uint32_t index = 0; index < kSampleCount; ++index)
+    input_a[index] = kInputA[index];{input_b_initialization}
+  {protocol_symbol}({main_arguments});
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
