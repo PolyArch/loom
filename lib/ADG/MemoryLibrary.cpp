@@ -1,5 +1,7 @@
 #include "ADG/MemoryLibrary.h"
 
+#include "CatalogCapabilities.h"
+
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/IR/MemoryActorContractDomain.h"
 #include "Fabric/IR/MemoryCapabilityDomains.h"
@@ -42,8 +44,7 @@ scalarElementWidths(CatalogMemoryDomain domain) {
   if (domain == CatalogMemoryDomain::General64)
     return ::fabric::UnsignedDomain::fromCanonical(
         {{8, 8}, {16, 16}, {32, 32}, {64, 64}});
-  return ::fabric::UnsignedDomain::fromCanonical(
-      {{8, 8}, {16, 16}, {32, 32}});
+  return ::fabric::UnsignedDomain::fromCanonical({{8, 8}, {16, 16}, {32, 32}});
 }
 
 llvm::Expected<::fabric::AlignmentDomain> allAlignments() {
@@ -60,7 +61,8 @@ enumDomain(std::initializer_list<Enum> values) {
 }
 
 llvm::Expected<::fabric::MemoryAccessClass>
-elementAccess(bool reads, CatalogMemoryDomain domain) {
+elementAccess(bool reads, CatalogMemoryDomain domain,
+              dataflow::semantics::MemoryAddressForm addressForm) {
   auto widths = scalarElementWidths(domain);
   if (!widths)
     return widths.takeError();
@@ -84,10 +86,15 @@ elementAccess(bool reads, CatalogMemoryDomain domain) {
       MemoryAccessForm::Element, std::move(*widths), std::move(*lanes),
       {{MemoryMaskForm::Absent,
         ::fabric::InactiveLaneSemantics::NotApplicable}},
-      std::move(*alignments), std::move(*read), std::move(*write));
+      std::move(*alignments), std::move(*read), std::move(*write), addressForm,
+      addressForm == dataflow::semantics::MemoryAddressForm::PointerAddressed
+          ? ::loom::adg::detail::catalogPointerFormats()
+          : ::fabric::PointerFormatRelation{},
+      ::loom::adg::detail::catalogPointerFormats());
 }
 
-llvm::Expected<::fabric::MemoryAccessClass> vectorAccess(bool reads) {
+llvm::Expected<::fabric::MemoryAccessClass>
+vectorAccess(bool reads, dataflow::semantics::MemoryAddressForm addressForm) {
   auto widths = singleton(32);
   if (!widths)
     return widths.takeError();
@@ -113,18 +120,32 @@ llvm::Expected<::fabric::MemoryAccessClass> vectorAccess(bool reads) {
        {MemoryMaskForm::Dynamic,
         reads ? ::fabric::InactiveLaneSemantics::SuppressAndZeroFill
               : ::fabric::InactiveLaneSemantics::Suppress}},
-      std::move(*alignments), std::move(*read), std::move(*write));
+      std::move(*alignments), std::move(*read), std::move(*write), addressForm,
+      addressForm == dataflow::semantics::MemoryAddressForm::PointerAddressed
+          ? ::loom::adg::detail::catalogPointerFormats()
+          : ::fabric::PointerFormatRelation{},
+      ::loom::adg::detail::catalogPointerFormats());
 }
 
 llvm::Expected<::fabric::ParameterizedMemoryAccessDomain>
 accessDomain(bool reads, CatalogMemoryDomain domain) {
-  auto element = elementAccess(reads, domain);
-  if (!element)
-    return element.takeError();
-  auto vector = vectorAccess(reads);
-  if (!vector)
-    return vector.takeError();
-  return ::fabric::ParameterizedMemoryAccessDomain::create({*element, *vector});
+  using dataflow::semantics::MemoryAddressForm;
+  auto rootElement =
+      elementAccess(reads, domain, MemoryAddressForm::RootRelative);
+  if (!rootElement)
+    return rootElement.takeError();
+  auto rootVector = vectorAccess(reads, MemoryAddressForm::RootRelative);
+  if (!rootVector)
+    return rootVector.takeError();
+  auto pointerElement =
+      elementAccess(reads, domain, MemoryAddressForm::PointerAddressed);
+  if (!pointerElement)
+    return pointerElement.takeError();
+  auto pointerVector = vectorAccess(reads, MemoryAddressForm::PointerAddressed);
+  if (!pointerVector)
+    return pointerVector.takeError();
+  return ::fabric::ParameterizedMemoryAccessDomain::create(
+      {*rootElement, *rootVector, *pointerElement, *pointerVector});
 }
 
 llvm::Expected<::fabric::MemoryActorContractDomain> actorDomain(bool reads) {
@@ -302,8 +323,8 @@ llvm::Expected<PortType> channelPort(std::uint32_t width,
 
 namespace {
 
-llvm::Expected<MemorySpec>
-makeLocalMemory(LocalMemoryParameters parameters, CatalogMemoryDomain domain) {
+llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
+                                           CatalogMemoryDomain domain) {
   if (parameters.capacityBytes == 0)
     return invalid("local memory capacity must be positive");
   if (parameters.capacityBytes > (std::uint64_t(1) << 32))
@@ -389,9 +410,9 @@ makeLocalMemory(LocalMemoryParameters parameters, CatalogMemoryDomain domain) {
                                         std::move(operationPorts));
   else
     engine = MemoryEngineSpec::spatial(std::move(operationPorts));
-  return MemorySpec::create(
-      std::move(inputs), std::move(outputs), std::move(managerOrdinals), {},
-      std::move(engine), std::move(*service), std::move(*connectivity));
+  return MemorySpec::create(std::move(inputs), std::move(outputs),
+                            std::move(managerOrdinals), {}, std::move(engine),
+                            std::move(*service), std::move(*connectivity));
 }
 
 llvm::Expected<SystemMemorySpec>
@@ -480,17 +501,15 @@ makeGeneral64LocalMemory(LocalMemoryParameters parameters) {
 }
 
 llvm::Expected<SystemMemorySpec>
-makeHybrid32SystemMemory(
-    SystemMemoryParameters parameters,
-    loom::fabric::ServiceRateContractRecord serviceRate) {
+makeHybrid32SystemMemory(SystemMemoryParameters parameters,
+                         loom::fabric::ServiceRateContractRecord serviceRate) {
   return makeSystemMemory(std::move(parameters), std::move(serviceRate),
                           CatalogMemoryDomain::Hybrid32);
 }
 
 llvm::Expected<SystemMemorySpec>
-makeGeneral64SystemMemory(
-    SystemMemoryParameters parameters,
-    loom::fabric::ServiceRateContractRecord serviceRate) {
+makeGeneral64SystemMemory(SystemMemoryParameters parameters,
+                          loom::fabric::ServiceRateContractRecord serviceRate) {
   return makeSystemMemory(std::move(parameters), std::move(serviceRate),
                           CatalogMemoryDomain::General64);
 }

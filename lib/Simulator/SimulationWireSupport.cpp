@@ -9,6 +9,7 @@
 
 #include "Common/IndexWidth.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -103,17 +104,25 @@ static llvm::Expected<LaneShape> scalarLaneShape(Type type,
   // A none-typed port carries pure signals: every token has zero lanes, so
   // the token count is free and the lane array is empty.
   if (isa<NoneType>(type))
-    return LaneShape{0, 0};
+    return LaneShape{0, 0, std::nullopt};
   if (auto integer = dyn_cast<IntegerType>(type))
-    return LaneShape{1, integer.getWidth()};
+    return LaneShape{1, integer.getWidth(), std::nullopt};
   if (isa<IndexType>(type)) {
     llvm::Expected<unsigned> width = loom::getIndexBitWidth(contextOp);
     if (!width)
       return width.takeError();
-    return LaneShape{1, *width};
+    return LaneShape{1, *width, std::nullopt};
   }
   if (auto floating = dyn_cast<FloatType>(type))
-    return LaneShape{1, static_cast<std::uint32_t>(floating.getWidth())};
+    return LaneShape{1, static_cast<std::uint32_t>(floating.getWidth()),
+                     std::nullopt};
+  if (auto pointer = dyn_cast<LLVM::LLVMPointerType>(type)) {
+    llvm::Expected<PointerLayout> layout =
+        resolvePointerLayout(contextOp, pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    return LaneShape{1, layout->representationBits, *layout};
+  }
   return invalid("simulation wire: value port type has no semantic lane "
                  "shape");
 }
@@ -136,7 +145,7 @@ llvm::Expected<LaneShape> laneShapeOf(Type type, Operation *contextOp) {
       return invalid("simulation wire: vector lane count overflow");
     lanes *= static_cast<std::uint64_t>(dimension);
   }
-  return LaneShape{lanes, element->laneBitWidth};
+  return LaneShape{lanes, element->laneBitWidth, std::nullopt};
 }
 
 //===----------------------------------------------------------------------===//
@@ -164,6 +173,8 @@ importedRootOfValue(
     const llvm::DenseMap<Operation *, dataflow::StaticGraphLaunchRef>
         &staticLaunchByOp,
     const llvm::DenseMap<Operation *, dataflow::LogicalMemoryRootRef>
+        &serviceRootByOp,
+    const llvm::DenseMap<Operation *, dataflow::LogicalMemoryRootRef>
         &freshRootByOp,
     const std::vector<dataflow::LogicalMemoryRootRef> &freshRoots) {
   while (true) {
@@ -185,6 +196,9 @@ importedRootOfValue(
       value = cast.getSource();
       continue;
     }
+    if (auto found = serviceRootByOp.find(definition);
+        found != serviceRootByOp.end())
+      return found->second;
     if (auto earlier = dyn_cast<dataflow::GraphLaunchOp>(definition)) {
       auto found = staticLaunchByOp.find(earlier.getOperation());
       if (found == staticLaunchByOp.end())
@@ -298,6 +312,7 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
   llvm::DenseMap<std::pair<Operation *, unsigned>,
                  dataflow::LogicalMemoryRootRef>
       importedByFormal;
+  llvm::DenseMap<Operation *, dataflow::LogicalMemoryRootRef> serviceRootByOp;
   llvm::DenseMap<Operation *, dataflow::LogicalMemoryRootRef> freshRootByOp;
   std::vector<dataflow::LogicalMemoryRootRef> freshRoots;
   for (const dataflow::CanonicalLogicalMemoryRootView &root :
@@ -305,6 +320,10 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
     if (root.formalArgIndex) {
       importedByFormal.try_emplace(
           std::make_pair(root.op, *root.formalArgIndex), root.ref);
+      continue;
+    }
+    if (isa<dataflow::MemoryServiceOp>(root.op)) {
+      serviceRootByOp.try_emplace(root.op, root.ref);
       continue;
     }
     freshRootByOp.try_emplace(root.op, root.ref);
@@ -323,8 +342,8 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
   for (Value binding : context.graphLaunchOp.getMemoryInputs()) {
     llvm::Expected<std::optional<dataflow::LogicalMemoryRootRef>> root =
         importedRootOfValue(binding, context.thread, launch, view,
-                            importedByFormal, staticLaunchByOp, freshRootByOp,
-                            freshRoots);
+                            importedByFormal, staticLaunchByOp, serviceRootByOp,
+                            freshRootByOp, freshRoots);
     if (!root)
       return root.takeError();
     context.memoryInputRoots.push_back(*root);
@@ -359,7 +378,8 @@ resolveLaunchContext(const dataflow::CanonicalDataflowProgramView &view,
 
 llvm::Error validateValueSequence(const CanonicalValueSequence &sequence,
                                   const LaneShape &shape,
-                                  const llvm::Twine &what) {
+                                  const llvm::Twine &what,
+                                  std::optional<std::uint64_t> objectCount) {
   if (shape.lanesPerToken == 0) {
     // None tokens: the token count is free and the lane array is empty.
     if (!sequence.lanes.empty())
@@ -378,6 +398,21 @@ llvm::Error validateValueSequence(const CanonicalValueSequence &sequence,
       if (lane.bits.getBitWidth() != shape.laneBitWidth)
         return invalid(what + ": defined lane width does not match the "
                               "target type");
+      if (shape.pointerLayout) {
+        if (!lane.pointerTarget)
+          return invalid(what + ": defined pointer lane has no object target");
+        if (!objectCount)
+          return invalid(what +
+                         ": pointer lane requires the runtime object registry");
+        if (lane.pointerTarget->objectOrdinal >= *objectCount)
+          return invalid(what + ": pointer object ordinal is out of range");
+        if (lane.pointerTarget->byteOffset.getBitWidth() !=
+            shape.pointerLayout->addressBits)
+          return invalid(what +
+                         ": pointer byte-offset width does not match A(AS)");
+      } else if (lane.pointerTarget) {
+        return invalid(what + ": non-pointer lane carries a pointer target");
+      }
       continue;
     }
     // A non-Defined lane carries no payload; any hidden bits would be
@@ -385,25 +420,56 @@ llvm::Error validateValueSequence(const CanonicalValueSequence &sequence,
     if (lane.bits.getBitWidth() != 1 || !lane.bits.isZero())
       return invalid(what + ": a non-defined lane carries hidden payload "
                             "bits");
+    if (lane.pointerTarget)
+      return invalid(what +
+                     ": a non-defined pointer lane carries an object target");
   }
   return llvm::Error::success();
 }
 
+static void encodeBits(WireWriter &writer, const llvm::APInt &bits) {
+  const unsigned width = bits.getBitWidth();
+  const unsigned byteCount = (width + 7) / 8;
+  for (unsigned index = 0; index < byteCount; ++index) {
+    const unsigned low = (byteCount - 1 - index) * 8;
+    const unsigned chunk = std::min(8u, width - low);
+    writer.bytes(
+        {static_cast<std::uint8_t>(bits.extractBitsAsZExtValue(chunk, low))});
+  }
+}
+
+static llvm::Expected<llvm::APInt>
+decodeBits(WireReader &reader, unsigned width, const llvm::Twine &what) {
+  const unsigned byteCount = (width + 7) / 8;
+  llvm::Expected<llvm::ArrayRef<std::uint8_t>> raw = reader.bytes(byteCount);
+  if (!raw)
+    return raw.takeError();
+  const unsigned padding = byteCount * 8 - width;
+  if (padding > 0 && ((*raw)[0] >> (8 - padding)) != 0)
+    return invalid(what + ": noncanonical padding bits");
+  llvm::APInt bits(width, 0);
+  for (std::uint8_t byte : *raw) {
+    bits <<= 8;
+    bits |= byte;
+  }
+  return bits;
+}
+
 void encodeValueSequence(WireWriter &writer,
-                         const CanonicalValueSequence &sequence) {
+                         const CanonicalValueSequence &sequence,
+                         const LaneShape &shape) {
   writer.u64(sequence.tokenCount);
   writer.u64(sequence.lanes.size());
   for (const SemanticLane &lane : sequence.lanes) {
     writer.u32(static_cast<std::uint32_t>(lane.state));
     if (lane.state != SemanticState::Defined)
       continue;
-    const unsigned width = lane.bits.getBitWidth();
-    const unsigned byteCount = (width + 7) / 8;
-    for (unsigned index = 0; index < byteCount; ++index) {
-      const unsigned low = (byteCount - 1 - index) * 8;
-      const unsigned bits = std::min(8u, width - low);
-      writer.bytes({static_cast<std::uint8_t>(
-          lane.bits.extractBitsAsZExtValue(bits, low))});
+    encodeBits(writer, lane.bits);
+    if (shape.pointerLayout) {
+      assert(lane.pointerTarget &&
+             "validated defined pointer lane has no target");
+      writer.u64(lane.pointerTarget->objectOrdinal);
+      encodeBits(writer, lane.pointerTarget->byteOffset);
     }
   }
 }
@@ -427,7 +493,6 @@ decodeValueSequence(WireReader &reader, const LaneShape &shape) {
       *laneCount / shape.lanesPerToken != *tokenCount)
     return invalid("simulation wire: lane count is not token count times "
                    "lanes per token");
-  const unsigned byteCount = (shape.laneBitWidth + 7) / 8;
   if (llvm::Error error = reader.guardCount(*laneCount, 4))
     return std::move(error);
   sequence.tokenCount = *tokenCount;
@@ -445,25 +510,32 @@ decodeValueSequence(WireReader &reader, const LaneShape &shape) {
                                    : SemanticLane::undef());
       continue;
     }
-    llvm::Expected<llvm::ArrayRef<std::uint8_t>> raw = reader.bytes(byteCount);
-    if (!raw)
-      return raw.takeError();
-    const unsigned padding = byteCount * 8 - shape.laneBitWidth;
-    if (padding > 0 && ((*raw)[0] >> (8 - padding)) != 0)
-      return invalid("simulation wire: noncanonical defined-lane padding bits");
-    llvm::APInt bits(shape.laneBitWidth, 0);
-    for (std::uint8_t byte : *raw) {
-      bits <<= 8;
-      bits |= byte;
+    llvm::Expected<llvm::APInt> bits =
+        decodeBits(reader, shape.laneBitWidth, "simulation wire: defined lane");
+    if (!bits)
+      return bits.takeError();
+    if (!shape.pointerLayout) {
+      sequence.lanes.push_back(SemanticLane::defined(std::move(*bits)));
+      continue;
     }
-    sequence.lanes.push_back(SemanticLane::defined(std::move(bits)));
+    llvm::Expected<std::uint64_t> objectOrdinal = reader.u64();
+    if (!objectOrdinal)
+      return objectOrdinal.takeError();
+    llvm::Expected<llvm::APInt> byteOffset =
+        decodeBits(reader, shape.pointerLayout->addressBits,
+                   "simulation wire: pointer byte offset");
+    if (!byteOffset)
+      return byteOffset.takeError();
+    sequence.lanes.push_back(SemanticLane::definedPointer(
+        std::move(*bits), *objectOrdinal, std::move(*byteOffset)));
   }
   return sequence;
 }
 
 void encodeStreamSequence(WireWriter &writer,
-                          const CanonicalStreamSequence &sequence) {
-  encodeValueSequence(writer, sequence.values);
+                          const CanonicalStreamSequence &sequence,
+                          const LaneShape &shape) {
+  encodeValueSequence(writer, sequence.values, shape);
   writer.u32(static_cast<std::uint32_t>(sequence.termination));
 }
 
@@ -492,9 +564,17 @@ void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object) {
     if (byte.state == SemanticState::Defined)
       writer.bytes({byte.value});
   }
+  writer.u64(object.pointerValues.size());
+  for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
+    writer.u64(pointer.storageByteOffset);
+    writer.u32(pointer.addressSpace);
+    writer.u64(pointer.target.objectOrdinal);
+    encodeBits(writer, pointer.target.byteOffset);
+  }
 }
 
-llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader) {
+llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader,
+                                                       Operation *scope) {
   RuntimeMemoryObject object;
   llvm::Expected<std::uint64_t> byteCount = reader.u64();
   if (!byteCount)
@@ -525,11 +605,155 @@ llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader) {
     }
     object.initialBytes.push_back(byte);
   }
+  llvm::Expected<std::uint64_t> pointerCount = reader.u64();
+  if (!pointerCount)
+    return pointerCount.takeError();
+  if (llvm::Error error = reader.guardCount(*pointerCount, 28))
+    return std::move(error);
+  object.pointerValues.reserve(*pointerCount);
+  for (std::uint64_t index = 0; index < *pointerCount; ++index) {
+    llvm::Expected<std::uint64_t> storageByteOffset = reader.u64();
+    if (!storageByteOffset)
+      return storageByteOffset.takeError();
+    llvm::Expected<std::uint32_t> addressSpace = reader.u32();
+    if (!addressSpace)
+      return addressSpace.takeError();
+    llvm::Expected<PointerLayout> layout =
+        resolvePointerLayout(scope, *addressSpace);
+    if (!layout)
+      return layout.takeError();
+    llvm::Expected<std::uint64_t> objectOrdinal = reader.u64();
+    if (!objectOrdinal)
+      return objectOrdinal.takeError();
+    llvm::Expected<llvm::APInt> byteOffset =
+        decodeBits(reader, layout->addressBits,
+                   "simulation wire: memory pointer byte offset");
+    if (!byteOffset)
+      return byteOffset.takeError();
+    object.pointerValues.push_back(RuntimeMemoryPointer{
+        *storageByteOffset, *addressSpace,
+        PointerTarget{*objectOrdinal, std::move(*byteOffset)}});
+  }
   return object;
 }
 
-llvm::Error
-validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects) {
+llvm::Expected<llvm::APInt>
+decodeRuntimePointerRepresentation(const RuntimeMemoryObject &object,
+                                   const RuntimeMemoryPointer &pointer,
+                                   Operation *scope) {
+  llvm::Expected<PointerLayout> layout =
+      resolvePointerLayout(scope, pointer.addressSpace);
+  if (!layout)
+    return layout.takeError();
+  if (layout->representationBits % 8 != 0)
+    return invalid("simulation runtime input: pointer representation is not "
+                   "byte-addressable");
+  const std::uint64_t byteCount = layout->representationBits / 8;
+  if (pointer.storageByteOffset > object.initialBytes.size() ||
+      byteCount > object.initialBytes.size() - pointer.storageByteOffset)
+    return invalid("simulation runtime input: stored pointer is out of range");
+  llvm::Expected<llvm::DataLayout> dataLayout = resolveLLVMDataLayout(scope);
+  if (!dataLayout)
+    return dataLayout.takeError();
+  llvm::APInt bits(layout->representationBits, 0);
+  for (std::uint64_t index = 0; index < byteCount; ++index) {
+    const SemanticMemoryByte &byte =
+        object.initialBytes[pointer.storageByteOffset + index];
+    if (byte.state != SemanticState::Defined)
+      return invalid("simulation runtime input: stored pointer contains an "
+                     "exceptional memory byte");
+    const std::uint64_t semanticByte =
+        dataLayout->isLittleEndian() ? index : byteCount - 1 - index;
+    bits.insertBits(llvm::APInt(8, byte.value), semanticByte * 8);
+  }
+  return bits;
+}
+
+namespace {
+
+llvm::Expected<llvm::APInt> checkedAddressAdd(const llvm::APInt &lhs,
+                                              std::uint64_t rhs,
+                                              const llvm::Twine &what) {
+  llvm::APInt wide(64, rhs);
+  if (wide.getActiveBits() > lhs.getBitWidth())
+    return invalid(what + ": runtime object extent exceeds A(AS)");
+  bool overflow = false;
+  llvm::APInt sum = lhs.uadd_ov(wide.zextOrTrunc(lhs.getBitWidth()), overflow);
+  if (overflow)
+    return invalid(what + ": canonical object address space is exhausted");
+  return sum;
+}
+
+llvm::Expected<llvm::APInt>
+canonicalObjectBase(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                    std::uint64_t objectOrdinal, const PointerLayout &layout) {
+  if (objectOrdinal >= objects.size())
+    return invalid("simulation runtime input: pointer object ordinal is out "
+                   "of range");
+
+  // Zero remains distinct from every object. One address after each finite
+  // object is reserved for its one-past pointer before the next base.
+  llvm::APInt base(layout.addressBits, 1);
+  for (std::uint64_t ordinal = 0; ordinal < objectOrdinal; ++ordinal) {
+    llvm::Expected<llvm::APInt> afterObject = checkedAddressAdd(
+        base, objects[ordinal].initialBytes.size(), "simulation runtime input");
+    if (!afterObject)
+      return afterObject.takeError();
+    llvm::Expected<llvm::APInt> next =
+        checkedAddressAdd(*afterObject, 1, "simulation runtime input");
+    if (!next)
+      return next.takeError();
+    base = std::move(*next);
+  }
+  llvm::Expected<llvm::APInt> onePast =
+      checkedAddressAdd(base, objects[objectOrdinal].initialBytes.size(),
+                        "simulation runtime input");
+  if (!onePast)
+    return onePast.takeError();
+  return base;
+}
+
+llvm::Expected<llvm::APInt>
+canonicalPointerRepresentation(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                               const PointerTarget &target,
+                               const PointerLayout &layout) {
+  if (layout.kind != PointerLayoutKind::StableIntegral)
+    return invalid("simulation runtime input: pointer format has no canonical "
+                   "stable-integral codec");
+  if (target.byteOffset.getBitWidth() != layout.addressBits)
+    return invalid("simulation runtime input: pointer byte-offset width does "
+                   "not match A(AS)");
+  llvm::Expected<llvm::APInt> base =
+      canonicalObjectBase(objects, target.objectOrdinal, layout);
+  if (!base)
+    return base.takeError();
+  llvm::APInt low = *base + target.byteOffset;
+  return low.zext(layout.representationBits);
+}
+
+llvm::Error writePointerRepresentation(RuntimeMemoryObject &object,
+                                       const RuntimeMemoryPointer &pointer,
+                                       const llvm::APInt &representation,
+                                       Operation *scope) {
+  llvm::Expected<llvm::DataLayout> dataLayout = resolveLLVMDataLayout(scope);
+  if (!dataLayout)
+    return dataLayout.takeError();
+  const std::uint64_t byteCount = representation.getBitWidth() / 8;
+  for (std::uint64_t index = 0; index < byteCount; ++index) {
+    const std::uint64_t semanticByte =
+        dataLayout->isLittleEndian() ? index : byteCount - 1 - index;
+    object.initialBytes[pointer.storageByteOffset + index] = {
+        SemanticState::Defined,
+        static_cast<std::uint8_t>(
+            representation.extractBitsAsZExtValue(8, semanticByte * 8))};
+  }
+  return llvm::Error::success();
+}
+
+} // namespace
+
+llvm::Error validateRuntimeMemoryObjectStructure(
+    llvm::ArrayRef<RuntimeMemoryObject> objects, Operation *scope) {
   for (const RuntimeMemoryObject &object : objects) {
     if (object.initialBytes.empty())
       return invalid("simulation runtime input: empty memory object");
@@ -541,6 +765,130 @@ validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects) {
       if (byte.state != SemanticState::Defined && byte.value != 0)
         return invalid("simulation runtime input: a non-defined memory byte "
                        "carries a hidden value");
+    }
+    std::uint64_t previousEnd = 0;
+    for (std::size_t index = 0; index < object.pointerValues.size(); ++index) {
+      const RuntimeMemoryPointer &pointer = object.pointerValues[index];
+      llvm::Expected<PointerLayout> layout =
+          resolvePointerLayout(scope, pointer.addressSpace);
+      if (!layout)
+        return layout.takeError();
+      if (layout->kind != PointerLayoutKind::StableIntegral)
+        return invalid("simulation runtime input: stored pointer format has "
+                       "no canonical stable-integral codec");
+      if (pointer.target.objectOrdinal >= objects.size())
+        return invalid("simulation runtime input: stored pointer object "
+                       "ordinal is out of range");
+      if (pointer.target.byteOffset.getBitWidth() != layout->addressBits)
+        return invalid("simulation runtime input: stored pointer byte-offset "
+                       "width does not match A(AS)");
+      if (layout->representationBits % 8 != 0)
+        return invalid("simulation runtime input: pointer representation is "
+                       "not byte-addressable");
+      const std::uint64_t byteCount = layout->representationBits / 8;
+      if (pointer.storageByteOffset > object.initialBytes.size() ||
+          byteCount > object.initialBytes.size() - pointer.storageByteOffset)
+        return invalid(
+            "simulation runtime input: stored pointer is out of range");
+      if (index != 0 && pointer.storageByteOffset < previousEnd)
+        return invalid("simulation runtime input: stored pointer table is not "
+                       "sorted or contains overlapping records");
+      previousEnd = pointer.storageByteOffset + byteCount;
+      llvm::Expected<llvm::APInt> representation =
+          decodeRuntimePointerRepresentation(object, pointer, scope);
+      if (!representation)
+        return representation.takeError();
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error canonicalizeRuntimeMemoryPointers(
+    llvm::MutableArrayRef<RuntimeMemoryObject> objects, Operation *scope) {
+  if (llvm::Error error = validateRuntimeMemoryObjectStructure(objects, scope))
+    return error;
+  for (RuntimeMemoryObject &object : objects) {
+    for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
+      llvm::Expected<PointerLayout> layout =
+          resolvePointerLayout(scope, pointer.addressSpace);
+      if (!layout)
+        return layout.takeError();
+      llvm::Expected<llvm::APInt> representation =
+          canonicalPointerRepresentation(objects, pointer.target, *layout);
+      if (!representation)
+        return representation.takeError();
+      if (llvm::Error error = writePointerRepresentation(
+              object, pointer, *representation, scope))
+        return error;
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error canonicalizePointerValueSequence(
+    CanonicalValueSequence &sequence, const LaneShape &shape,
+    llvm::ArrayRef<RuntimeMemoryObject> objects, Operation *scope) {
+  if (!shape.pointerLayout)
+    return llvm::Error::success();
+  for (SemanticLane &lane : sequence.lanes) {
+    if (lane.state != SemanticState::Defined)
+      continue;
+    if (!lane.pointerTarget)
+      return invalid("simulation runtime input: defined pointer lane has no "
+                     "object target");
+    llvm::Expected<llvm::APInt> representation = canonicalPointerRepresentation(
+        objects, *lane.pointerTarget, *shape.pointerLayout);
+    if (!representation)
+      return representation.takeError();
+    lane.bits = std::move(*representation);
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateCanonicalPointerValueSequence(
+    const CanonicalValueSequence &sequence, const LaneShape &shape,
+    llvm::ArrayRef<RuntimeMemoryObject> objects, Operation *scope,
+    const llvm::Twine &what) {
+  if (!shape.pointerLayout)
+    return llvm::Error::success();
+  for (const SemanticLane &lane : sequence.lanes) {
+    if (lane.state != SemanticState::Defined)
+      continue;
+    assert(lane.pointerTarget &&
+           "validated defined pointer lane has no object target");
+    llvm::Expected<llvm::APInt> expected = canonicalPointerRepresentation(
+        objects, *lane.pointerTarget, *shape.pointerLayout);
+    if (!expected)
+      return expected.takeError();
+    if (lane.bits != *expected)
+      return invalid(what + ": pointer bits are not the canonical object "
+                            "projection");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                             Operation *scope) {
+  if (llvm::Error error = validateRuntimeMemoryObjectStructure(objects, scope))
+    return error;
+  for (const RuntimeMemoryObject &object : objects) {
+    for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
+      llvm::Expected<PointerLayout> layout =
+          resolvePointerLayout(scope, pointer.addressSpace);
+      if (!layout)
+        return layout.takeError();
+      llvm::Expected<llvm::APInt> actual =
+          decodeRuntimePointerRepresentation(object, pointer, scope);
+      if (!actual)
+        return actual.takeError();
+      llvm::Expected<llvm::APInt> expected =
+          canonicalPointerRepresentation(objects, pointer.target, *layout);
+      if (!expected)
+        return expected.takeError();
+      if (*actual != *expected)
+        return invalid("simulation runtime input: stored pointer bytes are not "
+                       "the canonical object projection");
     }
   }
   return llvm::Error::success();

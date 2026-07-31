@@ -10,6 +10,7 @@ add_mlir_library(LoomCommon
   CanonicalRelation.cpp
   ComponentViewDigest.cpp
   IndexWidth.cpp
+  PointerLayout.cpp
   ResolvedConfig.cpp
   VectorWidth.cpp
 
@@ -21,6 +22,7 @@ add_mlir_library(LoomCommon
 target_link_libraries(LoomCommon PUBLIC Threads::Threads)
 mlir_target_link_libraries(LoomCommon PUBLIC
   LLVMSupport
+  LLVMCore
   MLIRDataLayoutInterfaces
   MLIRIR
   MLIRSupport

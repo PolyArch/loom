@@ -1,6 +1,7 @@
 #ifndef LOOM_DATAFLOW_IR_DATAFLOW_ACTOR_SEMANTICS_H
 #define LOOM_DATAFLOW_IR_DATAFLOW_ACTOR_SEMANTICS_H
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -359,6 +360,14 @@ SerializeTransition evaluateSerializeTransition(std::optional<bool> groupPhase,
 /// admits any positive fixed rank in canonical row-major lane order.
 enum class VectorRank : std::uint8_t { One, AnyFixed };
 
+/// Whether one addressed memory actor consumes a root-relative element index
+/// or a complete first-class pointer. This is derived from the actor's exact
+/// address type and is never an independently authored attribute.
+enum class MemoryAddressForm : std::uint8_t {
+  RootRelative,
+  PointerAddressed,
+};
+
 /// Canonical geometry of one addressed memory access. An access whose data
 /// type exactly equals the memory element type is an `element` access with one
 /// logical address and one lane, even when that element is itself a vector.
@@ -366,8 +375,13 @@ enum class VectorRank : std::uint8_t { One, AnyFixed };
 /// from a scalar address or indexed by a same-shape address vector.
 struct MemoryAccessType {
   mlir::Type elementType;
+  mlir::Type dataType;
+  mlir::Type addressType;
   mlir::VectorType vectorType;
   mlir::VectorType addressVectorType;
+  MemoryAddressForm addressForm = MemoryAddressForm::RootRelative;
+  std::optional<loom::PointerLayout> pointerLayout;
+  std::optional<loom::PointerLayout> dataPointerLayout;
 
   bool isVector() const { return static_cast<bool>(vectorType); }
   bool isGather() const { return static_cast<bool>(addressVectorType); }
@@ -399,7 +413,8 @@ llvm::Error validateVectorMaskType(mlir::VectorType dataVector,
 /// the others reject.
 llvm::Expected<MemoryAccessType>
 analyzeMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
-                        mlir::Type addressType, mlir::Type maskType = {});
+                        mlir::Type addressType, mlir::Operation *scope,
+                        mlir::Type maskType = {});
 
 /// Nonpersistent projection of the one aggregate contract owned by a canonical
 /// memory actor. `aggregate` remains the sole owner of every contract field;

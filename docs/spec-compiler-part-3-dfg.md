@@ -548,9 +548,97 @@ behavior. In particular, selection does not observe its unselected value,
 inactive masked-memory lanes do not observe address or data, active stores may
 store poison and loads restore it, and graph outputs may carry poison or undef.
 There is no global rule that a terminal exceptional value is an execution
-error. Ordinary LLVM pointers remain outside the first-version canonical graph
-surface. Pointer-bearing work remains InstructionCore-owned unless it has been
-mechanically converted to the existing logical-memory and address contracts.
+error.
+
+#### Pointer Values And Address Projections
+
+Canonical Dataflow 3.0 distinguishes three semantic categories:
+
+* a memref graph memory port is a logical memory-object or memory-service
+  capability;
+* `index` is a root-relative element coordinate whose selected representation
+  width is owned by the Structured candidate; and
+* `!llvm.ptr<AS>` is a first-class dynamic pointer value whose representation
+  and arithmetic semantics are owned by LLVM and the exact module DataLayout.
+
+No category is an alias for another. In particular, a pointer is not a memory
+capability and is not an `index` value with a different spelling. Value and
+stream graph ports may carry scalar LLVM pointer values. Memory graph ports
+remain ranked or unranked memrefs. Pointer values may pass through ordinary
+token-plane actors and channels only when the selected Fabric transport admits
+their exact representation width.
+
+For address space `AS`, the exact module-owned LLVM DataLayout derives:
+
+```text
+PointerLayout(AS) = {
+  representation_bits : P(AS)
+  address_bits        : A(AS)
+  kind                : StableIntegral | NonIntegral |
+                        ExternalState | Unstable
+}
+```
+
+`P(AS)` is the complete stored pointer representation. `A(AS)` is the width
+used by GEP address arithmetic. Neither is the canonical `index` width, the
+system physical-address width, nor a Fabric endpoint capacity. The same
+production DataLayout resolver is used by lowering, OperationSchema, Fabric
+admission, simulation, and Mapping verification. A missing, malformed, or
+inconsistent DataLayout is invalid. A non-integral, external-state, or unstable
+pointer layout without an exact provider is typed `Unsupported`; it is never
+silently projected to an integer.
+
+LLVM pointer operations retain their source-owned operations and semantics.
+The initial registered pointer-arithmetic set contains
+`llvm.getelementptr`. OperationSchema owns only the stable typed projection
+required by downstream consumers: source element type,
+constant-versus-dynamic index pattern and constants, and no-wrap flags. The
+function type already owns the base, dynamic-index, and result types.
+`llvm.ptrtoint`, `llvm.inttoptr`, `llvm.ptrtoaddr`, pointer comparison, and
+address-space conversion remain source-valid LLVM operations but are not
+Canonical Dataflow 3.0 actors until each has an exact OperationSchema, Fabric
+admission rule, and execution provider. Replacing any of these operations with
+a new Dataflow pointer opcode would duplicate LLVM semantics.
+
+GEP computes a DataLayout-derived byte offset from its complete typed index
+path. The final address formation adds that offset to the low `A(AS)` bits and
+preserves the high `P(AS)-A(AS)` representation bits. The exact address space,
+provenance, and `inbounds`/`nusw`/`nuw` poison contracts remain observable.
+Lowering may factor a GEP into ordinary integer offset arithmetic plus one final
+typed GEP only when it proves the same offset, poison, provenance, and
+intermediate-bound semantics. Otherwise the original typed operation remains
+one canonical actor.
+
+Each Dataflow memory actor has one closed address projection:
+
+```text
+MemoryAddressProjection =
+    RootRelative {
+      capability : memref
+      element_index : index | fixed vector<index>
+    }
+  | PointerAddressed {
+      service_capability : memref
+      pointer : !llvm.ptr<AS> | fixed vector<!llvm.ptr<AS>>
+    }
+```
+
+`RootRelative` computes the address from the capability base, element index,
+and exact element layout. `PointerAddressed` performs no extra base addition or
+element scaling: the pointer already denotes the byte address, while the
+capability selects the exact memory service, ordering domain, and provider.
+The service must resolve the pointer to one admitted object or region in the
+same address space. Encoding pointer access as base zero, byte element type,
+or integer index is forbidden. Loading or storing a pointer as ordinary data
+is legal only when the memory capability and physical data path admit all
+`P(AS)` bits and preserve the exact pointer kind.
+
+SCF-to-SCF optimization may choose rooted capability-plus-index addressing,
+first-class pointer execution in a SpatialCore, or InstructionCore ownership.
+That choice is an Evaluation/DSE result, not a type-system prohibition. Every
+pointer operation retained in a graph must have an exact OperationSchema,
+Fabric capability, provider, and simulator transition; otherwise that
+candidate fails closed.
 
 Finalized Canonical Dataflow Programs use one derived identity attribute:
 
@@ -866,9 +954,9 @@ traits:
   endpoints outside the function type. `graph.return` payload segments match
   all result types, and `graph.return.complete` derives `done_out`.
 * Every graph memory input and result is an established MLIR memref
-  capability. An ordinary LLVM pointer is legal in the enclosing
-  `dataflow.thread` or temporary `loom.spatial_region`, but is never a graph
-  port, graph-body value, or graph result. An addressed memory actor further
+  capability. An ordinary LLVM pointer may be a graph value or stream port,
+  graph-body value, or graph value/stream result, but never a memory port. An
+  addressed memory actor further
   requires the exact ranked, identity-layout, default-memory-space memref
   admitted by its operation schema and `CanonicalMemoryAccessView`.
 * `sym_name` is required and module-unique. `sym_visibility` is
@@ -949,8 +1037,7 @@ traits:
 ##### Graph Launch Memory Binding
 
 Value and stream bindings require their exact existing type relations. Memory
-input binding uses the following closed relation, owned solely by this graph
-ABI:
+input binding uses one closed relation, owned solely by this graph ABI:
 
 ```text
 GraphLaunchMemoryBinding =
@@ -958,21 +1045,14 @@ GraphLaunchMemoryBinding =
       actual: ranked or unranked memref<T>
       formal: the exact same memref<T>
     }
-  | ImportedLinearView {
-      actual: LLVM pointer in integral address space zero
-      formal: ranked memref<?xT> with identity layout and default memory space
-    }
 ```
 
-`ImportedLinearView` requires the actual to resolve to one established logical
-memory root or view. It derives a root-preserving `LogicalMemoryViewRef` from
-the static graph launch, memory-input ordinal, actual root/view, and exact
-callee formal type. The relation is not an attribute, actor, EntityId, cast
-operation, or second capability type. Reusing one actual pointer for several
-formal element types repeats that actual in the launch memory segment and
-derives one typed view per ordinal over the same root. Every other memory type
-mismatch is invalid. Memory results exactly match the callee's memref result
-types; a launch cannot return an LLVM pointer.
+An admitted memref view already resolves through its Dataflow-owned
+`LogicalMemoryViewRef`; graph launch neither derives another view nor accepts a
+pointer in the memory segment. A pointer needed by the graph is passed through
+an exact value or stream binding. Every memory type mismatch is invalid.
+Memory results exactly match the callee's memref result types. Pointer results
+are legal only in the value or stream result segment.
 
 ##### Graph Launch Stream And Execution Contract
 
@@ -1947,14 +2027,16 @@ The Canonical Dataflow Program is the single semantic root of the fixed
 Artifact family:
 
 ```text
-loom.canonical_dataflow 2.0
+loom.canonical_dataflow 3.0
 ```
 
-Version 2.0 removes ordinary LLVM pointer graph ports and residual conversion
-bridges. Pointer-to-memref adaptation is represented only by the typed
-[graph launch memory binding](#graph-launch-memory-binding). Version 1.0 bytes
-are not accepted or silently upgraded; a producer must rebuild and finalize
-the program through the current graph ABI.
+Version 3.0 removes residual conversion bridges while admitting first-class
+LLVM pointer values through the closed pointer and address projections above.
+It removes pointer-to-memref launch adaptation entirely: the typed
+[graph launch memory binding](#graph-launch-memory-binding) accepts only an
+exact memref capability relation. Version 1.0 and 2.0 bytes are not accepted or
+silently upgraded; a producer must rebuild and finalize the program through
+the current graph ABI.
 
 The family owns its admitted module surface, canonical semantic relation
 graph, canonical writer, artifact-local entity catalog, and importer. Common
@@ -2363,9 +2445,8 @@ root reference and graph invocation occurrence. If two imported roles alias at
 runtime, the runtime registry relates them to the same object without merging
 their static entity IDs. A memory view remains a typed structural reference
 whose root relation resolves to exactly one `LogicalMemoryRootRef`.
-For an `ImportedLinearView`, the importer derives the view from the exact
-launch binding and callee formal type. It never searches for or executes a
-graph-body conversion operation.
+The importer derives each admitted view from its exact root-preserving memref
+relation. It never searches for or executes a graph-body conversion operation.
 
 ### Anchor Verification
 
@@ -2386,11 +2467,11 @@ Anchor-level tests cover:
   reached from two root launches;
 * token-plane endpoint rejection for a memory-capability ordinal and
   out-of-range actor or boundary ordinals;
-* acceptance of exact memref launch binding and address-space-zero pointer to
-  canonical linear memref binding, including two typed views over one root;
-* rejection of pointer graph ports, pointer graph results, nonzero or
-  nonintegral pointer address spaces, noncanonical pointer-view formals, and
-  residual `builtin.unrealized_conversion_cast`;
+* acceptance of exact memref launch binding and first-class pointer value and
+  stream ports, including two typed memref views over one root;
+* rejection of pointer types in graph memory segments, pointer layouts without
+  an exact provider, pointer-to-memref launch adaptation, noncanonical memref
+  view formals, and residual `builtin.unrealized_conversion_cast`;
 * complete canonical sink derivation for one multicast channel producer;
 * rejection when a memory exposure is interpreted as a service member or
   assigned a service leg;
@@ -2514,8 +2595,8 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     only application payloads. Normalized `input_segments` and
     `result_segments` classify value, stream, and memory ports. The graph
     start and launch done endpoints are not function-type slots.
-  - Every memory port is a ranked or unranked memref. LLVM pointers and other
-    pointer-bearing capability types are rejected as graph inputs and results.
+  - Every memory port is a ranked or unranked memref. LLVM pointers are legal
+    only in value or stream segments and never become capability identity.
   - The graph definition's body is `IsolatedFromAbove`: every SSA
     value used in the body and defined outside it is rejected.
   - Entry block arguments are `(%ctrl_in : none, %arg_0 : T0, ...,
@@ -2534,8 +2615,8 @@ In addition to the Dataflow dialect and finalized-program verifier set:
   - A registered LLVM-dialect compute operation is eligible only through that
     same interface and only when it has explicit SSA operands and results, no
     regions or successors, no hidden memory, control, ABI, or runtime state,
-    deterministic typed per-firing semantics, no unrecorded DataLayout
-    dependency, no ordinary LLVM pointer graph value, and explicit semantic
+    deterministic typed per-firing semantics, only DataLayout dependencies
+    recorded by its OperationSchema projection, and explicit semantic
     parameters. This is the sole LLVM exception; registered arithmetic, math,
     scalar, and vector compute actors remain legal under the same contract.
     An LLVM operation that is an exact semantic alias of an available standard
@@ -2544,7 +2625,7 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     multiply-add remains two explicit actors.
   - Residual imperative LLVM surface is forbidden. This includes calls and
     unresolved intrinsics, inline assembly, loads, stores, atomics, fences,
-    allocation and pointer manipulation, branches, switches, PHI nodes,
+    allocation and unregistered pointer manipulation, branches, switches, PHI nodes,
     memory-copy or memory-set operations, and ABI, exception, stack, or
     runtime operations. Supported source forms must be normalized into
     canonical actors and explicit event networks before finalization.
@@ -2563,11 +2644,10 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     same module (verifier rejects unresolved or wrong-kind callee).
   - Operand and result segments bind mechanically to the callee's normalized
     value, stream, and memory segments. Stream ports bind channel endpoints.
-    Memory inputs accept only the closed `Identity | ImportedLinearView`
+    Memory inputs accept only the exact memref
     [graph launch memory binding](#graph-launch-memory-binding). The
-    finalized-program validator proves the actual root/view relation and
-    derives the root-local view reference. Memory results are exact memref
-    matches.
+    finalized-program validator proves the actual root/view relation. Memory
+    results are exact memref matches.
   - The mandatory trailing `done : none` result is the retirement protocol
     endpoint and equals `all_of(callee.graph.return.complete)`. No effect scan or
     quiescence rule provides an alternate completion authority.

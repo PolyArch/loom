@@ -277,7 +277,8 @@ decodeObservableTarget(detail::WireReader &reader) {
 }
 
 std::vector<std::uint8_t>
-encodeSpatialWorkload(const SpatialSimulationWorkload &workload) {
+encodeSpatialWorkload(const SpatialSimulationWorkload &workload,
+                      const detail::ResolvedLaunchContext &context) {
   detail::WireWriter writer;
   writer.u32(static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial));
   encodeEntityRef(writer, workload.launchRef.rootThreadLaunch);
@@ -292,7 +293,8 @@ encodeSpatialWorkload(const SpatialSimulationWorkload &workload) {
     const SpatialValueInputSource &source = workload.valueInputPlan[ordinal];
     if (const auto *fixed = std::get_if<CanonicalValueSequence>(&source)) {
       writer.u32(0);
-      detail::encodeValueSequence(writer, *fixed);
+      detail::encodeValueSequence(writer, *fixed,
+                                  context.valueInputShapes[ordinal]);
     } else {
       writer.u32(1);
     }
@@ -351,8 +353,7 @@ decodeSpatialWorkload(llvm::ArrayRef<std::uint8_t> bytes,
   if (*root == 1)
     return detail::invalid(
         "simulation workload: the System root is fail-closed");
-  if (*root !=
-      static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
+  if (*root != static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
     return detail::invalid("simulation workload: unknown root discriminant");
 
   llvm::Expected<dataflow::RootThreadLaunchRef> rootLaunch =
@@ -478,7 +479,8 @@ finalizeSimulationWorkload(const SpatialSimulationWorkload &workload,
   if (llvm::Error error =
           detail::validateSpatialWorkload(workload, *context, view))
     return std::move(error);
-  ::loom::CanonicalSemanticBytes bytes(encodeSpatialWorkload(workload));
+  ::loom::CanonicalSemanticBytes bytes(
+      encodeSpatialWorkload(workload, *context));
   ::loom::ArtifactIdentity identity =
       ::loom::finalizeArtifactIdentity(simulationWorkloadSchema, bytes);
   return CanonicalSimulationWorkload(identity, workload, std::move(bytes));
@@ -496,7 +498,7 @@ importSimulationWorkload(llvm::ArrayRef<std::uint8_t> canonicalBytes,
           decoded->workload, decoded->context, view))
     return std::move(error);
   const std::vector<std::uint8_t> reencoded =
-      encodeSpatialWorkload(decoded->workload);
+      encodeSpatialWorkload(decoded->workload, decoded->context);
   if (!llvm::ArrayRef<std::uint8_t>(reencoded).equals(canonicalBytes))
     return detail::invalid(
         "simulation workload: noncanonical bytes do not re-encode exactly");

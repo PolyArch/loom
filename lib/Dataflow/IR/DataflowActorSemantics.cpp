@@ -4,6 +4,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Matchers.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -828,10 +829,13 @@ llvm::Expected<dataflow::semantics::MemoryAccessType>
 dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
                                              mlir::Type dataType,
                                              mlir::Type addressType,
+                                             mlir::Operation *scope,
                                              mlir::Type maskType) {
   mlir::Type elementType = memoryType.getElementType();
   MemoryAccessType access;
   access.elementType = elementType;
+  access.dataType = dataType;
+  access.addressType = addressType;
   // Data that exactly equals the memory element type is one element access,
   // including when that element is itself a vector. A vector-valued element is
   // still a semantic vector, so it passes the same positive fixed-rank
@@ -847,6 +851,26 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
       return llvm::createStringError(
           std::errc::invalid_argument,
           "mask is only valid for a vector memory access");
+  } else if (auto pointer =
+                 llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(dataType)) {
+    if (maskType)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mask is not valid for a scalar pointer memory access");
+    auto storage = llvm::dyn_cast<mlir::IntegerType>(elementType);
+    if (!storage || storage.getWidth() == 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "pointer data requires a nonzero-width integer storage element");
+    auto layout = loom::resolvePointerLayout(scope, pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    if (storage.getWidth() != layout->representationBits)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "pointer data requires an integer storage element of exactly "
+          "P(AS) bits");
+    access.dataPointerLayout = *layout;
   } else if (llvm::isa<mlir::VectorType>(dataType)) {
     auto vector = analyzeFixedRankDataVector(dataType, VectorRank::AnyFixed);
     if (!vector)
@@ -870,19 +894,33 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
   if (llvm::isa<mlir::IndexType>(addressType))
     return access;
 
+  if (auto pointer = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(addressType)) {
+    auto layout = loom::resolvePointerLayout(scope, pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    access.addressForm = MemoryAddressForm::PointerAddressed;
+    access.pointerLayout = *layout;
+    return access;
+  }
+
   auto addressVector = llvm::dyn_cast<mlir::VectorType>(addressType);
   if (!addressVector)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "operand #1 must be index or a fixed-size vector of index");
+        "operand #1 must be index, LLVM pointer, or a fixed-size vector of "
+        "one of those types");
   if (addressVector.isScalable())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "address vector must be a fixed-size "
                                    "vector");
-  if (!llvm::isa<mlir::IndexType>(addressVector.getElementType()))
+  const bool indexAddress =
+      llvm::isa<mlir::IndexType>(addressVector.getElementType());
+  auto pointerAddress = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(
+      addressVector.getElementType());
+  if (!indexAddress && !pointerAddress)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "address vector element type must be "
-                                   "'index'");
+                                   "'index' or an LLVM pointer");
   if (!access.isVector())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -894,6 +932,14 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
         typeToString(addressVector).c_str(),
         typeToString(access.vectorType).c_str());
   access.addressVectorType = addressVector;
+  if (pointerAddress) {
+    auto layout =
+        loom::resolvePointerLayout(scope, pointerAddress.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    access.addressForm = MemoryAddressForm::PointerAddressed;
+    access.pointerLayout = *layout;
+  }
   return access;
 }
 

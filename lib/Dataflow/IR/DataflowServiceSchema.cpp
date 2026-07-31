@@ -213,9 +213,15 @@ bool CanonicalMemoryAccessView::operator==(
   return sourceActor == other.sourceActor &&
          accessOperation == other.accessOperation &&
          accessGeometry.elementType == other.accessGeometry.elementType &&
+         accessGeometry.dataType == other.accessGeometry.dataType &&
+         accessGeometry.addressType == other.accessGeometry.addressType &&
          accessGeometry.vectorType == other.accessGeometry.vectorType &&
          accessGeometry.addressVectorType ==
              other.accessGeometry.addressVectorType &&
+         accessGeometry.addressForm == other.accessGeometry.addressForm &&
+         accessGeometry.pointerLayout == other.accessGeometry.pointerLayout &&
+         accessGeometry.dataPointerLayout ==
+             other.accessGeometry.dataPointerLayout &&
          actorContract.aggregate == other.actorContract.aggregate &&
          actorContract.atomic == other.actorContract.atomic &&
          actorContract.isVolatile == other.actorContract.isVolatile &&
@@ -229,7 +235,7 @@ bool CanonicalMemoryAccessView::operator==(
          derived.addressCount == other.derived.addressCount &&
          derived.elementBits == other.derived.elementBits &&
          derived.dataBits == other.derived.dataBits &&
-         derived.indexBits == other.derived.indexBits &&
+         derived.addressLaneBits == other.derived.addressLaneBits &&
          derived.addressBits == other.derived.addressBits &&
          derived.maskBits == other.derived.maskBits;
 }
@@ -241,14 +247,11 @@ llvm::ArrayRef<std::int64_t> CanonicalMemoryAccessView::laneShape() const {
 }
 
 Type CanonicalMemoryAccessView::addressType() const {
-  if (accessGeometry.isGather())
-    return accessGeometry.addressVectorType;
-  return IndexType::get(accessGeometry.elementType.getContext());
+  return accessGeometry.addressType;
 }
 
 Type CanonicalMemoryAccessView::dataType() const {
-  return accessGeometry.isVector() ? Type(accessGeometry.vectorType)
-                                   : accessGeometry.elementType;
+  return accessGeometry.dataType;
 }
 
 Type CanonicalMemoryAccessView::successType() const {
@@ -277,7 +280,7 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   Type maskType = actor->mask ? actor->mask.getType() : Type();
   llvm::Expected<MemoryAccessType> geometry = analyzeMemoryAccessType(
       llvm::cast<MemRefType>(actor->memory.getType()), actor->dataType,
-      actor->address.getType(), maskType);
+      actor->address.getType(), op, maskType);
   if (!geometry)
     return geometry.takeError();
   std::optional<MemoryActorContract> contract = getMemoryActorContract(op);
@@ -289,9 +292,16 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
       getElementBitWidth(geometry->elementType, op);
   if (!elementBits)
     return elementBits.takeError();
-  llvm::Expected<unsigned> indexBits = loom::getIndexBitWidth(op);
-  if (!indexBits)
-    return indexBits.takeError();
+  llvm::Expected<unsigned> addressLaneBits = [&]() -> llvm::Expected<unsigned> {
+    if (geometry->addressForm == MemoryAddressForm::PointerAddressed) {
+      assert(geometry->pointerLayout &&
+             "verified pointer address has no pointer layout");
+      return geometry->pointerLayout->representationBits;
+    }
+    return loom::getIndexBitWidth(op);
+  }();
+  if (!addressLaneBits)
+    return addressLaneBits.takeError();
 
   // A verified access can still name a shape whose product no exact count can
   // hold. Each count and width below is that product under one element width,
@@ -299,7 +309,9 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   // second one here, so an unrepresentable access is refused before it is
   // published and no published value can be a wrapped one.
   std::uint64_t laneCount = 1;
-  std::uint64_t dataBits = *elementBits;
+  std::uint64_t dataBits = geometry->dataPointerLayout
+                               ? geometry->dataPointerLayout->representationBits
+                               : *elementBits;
   if (geometry->isVector()) {
     llvm::Expected<std::uint64_t> lanes =
         loom::getFixedVectorBitWidth(geometry->vectorType, 1);
@@ -314,14 +326,14 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   }
 
   std::uint64_t addressCount = 1;
-  std::uint64_t addressBits = *indexBits;
+  std::uint64_t addressBits = *addressLaneBits;
   if (geometry->isGather()) {
     llvm::Expected<std::uint64_t> addresses =
         loom::getFixedVectorBitWidth(geometry->addressVectorType, 1);
     if (!addresses)
       return addresses.takeError();
-    llvm::Expected<std::uint64_t> bits =
-        loom::getFixedVectorBitWidth(geometry->addressVectorType, *indexBits);
+    llvm::Expected<std::uint64_t> bits = loom::getFixedVectorBitWidth(
+        geometry->addressVectorType, *addressLaneBits);
     if (!bits)
       return bits.takeError();
     addressCount = *addresses;
@@ -331,7 +343,7 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   return CanonicalMemoryAccessView(
       std::move(*projection), actor->operation, *geometry, *contract, maskType,
       CanonicalMemoryAccessView::DerivedGeometry{
-          laneCount, addressCount, *elementBits, dataBits, *indexBits,
+          laneCount, addressCount, *elementBits, dataBits, *addressLaneBits,
           addressBits, maskType ? laneCount : 0});
 }
 
@@ -375,8 +387,7 @@ const ServiceRoleSchema &
 dataflow::semantics::getServiceRoleSchema(ServiceKind kind) {
   static const ServiceRoleSchema message{messageSchema.arguments,
                                          messageSchema.results};
-  static const ServiceRoleSchema read{readSchema.arguments,
-                                      readSchema.results};
+  static const ServiceRoleSchema read{readSchema.arguments, readSchema.results};
   static const ServiceRoleSchema write{writeSchema.arguments,
                                        writeSchema.results};
   static const ServiceRoleSchema rmw{rmwSchema.arguments, rmwSchema.results};

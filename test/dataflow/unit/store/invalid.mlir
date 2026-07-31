@@ -55,16 +55,6 @@ func.func @store_bad_mask_element(
 }
 
 // -----
-// Two explicit types require a vector address type.
-func.func @store_scalar_first_explicit_type(
-    %mem: memref<?xi32>, %addr: index, %data: vector<4xi32>,
-    %ctrl: none) -> none {
-  // expected-error @+1 {{first explicit type must be a vector address type}}
-  %done = dataflow.store %mem[%addr] %data %ctrl : memref<?xi32>, index, vector<4xi32>
-  return %done : none
-}
-
-// -----
 // A scatter address vector has the complete data-vector shape.
 func.func @store_bad_scatter_address_shape(
     %mem: memref<10xi32>, %addr: vector<2xindex>,

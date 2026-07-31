@@ -32,3 +32,12 @@ func.func @launch_relay(%channel: !dataflow.channel<i32>, %enabled: i1) {
       : (!dataflow.channel<i32>, i1) -> !dataflow.thread_token
   return
 }
+
+// A pointer is an ordinary stream payload, not a memory capability.
+// CHECK-LABEL: dataflow.thread private @relay_pointer
+dataflow.thread private @relay_pointer domain(#dataflow.thread_domain<dense>)(
+    %channel: !dataflow.channel<!llvm.ptr>) ctrl (%ctrl: none) {
+  %message = dataflow.channel.receive %channel : !dataflow.channel<!llvm.ptr>
+  dataflow.channel.send %channel, %message : !dataflow.channel<!llvm.ptr>
+  dataflow.thread.yield
+}

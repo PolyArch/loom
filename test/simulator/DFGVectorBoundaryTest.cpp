@@ -422,7 +422,8 @@ ActorExecutionPlan &installActorPlan(TestSimulatorState &state,
   state.prepared.actorPlans.push_back(ActorExecutionPlan{
       operation, std::move(*projection), provider, firstInput,
       static_cast<std::uint32_t>(operation->getNumOperands()),
-      std::move(outputs), std::move(primitive), std::move(memory)});
+      std::move(outputs), std::move(primitive), std::move(memory),
+      std::nullopt});
   return state.prepared.actorPlans.back();
 }
 
@@ -791,7 +792,7 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   testChannelQueue(state, op.getMemMutable())
-      .push_back(pointerToken(op.getMem(), memory, 0));
+      .push_back(memoryCapabilityToken(op.getMem(), memory, 0));
   testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
@@ -821,7 +822,7 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   testChannelQueue(state, op.getMemMutable())
-      .push_back(pointerToken(op.getMem(), memory, 0));
+      .push_back(memoryCapabilityToken(op.getMem(), memory, 0));
   testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexVectorToken(resolvedIndexBits(op.getOperation()), {0, 1}));
@@ -872,7 +873,7 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
   auto memory =
       makeMemory(memoryType.getElementType(), {0x11, 0x22}, op.getOperation());
   testChannelQueue(state, op.getMemMutable())
-      .push_back(pointerToken(op.getMem(), memory, 0));
+      .push_back(memoryCapabilityToken(op.getMem(), memory, 0));
   testChannelQueue(state, op.getAddrMutable())
       .push_back(
           indexVectorToken(resolvedIndexBits(op.getOperation()), {1, 1}));

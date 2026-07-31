@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
@@ -19,8 +20,8 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <memory>
 #include <map>
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -74,12 +75,13 @@ struct CanonicalStaticGraphLaunchView {
 struct CanonicalLogicalMemoryRootView {
   LogicalMemoryRootRef ref;
   // The owning dataflow.thread for an imported memory formal (selected by
-  // `formalArgIndex`), or the fresh memref.alloc op for an allocation root. An
-  // imported thread formal has no owning-graph entity: its downstream graph
-  // role is recovered through the exact graph.launch memory binding.
+  // `formalArgIndex`), the dataflow.memory.service operation for an
+  // object-scoped service root, or the fresh memref.alloc op for an allocation
+  // root. An imported thread formal has no owning-graph entity: its downstream
+  // graph role is recovered through the exact graph.launch memory binding.
   mlir::Operation *op = nullptr;
   // Set for an imported thread memory formal: the function-input ordinal, which
-  // is also its entry-block-argument index. Absent for a fresh-allocation root.
+  // is also its entry-block-argument index. Absent for an operation-owned root.
   std::optional<unsigned> formalArgIndex;
 };
 
@@ -113,6 +115,11 @@ public:
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
   std::uint64_t entityCount() const { return kindOfId_.size(); }
+
+  /// Derives one pointer format from the exact module-owned LLVM DataLayout.
+  /// The result is a removable typed projection, not persistent view state.
+  llvm::Expected<::loom::PointerLayout>
+  pointerLayout(std::uint32_t addressSpace) const;
 
   // Typed resolution. Each requires the exact artifact identity, so a
   // foreign-artifact or wrong-kind reference is a real runtime rejection.
@@ -269,6 +276,7 @@ private:
   roleOfValue(mlir::Value value) const;
 
   ::loom::ArtifactIdentity identity_;
+  mlir::ModuleOp module_;
   // Global EntityId -> kind, plus the slot within that kind's vector.
   std::vector<CanonicalDataflowEntityKind> kindOfId_;
   std::vector<std::size_t> slotOfId_;
@@ -352,9 +360,7 @@ public:
   /// Returns the read-only projection sealed by finalization or strict import.
   /// This disposable native cache is derived from the canonical bytes and may
   /// never replace them as the persistent authority.
-  llvm::Expected<CanonicalDataflowProgramView> view() const {
-    return view_;
-  }
+  llvm::Expected<CanonicalDataflowProgramView> view() const { return view_; }
 
 private:
   friend llvm::Expected<CanonicalDataflowArtifact>
@@ -369,11 +375,11 @@ private:
   importCanonicalDataflow(const ::loom::ArtifactRootReference &,
                           const ::loom::ArtifactStore &);
 
-  CanonicalDataflowArtifact(::loom::ArtifactIdentity identity,
-                            mlir::OwningOpRef<mlir::ModuleOp> module,
-                            ::loom::CanonicalSemanticBytes bytes,
-                            CanonicalDataflowProgramView view,
-                            std::unique_ptr<mlir::MLIRContext> context = nullptr)
+  CanonicalDataflowArtifact(
+      ::loom::ArtifactIdentity identity,
+      mlir::OwningOpRef<mlir::ModuleOp> module,
+      ::loom::CanonicalSemanticBytes bytes, CanonicalDataflowProgramView view,
+      std::unique_ptr<mlir::MLIRContext> context = nullptr)
       : identity_(identity), context_(std::move(context)),
         module_(std::move(module)), bytes_(std::move(bytes)),
         view_(std::move(view)) {}

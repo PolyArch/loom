@@ -340,6 +340,103 @@ struct CallableOwnershipBoundary final {
   llvm::SmallVector<mlir::Value, 1> outputs;
 };
 
+bool pointerLineageRequiresMemoryService(mlir::Value pointer,
+                                         llvm::DenseSet<mlir::Value> &visited) {
+  if (!pointer || !visited.insert(pointer).second)
+    return false;
+  for (mlir::OpOperand &use : pointer.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(owner)) {
+      if (load.getAddr() == pointer)
+        return true;
+    } else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(owner)) {
+      if (store.getAddr() == pointer)
+        return true;
+    }
+    for (mlir::Value result : owner->getResults())
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(result.getType()) &&
+          pointerLineageRequiresMemoryService(result, visited))
+        return true;
+  }
+  return false;
+}
+
+mlir::Operation *lastDynamicPointerServiceSource(mlir::Block &block) {
+  mlir::Operation *last = nullptr;
+  for (mlir::Operation &operation : block.without_terminator()) {
+    auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation);
+    if (!load ||
+        !llvm::isa<mlir::LLVM::LLVMPointerType>(load.getResult().getType()))
+      continue;
+    llvm::DenseSet<mlir::Value> visited;
+    if (pointerLineageRequiresMemoryService(load.getResult(), visited))
+      last = &operation;
+  }
+  return last;
+}
+
+bool isDefinedInSelection(
+    mlir::Value value,
+    const llvm::SmallPtrSetImpl<mlir::Operation *> &selected) {
+  if (auto result = llvm::dyn_cast<mlir::OpResult>(value))
+    return selected.contains(result.getOwner());
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  return argument && selected.contains(argument.getOwner()->getParentOp());
+}
+
+llvm::SmallVector<mlir::Value, 8> deriveSelectionLiveIns(
+    llvm::ArrayRef<mlir::Operation *> selectedBody,
+    const llvm::SmallPtrSetImpl<mlir::Operation *> &selected) {
+  llvm::SmallVector<mlir::Value, 8> liveIns;
+  llvm::SmallPtrSet<mlir::Value, 8> seen;
+  for (mlir::Operation *topLevel : selectedBody)
+    topLevel->walk([&](mlir::Operation *operation) {
+      for (mlir::Value operand : operation->getOperands())
+        if (!isDefinedInSelection(operand, selected) &&
+            seen.insert(operand).second)
+          liveIns.push_back(operand);
+    });
+  return liveIns;
+}
+
+struct CallableSpatialSlice final {
+  llvm::SmallVector<mlir::Operation *, 16> body;
+  llvm::SmallVector<mlir::Value, 8> liveIns;
+  llvm::SmallVector<mlir::Value, 1> liveOuts;
+};
+
+CallableSpatialSlice
+deriveCallableSpatialSlice(mlir::LLVM::LLVMFuncOp function,
+                           const CallableOwnershipBoundary &boundary) {
+  CallableSpatialSlice slice;
+  mlir::Block &block = function.getBody().front();
+  mlir::Operation *servicePrefixEnd = lastDynamicPointerServiceSource(block);
+  bool afterServicePrefix = servicePrefixEnd == nullptr;
+  for (mlir::Operation &operation : block.without_terminator()) {
+    if (!afterServicePrefix) {
+      afterServicePrefix = &operation == servicePrefixEnd;
+      continue;
+    }
+    if (!llvm::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
+      slice.body.push_back(&operation);
+  }
+
+  if (!servicePrefixEnd) {
+    slice.liveIns.assign(boundary.inputs.begin(), boundary.inputs.end());
+    slice.liveOuts.assign(boundary.outputs.begin(), boundary.outputs.end());
+    return slice;
+  }
+
+  llvm::SmallPtrSet<mlir::Operation *, 32> selected;
+  for (mlir::Operation *operation : slice.body)
+    operation->walk([&](mlir::Operation *nested) { selected.insert(nested); });
+  slice.liveIns = deriveSelectionLiveIns(slice.body, selected);
+  for (mlir::Value output : boundary.outputs)
+    if (isDefinedInSelection(output, selected))
+      slice.liveOuts.push_back(output);
+  return slice;
+}
+
 CallableOwnershipBoundary
 deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
   CallableOwnershipBoundary boundary;
@@ -385,20 +482,19 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
   // graph body.
   CallableOwnershipBoundary callableBoundary =
       deriveCallableOwnershipBoundary(function);
-  for (mlir::LLVM::AddressOfOp address :
-       llvm::reverse(callableBoundary.addresses))
-    if (&source.front() != address.getOperation())
-      address->moveBefore(&source, source.begin());
-  for (mlir::LLVM::UndefOp undef : llvm::reverse(callableBoundary.undefs))
-    if (&source.front() != undef.getOperation())
-      undef->moveBefore(&source, source.begin());
-
-  llvm::SmallVector<mlir::Operation *, 16> selectedBody;
-  for (mlir::Operation &operation : source.without_terminator())
-    if (!llvm::isa<mlir::LLVM::AddressOfOp, mlir::LLVM::UndefOp>(operation))
-      selectedBody.push_back(&operation);
-  llvm::SmallVector<mlir::Value, 1> yieldedValues(
-      callableBoundary.outputs.begin(), callableBoundary.outputs.end());
+  llvm::ArrayRef<mlir::Operation *> selectedBody = prepared.callableSpatialBody;
+  if (selectedBody.empty())
+    return invalid("dynamic pointer service prelude leaves no Spatial body");
+  llvm::ArrayRef<mlir::Value> captures = prepared.liveIns;
+  llvm::ArrayRef<mlir::Value> yieldedValues = prepared.liveOuts;
+  llvm::SmallVector<std::optional<std::size_t>, 1> outputResultOrdinals;
+  for (mlir::Value output : callableBoundary.outputs) {
+    auto found = llvm::find(yieldedValues, output);
+    outputResultOrdinals.push_back(
+        found == yieldedValues.end()
+            ? std::optional<std::size_t>{}
+            : std::optional<std::size_t>(found - yieldedValues.begin()));
+  }
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   for (mlir::Value value : yieldedValues)
     resultTypes.push_back(value.getType());
@@ -407,8 +503,6 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
   if (!resultSlots)
     return resultSlots.takeError();
 
-  llvm::SmallVector<mlir::Value, 8> captures(callableBoundary.inputs.begin(),
-                                             callableBoundary.inputs.end());
   auto boundary =
       createSpatialThreadBoundary(module, function, captures, *resultSlots,
                                   resultTypes, mlir::TypeRange{}, location);
@@ -458,10 +552,15 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
       mlir::ValueRange{});
   dataflow::ThreadWaitOp::create(builder, location,
                                  mlir::ValueRange{launch.getAsyncToken()});
-  llvm::SmallVector<mlir::Value, 1> returnedValues;
+  llvm::SmallVector<mlir::Value, 1> loadedResults;
   for (auto [slot, type] : llvm::zip_equal(*resultSlots, resultTypes))
-    returnedValues.push_back(
+    loadedResults.push_back(
         mlir::LLVM::LoadOp::create(builder, location, type, slot));
+  llvm::SmallVector<mlir::Value, 1> returnedValues;
+  for (auto [output, resultOrdinal] :
+       llvm::zip_equal(callableBoundary.outputs, outputResultOrdinals))
+    returnedValues.push_back(resultOrdinal ? loadedResults[*resultOrdinal]
+                                           : output);
   mlir::LLVM::ReturnOp::create(builder, location, returnedValues);
   return llvm::Error::success();
 }
@@ -1573,6 +1672,7 @@ prepareSpatialOwnershipSelection(
                                            *decision.fmuladdExecutionShape);
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
+  std::vector<mlir::Operation *> callableSpatialBody;
   std::optional<
       std::vector<PreparedSpatialOwnershipSelection::SourceInductionBinding>>
       sourceInductions;
@@ -1580,8 +1680,18 @@ prepareSpatialOwnershipSelection(
   if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(operation)) {
     CallableOwnershipBoundary boundary =
         deriveCallableOwnershipBoundary(function);
-    liveIns.assign(boundary.inputs.begin(), boundary.inputs.end());
-    liveOuts.assign(boundary.outputs.begin(), boundary.outputs.end());
+    for (mlir::LLVM::AddressOfOp address : llvm::reverse(boundary.addresses))
+      if (&function.getBody().front().front() != address.getOperation())
+        address->moveBefore(&function.getBody().front(),
+                            function.getBody().front().begin());
+    for (mlir::LLVM::UndefOp undef : llvm::reverse(boundary.undefs))
+      if (&function.getBody().front().front() != undef.getOperation())
+        undef->moveBefore(&function.getBody().front(),
+                          function.getBody().front().begin());
+    CallableSpatialSlice slice = deriveCallableSpatialSlice(function, boundary);
+    callableSpatialBody.assign(slice.body.begin(), slice.body.end());
+    liveIns.assign(slice.liveIns.begin(), slice.liveIns.end());
+    liveOuts.assign(slice.liveOuts.begin(), slice.liveOuts.end());
   } else if (auto forall = llvm::dyn_cast<mlir::scf::ForallOp>(operation);
              forall && decision.forallOwnershipShape ==
                            ForallOwnershipShape::LogicalThreadDomain) {
@@ -1618,6 +1728,7 @@ prepareSpatialOwnershipSelection(
     return invalid("prepared ownership selection does not verify");
   return PreparedSpatialOwnershipSelection{std::move(selection->clone),
                                            operation,
+                                           std::move(callableSpatialBody),
                                            std::move(liveIns),
                                            std::move(liveOuts),
                                            std::move(sourceInductions),

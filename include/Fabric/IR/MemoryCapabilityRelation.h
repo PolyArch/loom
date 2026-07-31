@@ -8,9 +8,16 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace fabric::detail {
+
+inline constexpr bool memoryAccessClassRelationGrouping[] = {
+    false, false, true, true, true, true, true, true, true, true};
+inline constexpr std::size_t memoryAccessClassRelationFieldCount =
+    sizeof(memoryAccessClassRelationGrouping) /
+    sizeof(memoryAccessClassRelationGrouping[0]);
 
 /// Internal common relation row used by memory operation ports and memory
 /// services. `physicalFacts` is an exact owner codec payload; it is never a

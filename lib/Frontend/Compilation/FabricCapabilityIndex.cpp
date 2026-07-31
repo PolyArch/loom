@@ -14,6 +14,24 @@
 
 using namespace loom;
 
+namespace {
+
+llvm::Expected<std::optional<::loom::PointerLayout>> resolveActorPointerLayout(
+    mlir::Operation *actor,
+    const dataflow::CanonicalActorSchemaProjection &projection) {
+  auto addressSpace = dataflow::projectActorPointerAddressSpace(projection);
+  if (!addressSpace)
+    return addressSpace.takeError();
+  if (!*addressSpace)
+    return std::optional<::loom::PointerLayout>{};
+  auto layout = ::loom::resolvePointerLayout(actor, **addressSpace);
+  if (!layout)
+    return layout.takeError();
+  return std::optional<::loom::PointerLayout>(*layout);
+}
+
+} // namespace
+
 frontend::FabricCapabilityIndex::FabricCapabilityIndex(
     fabric::FabricArtifactView fabric)
     : fabric_(std::move(fabric)),
@@ -122,7 +140,7 @@ llvm::SmallVector<
     loom::ArtifactReference<loom::fabric::FabricFuTemplateNodeRef>, 4>
 frontend::FabricCapabilityIndex::admittingOperationResources(
     const dataflow::CanonicalActorSchemaProjection &actor,
-    unsigned indexBitWidth) const {
+    unsigned indexBitWidth, const ::loom::PointerLayout *pointerLayout) const {
   llvm::SmallVector<ArtifactReference<fabric::FabricFuTemplateNodeRef>, 4>
       result;
   const std::uint32_t schemaOrdinal = static_cast<std::uint32_t>(actor.schema);
@@ -135,7 +153,8 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
         owner.resolvedFabricOpCapability(operation.reference);
     if (!capability)
       continue;
-    if (llvm::Error error = capability->admit(actor, indexBitWidth)) {
+    if (llvm::Error error =
+            capability->admit(actor, indexBitWidth, pointerLayout)) {
       llvm::consumeError(std::move(error));
       continue;
     }
@@ -148,7 +167,7 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
 llvm::Expected<std::uint64_t>
 frontend::FabricCapabilityIndex::admittingOperationResourceCount(
     const dataflow::CanonicalActorSchemaProjection &actor,
-    unsigned indexBitWidth) const {
+    unsigned indexBitWidth, const ::loom::PointerLayout *pointerLayout) const {
   std::uint64_t result = 0;
   const std::uint32_t schemaOrdinal = static_cast<std::uint32_t>(actor.schema);
   if (schemaOrdinal >= operationsBySchema_.size())
@@ -160,7 +179,8 @@ frontend::FabricCapabilityIndex::admittingOperationResourceCount(
         owner.resolvedFabricOpCapability(operation.reference);
     if (!capability)
       continue;
-    if (llvm::Error error = capability->admit(actor, indexBitWidth)) {
+    if (llvm::Error error =
+            capability->admit(actor, indexBitWidth, pointerLayout)) {
       llvm::consumeError(std::move(error));
       continue;
     }
@@ -191,7 +211,11 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
   auto indexBitWidth = loom::getIndexBitWidth(actor);
   if (!indexBitWidth)
     return indexBitWidth.takeError();
-  return admittingOperationResources(*projection, *indexBitWidth);
+  auto pointerLayout = resolveActorPointerLayout(actor, *projection);
+  if (!pointerLayout)
+    return pointerLayout.takeError();
+  return admittingOperationResources(
+      *projection, *indexBitWidth, *pointerLayout ? &**pointerLayout : nullptr);
 }
 
 llvm::Expected<std::uint64_t>
@@ -203,7 +227,11 @@ frontend::FabricCapabilityIndex::admittingOperationResourceCount(
   auto indexBitWidth = loom::getIndexBitWidth(actor);
   if (!indexBitWidth)
     return indexBitWidth.takeError();
-  return admittingOperationResourceCount(*projection, *indexBitWidth);
+  auto pointerLayout = resolveActorPointerLayout(actor, *projection);
+  if (!pointerLayout)
+    return pointerLayout.takeError();
+  return admittingOperationResourceCount(
+      *projection, *indexBitWidth, *pointerLayout ? &**pointerLayout : nullptr);
 }
 
 llvm::Expected<llvm::SmallVector<

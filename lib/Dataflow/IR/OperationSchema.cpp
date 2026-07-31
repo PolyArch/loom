@@ -354,6 +354,16 @@ readPayload(Operation *op, dataflow::OperationSchemaId schema) {
     if (!llvm::isa<LLVM::CallIntrinsicOp>(op))
       return mismatch(op, kind);
     return dataflow::SemanticPayload{dataflow::NoPayload{}};
+  case Case::LLVMGetElementPtrSemantics: {
+    auto actor = llvm::dyn_cast<LLVM::GEPOp>(op);
+    if (!actor)
+      return mismatch(op, kind);
+    llvm::ArrayRef<std::int32_t> rawIndices = actor.getRawConstantIndices();
+    return dataflow::SemanticPayload{dataflow::GetElementPtrPayload{
+        actor.getElemType(),
+        std::vector<std::int32_t>(rawIndices.begin(), rawIndices.end()),
+        actor.getNoWrapFlags()}};
+  }
   case Case::ArithFloatingPoint: {
     auto fastMath = llvm::dyn_cast<arith::ArithFastMathInterface>(op);
     auto rounding = llvm::dyn_cast<arith::ArithRoundingModeInterface>(op);
@@ -638,6 +648,35 @@ dataflow::projectRegisteredActorSchemaProjection(Operation *op) {
   FunctionType type = FunctionType::get(op->getContext(), op->getOperandTypes(),
                                         op->getResultTypes());
   return CanonicalActorSchemaProjection{*schema, type, *payload};
+}
+
+llvm::Expected<std::optional<std::uint32_t>>
+dataflow::projectActorPointerAddressSpace(
+    const CanonicalActorSchemaProjection &projection) {
+  std::optional<std::uint32_t> addressSpace;
+  const auto inspect = [&](Type type) -> llvm::Error {
+    auto pointer = llvm::dyn_cast<LLVM::LLVMPointerType>(type);
+    if (!pointer) {
+      if (auto vector = llvm::dyn_cast<VectorType>(type))
+        pointer =
+            llvm::dyn_cast<LLVM::LLVMPointerType>(vector.getElementType());
+    }
+    if (!pointer)
+      return llvm::Error::success();
+    if (addressSpace && *addressSpace != pointer.getAddressSpace())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "canonical actor mixes LLVM pointer address spaces");
+    addressSpace = pointer.getAddressSpace();
+    return llvm::Error::success();
+  };
+  for (Type type : projection.type.getInputs())
+    if (llvm::Error error = inspect(type))
+      return std::move(error);
+  for (Type type : projection.type.getResults())
+    if (llvm::Error error = inspect(type))
+      return std::move(error);
+  return addressSpace;
 }
 
 LogicalResult dataflow::verifyRegisteredActorInstance(Operation *op) {

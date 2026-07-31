@@ -5,6 +5,7 @@ add_mlir_library(LoomSimulator
   DFGSimulatorFunctionalObservations.cpp
   DFGSimulatorMemoryActors.cpp
   DFGSimulatorMemoryOrder.cpp
+  DFGSimulatorPointerActors.cpp
   DFGSimulatorPlainMemory.cpp
   DFGSimulatorReport.cpp
   DFGSimulatorTokens.cpp
@@ -16,6 +17,7 @@ add_mlir_library(LoomSimulator
   SimulationAdmission.cpp
   SimulationArtifactStore.cpp
   SimulationInputCapture.cpp
+  SimulationPointerCapture.cpp
   SimulationRuntimeInput.cpp
   SimulationWireSupport.cpp
   SimulationWorkload.cpp
@@ -40,6 +42,9 @@ add_mlir_library(LoomSimulator
   MLIRSupport
   LLVMSupport
 )
+mlir_target_link_libraries(LoomSimulator PRIVATE
+  MLIRTargetLLVMIRExport
+)
 
 find_path(LOOM_MPFR_INCLUDE_DIR NAMES mpfr.h REQUIRED)
 find_library(LOOM_MPFR_LIBRARY NAMES mpfr REQUIRED)
@@ -63,6 +68,7 @@ add_mlir_library(LoomNativeSimulationOracle
   NativeSimulationOracle.cpp
   SourceBackedDfgValidation.cpp
   StructuredProgramNativeExecution.cpp
+  StructuredProgramWorkloadInstrumentation.cpp
   StructuredProgramObservations.cpp
   StructuredOwnershipProjection.cpp
 

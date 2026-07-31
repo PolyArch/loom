@@ -73,7 +73,8 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
                                          unsigned kindIndex) {
   if (kind == GraphPortKind::Memory) {
     if (!isGraphMemoryCapabilityType(type)) {
-      if (DataflowDialect::isMemoryCapabilityType(type))
+      if (DataflowDialect::isMemoryCapabilityType(type) ||
+          DataflowDialect::isPointerValueType(type))
         return op->emitOpError()
                << "memory " << direction << " #" << kindIndex
                << " must be a memref capability, but got " << type;
@@ -86,6 +87,11 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
     return op->emitOpError()
            << graphPortKindName(kind) << " " << direction << " #" << kindIndex
            << " contains memory capability type " << type;
+  if (!DataflowDialect::isPointerValueType(type) &&
+      DataflowDialect::containsPointerValue(type))
+    return op->emitOpError()
+           << graphPortKindName(kind) << " " << direction << " #" << kindIndex
+           << " contains a nested LLVM pointer value in type " << type;
   if (kind == GraphPortKind::Value && isa<NoneType>(type))
     return op->emitOpError()
            << graphPortKindName(kind) << " " << direction << " #" << kindIndex
@@ -1293,29 +1299,10 @@ LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
   for (auto [index, memory] : llvm::enumerate(getMemoryInputs())) {
     Type actual = memory.getType();
     Type formal = inputs[inputIndex];
-    if (actual == formal) {
-      ++inputIndex;
-      continue;
-    }
-
-    auto pointer = dyn_cast<LLVM::LLVMPointerType>(actual);
-    if (!pointer)
+    if (actual != formal)
       return emitOpError("memory input #")
              << index << " type " << actual
              << " does not match callee payload type " << formal;
-
-    auto view = dyn_cast<MemRefType>(formal);
-    if (pointer.getAddressSpace() != 0)
-      return emitOpError("memory input #")
-             << index << " cannot bind pointer address space "
-             << pointer.getAddressSpace() << " to canonical graph memref "
-             << formal;
-    if (!view || view.getRank() != 1 || !view.isDynamicDim(0) ||
-        !view.getLayout().isIdentity() || view.getMemorySpace())
-      return emitOpError("memory input #")
-             << index << " pointer view target " << formal
-             << " must be a rank-one dynamic identity-layout memref in the "
-                "default memory space";
     ++inputIndex;
   }
 

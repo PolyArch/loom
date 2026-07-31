@@ -78,10 +78,30 @@ target_link_libraries(loom-simulator-simulation-wire-test PRIVATE
   MLIRDLTIDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRParser
   MLIRSupport
   LLVMSupport
+)
+
+add_executable(loom-simulator-dfg-pointer-execution-test
+  DFGPointerExecutionTest.cpp
+)
+
+target_link_libraries(loom-simulator-dfg-pointer-execution-test PRIVATE
+  LoomCommon
+  LoomNativeSimulationOracle
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSupport
 )
 
 add_executable(loom-simulator-structured-program-wire-test

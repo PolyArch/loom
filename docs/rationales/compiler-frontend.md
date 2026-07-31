@@ -223,15 +223,19 @@ or diagnostic owner: successful coordinates reference ordinary child
 Artifacts, expected failures retain their typed compiler reason, and central
 Evaluation still deduplicates equal children by Artifact identity.
 
-The same ownership explains pointer induction. A pointer updated on every
-iteration looks like loop state in imperative SSA, but its storage authority
-does not change: only an offset from one static capability changes. This remains
-true when the fixed per-iteration stride is a runtime value invariant within the
-loop. Keeping the base invariant and carrying the typed element offset preserves
-that fact, gives memory lowering an exact address relation, and avoids adding
-dynamic raw pointer semantics to canonical Dataflow. Shapes whose finite offset
-domain or element units cannot be proved remain ordinary InstructionCore
-candidates.
+Pointer induction often admits a cheaper rooted form: a pointer updated on
+every iteration may be represented by one invariant capability and a carried
+integer offset. This remains true when the fixed per-iteration stride is a
+runtime value invariant within the loop. Keeping that form preserves alias and
+bounds facts and usually maps to less hardware.
+
+It is not a semantic restriction. Descriptor-loaded pointers, pointer cursors,
+and pointers stored as ordinary data cannot always be reduced to one static
+root without changing the program. Canonical Dataflow therefore also admits
+first-class LLVM pointer values when exact DataLayout, OperationSchema, Fabric,
+and provider contracts exist. DSE chooses between the rooted form, pointer
+execution in a SpatialCore, and InstructionCore ownership; no frontend rule
+forces all address representation into one execution owner.
 
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
@@ -331,16 +335,17 @@ an A-by-B rule matrix, then emits ordinary Dataflow control and memory-event
 edges. This keeps source order semantics while allowing the canonical graph to
 be text-order independent.
 
-LLVM pointers remain valid in the callable ABI and InstructionCore program,
-while a SpatialCore graph needs typed addressable capabilities. Adapting that
-boundary at `dataflow.graph.launch` preserves both owners: the LLVM callable
-keeps its pointer ABI and the graph receives an exact memref view. Encoding the
-adaptation as `builtin.unrealized_conversion_cast` inside the graph would turn
-an incomplete dialect-conversion marker into executable, mappable semantics.
-Introducing a new capability type would instead duplicate memref layout and
-memory-access authority. A launch-derived root-preserving view is the smallest
-complete relation and is mechanically recoverable from the actual, formal,
-and launch ordinal.
+LLVM pointers remain valid in the callable ABI and may enter the graph as
+ordinary pointer values. When analysis proves a static logical root, SCF
+optimization may instead materialize an exact memref capability plus integer
+offset before the graph boundary. Graph launch itself performs no pointer-to-
+memref adaptation. Encoding that adaptation as
+`builtin.unrealized_conversion_cast` would turn an incomplete dialect-
+conversion marker into executable, mappable semantics. Introducing a duplicate
+Dataflow pointer type would likewise restate LLVM's DataLayout and provenance
+authority. The two closed graph forms are therefore memref capability plus
+index, or the original typed LLVM pointer plus an exact memory-service
+capability.
 
 ## Why Dataflow Has Its Own Optimization Lineage
 

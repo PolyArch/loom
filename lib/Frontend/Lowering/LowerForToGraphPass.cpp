@@ -939,15 +939,15 @@ struct LowerForToGraphPass
   // from its uses. Only when the existing pipeline succeeds does each staged
   // graph replace its original, which keeps the signature changes finalization
   // makes. The complete outer module is validated afterwards.
-  ::mlir::LogicalResult
-  updateGraphLaunches(::mlir::ModuleOp module, ::dataflow::GraphOp original,
-                      ::dataflow::GraphOp finalized,
-                      ::llvm::ArrayRef<unsigned> sourceMemoryOrdinals) {
+  ::mlir::LogicalResult updateGraphLaunches(
+      ::mlir::ModuleOp module, ::dataflow::GraphOp original,
+      ::dataflow::GraphOp finalized,
+      ::llvm::ArrayRef<::loom::lowering::GraphMemoryInputSource> sources) {
     ::llvm::ArrayRef<int32_t> finalizedInputs =
         finalized.getInputSegmentSizes();
     ::llvm::ArrayRef<int32_t> finalizedResults =
         finalized.getResultSegmentSizes();
-    if (sourceMemoryOrdinals.size() != static_cast<size_t>(finalizedInputs[2]))
+    if (sources.size() != static_cast<size_t>(finalizedInputs[2]))
       return finalized.emitError(
           "graph memory projection does not cover the finalized signature");
 
@@ -959,6 +959,13 @@ struct LowerForToGraphPass
 
     ::llvm::ArrayRef<::mlir::Type> resultTypes =
         finalized.getFunctionType().getResults();
+    ::llvm::ArrayRef<::mlir::Type> inputTypes =
+        finalized.getFunctionType().getInputs();
+    const unsigned valueInputCount = static_cast<unsigned>(finalizedInputs[0]);
+    const unsigned streamInputCount = static_cast<unsigned>(finalizedInputs[1]);
+    ::mlir::TypeRange memoryInputTypes =
+        inputTypes.slice(valueInputCount + streamInputCount,
+                         static_cast<unsigned>(finalizedInputs[2]));
     unsigned valueResultCount = static_cast<unsigned>(finalizedResults[0]);
     unsigned streamResultCount = static_cast<unsigned>(finalizedResults[1]);
     unsigned memoryResultCount = static_cast<unsigned>(finalizedResults[2]);
@@ -970,15 +977,31 @@ struct LowerForToGraphPass
     ::mlir::OpBuilder builder(module.getContext());
     for (::dataflow::GraphLaunchOp launch : launches) {
       ::llvm::SmallVector<::mlir::Value, 4> memoryInputs;
-      memoryInputs.reserve(sourceMemoryOrdinals.size());
-      for (unsigned sourceOrdinal : sourceMemoryOrdinals) {
-        if (sourceOrdinal >= launch.getMemoryInputs().size())
-          return launch.emitOpError("graph memory projection source #")
-                 << sourceOrdinal << " is out of range";
-        memoryInputs.push_back(launch.getMemoryInputs()[sourceOrdinal]);
+      memoryInputs.reserve(sources.size());
+      builder.setInsertionPoint(launch);
+      for (auto [ordinal, source] : ::llvm::enumerate(sources)) {
+        if (source.kind ==
+            ::loom::lowering::GraphMemoryInputSourceKind::ExistingMemory) {
+          if (source.sourceOrdinal >= launch.getMemoryInputs().size())
+            return launch.emitOpError("graph memory projection source #")
+                   << source.sourceOrdinal << " is out of range";
+          memoryInputs.push_back(
+              launch.getMemoryInputs()[source.sourceOrdinal]);
+          continue;
+        }
+        if (source.sourceOrdinal >= launch.getValueInputs().size())
+          return launch.emitOpError("pointer service value source #")
+                 << source.sourceOrdinal << " is out of range";
+        ::mlir::Value pointer = launch.getValueInputs()[source.sourceOrdinal];
+        if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(pointer.getType()))
+          return launch.emitOpError("pointer service source #")
+                 << source.sourceOrdinal << " has non-pointer type "
+                 << pointer.getType();
+        auto service = ::dataflow::MemoryServiceOp::create(
+            builder, launch.getLoc(), memoryInputTypes[ordinal], pointer);
+        memoryInputs.push_back(service.getMemory());
       }
 
-      builder.setInsertionPoint(launch);
       auto replacement = ::dataflow::GraphLaunchOp::create(
           builder, launch.getLoc(), valueResultTypes, memoryResultTypes,
           builder.getNoneType(), launch.getCalleeAttr(), launch.getSourceMaps(),
@@ -1060,7 +1083,7 @@ struct LowerForToGraphPass
           return finalizedGraph.emitError(
               "graph memory finalization produced no input projection");
         if (::mlir::failed(updateGraphLaunches(module, graph, finalizedGraph,
-                                               projection->sourceOrdinals)))
+                                               projection->sources)))
           return ::mlir::failure();
         finalizedGraph->moveBefore(graph);
         graph.erase();

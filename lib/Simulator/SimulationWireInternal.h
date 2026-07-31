@@ -4,6 +4,7 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "Common/Artifact.h"
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
@@ -139,6 +140,7 @@ int compareStructuredMemoryTargets(const StructuredProgramMemoryTarget &lhs,
 struct LaneShape {
   std::uint64_t lanesPerToken = 0;
   std::uint32_t laneBitWidth = 0;
+  std::optional<::loom::PointerLayout> pointerLayout;
 };
 llvm::Expected<LaneShape> laneShapeOf(mlir::Type type,
                                       mlir::Operation *contextOp);
@@ -208,30 +210,55 @@ structuredProgramWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes);
 // Semantic value, stream, and memory-byte validation and codec
 //===----------------------------------------------------------------------===//
 
-llvm::Error validateValueSequence(const CanonicalValueSequence &sequence,
-                                  const LaneShape &shape,
-                                  const llvm::Twine &what);
+llvm::Error
+validateValueSequence(const CanonicalValueSequence &sequence,
+                      const LaneShape &shape, const llvm::Twine &what,
+                      std::optional<std::uint64_t> objectCount = std::nullopt);
 
 void encodeValueSequence(WireWriter &writer,
-                         const CanonicalValueSequence &sequence);
+                         const CanonicalValueSequence &sequence,
+                         const LaneShape &shape);
 llvm::Expected<CanonicalValueSequence>
 decodeValueSequence(WireReader &reader, const LaneShape &shape);
 
 void encodeStreamSequence(WireWriter &writer,
-                          const CanonicalStreamSequence &sequence);
+                          const CanonicalStreamSequence &sequence,
+                          const LaneShape &shape);
 llvm::Expected<CanonicalStreamSequence>
 decodeStreamSequence(WireReader &reader, const LaneShape &shape);
 
 void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object);
-llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader);
+llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader,
+                                                       mlir::Operation *scope);
 
 struct RuntimeObjectBindingKey {
   std::uint64_t authorObject = 0;
   std::vector<std::uint8_t> targetAndOffset;
 };
 
+llvm::Error validateRuntimeMemoryObjectStructure(
+    llvm::ArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope);
+
+llvm::Error canonicalizeRuntimeMemoryPointers(
+    llvm::MutableArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope);
+
+llvm::Error canonicalizePointerValueSequence(
+    CanonicalValueSequence &sequence, const LaneShape &shape,
+    llvm::ArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope);
+
+llvm::Error validateCanonicalPointerValueSequence(
+    const CanonicalValueSequence &sequence, const LaneShape &shape,
+    llvm::ArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope,
+    const llvm::Twine &what);
+
 llvm::Error
-validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects);
+validateRuntimeMemoryObjects(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                             mlir::Operation *scope);
+
+llvm::Expected<llvm::APInt>
+decodeRuntimePointerRepresentation(const RuntimeMemoryObject &object,
+                                   const RuntimeMemoryPointer &pointer,
+                                   mlir::Operation *scope);
 
 /// Assign canonical object ordinals from each object's sorted nonempty list of
 /// typed target-and-offset wire keys. Callers own target validation and must

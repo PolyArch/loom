@@ -161,6 +161,15 @@ resolveDataflowPort(const DataflowEndpoint &endpoint,
 llvm::Expected<DataflowIndex>
 buildDataflowIndex(const DataflowProgramView &dataflow) {
   DataflowIndex index;
+  std::set<std::uint32_t> pointerAddressSpaces;
+  for (const ::loom::PointerLayout &layout : dataflow.pointerLayouts) {
+    if (layout.representationBits == 0 || layout.addressBits == 0 ||
+        layout.addressBits > layout.representationBits ||
+        !pointerAddressSpaces.insert(layout.addressSpace).second)
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "Dataflow pointer-layout projection is malformed or duplicated");
+  }
   for (const GraphDescriptor &graph : dataflow.graphs) {
     if (llvm::Error error =
             addEntity(index.kinds, graph.id.value(), EntityKind::Graph))
@@ -425,6 +434,22 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
       return mappingError(
           MappingErrorCode::CapabilityTemplateMismatch,
           "Fabric operation inventory has an invalid or duplicate owner");
+    if (operation.enabledOperationSchemas.empty())
+      return mappingError(MappingErrorCode::CapabilityTemplateMismatch,
+                          "Fabric operation has no enabled operation schema");
+    std::optional<::dataflow::OperationSchemaId> previous;
+    for (::dataflow::OperationSchemaId schema :
+         operation.enabledOperationSchemas) {
+      if (static_cast<std::uint32_t>(schema) >=
+              ::dataflow::operationSchemaCount() ||
+          !::fabric::admitsOperationSchema(operation.family, schema) ||
+          (previous && static_cast<std::uint32_t>(*previous) >=
+                           static_cast<std::uint32_t>(schema)))
+        return mappingError(
+            MappingErrorCode::CapabilityTemplateMismatch,
+            "Fabric operation enabled-schema inventory is not canonical");
+      previous = schema;
+    }
   }
   for (const MemoryServiceDomainDescriptor &service :
        fabric.memoryServiceDomains) {
@@ -874,9 +899,8 @@ llvm::Error validateMemoryRealization(
                                       : (*actor)->outputPorts;
       if (hardware == hardwarePorts.end() ||
           hardware->second.second->direction != entry.first.first ||
-          !physicalPortAdmitsSemanticPort(
-              softwarePorts[entry.first.second],
-              hardware->second.second->port))
+          !physicalPortAdmitsSemanticPort(softwarePorts[entry.first.second],
+                                          hardware->second.second->port))
         return mappingError(MappingErrorCode::MemoryOperationMismatch,
                             "memory operation signature does not match actor");
       actorInternalEndpoints.emplace(
@@ -954,8 +978,8 @@ llvm::Error validateMemoryRealization(
     if (graphPort->graph != realization.graph ||
         implementationPort->implementation->id != implementation.id ||
         graphPort->key.direction != implementationPort->descriptor->direction ||
-        !physicalPortAdmitsSemanticPort(
-            *graphPort->descriptor, implementationPort->descriptor->port) ||
+        !physicalPortAdmitsSemanticPort(*graphPort->descriptor,
+                                        implementationPort->descriptor->port) ||
         !graphInternalEndpoints.emplace(graphPort->key, endpoint).second ||
         !mappedImplementationBoundaries.insert(endpoint).second)
       return mappingError(

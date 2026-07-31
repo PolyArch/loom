@@ -1,5 +1,7 @@
 #include "ADG/FuLibrary.h"
 
+#include "CatalogCapabilities.h"
+
 #include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/OperationResourceContract.h"
 
@@ -38,17 +40,38 @@ loopControlResourceContract(ImplementationFamilyId family) {
 }
 
 struct SelectableResource {
+  SelectableResource(ImplementationFamilyId family,
+                     FamilyCapabilityParams parameters,
+                     std::vector<std::uint32_t> inputRoles,
+                     std::vector<OperationSchemaId> enabledOperations = {})
+      : family(family), parameters(std::move(parameters)),
+        inputRoles(std::move(inputRoles)),
+        enabledOperations(std::move(enabledOperations)) {}
+
   ImplementationFamilyId family;
   FamilyCapabilityParams parameters;
   std::vector<std::uint32_t> inputRoles;
+  std::vector<OperationSchemaId> enabledOperations;
 };
 
 struct RoutedResource {
+  RoutedResource(ImplementationFamilyId family,
+                 FamilyCapabilityParams parameters,
+                 std::vector<std::uint32_t> inputRoles,
+                 std::vector<PortType> resultTypes,
+                 std::vector<std::uint32_t> outputRoles,
+                 std::vector<OperationSchemaId> enabledOperations = {})
+      : family(family), parameters(std::move(parameters)),
+        inputRoles(std::move(inputRoles)), resultTypes(std::move(resultTypes)),
+        outputRoles(std::move(outputRoles)),
+        enabledOperations(std::move(enabledOperations)) {}
+
   ImplementationFamilyId family;
   FamilyCapabilityParams parameters;
   std::vector<std::uint32_t> inputRoles;
   std::vector<PortType> resultTypes;
   std::vector<std::uint32_t> outputRoles;
+  std::vector<OperationSchemaId> enabledOperations;
 };
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -137,10 +160,27 @@ integerCastRelation(::fabric::ResolvedIndexWidthSet resolvedIndexWidths) {
   return relation;
 }
 
-std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family) {
+std::vector<OperationSchemaId> familyMembers(ImplementationFamilyId family,
+                                             bool includePointer = false) {
   llvm::ArrayRef<OperationSchemaId> members =
       ::fabric::implementationFamily(family).admittedSchemas;
-  return {members.begin(), members.end()};
+  std::vector<OperationSchemaId> enabled;
+  for (OperationSchemaId member : members) {
+    if (member == OperationSchemaId::LLVMGetElementPtr && !includePointer)
+      continue;
+    enabled.push_back(member);
+  }
+  return enabled;
+}
+
+SelectableResource
+pointerCapableIntegerAddSub(std::vector<std::uint32_t> inputs) {
+  return {ImplementationFamilyId::ScalarIntegerAddSub,
+          ::fabric::ScalarIntegerParams{
+              ordinaryIntegerWidths(),
+              ::loom::adg::detail::catalogPointerFormats()},
+          std::move(inputs),
+          familyMembers(ImplementationFamilyId::ScalarIntegerAddSub, true)};
 }
 
 llvm::Expected<std::vector<FuValue>> nodeOutputs(const FuNode &node,
@@ -239,7 +279,9 @@ llvm::Error addRoutedFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
         operationInputs,
         OperationCapabilitySpec{
             resource.family, resource.parameters,
-            familyMembers(resource.family), resource.resultTypes,
+            resource.enabledOperations.empty() ? familyMembers(resource.family)
+                                               : resource.enabledOperations,
+            resource.resultTypes,
             ::fabric::oneCycleElasticOperationResourceContract()});
     if (!operation)
       return operation.takeError();
@@ -298,7 +340,8 @@ llvm::Error addSelectableFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                       resource.parameters,
                       resource.inputRoles,
                       {innerOutputType},
-                      {0}});
+                      {0},
+                      resource.enabledOperations});
   return addRoutedFu(pe, inputs, std::move(innerInputTypes),
                      {std::move(outerOutputType)}, routed);
 }
@@ -343,8 +386,7 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     return bits128.takeError();
 
   std::vector<SelectableResource> resources;
-  resources.push_back(
-      scalarInteger(ImplementationFamilyId::ScalarIntegerAddSub, {0, 1}));
+  resources.push_back(pointerCapableIntegerAddSub({0, 1}));
   resources.push_back(scalarInteger(
       ImplementationFamilyId::ScalarIntegerSaturatingAddSub, {0, 1}));
   resources.push_back(

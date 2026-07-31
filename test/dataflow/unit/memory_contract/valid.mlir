@@ -11,6 +11,24 @@ func.func @plain_default(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   return %data, %done : i32, none
 }
 
+// A pointer-addressed actor keeps the memref as the memory-service capability
+// and consumes the pointer as ordinary token-plane address data.
+// CHECK-LABEL: module @pointer_addressed
+// CHECK: dataflow.load %{{.*}}[%{{.*}}] %{{.*}} : memref<10xi32>, !llvm.ptr
+// CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<10xi32>, !llvm.ptr
+module @pointer_addressed attributes {
+  llvm.data_layout = "e-p:64:64:64:32"
+} {
+  func.func @load_store(%service: memref<10xi32>, %pointer: !llvm.ptr,
+                        %value: i32, %ctrl: none) -> (i32, none) {
+    %loaded, %load_done = dataflow.load %service[%pointer] %ctrl
+        : memref<10xi32>, !llvm.ptr
+    %store_done = dataflow.store %service[%pointer] %value %load_done
+        : memref<10xi32>, !llvm.ptr
+    return %loaded, %store_done : i32, none
+  }
+}
+
 // CHECK-LABEL: func.func @volatile_and_atomic
 // CHECK: contract = #dataflow.plain_access<is_volatile = true>
 // CHECK: contract = #dataflow.atomic_access<ordering = acquire, sync_scope = <system>, source_alignment_bytes = 4>

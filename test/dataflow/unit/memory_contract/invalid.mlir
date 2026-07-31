@@ -1,5 +1,39 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
+// Pointer-addressed memory requires the exact module LLVM DataLayout. An
+// index-width declaration cannot stand in for pointer representation.
+module @pointer_without_layout {
+  func.func @load(%service: memref<10xi32>, %pointer: !llvm.ptr,
+                  %ctrl: none) -> (i32, none) {
+    // expected-error @+1 {{pointer layout requires a nonempty LLVM DataLayout}}
+    %data, %done = dataflow.load %service[%pointer] %ctrl
+        : memref<10xi32>, !llvm.ptr
+    return %data, %done : i32, none
+  }
+}
+
+// -----
+
+// Pointer-addressed atomics remain valid for ordinary scalar payloads, but a
+// pointer value itself is not yet an admitted atomic object. Equal storage
+// width cannot erase its provenance semantics.
+module @atomic_pointer_payload attributes {
+  llvm.data_layout = "e-p:64:64:64:64"
+} {
+  func.func @load(%mem: memref<1xi64>, %address: index, %ctrl: none)
+      -> (!llvm.ptr, none) {
+    // expected-error @+1 {{atomic pointer payload is unsupported}}
+    %data, %done = dataflow.load %mem[%address] %ctrl
+        {contract = #dataflow.atomic_access<ordering = acquire,
+                                            sync_scope = <system>,
+                                            source_alignment_bytes = 8>}
+        : memref<1xi64>, index, !llvm.ptr
+    return %data, %done : !llvm.ptr, none
+  }
+}
+
+// -----
+
 // An atomic load rejects the publishing orderings.
 func.func @atomic_load_release(%mem: memref<10xi32>, %addr: index, %ctrl: none)
     -> (i32, none) {

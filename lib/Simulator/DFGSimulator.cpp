@@ -151,16 +151,17 @@ materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
     bytes.append(encoded->begin(), encoded->end());
   }
   llvm::SmallBitVector initialized(bytes.size(), /*t=*/true);
-  auto memory = std::make_shared<MemoryValue>(
-      MemoryValue{rootIt->second, std::move(bytes), std::move(initialized)});
+  auto memory = std::make_shared<MemoryValue>(MemoryValue{
+      rootIt->second, std::move(bytes), std::move(initialized), {}});
   state.memories[root] = memory;
   return memory;
 }
 
-Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory,
-                   std::int64_t byteOffset, mlir::Type elementType) {
+Token memoryCapabilityToken(mlir::Value root,
+                            std::shared_ptr<MemoryValue> memory,
+                            std::int64_t byteOffset, mlir::Type elementType) {
   Token token;
-  token.kind = TokenKind::Pointer;
+  token.kind = TokenKind::MemoryCapability;
   token.setMemoryView(
       MemoryView{std::move(memory), root, byteOffset, elementType});
   return token;
@@ -624,6 +625,16 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
                                      llvm::toString(plan.takeError())}}};
       memoryActor = std::move(*plan);
     }
+    std::optional<GepExecutionPlan> gepActor;
+    if (auto gep = mlir::dyn_cast<mlir::LLVM::GEPOp>(op)) {
+      auto plan = gepExecutionPlan(gep, graph);
+      if (!plan) {
+        unsupported.emplace(unsupportedOperationLabel(&op),
+                            llvm::toString(plan.takeError()));
+        continue;
+      }
+      gepActor = std::move(*plan);
+    }
     std::optional<PrimitiveOperationDescriptor> primitive;
     if (isSupportedPrimitiveOperation(projection->schema)) {
       auto descriptor = primitiveDescriptorForActor(*projection, &op);
@@ -667,7 +678,7 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
     execution.actorPlans.push_back(ActorExecutionPlan{
         &op, std::move(*projection), provider, firstInput,
         static_cast<std::uint32_t>(op.getNumOperands()), std::move(outputs),
-        std::move(primitive), std::move(memoryActor)});
+        std::move(primitive), std::move(memoryActor), std::move(gepActor)});
   }
   if (!unsupported.empty()) {
     GraphPreparationFailure failure{"unsupported", {}};
@@ -781,9 +792,11 @@ static llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
       return llvm::createStringError(std::errc::value_too_large,
                                      "memref.alloc is too large for DFG-sim");
     auto memory = std::make_shared<MemoryValue>(
-        MemoryValue{rootIt->second, std::move(bytes),
+        MemoryValue{rootIt->second,
+                    std::move(bytes),
                     llvm::SmallBitVector(static_cast<unsigned>(totalBytes),
-                                         /*t=*/false)});
+                                         /*t=*/false),
+                    {}});
     state.memories[alloc.getResult()] = memory;
     state.memoryViews[alloc.getResult()] = MemoryView{
         memory, alloc.getResult(), 0, alloc.getType().getElementType()};
@@ -1088,7 +1101,7 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
           if (inserted)
             ++state.nextMemoryRootId;
           auto memory = std::make_shared<MemoryValue>(MemoryValue{
-              rootIt->second, std::move(bytes), std::move(initialized)});
+              rootIt->second, std::move(bytes), std::move(initialized), {}});
           state.memories[arg] = memory;
           state.memoryViews[arg] =
               MemoryView{memory, arg, 0, memrefType.getElementType()};

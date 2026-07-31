@@ -28,13 +28,27 @@ llvm::Error payloadError(const llvm::Twine &message) {
 } // namespace
 
 bool DataflowDialect::isMemoryCapabilityType(Type type) {
-  return isa<MemRefType, UnrankedMemRefType, LLVM::LLVMPointerType>(type);
+  return isa<MemRefType, UnrankedMemRefType>(type);
 }
 
 bool DataflowDialect::containsMemoryCapability(Type type) {
   return type
       .walk<WalkOrder::PreOrder>([](Type nested) -> WalkResult {
         return DataflowDialect::isMemoryCapabilityType(nested)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
+bool DataflowDialect::isPointerValueType(Type type) {
+  return isa<LLVM::LLVMPointerType>(type);
+}
+
+bool DataflowDialect::containsPointerValue(Type type) {
+  return type
+      .walk<WalkOrder::PreOrder>([](Type nested) -> WalkResult {
+        return DataflowDialect::isPointerValueType(nested)
                    ? WalkResult::interrupt()
                    : WalkResult::advance();
       })
@@ -62,6 +76,9 @@ llvm::Error DataflowDialect::validateTransferPayloadType(Type type,
                                   "!dataflow.thread_token");
   if (containsMemoryCapability(type))
     return payloadError(subject + " must not contain a memory capability");
+  if (!isPointerValueType(type) && containsPointerValue(type))
+    return payloadError(subject +
+                        " must not contain a nested LLVM pointer value");
   return llvm::Error::success();
 }
 

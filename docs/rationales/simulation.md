@@ -33,10 +33,19 @@ binding, and gem5 processor correspondence rather than from host JIT behavior.
 
 Source-backed pointer discovery remains ephemeral for the same reason. One
 runtime object registry resolves every concrete pointer to an allocation and
-byte offset, while canonical graph boundaries expose memory capabilities rather
-than raw host pointers. Treating descriptor fields, call operands, and globals
-as separate pointer authorities would duplicate aliasing facts and make two
+byte offset. Canonical graph boundaries may expose either a memory capability
+or a first-class LLVM pointer value, but both resolve through that registry.
+Treating descriptor fields, call operands, globals, and graph pointer tokens as
+separate pointer authorities would duplicate aliasing facts and make two
 equivalent access paths simulate differently.
+
+Initial memory bytes alone cannot preserve that relation: identical pointer
+bit patterns in different native processes do not identify the same simulated
+object, and canonical object bases need not equal host addresses. Runtime input
+therefore stores one typed provenance overlay for defined pointer payloads.
+The bytes still own the pointer representation; the overlay owns only the
+object-relative target needed to reconstruct it. This avoids both an alias
+graph and a second copy of memory content.
 
 The graph launch, rather than a graph-body cast, establishes the typed view of
 that object. DFG-sim can therefore seed one byte object and interpret each

@@ -4,12 +4,21 @@
 #include "ADG/FuLibrary.h"
 
 #include "Common/ArtifactStore.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -457,6 +466,7 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
                      store));
 
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
   const auto actor = ::dataflow::CanonicalActorSchemaProjection{
       ::dataflow::OperationSchemaId::ArithIndexCast,
       mlir::FunctionType::get(&context, {mlir::IntegerType::get(&context, 32)},
@@ -467,6 +477,28 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
           "builtin Fabric rejected its 32-bit resolved index cast");
   require(test, !index.admittingOperationResources(actor, 64).empty(),
           "builtin Fabric rejected its 64-bit resolved index cast");
+
+  mlir::Type pointer = mlir::LLVM::LLVMPointerType::get(&context);
+  const auto gep = ::dataflow::CanonicalActorSchemaProjection{
+      ::dataflow::OperationSchemaId::LLVMGetElementPtr,
+      mlir::FunctionType::get(
+          &context, {pointer, mlir::IntegerType::get(&context, 64)}, {pointer}),
+      ::dataflow::GetElementPtrPayload{mlir::IntegerType::get(&context, 32),
+                                       {mlir::LLVM::GEPOp::kDynamicIndex},
+                                       mlir::LLVM::GEPNoWrapFlags::none}};
+  require(test, index.admittingOperationResources(gep, 64).empty(),
+          "builtin Fabric inferred pointer support without DataLayout");
+  const loom::PointerLayout pointerLayout{
+      0, 64, 64, loom::PointerLayoutKind::StableIntegral};
+  require(test,
+          !index.admittingOperationResources(gep, 64, &pointerLayout).empty(),
+          "builtin Fabric lost its exact stable-integral GEP add-on");
+  const loom::PointerLayout narrowPointerLayout{
+      0, 32, 32, loom::PointerLayoutKind::StableIntegral};
+  require(
+      test,
+      !index.admittingOperationResources(gep, 32, &narrowPointerLayout).empty(),
+      "builtin Fabric lost its explicit P32 GEP capability");
 
   mlir::Type f32 = mlir::Float32Type::get(&context);
   const auto floatMultiply = ::dataflow::CanonicalActorSchemaProjection{
@@ -517,11 +549,71 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
       "builtin Fabric has no fixed-vector zero-count resource");
 }
 
+void builtinMemoryCapabilitiesAdmitScalarAccess() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto system = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+
+  mlir::DialectRegistry registry;
+  registry.insert<::dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<
+    "dlti.endianness" = "little",
+    index = 64 : i64
+  >
+} {
+  func.func @load(%memory: memref<?xf32>, %index: index, %ctrl: none)
+      -> (f32, none) {
+    %value, %done = dataflow.load %memory[%index] %ctrl : memref<?xf32>
+    return %value, %done : f32, none
+  }
+
+  func.func @pointer_load(%memory: memref<?xi32>, %address: !llvm.ptr,
+                          %ctrl: none) -> (i32, none) {
+    %value, %done = dataflow.load %memory[%address] %ctrl
+        : memref<?xi32>, !llvm.ptr
+    return %value, %done : i32, none
+  }
+}
+)mlir";
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  require(test, static_cast<bool>(module),
+          "cannot parse the scalar memory actor anchor");
+  llvm::SmallVector<mlir::Operation *, 2> loads;
+  module->walk([&](::dataflow::LoadOp actor) { loads.push_back(actor); });
+  require(test, loads.size() == 2,
+          "scalar memory actor anchor does not have both loads");
+
+  loom::frontend::FabricCapabilityIndex index(system.roots().front().view());
+  auto indexed = take(test, index.admittingMemoryResources(loads[0]));
+  require(test, !indexed.empty(),
+          "builtin Fabric has no scalar load memory resource");
+  auto pointer = take(test, index.admittingMemoryResources(loads[1]));
+  require(test, !pointer.empty(),
+          "builtin Fabric has no P64 pointer-addressed load resource");
+
+  (*module)->setAttr("llvm.data_layout",
+                     mlir::StringAttr::get(&context, "e-p:32:32"));
+  auto narrowPointer = take(test, index.admittingMemoryResources(loads[1]));
+  require(test, !narrowPointer.empty(),
+          "builtin Fabric has no P32 pointer-addressed load resource");
+}
+
 void runBuiltinTests() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
   resolvedCapabilityPreservesTypedVectorGeometry();
   builtinCoreCapabilitiesCoverTypedDomains();
+  builtinMemoryCapabilitiesAdmitScalarAccess();
 }
 
 } // namespace loom::adg::test

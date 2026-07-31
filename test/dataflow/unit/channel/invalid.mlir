@@ -29,7 +29,7 @@ func.func @reject_memref_payload(
 }
 
 // -----
-// expected-error @+2 {{channel element type must not contain a memory capability}}
+// expected-error @+2 {{channel element type must not contain a nested LLVM pointer value}}
 func.func @reject_nested_pointer_payload(
     %channel: !dataflow.channel<tuple<i32, !llvm.ptr>>) {
   return

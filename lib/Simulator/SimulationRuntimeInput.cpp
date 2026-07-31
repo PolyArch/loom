@@ -45,7 +45,8 @@ deriveCanonicalOrdinals(llvm::ArrayRef<MemoryRootBindingEntry> bindings) {
 llvm::Error
 validateRuntimeValues(llvm::ArrayRef<RuntimeValueEntry> runtimeValues,
                       const SpatialSimulationWorkload &workload,
-                      const ResolvedLaunchContext &context) {
+                      const ResolvedLaunchContext &context,
+                      std::uint64_t objectCount) {
   std::uint64_t runtimeClassified = 0;
   for (const SpatialValueInputSource &source : workload.valueInputPlan)
     if (std::holds_alternative<RuntimeValueInput>(source))
@@ -71,7 +72,7 @@ validateRuntimeValues(llvm::ArrayRef<RuntimeValueEntry> runtimeValues,
           "simulation runtime input: a runtime value holds exactly one token");
     if (llvm::Error error = detail::validateValueSequence(
             entry.value, context.valueInputShapes[entry.valueInputOrdinal],
-            "simulation runtime input: runtime value"))
+            "simulation runtime input: runtime value", objectCount))
       return error;
   }
   return llvm::Error::success();
@@ -79,7 +80,8 @@ validateRuntimeValues(llvm::ArrayRef<RuntimeValueEntry> runtimeValues,
 
 llvm::Error
 validateRuntimeStreams(llvm::ArrayRef<CanonicalStreamSequence> runtimeStreams,
-                       const ResolvedLaunchContext &context) {
+                       const ResolvedLaunchContext &context,
+                       std::uint64_t objectCount) {
   if (runtimeStreams.size() != context.numStreamInputs)
     return detail::invalid("simulation runtime input: stream table is not "
                            "total over the graph stream inputs");
@@ -92,9 +94,54 @@ validateRuntimeStreams(llvm::ArrayRef<CanonicalStreamSequence> runtimeStreams,
           "simulation runtime input: stream termination is out of domain");
     if (llvm::Error error = detail::validateValueSequence(
             stream.values, context.streamInputShapes[ordinal],
-            "simulation runtime input: stream"))
+            "simulation runtime input: stream", objectCount))
       return error;
   }
+  return llvm::Error::success();
+}
+
+void remapPointerTargets(
+    CanonicalValueSequence &sequence,
+    const llvm::DenseMap<std::uint64_t, std::uint64_t> &canonicalOrdinals) {
+  for (SemanticLane &lane : sequence.lanes)
+    if (lane.pointerTarget)
+      lane.pointerTarget->objectOrdinal =
+          canonicalOrdinals.at(lane.pointerTarget->objectOrdinal);
+}
+
+llvm::Error canonicalizePointerValues(SpatialSimulationRuntimeInput &input,
+                                      const ResolvedLaunchContext &context) {
+  for (RuntimeValueEntry &entry : input.runtimeValues)
+    if (llvm::Error error = detail::canonicalizePointerValueSequence(
+            entry.value, context.valueInputShapes[entry.valueInputOrdinal],
+            input.memoryObjects, context.graphOp))
+      return error;
+  for (std::uint64_t ordinal = 0; ordinal < input.runtimeStreams.size();
+       ++ordinal)
+    if (llvm::Error error = detail::canonicalizePointerValueSequence(
+            input.runtimeStreams[ordinal].values,
+            context.streamInputShapes[ordinal], input.memoryObjects,
+            context.graphOp))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateCanonicalPointerValues(const SpatialSimulationRuntimeInput &input,
+                               const ResolvedLaunchContext &context) {
+  for (const RuntimeValueEntry &entry : input.runtimeValues)
+    if (llvm::Error error = detail::validateCanonicalPointerValueSequence(
+            entry.value, context.valueInputShapes[entry.valueInputOrdinal],
+            input.memoryObjects, context.graphOp,
+            "simulation runtime input: runtime value"))
+      return error;
+  for (std::uint64_t ordinal = 0; ordinal < input.runtimeStreams.size();
+       ++ordinal)
+    if (llvm::Error error = detail::validateCanonicalPointerValueSequence(
+            input.runtimeStreams[ordinal].values,
+            context.streamInputShapes[ordinal], input.memoryObjects,
+            context.graphOp, "simulation runtime input: runtime stream"))
+      return error;
   return llvm::Error::success();
 }
 
@@ -197,11 +244,13 @@ llvm::Error validateSpatialRuntimeInput(
     return invalid("simulation runtime input: does not name the exact "
                    "workload");
   if (llvm::Error error =
-          validateRuntimeValues(input.runtimeValues, workload, context))
+          validateRuntimeMemoryObjects(input.memoryObjects, context.graphOp))
     return error;
-  if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context))
+  if (llvm::Error error = validateRuntimeValues(
+          input.runtimeValues, workload, context, input.memoryObjects.size()))
     return error;
-  if (llvm::Error error = validateRuntimeMemoryObjects(input.memoryObjects))
+  if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context,
+                                                 input.memoryObjects.size()))
     return error;
   if (llvm::Error error = validateRootBindings(
           input.memoryRootBindings, input.memoryObjects, context, view))
@@ -217,6 +266,8 @@ llvm::Error validateSpatialRuntimeInput(
         entry.binding.objectOrdinal)
       return invalid("simulation runtime input: object ordinals are not the "
                      "canonical sorted-binding-key order");
+  if (llvm::Error error = validateCanonicalPointerValues(input, context))
+    return error;
   return validateDiffBaselineEligibility(workload, input.memoryRootBindings,
                                          view);
 }
@@ -237,15 +288,15 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
             [](const auto &lhs, const auto &rhs) {
               return lhs.valueInputOrdinal < rhs.valueInputOrdinal;
             });
-  if (llvm::Error error =
-          validateRuntimeValues(input.runtimeValues, workload, context))
-    return std::move(error);
-
   input.runtimeStreams = draft.runtimeStreams;
-  if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context))
+  if (llvm::Error error = validateRuntimeMemoryObjectStructure(
+          draft.memoryObjects, context.graphOp))
     return std::move(error);
-
-  if (llvm::Error error = validateRuntimeMemoryObjects(draft.memoryObjects))
+  if (llvm::Error error = validateRuntimeValues(
+          input.runtimeValues, workload, context, draft.memoryObjects.size()))
+    return std::move(error);
+  if (llvm::Error error = validateRuntimeStreams(input.runtimeStreams, context,
+                                                 draft.memoryObjects.size()))
     return std::move(error);
 
   // Bindings: sort by the typed root key, validate totality and ranges
@@ -271,10 +322,23 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
   input.memoryObjects.resize(draft.memoryObjects.size());
   for (std::size_t author = 0; author < draft.memoryObjects.size(); ++author)
     input.memoryObjects[canonical->at(author)] = draft.memoryObjects[author];
+  for (RuntimeMemoryObject &object : input.memoryObjects)
+    for (RuntimeMemoryPointer &pointer : object.pointerValues)
+      pointer.target.objectOrdinal =
+          canonical->at(pointer.target.objectOrdinal);
   for (MemoryRootBindingEntry &entry : bindings)
     entry.binding.objectOrdinal = canonical->at(entry.binding.objectOrdinal);
+  for (RuntimeValueEntry &entry : input.runtimeValues)
+    remapPointerTargets(entry.value, *canonical);
+  for (CanonicalStreamSequence &stream : input.runtimeStreams)
+    remapPointerTargets(stream.values, *canonical);
   input.memoryRootBindings = std::move(bindings);
 
+  if (llvm::Error error = canonicalizeRuntimeMemoryPointers(input.memoryObjects,
+                                                            context.graphOp))
+    return std::move(error);
+  if (llvm::Error error = canonicalizePointerValues(input, context))
+    return std::move(error);
   if (llvm::Error error = validateDiffBaselineEligibility(
           workload, input.memoryRootBindings, view))
     return std::move(error);
@@ -297,20 +361,23 @@ void encodeEntityRef(detail::WireWriter &writer,
 }
 
 std::vector<std::uint8_t>
-encodeSpatialRuntimeInput(const SpatialSimulationRuntimeInput &input) {
+encodeSpatialRuntimeInput(const SpatialSimulationRuntimeInput &input,
+                          const detail::ResolvedLaunchContext &context) {
   detail::WireWriter writer;
   writer.u32(static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial));
   writer.identity(input.workloadIdentity);
   writer.u64(input.runtimeValues.size());
   for (const RuntimeValueEntry &entry : input.runtimeValues) {
     writer.u64(entry.valueInputOrdinal);
-    detail::encodeValueSequence(writer, entry.value);
+    detail::encodeValueSequence(
+        writer, entry.value, context.valueInputShapes[entry.valueInputOrdinal]);
   }
   writer.u64(input.runtimeStreams.size());
   for (std::uint64_t ordinal = 0; ordinal < input.runtimeStreams.size();
        ++ordinal) {
     writer.u64(ordinal);
-    detail::encodeStreamSequence(writer, input.runtimeStreams[ordinal]);
+    detail::encodeStreamSequence(writer, input.runtimeStreams[ordinal],
+                                 context.streamInputShapes[ordinal]);
   }
   writer.u64(input.memoryObjects.size());
   for (const RuntimeMemoryObject &object : input.memoryObjects)
@@ -343,8 +410,7 @@ decodeSpatialRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
   if (*root == 1)
     return detail::invalid(
         "simulation runtime input: the System root is fail-closed");
-  if (*root !=
-      static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
+  if (*root != static_cast<std::uint32_t>(SimulationWorkloadKind::Spatial))
     return detail::invalid(
         "simulation runtime input: unknown root discriminant");
 
@@ -414,7 +480,7 @@ decodeSpatialRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
   input.memoryObjects.reserve(*objectCount);
   for (std::uint64_t index = 0; index < *objectCount; ++index) {
     llvm::Expected<RuntimeMemoryObject> object =
-        detail::decodeMemoryObject(reader);
+        detail::decodeMemoryObject(reader, context->graphOp);
     if (!object)
       return object.takeError();
     input.memoryObjects.push_back(std::move(*object));
@@ -480,7 +546,8 @@ llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
   if (llvm::Error error = detail::validateSpatialRuntimeInput(
           *input, *spatialWorkload, workload.identity(), *context, view))
     return std::move(error);
-  ::loom::CanonicalSemanticBytes bytes(encodeSpatialRuntimeInput(*input));
+  ::loom::CanonicalSemanticBytes bytes(
+      encodeSpatialRuntimeInput(*input, *context));
   ::loom::ArtifactIdentity identity =
       ::loom::finalizeArtifactIdentity(simulationRuntimeInputSchema, bytes);
   return CanonicalSimulationRuntimeInput(identity, std::move(*input),
@@ -505,7 +572,7 @@ importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t> canonicalBytes,
           decoded->context, view))
     return std::move(error);
   const std::vector<std::uint8_t> reencoded =
-      encodeSpatialRuntimeInput(decoded->input);
+      encodeSpatialRuntimeInput(decoded->input, decoded->context);
   if (!llvm::ArrayRef<std::uint8_t>(reencoded).equals(canonicalBytes))
     return detail::invalid(
         "simulation runtime input: noncanonical bytes do not re-encode "

@@ -105,8 +105,8 @@ llvm::Error validateStructuredRuntimeInput(
   if (llvm::Error error =
           validateRuntimeValues(input.runtimeValues, workload, context))
     return error;
-  if (llvm::Error error =
-          detail::validateRuntimeMemoryObjects(input.memoryObjects))
+  if (llvm::Error error = detail::validateRuntimeMemoryObjects(
+          input.memoryObjects, context.entryOp))
     return error;
   if (llvm::Error error = validatePointerBindings(
           input.pointerBindings, input.memoryObjects, workload))
@@ -141,8 +141,8 @@ canonicalizeStructuredRuntimeInput(
   if (llvm::Error error =
           validateRuntimeValues(input.runtimeValues, workload, context))
     return std::move(error);
-  if (llvm::Error error =
-          detail::validateRuntimeMemoryObjects(draft.memoryObjects))
+  if (llvm::Error error = detail::validateRuntimeMemoryObjectStructure(
+          draft.memoryObjects, context.entryOp))
     return std::move(error);
 
   input.pointerBindings.reserve(draft.pointerBindings.size());
@@ -165,13 +165,21 @@ canonicalizeStructuredRuntimeInput(
   input.memoryObjects.resize(draft.memoryObjects.size());
   for (std::size_t author = 0; author < draft.memoryObjects.size(); ++author)
     input.memoryObjects[canonical->at(author)] = draft.memoryObjects[author];
+  for (RuntimeMemoryObject &object : input.memoryObjects)
+    for (RuntimeMemoryPointer &pointer : object.pointerValues)
+      pointer.target.objectOrdinal =
+          canonical->at(pointer.target.objectOrdinal);
   for (StructuredPointerBindingEntry &entry : input.pointerBindings)
     entry.binding.objectOrdinal = canonical->at(entry.binding.objectOrdinal);
+  if (llvm::Error error = detail::canonicalizeRuntimeMemoryPointers(
+          input.memoryObjects, context.entryOp))
+    return std::move(error);
   return input;
 }
 
 std::vector<std::uint8_t> encodeStructuredRuntimeInput(
-    const StructuredProgramSimulationRuntimeInput &input) {
+    const StructuredProgramSimulationRuntimeInput &input,
+    const detail::ResolvedStructuredProgramContext &context) {
   detail::WireWriter writer;
   writer.u32(
       static_cast<std::uint32_t>(SimulationWorkloadKind::StructuredProgram));
@@ -179,7 +187,10 @@ std::vector<std::uint8_t> encodeStructuredRuntimeInput(
   writer.u64(input.runtimeValues.size());
   for (const StructuredRuntimeValueEntry &entry : input.runtimeValues) {
     writer.u64(entry.argumentOrdinal);
-    detail::encodeValueSequence(writer, entry.value);
+    assert(context.argumentShapes[entry.argumentOrdinal] &&
+           "validated Structured runtime value has no lane shape");
+    detail::encodeValueSequence(writer, entry.value,
+                                *context.argumentShapes[entry.argumentOrdinal]);
   }
   writer.u64(input.memoryObjects.size());
   for (const RuntimeMemoryObject &object : input.memoryObjects)
@@ -255,7 +266,7 @@ llvm::Expected<DecodedStructuredRuntimeInput> decodeStructuredRuntimeInput(
   input.memoryObjects.reserve(*objectCount);
   for (std::uint64_t index = 0; index < *objectCount; ++index) {
     llvm::Expected<RuntimeMemoryObject> object =
-        detail::decodeMemoryObject(reader);
+        detail::decodeMemoryObject(reader, context->entryOp);
     if (!object)
       return object.takeError();
     input.memoryObjects.push_back(std::move(*object));
@@ -309,7 +320,8 @@ llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
   if (llvm::Error error = validateStructuredRuntimeInput(
           *input, *structured, workload.identity(), *context))
     return std::move(error);
-  ::loom::CanonicalSemanticBytes bytes(encodeStructuredRuntimeInput(*input));
+  ::loom::CanonicalSemanticBytes bytes(
+      encodeStructuredRuntimeInput(*input, *context));
   ::loom::ArtifactIdentity identity =
       ::loom::finalizeArtifactIdentity(simulationRuntimeInputSchema, bytes);
   return CanonicalSimulationRuntimeInput(
@@ -335,7 +347,7 @@ llvm::Expected<CanonicalSimulationRuntimeInput> importSimulationRuntimeInput(
           decoded->input, *structured, workload.identity(), decoded->context))
     return std::move(error);
   const std::vector<std::uint8_t> reencoded =
-      encodeStructuredRuntimeInput(decoded->input);
+      encodeStructuredRuntimeInput(decoded->input, decoded->context);
   if (!llvm::ArrayRef<std::uint8_t>(reencoded).equals(canonicalBytes))
     return detail::invalid("simulation runtime input: noncanonical bytes do "
                            "not re-encode exactly");

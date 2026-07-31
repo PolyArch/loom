@@ -87,16 +87,6 @@ func.func @load_bad_mask_shape(
 }
 
 // -----
-// Two explicit types require a vector address type.
-func.func @load_scalar_first_explicit_type(
-    %mem: memref<?xi32>, %addr: index, %ctrl: none)
-    -> (vector<4xi32>, none) {
-  // expected-error @+1 {{first explicit type must be a vector address type}}
-  %data, %done = dataflow.load %mem[%addr] %ctrl : memref<?xi32>, index, vector<4xi32>
-  return %data, %done : vector<4xi32>, none
-}
-
-// -----
 // Gather address lanes must match result lanes.
 func.func @load_bad_gather_address_shape(
     %mem: memref<10xi32>, %addr: vector<2xindex>, %ctrl: none)

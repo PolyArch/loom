@@ -8,16 +8,16 @@
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/zero.mlir 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ZERO
 
-// The Structured candidate's declared index width owns graph address
-// materialization even when LLVM pointers use a wider machine layout.
+// The Structured candidate's declared index width remains independent of LLVM
+// pointer arithmetic. The exact LLVM DataLayout owns the retained GEP.
 
 // DECLARED-LABEL: dataflow.graph private @declared_index_graph(
+// DECLARED-SAME: %[[BASE:[^, )]+]]: !llvm.ptr
 // DECLARED-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
-// DECLARED: %[[ADDRESS:.*]] = arith.index_cast %arg1 : i16 to index
+// DECLARED: %[[ADDRESS:.*]] = llvm.getelementptr inbounds %[[BASE]]
 // DECLARED: %[[DATA:.*]], %[[READ:.*]] = dataflow.load [[MEM]][%[[ADDRESS]]]
 // DECLARED: dataflow.store [[MEM]][%[[ADDRESS]]] %[[DATA]] %[[READ]]
 // DECLARED-NOT: builtin.unrealized_conversion_cast
-// DECLARED-NOT: llvm.getelementptr
 
 //--- declared.mlir
 module attributes {
@@ -28,7 +28,7 @@ module attributes {
       domain(#dataflow.thread_domain<dense>)(%base: !llvm.ptr, %address: i16)
       ctrl (%ctrl: none) {
     "loom.spatial_region"(%address, %base)
-        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
       ^bb0(%offset: i16, %memory: !llvm.ptr):
         %ptr = llvm.getelementptr inbounds %memory[%offset]

@@ -139,14 +139,42 @@ llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
       return mappingError(MappingErrorCode::CapabilityTemplateMismatch,
                           "actor correspondence names an inactive Fabric "
                           "operation");
-    if (llvm::Error error = ::fabric::verifyImplementationFamilyAdmission(
-            operation->second->family, &operation->second->capability,
-            (*actor)->semantics, dataflow.indexBitWidth))
+    if (!llvm::is_contained(operation->second->enabledOperationSchemas,
+                            (*actor)->semantics.schema))
+      return mappingError(
+          MappingErrorCode::CapabilityTemplateMismatch,
+          "actor schema is not enabled by the selected Fabric operation");
+    const ::loom::PointerLayout *pointerLayout = nullptr;
+    auto pointerAddressSpace =
+        ::dataflow::projectActorPointerAddressSpace((*actor)->semantics);
+    if (!pointerAddressSpace)
+      return mappingError(MappingErrorCode::InvalidPortConnection,
+                          llvm::toString(pointerAddressSpace.takeError()));
+    if (*pointerAddressSpace) {
+      auto layout = llvm::find_if(
+          dataflow.pointerLayouts, [&](const ::loom::PointerLayout &candidate) {
+            return candidate.addressSpace == **pointerAddressSpace;
+          });
+      if (layout == dataflow.pointerLayouts.end())
+        return mappingError(
+            MappingErrorCode::InvalidPortConnection,
+            "actor has no exact Dataflow pointer-layout projection");
+      pointerLayout = &*layout;
+    }
+    llvm::Error admission =
+        pointerLayout
+            ? ::fabric::verifyImplementationFamilyAdmission(
+                  operation->second->family, &operation->second->capability,
+                  (*actor)->semantics, dataflow.indexBitWidth, *pointerLayout)
+            : ::fabric::verifyImplementationFamilyAdmission(
+                  operation->second->family, &operation->second->capability,
+                  (*actor)->semantics, dataflow.indexBitWidth);
+    if (admission)
       return mappingError(
           MappingErrorCode::CapabilityTemplateMismatch,
           llvm::Twine("actor is not admitted by the selected Fabric "
                       "operation: ") +
-              llvm::toString(std::move(error)));
+              llvm::toString(std::move(admission)));
     if (!validPortCorrespondence((*actor)->inputPorts,
                                  operation->second->inputPorts,
                                  correspondence.operandPorts) ||

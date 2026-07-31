@@ -4,14 +4,15 @@
 // graph selects execution around the loads, not a dynamic memory capability.
 
 // CHECK-LABEL: dataflow.thread private @branch_selected_load
+// CHECK-COUNT-2: dataflow.memory.service
 // CHECK: dataflow.graph.launch @branch_selected_load_graph
-// CHECK-SAME: memories(%arg0, %arg1)
+// CHECK-SAME: values(%arg2, %arg3, %arg0, %arg1)
 // CHECK-LABEL: dataflow.graph private @branch_selected_load_graph(
+// CHECK-SAME: !llvm.ptr
 // CHECK-SAME: [[A:%[^, )]+]]: memref<?xf32>, [[B:%[^, )]+]]: memref<?xf32>)
 // CHECK-COUNT-2: dataflow.load
 // CHECK: dataflow.mux
 // CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
 
 module attributes {
@@ -23,7 +24,7 @@ module attributes {
           %a: !llvm.ptr, %b: !llvm.ptr, %choose_a: i1, %ordinal: i64)
       ctrl (%ctrl: none) {
     %value = "loom.spatial_region"(%choose_a, %ordinal, %a, %b)
-        <{operandSegmentSizes = array<i32: 2, 0, 2, 0>,
+        <{operandSegmentSizes = array<i32: 4, 0, 0, 0>,
           resultSegmentSizes = array<i32: 1, 0>}> ({
       ^bb0(%choose: i1, %index: i64, %a_base: !llvm.ptr,
            %b_base: !llvm.ptr):

@@ -48,14 +48,30 @@ deriveRootedLogicalMemorySources(
   std::vector<RootedLogicalMemorySource> sources;
   for (const dataflow::CanonicalLogicalMemoryRootView &root :
        program.logicalMemoryRoots()) {
-    if (root.op != threadOp.getOperation() || !root.formalArgIndex)
+    std::optional<unsigned> argument;
+    if (root.op == threadOp.getOperation() && root.formalArgIndex) {
+      argument = *root.formalArgIndex;
+    } else if (auto service =
+                   llvm::dyn_cast_or_null<dataflow::MemoryServiceOp>(root.op)) {
+      if (service->getParentOfType<dataflow::ThreadOp>() != threadOp)
+        continue;
+      auto source = llvm::dyn_cast<mlir::BlockArgument>(service.getPointer());
+      if (source && source.getOwner() == &threadOp.getBody().front() &&
+          source.getArgNumber() < threadOp.getFunctionType().getNumInputs())
+        argument = source.getArgNumber();
+    } else {
       continue;
-    const unsigned argument = *root.formalArgIndex;
-    if (argument >= launchOp.getBodyOperands().size())
-      return invalid("logical memory formal exceeds launch body operands");
+    }
 
     RootedLogicalMemorySource source{root.ref, std::nullopt};
-    mlir::Value operand = launchOp.getBodyOperands()[argument];
+    if (!argument) {
+      sources.push_back(source);
+      continue;
+    }
+    if (*argument >= launchOp.getBodyOperands().size())
+      return invalid("logical memory formal exceeds launch body operands");
+
+    mlir::Value operand = launchOp.getBodyOperands()[*argument];
     if (auto address = operand.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
       source.globalOrdinal = globalOrdinal(catalog, address.getGlobalName());
       if (!source.globalOrdinal)

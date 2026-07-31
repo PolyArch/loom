@@ -1,10 +1,13 @@
-// RUN: not loom-raise-opt --loom-lower-scf-to-dfg %s 2>&1 | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
-// A two-byte recurrence cannot address f32 elements without changing source
-// semantics. Publication fails instead of inventing a truncated element view.
+// A two-byte recurrence remains exact pointer arithmetic. Pointer-addressed
+// memory does not invent or truncate an element index.
 
-// CHECK: memory pointer input remains after graph memory normalization: '!llvm.ptr'
-// CHECK-NOT: dataflow.graph private @unaligned_byte_recurrence_graph
+// CHECK: dataflow.memory.service %arg0 : !llvm.ptr -> memref<?xf32>
+// CHECK-LABEL: dataflow.graph private @unaligned_byte_recurrence_graph
+// CHECK: llvm.getelementptr inbounds|nuw
+// CHECK: dataflow.load {{%.*}}[{{%.*}}] {{%.*}} : memref<?xf32>, !llvm.ptr
+// CHECK-NOT: llvm.load
 
 module attributes {
   llvm.data_layout = "e-p:64:64",
@@ -14,7 +17,7 @@ module attributes {
       domain(#dataflow.thread_domain<dense>)(%base: !llvm.ptr, %limit: i64)
       ctrl (%ctrl: none) {
     %sum = "loom.spatial_region"(%limit, %base)
-        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
           resultSegmentSizes = array<i32: 1, 0>}> ({
       ^bb0(%bound: i64, %memory: !llvm.ptr):
         %zero = arith.constant 0 : i64

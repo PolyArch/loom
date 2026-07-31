@@ -74,7 +74,7 @@ using LogicalMemoryRootRef = ::loom::ArtifactReference<LogicalMemoryRootId>;
 
 /// The declared Artifact family framed by Common and hashed with SHA-256 v1.
 inline constexpr ::loom::ArtifactSchemaDescriptor canonicalDataflowSchema{
-    "loom.canonical_dataflow", ::loom::SchemaVersion{2, 0}};
+    "loom.canonical_dataflow", ::loom::SchemaVersion{3, 0}};
 
 } // namespace dataflow
 

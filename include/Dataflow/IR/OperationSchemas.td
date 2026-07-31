@@ -62,6 +62,7 @@ def VectorStaticPosition : SemanticsCase<13, 0x4c53010e>;
 def VectorShuffleMask : SemanticsCase<14, 0x4c53010f>;
 def LLVMDisjoint : SemanticsCase<15, 0x4c530110>;
 def LLVMRegisteredIntrinsic : SemanticsCase<16, 0x4c530111>;
+def LLVMGetElementPtrSemantics : SemanticsCase<17, 0x4c530112>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -349,6 +350,8 @@ def LLVMFPToSISat : ActorSchema<103, 0x4c530268,
 def LLVMFPToUISat : ActorSchema<104, 0x4c530269,
     "::mlir::LLVM::CallIntrinsicOp", "Compute", LLVMRegisteredIntrinsic,
     LLVMIntrinsicSelector<"fptoui_sat">>;
+def LLVMGetElementPtr : ActorSchema<105, 0x4c53026a,
+    "::mlir::LLVM::GEPOp", "Compute", LLVMGetElementPtrSemantics>;
 
 //===----------------------------------------------------------------------===//
 // Canonical Dataflow control and memory actor schemas
@@ -396,7 +399,8 @@ def DataflowFence : ActorSchema<92, 0x4c53025d, "::dataflow::FenceOp", "Memory",
 // predicates are concrete-resource capability, never family identity.
 //===----------------------------------------------------------------------===//
 
-def ScalarIntegerAddSub : ImplementationFamily<0, [ArithAddI, ArithSubI],
+def ScalarIntegerAddSub : ImplementationFamily<0,
+    [ArithAddI, ArithSubI, LLVMGetElementPtr],
     ScalarIntegerParams, ScalarOrdinaryIntegerAdmission>;
 def ScalarIntegerLogic : ImplementationFamily<1,
     [ArithAndI, ArithOrI, ArithXOrI, LLVMOrDisjoint],

@@ -27,8 +27,9 @@ struct RootedLogicalMemorySource {
 };
 
 /// Derives the total imported-memory source relation for one rooted graph
-/// launch from the canonical Dataflow launch binding. This never guesses from
-/// a graph operand type or private symbol spelling in isolation.
+/// launch from its thread memory formals and object-scoped memory-service
+/// acquisitions. This never guesses from a graph operand type or private
+/// symbol spelling in isolation.
 llvm::Expected<std::vector<RootedLogicalMemorySource>>
 deriveRootedLogicalMemorySources(
     const StaticGlobalMemoryCatalog &catalog,

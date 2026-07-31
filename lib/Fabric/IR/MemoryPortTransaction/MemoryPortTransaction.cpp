@@ -99,7 +99,7 @@ bool sameAccess(const CanonicalMemoryAccessView &lhs,
          lhs.addressCount() == rhs.addressCount() &&
          lhs.elementBits() == rhs.elementBits() &&
          lhs.dataBits() == rhs.dataBits() &&
-         lhs.indexBits() == rhs.indexBits() &&
+         lhs.addressLaneBits() == rhs.addressLaneBits() &&
          lhs.addressBits() == rhs.addressBits() &&
          lhs.maskBits() == rhs.maskBits() &&
          lhs.contract().aggregate == rhs.contract().aggregate;

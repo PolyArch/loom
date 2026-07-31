@@ -10,12 +10,24 @@
 namespace loom {
 namespace lowering {
 
+enum class GraphMemoryInputSourceKind : unsigned char {
+  ExistingMemory,
+  PointerService,
+};
+
 // Construction-local projection used by the atomic Spatial-to-Dataflow
-// publisher. Each canonical graph memory input names the source memory operand
-// of the pre-finalization graph. It never enters MLIR or artifact identity.
+// publisher. An existing memory input retains its source memory ordinal. A
+// pointer-addressed access names the source value ordinal from which the
+// enclosing thread acquires an explicit object-scoped memory service. This
+// projection never enters MLIR or artifact identity.
+struct GraphMemoryInputSource {
+  GraphMemoryInputSourceKind kind = GraphMemoryInputSourceKind::ExistingMemory;
+  unsigned sourceOrdinal = 0;
+};
+
 struct GraphMemoryInputProjection {
   ::dataflow::GraphOp graph;
-  ::llvm::SmallVector<unsigned, 4> sourceOrdinals;
+  ::llvm::SmallVector<GraphMemoryInputSource, 4> sources;
 };
 
 ::mlir::LogicalResult lowerGraphMemory(

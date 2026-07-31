@@ -46,7 +46,7 @@ peekMemoryView(SimulatorState &state, mlir::Value mem,
   if (hasInputToken(state, memoryOperandOrdinal)) {
     Token token = peekInputToken(state, memoryOperandOrdinal);
     const MemoryView *view = token.memoryView();
-    if (token.kind != TokenKind::Pointer || !view || !view->memory) {
+    if (token.kind != TokenKind::MemoryCapability || !view || !view->memory) {
       diagnostics.push_back("dataflow memory operand is not a memory view");
       return std::nullopt;
     }
@@ -145,7 +145,7 @@ memoryActorExecutionPlan(mlir::Operation *operation,
 
   auto access = dataflow::semantics::analyzeMemoryAccessType(
       mlir::cast<mlir::MemRefType>(memory.getType()), dataType,
-      address.getType(), mask ? mask.getType() : mlir::Type{});
+      address.getType(), operation, mask ? mask.getType() : mlir::Type{});
   if (!access)
     return access.takeError();
   auto indexWidth = loom::getIndexBitWidth(graphScope);
@@ -257,13 +257,25 @@ memoryTokenBits(const Token &token, mlir::Type type, unsigned bitWidth) {
       return token.exactBitPattern();
     }
   }
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(type)) {
+    const PointerValue *value = token.pointerValue();
+    if (token.valueState != PrimitiveValueState::Defined ||
+        token.kind != TokenKind::Pointer || !value ||
+        value->addressSpace != pointer.getAddressSpace() ||
+        value->representation.getBitWidth() != bitWidth)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "pointer memory token does not match its exact representation");
+    return value->representation;
+  }
   return tokenBitPattern(token, type);
 }
 
 std::optional<Token> readMemoryElementResolved(
-    const MemoryView &view, std::size_t byteOffset, mlir::Type elementType,
-    const ResolvedMemoryElementLayout &layout, SimulatorState &state,
-    llvm::StringRef diagnosticLabel) {
+    const MemoryView &view, std::size_t byteOffset, mlir::Type dataType,
+    const ResolvedMemoryElementLayout &layout,
+    const std::optional<::loom::PointerLayout> &pointerLayout,
+    SimulatorState &state, llvm::StringRef diagnosticLabel) {
   const std::size_t byteCount = layout.byteCount;
   const unsigned bitWidth = layout.bitWidth;
   const MemoryByteOrder order = layout.byteOrder;
@@ -293,14 +305,38 @@ std::optional<Token> readMemoryElementResolved(
   if (poison || undef) {
     auto token = exceptionalValueToken(poison ? PrimitiveValueState::Poison
                                               : PrimitiveValueState::Undef,
-                                       elementType);
+                                       dataType);
     if (!token) {
       state.diagnostics.push_back(llvm::toString(token.takeError()));
       return std::nullopt;
     }
     return *token;
   }
-  auto token = tokenFromMemoryBits(bits, elementType);
+  if (pointerLayout) {
+    auto stored = view.memory->pointerValues.find(byteOffset);
+    if (stored == view.memory->pointerValues.end()) {
+      state.diagnostics.push_back(
+          (diagnosticLabel +
+           " reads defined pointer bits without pointer provenance")
+              .str());
+      return std::nullopt;
+    }
+    const PointerValue &pointer = stored->second;
+    if (pointer.addressSpace != pointerLayout->addressSpace ||
+        pointer.representation.getBitWidth() !=
+            pointerLayout->representationBits ||
+        pointer.byteOffset.getBitWidth() != pointerLayout->addressBits ||
+        pointer.representation != bits || !pointer.memory) {
+      state.diagnostics.push_back(
+          (diagnosticLabel + " reads inconsistent pointer provenance").str());
+      return std::nullopt;
+    }
+    Token token;
+    token.kind = TokenKind::Pointer;
+    token.setPointerValue(pointer);
+    return token;
+  }
+  auto token = tokenFromMemoryBits(bits, dataType);
   if (!token) {
     state.diagnostics.push_back(llvm::toString(token.takeError()));
     return std::nullopt;
@@ -318,7 +354,7 @@ readMemoryElement(const MemoryView &view, std::size_t byteOffset,
     return std::nullopt;
   }
   return readMemoryElementResolved(view, byteOffset, elementType, *layout,
-                                   state, diagnosticLabel);
+                                   std::nullopt, state, diagnosticLabel);
 }
 
 static llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
@@ -369,6 +405,17 @@ encodeMemoryElement(const Token &value, mlir::Type elementType,
 
 void writeMemoryElement(const MemoryView &view, std::size_t byteOffset,
                         llvm::ArrayRef<SemanticMemoryByte> bytes) {
+  const std::size_t writeEnd = byteOffset + bytes.size();
+  for (auto stored = view.memory->pointerValues.begin();
+       stored != view.memory->pointerValues.end();) {
+    const std::size_t pointerBytes =
+        (stored->second.representation.getBitWidth() + 7) / 8;
+    const std::size_t pointerEnd = stored->first + pointerBytes;
+    if (stored->first < writeEnd && byteOffset < pointerEnd)
+      stored = view.memory->pointerValues.erase(stored);
+    else
+      ++stored;
+  }
   std::copy(bytes.begin(), bytes.end(),
             view.memory->bytes.begin() + byteOffset);
   view.memory->initialized.set(byteOffset, byteOffset + bytes.size());
@@ -414,6 +461,81 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
   llvm::SmallVector<std::size_t> slots;
   if (activeLanes.isZero())
     return slots;
+
+  if (access.addressForm ==
+      dataflow::semantics::MemoryAddressForm::PointerAddressed) {
+    if (access.isGather()) {
+      diagnostics.push_back(
+          "vector pointer memory addresses have no DFG-sim token provider");
+      return std::nullopt;
+    }
+    const PointerValue *pointer = addr.pointerValue();
+    if (addr.valueState != PrimitiveValueState::Defined ||
+        addr.kind != TokenKind::Pointer || !pointer || !pointer->memory) {
+      diagnostics.push_back(
+          (diagnosticLabel + " pointer address has no object provenance")
+              .str());
+      return std::nullopt;
+    }
+    if (!access.pointerLayout ||
+        pointer->addressSpace != access.pointerLayout->addressSpace ||
+        pointer->representation.getBitWidth() !=
+            access.pointerLayout->representationBits ||
+        pointer->byteOffset.getBitWidth() !=
+            access.pointerLayout->addressBits) {
+      diagnostics.push_back(
+          (diagnosticLabel + " pointer address has the wrong layout").str());
+      return std::nullopt;
+    }
+    if (pointer->memory != view.memory) {
+      diagnostics.push_back(
+          (diagnosticLabel +
+           " pointer does not resolve through the selected memory service")
+              .str());
+      return std::nullopt;
+    }
+    if (view.byteOffset < 0 || pointer->byteOffset.isNegative()) {
+      diagnostics.push_back(
+          (diagnosticLabel + " pointer address is out of range").str());
+      return std::nullopt;
+    }
+
+    const std::uint64_t base = pointer->byteOffset.getLimitedValue();
+    if (base < static_cast<std::uint64_t>(view.byteOffset)) {
+      diagnostics.push_back(
+          (diagnosticLabel +
+           " pointer is outside the selected memory-service region")
+              .str());
+      return std::nullopt;
+    }
+    slots.reserve(activeLanes.popcount());
+    for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
+      if (!activeLanes[lane])
+        continue;
+      if (lane > std::numeric_limits<std::uint64_t>::max() /
+                     plan.elementLayout.byteCount) {
+        diagnostics.push_back(
+            (diagnosticLabel + " pointer lane offset overflows").str());
+        return std::nullopt;
+      }
+      const std::uint64_t laneOffset =
+          static_cast<std::uint64_t>(lane) * plan.elementLayout.byteCount;
+      if (base > std::numeric_limits<std::uint64_t>::max() - laneOffset) {
+        diagnostics.push_back(
+            (diagnosticLabel + " pointer lane address overflows").str());
+        return std::nullopt;
+      }
+      const std::uint64_t slot = base + laneOffset;
+      if (slot > view.memory->bytes.size() ||
+          plan.elementLayout.byteCount > view.memory->bytes.size() - slot) {
+        diagnostics.push_back(
+            (diagnosticLabel + " pointer address is out of range").str());
+        return std::nullopt;
+      }
+      slots.push_back(static_cast<std::size_t>(slot));
+    }
+    return slots;
+  }
 
   llvm::APInt base;
   std::optional<llvm::APInt> addressBits;
@@ -485,9 +607,9 @@ static std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
   // An element access is one complete memref element, even when that element
   // is itself a vector: one lane, one address, and no mask.
   if (!access.isVector()) {
-    auto value =
-        readMemoryElementResolved(view, slots.front(), access.elementType,
-                                  plan.elementLayout, state, "dataflow.load");
+    auto value = readMemoryElementResolved(
+        view, slots.front(), access.dataType, plan.elementLayout,
+        access.dataPointerLayout, state, "dataflow.load");
     if (!value)
       return std::nullopt;
     return DataflowMemoryRead{*value, true};
@@ -499,9 +621,9 @@ static std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
   for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
     if (!activeLanes[lane])
       continue;
-    auto element =
-        readMemoryElementResolved(view, slots[active++], access.elementType,
-                                  plan.elementLayout, state, "dataflow.load");
+    auto element = readMemoryElementResolved(
+        view, slots[active++], access.elementType, plan.elementLayout,
+        std::nullopt, state, "dataflow.load");
     if (!element)
       return std::nullopt;
     auto elementBits = memoryTokenBits(*element, access.elementType,
@@ -529,7 +651,7 @@ prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
   const auto &access = plan.access;
   if (!access.isVector()) {
     auto bytes = encodeMemoryElementResolved(
-        data, access.elementType, plan.elementLayout.byteCount,
+        data, access.dataType, plan.elementLayout.byteCount,
         plan.elementLayout.bitWidth, plan.elementLayout.byteOrder);
     if (!bytes) {
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
@@ -537,8 +659,25 @@ prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
     }
     DataflowMemoryWrite write;
     write.accessedMemory = true;
-    write.elements.push_back(
-        DataflowMemoryWrite::Element{slots.front(), std::move(*bytes)});
+    std::optional<PointerValue> pointer;
+    if (access.dataPointerLayout &&
+        data.valueState == PrimitiveValueState::Defined) {
+      const PointerValue *value = data.pointerValue();
+      if (!value ||
+          value->addressSpace != access.dataPointerLayout->addressSpace ||
+          value->representation.getBitWidth() !=
+              access.dataPointerLayout->representationBits ||
+          value->byteOffset.getBitWidth() !=
+              access.dataPointerLayout->addressBits ||
+          !value->memory) {
+        state.diagnostics.push_back(
+            "dataflow.store pointer data has the wrong provenance layout");
+        return std::nullopt;
+      }
+      pointer = *value;
+    }
+    write.elements.push_back(DataflowMemoryWrite::Element{
+        slots.front(), std::move(*bytes), std::move(pointer)});
     return write;
   }
 
@@ -592,16 +731,19 @@ prepareDataflowMemoryWrite(const Token &data, const llvm::APInt &activeLanes,
       state.diagnostics.push_back(llvm::toString(bytes.takeError()));
       return std::nullopt;
     }
-    write.elements.push_back(
-        DataflowMemoryWrite::Element{slots[active++], std::move(*bytes)});
+    write.elements.push_back(DataflowMemoryWrite::Element{
+        slots[active++], std::move(*bytes), std::nullopt});
   }
   return write;
 }
 
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write) {
-  for (const DataflowMemoryWrite::Element &element : write.elements)
+  for (const DataflowMemoryWrite::Element &element : write.elements) {
     writeMemoryElement(view, element.byteOffset, element.bytes);
+    if (element.pointer)
+      view.memory->pointerValues.emplace(element.byteOffset, *element.pointer);
+  }
 }
 
 // The byte ranges one issued access covers, derived from the active element

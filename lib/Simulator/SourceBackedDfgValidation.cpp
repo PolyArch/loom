@@ -1,5 +1,6 @@
 #include "Simulator/SourceBackedDfgValidation.h"
 
+#include "SimulationPointerCapture.h"
 #include "SimulationWireInternal.h"
 #include "StructuredProgramNativeExecutionInternal.h"
 
@@ -319,7 +320,7 @@ deriveCapturePlan(const dataflow::CanonicalDataflowProgramView &view,
     }
     plan.valueInputs.push_back(SimulationValueInputCapture{
         ordinal, std::nullopt, *boundary, shape.lanesPerToken,
-        shape.laneBitWidth, byteCount, std::move(*fixed)});
+        shape.laneBitWidth, byteCount, std::move(*fixed), std::nullopt});
   }
 
   plan.valueResults.reserve(context->numValueResults);
@@ -349,14 +350,32 @@ deriveCapturePlan(const dataflow::CanonicalDataflowProgramView &view,
     auto resolved = view.resolve(root);
     if (!resolved)
       return resolved.takeError();
-    if (resolved->op != context->thread.getOperation() ||
-        !resolved->formalArgIndex ||
-        *resolved->formalArgIndex >= prepared.liveIns.size())
-      return invalid("imported memory root has no selected thread formal");
-    mlir::Value boundary = prepared.liveIns[*resolved->formalArgIndex];
+    auto threadSource =
+        capture_detail::threadMemorySourceForRoot(*resolved, *context);
+    if (!threadSource)
+      return threadSource.takeError();
+    mlir::Value boundary = *threadSource;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(boundary)) {
+      if (argument.getArgNumber() >= prepared.liveIns.size())
+        return invalid("imported memory root exceeds the selected boundary");
+      boundary = prepared.liveIns[argument.getArgNumber()];
+    }
     if (!llvm::isa<mlir::LLVM::LLVMPointerType>(boundary.getType()))
       return invalid("imported memory root is not pointer-valued");
     plan.memoryRoots.push_back({root, boundary});
+  }
+  for (std::uint64_t valueOrdinal = 0; valueOrdinal < context->numValueInputs;
+       ++valueOrdinal) {
+    auto projection = capture_detail::pointerValueTargetForInput(view, *context,
+                                                                 valueOrdinal);
+    if (!projection)
+      return projection.takeError();
+    if (!*projection)
+      continue;
+    if (plan.valueInputs[valueOrdinal].fixedValue)
+      return unsupported(
+          "fixed first-class pointer inputs have no runtime object binding");
+    plan.valueInputs[valueOrdinal].pointerTarget = (*projection)->target;
   }
   return plan;
 }
@@ -407,12 +426,81 @@ llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
   return SelectedActivationCapture{std::move(module), spatial, std::move(plan)};
 }
 
-RuntimeMemoryObject capturedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes) {
+RuntimeMemoryObject
+capturedMemoryObject(llvm::ArrayRef<std::uint8_t> bytes,
+                     llvm::ArrayRef<RuntimeMemoryPointer> pointers) {
   RuntimeMemoryObject object;
   object.initialBytes.reserve(bytes.size());
   for (std::uint8_t byte : bytes)
     object.initialBytes.push_back({SemanticState::Defined, byte});
+  object.pointerValues.assign(pointers.begin(), pointers.end());
   return object;
+}
+
+const MemoryRootBindingEntry *
+findMemoryBinding(const SpatialSimulationRuntimeInput &input,
+                  dataflow::LogicalMemoryRootRef root) {
+  for (const MemoryRootBindingEntry &binding : input.memoryRootBindings)
+    if (binding.root == root)
+      return &binding;
+  return nullptr;
+}
+
+llvm::Expected<std::vector<RuntimeMemoryObject>> canonicalizeNativeFinalObjects(
+    const NativeSimulationCallCapture &capture,
+    const WorkloadBackedSimulationInputCapturePlan &plan,
+    const SpatialSimulationRuntimeInput &runtimeInput,
+    mlir::Operation *layoutScope) {
+  if (capture.objects.size() != runtimeInput.memoryObjects.size())
+    return executionFailed(
+        "native and DFG runtime object tables have different sizes");
+  std::vector<std::optional<std::uint64_t>> canonicalOrdinal(
+      capture.objects.size());
+  for (auto [rootOrdinal, root] : llvm::enumerate(plan.memoryRoots)) {
+    if (rootOrdinal >= capture.memoryRootObjectOrdinals.size())
+      return executionFailed("native memory-root capture is not total");
+    const MemoryRootBindingEntry *binding =
+        findMemoryBinding(runtimeInput, root.root);
+    if (!binding)
+      return executionFailed("DFG runtime input lost an imported root");
+    const std::uint64_t authorObject =
+        capture.memoryRootObjectOrdinals[rootOrdinal];
+    if (authorObject >= canonicalOrdinal.size() ||
+        binding->binding.objectOrdinal >= canonicalOrdinal.size())
+      return executionFailed("memory-root object ordinal is out of range");
+    if (canonicalOrdinal[authorObject] &&
+        *canonicalOrdinal[authorObject] != binding->binding.objectOrdinal)
+      return executionFailed(
+          "aliased roots disagree on canonical object identity");
+    canonicalOrdinal[authorObject] = binding->binding.objectOrdinal;
+  }
+  if (llvm::any_of(canonicalOrdinal,
+                   [](const auto &ordinal) { return !ordinal.has_value(); }))
+    return executionFailed("native capture contains an unreferenced object");
+
+  std::vector<RuntimeMemoryObject> objects(capture.objects.size());
+  std::vector<bool> assigned(capture.objects.size(), false);
+  for (auto [authorOrdinal, native] : llvm::enumerate(capture.objects)) {
+    const std::uint64_t canonical = *canonicalOrdinal[authorOrdinal];
+    if (assigned[canonical])
+      return executionFailed("native objects collapse to one canonical slot");
+    assigned[canonical] = true;
+    RuntimeMemoryObject &object = objects[canonical];
+    object.initialBytes.reserve(native.finalBytes.size());
+    for (std::uint8_t byte : native.finalBytes)
+      object.initialBytes.push_back({SemanticState::Defined, byte});
+    object.pointerValues = native.finalPointers;
+    for (RuntimeMemoryPointer &pointer : object.pointerValues) {
+      if (pointer.target.objectOrdinal >= canonicalOrdinal.size())
+        return executionFailed("native final pointer target is out of range");
+      pointer.target.objectOrdinal =
+          *canonicalOrdinal[pointer.target.objectOrdinal];
+    }
+  }
+  if (llvm::Error error =
+          detail::canonicalizeRuntimeMemoryPointers(objects, layoutScope))
+    return std::move(error);
+  return objects;
 }
 
 bool sameLane(const SemanticLane &lhs, const SemanticLane &rhs) {
@@ -441,6 +529,8 @@ compareObservations(const SpatialSimulationWorkload &workload,
                     const SpatialFunctionalObservations &observations,
                     const WorkloadBackedSimulationInputCapturePlan &plan,
                     const NativeSimulationCallCapture &native,
+                    const SpatialSimulationRuntimeInput &runtimeInput,
+                    llvm::ArrayRef<RuntimeMemoryObject> nativeFinalObjects,
                     SourceBackedDfgValidationResult &result) {
   if (workload.observableContract.valueResults.size() !=
           plan.valueResults.size() ||
@@ -471,24 +561,26 @@ compareObservations(const SpatialSimulationWorkload &workload,
     if (!root || !full)
       return executionFailed("source-backed replay did not return root state");
     std::optional<std::size_t> rootOrdinal = findMemoryRoot(plan, *root);
-    if (!rootOrdinal ||
-        *rootOrdinal >= native.memoryRootObjectOrdinals.size() ||
-        *rootOrdinal >= native.memoryRootByteOffsets.size())
+    if (!rootOrdinal)
       return executionFailed("native capture has no memory-root binding");
-    const std::uint64_t objectOrdinal =
-        native.memoryRootObjectOrdinals[*rootOrdinal];
-    if (objectOrdinal >= native.objects.size())
-      return executionFailed("native memory root names an absent object");
-    const std::uint64_t byteOffset = native.memoryRootByteOffsets[*rootOrdinal];
-    llvm::ArrayRef<std::uint8_t> expected(
-        native.objects[objectOrdinal].finalBytes);
+    const MemoryRootBindingEntry *binding =
+        findMemoryBinding(runtimeInput, *root);
+    if (!binding || binding->binding.objectOrdinal >= nativeFinalObjects.size())
+      return executionFailed("DFG runtime input has no memory-root binding");
+    const RuntimeMemoryObject &expectedObject =
+        nativeFinalObjects[binding->binding.objectOrdinal];
+    const std::uint64_t byteOffset = binding->binding.byteOffset;
+    llvm::ArrayRef<SemanticMemoryByte> expected(expectedObject.initialBytes);
     if (byteOffset > expected.size() ||
         full->bytes.size() > expected.size() - byteOffset)
       return executionFailed("DFG memory observation exceeds native object");
     expected = expected.slice(byteOffset, full->bytes.size());
-    for (auto [actual, byte] : llvm::zip_equal(full->bytes, expected))
-      if (actual.state != SemanticState::Defined || actual.value != byte)
+    for (auto [actual, byte] : llvm::zip_equal(full->bytes, expected)) {
+      if (actual.state != byte.state ||
+          (actual.state == SemanticState::Defined &&
+           actual.value != byte.value))
         return false;
+    }
     result.memoryBytesCompared += full->bytes.size();
   }
   return true;
@@ -564,6 +656,9 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       prepareDfgExecution(candidate.canonicalDataflow, launches.front());
   if (!preparedDfg)
     return preparedDfg.takeError();
+  auto launchContext = detail::resolveLaunchContext(*view, launches.front());
+  if (!launchContext)
+    return launchContext.takeError();
 
   auto plan = deriveCapturePlan(*view, launches.front(), *prepared);
   if (!plan)
@@ -629,7 +724,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     draft.runtimeValues = call.runtimeValues;
     draft.memoryObjects.reserve(call.objects.size());
     for (const NativeCapturedMemoryObject &object : call.objects)
-      draft.memoryObjects.push_back(capturedMemoryObject(object.initialBytes));
+      draft.memoryObjects.push_back(
+          capturedMemoryObject(object.initialBytes, object.initialPointers));
     for (auto [ordinal, root] : llvm::enumerate(plan->memoryRoots))
       draft.memoryRootBindings.push_back(RuntimeMemoryBindingDraft{
           root.root, call.memoryRootObjectOrdinals[ordinal],
@@ -638,6 +734,10 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
     if (!replayInput)
       return replayInput.takeError();
+    auto nativeFinalObjects = canonicalizeNativeFinalObjects(
+        call, *plan, *replayInput->spatial(), launchContext->graphOp);
+    if (!nativeFinalObjects)
+      return nativeFinalObjects.takeError();
     if (remainingSimulationWallTime ==
         std::chrono::steady_clock::duration::zero())
       return executionLimit("aggregate simulation wall-time budget exhausted");
@@ -691,9 +791,9 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
             return llvm::Error::success();
           });
     }
-    auto equivalent =
-        compareObservations(*replayWorkload->spatial(), execution->observations,
-                            *plan, call, result);
+    auto equivalent = compareObservations(
+        *replayWorkload->spatial(), execution->observations, *plan, call,
+        *replayInput->spatial(), *nativeFinalObjects, result);
     if (!equivalent)
       return equivalent.takeError();
     if (!*equivalent)

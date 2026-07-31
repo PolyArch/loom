@@ -79,6 +79,19 @@ service's architecture contract.
 
 ## Operation Engine
 
+Every operation row declares whether its address input consumes the Dataflow-
+owned `RootRelative` or `PointerAddressed` projection. A RootRelative row owns
+element-index scaling. A PointerAddressed row consumes the complete pointer
+representation and performs no implicit base addition or element scaling; its
+manager or local-service binding owns translation from that pointer address
+space to the selected service region. One row cannot accept both forms through
+a raw integer ordinal.
+
+Memory data ports may carry pointer payloads only when their typed capability
+domain admits the exact DataLayout-owned pointer format and full
+representation width. A wide bits port alone does not establish pointer
+provenance, address-space, or exceptional-value semantics.
+
 An Operation Engine owns one canonical ordered inventory of physical memory
 operation ports. Each inventory entry contains exactly:
 

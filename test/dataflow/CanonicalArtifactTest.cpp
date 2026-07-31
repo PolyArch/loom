@@ -885,9 +885,9 @@ static_assert(!std::is_constructible_v<ContextualActorRef, MemoryExposureRef>,
               "a memory exposure is not a contextual actor");
 static_assert(!std::is_constructible_v<ServiceMemberRef, MemoryExposureRef>,
               "a memory exposure is not a service member");
-static_assert(canonicalDataflowSchema.version.major == 2 &&
+static_assert(canonicalDataflowSchema.version.major == 3 &&
                   canonicalDataflowSchema.version.minor == 0,
-              "canonical graph memory ABI requires Dataflow schema 2.0");
+              "first-class pointer ABI requires Dataflow schema 3.0");
 
 void memoryViewExposureService() {
   const char *test = "memoryViewExposureService";
@@ -992,27 +992,34 @@ void memoryViewExposureService() {
           "an actor outside the launched graph is a wrong-owner rejection");
 }
 
-const char *importedPointerViewProgram() {
+const char *pointerValueProgram() {
   return R"mlir(
 module attributes {
-  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>,
+  llvm.data_layout = "e-p:64:64"
 } {
-  dataflow.graph private @g(%start: none, %addr: index, %bytes: memref<?xi8>, %words: memref<?xi32>) -> i32 attributes {input_segments = array<i32: 1, 0, 2>, result_segments = array<i32: 1, 0, 0>} {
-    %byte, %byte_done = dataflow.load %bytes[%addr] %start : memref<?xi8>
-    %word, %word_done = dataflow.load %words[%addr] %byte_done : memref<?xi32>
-    %extended = arith.extui %byte : i8 to i32
-    %sum = arith.addi %extended, %word : i32
-    %result:2 = dataflow.sync %word_done, %sum : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories() complete(%result#0 : none)
+  dataflow.graph private @g(%start: none, %base: !llvm.ptr, %offset: i64)
+      -> !llvm.ptr
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %next = llvm.getelementptr inbounds %base[%offset]
+        : (!llvm.ptr, i64) -> !llvm.ptr, i32
+    %result:2 = dataflow.sync %start, %next
+        : (none, !llvm.ptr) -> (none, !llvm.ptr)
+    dataflow.graph.return values(%result#1 : !llvm.ptr) streams() memories()
+        complete(%result#0 : none)
   }
-  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr) ctrl (%ctrl: none) {
-    %addr = arith.constant 0 : index
-    %value, %done = dataflow.graph.launch @g deps(%ctrl) values(%addr) stream_inputs() memories(%pointer, %pointer) stream_outputs() : (none, index, !llvm.ptr, !llvm.ptr) -> (i32, none)
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(
+      %pointer: !llvm.ptr, %offset: i64) ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @g deps(%ctrl)
+        values(%pointer, %offset) stream_inputs() memories() stream_outputs()
+        : (none, !llvm.ptr, i64) -> (!llvm.ptr, none)
     dataflow.graph.wait %done : none
     dataflow.thread.yield %done : none
   }
-  func.func private @host(%pointer: !llvm.ptr) {
-    %token = dataflow.thread.launch @t(%pointer) : (!llvm.ptr) -> !dataflow.thread_token
+  func.func private @host(%pointer: !llvm.ptr, %offset: i64) {
+    %token = dataflow.thread.launch @t(%pointer, %offset)
+        : (!llvm.ptr, i64) -> !dataflow.thread_token
     dataflow.thread.wait %token : !dataflow.thread_token
     return
   }
@@ -1020,17 +1027,65 @@ module attributes {
 )mlir";
 }
 
-void importedPointerCreatesLogicalView() {
-  const char *test = "importedPointerCreatesLogicalView";
-  CanonicalDataflowArtifact artifact =
-      finalize(test, importedPointerViewProgram());
+void pointerValueAndLayoutRoundTrip() {
+  const char *test = "pointerValueAndLayoutRoundTrip";
+  CanonicalDataflowArtifact artifact = finalize(test, pointerValueProgram());
+  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  require(test, view.logicalMemoryRoots().empty(),
+          "a pointer value became a logical memory capability");
+  require(test,
+          actorByName(test, view, "llvm.getelementptr").kind ==
+              CanonicalDataflowActorKind::Compute,
+          "registered GEP did not survive canonical import as a compute actor");
+  llvm::Expected<loom::PointerLayout> layout = view.pointerLayout(0);
+  require(test,
+          layout && *layout ==
+                        loom::PointerLayout{
+                            0, 64, 64, loom::PointerLayoutKind::StableIntegral},
+          "canonical view lost its exact module pointer layout");
+}
+
+void pointerMemoryServiceIsOneLogicalRoot() {
+  const char *test = "pointerMemoryServiceIsOneLogicalRoot";
+  CanonicalDataflowArtifact artifact = finalize(test, R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>,
+  llvm.data_layout = "e-p:64:64"
+} {
+  dataflow.graph private @g(%start: none, %pointer: !llvm.ptr,
+                            %service: memref<?xi32>) -> i32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value, %done = dataflow.load %service[%pointer] %start
+        : memref<?xi32>, !llvm.ptr
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(
+      %pointer: !llvm.ptr) ctrl (%ctrl: none) {
+    %service = dataflow.memory.service %pointer
+        : !llvm.ptr -> memref<?xi32>
+    %value, %done = dataflow.graph.launch @g deps(%ctrl)
+        values(%pointer) stream_inputs() memories(%service) stream_outputs()
+        : (none, !llvm.ptr, memref<?xi32>) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%pointer: !llvm.ptr) {
+    %token = dataflow.thread.launch @t(%pointer)
+        : (!llvm.ptr) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir");
   CanonicalDataflowProgramView view = viewOf(test, artifact);
   require(test, view.logicalMemoryRoots().size() == 1,
-          "the thread pointer formal is the one memory root");
-  LogicalMemoryRootRef root = view.logicalMemoryRoots().front().ref;
-  llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> views = view.views(root);
-  require(test, views && views->size() == 2,
-          "two typed bindings of one pointer derive two logical views");
+          "one memory service did not produce one logical root");
+  const CanonicalLogicalMemoryRootView &root =
+      view.logicalMemoryRoots().front();
+  require(test,
+          !root.formalArgIndex && root.op &&
+              root.op->getName().getStringRef() == "dataflow.memory.service",
+          "logical root is not owned by the memory service operation");
 }
 
 void registeredIntrinsicCarrierFinalizes() {
@@ -1069,7 +1124,8 @@ int main() {
   rootedLaunchTokenEdge();
   channelMulticastTerminals();
   memoryViewExposureService();
-  importedPointerCreatesLogicalView();
+  pointerValueAndLayoutRoundTrip();
+  pointerMemoryServiceIsOneLogicalRoot();
   registeredIntrinsicCarrierFinalizes();
   llvm::outs() << "all canonical dataflow artifact tests passed\n";
   return EXIT_SUCCESS;

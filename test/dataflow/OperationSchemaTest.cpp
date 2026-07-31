@@ -508,6 +508,60 @@ bool checkRegisteredLLVMIntrinsicSelectors(MLIRContext &context) {
   return ok;
 }
 
+bool checkPointerProjection(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type pointer = LLVM::LLVMPointerType::get(&context);
+  Type i32 = fixture.builder.getI32Type();
+  Type i64 = fixture.builder.getI64Type();
+  Value base = fixture.poison(pointer);
+  Value dynamicIndex = fixture.poison(i64);
+
+  const SmallVector<LLVM::GEPArg, 1> dynamicIndices{dynamicIndex};
+  const SmallVector<LLVM::GEPArg, 1> constantIndices{3};
+  Operation *dynamic =
+      LLVM::GEPOp::create(fixture.builder, fixture.loc, pointer, i32, base,
+                          dynamicIndices, LLVM::GEPNoWrapFlags::none);
+  Operation *constant =
+      LLVM::GEPOp::create(fixture.builder, fixture.loc, pointer, i32, base,
+                          constantIndices, LLVM::GEPNoWrapFlags::none);
+  Operation *inbounds =
+      LLVM::GEPOp::create(fixture.builder, fixture.loc, pointer, i32, base,
+                          constantIndices, LLVM::GEPNoWrapFlags::inbounds);
+
+  bool ok = true;
+  auto dynamicProjection = projectActor(dynamic, ok);
+  auto constantProjection = projectActor(constant, ok);
+  auto inboundsProjection = projectActor(inbounds, ok);
+  if (!dynamicProjection || !constantProjection || !inboundsProjection)
+    return false;
+
+  const auto *dynamicPayload =
+      std::get_if<GetElementPtrPayload>(&dynamicProjection->payload);
+  const auto *constantPayload =
+      std::get_if<GetElementPtrPayload>(&constantProjection->payload);
+  const auto *inboundsPayload =
+      std::get_if<GetElementPtrPayload>(&inboundsProjection->payload);
+  if (dynamicProjection->schema != OperationSchemaId::LLVMGetElementPtr ||
+      !dynamicPayload || dynamicPayload->sourceElementType != i32 ||
+      dynamicPayload->rawConstantIndices !=
+          std::vector<std::int32_t>{LLVM::GEPOp::kDynamicIndex} ||
+      dynamicPayload->noWrapFlags != LLVM::GEPNoWrapFlags::none) {
+    llvm::errs() << "dynamic GEP lost its exact typed projection\n";
+    ok = false;
+  }
+  if (!constantPayload ||
+      constantPayload->rawConstantIndices != std::vector<std::int32_t>{3} ||
+      !inboundsPayload ||
+      inboundsPayload->noWrapFlags != LLVM::GEPNoWrapFlags::inbounds ||
+      *dynamicProjection == *constantProjection ||
+      *constantProjection == *inboundsProjection) {
+    llvm::errs()
+        << "GEP index shape or no-wrap flags did not affect identity\n";
+    ok = false;
+  }
+  return ok;
+}
+
 bool checkFailClosedProjection(MLIRContext &context) {
   OpFixture fixture(context);
   Value lhs = fixture.poison(fixture.builder.getI32Type());
@@ -668,6 +722,7 @@ int main() {
   ok &= checkVectorStructure(context);
   ok &= checkPoisonAndAggregateState(context);
   ok &= checkRegisteredLLVMIntrinsicSelectors(context);
+  ok &= checkPointerProjection(context);
   ok &= checkFailClosedProjection(context);
   ok &= checkMemorySourceAlignmentIdentity(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;

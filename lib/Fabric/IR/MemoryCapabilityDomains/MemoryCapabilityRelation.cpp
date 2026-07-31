@@ -6,6 +6,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <system_error>
 #include <tuple>
@@ -165,12 +166,12 @@ reduceEntries(mlir::MLIRContext *context,
   std::vector<MemoryCapabilityRelationEntry> pieces;
   for (auto &[partition, rows] : partitions) {
     const std::size_t actorFieldCount =
-        rows.front().size() - (partition.hasAccess ? 9 : 2);
+        rows.front().size() -
+        (partition.hasAccess ? memoryAccessClassRelationFieldCount + 2 : 2);
     llvm::SmallVector<bool, 16> grouping(actorFieldCount, true);
-    if (partition.hasAccess) {
-      grouping.push_back(false);
-      grouping.append(6, true);
-    }
+    if (partition.hasAccess)
+      grouping.append(std::begin(memoryAccessClassRelationGrouping),
+                      std::end(memoryAccessClassRelationGrouping));
     grouping.push_back(false);
     grouping.push_back(true);
     auto reduced = reduceProductRelation(rows, grouping);
@@ -193,7 +194,8 @@ reduceEntries(mlir::MLIRContext *context,
       std::optional<ParameterizedMemoryAccessDomain> accesses;
       if (partition.hasAccess) {
         ReducedProductRow accessRow(row.begin() + cursor,
-                                    row.begin() + cursor + 7);
+                                    row.begin() + cursor +
+                                        memoryAccessClassRelationFieldCount);
         auto access = importMemoryAccessClass(accessRow);
         if (!access)
           return access.takeError();
@@ -201,7 +203,7 @@ reduceEntries(mlir::MLIRContext *context,
         if (!domain)
           return domain.takeError();
         accesses = std::move(*domain);
-        cursor += 7;
+        cursor += memoryAccessClassRelationFieldCount;
       }
 
       const auto *physical = std::get_if<ReducedFiniteDomain>(&row[cursor++]);

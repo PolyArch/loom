@@ -61,6 +61,7 @@ enum class TypeWireTag : std::uint32_t {
   Complex = 9,
   LLVMArray = 10,
   LLVMLiteralStruct = 11,
+  LLVMPointer = 12,
 };
 
 enum class ConstantWireTag : std::uint32_t {
@@ -605,6 +606,11 @@ llvm::Error encodeType(Writer &writer, Type type, unsigned depth) {
     writer.boolean(structure.isPacked());
     return encodeTypeList(writer, structure.getBody(), depth + 1);
   }
+  if (auto pointer = llvm::dyn_cast<LLVM::LLVMPointerType>(type)) {
+    writer.u32(static_cast<std::uint32_t>(TypeWireTag::LLVMPointer));
+    writer.u32(pointer.getAddressSpace());
+    return llvm::Error::success();
+  }
   return invalid("type is outside the canonical actor projection codec");
 }
 
@@ -767,6 +773,12 @@ llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
       return body.takeError();
     return LLVM::LLVMStructType::getLiteral(context, *body, *packed);
   }
+  case TypeWireTag::LLVMPointer: {
+    auto addressSpace = reader.u32("LLVM pointer address space");
+    if (!addressSpace)
+      return addressSpace.takeError();
+    return LLVM::LLVMPointerType::get(context, *addressSpace);
+  }
   }
   return invalid("unknown type tag");
 }
@@ -908,6 +920,12 @@ llvm::Expected<TypeSummary> validateType(Reader &reader, unsigned depth) {
       return packed.takeError();
     if (llvm::Error error = validateTypeList(reader, depth + 1))
       return std::move(error);
+    return TypeSummary{};
+  }
+  case TypeWireTag::LLVMPointer: {
+    auto addressSpace = reader.u32("LLVM pointer address space");
+    if (!addressSpace)
+      return addressSpace.takeError();
     return TypeSummary{};
   }
   }
@@ -1300,6 +1318,30 @@ llvm::Error validateSignedList(Reader &reader, std::int64_t minimum,
   return llvm::Error::success();
 }
 
+llvm::Error encodeI32List(Writer &writer, llvm::ArrayRef<std::int32_t> values,
+                          llvm::StringRef what) {
+  writer.u64(values.size());
+  for (std::int32_t value : values)
+    writer.u64(static_cast<std::uint64_t>(static_cast<std::int64_t>(value)));
+  return llvm::Error::success();
+}
+
+llvm::Error validateI32List(Reader &reader, llvm::StringRef what) {
+  auto count = readCount(reader, llvm::Twine(what) + " count", 8);
+  if (!count)
+    return count.takeError();
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    auto raw = reader.u64(what);
+    if (!raw)
+      return raw.takeError();
+    const std::int64_t value = static_cast<std::int64_t>(*raw);
+    if (value < std::numeric_limits<std::int32_t>::min() ||
+        value > std::numeric_limits<std::int32_t>::max())
+      return invalid(llvm::Twine(what) + " contains an invalid i32 value");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error encodePayload(Writer &writer,
                           dataflow::OperationSemanticsCase semanticCase,
                           const dataflow::SemanticPayload &payload) {
@@ -1310,6 +1352,21 @@ llvm::Error encodePayload(Writer &writer,
     if (!std::holds_alternative<dataflow::NoPayload>(payload))
       break;
     return llvm::Error::success();
+  case Case::LLVMGetElementPtrSemantics: {
+    const auto *gep = std::get_if<dataflow::GetElementPtrPayload>(&payload);
+    if (!gep)
+      break;
+    if (llvm::Error error = encodeType(writer, gep->sourceElementType, 0))
+      return error;
+    if (llvm::Error error =
+            encodeI32List(writer, gep->rawConstantIndices, "GEP index"))
+      return error;
+    const std::uint32_t flags = static_cast<std::uint32_t>(gep->noWrapFlags);
+    if ((flags & ~std::uint32_t{0x7}) != 0)
+      return invalid("GEP payload has unknown no-wrap flag bits");
+    writer.u32(flags);
+    return llvm::Error::success();
+  }
   case Case::ArithFloatingPoint: {
     const auto *floating =
         std::get_if<dataflow::FloatingPointPayload>(&payload);
@@ -1452,6 +1509,19 @@ llvm::Error validatePayload(Reader &reader,
   case Case::NoSemanticPayload:
   case Case::LLVMRegisteredIntrinsic:
     return llvm::Error::success();
+  case Case::LLVMGetElementPtrSemantics: {
+    auto element = validateType(reader, 0);
+    if (!element)
+      return element.takeError();
+    if (llvm::Error error = validateI32List(reader, "GEP index"))
+      return error;
+    auto flags = reader.u32("GEP no-wrap flags");
+    if (!flags)
+      return flags.takeError();
+    if ((*flags & ~std::uint32_t{0x7}) != 0)
+      return invalid("unknown GEP no-wrap flag bits");
+    return llvm::Error::success();
+  }
   case Case::ArithFloatingPoint: {
     auto flags = reader.u32("fast-math flags");
     if (!flags)

@@ -1051,35 +1051,27 @@ module attributes {
       acceptedSource, {findForall(acceptedSource)},
       findThreadDecision(acceptedSource, std::nullopt), fabric));
 
-  bool sawElementScale = false;
+  bool sawExactElementAddress = false;
   candidate.canonicalDataflow.module().walk([&](mlir::Operation *operation) {
     for (mlir::Type type : operation->getResultTypes()) {
       auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
       if (integer && integer.getWidth() > 32)
         fail("scaled element address introduced an over-wide graph actor");
     }
-    auto multiply = llvm::dyn_cast<mlir::arith::MulIOp>(operation);
-    if (!multiply)
+    auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
+    if (!gep)
       return;
-    for (mlir::Value operand : multiply->getOperands()) {
-      mlir::Value source = operand;
-      if (auto cast = source.getDefiningOp<mlir::arith::IndexCastOp>())
-        source = cast.getIn();
-      auto constant = source.getDefiningOp<mlir::arith::ConstantOp>();
-      auto value = constant
-                       ? llvm::dyn_cast<mlir::IntegerAttr>(constant.getValue())
-                       : mlir::IntegerAttr{};
-      if (!value) {
-        auto graphConstant = source.getDefiningOp<dataflow::ConstantOp>();
-        value = graphConstant ? llvm::dyn_cast<mlir::IntegerAttr>(
-                                    graphConstant.getConstValue())
-                              : mlir::IntegerAttr{};
-      }
-      sawElementScale |= value && value.getValue().getSExtValue() == 268435456;
-    }
+    auto array = llvm::dyn_cast<mlir::LLVM::LLVMArrayType>(gep.getElemType());
+    if (!array || array.getNumElements() != 1073741824 ||
+        !array.getElementType().isInteger(8))
+      return;
+    if (gep.getDynamicIndices().size() != 1 ||
+        !gep.getDynamicIndices().front().getType().isInteger(32))
+      fail("scaled element address changed its exact index type");
+    sawExactElementAddress = true;
   });
-  if (!sawElementScale)
-    fail("scaled element address did not preserve the exact element stride");
+  if (!sawExactElementAddress)
+    fail("scaled element address did not preserve the exact typed GEP");
 }
 
 } // namespace

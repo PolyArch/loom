@@ -41,6 +41,13 @@ graph boundary:
 * a stream is a zero-or-more ordered, incremental, backpressured sequence; and
 * a memory is access capability to an addressable object or service.
 
+An LLVM pointer belongs to the value or stream plane because its address is
+dynamic program data. A memref belongs to the memory plane because it denotes
+a logical object or service capability. Keeping them separate lets pointer
+arithmetic flow through a graph without turning an address value into storage
+ownership, and lets Mapping select a memory provider without inventing pointer
+identity.
+
 Input and output directions are symmetric. A memory export can expose an
 internally created object just as an import consumes an external capability.
 The hardware boundary has an analogous manager/subordinate distinction, but

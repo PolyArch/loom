@@ -103,16 +103,6 @@ bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
                    mlir::LLVM::MemsetOp>(op);
 }
 
-bool hasRawPointerUse(mlir::Operation *op) {
-  return llvm::any_of(op->getOperandTypes(),
-                      [](mlir::Type type) {
-                        return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
-                      }) ||
-         llvm::any_of(op->getResultTypes(), [](mlir::Type type) {
-           return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
-         });
-}
-
 using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
 
 /// A canonical memory actor publishes its remaining results together with
@@ -1633,12 +1623,6 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
       structuralError =
           graphError("finalized graph contains forbidden operation "
                      "'builtin.unrealized_conversion_cast'");
-      return mlir::WalkResult::interrupt();
-    }
-    if (hasRawPointerUse(op)) {
-      structuralError = graphError(
-          llvm::Twine("finalized graph contains residual pointer operation '") +
-          op->getName().getStringRef() + "'");
       return mlir::WalkResult::interrupt();
     }
     if (llvm::any_of(op->getResultTypes(), isMemoryCapabilityType) &&

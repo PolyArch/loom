@@ -359,6 +359,7 @@ CanonicalDataflowProgramView::buildView(
     const detail::CanonicalLabeling &labeling) {
   const std::size_t count = labeling.carriers.size();
   CanonicalDataflowProgramView view(identity);
+  view.module_ = module;
   view.kindOfId_.resize(count, CanonicalDataflowEntityKind::Graph);
   view.slotOfId_.resize(count, 0);
 
@@ -418,7 +419,8 @@ CanonicalDataflowProgramView::buildView(
       LogicalMemoryRootRef ref{identity, LogicalMemoryRootId(carrier.id)};
       // The root-defining value: an imported thread memory formal is that
       // thread's entry-block argument at its input ordinal (function inputs are
-      // the leading block arguments); a fresh allocation is its result.
+      // the leading block arguments); a memory service or fresh allocation is
+      // its result.
       mlir::Value rootValue =
           carrier.formalArgIndex
               ? mlir::Value(cast<ThreadOp>(carrier.op)
@@ -441,6 +443,11 @@ CanonicalDataflowProgramView::buildView(
           module, labeling.canonicalOperationOrder))
     return std::move(error);
   return view;
+}
+
+llvm::Expected<::loom::PointerLayout>
+CanonicalDataflowProgramView::pointerLayout(std::uint32_t addressSpace) const {
+  return ::loom::resolvePointerLayout(module_, addressSpace);
 }
 
 llvm::Expected<CanonicalDataflowProgramView>

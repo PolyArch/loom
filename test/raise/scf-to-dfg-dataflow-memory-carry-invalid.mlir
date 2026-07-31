@@ -1,11 +1,13 @@
-// RUN: not loom-raise-opt --loom-lower-scf-to-dfg %s 2>&1 | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
-// A residual loop-carried pointer proves that SCF memory normalization did not
-// establish the required invariant capability plus integer offset. Graph
-// publication rejects it instead of creating a pointer-valued dataflow.carry.
+// A loop-carried pointer is first-class graph data. Its object-scoped memory
+// service remains invariant while the pointer recurrence advances exactly.
 
-// CHECK: cannot lower loop-carried memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-NOT: dataflow.graph private @pointer_carry_graph
+// CHECK: dataflow.memory.service %arg0 : !llvm.ptr -> memref<?xi8>
+// CHECK-LABEL: dataflow.graph private @pointer_carry_graph
+// CHECK: dataflow.load {{%.*}}[{{%.*}}] {{%.*}} : memref<?xi8>, !llvm.ptr
+// CHECK: dataflow.carry {{.*}} : !llvm.ptr
+// CHECK: llvm.getelementptr
 
 module attributes {
   llvm.data_layout = "e-p:64:64",
@@ -16,7 +18,7 @@ module attributes {
           %base: !llvm.ptr, %lower: index, %upper: index, %step: index)
       ctrl (%ctrl: none) {
     %value = "loom.spatial_region"(%lower, %upper, %step, %base)
-        <{operandSegmentSizes = array<i32: 3, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 4, 0, 0, 0>,
           resultSegmentSizes = array<i32: 1, 0>}> ({
       ^bb0(%lb: index, %ub: index, %stride: index, %memory: !llvm.ptr):
         %final = scf.for %i = %lb to %ub step %stride

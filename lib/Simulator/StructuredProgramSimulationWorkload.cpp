@@ -74,7 +74,8 @@ decodeMemoryTarget(detail::WireReader &reader) {
 }
 
 std::vector<std::uint8_t> encodeStructuredProgramWorkload(
-    const StructuredProgramSimulationWorkload &workload) {
+    const StructuredProgramSimulationWorkload &workload,
+    const detail::ResolvedStructuredProgramContext &context) {
   detail::WireWriter writer;
   writer.u32(
       static_cast<std::uint32_t>(SimulationWorkloadKind::StructuredProgram));
@@ -87,7 +88,10 @@ std::vector<std::uint8_t> encodeStructuredProgramWorkload(
         workload.argumentPlan[ordinal];
     if (const auto *fixed = std::get_if<CanonicalValueSequence>(&source)) {
       writer.u32(0);
-      detail::encodeValueSequence(writer, *fixed);
+      assert(context.argumentShapes[ordinal] &&
+             "validated fixed argument has no lane shape");
+      detail::encodeValueSequence(writer, *fixed,
+                                  *context.argumentShapes[ordinal]);
     } else if (std::holds_alternative<StructuredRuntimeValueInput>(source)) {
       writer.u32(1);
     } else {
@@ -379,7 +383,7 @@ llvm::Expected<CanonicalSimulationWorkload> finalizeSimulationWorkload(
           detail::validateStructuredProgramWorkload(workload, *context, view))
     return std::move(error);
   ::loom::CanonicalSemanticBytes bytes(
-      encodeStructuredProgramWorkload(workload));
+      encodeStructuredProgramWorkload(workload, *context));
   ::loom::ArtifactIdentity identity =
       ::loom::finalizeArtifactIdentity(simulationWorkloadSchema, bytes);
   return CanonicalSimulationWorkload(
@@ -398,7 +402,7 @@ importSimulationWorkload(llvm::ArrayRef<std::uint8_t> canonicalBytes,
           decoded->workload, decoded->context, view))
     return std::move(error);
   const std::vector<std::uint8_t> reencoded =
-      encodeStructuredProgramWorkload(decoded->workload);
+      encodeStructuredProgramWorkload(decoded->workload, decoded->context);
   if (!llvm::ArrayRef<std::uint8_t>(reencoded).equals(canonicalBytes))
     return detail::invalid(
         "simulation workload: noncanonical bytes do not re-encode exactly");

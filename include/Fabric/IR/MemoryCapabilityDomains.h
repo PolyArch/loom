@@ -2,6 +2,7 @@
 #define LOOM_FABRIC_IR_MEMORY_CAPABILITY_DOMAINS_H
 
 #include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Fabric/IR/ImplementationFamily.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -211,7 +212,11 @@ public:
          llvm::ArrayRef<MaskInactivePair> maskInactivePairs,
          AlignmentDomain sourceAlignments,
          ClosedEnumDomain<ReadSubwordSemantics> readSubword,
-         ClosedEnumDomain<WriteSubwordSemantics> writeSubword);
+         ClosedEnumDomain<WriteSubwordSemantics> writeSubword,
+         dataflow::semantics::MemoryAddressForm addressForm =
+             dataflow::semantics::MemoryAddressForm::RootRelative,
+         PointerFormatRelation addressPointerFormats = {},
+         PointerFormatRelation dataPointerFormats = {});
 
   dataflow::semantics::MemoryAccessForm accessForm() const {
     return accessForm_;
@@ -230,6 +235,15 @@ public:
   const ClosedEnumDomain<WriteSubwordSemantics> &writeSubwordSemantics() const {
     return writeSubword_;
   }
+  dataflow::semantics::MemoryAddressForm addressForm() const {
+    return addressForm_;
+  }
+  const PointerFormatRelation &addressPointerFormats() const {
+    return addressPointerFormats_;
+  }
+  const PointerFormatRelation &dataPointerFormats() const {
+    return dataPointerFormats_;
+  }
 
   bool
   contains(const dataflow::semantics::CanonicalMemoryAccessView &access) const;
@@ -241,13 +255,18 @@ private:
                     std::vector<MaskInactivePair> maskInactivePairs,
                     AlignmentDomain sourceAlignments,
                     ClosedEnumDomain<ReadSubwordSemantics> readSubword,
-                    ClosedEnumDomain<WriteSubwordSemantics> writeSubword)
+                    ClosedEnumDomain<WriteSubwordSemantics> writeSubword,
+                    dataflow::semantics::MemoryAddressForm addressForm,
+                    PointerFormatRelation addressPointerFormats,
+                    PointerFormatRelation dataPointerFormats)
       : accessForm_(accessForm), elementWidths_(std::move(elementWidths)),
         flattenedLaneCounts_(std::move(flattenedLaneCounts)),
         maskInactivePairs_(std::move(maskInactivePairs)),
         sourceAlignments_(std::move(sourceAlignments)),
         readSubword_(std::move(readSubword)),
-        writeSubword_(std::move(writeSubword)) {}
+        writeSubword_(std::move(writeSubword)), addressForm_(addressForm),
+        addressPointerFormats_(std::move(addressPointerFormats)),
+        dataPointerFormats_(std::move(dataPointerFormats)) {}
 
   dataflow::semantics::MemoryAccessForm accessForm_;
   UnsignedDomain elementWidths_;
@@ -256,6 +275,9 @@ private:
   AlignmentDomain sourceAlignments_;
   ClosedEnumDomain<ReadSubwordSemantics> readSubword_;
   ClosedEnumDomain<WriteSubwordSemantics> writeSubword_;
+  dataflow::semantics::MemoryAddressForm addressForm_;
+  PointerFormatRelation addressPointerFormats_;
+  PointerFormatRelation dataPointerFormats_;
 };
 
 class ParameterizedMemoryAccessDomain {

@@ -1,8 +1,10 @@
 #include "DFGSimulatorInternal.h"
 
 #include "Common/IndexWidth.h"
+#include "Common/PointerLayout.h"
 #include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
@@ -55,6 +57,8 @@ llvm::Expected<Token> exceptionalValueToken(PrimitiveValueState state,
     token.kind = integer.getWidth() == 1 ? TokenKind::Bool : TokenKind::Integer;
   else if (mlir::isa<mlir::FloatType>(type))
     token.kind = TokenKind::Float;
+  else if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
+    token.kind = TokenKind::Pointer;
   else if (mlir::isa<mlir::VectorType>(type))
     token.kind = TokenKind::Vector;
   else
@@ -157,9 +161,25 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
              formatHexBitPattern(*bits, hexDigitCount(bits->getBitWidth()));
     }
   }
-  if (token.kind == TokenKind::Pointer)
-    return typePrefix(type) + ":ptr+" +
-           std::to_string(token.memoryView()->byteOffset);
+  if (token.kind == TokenKind::Pointer) {
+    const PointerValue *pointer = token.pointerValue();
+    if (!pointer)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "pointer token has no provenance");
+    llvm::SmallString<48> offset;
+    pointer->byteOffset.toString(offset, 10, /*Signed=*/true);
+    return llvm::formatv(
+               "{0}:as{1}:object{2}:{3}:{4}", typePrefix(type),
+               pointer->addressSpace, pointer->objectOrdinal, offset,
+               formatHexBitPattern(
+                   pointer->representation,
+                   hexDigitCount(pointer->representation.getBitWidth())))
+        .str();
+  }
+  if (token.kind == TokenKind::MemoryCapability)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "memory capability token has no ordinary value spelling");
   double floatValue = llvm::bit_cast<double>(token.scalarValue);
   if (token.hasExactBitPattern()) {
     auto bits = tokenBitPattern(token, type);
@@ -478,6 +498,12 @@ llvm::Expected<unsigned> resolvedTokenTypeBitWidth(mlir::Type type,
                                                    mlir::Operation *scope) {
   if (mlir::isa<mlir::IndexType>(type))
     return loom::getIndexBitWidth(scope);
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(type)) {
+    auto layout = loom::resolvePointerLayout(scope, pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    return layout->representationBits;
+  }
   if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
     if (mlir::isa<mlir::IndexType>(vector.getElementType()))
       return indexVectorTokenBitWidth(vector, scope);
@@ -547,6 +573,22 @@ llvm::Expected<llvm::APInt> resolvedTokenBitPattern(const Token &token,
   if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
     if (mlir::isa<mlir::IndexType>(vector.getElementType()))
       return vectorIndexTokenBitPattern(token, vector, scope);
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(type)) {
+    auto layout = loom::resolvePointerLayout(scope, pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    const PointerValue *value = token.pointerValue();
+    if (token.kind != TokenKind::Pointer || !value)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "pointer token has no provenance");
+    if (value->addressSpace != layout->addressSpace ||
+        value->representation.getBitWidth() != layout->representationBits ||
+        value->byteOffset.getBitWidth() != layout->addressBits)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "pointer token does not match the exact LLVM pointer layout");
+    return value->representation;
+  }
   return tokenBitPattern(token, type);
 }
 
@@ -579,6 +621,10 @@ llvm::Expected<Token> tokenFromResolvedBitPattern(const llvm::APInt &bits,
       return token;
     }
   }
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "pointer provenance cannot be reconstructed from representation bits");
   return tokenFromBitPattern(bits, type);
 }
 

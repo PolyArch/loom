@@ -66,6 +66,18 @@ struct NativeExecutionContext final {
   std::optional<std::string> error;
 };
 
+struct WorkloadCaptureCallbackNames final {
+  std::string begin;
+  std::string end;
+  std::optional<std::string> registerObject;
+  std::optional<std::string> coordinate;
+  std::optional<std::string> memoryRoot;
+  std::optional<std::string> value;
+  std::optional<std::string> result;
+  std::optional<std::string> memoryWrite;
+  std::optional<std::string> pointerWrite;
+};
+
 std::string uniqueMlirSymbolName(mlir::ModuleOp module, llvm::StringRef prefix);
 
 llvm::Expected<std::string>
@@ -81,6 +93,10 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
 
 llvm::Expected<std::optional<std::string>>
 projectSelectedWholeProgram(mlir::ModuleOp module);
+
+llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
+    mlir::ModuleOp module, mlir::Operation *selectedOperation,
+    const WorkloadBackedSimulationInputCapturePlan &plan);
 
 llvm::Expected<NativeStructuredProgramObservations>
 visitProjectedWorkloadBackedSimulationInputCaptures(

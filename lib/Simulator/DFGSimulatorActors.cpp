@@ -823,6 +823,8 @@ ActorProvider actorProvider(dataflow::OperationSchemaId schema) {
 
   using Schema = dataflow::OperationSchemaId;
   switch (schema) {
+  case Schema::LLVMGetElementPtr:
+    return fireGetElementPtr;
   case Schema::ArithConstant:
     return fireArithConstantActor;
   case Schema::DataflowStream:

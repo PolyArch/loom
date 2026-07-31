@@ -11,7 +11,7 @@ The fixed schema descriptors are:
 
 ```text
 loom.simulation_workload      1.1
-loom.simulation_runtime_input 1.1
+loom.simulation_runtime_input 2.0
 loom.simulation_execution     1.0
 ```
 
@@ -235,6 +235,14 @@ endianness, Fabric port layout, vector packing, or a hardware representation.
 Host integer and floating types are never semantic authorities. Unknown lane
 states, wrong widths, extra lanes, and unresolved target widths are invalid.
 
+For a first-class `!llvm.ptr<AS>` value, defined semantic bits are accompanied
+by the runtime-input-owned object ordinal and signed byte offset resolved from
+the same object registry used by memory-root bindings. Canonical pointer values
+never contain a native process address. Their exact `P(AS)`-bit projection is
+validated against the module DataLayout and must round-trip through the owning
+pointer codec; poison and undef carry no object target. This is a typed pointer
+alternative, not an integer convention or a second alias graph.
+
 ## SimulationRuntimeInput
 
 `SimulationRuntimeInput` uses the same root discriminant as its exact workload.
@@ -260,6 +268,14 @@ CanonicalStreamSequence {
 RuntimeMemoryObject {
   byte_count: uint64
   initial_bytes: array<SemanticMemoryByte>
+  pointer_values: canonical array<RuntimeMemoryPointer>
+}
+
+RuntimeMemoryPointer {
+  storage_byte_offset: uint64
+  address_space: uint32
+  target_object_ordinal: uint64
+  target_byte_offset: signed A(address_space)-bit integer
 }
 
 SemanticMemoryByte =
@@ -292,6 +308,17 @@ root/view relations alone interpret typed accesses. This avoids choosing one
 aliased memref role as a privileged storage type or importing physical memory
 layout into the software input.
 
+`pointer_values` is sorted by `storage_byte_offset` and contains no duplicate
+or overlapping stored representations. Every record covers exactly
+`P(address_space)` defined bits in `initial_bytes`, interpreted with the exact
+module DataLayout endianness, and targets an existing canonical object ordinal
+with an exact signed `A(address_space)`-bit byte offset. Re-encoding the target
+through the object registry must reproduce those stored representation bits.
+Poison or undef storage cannot carry pointer provenance. The bytes remain the
+content authority; this table supplies only the object provenance that a raw
+address representation cannot recover. Schema 2.0 adds this table and is
+therefore incompatible with runtime-input schema 1.x.
+
 For a launch-derived imported linear view, the runtime input still binds only
 the owning `LogicalMemoryRootRef` to an object and byte offset. The simulator
 resolves the Dataflow-owned launch relation and instantiates the graph formal's
@@ -309,6 +336,10 @@ ordinal expresses aliasing; no separate alias graph is serialized. Missing,
 empty, duplicate, out-of-range, or unreferenced objects are invalid. Overlap
 between two root ranges bound to the same object is legal aliasing and must
 not be rejected merely because their ranges intersect.
+
+Canonical object reordering also remaps every `target_object_ordinal` in stored
+pointer records. A finalizer must not preserve draft-local ordinals or native
+addresses in either the bytes or provenance table.
 
 A fresh graph allocation is not an imported runtime object. Its execution
 identity derives from its static `LogicalMemoryRootRef` and graph-invocation

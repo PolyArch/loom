@@ -60,6 +60,27 @@ def Dataflow_ChannelReceiveOp : Dataflow_Op<"channel.receive", [
 }
 
 //===----------------------------------------------------------------------===//
+// Thread Memory Service Ops
+//===----------------------------------------------------------------------===//
+
+def Dataflow_MemoryServiceOp : Dataflow_Op<"memory.service", [Pure]> {
+  let summary = "acquire an object-scoped memory service for a pointer";
+  let description = [{
+    Establishes a memory capability in the InstructionCore portion of a
+    `dataflow.thread`. The pointer remains ordinary value-plane data; the
+    result selects the exact object-scoped memory service used by a later
+    `dataflow.graph.launch` memory binding. This is not a cast and cannot
+    appear inside a `dataflow.graph`.
+  }];
+
+  let arguments = (ins AnyType:$pointer);
+  let results = (outs AnyMemRef:$memory);
+  let assemblyFormat =
+      "$pointer attr-dict `:` type($pointer) `->` type($memory)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Streaming Ops
 //
 // Ops whose primary semantics is generating / shaping / latching a stream of

@@ -34,12 +34,13 @@ topology, and each fresh allocation occurrence combines its static root
 reference with an invocation occurrence. These execution facts do not mutate
 the static Mapping references or create Mapping-local memory identities.
 
-A pointer-to-linear-memref launch binding is already a Dataflow-owned
-`LogicalMemoryViewRef`. Mapping consumes that derived view through the same
-`MemoryBinding` relation as any other logical root or view. It does not map a
-cast actor, persist another pointer adaptation, or allocate a separate physical
-resource for the view itself; storage placement and addressed memory actors
-remain the complete physical accounting owners.
+Graph launch memory bindings are exact memref capability bindings. Mapping
+consumes each Dataflow-owned `LogicalMemoryRootOrViewRef` through the same
+`MemoryBinding` relation and never derives a pointer adaptation. A
+`PointerAddressed` actor retains its pointer value edge while its independent
+service capability participates in the ordinary memory binding; storage
+placement and addressed memory actors remain the complete physical accounting
+owners.
 
 For each canonical addressed memory actor, consumers mechanically derive the
 nonpersistent `CanonicalMemoryAccessView` defined by

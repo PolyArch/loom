@@ -105,7 +105,7 @@ module {
   dataflow.thread private @selected domain(#dataflow.thread_domain<dense>)(
       %value: i32, %written: !llvm.ptr) ctrl (%ctrl: none) {
     "loom.spatial_region"(%value, %written)
-        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
       ^bb0(%payload: i32, %target: !llvm.ptr):
         llvm.store %payload, %target : i32, !llvm.ptr
@@ -368,6 +368,83 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
           "selected candidate execution invented a source coverage profile");
 }
 
+void storedPointerPayloadExecutesThroughNativeObjectRegistry() {
+  const char *test = __func__;
+  SourceProgram host = sourceProgram(test);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func @kernel(%descriptor: !llvm.ptr, %target: !llvm.ptr) -> i32 {
+    %loaded = llvm.load %descriptor : !llvm.ptr -> !llvm.ptr
+    %address = llvm.getelementptr %loaded[2]
+        : (!llvm.ptr) -> !llvm.ptr, i32
+    %result = llvm.load %address : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail(test, "cannot parse the stored-pointer Structured Program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), host.layout.getStringRepresentation()));
+  auto program =
+      take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+  auto view = take(test, program.view());
+
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      entryRef(test, view)};
+  workloadDraft.argumentPlan = {loom::sim::StructuredRuntimeMemoryInput{},
+                                loom::sim::StructuredRuntimeMemoryInput{}};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(test, loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+
+  const unsigned pointerBytes = host.layout.getPointerSize(0);
+  loom::sim::RuntimeMemoryObject descriptor(
+      std::vector<loom::sim::SemanticMemoryByte>(
+          pointerBytes, {loom::sim::SemanticState::Defined, 0}));
+  descriptor.initialBytes[1].value = 0x10;
+  descriptor.pointerValues = {loom::sim::RuntimeMemoryPointer{
+      0, 0,
+      loom::sim::PointerTarget{
+          1, llvm::APInt(host.layout.getIndexSizeInBits(0), 0)}}};
+  loom::sim::RuntimeMemoryObject target(
+      std::vector<loom::sim::SemanticMemoryByte>(
+          16, {loom::sim::SemanticState::Defined, 0}));
+  target.initialBytes[8].value = 0x78;
+  target.initialBytes[9].value = 0x56;
+  target.initialBytes[10].value = 0x34;
+  target.initialBytes[11].value = 0x12;
+
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  inputDraft.memoryObjects = {std::move(descriptor), std::move(target)};
+  inputDraft.pointerBindings = {{0, 0, 0}, {1, 1, 0}};
+  auto alternateDraft = inputDraft;
+  alternateDraft.memoryObjects.front().initialBytes[6].value = 0x7f;
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              inputDraft, workload, view));
+  auto alternateInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                                       alternateDraft, workload, view));
+  require(test,
+          input.identity() == alternateInput.identity() &&
+              input.canonicalBytes().bytes() ==
+                  alternateInput.canonicalBytes().bytes(),
+          "native stored-pointer bytes changed canonical runtime identity");
+  auto execution =
+      take(test,
+           loom::sim::executeNativeStructuredProgram(program, workload, input));
+  require(test,
+          execution.returnValue && execution.returnValue->lanes.size() == 1 &&
+              execution.returnValue->lanes.front().bits ==
+                  llvm::APInt(32, 0x12345678),
+          "native execution did not restore stored pointer provenance");
+}
+
 loom::frontend::StructuredProgramCandidate
 denseThreadProgram(llvm::StringRef test, const llvm::DataLayout &layout,
                    bool selected) {
@@ -376,7 +453,7 @@ module {
   dataflow.thread private @dense domain(#dataflow.thread_domain<dense>)(
       %base: !llvm.ptr) ctrl (%ctrl: none) iv (%coord: index) {
     "loom.spatial_region"(%coord, %base)
-        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
       ^bb0(%i: index, %target: !llvm.ptr):
         %i64 = arith.index_cast %i : index to i64
@@ -684,6 +761,7 @@ int main() {
   nonDefinedInputsFailClosed();
   typedCosineUsesCanonicalNativeSemantics();
   selectedOwnershipCarriersExecuteAsWholeProgram();
+  storedPointerPayloadExecutesThroughNativeObjectRegistry();
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();
   runtimeAllocationsEnterTheCaptureRegistry();

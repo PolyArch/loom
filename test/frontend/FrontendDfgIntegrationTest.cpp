@@ -638,9 +638,16 @@ dataflow::LogicalMemoryRootRef
 memoryRoot(const char *test, const dataflow::CanonicalDataflowProgramView &view,
            unsigned threadFormal) {
   for (const dataflow::CanonicalLogicalMemoryRootView &root :
-       view.logicalMemoryRoots())
+       view.logicalMemoryRoots()) {
     if (root.formalArgIndex && *root.formalArgIndex == threadFormal)
       return root.ref;
+    auto service = llvm::dyn_cast_or_null<dataflow::MemoryServiceOp>(root.op);
+    auto source =
+        service ? llvm::dyn_cast<mlir::BlockArgument>(service.getPointer())
+                : mlir::BlockArgument{};
+    if (source && source.getArgNumber() == threadFormal)
+      return root.ref;
+  }
   fail(test, "materialized vecadd is missing an imported memory root");
 }
 
@@ -1377,10 +1384,26 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
       captureBinding(test, capturePlan.input, memoryRoot(test, view, 2))
           .requiresInitialState)
     fail(test, "vecadd capture plan has the wrong initial-state relation");
-  if (capturePlan.input.valueInputs.size() != 1 ||
-      capturePlan.input.valueInputs.front().fixedValue ||
-      capturePlan.input.valueInputs.front().boundaryOperandOrdinal != 3)
-    fail(test, "vecadd capture plan did not recover its runtime scalar");
+  if (capturePlan.input.valueInputs.size() != 4)
+    fail(test, "vecadd capture plan lost pointer or scalar value inputs");
+  unsigned pointerInputs = 0;
+  unsigned scalarInputs = 0;
+  for (const loom::sim::SimulationValueInputCapture &input :
+       capturePlan.input.valueInputs) {
+    if (input.fixedValue || !input.boundaryOperandOrdinal)
+      fail(test, "vecadd runtime value input was classified as fixed");
+    if (input.pointerTarget) {
+      ++pointerInputs;
+      if (*input.boundaryOperandOrdinal >= 3)
+        fail(test, "vecadd pointer input does not name a pointer operand");
+    } else {
+      ++scalarInputs;
+      if (*input.boundaryOperandOrdinal != 3)
+        fail(test, "vecadd runtime scalar names the wrong call operand");
+    }
+  }
+  if (pointerInputs != 3 || scalarInputs != 1)
+    fail(test, "vecadd capture plan has the wrong pointer/value partition");
   for (const loom::sim::SimulationMemoryCaptureObject &object :
        capturePlan.input.objects)
     if (object.byteCount != 64 * sizeof(float))
@@ -1406,7 +1429,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                      capturePlan));
   if (nativeCapture.entryResult != 0 || nativeCapture.calls.size() != 1 ||
       nativeCapture.calls.front().objects.size() != 3 ||
-      nativeCapture.calls.front().runtimeValues.size() != 1)
+      nativeCapture.calls.front().runtimeValues.size() != 4)
     fail(test, "native vecadd oracle did not capture one complete call");
 
   auto mismatchedPlan = capturePlan;
@@ -1425,9 +1448,15 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                      view, launch,
                      findHostCall(test, candidate.canonicalDataflow,
                                   "slice_main", "vecadd")));
-  if (slicePlan.input.valueInputs.size() != 1 ||
-      !slicePlan.input.valueInputs.front().fixedValue)
-    fail(test, "constant call operand did not become a fixed graph input");
+  if (slicePlan.input.valueInputs.size() != 4 ||
+      llvm::count_if(slicePlan.input.valueInputs,
+                     [](const auto &input) {
+                       return input.fixedValue.has_value();
+                     }) != 1 ||
+      llvm::count_if(slicePlan.input.valueInputs, [](const auto &input) {
+        return input.pointerTarget.has_value();
+      }) != 3)
+    fail(test, "constant call operand or pointer inputs were misclassified");
   const auto &sliceA =
       captureBinding(test, slicePlan.input, memoryRoot(test, view, 0));
   const auto &sliceB =
@@ -1443,7 +1472,13 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
     fail(test, "vecadd slice capture did not preserve host aliasing");
 
   loom::sim::SpatialSimulationWorkload workload{launch};
-  workload.valueInputPlan.push_back(loom::sim::RuntimeValueInput{});
+  for (const loom::sim::SimulationValueInputCapture &captured :
+       capturePlan.input.valueInputs)
+    workload.valueInputPlan.push_back(
+        captured.fixedValue
+            ? loom::sim::SpatialValueInputSource(*captured.fixedValue)
+            : loom::sim::SpatialValueInputSource(
+                  loom::sim::RuntimeValueInput{}));
   workload.observableContract.memories.push_back(
       loom::sim::SpatialMemoryObservable{
           dataflow::LogicalMemoryRootOrViewRef{memoryRoot(test, view, 2)},
@@ -1556,9 +1591,6 @@ void staticTableExecutesThroughTypedDfgInput() {
   if (sources.size() != 2)
     fail(test, "table lookup did not retain two logical memory roots");
 
-  loom::sim::RuntimeMemoryObject table;
-  loom::sim::RuntimeMemoryObject output =
-      definedByteObject(std::vector<std::uint8_t>(16, 0));
   std::optional<dataflow::LogicalMemoryRootRef> tableRoot;
   std::optional<dataflow::LogicalMemoryRootRef> outputRoot;
   for (const loom::frontend::RootedLogicalMemorySource &source : sources) {
@@ -1573,7 +1605,6 @@ void staticTableExecutesThroughTypedDfgInput() {
     if (global.symbol != "lookup" ||
         global.provision != loom::frontend::StaticGlobalProvision::Image)
       fail(test, "lookup table has no exact static image");
-    table = definedByteObject(global.bytes);
     tableRoot = source.root;
   }
   if (!tableRoot || !outputRoot)
@@ -1681,6 +1712,13 @@ void staticTableExecutesThroughTypedDfgInput() {
     fail(test, "native table oracle did not preserve the static image");
 
   loom::sim::SpatialSimulationWorkload workload{launch};
+  for (const loom::sim::SimulationValueInputCapture &captured :
+       directPlan.input.valueInputs)
+    workload.valueInputPlan.push_back(
+        captured.fixedValue
+            ? loom::sim::SpatialValueInputSource(*captured.fixedValue)
+            : loom::sim::SpatialValueInputSource(
+                  loom::sim::RuntimeValueInput{}));
   workload.observableContract.memories.push_back(
       loom::sim::SpatialMemoryObservable{
           dataflow::LogicalMemoryRootOrViewRef{*outputRoot},
@@ -1690,10 +1728,14 @@ void staticTableExecutesThroughTypedDfgInput() {
 
   loom::sim::SpatialSimulationRuntimeInputDraft input{
       finalizedWorkload.identity()};
-  input.memoryObjects = {std::move(table), std::move(output)};
-  input.memoryRootBindings = {
-      loom::sim::RuntimeMemoryBindingDraft{*tableRoot, 0, 0},
-      loom::sim::RuntimeMemoryBindingDraft{*outputRoot, 1, 0}};
+  input.runtimeValues = directCapture.calls.front().runtimeValues;
+  for (const loom::sim::NativeCapturedMemoryObject &object :
+       directCapture.calls.front().objects)
+    input.memoryObjects.push_back(definedByteObject(object.initialBytes));
+  for (const loom::sim::SimulationMemoryRootCapture &binding :
+       directPlan.input.memoryRootBindings)
+    input.memoryRootBindings.push_back(loom::sim::RuntimeMemoryBindingDraft{
+        binding.root, binding.objectIndex, binding.byteOffset});
   auto finalizedInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
                                        input, finalizedWorkload, view));
 

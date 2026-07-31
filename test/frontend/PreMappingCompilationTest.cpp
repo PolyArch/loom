@@ -938,8 +938,9 @@ void wholeCallableExternalizesUndefValue() {
     fail(test, "undef boundary did not produce one graph");
   auto graph = mlir::cast<dataflow::GraphOp>(view.graphs().front().op);
   llvm::ArrayRef<std::int32_t> segments = graph.getInputSegmentSizes();
-  if (segments.size() != 3 || segments[0] != 1 || segments[2] != 1)
-    fail(test, "undef was not externalized as one graph value input");
+  if (segments.size() != 3 || segments[0] != 2 || segments[2] != 1)
+    fail(test, "pointer, undef, and memory service did not cross their exact "
+               "graph ABI planes");
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (actor.op->getName().getStringRef() == "llvm.mlir.undef")
       fail(test, "undef remained a canonical actor");

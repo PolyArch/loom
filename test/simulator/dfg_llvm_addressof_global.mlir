@@ -1,6 +1,6 @@
 // RUN: not loom-dfg-sim %s --graph global_table_load --arg 0=1 --output %t.json 2>&1 | FileCheck %s
 
-// CHECK: finalized graph contains residual pointer operation 'llvm.mlir.addressof'
+// CHECK: finalized graph contains unregistered actor 'llvm.mlir.addressof'
 
 module {
   llvm.mlir.global external constant @lookup_table() : !llvm.array<3 x i32>

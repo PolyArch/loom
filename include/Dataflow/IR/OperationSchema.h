@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowEnums.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -196,6 +197,21 @@ struct AggregatePositionPayload {
   }
 };
 
+/// The exact typed indexing path and no-wrap contract of one LLVM GEP. The
+/// function type owns the base, dynamic indices, and result pointer types.
+struct GetElementPtrPayload {
+  ::mlir::Type sourceElementType;
+  std::vector<std::int32_t> rawConstantIndices;
+  ::mlir::LLVM::GEPNoWrapFlags noWrapFlags = ::mlir::LLVM::GEPNoWrapFlags::none;
+
+  friend bool operator==(const GetElementPtrPayload &lhs,
+                         const GetElementPtrPayload &rhs) {
+    return lhs.sourceElementType == rhs.sourceElementType &&
+           lhs.rawConstantIndices == rhs.rawConstantIndices &&
+           lhs.noWrapFlags == rhs.noWrapFlags;
+  }
+};
+
 /// The static dimension selections of a fixed-vector extract or insert.
 /// Dynamic selections remain operands and are already represented by the
 /// actor's function type.
@@ -338,7 +354,8 @@ using SemanticPayload = std::variant<
     IntegerOverflowPayload, IntegerComparePayload, FloatComparePayload,
     ConstantValuePayload, StreamRecurrencePayload, MemoryContractPayload,
     ZeroPoisonPayload, IntegerMinPoisonPayload, AggregatePositionPayload,
-    VectorStaticPositionPayload, VectorShuffleMaskPayload, DisjointPayload>;
+    VectorStaticPositionPayload, VectorShuffleMaskPayload, DisjointPayload,
+    GetElementPtrPayload>;
 
 /// The complete identity-critical projection of one canonical actor instance.
 struct CanonicalActorSchemaProjection {
@@ -378,6 +395,13 @@ struct TransitionDescriptorIdentity {
 /// no empty-payload fallback.
 llvm::Expected<CanonicalActorSchemaProjection>
 projectRegisteredActorSchemaProjection(::mlir::Operation *op);
+
+/// Returns the one LLVM pointer address space used by an actor's exact
+/// function type. Actors without pointer endpoints return no value. Mixed
+/// address spaces are rejected because one concrete admission query must use
+/// one exact DataLayout-derived pointer format.
+llvm::Expected<std::optional<std::uint32_t>> projectActorPointerAddressSpace(
+    const CanonicalActorSchemaProjection &projection);
 
 /// Verifies that a registered actor instance carries exactly the typed state
 /// its schema's declared semantic case owns.

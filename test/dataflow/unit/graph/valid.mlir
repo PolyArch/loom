@@ -41,6 +41,28 @@ dataflow.graph private @g_memory(%ctrl: none, %x: i32,
       memories(%memory : memref<?xi32>) complete(%ctrl : none)
 }
 
+// A pointer is legal on the value plane and remains distinct from a memory
+// capability.
+// CHECK-LABEL: dataflow.graph private @g_pointer_value
+// CHECK-SAME: (%{{.*}}: none, %{{.*}}: !llvm.ptr) -> !llvm.ptr
+dataflow.graph private @g_pointer_value(%ctrl: none, %pointer: !llvm.ptr)
+    -> !llvm.ptr
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 1, 0, 0>} {
+  dataflow.graph.return values(%pointer : !llvm.ptr) streams() memories()
+      complete(%ctrl : none)
+}
+
+// A pointer is also legal as a stream payload.
+// CHECK-LABEL: dataflow.graph private @g_pointer_stream
+dataflow.graph private @g_pointer_stream(%ctrl: none, %pointer: !llvm.ptr)
+    -> !llvm.ptr
+    attributes {input_segments = array<i32: 0, 1, 0>,
+                result_segments = array<i32: 0, 1, 0>} {
+  dataflow.graph.return values() streams(%pointer : !llvm.ptr) memories()
+      complete(%ctrl : none)
+}
+
 // Asynchronous launch site inside a thread body. Dependencies and payload
 // bindings are distinct, and done follows all SSA payload results.
 // CHECK-LABEL: dataflow.thread private @t_demo domain(#dataflow.thread_domain<dense>)(%{{.*}}: i32) ctrl (%{{.*}}: none)
@@ -50,25 +72,6 @@ dataflow.thread private @t_demo domain(#dataflow.thread_domain<dense>)(%x: i32) 
       stream_inputs() memories() stream_outputs()
       : (none, i32) -> (i32, none)
   dataflow.thread.yield
-}
-
-// An address-space-zero LLVM pointer remains in the InstructionCore-facing
-// thread ABI while graph launch derives the canonical linear memref view.
-// CHECK-LABEL: dataflow.thread private @t_pointer_import
-// CHECK: dataflow.graph.launch @g_pointer_import deps(%{{.*}}) values() stream_inputs() memories(%{{.*}}) stream_outputs() : (none, !llvm.ptr) -> none
-dataflow.graph private @g_pointer_import(%start: none,
-                                         %memory: memref<?xf32>) -> ()
-    attributes {input_segments = array<i32: 0, 0, 1>,
-                result_segments = array<i32: 0, 0, 0>} {
-  dataflow.graph.return %start : none
-}
-dataflow.thread private @t_pointer_import
-    domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr)
-    ctrl (%ctrl: none) {
-  %done = dataflow.graph.launch @g_pointer_import deps(%ctrl) values()
-      stream_inputs() memories(%pointer) stream_outputs()
-      : (none, !llvm.ptr) -> none
-  dataflow.thread.yield %done : none
 }
 
 // Stream payloads remain graph-local SSA values and bind to thread channel

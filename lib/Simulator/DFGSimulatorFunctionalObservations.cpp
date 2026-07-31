@@ -59,6 +59,25 @@ sequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
       sequence.lanes.insert(sequence.lanes.end(), shape.lanesPerToken, lane);
       continue;
     }
+    if (shape.pointerLayout) {
+      if (shape.lanesPerToken != 1)
+        return llvm::createStringError(
+            std::errc::not_supported,
+            "DFG observation does not support vector pointer tokens");
+      const PointerValue *pointer = token.pointerValue();
+      if (token.kind != TokenKind::Pointer || !pointer ||
+          pointer->addressSpace != shape.pointerLayout->addressSpace ||
+          pointer->representation.getBitWidth() !=
+              shape.pointerLayout->representationBits ||
+          pointer->byteOffset.getBitWidth() != shape.pointerLayout->addressBits)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "DFG pointer observation does not match its exact pointer type");
+      sequence.lanes.push_back(SemanticLane::definedPointer(
+          pointer->representation, pointer->objectOrdinal,
+          pointer->byteOffset));
+      continue;
+    }
     llvm::Expected<llvm::APInt> bits =
         resolvedTokenBitPattern(token, type, scope);
     if (!bits)

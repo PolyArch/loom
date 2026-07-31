@@ -86,12 +86,14 @@ recognizes:
   accepted set contains `memref.cast`; adding another view form requires one
   matching root, region, and simulator contract before admission.
 
-An enclosing address-space-zero LLVM pointer may bind a canonical linear graph
-memref only through the launch-owned relation in
-`docs/spec-compiler-part-3-dfg.md`. That relation derives a typed structural
-view and does not materialize a graph-body operation.
-`builtin.unrealized_conversion_cast` is never a canonical root, view, actor,
-or boundary bridge.
+Graph launch memory bindings require exact memref capability types. An LLVM
+pointer cannot bind a graph memref through a conversion, inferred base, or
+special address-space-zero rule. SCF optimization may first prove and
+materialize a rooted memref capability plus integer offset, or it may retain
+the pointer as a value consumed by a `PointerAddressed` memory actor together
+with an independently bound service capability. Neither path materializes a
+graph-body bridge. `builtin.unrealized_conversion_cast` is never a canonical
+root, view, actor, or boundary bridge.
 
 The Canonical Dataflow finalizer assigns one `LogicalMemoryRootRef` to each
 static imported-memory formal role and canonical fresh-allocation definition.
@@ -121,10 +123,11 @@ to one runtime object through explicit alias topology without merging their
 static IDs. Partition identity below remains local analysis state and is not
 the persistent root catalog.
 
-A memory input binds an established external capability. When its launch
-actual is an LLVM pointer, runtime admission must resolve a non-null pointer to
-one finite object and byte offset. Raw pointer bits and null do not enter the
-graph and cannot satisfy a graph memory port.
+A memory input binds an established external memref capability through an
+exact graph-launch type match. An LLVM pointer never satisfies a graph memory
+port. A first-class pointer value used by a `PointerAddressed` actor resolves
+through the runtime object registry to one object and byte offset independently
+of the service-capability binding.
 
 Distinct graph memory inputs are conservatively may-alias unless explicit
 no-alias evidence distinguishes them. Distinct fresh allocations are

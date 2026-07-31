@@ -40,6 +40,15 @@ llvm::Error validateAccessForm(MemoryAccessForm form) {
   return invalid("unknown memory access form");
 }
 
+llvm::Error validateAddressForm(MemoryAddressForm form) {
+  switch (form) {
+  case MemoryAddressForm::RootRelative:
+  case MemoryAddressForm::PointerAddressed:
+    return llvm::Error::success();
+  }
+  return invalid("unknown memory address form");
+}
+
 llvm::Error validateMaskForm(MemoryMaskForm form) {
   switch (form) {
   case MemoryMaskForm::Absent:
@@ -80,6 +89,42 @@ llvm::Expected<FiniteAtom> canonicalAtom(MemoryAccessForm value) {
     return encoded.takeError();
   return FiniteAtom{std::vector<std::uint8_t>(encoded->bytes().begin(),
                                               encoded->bytes().end())};
+}
+
+llvm::Expected<FiniteAtom> canonicalAtom(MemoryAddressForm value) {
+  if (llvm::Error error = validateAddressForm(value))
+    return std::move(error);
+  std::vector<std::uint8_t> bytes;
+  appendU32(bytes, static_cast<std::uint32_t>(value));
+  return FiniteAtom{std::move(bytes)};
+}
+
+FiniteAtom canonicalPointerAtom(std::optional<PointerFormat> format) {
+  std::vector<std::uint8_t> bytes;
+  appendU32(bytes, format ? 1 : 0);
+  if (format) {
+    appendU32(bytes, format->addressSpace);
+    appendU32(bytes, format->representationBits);
+    appendU32(bytes, format->addressBits);
+    appendU32(bytes, static_cast<std::uint32_t>(format->kind));
+  }
+  return FiniteAtom{std::move(bytes)};
+}
+
+llvm::Expected<FiniteDomain>
+canonicalPointerDomain(const PointerFormatRelation &relation,
+                       bool includeNonPointer) {
+  if (!relation.valid())
+    return invalid("pointer-format relation is malformed");
+  std::vector<FiniteAtom> atoms;
+  atoms.reserve(relation.size() + (includeNonPointer ? 1 : 0));
+  if (includeNonPointer)
+    atoms.push_back(canonicalPointerAtom(std::nullopt));
+  for (const PointerFormat &format : relation.formats())
+    atoms.push_back(canonicalPointerAtom(format));
+  if (atoms.empty())
+    return invalid("pointer-format domain must not be empty");
+  return FiniteDomain{std::move(atoms)};
 }
 
 llvm::Expected<FiniteAtom> canonicalAtom(MaskInactivePair value) {
@@ -141,6 +186,20 @@ accessClassRelationRow(const MemoryAccessClass &accessClass) {
   auto forms = canonicalFiniteDomain<MemoryAccessForm>(formValues);
   if (!forms)
     return forms.takeError();
+  const MemoryAddressForm addressFormValues[] = {accessClass.addressForm()};
+  auto addressForms =
+      canonicalFiniteDomain<MemoryAddressForm>(addressFormValues);
+  if (!addressForms)
+    return addressForms.takeError();
+  auto addressPointers = canonicalPointerDomain(
+      accessClass.addressPointerFormats(),
+      accessClass.addressForm() == MemoryAddressForm::RootRelative);
+  if (!addressPointers)
+    return addressPointers.takeError();
+  auto dataPointers = canonicalPointerDomain(accessClass.dataPointerFormats(),
+                                             /*includeNonPointer=*/true);
+  if (!dataPointers)
+    return dataPointers.takeError();
   auto masks =
       canonicalFiniteDomain<MaskInactivePair>(accessClass.maskInactivePairs());
   if (!masks)
@@ -155,6 +214,9 @@ accessClassRelationRow(const MemoryAccessClass &accessClass) {
     return writes.takeError();
   RelationRow row;
   row.push_back(std::move(*forms));
+  row.push_back(std::move(*addressForms));
+  row.push_back(std::move(*addressPointers));
+  row.push_back(std::move(*dataPointers));
   row.push_back(accessClass.elementWidths());
   row.push_back(accessClass.flattenedLaneCounts());
   row.push_back(std::move(*masks));
@@ -187,6 +249,66 @@ llvm::Expected<std::uint64_t> readU64(llvm::ArrayRef<std::uint8_t> bytes,
 llvm::Expected<MemoryAccessForm>
 decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, MemoryAccessForm *) {
   return dataflow::decodeMemoryAccessForm(bytes);
+}
+
+llvm::Expected<MemoryAddressForm>
+decodeFiniteAtom(llvm::ArrayRef<std::uint8_t> bytes, MemoryAddressForm *) {
+  std::size_t offset = 0;
+  auto tag = readU32(bytes, offset);
+  if (!tag)
+    return tag.takeError();
+  if (offset != bytes.size() || *tag > 1)
+    return invalid("memory address-form relation atom is not canonical");
+  return static_cast<MemoryAddressForm>(*tag);
+}
+
+struct DecodedPointerDomain {
+  bool containsNonPointer = false;
+  PointerFormatRelation formats;
+};
+
+llvm::Expected<DecodedPointerDomain>
+decodePointerDomain(const RelationDomain &domain) {
+  const auto *finite = std::get_if<FiniteDomain>(&domain);
+  if (!finite)
+    return invalid("pointer-format relation has the wrong domain kind");
+  DecodedPointerDomain decoded;
+  for (const FiniteAtom &atom : finite->atoms) {
+    std::size_t offset = 0;
+    auto tag = readU32(atom.bytes, offset);
+    if (!tag)
+      return tag.takeError();
+    if (*tag == 0) {
+      if (offset != atom.bytes.size() || decoded.containsNonPointer)
+        return invalid("non-pointer relation atom is not canonical");
+      decoded.containsNonPointer = true;
+      continue;
+    }
+    if (*tag != 1)
+      return invalid("unknown pointer-format relation atom");
+    auto addressSpace = readU32(atom.bytes, offset);
+    auto representationBits = readU32(atom.bytes, offset);
+    auto addressBits = readU32(atom.bytes, offset);
+    auto kind = readU32(atom.bytes, offset);
+    if (!addressSpace)
+      return addressSpace.takeError();
+    if (!representationBits)
+      return representationBits.takeError();
+    if (!addressBits)
+      return addressBits.takeError();
+    if (!kind)
+      return kind.takeError();
+    if (offset != atom.bytes.size() ||
+        *kind > static_cast<std::uint32_t>(
+                    ::loom::PointerLayoutKind::ExternalState))
+      return invalid("pointer-format relation atom is not canonical");
+    if (!decoded.formats.insert(
+            PointerFormat{*addressSpace, *representationBits, *addressBits,
+                          static_cast<::loom::PointerLayoutKind>(*kind)}))
+      return invalid("pointer-format relation contains an invalid or duplicate "
+                     "format");
+  }
+  return decoded;
 }
 
 llvm::Expected<MaskInactivePair>
@@ -258,25 +380,45 @@ accessClassesFromRows(llvm::ArrayRef<RelationRow> rows) {
   std::vector<MemoryAccessClass> result;
   result.reserve(rows.size());
   for (const RelationRow &row : rows) {
-    if (row.size() != 7)
+    if (row.size() != detail::memoryAccessClassRelationFieldCount)
       return invalid("canonical access relation has the wrong field count");
     auto forms = valuesOf<MemoryAccessForm>(row[0]);
-    auto masks = valuesOf<MaskInactivePair>(row[3]);
-    auto reads = valuesOf<ReadSubwordSemantics>(row[5]);
-    auto writes = valuesOf<WriteSubwordSemantics>(row[6]);
+    auto addressForms = valuesOf<MemoryAddressForm>(row[1]);
+    auto addressPointers = decodePointerDomain(row[2]);
+    auto dataPointers = decodePointerDomain(row[3]);
+    auto masks = valuesOf<MaskInactivePair>(row[6]);
+    auto reads = valuesOf<ReadSubwordSemantics>(row[8]);
+    auto writes = valuesOf<WriteSubwordSemantics>(row[9]);
     if (!forms)
       return forms.takeError();
+    if (!addressForms)
+      return addressForms.takeError();
+    if (!addressPointers)
+      return addressPointers.takeError();
+    if (!dataPointers)
+      return dataPointers.takeError();
     if (!masks)
       return masks.takeError();
     if (!reads)
       return reads.takeError();
     if (!writes)
       return writes.takeError();
-    if (forms->size() != 1)
-      return invalid("canonical access form partition is not a singleton");
-    const auto *elementWidths = std::get_if<UnsignedDomain>(&row[1]);
-    const auto *laneCounts = std::get_if<UnsignedDomain>(&row[2]);
-    const auto *alignmentExponents = std::get_if<UnsignedDomain>(&row[4]);
+    if (forms->size() != 1 || addressForms->size() != 1)
+      return invalid("canonical access/address form partition is not a "
+                     "singleton");
+    const bool expectsNonPointer =
+        addressForms->front() == MemoryAddressForm::RootRelative;
+    if (addressPointers->containsNonPointer != expectsNonPointer ||
+        (expectsNonPointer && !addressPointers->formats.empty()) ||
+        (!expectsNonPointer && addressPointers->formats.empty()))
+      return invalid("canonical address pointer-format domain disagrees with "
+                     "its address form");
+    if (!dataPointers->containsNonPointer)
+      return invalid("canonical data pointer-format domain omits ordinary "
+                     "typed data");
+    const auto *elementWidths = std::get_if<UnsignedDomain>(&row[4]);
+    const auto *laneCounts = std::get_if<UnsignedDomain>(&row[5]);
+    const auto *alignmentExponents = std::get_if<UnsignedDomain>(&row[7]);
     if (!elementWidths || !laneCounts || !alignmentExponents)
       return invalid("canonical access relation has a wrong unsigned field");
     auto alignments = AlignmentDomain::create(*alignmentExponents);
@@ -292,8 +434,9 @@ accessClassesFromRows(llvm::ArrayRef<RelationRow> rows) {
       return writeDomain.takeError();
     auto accessClass = MemoryAccessClass::create(
         forms->front(), *elementWidths, *laneCounts, *masks,
-        std::move(*alignments), std::move(*readDomain),
-        std::move(*writeDomain));
+        std::move(*alignments), std::move(*readDomain), std::move(*writeDomain),
+        addressForms->front(), std::move(addressPointers->formats),
+        std::move(dataPointers->formats));
     if (!accessClass)
       return accessClass.takeError();
     result.push_back(std::move(*accessClass));
@@ -314,8 +457,8 @@ normalizeAccessClasses(llvm::ArrayRef<MemoryAccessClass> accessClasses) {
       return row.takeError();
     rows.push_back(std::move(*row));
   }
-  const bool groupFiniteFields[] = {false, true, true, true, true, true, true};
-  auto normalized = detail::reduceProductRelation(rows, groupFiniteFields);
+  auto normalized = detail::reduceProductRelation(
+      rows, detail::memoryAccessClassRelationGrouping);
   if (!normalized)
     return normalized.takeError();
   return accessClassesFromRows(*normalized);
@@ -549,9 +692,23 @@ llvm::Expected<MemoryAccessClass> MemoryAccessClass::create(
     llvm::ArrayRef<MaskInactivePair> maskInactivePairs,
     AlignmentDomain sourceAlignments,
     ClosedEnumDomain<ReadSubwordSemantics> readSubword,
-    ClosedEnumDomain<WriteSubwordSemantics> writeSubword) {
+    ClosedEnumDomain<WriteSubwordSemantics> writeSubword,
+    MemoryAddressForm addressForm, PointerFormatRelation addressPointerFormats,
+    PointerFormatRelation dataPointerFormats) {
   if (llvm::Error error = validateAccessForm(accessForm))
     return std::move(error);
+  if (llvm::Error error = validateAddressForm(addressForm))
+    return std::move(error);
+  if (!addressPointerFormats.valid() || !dataPointerFormats.valid())
+    return invalid("memory pointer-format relation is malformed");
+  if (addressForm == MemoryAddressForm::RootRelative &&
+      !addressPointerFormats.empty())
+    return invalid("root-relative memory capability must not own address "
+                   "pointer formats");
+  if (addressForm == MemoryAddressForm::PointerAddressed &&
+      addressPointerFormats.empty())
+    return invalid("pointer-addressed memory capability requires at least one "
+                   "exact pointer format");
   if (elementWidths.contains(0))
     return invalid(
         "memory element width domain must contain only positive values");
@@ -594,10 +751,11 @@ llvm::Expected<MemoryAccessClass> MemoryAccessClass::create(
     sortedMasks.push_back(*pair);
   }
 
-  return MemoryAccessClass(accessForm, std::move(elementWidths),
-                           std::move(flattenedLaneCounts),
-                           std::move(sortedMasks), std::move(sourceAlignments),
-                           std::move(readSubword), std::move(writeSubword));
+  return MemoryAccessClass(
+      accessForm, std::move(elementWidths), std::move(flattenedLaneCounts),
+      std::move(sortedMasks), std::move(sourceAlignments),
+      std::move(readSubword), std::move(writeSubword), addressForm,
+      std::move(addressPointerFormats), std::move(dataPointerFormats));
 }
 
 bool MemoryAccessClass::contains(
@@ -606,10 +764,19 @@ bool MemoryAccessClass::contains(
   const std::optional<std::uint64_t> sourceAlignment =
       contract.atomic ? contract.sourceAlignmentBytes
                       : std::optional<std::uint64_t>(1);
-  if (access.form() != accessForm_ ||
+  if (access.form() != accessForm_ || access.addressForm() != addressForm_ ||
       !elementWidths_.contains(access.elementBits()) ||
       !flattenedLaneCounts_.contains(access.laneCount()) || !sourceAlignment ||
       !sourceAlignments_.containsBytes(*sourceAlignment))
+    return false;
+
+  if (addressForm_ == MemoryAddressForm::PointerAddressed) {
+    if (!access.geometry().pointerLayout ||
+        !addressPointerFormats_.contains(*access.geometry().pointerLayout))
+      return false;
+  }
+  if (access.geometry().dataPointerLayout &&
+      !dataPointerFormats_.contains(*access.geometry().dataPointerLayout))
     return false;
 
   InactiveLaneSemantics required = InactiveLaneSemantics::NotApplicable;

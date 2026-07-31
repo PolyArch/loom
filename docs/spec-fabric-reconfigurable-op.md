@@ -117,6 +117,25 @@ Operations that do not share a real implementation family require separate
 
 ## `hw_params` And Physical Ports
 
+Pointer-capable scalar integer parameters extend the ordinary integer-width
+domain with a finite relation of exact pointer formats:
+
+```text
+PointerFormat = {
+  address_space        : u32
+  representation_bits : u32
+  address_bits         : u32
+  kind                 : StableIntegral
+}
+```
+
+The relation is empty for an ordinary integer-only resource. It is nonempty
+only when the concrete resource's `op_list` enables a pointer schema. Endpoint
+capacity must cover `representation_bits`; GEP index operands must be admitted
+by their own integer widths. `representation_bits`, `address_bits`, and the
+software candidate's selected `index` width are independently validated and
+must never be inferred from one another.
+
 `hw_params` stores hardware facts: fixed implementation parameters, supported
 typed semantic parameter domains, configurable arity and port-selection
 constraints, and legal correlations among configuration fields. It describes
@@ -299,14 +318,17 @@ software configuration field.
 
 `LoopCarry`, `LoopInvariant`, and `LoopGate` are bit-preserving token-plane
 resources. Their concrete port capacities may admit exact scalar integer,
-floating-point, and fixed-ranked vector actor types whose semantic payload
-fits the selected same-kind physical path, plus `none` under Fabric's
-zero-payload control-token convention. Equal payload width does not identify
-the semantic type; TechMapping still proves exact operation type and ordered
-port correspondence. These resources do not interpret payload bits and
-therefore do not enumerate the Cartesian product of such types. Frontend
-`memref` bindings are not token-plane payloads and are never admitted by these
-families.
+floating-point, fixed-ranked vector, and scalar `!llvm.ptr<AS>` actor types
+whose semantic payload fits the selected same-kind physical path, plus `none`
+under Fabric's zero-payload control-token convention. A pointer payload also
+requires the exact module-derived stable-integral `PointerLayout(AS)` and port
+capacity for all `representation_bits`; the token resource does not acquire
+pointer arithmetic or dereference capability merely by transporting those
+bits. Equal payload width does not identify the semantic type; TechMapping
+still proves exact operation type and ordered port correspondence. These
+resources do not interpret payload bits and therefore do not enumerate the
+Cartesian product of such types. Frontend `memref` bindings are not
+token-plane payloads and are never admitted by these families.
 
 The operation schema owns the logical transition cases specified in
 `docs/spec-dataflow-part-1-streaming.md`. The concrete Fabric resource maps

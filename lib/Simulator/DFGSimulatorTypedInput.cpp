@@ -32,8 +32,10 @@ bool sequenceNeedsLaneStateSupport(const CanonicalValueSequence &sequence,
   return false;
 }
 
-llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
-                                     mlir::Type type, const LaneShape &shape) {
+llvm::Expected<Token>
+tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes, mlir::Type type,
+               const LaneShape &shape,
+               llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects) {
   if (shape.lanesPerToken == 0)
     return noneToken();
   const SemanticState state = lanes.front().state;
@@ -46,6 +48,20 @@ llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
   if (shape.lanesPerToken == 1) {
     if (mlir::isa<mlir::IndexType>(type))
       return indexToken(lanes.front().bits);
+    if (shape.pointerLayout) {
+      const PointerTarget &target = *lanes.front().pointerTarget;
+      if (target.objectOrdinal >= objects.size())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "typed pointer input names an unavailable runtime object");
+      Token token;
+      token.kind = TokenKind::Pointer;
+      token.setPointerValue(
+          PointerValue{objects[target.objectOrdinal], target.objectOrdinal,
+                       shape.pointerLayout->addressSpace, target.byteOffset,
+                       lanes.front().bits});
+      return token;
+    }
     return tokenFromBitPattern(lanes.front().bits, type);
   }
 
@@ -71,7 +87,8 @@ llvm::Expected<Token> tokenFromLanes(llvm::ArrayRef<SemanticLane> lanes,
 
 llvm::Expected<llvm::SmallVector<Token>>
 tokensFromSequence(const CanonicalValueSequence &sequence, mlir::Type type,
-                   const LaneShape &shape) {
+                   const LaneShape &shape,
+                   llvm::ArrayRef<std::shared_ptr<MemoryValue>> objects) {
   llvm::SmallVector<Token> tokens;
   tokens.reserve(sequence.tokenCount);
   for (std::uint64_t token = 0; token < sequence.tokenCount; ++token) {
@@ -79,7 +96,7 @@ tokensFromSequence(const CanonicalValueSequence &sequence, mlir::Type type,
     if (shape.lanesPerToken != 0)
       lanes = llvm::ArrayRef(sequence.lanes)
                   .slice(token * shape.lanesPerToken, shape.lanesPerToken);
-    auto converted = tokenFromLanes(lanes, type, shape);
+    auto converted = tokenFromLanes(lanes, type, shape, objects);
     if (!converted)
       return converted.takeError();
     tokens.push_back(std::move(*converted));
@@ -157,40 +174,6 @@ seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
   const SpatialSimulationWorkload &model = *workload.spatial();
   const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
 
-  for (std::uint64_t ordinal = 0; ordinal < model.valueInputPlan.size();
-       ++ordinal) {
-    const CanonicalValueSequence *sequence =
-        std::get_if<CanonicalValueSequence>(&model.valueInputPlan[ordinal]);
-    if (!sequence) {
-      const RuntimeValueEntry *runtime = runtimeValueAt(input, ordinal);
-      if (!runtime)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "admitted typed value input has no runtime value");
-      sequence = &runtime->value;
-    }
-    mlir::BlockArgument argument = entry.getArgument(ordinal + 1);
-    auto tokens = tokensFromSequence(*sequence, argument.getType(),
-                                     context.valueInputShapes[ordinal]);
-    if (!tokens)
-      return tokens.takeError();
-    for (const Token &token : *tokens)
-      seedBlockArgument(state, argument, token);
-  }
-
-  const std::uint64_t streamBase = 1 + context.numValueInputs;
-  for (std::uint64_t ordinal = 0; ordinal < input.runtimeStreams.size();
-       ++ordinal) {
-    mlir::BlockArgument argument = entry.getArgument(streamBase + ordinal);
-    auto tokens = tokensFromSequence(input.runtimeStreams[ordinal].values,
-                                     argument.getType(),
-                                     context.streamInputShapes[ordinal]);
-    if (!tokens)
-      return tokens.takeError();
-    for (const Token &token : *tokens)
-      seedBlockArgument(state, argument, token);
-  }
-
   llvm::SmallVector<std::shared_ptr<MemoryValue>> objects;
   objects.reserve(input.memoryObjects.size());
   for (auto [ordinal, object] : llvm::enumerate(input.memoryObjects)) {
@@ -205,7 +188,63 @@ seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
     memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
     objects.push_back(std::move(memory));
   }
+  for (auto [storageOrdinal, object] : llvm::enumerate(input.memoryObjects)) {
+    for (const RuntimeMemoryPointer &stored : object.pointerValues) {
+      if (stored.target.objectOrdinal >= objects.size())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "typed stored pointer names an unavailable runtime object");
+      llvm::Expected<PointerLayout> layout =
+          resolvePointerLayout(context.graphOp, stored.addressSpace);
+      if (!layout)
+        return layout.takeError();
+      llvm::Expected<llvm::APInt> representation =
+          decodeRuntimePointerRepresentation(object, stored, context.graphOp);
+      if (!representation)
+        return representation.takeError();
+      objects[storageOrdinal]->pointerValues.emplace(
+          stored.storageByteOffset,
+          PointerValue{objects[stored.target.objectOrdinal],
+                       stored.target.objectOrdinal, stored.addressSpace,
+                       stored.target.byteOffset, std::move(*representation)});
+    }
+  }
   state.nextMemoryRootId = objects.size();
+
+  for (std::uint64_t ordinal = 0; ordinal < model.valueInputPlan.size();
+       ++ordinal) {
+    const CanonicalValueSequence *sequence =
+        std::get_if<CanonicalValueSequence>(&model.valueInputPlan[ordinal]);
+    if (!sequence) {
+      const RuntimeValueEntry *runtime = runtimeValueAt(input, ordinal);
+      if (!runtime)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "admitted typed value input has no runtime value");
+      sequence = &runtime->value;
+    }
+    mlir::BlockArgument argument = entry.getArgument(ordinal + 1);
+    auto tokens =
+        tokensFromSequence(*sequence, argument.getType(),
+                           context.valueInputShapes[ordinal], objects);
+    if (!tokens)
+      return tokens.takeError();
+    for (const Token &token : *tokens)
+      seedBlockArgument(state, argument, token);
+  }
+
+  const std::uint64_t streamBase = 1 + context.numValueInputs;
+  for (std::uint64_t ordinal = 0; ordinal < input.runtimeStreams.size();
+       ++ordinal) {
+    mlir::BlockArgument argument = entry.getArgument(streamBase + ordinal);
+    auto tokens = tokensFromSequence(
+        input.runtimeStreams[ordinal].values, argument.getType(),
+        context.streamInputShapes[ordinal], objects);
+    if (!tokens)
+      return tokens.takeError();
+    for (const Token &token : *tokens)
+      seedBlockArgument(state, argument, token);
+  }
 
   const std::uint64_t memoryBase = streamBase + context.numStreamInputs;
   for (std::uint64_t ordinal = 0; ordinal < context.memoryInputRoots.size();

@@ -20,6 +20,8 @@ def Dataflow_Dialect : Dialect {
   let extraClassDeclaration = [{
     static bool isMemoryCapabilityType(::mlir::Type type);
     static bool containsMemoryCapability(::mlir::Type type);
+    static bool isPointerValueType(::mlir::Type type);
+    static bool containsPointerValue(::mlir::Type type);
     static bool containsChannelOrThreadToken(::mlir::Type type);
 
     /// The one type domain a transferred Dataflow payload admits. A channel

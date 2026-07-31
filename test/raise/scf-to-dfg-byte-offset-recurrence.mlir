@@ -1,21 +1,19 @@
 // RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
-// A byte-address recurrence whose initial value and update are aligned to the
-// accessed element width becomes one integer access function. The LLVM pointer
-// remains at the thread boundary while the finalized graph owns one f32 view.
+// A byte-address recurrence remains one exact pointer access function. The
+// enclosing thread owns the memory service while the graph retains the typed
+// GEP and byte offset.
 
 // CHECK-LABEL: dataflow.thread private @byte_offset_recurrence
+// CHECK: dataflow.memory.service %arg0 : !llvm.ptr -> memref<?xf32>
 // CHECK: dataflow.graph.launch @byte_offset_recurrence_graph
-// CHECK-SAME: memories(%arg0)
 // CHECK-LABEL: dataflow.graph private @byte_offset_recurrence_graph(
+// CHECK-SAME: !llvm.ptr
 // CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
 // CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK-NOT: !llvm.ptr
 // CHECK: %[[OFFSET:.*]] = dataflow.carry {{.*}} : i64
-// CHECK: %[[ELEMENT_OFFSET:.*]] = arith.shrsi %[[OFFSET]], %{{.*}} : i64
-// CHECK: %[[ADDRESS:.*]] = arith.index_cast %[[ELEMENT_OFFSET]] : i64 to index
+// CHECK: %[[ADDRESS:.*]] = llvm.getelementptr inbounds|nuw {{%.*}}[%[[OFFSET]]]
 // CHECK: dataflow.load [[MEM]][%[[ADDRESS]]]
-// CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
 
 module attributes {
@@ -26,7 +24,7 @@ module attributes {
       domain(#dataflow.thread_domain<dense>)(%base: !llvm.ptr, %limit: i64)
       ctrl (%ctrl: none) {
     %sum = "loom.spatial_region"(%limit, %base)
-        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 0>,
           resultSegmentSizes = array<i32: 1, 0>}> ({
       ^bb0(%bound: i64, %memory: !llvm.ptr):
         %zero = arith.constant 0 : i64

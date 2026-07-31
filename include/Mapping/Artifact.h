@@ -249,6 +249,7 @@ struct DataflowProgramView {
   std::vector<ActorDescriptor> actors;
   std::vector<DataflowEdge> edges;
   std::vector<LogicalMemoryRootDescriptor> logicalMemoryRoots;
+  std::vector<::loom::PointerLayout> pointerLayouts;
 };
 
 struct FuDescriptor {
@@ -350,6 +351,7 @@ struct FabricOpDescriptor {
   ::fabric::FamilyCapabilityParams capability;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+  std::vector<::dataflow::OperationSchemaId> enabledOperationSchemas;
 };
 
 struct MemoryServiceDomainDescriptor {

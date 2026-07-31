@@ -1,16 +1,48 @@
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowEnums.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "llvm/Support/Error.h"
 
 using namespace mlir;
 using namespace dataflow;
 
 #define GET_OP_CLASSES
 #include "Dataflow/IR/DataflowOps.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// Thread memory service ops
+//===----------------------------------------------------------------------===//
+
+LogicalResult MemoryServiceOp::verify() {
+  if (getOperation()->getParentOfType<GraphOp>())
+    return emitOpError("must not appear inside a dataflow.graph definition");
+  if (!getOperation()->getParentOfType<ThreadOp>())
+    return emitOpError("must appear inside a dataflow.thread body");
+
+  auto pointerType = dyn_cast<LLVM::LLVMPointerType>(getPointer().getType());
+  if (!pointerType)
+    return emitOpError("pointer operand must have LLVM pointer type");
+  auto memoryType = dyn_cast<MemRefType>(getMemory().getType());
+  if (!memoryType || memoryType.getRank() != 1 || !memoryType.isDynamicDim(0) ||
+      !memoryType.getLayout().isIdentity() || memoryType.getMemorySpace())
+    return emitOpError("result must be an identity-layout memref<?xT> in the "
+                       "default memory space");
+
+  llvm::Expected<::loom::PointerLayout> layout = ::loom::resolvePointerLayout(
+      getOperation(), pointerType.getAddressSpace());
+  if (!layout)
+    return emitOpError() << llvm::toString(layout.takeError());
+  if (layout->kind != ::loom::PointerLayoutKind::StableIntegral)
+    return emitOpError(
+        "requires a stable integral pointer representation provider");
+  return success();
+}
 
 //===----------------------------------------------------------------------===//
 // Streaming Ops
@@ -167,13 +199,23 @@ ParseResult parseMemoryAccessTypes(OpAsmParser &parser,
   Type firstExplicitType;
   if (parser.parseType(firstExplicitType))
     return failure();
+  auto isAddressType = [](Type type) {
+    if (isa<IndexType, LLVM::LLVMPointerType>(type))
+      return true;
+    auto vector = dyn_cast<VectorType>(type);
+    return vector &&
+           isa<IndexType, LLVM::LLVMPointerType>(vector.getElementType());
+  };
   if (failed(parser.parseOptionalComma())) {
-    types.dataType = firstExplicitType;
+    if (isAddressType(firstExplicitType))
+      types.addressType = firstExplicitType;
+    else
+      types.dataType = firstExplicitType;
     return success();
   }
-  if (!isa<VectorType>(firstExplicitType))
+  if (!isAddressType(firstExplicitType))
     return parser.emitError(parser.getCurrentLocation(),
-                            "first explicit type must be a vector address type");
+                            "first explicit type must be an address type");
 
   types.addressType = firstExplicitType;
   return parser.parseType(types.dataType);
@@ -195,6 +237,14 @@ Type getMaskType(OpAsmParser &parser, VectorType dataVector) {
 
 bool hasExplicitMemoryDataType(Value memory, Type dataType) {
   return dataType != cast<MemRefType>(memory.getType()).getElementType();
+}
+
+bool isMemoryAddressType(Type type) {
+  if (isa<IndexType, LLVM::LLVMPointerType>(type))
+    return true;
+  auto vector = dyn_cast<VectorType>(type);
+  return vector &&
+         isa<IndexType, LLVM::LLVMPointerType>(vector.getElementType());
 }
 
 /// Parses the grammar shared by every addressed memory actor:
@@ -252,9 +302,14 @@ void printAddressedAccess(OpAsmPrinter &printer, Operation *op, Value memory,
     printer << " mask " << mask;
   printer.printOptionalAttrDict(op->getAttrs());
   printer << " : " << memory.getType();
-  if (isa<VectorType>(address.getType()))
+  const bool explicitData = hasExplicitMemoryDataType(memory, dataType);
+  // A lone explicit pointer type is parsed as the address type. Preserve the
+  // otherwise implicit index when the data itself is a pointer so printing is
+  // unambiguous and round-trippable.
+  if (!isa<IndexType>(address.getType()) ||
+      (explicitData && isMemoryAddressType(dataType)))
     printer << ", " << address.getType();
-  if (hasExplicitMemoryDataType(memory, dataType))
+  if (explicitData)
     printer << ", " << dataType;
 }
 
@@ -264,7 +319,7 @@ void printAddressedAccess(OpAsmPrinter &printer, Operation *op, Value memory,
 LogicalResult verifyAddressedAccess(Operation *op, Value memory, Value address,
                                     Type dataType, Value mask) {
   auto access = semantics::analyzeMemoryAccessType(
-      cast<MemRefType>(memory.getType()), dataType, address.getType(),
+      cast<MemRefType>(memory.getType()), dataType, address.getType(), op,
       mask ? mask.getType() : Type{});
   if (!access)
     return op->emitOpError(llvm::toString(access.takeError()));
@@ -285,8 +340,7 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void LoadOp::print(OpAsmPrinter &printer) {
   printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
-                       ValueRange{}, getCtrl(), getMask(),
-                       getData().getType());
+                       ValueRange{}, getCtrl(), getMask(), getData().getType());
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Type data,
@@ -315,8 +369,8 @@ ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void StoreOp::print(OpAsmPrinter &printer) {
-  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
-                       getData(), getCtrl(), getMask(), getData().getType());
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(), getData(),
+                       getCtrl(), getMask(), getData().getType());
 }
 
 void StoreOp::build(OpBuilder &builder, OperationState &state, Type done,
@@ -344,8 +398,8 @@ ParseResult AtomicRmwOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void AtomicRmwOp::print(OpAsmPrinter &printer) {
-  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
-                       getValue(), getCtrl(), getMask(), getOld().getType());
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(), getValue(),
+                       getCtrl(), getMask(), getOld().getType());
 }
 
 LogicalResult AtomicRmwOp::verify() {

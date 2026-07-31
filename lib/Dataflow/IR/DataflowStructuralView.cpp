@@ -368,15 +368,15 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
           }))
     return error;
 
-  // (5) Static memory composition, in canonical stored-program order. Roots are
-  // thread memory formals and fresh allocations. A thread-body view is a global
-  // root-local view; a graph-body view is resolved once per callee context at
-  // each actual static launch site, contextual when it peels to a graph memory
-  // formal (so two sites under two thread roots yield distinct root-local
-  // views) and global when it peels to a graph-body allocation. Every admitted
-  // view is resolved and every memory-result exposure is total; an unresolved
-  // relation fails finalization. Root-launch occurrences never multiply this
-  // inventory.
+  // (5) Static memory composition, in canonical stored-program order. Roots
+  // are thread memory formals, thread memory-service acquisitions, and fresh
+  // graph allocations. A thread-body view is a global root-local view; a
+  // graph-body view is resolved once per callee context at each actual static
+  // launch site, contextual when it peels to a graph memory formal (so two
+  // sites under two thread roots yield distinct root-local views) and global
+  // when it peels to a graph-body allocation. Every admitted view is resolved
+  // and every memory-result exposure is total; an unresolved relation fails
+  // finalization. Root-launch occurrences never multiply this inventory.
   llvm::SmallVector<unsigned> viewCountByRoot(logicalMemoryRoots_.size(), 0);
   llvm::SmallVector<std::pair<std::size_t, LogicalMemoryViewRef>> flatViews;
   auto addRole = [&](LogicalMemoryRootOrViewRef role) -> unsigned {
@@ -477,16 +477,11 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
         llvm::Expected<unsigned> role = resolveThreadValue(actual);
         if (!role)
           return role.takeError();
-        if (actual.getType() == arg.getType()) {
-          siteCache[m] = *role;
-          return *role;
-        }
-        // A pointer-valued thread ABI binding to a canonical graph memref is
-        // one launch-owned imported view under the pointer's logical root.
-        // GraphLaunchOp verification owns the exact admissible type relation.
-        unsigned viewRole = makeViewRole(rootSlotOf(*role));
-        siteCache[m] = viewRole;
-        return viewRole;
+        if (actual.getType() != arg.getType())
+          return invalid(
+              "canonical dataflow: graph memory binding type mismatch");
+        siteCache[m] = *role;
+        return *role;
       }
       if (Operation *def = m.getDefiningOp())
         if (Value base = viewBase(def)) {

@@ -59,6 +59,7 @@ struct RuntimeValueCaptureShape {
   std::uint64_t lanesPerToken = 0;
   std::uint32_t laneBitWidth = 0;
   std::uint64_t byteCount = 0;
+  std::optional<SimulationPointerValueTargetCapture> pointerTarget;
 };
 
 struct ValueResultCaptureShape {
@@ -357,11 +358,34 @@ void captureValue(std::uint64_t valueOrdinal, void *base,
 
   const RuntimeValueCaptureShape &shape =
       context.runtimeValueShapes[valueOrdinal];
+  CanonicalValueSequence value =
+      readCapturedValue(base, byteCount, shape.lanesPerToken,
+                        shape.laneBitWidth, context.littleEndian);
+  if (shape.pointerTarget) {
+    const std::uint64_t rootOrdinal =
+        shape.pointerTarget->memoryRootBindingOrdinal;
+    NativeSimulationCallCapture &capture =
+        context.result.calls[active.captureIndex];
+    if (value.lanes.size() != 1 ||
+        rootOrdinal >= capture.memoryRootObjectOrdinals.size() ||
+        rootOrdinal >= capture.memoryRootByteOffsets.size() ||
+        shape.pointerTarget->addressBitWidth == 0) {
+      recordCaptureError("pointer value has an invalid memory-root target");
+      return;
+    }
+    const std::uint64_t byteOffset = capture.memoryRootByteOffsets[rootOrdinal];
+    llvm::APInt offsetBits(64, byteOffset);
+    if (offsetBits.getActiveBits() >= shape.pointerTarget->addressBitWidth) {
+      recordCaptureError("pointer value offset exceeds its signed address "
+                         "width");
+      return;
+    }
+    value.lanes.front().pointerTarget = PointerTarget{
+        capture.memoryRootObjectOrdinals[rootOrdinal],
+        llvm::APInt(shape.pointerTarget->addressBitWidth, byteOffset)};
+  }
   context.result.calls[active.captureIndex].runtimeValues.push_back(
-      RuntimeValueEntry{shape.graphInputOrdinal,
-                        readCapturedValue(base, byteCount, shape.lanesPerToken,
-                                          shape.laneBitWidth,
-                                          context.littleEndian)});
+      RuntimeValueEntry{shape.graphInputOrdinal, std::move(value)});
   ++active.nextValue;
 }
 
@@ -688,13 +712,48 @@ instrumentCapture(llvm::Module &module,
   for (const SimulationValueInputCapture &input : plan.input.valueInputs) {
     if (input.fixedValue)
       continue;
-    if (!valueCallback || !input.boundaryOperandOrdinal ||
-        *input.boundaryOperandOrdinal >= selected->arg_size() ||
-        input.byteCount == 0 ||
+    if (!valueCallback || input.byteCount == 0 ||
         input.byteCount > std::numeric_limits<std::size_t>::max())
       return invalid("runtime value input has no finite call projection");
-    llvm::Value *operand =
-        selected->getArgOperand(*input.boundaryOperandOrdinal);
+    llvm::Value *operand = nullptr;
+    if (input.boundaryOperandOrdinal) {
+      if (*input.boundaryOperandOrdinal >= selected->arg_size())
+        return invalid("runtime value input exceeds call operands");
+      operand = selected->getArgOperand(*input.boundaryOperandOrdinal);
+    } else if (input.pointerTarget) {
+      const std::uint64_t rootOrdinal =
+          input.pointerTarget->memoryRootBindingOrdinal;
+      if (rootOrdinal >= plan.input.memoryRootBindings.size())
+        return invalid("runtime pointer target exceeds memory roots");
+      const SimulationMemoryRootCapture &root =
+          plan.input.memoryRootBindings[rootOrdinal];
+      if (root.objectIndex >= plan.input.objects.size() ||
+          root.objectIndex >= plan.memoryObjectSources.size())
+        return invalid("runtime pointer target names an absent object");
+      const SimulationMemoryCaptureObject &object =
+          plan.input.objects[root.objectIndex];
+      auto source = resolveDirectCallMemorySource(
+          module, *selected, plan.memoryObjectSources[root.objectIndex]);
+      if (!source)
+        return source.takeError();
+      operand = *source;
+      if (root.byteOffset != object.operandByteOffset) {
+        if (root.byteOffset > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int64_t>::max()) ||
+            object.operandByteOffset >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()))
+          return invalid("runtime pointer target offset exceeds int64");
+        const std::int64_t delta =
+            static_cast<std::int64_t>(root.byteOffset) -
+            static_cast<std::int64_t>(object.operandByteOffset);
+        operand = beforeBuilder.CreateGEP(
+            llvm::Type::getInt8Ty(context), operand,
+            llvm::ConstantInt::getSigned(i64, delta), "loom.capture.pointer");
+      }
+    } else {
+      return invalid("runtime value input has no finite call projection");
+    }
     if (!operand->getType()->isSized())
       return invalid("runtime value input has no sized native type");
     llvm::TypeSize nativeBytes =
@@ -1261,9 +1320,9 @@ runNativeCapture(llvm::orc::ThreadSafeModule module,
   capture.littleEndian = jit->getDataLayout().isLittleEndian();
   for (const SimulationValueInputCapture &input : plan.valueInputs)
     if (!input.fixedValue)
-      capture.runtimeValueShapes.push_back(
-          RuntimeValueCaptureShape{input.valueInputOrdinal, input.lanesPerToken,
-                                   input.laneBitWidth, input.byteCount});
+      capture.runtimeValueShapes.push_back(RuntimeValueCaptureShape{
+          input.valueInputOrdinal, input.lanesPerToken, input.laneBitWidth,
+          input.byteCount, input.pointerTarget});
   capture.valueResultShapes.reserve(plan.valueResults.size());
   for (const SimulationValueResultCapture &result : plan.valueResults)
     capture.valueResultShapes.push_back(

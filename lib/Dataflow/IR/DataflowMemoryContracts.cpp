@@ -185,6 +185,8 @@ llvm::Error validateAtomicObject(Type object) {
 llvm::Error
 validateAtomicAccessType(Operation *op,
                          const semantics::MemoryAccessType &access) {
+  if (access.dataPointerLayout)
+    return contractError("atomic pointer payload is unsupported");
   Type object = access.elementType;
   auto vector = llvm::dyn_cast<VectorType>(object);
   if (llvm::Error error = validateAtomicElementCategory(

@@ -77,6 +77,7 @@ set(LOOM_TEST_DEPENDS
   loom-structured-program-artifact-test
   loom-structured-thread-domain-test
   loom-pre-mapping-compilation-test
+  loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test
   loom-mapping-core-test
   loom-pnr-index-test
@@ -85,6 +86,7 @@ set(LOOM_TEST_DEPENDS
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
+  loom-simulator-dfg-pointer-execution-test
   loom-simulator-operation-schema-projection-test
   loom-simulator-simulation-wire-test
   loom-simulator-structured-program-native-execution-test

@@ -29,7 +29,8 @@ public:
       ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>
   admittingOperationResources(
       const ::dataflow::CanonicalActorSchemaProjection &actor,
-      unsigned indexBitWidth) const;
+      unsigned indexBitWidth,
+      const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
   /// Counts the concrete operation occurrences represented by the admitted
   /// capability templates. For a System root this expands both module-local
@@ -37,7 +38,8 @@ public:
   /// is a removable Evaluation projection, not a placement or routing proof.
   llvm::Expected<std::uint64_t> admittingOperationResourceCount(
       const ::dataflow::CanonicalActorSchemaProjection &actor,
-      unsigned indexBitWidth) const;
+      unsigned indexBitWidth,
+      const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
   llvm::Expected<std::uint64_t>
   admittingOperationResourceCount(::mlir::Operation *actor) const;

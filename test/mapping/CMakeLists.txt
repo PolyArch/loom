@@ -14,4 +14,5 @@ target_link_libraries(loom-mapping-core-test PRIVATE
   LoomPnR
   LLVMSupport
   MLIRIR
+  MLIRLLVMDialect
 )

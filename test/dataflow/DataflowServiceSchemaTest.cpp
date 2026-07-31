@@ -553,7 +553,8 @@ bool checkAccess(llvm::StringRef subject, const CanonicalMemoryAccessView &view,
     llvm::consumeError(index.takeError());
     return fail(subject, "the actor has no canonical index width");
   }
-  ok &= checkWidth(subject, "index width", view.indexBits(), *index);
+  ok &=
+      checkWidth(subject, "address lane width", view.addressLaneBits(), *index);
 
   std::uint64_t addressBits = *index;
   if (auto addresses =
@@ -623,9 +624,8 @@ bool checkMemoryServiceRoleProjection() {
        maskedWriteArguments, writeResults},
       {OperationSchemaId::DataflowAtomicRmw, ServiceKind::MemoryAtomicRmw,
        maskedRmwArguments, rmwResults},
-      {OperationSchemaId::DataflowCmpXchg,
-       ServiceKind::MemoryCompareExchange, maskedCmpxchgArguments,
-       cmpxchgResults},
+      {OperationSchemaId::DataflowCmpXchg, ServiceKind::MemoryCompareExchange,
+       maskedCmpxchgArguments, cmpxchgResults},
       {OperationSchemaId::DataflowFence, ServiceKind::MemoryFence,
        fenceArguments, fenceResults},
   };
@@ -939,7 +939,8 @@ bool checkCorrespondenceIncludesIndexScope(mlir::ModuleOp module) {
   if (*projection32 != *projection64)
     return fail("correspondence",
                 "the fixture changes the canonical actor projection");
-  if (service32->access().indexBits() != 32 || access64->indexBits() != 64 ||
+  if (service32->access().addressLaneBits() != 32 ||
+      access64->addressLaneBits() != 64 ||
       service32->access().addressBits() != 32 || access64->addressBits() != 64)
     return fail("correspondence",
                 "the fixture does not isolate the enclosing index scope");
@@ -1175,8 +1176,7 @@ int main() {
   mlir::DialectRegistry registry;
   registry
       .insert<DataflowDialect, mlir::func::FuncDialect, mlir::DLTIDialect>();
-  mlir::MLIRContext context(registry,
-                            mlir::MLIRContext::Threading::DISABLED);
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =

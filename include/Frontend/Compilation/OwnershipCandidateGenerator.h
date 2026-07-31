@@ -197,6 +197,10 @@ struct PreparedSpatialOwnershipSelection final {
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   mlir::Operation *operation = nullptr;
+  /// Exact top-level operations selected from a whole callable after any
+  /// InstructionCore service-acquisition prelude. Empty for non-callable
+  /// scopes, whose selected operation remains the complete Spatial body.
+  std::vector<mlir::Operation *> callableSpatialBody;
   std::vector<mlir::Value> liveIns;
   std::vector<mlir::Value> liveOuts;
   /// Present exactly when the selected decision promotes an scf.forall to a

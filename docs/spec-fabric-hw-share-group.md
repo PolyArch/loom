@@ -99,12 +99,27 @@ canonical or reinterpret the schema's semantic projection.
 
 ### Initial Scalar Compute Families
 
+`ScalarIntegerAddSub` may include `LLVMGetElementPtr` as an optional concrete
+member because a stable integral GEP's final address formation can share a real
+integer add/sub datapath. This is physical sharing, not semantic equivalence.
+The family descriptor makes the schema eligible; a concrete `fabric.op` must
+still list `LLVMGetElementPtr` in `op_list` and its typed parameters must admit
+the exact pointer representation width, address-arithmetic width, address
+space, and stable-integral pointer kind. An ordinary adder that omits that
+member does not support GEP.
+
+The same `LLVMGetElementPtr` schema may also belong to a dedicated address-
+generation implementation family. TechMapping selects one concrete family and
+does not reinterpret either family as an InstructionCore ISA. RISC-V may own
+the initial LLVM DataLayout and InstructionCore ABI, but every SpatialCore
+datapath is Fabric-defined.
+
 The initial general-purpose scalar registry contains these exact family/member
 relations:
 
 | `ImplementationFamilyId` | Admitted canonical operation schemas |
 | ------------------------ | ------------------------------------ |
-| `ScalarIntegerAddSub` | `arith.addi`, `arith.subi` |
+| `ScalarIntegerAddSub` | `arith.addi`, `arith.subi`, optional `llvm.getelementptr` |
 | `ScalarIntegerSaturatingAddSub` | `llvm.intr.sadd.sat`, `llvm.intr.uadd.sat`, `llvm.intr.ssub.sat`, `llvm.intr.usub.sat` |
 | `ScalarIntegerCountZeros` | `math.ctlz`, `math.cttz`, poison-flagged `llvm.intr.ctlz`, poison-flagged `llvm.intr.cttz` |
 | `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |

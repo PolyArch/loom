@@ -1,5 +1,6 @@
 #include "Simulator/SimulationInputCapture.h"
 
+#include "SimulationPointerCapture.h"
 #include "SimulationWireInternal.h"
 
 #include "Dataflow/IR/DataflowOps.h"
@@ -1215,7 +1216,7 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
   return SimulationValueInputCapture{valueInputOrdinal,   boundaryOrdinal,
                                      boundaryValue,       shape->lanesPerToken,
                                      shape->laneBitWidth, byteCount,
-                                     std::move(*fixed)};
+                                     std::move(*fixed),   std::nullopt};
 }
 
 llvm::Expected<SimulationValueResultCapture>
@@ -1304,7 +1305,20 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        callableSource,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed)};
+        std::move(*fixed),    std::nullopt};
+
+  if (llvm::isa<mlir::LLVM::LLVMPointerType>(callableSource.getType()) &&
+      callableSource.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
+    llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
+        callableSource.getDefiningOp(), callableSource.getType());
+    if (!bytes)
+      return bytes.takeError();
+    if (!fitsStorageExtent(*shape, *bytes))
+      return invalid("runtime global pointer does not fit its storage extent");
+    return SimulationValueInputCapture{
+        valueInputOrdinal,   std::nullopt, callableSource, shape->lanesPerToken,
+        shape->laneBitWidth, *bytes,       std::nullopt,   std::nullopt};
+  }
 
   llvm::Expected<unsigned> callableArgument =
       enclosingCallableArgument(callableSource, enclosingCallable);
@@ -1321,7 +1335,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        hostOperand,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed)};
+        std::move(*fixed),    std::nullopt};
 
   llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
       hostOperand.getDefiningOp() ? hostOperand.getDefiningOp()
@@ -1336,7 +1350,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
   return SimulationValueInputCapture{valueInputOrdinal,   *callableArgument,
                                      hostOperand,         shape->lanesPerToken,
                                      shape->laneBitWidth, *bytes,
-                                     std::nullopt};
+                                     std::nullopt,        std::nullopt};
 }
 
 llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(
@@ -1423,8 +1437,14 @@ directCallMemoryObject(mlir::Value callableSource,
     return invalid("direct-call memory capture has no invocation path");
   mlir::LLVM::CallOp hostCall = invocationPath.back();
   if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(callableSource)) {
-    if (argument.getOwner() != &enclosingCallable.getBody().front())
-      return unsupported("root launch memory is not owned by its callable");
+    if (argument.getOwner() != &enclosingCallable.getBody().front()) {
+      mlir::Operation *owner = argument.getOwner()->getParentOp();
+      return unsupported(
+          llvm::Twine("root launch memory block argument belongs to '") +
+          (owner ? owner->getName().getStringRef()
+                 : llvm::StringRef("<unknown>")) +
+          "', not enclosing callable '" + enclosingCallable.getSymName() + "'");
+    }
     const unsigned ordinal = argument.getArgNumber();
     if (ordinal >= hostCall.getCalleeOperands().size())
       return invalid("callable argument exceeds host call operands");
@@ -1591,15 +1611,20 @@ deriveSimulationInputCapturePlan(
         program.resolve(root);
     if (!resolvedRoot)
       return resolvedRoot.takeError();
-    if (resolvedRoot->op != context->thread.getOperation() ||
-        !resolvedRoot->formalArgIndex)
-      return invalid("imported root is not owned by the rooted thread");
-    const unsigned threadFormal = *resolvedRoot->formalArgIndex;
-    if (threadFormal >= context->rootLaunchOp.getBodyOperands().size())
-      return invalid("thread memory formal exceeds root launch operands");
+    auto threadSource =
+        capture_detail::threadMemorySourceForRoot(*resolvedRoot, *context);
+    if (!threadSource)
+      return threadSource.takeError();
+    mlir::Value callableSource = *threadSource;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(callableSource)) {
+      if (argument.getArgNumber() >=
+          context->rootLaunchOp.getBodyOperands().size())
+        return invalid("thread memory formal exceeds root launch operands");
+      callableSource =
+          context->rootLaunchOp.getBodyOperands()[argument.getArgNumber()];
+    }
     llvm::Expected<ResolvedDirectCallObject> resolved = directCallMemoryObject(
-        context->rootLaunchOp.getBodyOperands()[threadFormal],
-        enclosingCallable, invocationPath);
+        callableSource, enclosingCallable, invocationPath);
     if (!resolved)
       return resolved.takeError();
     ResolvedObject &object = resolved->object;
@@ -1620,13 +1645,13 @@ deriveSimulationInputCapturePlan(
     if (object.byteOffset >= object.byteCount)
       return invalid("logical root offset is outside its host allocation");
     plan.input.memoryRootBindings.push_back(SimulationMemoryRootCapture{
-        root,
-        objectIndex,
-        object.byteOffset,
+        root, objectIndex, object.byteOffset,
         memoryRequiresInitialState(*context, root),
-        uniformFloatingWriteLaneType(*context, root),
-        {}});
+        uniformFloatingWriteLaneType(*context, root), resolved->pointer});
   }
+  if (llvm::Error error = capture_detail::attachPointerValueTargets(
+          program, *context, plan.input))
+    return std::move(error);
   return plan;
 }
 
@@ -1680,14 +1705,16 @@ deriveOperationSimulationInputCapturePlanImpl(
         program.resolve(root);
     if (!resolvedRoot)
       return resolvedRoot.takeError();
-    if (resolvedRoot->op != context->thread.getOperation() ||
-        !resolvedRoot->formalArgIndex)
-      return invalid("imported root is not owned by the rooted thread");
-    const std::uint64_t boundaryOrdinal = *resolvedRoot->formalArgIndex;
-    if (boundaryOrdinal >= boundaryInputs.size())
-      return invalid("thread memory formal exceeds source boundary inputs");
-
-    mlir::Value pointer = boundaryInputs[boundaryOrdinal];
+    auto threadSource =
+        capture_detail::threadMemorySourceForRoot(*resolvedRoot, *context);
+    if (!threadSource)
+      return threadSource.takeError();
+    mlir::Value pointer = *threadSource;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer)) {
+      if (argument.getArgNumber() >= boundaryInputs.size())
+        return invalid("thread memory formal exceeds source boundary inputs");
+      pointer = boundaryInputs[argument.getArgNumber()];
+    }
     llvm::Expected<ResolvedOperationObject> resolved =
         resolveOperationObject(pointer, invocationPath);
     if (!resolved)
@@ -1725,6 +1752,9 @@ deriveOperationSimulationInputCapturePlanImpl(
         memoryRequiresInitialState(*context, root),
         uniformFloatingWriteLaneType(*context, root), pointer});
   }
+  if (llvm::Error error = capture_detail::attachPointerValueTargets(
+          program, *context, plan.input))
+    return std::move(error);
   return plan;
 }
 

@@ -67,9 +67,19 @@ the Dataflow-owned launch memory binding. An imported linear view reuses the
 runtime object and byte offset bound to its `LogicalMemoryRootRef`; exact
 memref bindings reuse their existing root or view. DFG-sim has no
 pointer-to-memref cast event, simulator-private alias bridge, or conversion
-semantics. Residual `builtin.unrealized_conversion_cast` and raw pointer graph
-values are invalid Canonical Dataflow input, not unsupported simulator
-operations.
+semantics. Residual `builtin.unrealized_conversion_cast` is invalid Canonical
+Dataflow input. Registered first-class pointer operations execute through the
+same OperationSchema transition authority as every other actor.
+
+DFG-sim represents a defined pointer value by the exact runtime object ordinal,
+signed byte offset within that object, address space, and exact DataLayout-owned
+representation bits. It never serializes or compares a native host address.
+The runtime object registry is the only pointer-to-object authority. GEP,
+pointer casts, comparisons, pointer payload memory operations, and
+PointerAddressed accesses all consume that same representation. An access whose
+pointer does not resolve to the selected service or an admitted object range is
+an execution failure; the simulator does not repair it by rebasing the pointer
+or selecting another object.
 
 An admitted actor without implemented semantics is `unsupported`. It must not
 be approximated, skipped, or interpreted through a compatibility path.
@@ -132,13 +142,12 @@ object; indirect calls, unavailable bodies, or divergent object origins are
 `Unsupported` rather than guessed from a symbol name.
 
 Pointer-producing descriptor loads and analogous aggregate traversal are
-normalized before graph finalization. InstructionCore code resolves them to
-explicit memory capabilities at the graph boundary; the graph consumes only
-those capabilities plus fixed-width integer access functions. If a pointer
-root or finite extent cannot be resolved at one concrete activation, that
-activation is typed `Unsupported`. The oracle does not infer a static pointer
-identity from one reaching store or introduce pointer-as-data semantics into
-canonical Dataflow.
+normalized to rooted memory capabilities when that relation is proved.
+Otherwise a candidate may retain the pointer as first-class graph data under
+the closed pointer contract. If neither a finite rooted view nor an exact
+pointer-capable provider exists at one concrete activation, that activation is
+typed `Unsupported`. The oracle never infers a static pointer identity from one
+reaching store.
 The canonical memory-actor relation also determines whether independent
 native replays must agree on an imported object's pre-activation bytes. If any
 aliasing root loads, performs RMW, or otherwise may read initial state, those

@@ -28,6 +28,21 @@ A software operation may be admitted by several physical families, but one
 concrete capability template selects one family. This preserves genuine
 hardware alternatives without making family selection ambiguous.
 
+GEP illustrates why family membership is physical sharing rather than semantic
+aliasing. A stable integral pointer's final address formation may reuse the
+same custom SpatialCore adder used for integer arithmetic, or a Fabric may
+provide a dedicated address-generation unit. Both families can admit the one
+LLVM-owned GEP schema. A concrete integer adder supports GEP only when its
+`op_list` and pointer-format relation say so; neither the RISC-V InstructionCore
+nor a coincidentally wide port grants that capability implicitly.
+
+Bit-preserving token resources need no parallel pointer-format catalog. They
+do not interpret a pointer, so the exact module DataLayout and concrete port
+capacity completely determine whether all representation bits can be carried.
+GEP, pointer conversion, comparison, and dereference remain separately admitted
+operations. Requiring every mux, sync, carry, or channel to enumerate the same
+pointer formats would duplicate the DataLayout without adding a hardware fact.
+
 Ordinary and saturating floating-to-integer conversion share most of one real
 converter datapath. Treating saturation as a separate implementation family
 would hide that physical sharing; adding a `supports_saturation` flag would

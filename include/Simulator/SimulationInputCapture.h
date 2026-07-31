@@ -66,6 +66,15 @@ struct SimulationMemoryRootCapture {
   mlir::Value boundaryPointer;
 };
 
+/// The exact memory-root binding that supplies object provenance for one
+/// first-class pointer value. This relation is derived from the shared thread
+/// SSA source used by dataflow.memory.service and the graph value input; it is
+/// ephemeral capture state and never enters the runtime-input wire.
+struct SimulationPointerValueTargetCapture {
+  std::uint64_t memoryRootBindingOrdinal = 0;
+  std::uint32_t addressBitWidth = 0;
+};
+
 /// One exact graph value-input source at an execution boundary. Fixed values
 /// preserve Defined, Poison, or Undef semantics in the workload. Runtime
 /// values retain the source SSA value only as an ephemeral instrumentation
@@ -78,6 +87,7 @@ struct SimulationValueInputCapture {
   std::uint32_t laneBitWidth = 0;
   std::uint64_t byteCount = 0;
   std::optional<CanonicalValueSequence> fixedValue;
+  std::optional<SimulationPointerValueTargetCapture> pointerTarget;
 };
 
 /// One graph value result and its exact source value at the selected

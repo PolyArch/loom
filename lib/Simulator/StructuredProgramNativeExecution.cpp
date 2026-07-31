@@ -4,6 +4,7 @@
 #include "SimulationWireInternal.h"
 #include "StructuredProgramNativeExecutionInternal.h"
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/LoomOps.h"
 
@@ -17,6 +18,7 @@
 #include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
@@ -34,6 +36,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
@@ -48,10 +51,12 @@ namespace {
 using native_detail::AlignedByteStorage;
 using native_detail::buildObservations;
 using native_detail::instrumentBlockActivations;
+using native_detail::instrumentWorkloadBackedCapture;
 using native_detail::MemoryTargetPlan;
 using native_detail::NativeExecutionContext;
 using native_detail::projectSelectedWholeProgram;
 using native_detail::uniqueMlirSymbolName;
+using native_detail::WorkloadCaptureCallbackNames;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -97,6 +102,7 @@ struct WorkloadCaptureValueShape final {
   std::uint64_t lanesPerToken = 0;
   std::uint32_t laneBitWidth = 0;
   std::uint64_t byteCount = 0;
+  std::optional<SimulationPointerValueTargetCapture> pointerTarget;
 };
 
 struct WorkloadCaptureActiveCall final {
@@ -110,12 +116,23 @@ struct WorkloadCaptureActiveCall final {
   std::vector<std::uint8_t *> objectBases;
 };
 
+struct TrackedPointerPayload final {
+  std::uint64_t storageObjectOrdinal = 0;
+  std::uint64_t storageByteOffset = 0;
+  std::uint32_t addressSpace = 0;
+  std::uint32_t representationBits = 0;
+  PointerTarget target;
+};
+
+using TrackedPointerKey = std::pair<std::uint64_t, std::uint64_t>;
+
 struct WorkloadCaptureContext final {
   std::vector<std::optional<NativeSimulationCallCapture>> captures;
   std::vector<WorkloadCaptureValueShape> coordinateShapes;
   std::vector<WorkloadCaptureValueShape> runtimeValueShapes;
   std::vector<WorkloadCaptureValueShape> valueResultShapes;
   std::vector<std::pair<std::uint8_t *, std::size_t>> runtimeObjects;
+  std::map<TrackedPointerKey, TrackedPointerPayload> pointerPayloads;
   std::vector<WorkloadCaptureActiveCall> activeCalls;
   std::uint64_t rootCount = 0;
   std::uint64_t retainedBytes = 0;
@@ -124,16 +141,6 @@ struct WorkloadCaptureContext final {
   bool littleEndian = true;
   std::optional<std::error_code> errorCode;
   std::optional<std::string> error;
-};
-
-struct WorkloadCaptureCallbackNames final {
-  std::string begin;
-  std::string end;
-  std::optional<std::string> registerObject;
-  std::optional<std::string> coordinate;
-  std::optional<std::string> memoryRoot;
-  std::optional<std::string> value;
-  std::optional<std::string> result;
 };
 
 thread_local NativeExecutionContext *activeExecution = nullptr;
@@ -292,19 +299,194 @@ void workloadCaptureRegisterObject(void *base, std::uint64_t extentFactor0,
 }
 
 std::optional<std::pair<std::uint64_t, std::uint64_t>>
-resolveRuntimeObject(void *pointer) {
+resolveRuntimeObject(void *pointer, bool admitOnePast = false) {
   if (!activeWorkloadCapture || !pointer)
     return std::nullopt;
   const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(pointer);
+  std::optional<std::pair<std::uint64_t, std::uint64_t>> onePast;
   for (std::size_t ordinal = activeWorkloadCapture->runtimeObjects.size();
        ordinal != 0; --ordinal) {
     const auto &object = activeWorkloadCapture->runtimeObjects[ordinal - 1];
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(object.first);
-    if (address < base || address - base >= object.second)
+    if (address < base)
       continue;
-    return std::pair<std::uint64_t, std::uint64_t>{ordinal - 1, address - base};
+    const std::uintptr_t offset = address - base;
+    if (offset < object.second)
+      return std::pair<std::uint64_t, std::uint64_t>{ordinal - 1, offset};
+    if (!admitOnePast || offset != object.second)
+      continue;
+    if (onePast)
+      return std::nullopt;
+    onePast = std::pair<std::uint64_t, std::uint64_t>{ordinal - 1, offset};
   }
-  return std::nullopt;
+  return onePast;
+}
+
+bool rangesOverlap(std::uint64_t lhsOffset, std::uint64_t lhsBytes,
+                   std::uint64_t rhsOffset, std::uint64_t rhsBytes) {
+  if (lhsBytes == 0 || rhsBytes == 0)
+    return false;
+  return lhsOffset < rhsOffset + rhsBytes && rhsOffset < lhsOffset + lhsBytes;
+}
+
+void eraseTrackedPointers(std::uint64_t objectOrdinal, std::uint64_t byteOffset,
+                          std::uint64_t byteCount) {
+  WorkloadCaptureContext &context = *activeWorkloadCapture;
+  for (auto position = context.pointerPayloads.begin();
+       position != context.pointerPayloads.end();) {
+    const TrackedPointerPayload &pointer = position->second;
+    const std::uint64_t pointerBytes = pointer.representationBits / 8;
+    if (pointer.storageObjectOrdinal == objectOrdinal &&
+        rangesOverlap(pointer.storageByteOffset, pointerBytes, byteOffset,
+                      byteCount)) {
+      position = context.pointerPayloads.erase(position);
+      continue;
+    }
+    ++position;
+  }
+}
+
+void workloadCaptureMemoryWrite(void *storage, std::uint64_t byteCount) {
+  if (!activeWorkloadCapture || activeWorkloadCapture->error)
+    return;
+  std::optional<std::pair<std::uint64_t, std::uint64_t>> resolved =
+      resolveRuntimeObject(storage);
+  if (!resolved && activeWorkloadCapture->activeCalls.empty())
+    return;
+  if (!resolved || byteCount == 0 ||
+      byteCount >
+          activeWorkloadCapture->runtimeObjects[resolved->first].second -
+              resolved->second) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "memory write is outside the runtime object registry");
+    return;
+  }
+  eraseTrackedPointers(resolved->first, resolved->second, byteCount);
+}
+
+void workloadCapturePointerWrite(void *storage, void *value,
+                                 std::uint64_t addressSpace,
+                                 std::uint64_t representationBits,
+                                 std::uint64_t addressBits,
+                                 std::uint64_t rootHint) {
+  if (!activeWorkloadCapture || activeWorkloadCapture->error)
+    return;
+  if (addressSpace > std::numeric_limits<std::uint32_t>::max() ||
+      representationBits == 0 || representationBits % 8 != 0 ||
+      representationBits > std::numeric_limits<std::uint32_t>::max() ||
+      addressBits == 0 ||
+      addressBits > std::numeric_limits<std::uint32_t>::max()) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::io_error),
+        "pointer write has an invalid DataLayout projection");
+    return;
+  }
+  auto storageTarget = resolveRuntimeObject(storage);
+  std::optional<std::pair<std::uint64_t, std::uint64_t>> valueTarget;
+  std::optional<llvm::APInt> hintedOffset;
+  if (rootHint != std::numeric_limits<std::uint64_t>::max() &&
+      !activeWorkloadCapture->activeCalls.empty()) {
+    WorkloadCaptureActiveCall &active =
+        activeWorkloadCapture->activeCalls.back();
+    NativeSimulationCallCapture &capture =
+        *activeWorkloadCapture->captures[active.captureIndex];
+    if (rootHint >= capture.memoryRootObjectOrdinals.size()) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::io_error),
+          "pointer-write root hint is outside the captured root table");
+      return;
+    }
+    const std::uint64_t localObject =
+        capture.memoryRootObjectOrdinals[rootHint];
+    if (localObject >= active.runtimeObjectOrdinals.size()) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::io_error),
+          "pointer-write root hint names an absent runtime object");
+      return;
+    }
+    const std::uint64_t runtimeObject =
+        active.runtimeObjectOrdinals[localObject];
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value);
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(
+        activeWorkloadCapture->runtimeObjects[runtimeObject].first);
+    llvm::APInt addressValue(static_cast<unsigned>(addressBits), address);
+    llvm::APInt baseValue(static_cast<unsigned>(addressBits), base);
+    hintedOffset = addressValue - baseValue;
+    valueTarget = {runtimeObject, 0};
+  } else {
+    valueTarget = resolveRuntimeObject(value, /*admitOnePast=*/true);
+  }
+  if (!storageTarget && activeWorkloadCapture->activeCalls.empty())
+    return;
+  if (!storageTarget) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "pointer-write storage is outside the runtime object registry during "
+        "a selected activation");
+    return;
+  }
+  if (!valueTarget) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "pointer-write value is outside the runtime object registry");
+    return;
+  }
+  const std::uint64_t pointerBytes = representationBits / 8;
+  if (pointerBytes >
+      activeWorkloadCapture->runtimeObjects[storageTarget->first].second -
+          storageTarget->second) {
+    recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
+                               "pointer write exceeds its runtime object");
+    return;
+  }
+  eraseTrackedPointers(storageTarget->first, storageTarget->second,
+                       pointerBytes);
+  TrackedPointerPayload pointer;
+  pointer.storageObjectOrdinal = storageTarget->first;
+  pointer.storageByteOffset = storageTarget->second;
+  pointer.addressSpace = static_cast<std::uint32_t>(addressSpace);
+  pointer.representationBits = static_cast<std::uint32_t>(representationBits);
+  pointer.target = PointerTarget{
+      valueTarget->first, hintedOffset
+                              ? *hintedOffset
+                              : llvm::APInt(static_cast<unsigned>(addressBits),
+                                            valueTarget->second)};
+  activeWorkloadCapture->pointerPayloads[{pointer.storageObjectOrdinal,
+                                          pointer.storageByteOffset}] =
+      std::move(pointer);
+}
+
+bool projectTrackedPointers(WorkloadCaptureContext &context,
+                            const WorkloadCaptureActiveCall &active,
+                            std::vector<NativeCapturedMemoryObject> &objects,
+                            bool initial) {
+  for (const auto &[key, pointer] : context.pointerPayloads) {
+    (void)key;
+    auto storage =
+        llvm::find(active.runtimeObjectOrdinals, pointer.storageObjectOrdinal);
+    if (storage == active.runtimeObjectOrdinals.end())
+      continue;
+    auto target =
+        llvm::find(active.runtimeObjectOrdinals, pointer.target.objectOrdinal);
+    if (target == active.runtimeObjectOrdinals.end()) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::not_supported),
+          "captured pointer target has no imported memory service");
+      return false;
+    }
+    const std::uint64_t storageOrdinal =
+        std::distance(active.runtimeObjectOrdinals.begin(), storage);
+    const std::uint64_t targetOrdinal =
+        std::distance(active.runtimeObjectOrdinals.begin(), target);
+    RuntimeMemoryPointer projected{
+        pointer.storageByteOffset, pointer.addressSpace,
+        PointerTarget{targetOrdinal, pointer.target.byteOffset}};
+    auto &destination = initial ? objects[storageOrdinal].initialPointers
+                                : objects[storageOrdinal].finalPointers;
+    destination.push_back(std::move(projected));
+  }
+  return true;
 }
 
 void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
@@ -351,6 +533,10 @@ void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
   capture.memoryRootObjectOrdinals.push_back(objectOrdinal);
   capture.memoryRootByteOffsets.push_back(resolved->second);
   ++active.nextRoot;
+  if (active.nextRoot == context.rootCount &&
+      !projectTrackedPointers(context, active, capture.objects,
+                              /*initial=*/true))
+    return;
 }
 
 CanonicalValueSequence
@@ -415,10 +601,36 @@ void workloadCaptureValue(std::uint64_t ordinal, void *base,
   const WorkloadCaptureValueShape &shape = context.runtimeValueShapes[ordinal];
   if (!reserveWorkloadCaptureBytes(context, active, byteCount))
     return;
+  CanonicalValueSequence value =
+      readWorkloadCaptureValue(base, shape, context.littleEndian);
+  if (shape.pointerTarget) {
+    NativeSimulationCallCapture &capture =
+        *context.captures[active.captureIndex];
+    const std::uint64_t rootOrdinal =
+        shape.pointerTarget->memoryRootBindingOrdinal;
+    if (value.lanes.size() != 1 ||
+        rootOrdinal >= capture.memoryRootObjectOrdinals.size() ||
+        rootOrdinal >= capture.memoryRootByteOffsets.size() ||
+        shape.pointerTarget->addressBitWidth == 0) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::io_error),
+          "pointer value has an invalid memory-root target");
+      return;
+    }
+    const std::uint64_t byteOffset = capture.memoryRootByteOffsets[rootOrdinal];
+    llvm::APInt offsetBits(64, byteOffset);
+    if (offsetBits.getActiveBits() >= shape.pointerTarget->addressBitWidth) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::io_error),
+          "pointer value offset exceeds its signed address width");
+      return;
+    }
+    value.lanes.front().pointerTarget = PointerTarget{
+        capture.memoryRootObjectOrdinals[rootOrdinal],
+        llvm::APInt(shape.pointerTarget->addressBitWidth, byteOffset)};
+  }
   context.captures[active.captureIndex]->runtimeValues.push_back(
-      RuntimeValueEntry{
-          shape.graphOrdinal,
-          readWorkloadCaptureValue(base, shape, context.littleEndian)});
+      RuntimeValueEntry{shape.graphOrdinal, std::move(value)});
   ++active.nextValue;
 }
 
@@ -468,6 +680,9 @@ void workloadCaptureEnd() {
     return;
   }
   NativeSimulationCallCapture &capture = *context.captures[active.captureIndex];
+  if (!projectTrackedPointers(context, active, capture.objects,
+                              /*initial=*/false))
+    return;
   for (auto [ordinal, base] : llvm::enumerate(active.objectBases)) {
     const std::uint64_t runtimeOrdinal = active.runtimeObjectOrdinals[ordinal];
     if (!reserveWorkloadCaptureBytes(
@@ -507,500 +722,6 @@ std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
   while (module.getNamedValue(candidate))
     candidate = (prefix + "." + llvm::Twine(++suffix)).str();
   return candidate;
-}
-
-struct ProgramObjectCaptureSite final {
-  mlir::Value base;
-  mlir::LLVM::GlobalOp global;
-  struct ExtentFactor final {
-    mlir::Value runtimeValue;
-    std::uint64_t fixedValue = 1;
-  } extentFactor0, extentFactor1;
-  mlir::Operation *registration = nullptr;
-
-  bool isGlobal() const { return static_cast<bool>(global); }
-};
-
-std::optional<std::uint64_t> constantUnsignedValue(mlir::Value value) {
-  mlir::Attribute attribute;
-  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
-    attribute = constant.getValue();
-  else if (auto constant = value.getDefiningOp<mlir::LLVM::ConstantOp>())
-    attribute = constant.getValue();
-  auto integer = llvm::dyn_cast_if_present<mlir::IntegerAttr>(attribute);
-  if (!integer || integer.getValue().isNegative() ||
-      integer.getValue().getActiveBits() > 64)
-    return std::nullopt;
-  return integer.getValue().getZExtValue();
-}
-
-std::optional<std::uint64_t>
-fixedTypeByteCountForCapture(mlir::Operation *scope, mlir::Type type) {
-  llvm::TypeSize bytes = mlir::DataLayout::closest(scope).getTypeSize(type);
-  if (bytes.isScalable() || bytes.getFixedValue() == 0)
-    return std::nullopt;
-  return bytes.getFixedValue();
-}
-
-std::optional<std::uint64_t>
-fixedAllocationByteCountForCapture(mlir::LLVM::AllocaOp allocation) {
-  std::optional<std::uint64_t> count =
-      constantUnsignedValue(allocation.getArraySize());
-  std::optional<std::uint64_t> elementBytes = fixedTypeByteCountForCapture(
-      allocation.getOperation(), allocation.getElemType());
-  if (!count || *count == 0 || !elementBytes ||
-      *count > std::numeric_limits<std::uint64_t>::max() / *elementBytes)
-    return std::nullopt;
-  return *count * *elementBytes;
-}
-
-llvm::Expected<std::vector<ProgramObjectCaptureSite>>
-collectProgramObjectCaptureSites(mlir::ModuleOp module) {
-  std::vector<mlir::LLVM::AllocaOp> allocations;
-  std::vector<mlir::LLVM::GlobalOp> globals;
-  std::vector<mlir::LLVM::CallOp> calls;
-  module.walk([&](mlir::LLVM::AllocaOp allocation) {
-    allocations.push_back(allocation);
-  });
-  module.walk([&](mlir::LLVM::GlobalOp global) { globals.push_back(global); });
-  module.walk([&](mlir::LLVM::CallOp call) { calls.push_back(call); });
-
-  std::vector<ProgramObjectCaptureSite> sites;
-  sites.reserve(allocations.size() + globals.size() + calls.size());
-  for (mlir::LLVM::AllocaOp allocation : allocations) {
-    std::optional<std::uint64_t> byteCount =
-        fixedAllocationByteCountForCapture(allocation);
-    if (!byteCount)
-      continue;
-    ProgramObjectCaptureSite site;
-    site.base = allocation.getRes();
-    site.extentFactor0.fixedValue = *byteCount;
-    sites.push_back(std::move(site));
-  }
-  for (mlir::LLVM::GlobalOp global : globals) {
-    if (!global.getValueOrNull() && !global.getInitializerBlock())
-      continue;
-    std::optional<std::uint64_t> byteCount = fixedTypeByteCountForCapture(
-        global.getOperation(), global.getGlobalType());
-    if (!byteCount)
-      continue;
-    ProgramObjectCaptureSite site;
-    site.global = global;
-    site.extentFactor0.fixedValue = *byteCount;
-    sites.push_back(std::move(site));
-  }
-  for (mlir::LLVM::CallOp call : calls) {
-    std::optional<llvm::ArrayRef<std::int32_t>> allocsize = call.getAllocsize();
-    if (!allocsize && call.getCalleeAttr()) {
-      auto callee =
-          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
-              call, call.getCalleeAttr());
-      if (callee)
-        allocsize = callee.getAllocsize();
-    }
-    if (!allocsize)
-      continue;
-    if (allocsize->empty() || allocsize->size() > 2)
-      return invalid("allocator allocsize must name one or two operands");
-    if (call->getNumResults() != 1 ||
-        !llvm::isa<mlir::LLVM::LLVMPointerType>(call->getResult(0).getType()))
-      continue;
-
-    ProgramObjectCaptureSite site;
-    site.base = call->getResult(0);
-    ProgramObjectCaptureSite::ExtentFactor *factors[] = {&site.extentFactor0,
-                                                         &site.extentFactor1};
-    bool representable = true;
-    for (auto [factorOrdinal, operandOrdinal] : llvm::enumerate(*allocsize)) {
-      if (operandOrdinal < 0 || static_cast<std::size_t>(operandOrdinal) >=
-                                    call.getCalleeOperands().size())
-        return invalid("allocator allocsize operand is outside the call ABI");
-      mlir::Value operand = call.getCalleeOperands()[operandOrdinal];
-      auto type = llvm::dyn_cast<mlir::IntegerType>(operand.getType());
-      if (!type || type.getWidth() > 64) {
-        representable = false;
-        break;
-      }
-      factors[factorOrdinal]->runtimeValue = operand;
-    }
-    if (representable)
-      sites.push_back(std::move(site));
-  }
-  return sites;
-}
-
-mlir::Value programObjectBase(mlir::Value pointer) {
-  while (auto gep = pointer.getDefiningOp<mlir::LLVM::GEPOp>())
-    pointer = gep.getBase();
-  if (pointer.getDefiningOp<mlir::LLVM::AllocaOp>() ||
-      pointer.getDefiningOp<mlir::LLVM::AddressOfOp>() ||
-      pointer.getDefiningOp<mlir::LLVM::CallOp>())
-    return pointer;
-  return {};
-}
-
-llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
-    mlir::ModuleOp module, mlir::Operation *selectedOperation,
-    const WorkloadBackedSimulationInputCapturePlan &plan) {
-  if (!selectedOperation ||
-      selectedOperation->getParentOfType<mlir::ModuleOp>() != module)
-    return invalid("selected capture boundary is not owned by its module");
-  auto selectedFunction =
-      llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(selectedOperation);
-  auto selectedForall = llvm::dyn_cast<mlir::scf::ForallOp>(selectedOperation);
-  auto selectedThread =
-      selectedOperation->getParentOfType<dataflow::ThreadOp>();
-  auto callable =
-      selectedFunction
-          ? selectedFunction
-          : selectedOperation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
-  mlir::Block *captureEntry = nullptr;
-  if (callable && !callable.getBody().empty())
-    captureEntry = &callable.getBody().front();
-  else if (selectedThread && !selectedThread.getBody().empty())
-    captureEntry = &selectedThread.getBody().front();
-  if (!captureEntry)
-    return invalid("selected capture boundary has no executable owner");
-  if (selectedFunction && !callable.getBody().hasOneBlock())
-    return unsupported(
-        "workload-backed callable capture requires one structured block");
-
-  llvm::Expected<std::vector<ProgramObjectCaptureSite>> objectSites =
-      plan.memoryRoots.empty()
-          ? llvm::Expected<std::vector<ProgramObjectCaptureSite>>(
-                std::vector<ProgramObjectCaptureSite>{})
-          : collectProgramObjectCaptureSites(module);
-  if (!objectSites)
-    return objectSites.takeError();
-
-  mlir::MLIRContext *context = module.getContext();
-  mlir::Location location = selectedOperation->getLoc();
-  mlir::OpBuilder declarations(context);
-  declarations.setInsertionPointToStart(module.getBody());
-  const mlir::Type i64 = declarations.getI64Type();
-  const mlir::Type pointer = mlir::LLVM::LLVMPointerType::get(context);
-  const mlir::Type voidType = mlir::LLVM::LLVMVoidType::get(context);
-  const mlir::Type lifecycleType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {});
-  const mlir::Type memoryRootType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer});
-  const mlir::Type objectRegistrationType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64, i64});
-  const mlir::Type valueType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer, i64});
-
-  WorkloadCaptureCallbackNames names;
-  names.begin = uniqueMlirSymbolName(module, "__loom_workload_capture_begin");
-  names.end = uniqueMlirSymbolName(module, "__loom_workload_capture_end");
-  if (!objectSites->empty())
-    names.registerObject =
-        uniqueMlirSymbolName(module, "__loom_workload_capture_register_object");
-  if (!plan.denseCoordinates.empty())
-    names.coordinate =
-        uniqueMlirSymbolName(module, "__loom_workload_capture_coordinate");
-  if (!plan.memoryRoots.empty())
-    names.memoryRoot =
-        uniqueMlirSymbolName(module, "__loom_workload_capture_memory_root");
-  if (llvm::any_of(plan.valueInputs, [](const auto &input) {
-        return !input.fixedValue.has_value();
-      }))
-    names.value = uniqueMlirSymbolName(module, "__loom_workload_capture_value");
-  if (!plan.valueResults.empty())
-    names.result =
-        uniqueMlirSymbolName(module, "__loom_workload_capture_result");
-
-  mlir::LLVM::LLVMFuncOp::create(declarations, location, names.begin,
-                                 lifecycleType);
-  mlir::LLVM::LLVMFuncOp::create(declarations, location, names.end,
-                                 lifecycleType);
-  if (names.registerObject)
-    mlir::LLVM::LLVMFuncOp::create(
-        declarations, location, *names.registerObject, objectRegistrationType);
-  if (names.coordinate)
-    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.coordinate,
-                                   valueType);
-  if (names.memoryRoot)
-    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.memoryRoot,
-                                   memoryRootType);
-  if (names.value)
-    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.value,
-                                   valueType);
-  if (names.result)
-    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.result,
-                                   valueType);
-
-  if (names.registerObject) {
-    auto materializeExtentFactor =
-        [&](mlir::OpBuilder &builder, mlir::Location factorLocation,
-            const ProgramObjectCaptureSite::ExtentFactor &factor) {
-          if (!factor.runtimeValue)
-            return mlir::Value(mlir::LLVM::ConstantOp::create(
-                builder, factorLocation, i64,
-                builder.getI64IntegerAttr(factor.fixedValue)));
-          auto type =
-              llvm::cast<mlir::IntegerType>(factor.runtimeValue.getType());
-          if (type.getWidth() == 64)
-            return factor.runtimeValue;
-          return mlir::Value(mlir::LLVM::ZExtOp::create(
-              builder, factorLocation, i64, factor.runtimeValue));
-        };
-    for (ProgramObjectCaptureSite &site : *objectSites) {
-      mlir::OpBuilder registration(context);
-      mlir::Location siteLocation = location;
-      if (site.isGlobal()) {
-        siteLocation = site.global.getLoc();
-        registration.setInsertionPointToStart(captureEntry);
-        site.base = mlir::LLVM::AddressOfOp::create(registration, siteLocation,
-                                                    site.global);
-      } else {
-        siteLocation = site.base.getLoc();
-        registration.setInsertionPointAfter(site.base.getDefiningOp());
-      }
-      mlir::Value extentFactor0 = materializeExtentFactor(
-          registration, siteLocation, site.extentFactor0);
-      mlir::Value extentFactor1 = materializeExtentFactor(
-          registration, siteLocation, site.extentFactor1);
-      auto call = mlir::LLVM::CallOp::create(
-          registration, siteLocation, mlir::TypeRange{}, *names.registerObject,
-          mlir::ValueRange{site.base, extentFactor0, extentFactor1});
-      site.registration = call.getOperation();
-    }
-  }
-
-  mlir::OpBuilder storage(context);
-  storage.setInsertionPointToStart(captureEntry);
-  mlir::Value one;
-  mlir::Operation *lastStorage = nullptr;
-  auto allocateSlot = [&](mlir::Type type) {
-    if (!one) {
-      one = mlir::LLVM::ConstantOp::create(storage, location, i64,
-                                           storage.getI64IntegerAttr(1));
-      lastStorage = one.getDefiningOp();
-    }
-    mlir::Value slot =
-        mlir::LLVM::AllocaOp::create(storage, location, pointer, type, one)
-            .getRes();
-    lastStorage = slot.getDefiningOp();
-    return slot;
-  };
-  auto storageTypeFor =
-      [&](mlir::Type semanticType,
-          std::uint64_t byteCount) -> llvm::Expected<mlir::Type> {
-    if (!semanticType.isIndex())
-      return semanticType;
-    if (byteCount == 0 || byteCount > std::numeric_limits<unsigned>::max() / 8)
-      return invalid("index capture has no finite storage width");
-    return mlir::IntegerType::get(context,
-                                  static_cast<unsigned>(byteCount * 8));
-  };
-  auto valueForStorage =
-      [&](mlir::OpBuilder &builder, mlir::Value value,
-          mlir::Type storageType) -> llvm::Expected<mlir::Value> {
-    if (value.getType() == storageType)
-      return value;
-    if (value.getType().isIndex() && llvm::isa<mlir::IntegerType>(storageType))
-      return mlir::arith::IndexCastOp::create(builder, location, storageType,
-                                              value)
-          .getResult();
-    return invalid("capture value has no exact LLVM storage projection");
-  };
-
-  std::vector<mlir::Value> coordinateSlots;
-  std::vector<mlir::Type> coordinateStorageTypes;
-  coordinateSlots.reserve(plan.denseCoordinates.size());
-  coordinateStorageTypes.reserve(plan.denseCoordinates.size());
-  for (const WorkloadBackedDenseCoordinateCapture &coordinate :
-       plan.denseCoordinates) {
-    auto storageType = storageTypeFor(coordinate.boundaryValue.getType(),
-                                      coordinate.byteCount);
-    if (!storageType)
-      return storageType.takeError();
-    coordinateStorageTypes.push_back(*storageType);
-    coordinateSlots.push_back(allocateSlot(*storageType));
-  }
-  std::vector<mlir::Value> inputSlots(plan.valueInputs.size());
-  std::vector<mlir::Type> inputStorageTypes(plan.valueInputs.size());
-  for (auto [ordinal, input] : llvm::enumerate(plan.valueInputs)) {
-    if (input.fixedValue)
-      continue;
-    auto storageType =
-        storageTypeFor(input.boundaryValue.getType(), input.byteCount);
-    if (!storageType)
-      return storageType.takeError();
-    inputStorageTypes[ordinal] = *storageType;
-    inputSlots[ordinal] = allocateSlot(*storageType);
-  }
-  std::vector<mlir::Value> resultSlots;
-  std::vector<mlir::Type> resultStorageTypes;
-  resultSlots.reserve(plan.valueResults.size());
-  resultStorageTypes.reserve(plan.valueResults.size());
-  for (const SimulationValueResultCapture &result : plan.valueResults) {
-    auto storageType =
-        storageTypeFor(result.boundaryValue.getType(), result.byteCount);
-    if (!storageType)
-      return storageType.takeError();
-    resultStorageTypes.push_back(*storageType);
-    resultSlots.push_back(allocateSlot(*storageType));
-  }
-
-  mlir::OpBuilder before(context);
-  if (selectedFunction) {
-    mlir::Operation *lastPrelude = lastStorage;
-    mlir::Block *entry = &callable.getBody().front();
-    auto includePrelude = [&](mlir::Operation *operation) {
-      if (!operation || operation->getBlock() != entry)
-        return;
-      if (!lastPrelude || lastPrelude->isBeforeInBlock(operation))
-        lastPrelude = operation;
-    };
-    for (const SimulationValueInputCapture &input : plan.valueInputs)
-      includePrelude(input.boundaryValue.getDefiningOp());
-    for (const WorkloadBackedDenseCoordinateCapture &coordinate :
-         plan.denseCoordinates)
-      includePrelude(coordinate.boundaryValue.getDefiningOp());
-    for (const ProgramObjectCaptureSite &site : *objectSites)
-      if (site.isGlobal())
-        includePrelude(site.registration);
-    for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
-      includePrelude(root.boundaryPointer.getDefiningOp());
-      mlir::Value base = programObjectBase(root.boundaryPointer);
-      if (!base)
-        continue;
-      for (const ProgramObjectCaptureSite &site : *objectSites)
-        if (site.base == base)
-          includePrelude(site.registration);
-    }
-    if (lastPrelude)
-      before.setInsertionPointAfter(lastPrelude);
-    else
-      before.setInsertionPointToStart(entry);
-  } else if (selectedForall) {
-    mlir::Operation *lastPrelude = nullptr;
-    mlir::Block *body = selectedForall.getBody();
-    auto includePrelude = [&](mlir::Operation *operation) {
-      if (!operation || operation->getBlock() != body)
-        return;
-      if (!lastPrelude || lastPrelude->isBeforeInBlock(operation))
-        lastPrelude = operation;
-    };
-    for (const SimulationValueInputCapture &input : plan.valueInputs)
-      includePrelude(input.boundaryValue.getDefiningOp());
-    for (const WorkloadBackedDenseCoordinateCapture &coordinate :
-         plan.denseCoordinates)
-      includePrelude(coordinate.boundaryValue.getDefiningOp());
-    for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
-      includePrelude(root.boundaryPointer.getDefiningOp());
-      mlir::Value base = programObjectBase(root.boundaryPointer);
-      if (!base)
-        continue;
-      for (const ProgramObjectCaptureSite &site : *objectSites)
-        if (site.base == base)
-          includePrelude(site.registration);
-    }
-    if (lastPrelude)
-      before.setInsertionPointAfter(lastPrelude);
-    else
-      before.setInsertionPointToStart(body);
-  } else {
-    before.setInsertionPoint(selectedOperation);
-  }
-  mlir::LLVM::CallOp::create(before, location, mlir::TypeRange{}, names.begin,
-                             mlir::ValueRange{});
-  for (auto [ordinal, coordinate] : llvm::enumerate(plan.denseCoordinates)) {
-    if (!names.coordinate || !coordinate.boundaryValue ||
-        coordinate.dimension != ordinal || coordinate.byteCount == 0)
-      return invalid("dense coordinate has no finite selected boundary");
-    auto storageValue = valueForStorage(before, coordinate.boundaryValue,
-                                        coordinateStorageTypes[ordinal]);
-    if (!storageValue)
-      return storageValue.takeError();
-    mlir::LLVM::StoreOp::create(before, location, *storageValue,
-                                coordinateSlots[ordinal]);
-    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(ordinal));
-    mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(coordinate.byteCount));
-    mlir::LLVM::CallOp::create(
-        before, location, mlir::TypeRange{}, *names.coordinate,
-        mlir::ValueRange{ordinalValue, coordinateSlots[ordinal], byteCount});
-  }
-  for (auto [ordinal, root] : llvm::enumerate(plan.memoryRoots)) {
-    if (!names.memoryRoot || !root.boundaryPointer ||
-        !llvm::isa<mlir::LLVM::LLVMPointerType>(root.boundaryPointer.getType()))
-      return invalid("memory root has no pointer-valued selected boundary");
-    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(ordinal));
-    mlir::LLVM::CallOp::create(
-        before, location, mlir::TypeRange{}, *names.memoryRoot,
-        mlir::ValueRange{ordinalValue, root.boundaryPointer});
-  }
-  std::uint64_t runtimeOrdinal = 0;
-  for (auto [ordinal, input] : llvm::enumerate(plan.valueInputs)) {
-    if (input.fixedValue)
-      continue;
-    if (!names.value || !input.boundaryValue || input.byteCount == 0)
-      return invalid("runtime graph input has no finite selected boundary");
-    auto storageValue = valueForStorage(before, input.boundaryValue,
-                                        inputStorageTypes[ordinal]);
-    if (!storageValue)
-      return storageValue.takeError();
-    mlir::LLVM::StoreOp::create(before, location, *storageValue,
-                                inputSlots[ordinal]);
-    mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(runtimeOrdinal));
-    mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
-        before, location, i64, before.getI64IntegerAttr(input.byteCount));
-    mlir::LLVM::CallOp::create(
-        before, location, mlir::TypeRange{}, *names.value,
-        mlir::ValueRange{ordinalValue, inputSlots[ordinal], byteCount});
-    ++runtimeOrdinal;
-  }
-
-  auto emitResultsAndEnd = [&](mlir::OpBuilder &after) -> llvm::Error {
-    for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
-      if (!names.result || !result.boundaryValue || result.byteCount == 0)
-        return invalid("graph result has no finite selected boundary");
-      auto storageValue = valueForStorage(after, result.boundaryValue,
-                                          resultStorageTypes[ordinal]);
-      if (!storageValue)
-        return storageValue.takeError();
-      mlir::LLVM::StoreOp::create(after, location, *storageValue,
-                                  resultSlots[ordinal]);
-      mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
-          after, location, i64, after.getI64IntegerAttr(ordinal));
-      mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
-          after, location, i64, after.getI64IntegerAttr(result.byteCount));
-      mlir::LLVM::CallOp::create(
-          after, location, mlir::TypeRange{}, *names.result,
-          mlir::ValueRange{ordinalValue, resultSlots[ordinal], byteCount});
-    }
-    mlir::LLVM::CallOp::create(after, location, mlir::TypeRange{}, names.end,
-                               mlir::ValueRange{});
-    return llvm::Error::success();
-  };
-
-  if (selectedFunction) {
-    auto returnOp = llvm::dyn_cast<mlir::LLVM::ReturnOp>(
-        callable.getBody().front().getTerminator());
-    if (!returnOp)
-      return unsupported(
-          "workload-backed callable capture has no direct return");
-    mlir::OpBuilder after(returnOp);
-    if (llvm::Error error = emitResultsAndEnd(after))
-      return std::move(error);
-  } else if (selectedForall) {
-    mlir::OpBuilder after(selectedForall.getTerminator());
-    if (llvm::Error error = emitResultsAndEnd(after))
-      return std::move(error);
-  } else {
-    mlir::OpBuilder after(selectedOperation);
-    after.setInsertionPointAfter(selectedOperation);
-    if (llvm::Error error = emitResultsAndEnd(after))
-      return std::move(error);
-  }
-  if (mlir::failed(mlir::verify(module)))
-    return invalid("workload-backed capture instrumentation does not verify");
-  return names;
 }
 
 llvm::Align requiredRuntimeObjectAlignment(const llvm::Module &module) {
@@ -1052,6 +773,51 @@ definedMemoryBytes(const RuntimeMemoryObject &object) {
     bytes.push_back(byte.value);
   }
   return bytes;
+}
+
+llvm::Error patchRuntimePointerObjects(
+    const llvm::Module &module,
+    llvm::ArrayRef<RuntimeMemoryObject> sourceObjects,
+    llvm::MutableArrayRef<AlignedByteStorage> nativeObjects) {
+  if (sourceObjects.size() != nativeObjects.size())
+    return invalid("runtime pointer patch has mismatched object tables");
+  const llvm::DataLayout &layout = module.getDataLayout();
+  for (auto [storageOrdinal, object] : llvm::enumerate(sourceObjects)) {
+    for (const RuntimeMemoryPointer &stored : object.pointerValues) {
+      if (stored.addressSpace != 0)
+        return unsupported(
+            "native execution cannot materialize a nonzero-address-space "
+            "stored pointer");
+      if (stored.target.objectOrdinal >= nativeObjects.size())
+        return invalid("stored pointer target object is out of range");
+      const unsigned pointerBits =
+          layout.getPointerSizeInBits(stored.addressSpace);
+      if (pointerBits != sizeof(std::uintptr_t) * 8 || pointerBits % 8 != 0)
+        return unsupported(
+            "native execution pointer representation differs from the host");
+      if (stored.target.byteOffset.getBitWidth() > 64 &&
+          !stored.target.byteOffset.isSignedIntN(64))
+        return unsupported(
+            "native execution pointer byte offset exceeds host range");
+      const std::int64_t signedOffset =
+          stored.target.byteOffset.sextOrTrunc(64).getSExtValue();
+      AlignedByteStorage &target = nativeObjects[stored.target.objectOrdinal];
+      if (signedOffset < 0 ||
+          static_cast<std::uint64_t>(signedOffset) > target.size())
+        return unsupported(
+            "native execution stored pointer is outside its runtime object");
+      AlignedByteStorage &storage = nativeObjects[storageOrdinal];
+      const std::size_t pointerBytes = pointerBits / 8;
+      if (stored.storageByteOffset > storage.size() ||
+          pointerBytes > storage.size() - stored.storageByteOffset)
+        return invalid("stored pointer storage range is out of bounds");
+      std::uint8_t *nativeTarget =
+          target.data() + static_cast<std::size_t>(signedOffset);
+      std::memcpy(storage.data() + stored.storageByteOffset, &nativeTarget,
+                  pointerBytes);
+    }
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<llvm::Constant *>
@@ -1237,6 +1003,9 @@ llvm::Expected<CallbackNames> instrumentExecution(
       return storage.takeError();
     capture.objects.push_back(std::move(*storage));
   }
+  if (llvm::Error error = patchRuntimePointerObjects(
+          module, input.memoryObjects, capture.objects))
+    return std::move(error);
   capture.littleEndian = layout.isLittleEndian();
   capture.globalBefore.resize(memoryPlans.size());
   capture.globalAfter.resize(memoryPlans.size());
@@ -1372,7 +1141,8 @@ llvm::Expected<CallbackNames> instrumentExecution(
 llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
     const WorkloadBackedSimulationInputCapturePlan &plan,
     NativeExecutionContext &execution,
-    WorkloadBackedSimulationInputVisitor *visitor,
+    const StructuredProgramSimulationRuntimeInput &input,
+    mlir::Operation *layoutScope, WorkloadBackedSimulationInputVisitor *visitor,
     std::uint64_t maxRetainedBytes) {
   WorkloadCaptureContext capture;
   capture.visitor = visitor;
@@ -1382,6 +1152,25 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
   capture.runtimeObjects.reserve(execution.objects.size());
   for (AlignedByteStorage &object : execution.objects)
     capture.runtimeObjects.push_back({object.data(), object.size()});
+  if (input.memoryObjects.size() != execution.objects.size())
+    return invalid("workload capture pointer table differs from runtime "
+                   "objects");
+  for (auto [storageOrdinal, object] : llvm::enumerate(input.memoryObjects)) {
+    for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
+      auto layout =
+          ::loom::resolvePointerLayout(layoutScope, pointer.addressSpace);
+      if (!layout)
+        return layout.takeError();
+      if (layout->kind != ::loom::PointerLayoutKind::StableIntegral ||
+          layout->representationBits % 8 != 0)
+        return unsupported("runtime pointer payload has no stable-integral "
+                           "native capture projection");
+      capture.pointerPayloads[{storageOrdinal, pointer.storageByteOffset}] =
+          TrackedPointerPayload{storageOrdinal, pointer.storageByteOffset,
+                                pointer.addressSpace,
+                                layout->representationBits, pointer.target};
+    }
+  }
   capture.coordinateShapes.reserve(plan.denseCoordinates.size());
   for (auto [dimension, coordinate] : llvm::enumerate(plan.denseCoordinates)) {
     if (coordinate.dimension != dimension || coordinate.byteCount == 0 ||
@@ -1390,7 +1179,7 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
     capture.coordinateShapes.push_back(WorkloadCaptureValueShape{
         coordinate.dimension, 1,
         static_cast<std::uint32_t>(coordinate.byteCount * 8),
-        coordinate.byteCount});
+        coordinate.byteCount, std::nullopt});
   }
   for (const SimulationValueInputCapture &input : plan.valueInputs) {
     if (input.valueInputOrdinal >= plan.valueInputs.size())
@@ -1398,7 +1187,7 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
     if (!input.fixedValue)
       capture.runtimeValueShapes.push_back(WorkloadCaptureValueShape{
           input.valueInputOrdinal, input.lanesPerToken, input.laneBitWidth,
-          input.byteCount});
+          input.byteCount, input.pointerTarget});
   }
   capture.valueResultShapes.reserve(plan.valueResults.size());
   for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
@@ -1406,7 +1195,7 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
       return invalid("graph value results are not dense in ABI order");
     capture.valueResultShapes.push_back(WorkloadCaptureValueShape{
         result.valueResultOrdinal, result.lanesPerToken, result.laneBitWidth,
-        result.byteCount});
+        result.byteCount, std::nullopt});
   }
   return capture;
 }
@@ -1478,6 +1267,14 @@ llvm::Error runInstrumentedExecution(
     if (workloadCaptureNames->result)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->result)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureResult),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->memoryWrite)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->memoryWrite)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureMemoryWrite),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->pointerWrite)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->pointerWrite)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCapturePointerWrite),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   }
   if (llvm::Error error =
@@ -1629,7 +1426,8 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
         callbackNames.blockActivation = std::move(blockActivation);
         if (capturePlan) {
           auto prepared = prepareWorkloadCaptureContext(
-              *capturePlan, capture, captureVisitor, maxRetainedCaptureBytes);
+              *capturePlan, capture, *input, sourceContext->entryOp,
+              captureVisitor, maxRetainedCaptureBytes);
           if (!prepared)
             return prepared.takeError();
           workloadCapture.emplace(std::move(*prepared));

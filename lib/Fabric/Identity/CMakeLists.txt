@@ -3,6 +3,7 @@ add_mlir_library(LoomFabricIdentity
   FabricRefText.cpp
   FabricRefBytes.cpp
   FabricRefImport.cpp
+  FabricOpCapabilityView.cpp
   FabricFuCapabilityTemplate.cpp
 
   ADDITIONAL_HEADER_DIRS

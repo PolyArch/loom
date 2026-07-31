@@ -10,6 +10,8 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -21,7 +23,7 @@ namespace loom {
 class ArtifactStore;
 } // namespace loom
 
-// The typed schema-1.1 models of the loom.simulation_workload and
+// The typed schema models of the loom.simulation_workload and
 // loom.simulation_runtime_input Artifact families owned by
 // docs/spec-simulation-artifacts.md. Each root carries one owner reference;
 // types and structural meanings are recovered from that exact owner and are
@@ -34,7 +36,7 @@ namespace loom::sim {
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationWorkloadSchema{
     "loom.simulation_workload", ::loom::SchemaVersion{1, 1}};
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationRuntimeInputSchema{
-    "loom.simulation_runtime_input", ::loom::SchemaVersion{1, 1}};
+    "loom.simulation_runtime_input", ::loom::SchemaVersion{2, 0}};
 
 enum class SimulationWorkloadKind : std::uint32_t {
   Spatial = 0,
@@ -50,11 +52,26 @@ enum class SimulationWorkloadKind : std::uint32_t {
 /// discriminants are the zero-based declaration order.
 enum class SemanticState : std::uint32_t { Defined = 0, Poison = 1, Undef = 2 };
 
+/// Object-relative provenance accompanying one defined first-class LLVM
+/// pointer lane. The offset is the exact signed two's-complement A(AS)-bit
+/// byte offset; the lane bits separately carry the complete P(AS)-bit pointer
+/// representation.
+struct PointerTarget {
+  std::uint64_t objectOrdinal = 0;
+  llvm::APInt byteOffset;
+
+  friend bool operator==(const PointerTarget &lhs, const PointerTarget &rhs) {
+    return lhs.objectOrdinal == rhs.objectOrdinal &&
+           lhs.byteOffset == rhs.byteOffset;
+  }
+};
+
 /// One semantic lane. A Defined lane carries the exact fixed-width
 /// software-semantic bits; host integers and doubles are never authorities.
 struct SemanticLane {
   SemanticState state = SemanticState::Undef;
   llvm::APInt bits; // meaningful only when state == Defined
+  std::optional<PointerTarget> pointerTarget;
 
   static SemanticLane defined(llvm::APInt value) {
     SemanticLane lane;
@@ -63,10 +80,22 @@ struct SemanticLane {
     return lane;
   }
   static SemanticLane poison() {
-    return SemanticLane{SemanticState::Poison, llvm::APInt()};
+    return SemanticLane{SemanticState::Poison, llvm::APInt(), std::nullopt};
   }
   static SemanticLane undef() {
-    return SemanticLane{SemanticState::Undef, llvm::APInt()};
+    return SemanticLane{SemanticState::Undef, llvm::APInt(), std::nullopt};
+  }
+  static SemanticLane definedPointer(llvm::APInt representation,
+                                     std::uint64_t objectOrdinal,
+                                     llvm::APInt byteOffset) {
+    SemanticLane lane = defined(std::move(representation));
+    lane.pointerTarget = PointerTarget{objectOrdinal, std::move(byteOffset)};
+    return lane;
+  }
+
+  friend bool operator==(const SemanticLane &lhs, const SemanticLane &rhs) {
+    return lhs.state == rhs.state && lhs.bits == rhs.bits &&
+           lhs.pointerTarget == rhs.pointerTarget;
   }
 };
 
@@ -208,8 +237,22 @@ struct RuntimeValueEntry {
 
 /// Neutral byte-addressed software storage. The exact Canonical Dataflow
 /// type, DataLayout, and root/view relations alone interpret typed accesses.
+struct RuntimeMemoryPointer {
+  std::uint64_t storageByteOffset = 0;
+  std::uint32_t addressSpace = 0;
+  PointerTarget target;
+};
+
 struct RuntimeMemoryObject {
+  RuntimeMemoryObject() = default;
+  explicit RuntimeMemoryObject(std::vector<SemanticMemoryByte> bytes,
+                               std::vector<RuntimeMemoryPointer> pointers = {})
+      : initialBytes(std::move(bytes)), pointerValues(std::move(pointers)) {}
+
   std::vector<SemanticMemoryByte> initialBytes; // nonempty
+  // Canonical sorted provenance for defined pointer payloads already stored
+  // in initialBytes. Representation bits remain owned by those bytes.
+  std::vector<RuntimeMemoryPointer> pointerValues;
 };
 
 struct RuntimeMemoryRootBinding {
@@ -222,7 +265,7 @@ struct MemoryRootBindingEntry {
   RuntimeMemoryRootBinding binding;
 };
 
-/// The canonical schema-1.1 spatial runtime-input root. `runtimeValues` is
+/// The canonical schema-2.0 spatial runtime-input root. `runtimeValues` is
 /// sorted by value-input ordinal and exactly complements the workload's Runtime
 /// classifications; `runtimeStreams` is dense over graph stream-input
 /// ordinals; `memoryObjects` is in canonical object-ordinal order;

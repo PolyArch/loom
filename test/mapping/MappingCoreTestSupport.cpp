@@ -111,8 +111,7 @@ void expectMapError(const char *test, const TestCase &testCase,
 namespace {
 
 ::mlir::MLIRContext &testContext() {
-  static ::mlir::MLIRContext context(
-      ::mlir::MLIRContext::Threading::DISABLED);
+  static ::mlir::MLIRContext context(::mlir::MLIRContext::Threading::DISABLED);
   return context;
 }
 
@@ -230,6 +229,7 @@ TestCase makeValidCase() {
                     ActorPort{addActor, PortDirection::Input, 1}},
        DataflowEdge{ActorPort{addActor, PortDirection::Output, 0},
                     GraphPort{graph, PortDirection::Output, 0}}},
+      {},
       {}};
   const ::loom::fabric::FabricFuTemplateRef fu(10);
   const auto multiplyOp = opNode(fu, 0);
@@ -257,12 +257,14 @@ TestCase makeValidCase() {
            ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
            integerCapability(32),
            {value, stream},
-           {value}},
+           {value},
+           {::dataflow::OperationSchemaId::ArithMulI}},
        FabricOpDescriptor{addOp,
                           ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                           integerCapability(32),
                           {value, auxiliary},
-                          {value}}},
+                          {value},
+                          {::dataflow::OperationSchemaId::ArithAddI}}},
       {},
       {},
       {},
@@ -386,7 +388,8 @@ TestCase makeMemoryAnchorCase() {
           root,
           graph,
           {GraphPort{graph, PortDirection::Input, 0}},
-          {GraphPort{graph, PortDirection::Output, 0}}}}};
+          {GraphPort{graph, PortDirection::Output, 0}}}},
+      {}};
   const ::loom::fabric::FabricFuTemplateRef pairFu(10);
   const ::loom::fabric::FabricFuTemplateRef multiplyFu(20);
   const ::loom::fabric::FabricFuTemplateRef subtractFu(23);
@@ -469,28 +472,33 @@ TestCase makeMemoryAnchorCase() {
                           ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
                           integerCapability(16),
                           {value, value},
-                          {value}},
+                          {value},
+                          {::dataflow::OperationSchemaId::ArithXOrI}},
        FabricOpDescriptor{preAddOp,
                           ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                           integerCapability(16),
                           {value, value},
-                          {value}},
+                          {value},
+                          {::dataflow::OperationSchemaId::ArithAddI}},
        FabricOpDescriptor{
            multiplyOp,
            ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
            integerCapability(16),
            {value, value},
-           {value}},
+           {value},
+           {::dataflow::OperationSchemaId::ArithMulI}},
        FabricOpDescriptor{subtractOp,
                           ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                           integerCapability(16),
                           {value, value},
-                          {value}},
+                          {value},
+                          {::dataflow::OperationSchemaId::ArithSubI}},
        FabricOpDescriptor{finalAddOp,
                           ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
                           integerCapability(16),
                           {value, value},
-                          {value}}},
+                          {value},
+                          {::dataflow::OperationSchemaId::ArithAddI}}},
       {MemoryServiceDomainDescriptor{service},
        MemoryServiceDomainDescriptor{otherService}},
       {MemoryImplementationDescriptor{implementation, service,

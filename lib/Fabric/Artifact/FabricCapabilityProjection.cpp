@@ -106,6 +106,20 @@ resolveFabricOpCapability(::fabric::OpOp operation,
     enabledSchemas.push_back(*schema);
   }
 
+  const bool enablesGetElementPtr = llvm::is_contained(
+      enabledSchemas, ::dataflow::OperationSchemaId::LLVMGetElementPtr);
+  const auto *integerParameters =
+      std::get_if<::fabric::ScalarIntegerParams>(&*parameters);
+  const bool hasPointerFormats =
+      integerParameters && !integerParameters->pointerFormats.empty();
+  if (enablesGetElementPtr != hasPointerFormats)
+    return invalid("fabric.op GEP member and pointer_formats must be present "
+                   "or absent together");
+  if (hasPointerFormats &&
+      *family != ::fabric::ImplementationFamilyId::ScalarIntegerAddSub)
+    return invalid("pointer_formats are unavailable for this implementation "
+                   "family");
+
   if (!node.owner.resourceContract)
     return invalid("fabric.op has no resolved resource contract");
 

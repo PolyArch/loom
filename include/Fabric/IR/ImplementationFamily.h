@@ -1,6 +1,7 @@
 #ifndef FABRIC_IR_IMPLEMENTATIONFAMILY_H
 #define FABRIC_IR_IMPLEMENTATIONFAMILY_H
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/FabricEnums.h"
 
@@ -9,15 +10,18 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace fabric {
 
@@ -149,6 +153,8 @@ private:
 
 /// Closed scalar integer widths admitted by the initial family schemas.
 enum class IntegerWidth : std::uint8_t { I1, I8, I16, I32, I64 };
+
+unsigned getBitWidth(IntegerWidth width);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I1) == 0);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I8) == 1);
 static_assert(static_cast<std::uint8_t>(IntegerWidth::I16) == 2);
@@ -158,6 +164,8 @@ using IntegerWidthSet = detail::ClosedEnumSet<IntegerWidth, 5>;
 
 /// Closed scalar floating-point formats admitted by the initial schemas.
 enum class FloatFormat : std::uint8_t { F16, BF16, F32, F64 };
+
+unsigned getBitWidth(FloatFormat format);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F16) == 0);
 static_assert(static_cast<std::uint8_t>(FloatFormat::BF16) == 1);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F32) == 2);
@@ -305,10 +313,82 @@ struct IntegerCastRelation {
   ResolvedIndexWidthSet resolvedIndexWidths;
 };
 
+struct PointerFormat {
+  std::uint32_t addressSpace = 0;
+  std::uint32_t representationBits = 0;
+  std::uint32_t addressBits = 0;
+  ::loom::PointerLayoutKind kind = ::loom::PointerLayoutKind::StableIntegral;
+
+  friend bool operator==(const PointerFormat &lhs, const PointerFormat &rhs) {
+    return lhs.addressSpace == rhs.addressSpace &&
+           lhs.representationBits == rhs.representationBits &&
+           lhs.addressBits == rhs.addressBits && lhs.kind == rhs.kind;
+  }
+  friend bool operator<(const PointerFormat &lhs, const PointerFormat &rhs) {
+    return std::tie(lhs.addressSpace, lhs.representationBits, lhs.addressBits,
+                    lhs.kind) < std::tie(rhs.addressSpace,
+                                         rhs.representationBits,
+                                         rhs.addressBits, rhs.kind);
+  }
+};
+
+/// Canonically ordered exact pointer formats enabled by one concrete integer
+/// datapath. The initial provider domain admits stable integral formats only.
+class PointerFormatRelation {
+public:
+  static PointerFormatRelation
+  get(std::initializer_list<PointerFormat> formats) {
+    PointerFormatRelation relation;
+    for (const PointerFormat &format : formats)
+      relation.insert(format);
+    return relation;
+  }
+
+  bool insert(PointerFormat format) {
+    if (format.representationBits == 0 || format.addressBits == 0 ||
+        format.addressBits > format.representationBits ||
+        format.kind != ::loom::PointerLayoutKind::StableIntegral) {
+      valid_ = false;
+      return false;
+    }
+    auto position = std::lower_bound(formats_.begin(), formats_.end(), format);
+    if (position != formats_.end() && *position == format)
+      return false;
+    formats_.insert(position, format);
+    return true;
+  }
+
+  bool contains(PointerFormat format) const {
+    return valid_ &&
+           std::binary_search(formats_.begin(), formats_.end(), format);
+  }
+  bool contains(const ::loom::PointerLayout &layout) const {
+    return contains(PointerFormat{layout.addressSpace,
+                                  layout.representationBits, layout.addressBits,
+                                  layout.kind});
+  }
+  bool empty() const { return formats_.empty(); }
+  std::size_t size() const { return formats_.size(); }
+  bool valid() const { return valid_; }
+  llvm::ArrayRef<PointerFormat> formats() const { return formats_; }
+
+private:
+  std::vector<PointerFormat> formats_;
+  bool valid_ = true;
+};
+
 struct ScalarIntegerParams {
   static constexpr CapabilityParamsSchemaId schemaId =
       CapabilityParamsSchemaId::ScalarIntegerParams;
+
+  explicit ScalarIntegerParams(
+      IntegerWidthSet integerWidths,
+      PointerFormatRelation pointerFormats = PointerFormatRelation{})
+      : integerWidths(integerWidths),
+        pointerFormats(std::move(pointerFormats)) {}
+
   IntegerWidthSet integerWidths;
+  PointerFormatRelation pointerFormats;
 };
 
 struct ScalarIntegerCompareMinMaxParams {
@@ -521,6 +601,14 @@ llvm::Error verifyImplementationFamilyAdmission(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     unsigned indexBitWidth);
 
+/// Verifies a registered pointer actor against one exact DataLayout-derived
+/// format. Supplying a layout does not grant pointer support: the concrete
+/// resource must also enable the actor schema and list the same format.
+llvm::Error verifyImplementationFamilyAdmission(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth, const ::loom::PointerLayout &pointerLayout);
+
 llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
 projectResolvedIndexTypes(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
@@ -540,6 +628,10 @@ llvm::Expected<bool> requiresSemanticConfigurationField(
 /// admission. Equal widths do not imply equal actor semantics.
 ::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
                                                     std::string &error);
+::mlir::FailureOr<unsigned>
+getSemanticPayloadWidth(::mlir::Type type,
+                        const ::loom::PointerLayout *pointerLayout,
+                        std::string &error);
 
 } // namespace fabric
 

@@ -131,8 +131,9 @@ serializeMemoryValue(const MemoryView &view, SimulatorState &state,
       values.push_back("uninitialized");
       continue;
     }
-    auto token = readMemoryElementResolved(
-        view, offset, view.elementType, *layout, state, "memory observation");
+    auto token =
+        readMemoryElementResolved(view, offset, view.elementType, *layout,
+                                  std::nullopt, state, "memory observation");
     if (!token)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "memory observation decode failed");

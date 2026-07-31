@@ -715,27 +715,28 @@ candidate semantics or performance must be materialized in Sn before handoff.
 A residual unsupported or unmaterialized aggregation or reduction form makes
 Sn non-finalizable; Part 3 neither drops it nor selects a fallback.
 
-Every selected Spatial region containing a dynamic LLVM GEP also materializes
-one explicit canonical address-index width in its Structured candidate. This
-rule is identical for whole-callable and operation-owned regions. Candidate
+Every selected Spatial region containing a dynamic LLVM GEP materializes one
+of the address projections owned by the Canonical Dataflow specification. A
+`RootRelative` candidate selects one canonical address-index width. Candidate
 generation may enumerate widths admitted by the exact Fabric, but neither the
 lowerer nor ambient process configuration selects one. A source integer wider
 than the selected width is narrowed only when its complete signed value domain
-is proven to fit; otherwise that candidate is non-finalizable. The resulting
-fixed index DataLayout entry and explicit casts are ordinary candidate
-semantics and are the sole input consumed by mechanical Dataflow lowering.
+is proven to fit. A `PointerAddressed` candidate instead retains the exact LLVM
+pointer type, GEP index path, no-wrap semantics, and module DataLayout-derived
+pointer format. It does not acquire a synthetic canonical index width.
 
-A loop-carried raw pointer is not a second memory-capability recurrence. Before
-the selected region finalizes, a proven constant-stride pointer induction is
-materialized as one loop-invariant base capability plus a fixed-width integer
-element-offset recurrence. Constant-stride means invariant for that loop; the
-stride may be a runtime value defined outside the loop. The proof must identify
-one finite counted-loop domain, one exact access element type per pointer lane,
-an integral element stride with a finite value range, and an accumulated offset
-that fits the selected signed index width.
-The transformed GEP is derived mechanically from the base and offset. If any
-of those facts is unknown, the candidate is non-finalizable; Part 3 never
-places the raw pointer in `dataflow.carry` or invents a dynamic capability.
+A proven constant-stride pointer induction may be materialized as one
+loop-invariant base capability plus a fixed-width integer element-offset
+recurrence. Constant-stride means invariant for that loop; the stride may be a
+runtime value defined outside the loop. The proof identifies one finite
+counted-loop domain, one exact access element type per pointer lane, an integral
+element stride with a finite value range, and an accumulated offset that fits
+the selected signed index width. This is an optimization candidate, not the
+only legal pointer representation. When that proof is unavailable, the exact
+pointer recurrence may remain a first-class Spatial value if OperationSchema,
+Fabric capability, provider, and simulator contracts admit it. A candidate is
+non-finalizable only when neither exact representation is supported; no pass
+invents a dynamic memory capability or silently casts a pointer to one.
 
 Sn uses two ownership carriers:
 

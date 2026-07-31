@@ -43,3 +43,13 @@ target_link_libraries(loom-common-canonical-relation-test PRIVATE
   LoomCommon
   LLVMSupport
 )
+
+add_executable(loom-common-pointer-layout-test
+  PointerLayoutTest.cpp
+)
+
+target_link_libraries(loom-common-pointer-layout-test PRIVATE
+  LoomCommon
+  MLIRIR
+  LLVMSupport
+)

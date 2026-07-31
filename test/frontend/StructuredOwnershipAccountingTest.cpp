@@ -424,7 +424,7 @@ void requireUnsupportedNestedLeafIsPreflightRejection(
     fail("nested unresolved call reached candidate materialization");
 }
 
-void requireUnsupportedPointerStateDoesNotHideInnerScope(
+void requireFirstClassPointerStateDoesNotHideInnerScope(
     const loom::fabric::FinalizedFabricRoot &fabric) {
   llvm::LLVMContext context;
   auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
@@ -433,7 +433,7 @@ void requireUnsupportedPointerStateDoesNotHideInnerScope(
   auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
       structured.structuredProgram));
 
-  bool sawRejectedPointerState = false;
+  bool sawAcceptedPointerState = false;
   bool sawAcceptedInnerLoop = false;
   for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
     const loom::frontend::SpatialOwnershipScope *scope =
@@ -451,18 +451,17 @@ void requireUnsupportedPointerStateDoesNotHideInnerScope(
           return llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType());
         });
     if (carriesPointer) {
-      if (!rejected ||
-          rejected->message.find("memory capability") == std::string::npos)
-        fail("branch-dependent pointer state escaped ownership preflight");
-      sawRejectedPointerState = true;
+      if (!scope)
+        fail("first-class pointer state was rejected by ownership preflight");
+      sawAcceptedPointerState = true;
     } else if (scope) {
       sawAcceptedInnerLoop = true;
     }
   }
-  if (!sawRejectedPointerState)
+  if (!sawAcceptedPointerState)
     fail("branch-dependent pointer state was not represented in the domain");
   if (!sawAcceptedInnerLoop)
-    fail("unsupported outer pointer state hid a graphable inner loop");
+    fail("outer pointer state hid a graphable inner loop");
 }
 
 void requireProtocolRootsExcludeHarnessScopes(
@@ -523,7 +522,7 @@ int main() {
 
   requireEmptyScopeIsCandidateRejection(design.roots().front());
   requireUnsupportedNestedLeafIsPreflightRejection(design.roots().front());
-  requireUnsupportedPointerStateDoesNotHideInnerScope(design.roots().front());
+  requireFirstClassPointerStateDoesNotHideInnerScope(design.roots().front());
   requireProtocolRootsExcludeHarnessScopes(design.roots().front());
 
   auto serial = explore(design.roots().front(), store, 1);

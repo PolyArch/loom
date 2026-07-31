@@ -5,8 +5,10 @@
 #include "Simulator/MemorySynchronization.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -46,9 +48,26 @@ struct MemoryView {
   mlir::Type elementType;
 };
 
-using ExtendedTokenPayload = std::variant<llvm::APInt, MemoryView>;
+struct PointerValue {
+  std::shared_ptr<MemoryValue> memory;
+  std::uint64_t objectOrdinal = 0;
+  std::uint32_t addressSpace = 0;
+  llvm::APInt byteOffset;
+  llvm::APInt representation;
+};
 
-enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
+using ExtendedTokenPayload =
+    std::variant<llvm::APInt, MemoryView, PointerValue>;
+
+enum class TokenKind {
+  None,
+  Integer,
+  Float,
+  Bool,
+  Vector,
+  Pointer,
+  MemoryCapability,
+};
 
 /// Dense execution-local handle to one immutable memory-order frontier owned
 /// by the run's arena. A default handle is the empty frontier, so a token that
@@ -521,7 +540,8 @@ struct Token {
 
   bool hasExactBitPattern() const {
     return inlineBitWidth != 0 ||
-           (extended && std::holds_alternative<llvm::APInt>(*extended));
+           (extended && (std::holds_alternative<llvm::APInt>(*extended) ||
+                         std::holds_alternative<PointerValue>(*extended)));
   }
 
   unsigned exactBitWidth() const {
@@ -529,7 +549,11 @@ struct Token {
       return inlineBitWidth;
     const auto *bits =
         extended ? std::get_if<llvm::APInt>(extended.get()) : nullptr;
-    return bits ? bits->getBitWidth() : 0;
+    if (bits)
+      return bits->getBitWidth();
+    const auto *pointer =
+        extended ? std::get_if<PointerValue>(extended.get()) : nullptr;
+    return pointer ? pointer->representation.getBitWidth() : 0;
   }
 
   llvm::APInt exactBitPattern() const {
@@ -537,7 +561,9 @@ struct Token {
     if (inlineBitWidth != 0)
       return llvm::APInt(inlineBitWidth, scalarValue,
                          /*isSigned=*/false, /*implicitTrunc=*/true);
-    return *std::get_if<llvm::APInt>(extended.get());
+    if (const auto *bits = std::get_if<llvm::APInt>(extended.get()))
+      return *bits;
+    return std::get<PointerValue>(*extended).representation;
   }
 
   void setExactBitPattern(llvm::APInt bits) {
@@ -559,6 +585,15 @@ struct Token {
     inlineBitWidth = 0;
     extended = std::make_shared<ExtendedTokenPayload>(std::move(view));
   }
+
+  const PointerValue *pointerValue() const {
+    return extended ? std::get_if<PointerValue>(extended.get()) : nullptr;
+  }
+
+  void setPointerValue(PointerValue pointer) {
+    inlineBitWidth = 0;
+    extended = std::make_shared<ExtendedTokenPayload>(std::move(pointer));
+  }
 };
 
 struct DataflowMemoryRead {
@@ -572,6 +607,7 @@ struct DataflowMemoryWrite {
   struct Element {
     std::size_t byteOffset = 0;
     llvm::SmallVector<SemanticMemoryByte, 8> bytes;
+    std::optional<PointerValue> pointer;
   };
   llvm::SmallVector<Element> elements;
   bool accessedMemory = false;
@@ -689,6 +725,10 @@ struct MemoryValue {
   // Fresh allocation bytes are not initialized. Runtime-input bytes remain
   // initialized even when their semantic state is Poison or Undef.
   llvm::SmallBitVector initialized;
+  // Provenance cannot be reconstructed from pointer representation bits.
+  // This execution-local overlay is invalidated by every overlapping byte
+  // write and therefore never becomes a competing memory-content authority.
+  std::map<std::size_t, PointerValue> pointerValues;
 };
 
 struct MemoryFixture {
@@ -732,6 +772,23 @@ struct MemoryActorExecutionPlan {
   ResolvedMemoryElementLayout elementLayout;
 };
 
+/// One typed GEP path component. A dynamic component names its actor operand;
+/// otherwise constantIndex carries the exact source integer. scale is already
+/// projected to A(AS) bits from the exact LLVM DataLayout.
+struct GepOffsetTerm {
+  std::optional<unsigned> dynamicOperandOrdinal;
+  llvm::APInt constantIndex = llvm::APInt(1, 0);
+  llvm::APInt scale = llvm::APInt(1, 0);
+};
+
+/// Immutable execution projection of one scalar LLVM GEP. Type walking and
+/// DataLayout queries happen once during graph preparation, never per firing.
+struct GepExecutionPlan {
+  ::loom::PointerLayout pointerLayout;
+  mlir::LLVM::GEPNoWrapFlags noWrapFlags = mlir::LLVM::GEPNoWrapFlags::none;
+  llvm::SmallVector<GepOffsetTerm, 4> terms;
+};
+
 using ActorProvider = bool (*)(mlir::Operation *,
                                const dataflow::CanonicalActorSchemaProjection &,
                                SimulatorState &);
@@ -755,6 +812,7 @@ struct ActorExecutionPlan {
   llvm::SmallVector<Output, 2> outputs;
   std::optional<PrimitiveOperationDescriptor> primitive;
   std::optional<MemoryActorExecutionPlan> memory;
+  std::optional<GepExecutionPlan> gep;
 
   bool isPlainMemory() const { return memory.has_value(); }
 };
@@ -1019,8 +1077,10 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
                                         mlir::Operation *scope);
 llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
                                           mlir::Operation *scope);
-Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
-                   std::int64_t byteOffset = 0, mlir::Type elementType = {});
+Token memoryCapabilityToken(mlir::Value root,
+                            std::shared_ptr<MemoryValue> memory = {},
+                            std::int64_t byteOffset = 0,
+                            mlir::Type elementType = {});
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
 llvm::Expected<Token> zeroToken(mlir::Type type);
 
@@ -1098,9 +1158,10 @@ readMemoryElement(const MemoryView &view, std::size_t byteOffset,
                   mlir::Type elementType, SimulatorState &state,
                   mlir::Operation *scope, llvm::StringRef diagnosticLabel);
 std::optional<Token> readMemoryElementResolved(
-    const MemoryView &view, std::size_t byteOffset, mlir::Type elementType,
-    const ResolvedMemoryElementLayout &layout, SimulatorState &state,
-    llvm::StringRef diagnosticLabel);
+    const MemoryView &view, std::size_t byteOffset, mlir::Type dataType,
+    const ResolvedMemoryElementLayout &layout,
+    const std::optional<::loom::PointerLayout> &pointerLayout,
+    SimulatorState &state, llvm::StringRef diagnosticLabel);
 llvm::Expected<llvm::SmallVector<SemanticMemoryByte, 8>>
 encodeMemoryElement(const Token &value, mlir::Type elementType,
                     mlir::Operation *scope);
@@ -1175,6 +1236,12 @@ llvm::Expected<PrimitiveOperationDescriptor> primitiveDescriptorForActor(
     mlir::Operation *op);
 llvm::Expected<MemoryActorExecutionPlan>
 memoryActorExecutionPlan(mlir::Operation *op, mlir::Operation *graphScope);
+llvm::Expected<GepExecutionPlan> gepExecutionPlan(mlir::LLVM::GEPOp op,
+                                                  mlir::Operation *graphScope);
+bool fireGetElementPtr(
+    mlir::Operation *op,
+    const dataflow::CanonicalActorSchemaProjection &projection,
+    SimulatorState &state);
 llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
                                         mlir::Value result);
 llvm::Expected<Token>

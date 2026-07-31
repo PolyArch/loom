@@ -27,42 +27,6 @@
 
 namespace {
 
-constexpr std::size_t kFamilyCount = 0
-#define LOOM_IMPLEMENTATION_FAMILY(Name, Id, CapabilityParams, TypedAdmission) \
-  +1
-#include "Fabric/IR/ImplementationFamilies.inc"
-    ;
-
-/// The admitted schemas of each family, laid out one contiguous array per
-/// family so a descriptor holds a span into immutable generated storage.
-#define LOOM_IMPLEMENTATION_FAMILY(Name, Id, CapabilityParams, TypedAdmission) \
-  constexpr ::dataflow::OperationSchemaId kMembers##Name[] = {
-#define LOOM_IMPLEMENTATION_FAMILY_MEMBER(Family, Schema)                      \
-  ::dataflow::OperationSchemaId::Schema,
-#define LOOM_IMPLEMENTATION_FAMILY_END(Name)                                   \
-  }                                                                            \
-  ;
-#include "Fabric/IR/ImplementationFamilies.inc"
-
-const std::array<fabric::ImplementationFamilyDescriptor, kFamilyCount> &
-familyTable() {
-  static const std::array<fabric::ImplementationFamilyDescriptor, kFamilyCount>
-      table = {{
-#define LOOM_IMPLEMENTATION_FAMILY(Name, Id, CapabilityParams, TypedAdmission) \
-  fabric::ImplementationFamilyDescriptor{                                      \
-      fabric::ImplementationFamilyId::Name,                                    \
-      llvm::ArrayRef<::dataflow::OperationSchemaId>(kMembers##Name),           \
-      fabric::CapabilityParamsSchemaId::CapabilityParams,                      \
-      fabric::TypedAdmissionProviderId::TypedAdmission},
-#include "Fabric/IR/ImplementationFamilies.inc"
-      }};
-  return table;
-}
-
-} // namespace
-
-namespace {
-
 using dataflow::CanonicalActorSchemaProjection;
 using dataflow::OperationSchemaId;
 using fabric::FamilyCapabilityParams;
@@ -87,10 +51,8 @@ llvm::Error validateFloatFormats(FloatFormatSet formats,
 llvm::Error validateFloatBehavior(const FloatBehaviorProfile &behavior);
 llvm::Expected<IntegerWidth> integerWidth(::mlir::Type type,
                                           llvm::StringRef relation);
-unsigned integerBitWidth(IntegerWidth width);
 llvm::Expected<FloatFormat> floatFormat(::mlir::Type type,
                                         llvm::StringRef relation);
-unsigned floatBitWidth(FloatFormat format);
 llvm::Error requireArity(const CanonicalActorSchemaProjection &actor,
                          unsigned inputs, unsigned results);
 llvm::Error requireUniformType(const CanonicalActorSchemaProjection &actor,
@@ -112,6 +74,9 @@ floatPredicate(const CanonicalActorSchemaProjection &actor);
 llvm::Error admitScalarOrdinaryIntegerAdmission(
     const FamilyCapabilityParams &capability,
     const CanonicalActorSchemaProjection &actor);
+llvm::Error admitGetElementPtr(const FamilyCapabilityParams &capability,
+                               const CanonicalActorSchemaProjection &actor,
+                               const ::loom::PointerLayout &pointerLayout);
 llvm::Error
 admitScalarUnaryIntegerAdmission(const FamilyCapabilityParams &capability,
                                  const CanonicalActorSchemaProjection &actor);
@@ -239,9 +204,22 @@ llvm::Error admitStreamAdmission(const FamilyCapabilityParams &capability,
   return llvm::Error::success();
 }
 
-llvm::Error admitTokenPlanePayload(::mlir::Type payloadType) {
+llvm::Error
+admitTokenPlanePayload(::mlir::Type payloadType,
+                       const ::loom::PointerLayout *pointerLayout = nullptr) {
   if (::llvm::isa<::mlir::NoneType>(payloadType))
     return llvm::Error::success();
+  if (auto pointer =
+          ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(payloadType)) {
+    if (!pointerLayout ||
+        pointerLayout->addressSpace != pointer.getAddressSpace())
+      return reject("token-plane pointer payload requires its exact pointer "
+                    "layout");
+    if (pointerLayout->kind != ::loom::PointerLayoutKind::StableIntegral)
+      return reject("token-plane pointer payload requires an unavailable "
+                    "representation provider");
+    return llvm::Error::success();
+  }
   if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(payloadType)) {
     if (integer.isSignless())
       return llvm::Error::success();
@@ -265,7 +243,8 @@ llvm::Error admitTokenPlanePayload(::mlir::Type payloadType) {
 
 llvm::Error
 admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
-                         const CanonicalActorSchemaProjection &actor) {
+                         const CanonicalActorSchemaProjection &actor,
+                         const ::loom::PointerLayout *pointerLayout) {
   (void)std::get<fabric::TokenPlaneParams>(capability);
   ::mlir::Type payloadType;
   switch (actor.schema) {
@@ -305,7 +284,13 @@ admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
     if (!result || !result.isSignless() || result.getWidth() != 1)
       return reject("gate condition result must be scalar i1");
   }
-  return admitTokenPlanePayload(payloadType);
+  return admitTokenPlanePayload(payloadType, pointerLayout);
+}
+
+llvm::Error
+admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor) {
+  return admitTokenPlaneAdmission(capability, actor, nullptr);
 }
 
 llvm::Expected<::mlir::VectorType> fixedVector(::mlir::Type type,
@@ -685,7 +670,17 @@ admitFixedVectorAdapterAdmission(const FamilyCapabilityParams &capability,
   }
 }
 
-llvm::Expected<std::uint64_t> payloadBitWidth(::mlir::Type type) {
+llvm::Expected<std::uint64_t>
+payloadBitWidth(::mlir::Type type,
+                const ::loom::PointerLayout *pointerLayout = nullptr) {
+  if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(type)) {
+    std::string message;
+    auto width =
+        ::fabric::getSemanticPayloadWidth(type, pointerLayout, message);
+    if (::mlir::failed(width))
+      return reject(message);
+    return *width;
+  }
   if (::llvm::isa<::mlir::NoneType>(type))
     return 0;
   if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type)) {
@@ -700,10 +695,11 @@ llvm::Expected<std::uint64_t> payloadBitWidth(::mlir::Type type) {
   return reject("payload must be scalar, fixed vector, or none");
 }
 
-llvm::Error admitPayload(::mlir::Type type, std::uint32_t capacity) {
-  if (llvm::Error error = admitTokenPlanePayload(type))
+llvm::Error admitPayload(::mlir::Type type, std::uint32_t capacity,
+                         const ::loom::PointerLayout *pointerLayout = nullptr) {
+  if (llvm::Error error = admitTokenPlanePayload(type, pointerLayout))
     return error;
-  auto width = payloadBitWidth(type);
+  auto width = payloadBitWidth(type, pointerLayout);
   if (!width)
     return width.takeError();
   if (*width > capacity)
@@ -713,18 +709,27 @@ llvm::Error admitPayload(::mlir::Type type, std::uint32_t capacity) {
 
 llvm::Error
 admitConstantTokenAdmission(const FamilyCapabilityParams &capability,
-                            const CanonicalActorSchemaProjection &actor) {
+                            const CanonicalActorSchemaProjection &actor,
+                            const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::PayloadCapacityParams>(capability);
   if (llvm::Error error = requireArity(actor, 1, 1))
     return error;
   if (!::llvm::isa<::mlir::NoneType>(actor.type.getInput(0)))
     return reject("constant control input must be none");
-  return admitPayload(actor.type.getResult(0), params.maxPayloadBits);
+  return admitPayload(actor.type.getResult(0), params.maxPayloadBits,
+                      pointerLayout);
+}
+
+llvm::Error
+admitConstantTokenAdmission(const FamilyCapabilityParams &capability,
+                            const CanonicalActorSchemaProjection &actor) {
+  return admitConstantTokenAdmission(capability, actor, nullptr);
 }
 
 llvm::Error
 admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
-                        const CanonicalActorSchemaProjection &actor) {
+                        const CanonicalActorSchemaProjection &actor,
+                        const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
   const unsigned lanes = actor.type.getNumInputs();
   if (lanes == 0 || lanes > params.maxFan ||
@@ -733,11 +738,17 @@ admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
   for (unsigned lane = 0; lane < lanes; ++lane) {
     if (actor.type.getInput(lane) != actor.type.getResult(lane))
       return reject("sync lane types do not agree");
-    if (llvm::Error error =
-            admitPayload(actor.type.getInput(lane), params.maxPayloadBits))
+    if (llvm::Error error = admitPayload(actor.type.getInput(lane),
+                                         params.maxPayloadBits, pointerLayout))
       return error;
   }
   return llvm::Error::success();
+}
+
+llvm::Error
+admitSyncTokenAdmission(const FamilyCapabilityParams &capability,
+                        const CanonicalActorSchemaProjection &actor) {
+  return admitSyncTokenAdmission(capability, actor, nullptr);
 }
 
 llvm::Error validateSelector(::mlir::Type selector, unsigned fan) {
@@ -750,9 +761,9 @@ llvm::Error validateSelector(::mlir::Type selector, unsigned fan) {
              : reject("multi-way token route requires an index selector");
 }
 
-llvm::Error
-admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
-                       const CanonicalActorSchemaProjection &actor) {
+llvm::Error admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
+                                   const CanonicalActorSchemaProjection &actor,
+                                   const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
   if (actor.type.getNumInputs() < 3 || actor.type.getNumResults() != 1)
     return reject("token mux arity is malformed");
@@ -765,12 +776,19 @@ admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
   for (unsigned lane = 1; lane < actor.type.getNumInputs(); ++lane)
     if (actor.type.getInput(lane) != payload)
       return reject("token mux payload types do not agree");
-  return admitPayload(payload, params.maxPayloadBits);
+  return admitPayload(payload, params.maxPayloadBits, pointerLayout);
+}
+
+llvm::Error
+admitMuxTokenAdmission(const FamilyCapabilityParams &capability,
+                       const CanonicalActorSchemaProjection &actor) {
+  return admitMuxTokenAdmission(capability, actor, nullptr);
 }
 
 llvm::Error
 admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
-                         const CanonicalActorSchemaProjection &actor) {
+                         const CanonicalActorSchemaProjection &actor,
+                         const ::loom::PointerLayout *pointerLayout) {
   const auto &params = std::get<fabric::RoutedTokenParams>(capability);
   const unsigned fan = actor.type.getNumResults();
   if (actor.type.getNumInputs() != 2 || fan < 2 || fan > params.maxFan)
@@ -781,7 +799,13 @@ admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
   for (unsigned lane = 0; lane < fan; ++lane)
     if (actor.type.getResult(lane) != payload)
       return reject("token demux payload types do not agree");
-  return admitPayload(payload, params.maxPayloadBits);
+  return admitPayload(payload, params.maxPayloadBits, pointerLayout);
+}
+
+llvm::Error
+admitDemuxTokenAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor) {
+  return admitDemuxTokenAdmission(capability, actor, nullptr);
 }
 
 } // namespace
@@ -834,6 +858,8 @@ llvm::Error fabric::verifyImplementationFamilyAdmission(
   if (capabilityParamsSchema(*params) != descriptor.capabilityParamsSchema)
     return reject("capability parameter schema does not match the generated "
                   "family descriptor");
+  if (actor.schema == ::dataflow::OperationSchemaId::LLVMGetElementPtr)
+    return reject("GEP admission requires an exact pointer layout");
 
   switch (descriptor.typedAdmissionProvider) {
 #define LOOM_TYPED_ADMISSION_PROVIDER(Name, Id)                                \
@@ -917,191 +943,49 @@ llvm::Error fabric::verifyImplementationFamilyAdmission(
   return verifyImplementationFamilyAdmission(family, params, *represented);
 }
 
-llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
-    ImplementationFamilyId family, const FamilyCapabilityParams &params,
-    llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
-    std::uint32_t physicalInputCount, std::uint32_t physicalResultCount) {
+llvm::Error fabric::verifyImplementationFamilyAdmission(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth, const ::loom::PointerLayout &pointerLayout) {
+  if (!symbolizeResolvedIndexWidth(indexBitWidth))
+    return reject("resolved index width must be 32 or 64");
   const std::uint32_t familyIndex = static_cast<std::uint32_t>(family);
   if (familyIndex >= implementationFamilyCount())
     return reject("implementation family is not registered");
   const ImplementationFamilyDescriptor &descriptor =
       implementationFamily(family);
-  if (capabilityParamsSchema(params) != descriptor.capabilityParamsSchema)
+  if (!llvm::is_contained(descriptor.admittedSchemas, actor.schema))
+    return reject("actor schema is not admitted by the implementation family");
+  if (!params)
+    return reject("capability parameters are absent");
+  if (capabilityParamsSchema(*params) != descriptor.capabilityParamsSchema)
     return reject("capability parameter schema does not match the generated "
                   "family descriptor");
-  if (enabledSchemas.empty())
-    return reject("concrete operation capability has no enabled schema");
-  for (OperationSchemaId schema : enabledSchemas)
-    if (!llvm::is_contained(descriptor.admittedSchemas, schema))
-      return reject("concrete operation capability escapes its generated "
-                    "implementation family");
-
-  // Selecting among enabled members always changes the configured function.
-  // All remaining cases below identify a parameterized singleton relation
-  // whose exact actor point changes real hardware behavior. Width-only
-  // admission for a bitwise or modular datapath deliberately creates no field.
-  if (enabledSchemas.size() > 1)
-    return true;
-
-  const auto floatBehaviorVaries = [](const FloatBehaviorProfile &behavior) {
-    return behavior.roundingModes.size() > 1 ||
-           behavior.nanBehaviors.size() > 1 ||
-           behavior.subnormalBehaviors.size() > 1 ||
-           behavior.signedZeroBehaviors.size() > 1;
-  };
-  const auto hasSchema = [&](OperationSchemaId schema) {
-    return llvm::is_contained(enabledSchemas, schema);
-  };
-  const auto hasSignedIntegerBehavior = [&] {
-    if (hasSchema(OperationSchemaId::ArithShRSI) ||
-        hasSchema(OperationSchemaId::ArithDivSI) ||
-        hasSchema(OperationSchemaId::ArithRemSI) ||
-        hasSchema(OperationSchemaId::ArithMinSI) ||
-        hasSchema(OperationSchemaId::ArithMaxSI))
-      return true;
-    if (!hasSchema(OperationSchemaId::ArithCmpI))
-      return false;
-    const auto &compare = std::get<ScalarIntegerCompareMinMaxParams>(params);
-    using Predicate = ::mlir::arith::CmpIPredicate;
-    return compare.predicates.contains(Predicate::slt) ||
-           compare.predicates.contains(Predicate::sle) ||
-           compare.predicates.contains(Predicate::sgt) ||
-           compare.predicates.contains(Predicate::sge);
-  };
-
+  if (actor.schema == ::dataflow::OperationSchemaId::LLVMGetElementPtr) {
+    if (descriptor.typedAdmissionProvider !=
+        TypedAdmissionProviderId::ScalarOrdinaryIntegerAdmission)
+      return reject("GEP requires a scalar integer add/sub implementation");
+    return admitGetElementPtr(*params, actor, pointerLayout);
+  }
+  auto represented = projectResolvedIndexTypes(actor, indexBitWidth);
+  if (!represented)
+    return represented.takeError();
   switch (descriptor.typedAdmissionProvider) {
-  case TypedAdmissionProviderId::ScalarOrdinaryIntegerAdmission:
-    return std::get<ScalarIntegerParams>(params).integerWidths.size() > 1 &&
-           hasSignedIntegerBehavior();
-  case TypedAdmissionProviderId::ScalarUnaryIntegerAdmission:
-    return false;
-  case TypedAdmissionProviderId::ScalarLogicIntegerAdmission:
-  case TypedAdmissionProviderId::ScalarBitReinterpretAdmission:
-  case TypedAdmissionProviderId::ScalarValueSelectAdmission:
   case TypedAdmissionProviderId::TokenPlaneAdmission:
-  case TypedAdmissionProviderId::FixedVectorLogicIntegerAdmission:
-    return false;
-  case TypedAdmissionProviderId::ScalarIntegerCompareAdmission: {
-    const auto &typed = std::get<ScalarIntegerCompareMinMaxParams>(params);
-    return typed.predicates.size() > 1 ||
-           (typed.operandWidths.size() > 1 && hasSignedIntegerBehavior());
-  }
-  case TypedAdmissionProviderId::ScalarIntegerCastAdmission:
-    return std::get<ScalarIntegerCastParams>(params)
-               .relation.widthPairs.size() > 1;
-  case TypedAdmissionProviderId::ScalarUniformFloatAdmission: {
-    const auto &typed = std::get<ScalarFloatParams>(params);
-    return typed.formats.size() > 1 || floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::ScalarFloatCompareAdmission: {
-    const auto &typed = std::get<ScalarFloatCompareMinMaxParams>(params);
-    return typed.formats.size() > 1 || typed.predicates.size() > 1 ||
-           floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::ScalarFloatCastAdmission: {
-    const auto &typed = std::get<ScalarFloatWidthCastParams>(params);
-    return typed.formatPairs.size() > 1 || floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::ScalarIntegerFloatConversionAdmission: {
-    const auto &typed = std::get<ScalarIntegerFloatConversionParams>(params);
-    return typed.formatPairs.size() > 1 || floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::StreamAdmission: {
-    const auto &typed = std::get<LoopStreamParams>(params);
-    return typed.integerWidths.size() > 1 ||
-           typed.continuationPredicates.size() > 1;
-  }
-  case TypedAdmissionProviderId::FixedVectorOrdinaryIntegerAdmission:
-    return std::get<FixedVectorIntegerParams>(params).elementWidths.size() > 1;
-  case TypedAdmissionProviderId::FixedVectorUnaryIntegerAdmission:
-    return false;
-  case TypedAdmissionProviderId::FixedVectorIntegerCompareAdmission: {
-    const auto &typed = std::get<FixedVectorIntegerCompareMinMaxParams>(params);
-    return typed.elementWidths.size() > 1 || typed.predicates.size() > 1;
-  }
-  case TypedAdmissionProviderId::FixedVectorValueSelectAdmission: {
-    const auto &typed = std::get<FixedVectorValueSelectParams>(params);
-    llvm::SmallVector<unsigned, 8> elementWidths;
-    const auto addWidth = [&](unsigned width) {
-      if (!llvm::is_contained(elementWidths, width))
-        elementWidths.push_back(width);
-    };
-    constexpr IntegerWidth integerWidths[] = {
-        IntegerWidth::I1, IntegerWidth::I8, IntegerWidth::I16,
-        IntegerWidth::I32, IntegerWidth::I64};
-    for (IntegerWidth width : integerWidths)
-      if (typed.integerElementWidths.contains(width))
-        addWidth(integerBitWidth(width));
-    constexpr FloatFormat floatFormats[] = {FloatFormat::F16, FloatFormat::BF16,
-                                            FloatFormat::F32, FloatFormat::F64};
-    for (FloatFormat format : floatFormats)
-      if (typed.floatElementFormats.contains(format))
-        addWidth(floatBitWidth(format));
-    return elementWidths.size() > 1;
-  }
-  case TypedAdmissionProviderId::FixedVectorUniformFloatAdmission: {
-    const auto &typed = std::get<FixedVectorFloatParams>(params);
-    return typed.elementFormats.size() > 1 ||
-           floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::FixedVectorFloatCompareAdmission: {
-    const auto &typed = std::get<FixedVectorFloatCompareMinMaxParams>(params);
-    return typed.elementFormats.size() > 1 || typed.predicates.size() > 1 ||
-           floatBehaviorVaries(typed.behavior);
-  }
-  case TypedAdmissionProviderId::FixedVectorAdapterAdmission: {
-    if (!hasSchema(OperationSchemaId::DataflowParallelize) &&
-        !hasSchema(OperationSchemaId::DataflowSerialize))
-      return false;
-    const auto &typed = std::get<FixedVectorAdapterParams>(params);
-    return typed.integerElementWidths.size() +
-               typed.floatElementFormats.size() >
-           1;
-  }
+    return admitTokenPlaneAdmission(*params, *represented, &pointerLayout);
   case TypedAdmissionProviderId::ConstantTokenAdmission:
-    return true;
+    return admitConstantTokenAdmission(*params, *represented, &pointerLayout);
   case TypedAdmissionProviderId::SyncTokenAdmission:
-    return physicalInputCount > 1 || physicalResultCount > 1;
+    return admitSyncTokenAdmission(*params, *represented, &pointerLayout);
   case TypedAdmissionProviderId::MuxTokenAdmission:
-    return physicalInputCount > 3;
+    return admitMuxTokenAdmission(*params, *represented, &pointerLayout);
   case TypedAdmissionProviderId::DemuxTokenAdmission:
-    return physicalResultCount > 2;
+    return admitDemuxTokenAdmission(*params, *represented, &pointerLayout);
+  default:
+    break;
   }
-  return reject("typed admission provider is not registered");
-}
-
-mlir::FailureOr<unsigned> fabric::getSemanticPayloadWidth(mlir::Type type,
-                                                          std::string &error) {
-  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
-    return integer.getWidth();
-  if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
-    return floating.getWidth();
-  if (mlir::isa<mlir::IndexType, mlir::LLVM::LLVMPointerType>(type))
-    return ::loom::getIndexWidth();
-  if (mlir::isa<mlir::NoneType>(type))
-    return 0u;
-  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
-    auto elementWidth = getSemanticPayloadWidth(vector.getElementType(), error);
-    if (mlir::failed(elementWidth))
-      return mlir::failure();
-    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
-    if (!width) {
-      error = llvm::toString(width.takeError());
-      return mlir::failure();
-    }
-    if (static_cast<unsigned>(*width) != *width) {
-      error = "semantic payload width " + std::to_string(*width) +
-              " exceeds the physical payload width";
-      return mlir::failure();
-    }
-    return static_cast<unsigned>(*width);
-  }
-
-  std::string spelling;
-  llvm::raw_string_ostream stream(spelling);
-  type.print(stream);
-  error = "unsupported semantic payload type " + stream.str();
-  return mlir::failure();
+  return verifyImplementationFamilyAdmission(family, params, actor,
+                                             indexBitWidth);
 }
 
 namespace {
@@ -1116,7 +1000,7 @@ bitReinterpretEndpoint(::mlir::Type type,
       return width.takeError();
     if (*width == IntegerWidth::I1 || !params.integerWidths.contains(*width))
       return reject("bit reinterpretation integer width is not admitted");
-    return integerBitWidth(*width);
+    return fabric::getBitWidth(*width);
   }
   llvm::Expected<FloatFormat> format =
       floatFormat(type, "scalar bit reinterpretation");
@@ -1124,7 +1008,7 @@ bitReinterpretEndpoint(::mlir::Type type,
     return format.takeError();
   if (!params.floatFormats.contains(*format))
     return reject("bit reinterpretation floating format is not admitted");
-  return floatBitWidth(*format);
+  return fabric::getBitWidth(*format);
 }
 
 llvm::Error admitScalarBitReinterpretAdmission(
@@ -1331,11 +1215,11 @@ admitScalarFloatCastAdmission(const FamilyCapabilityParams &capability,
   bool truncates = false;
   switch (actor.schema) {
   case OperationSchemaId::ArithExtF:
-    if (floatBitWidth(*source) >= floatBitWidth(*destination))
+    if (fabric::getBitWidth(*source) >= fabric::getBitWidth(*destination))
       return reject("floating extension must widen");
     break;
   case OperationSchemaId::ArithTruncF:
-    if (floatBitWidth(*source) <= floatBitWidth(*destination))
+    if (fabric::getBitWidth(*source) <= fabric::getBitWidth(*destination))
       return reject("floating truncation must narrow");
     truncates = true;
     break;
@@ -1494,22 +1378,6 @@ llvm::Expected<IntegerWidth> integerWidth(::mlir::Type type,
   }
 }
 
-unsigned integerBitWidth(IntegerWidth width) {
-  switch (width) {
-  case IntegerWidth::I1:
-    return 1;
-  case IntegerWidth::I8:
-    return 8;
-  case IntegerWidth::I16:
-    return 16;
-  case IntegerWidth::I32:
-    return 32;
-  case IntegerWidth::I64:
-    return 64;
-  }
-  llvm_unreachable("invalid integer width");
-}
-
 llvm::Expected<FloatFormat> floatFormat(::mlir::Type type,
                                         llvm::StringRef relation) {
   if (::llvm::isa<::mlir::VectorType>(type))
@@ -1526,19 +1394,6 @@ llvm::Expected<FloatFormat> floatFormat(::mlir::Type type,
   if (floating.isF64())
     return FloatFormat::F64;
   return reject(relation + " rejects the actor floating format");
-}
-
-unsigned floatBitWidth(FloatFormat format) {
-  switch (format) {
-  case FloatFormat::F16:
-  case FloatFormat::BF16:
-    return 16;
-  case FloatFormat::F32:
-    return 32;
-  case FloatFormat::F64:
-    return 64;
-  }
-  llvm_unreachable("invalid floating format");
 }
 
 llvm::Error requireArity(const CanonicalActorSchemaProjection &actor,
@@ -1618,64 +1473,6 @@ arithmeticRounding(const CanonicalActorSchemaProjection &actor) {
 
 } // namespace
 
-std::uint32_t fabric::implementationFamilyCount() {
-  return static_cast<std::uint32_t>(kFamilyCount);
-}
-
-const fabric::ImplementationFamilyDescriptor &
-fabric::implementationFamily(ImplementationFamilyId family) {
-  return familyTable()[static_cast<std::size_t>(family)];
-}
-
-llvm::StringRef
-fabric::implementationFamilyKeyword(ImplementationFamilyId family) {
-  return stringifyImplementationFamilyId(family);
-}
-
-std::optional<fabric::ImplementationFamilyId>
-fabric::findImplementationFamily(llvm::StringRef keyword) {
-  return symbolizeImplementationFamilyId(keyword);
-}
-
-bool fabric::admitsOperationSchema(ImplementationFamilyId family,
-                                   ::dataflow::OperationSchemaId schema) {
-  return llvm::is_contained(implementationFamily(family).admittedSchemas,
-                            schema);
-}
-
-llvm::SmallVector<fabric::ImplementationFamilyId, 2>
-fabric::implementationFamiliesFor(::dataflow::OperationSchemaId schema) {
-  llvm::SmallVector<ImplementationFamilyId, 2> families;
-  for (std::uint32_t index = 0; index < implementationFamilyCount(); ++index) {
-    auto family = static_cast<ImplementationFamilyId>(index);
-    if (admitsOperationSchema(family, schema))
-      families.push_back(family);
-  }
-  return families;
-}
-
-llvm::StringRef
-fabric::capabilityParamsSchemaKeyword(CapabilityParamsSchemaId schema) {
-  switch (schema) {
-#define LOOM_CAPABILITY_PARAMS_SCHEMA(Name, Id)                                \
-  case CapabilityParamsSchemaId::Name:                                         \
-    return #Name;
-#include "Fabric/IR/ImplementationFamilies.inc"
-  }
-  llvm_unreachable("unregistered capability parameter schema");
-}
-
-llvm::StringRef
-fabric::typedAdmissionProviderKeyword(TypedAdmissionProviderId provider) {
-  switch (provider) {
-#define LOOM_TYPED_ADMISSION_PROVIDER(Name, Id)                                \
-  case TypedAdmissionProviderId::Name:                                         \
-    return #Name;
-#include "Fabric/IR/ImplementationFamilies.inc"
-  }
-  llvm_unreachable("unregistered typed admission provider");
-}
-
 namespace {
 
 llvm::Error admitUniformInteger(const CanonicalActorSchemaProjection &actor,
@@ -1699,6 +1496,50 @@ llvm::Error admitScalarOrdinaryIntegerAdmission(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
     return error;
   return admitUniformInteger(actor, params.integerWidths, 2);
+}
+
+llvm::Error admitGetElementPtr(const FamilyCapabilityParams &capability,
+                               const CanonicalActorSchemaProjection &actor,
+                               const ::loom::PointerLayout &pointerLayout) {
+  const auto &params = std::get<fabric::ScalarIntegerParams>(capability);
+  if (llvm::Error error = validateIntegerWidths(
+          params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
+    return error;
+  if (!params.pointerFormats.valid() ||
+      !params.pointerFormats.contains(pointerLayout))
+    return reject("concrete resource does not admit the exact pointer format");
+  if (pointerLayout.kind != ::loom::PointerLayoutKind::StableIntegral)
+    return reject("pointer layout requires an unavailable representation "
+                  "provider");
+
+  const auto *payload =
+      std::get_if<dataflow::GetElementPtrPayload>(&actor.payload);
+  if (!payload || !payload->sourceElementType)
+    return reject("GEP actor has no exact source element type");
+  if (actor.type.getNumInputs() == 0 || actor.type.getNumResults() != 1)
+    return reject("GEP actor has invalid arity");
+  auto base =
+      ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getInput(0));
+  auto result =
+      ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getResult(0));
+  if (!base || !result || base.getAddressSpace() != result.getAddressSpace() ||
+      base.getAddressSpace() != pointerLayout.addressSpace)
+    return reject("GEP pointer address spaces do not match the exact layout");
+
+  unsigned dynamicCount = 0;
+  for (std::int32_t raw : payload->rawConstantIndices)
+    dynamicCount += raw == ::mlir::LLVM::GEPOp::kDynamicIndex;
+  if (dynamicCount + 1 != actor.type.getNumInputs())
+    return reject("GEP dynamic index pattern does not match its function type");
+  for (::mlir::Type type : actor.type.getInputs().drop_front()) {
+    llvm::Expected<IntegerWidth> width =
+        integerWidth(type, "GEP dynamic index width");
+    if (!width)
+      return width.takeError();
+    if (!params.integerWidths.contains(*width))
+      return reject("GEP dynamic index width is not admitted");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error
@@ -1885,8 +1726,8 @@ admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
     return destination.takeError();
   if (!params.relation.widthPairs.contains(*source, *destination))
     return reject("integer cast relation does not admit the endpoint pair");
-  unsigned sourceBits = integerBitWidth(*source);
-  unsigned destinationBits = integerBitWidth(*destination);
+  unsigned sourceBits = fabric::getBitWidth(*source);
+  unsigned destinationBits = fabric::getBitWidth(*destination);
   switch (actor.schema) {
   case OperationSchemaId::ArithExtSI:
   case OperationSchemaId::ArithExtUI:

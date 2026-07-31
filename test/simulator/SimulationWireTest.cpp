@@ -1,4 +1,4 @@
-// Anchor tests for the schema-1.1 Spatial SimulationWorkload and
+// Anchor tests for the schema-1.1 Spatial SimulationWorkload and schema-2.0
 // SimulationRuntimeInput persistent artifacts: rooted-launch ownership,
 // total value classification, stream horizon state, canonical object
 // ordinals, observable contracts, strict wire parsing, and DFG/CGRA
@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -70,7 +71,7 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, mlir::DLTIDialect,
                     mlir::func::FuncDialect, mlir::arith::ArithDialect,
-                    mlir::memref::MemRefDialect>();
+                    mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
     auto *c =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     c->loadAllAvailableDialects();
@@ -136,6 +137,44 @@ module {
     %k = dataflow.constant %ctrl {const_value = 1 : i32} : i32
     %r:2 = dataflow.sync %ctrl, %k : (none, i32) -> (none, i32)
     dataflow.graph.return values(%r#1 : i32) streams() memories() complete(%r#0 : none)
+  }
+}
+)mlir";
+}
+
+const char *pointerValueProgram() {
+  return R"mlir(
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<
+    "dlti.endianness" = "little",
+    index = 32 : i64
+  >
+} {
+  dataflow.graph private @pointer_value(%ctrl: none, %pointer: !llvm.ptr,
+                                        %service: memref<16xi8>)
+      -> !llvm.ptr attributes {
+        input_segments = array<i32: 1, 0, 1>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %published:2 = dataflow.sync %ctrl, %pointer
+        : (none, !llvm.ptr) -> (none, !llvm.ptr)
+    dataflow.graph.return values(%published#1 : !llvm.ptr) streams()
+        memories() complete(%published#0 : none)
+  }
+  dataflow.thread private @pointer_thread
+      domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr,
+                                              %service: memref<16xi8>)
+      ctrl (%ctrl: none) {
+    %returned, %done = dataflow.graph.launch @pointer_value deps(%ctrl)
+        values(%pointer) stream_inputs() memories(%service) stream_outputs()
+        : (none, !llvm.ptr, memref<16xi8>) -> (!llvm.ptr, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%pointer: !llvm.ptr, %service: memref<16xi8>) {
+    %thread = dataflow.thread.launch @pointer_thread(%pointer, %service)
+        : (!llvm.ptr, memref<16xi8>) -> !dataflow.thread_token
+    return
   }
 }
 )mlir";
@@ -620,6 +659,78 @@ void typedDfgExecution() {
                   SemanticState::Defined &&
               diff->runs.front().changedBytes.front().value == 0x40,
           "typed execution emitted a non-maximal or incorrect diff run");
+}
+
+void pointerValueRoundtrip() {
+  const char *test = "pointerValueRoundtrip";
+  CanonicalDataflowArtifact artifact =
+      finalizeProgram(test, pointerValueProgram());
+  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  LogicalMemoryRootRef serviceRoot = rootByFormal(test, view, 1);
+
+  SpatialSimulationWorkload workloadModel{onlyLaunch(test, view)};
+  workloadModel.valueInputPlan = {RuntimeValueInput{}};
+  workloadModel.observableContract.valueResults = {0};
+  llvm::Expected<CanonicalSimulationWorkload> workload =
+      finalizeSimulationWorkload(workloadModel, view);
+  if (!workload)
+    fail(test, "workload finalization failed: " +
+                   llvm::toString(workload.takeError()));
+
+  SpatialSimulationRuntimeInputDraft draft{workload->identity()};
+  draft.runtimeValues = {RuntimeValueEntry{
+      0, oneToken({SemanticLane::definedPointer(llvm::APInt(64, 0x1004), 0,
+                                                llvm::APInt(64, 4))})}};
+  draft.memoryObjects = {byteObject(16, 0)};
+  draft.memoryRootBindings = {RuntimeMemoryBindingDraft{serviceRoot, 0, 0}};
+  llvm::Expected<CanonicalSimulationRuntimeInput> input =
+      finalizeSimulationRuntimeInput(draft, *workload, view);
+  if (!input)
+    fail(test,
+         "pointer runtime input failed: " + llvm::toString(input.takeError()));
+
+  SpatialSimulationRuntimeInputDraft alternate = draft;
+  alternate.runtimeValues.front().value.lanes.front().bits =
+      llvm::APInt(64, 0x7fff00001004ULL);
+  llvm::Expected<CanonicalSimulationRuntimeInput> alternateInput =
+      finalizeSimulationRuntimeInput(alternate, *workload, view);
+  if (!alternateInput)
+    fail(test, "alternate pointer runtime input failed: " +
+                   llvm::toString(alternateInput.takeError()));
+  require(test,
+          alternateInput->identity() == input->identity() &&
+              alternateInput->canonicalBytes().bytes() ==
+                  input->canonicalBytes().bytes(),
+          "native pointer bits changed canonical runtime-input identity");
+
+  llvm::Expected<CanonicalSimulationRuntimeInput> imported =
+      importSimulationRuntimeInput(input->canonicalBytes().bytes(), *workload,
+                                   view, input->identity());
+  if (!imported)
+    fail(test, "pointer runtime input import failed: " +
+                   llvm::toString(imported.takeError()));
+  const SemanticLane &importedLane =
+      imported->spatial()->runtimeValues.front().value.lanes.front();
+  require(
+      test,
+      importedLane.pointerTarget.has_value() &&
+          importedLane.pointerTarget->objectOrdinal == 0 &&
+          importedLane.pointerTarget->byteOffset == llvm::APInt(64, 4) &&
+          importedLane.bits ==
+              input->spatial()->runtimeValues.front().value.lanes.front().bits,
+      "pointer wire changed canonical representation or provenance");
+
+  llvm::Expected<RetiredDFGSimulation> execution =
+      simulateRetiredDfgWorkload(artifact, *workload, *input);
+  if (!execution)
+    fail(test, "pointer DFG execution failed: " +
+                   llvm::toString(execution.takeError()));
+  const auto *published = std::get_if<PublishedValueResult>(
+      &execution->observations.valueResults.front());
+  require(test,
+          published && published->value.lanes.size() == 1 &&
+              published->value.lanes.front() == importedLane,
+          "DFG execution changed pointer representation or provenance");
 }
 
 // (b) Total Fixed/Runtime classification and exact lane-state validation.
@@ -1362,8 +1473,8 @@ void enumStrictness() {
   };
   {
     SpatialSimulationWorkload workload = base();
-    workload.valueInputPlan[0] =
-        oneToken({SemanticLane{static_cast<SemanticState>(9), llvm::APInt()}});
+    workload.valueInputPlan[0] = oneToken({SemanticLane{
+        static_cast<SemanticState>(9), llvm::APInt(), std::nullopt}});
     require(test, isRejected(finalizeSimulationWorkload(workload, view)),
             "an out-of-domain lane state is rejected at finalization");
   }
@@ -1604,6 +1715,7 @@ void freshExposureChain() {
 
 int main() {
   typedDfgExecution();
+  pointerValueRoundtrip();
   rootedLaunchOwnership();
   valueClassificationAndLanes();
   streamHorizonAndCardinality();

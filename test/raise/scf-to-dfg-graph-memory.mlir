@@ -7,22 +7,23 @@
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/dynamic-rank.mlir \
 // RUN:   2>&1 | FileCheck %s --check-prefix=DYNAMIC-RANK
 
-// One chain of pointer arithmetic becomes one integer access function over a
-// launch-owned typed view. Intermediate pointers never become graph entities.
+// A source pointer remains first-class graph data. The enclosing thread
+// explicitly acquires one object-scoped memory service, while the complete
+// typed GEP chain remains the pointer-addressed access function.
 
 // CHAIN-LABEL: dataflow.thread private @pointer_chain
+// CHAIN: %[[SERVICE:.*]] = dataflow.memory.service %arg0 : !llvm.ptr -> memref<?xf32>
 // CHAIN: dataflow.graph.launch @pointer_chain_graph
-// CHAIN-SAME: memories(%arg0)
+// CHAIN-SAME: values(%arg1, %arg2, %arg3, %arg0)
+// CHAIN-SAME: memories(%[[SERVICE]])
 // CHAIN-LABEL: dataflow.graph private @pointer_chain_graph(
+// CHAIN-SAME: %[[BASE:[^, )]+]]: !llvm.ptr
 // CHAIN-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
-// CHAIN: %[[OUTER:.*]] = arith.index_cast %arg1 : i64 to index
-// CHAIN: %[[MIDDLE:.*]] = arith.index_cast %arg2 : i64 to index
-// CHAIN: %[[FIRST:.*]] = arith.addi %[[OUTER]], %[[MIDDLE]] : index
-// CHAIN: %[[INNER:.*]] = arith.index_cast %arg3 : i64 to index
-// CHAIN: %[[ADDRESS:.*]] = arith.addi %[[FIRST]], %[[INNER]] : index
+// CHAIN: %[[FIRST:.*]] = llvm.getelementptr inbounds %[[BASE]]
+// CHAIN: %[[SECOND:.*]] = llvm.getelementptr inbounds %[[FIRST]]
+// CHAIN: %[[ADDRESS:.*]] = llvm.getelementptr inbounds %[[SECOND]]
 // CHAIN: dataflow.load [[MEM]][%[[ADDRESS]]]
 // CHAIN-NOT: builtin.unrealized_conversion_cast
-// CHAIN-NOT: llvm.getelementptr
 // CHAIN-NOT: llvm.load
 
 //--- pointer-chain.mlir
@@ -35,7 +36,7 @@ module attributes {
           %base: !llvm.ptr, %outer: i64, %middle: i64, %inner: i64)
       ctrl (%ctrl: none) {
     %value = "loom.spatial_region"(%outer, %middle, %inner, %base)
-        <{operandSegmentSizes = array<i32: 3, 0, 1, 0>,
+        <{operandSegmentSizes = array<i32: 4, 0, 0, 0>,
           resultSegmentSizes = array<i32: 1, 0>}> ({
       ^bb0(%i: i64, %j: i64, %k: i64, %memory: !llvm.ptr):
         %first = llvm.getelementptr inbounds %memory[%i]

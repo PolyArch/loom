@@ -77,6 +77,8 @@ public:
 
   MemoryAccessOperation operation() const { return accessOperation; }
 
+  MemoryAddressForm addressForm() const { return accessGeometry.addressForm; }
+
   /// The one shared geometry analysis of this access.
   const MemoryAccessType &geometry() const { return accessGeometry; }
 
@@ -121,8 +123,9 @@ public:
 
   std::uint64_t dataBits() const { return derived.dataBits; }
 
-  /// The canonical `index` width in this actor's closest enclosing scope.
-  unsigned indexBits() const { return derived.indexBits; }
+  /// Width of one address lane: canonical index width for RootRelative and
+  /// complete pointer representation width for PointerAddressed.
+  unsigned addressLaneBits() const { return derived.addressLaneBits; }
 
   std::uint64_t addressBits() const { return derived.addressBits; }
 
@@ -139,7 +142,7 @@ private:
     std::uint64_t addressCount;
     std::uint64_t elementBits;
     std::uint64_t dataBits;
-    unsigned indexBits;
+    unsigned addressLaneBits;
     std::uint64_t addressBits;
     std::uint64_t maskBits;
   };
@@ -253,8 +256,7 @@ const ServiceRoleSchema &getServiceRoleSchema(ServiceKind kind);
 
 /// Projects a registered canonical memory actor schema to its service kind.
 /// A non-memory actor schema is rejected rather than assigned a fallback.
-llvm::Expected<ServiceKind>
-getMemoryServiceKind(OperationSchemaId actorSchema);
+llvm::Expected<ServiceKind> getMemoryServiceKind(OperationSchemaId actorSchema);
 
 /// One nonpersistent Canonical Service Schema 2.0 service: an exact kind bound
 /// to the one parameter that kind takes -- a message payload type, an

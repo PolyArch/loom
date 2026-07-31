@@ -121,6 +121,36 @@ bool expectAdmissionAtIndexWidth(
   return false;
 }
 
+bool expectAdmissionAtPointerLayout(
+    ImplementationFamilyId family, const FamilyCapabilityParams *params,
+    const dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth, const loom::PointerLayout &pointerLayout,
+    bool admitted, llvm::StringRef semanticReason) {
+  llvm::Error error = verifyImplementationFamilyAdmission(
+      family, params, actor, indexBitWidth, pointerLayout);
+  if (admitted) {
+    if (!error)
+      return true;
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " rejected an admitted pointer actor: "
+                 << llvm::toString(std::move(error)) << '\n';
+    return false;
+  }
+  if (!error) {
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " admitted a pointer actor that must fail "
+                 << semanticReason << '\n';
+    return false;
+  }
+  std::string message = llvm::toString(std::move(error));
+  if (llvm::StringRef(message).contains(semanticReason))
+    return true;
+  llvm::errs() << implementationFamilyKeyword(family)
+               << " reported an unspecific pointer rejection: " << message
+               << '\n';
+  return false;
+}
+
 bool checkDescriptorRelations() {
   bool ok = true;
   llvm::StringSet<> keywords;
@@ -223,6 +253,8 @@ bool checkMembership() {
                              OperationSchemaId::ArithAddI) ||
       !admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
                              OperationSchemaId::ArithSubI) ||
+      !admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
+                             OperationSchemaId::LLVMGetElementPtr) ||
       admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
                             OperationSchemaId::ArithMulI) ||
       !admitsOperationSchema(ImplementationFamilyId::LoopStream,
@@ -258,6 +290,22 @@ bool checkCapabilityCodec(MLIRContext &context) {
   }
   if (getFamilyCapabilityParamsAttr(&context, *decoded) != encoded) {
     llvm::errs() << "canonical typed hw_params did not round-trip\n";
+    return false;
+  }
+
+  FamilyCapabilityParams pointerCapability = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64}),
+      PointerFormatRelation::get(
+          {{0, 64, 64, loom::PointerLayoutKind::StableIntegral}})};
+  DictionaryAttr encodedPointer =
+      getFamilyCapabilityParamsAttr(&context, pointerCapability);
+  auto decodedPointer = parseFamilyCapabilityParams(
+      ImplementationFamilyId::ScalarIntegerAddSub, encodedPointer);
+  if (!decodedPointer || getFamilyCapabilityParamsAttr(
+                             &context, *decodedPointer) != encodedPointer) {
+    if (!decodedPointer)
+      llvm::errs() << llvm::toString(decodedPointer.takeError()) << '\n';
+    llvm::errs() << "pointer-format capability did not round-trip\n";
     return false;
   }
 
@@ -380,6 +428,48 @@ bool checkIntegerAdmission(MLIRContext &context) {
         expectAdmission(ImplementationFamilyId::ScalarIntegerAddSub, &ordinary,
                         *mismatch, false, "requires a scalar signless integer");
   }
+  return ok;
+}
+
+bool checkPointerAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type pointer = LLVM::LLVMPointerType::get(&context);
+  Type i32 = fixture.builder.getI32Type();
+  Type i64 = fixture.builder.getI64Type();
+  SmallVector<LLVM::GEPArg, 1> indices{fixture.poison(i64)};
+  Operation *gep = LLVM::GEPOp::create(fixture.builder, fixture.loc, pointer,
+                                       i32, fixture.poison(pointer), indices,
+                                       LLVM::GEPNoWrapFlags::none);
+
+  bool ok = true;
+  std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+      projectActor(gep, ok);
+  if (!projection)
+    return false;
+
+  FamilyCapabilityParams integerOnly = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64})};
+  FamilyCapabilityParams pointerCapable = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64}),
+      PointerFormatRelation::get(
+          {{0, 64, 64, loom::PointerLayoutKind::StableIntegral}})};
+  const loom::PointerLayout exact{0, 64, 64,
+                                  loom::PointerLayoutKind::StableIntegral};
+  const loom::PointerLayout wrongWidth{0, 32, 32,
+                                       loom::PointerLayoutKind::StableIntegral};
+
+  ok &= expectAdmission(ImplementationFamilyId::ScalarIntegerAddSub,
+                        &pointerCapable, *projection, false,
+                        "exact pointer layout");
+  ok &= expectAdmissionAtPointerLayout(
+      ImplementationFamilyId::ScalarIntegerAddSub, &integerOnly, *projection,
+      64, exact, false, "pointer format");
+  ok &= expectAdmissionAtPointerLayout(
+      ImplementationFamilyId::ScalarIntegerAddSub, &pointerCapable, *projection,
+      64, wrongWidth, false, "pointer format");
+  ok &= expectAdmissionAtPointerLayout(
+      ImplementationFamilyId::ScalarIntegerAddSub, &pointerCapable, *projection,
+      64, exact, true, {});
   return ok;
 }
 
@@ -616,6 +706,10 @@ bool checkLoopAndTokenAdmission(MLIRContext &context) {
         fixture.poison(payload));
   };
   Operation *scalarCarry = carry(i32);
+  Type pointer = LLVM::LLVMPointerType::get(&context);
+  Operation *pointerInvariant = dataflow::InvariantOp::create(
+      fixture.builder, fixture.loc, pointer,
+      fixture.poison(fixture.builder.getI1Type()), fixture.poison(pointer));
   Operation *memoryCarry =
       carry(MemRefType::get({4}, fixture.builder.getI32Type()));
   FamilyCapabilityParams tokenPlane = TokenPlaneParams{};
@@ -638,6 +732,16 @@ bool checkLoopAndTokenAdmission(MLIRContext &context) {
   check(scalarCarry, ImplementationFamilyId::LoopCarry, tokenPlane, true, {});
   check(memoryCarry, ImplementationFamilyId::LoopCarry, tokenPlane, false,
         "token-plane payload");
+  if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+          projectActor(pointerInvariant, ok)) {
+    const loom::PointerLayout exact{0, 64, 64,
+                                    loom::PointerLayoutKind::StableIntegral};
+    ok &= expectAdmission(ImplementationFamilyId::LoopInvariant, &tokenPlane,
+                          *projection, false, "exact pointer layout");
+    ok &= expectAdmissionAtPointerLayout(ImplementationFamilyId::LoopInvariant,
+                                         &tokenPlane, *projection, 64, exact,
+                                         true, {});
+  }
   return ok;
 }
 
@@ -736,6 +840,7 @@ int main() {
   ok &= checkMembership();
   ok &= checkCapabilityCodec(context);
   ok &= checkIntegerAdmission(context);
+  ok &= checkPointerAdmission(context);
   ok &= checkFloatingAdmission(context);
   ok &= checkCastRelations(context);
   ok &= checkLoopAndTokenAdmission(context);

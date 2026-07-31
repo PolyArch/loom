@@ -56,7 +56,8 @@ struct ResolvedFabricOpCapabilityView {
   /// it is required even when this actor contains no index type so callers
   /// cannot silently fall back to process configuration.
   llvm::Error admit(const ::dataflow::CanonicalActorSchemaProjection &actor,
-                    unsigned indexBitWidth) const;
+                    unsigned indexBitWidth,
+                    const ::loom::PointerLayout *pointerLayout = nullptr) const;
 };
 
 class FabricArtifactView;

@@ -518,6 +518,13 @@ author intends the narrower exact memory contract. Both helpers construct the
 same ordinary `MemorySpec` and `MemoryServiceContractRecord`; helper selection
 is not persisted as a Fabric classification or capability authority.
 
+The built-in catalog explicitly admits stable-integral address-space-zero P32
+and P64 pointer formats on its pointer-capable integer and memory resources.
+The formats remain separate members of the exact typed relation: a 64-bit
+physical endpoint carries P32 by the declared low-bit-aligned zero-extension
+rule, rather than by treating every narrower bit vector as a pointer. No other
+address space, pointer kind, representation width, or address width is implied.
+
 #### CoreAluFu Resource Inventory
 
 `CoreAluFu` constructs one concrete `fabric.op` resource for each of the

@@ -31,6 +31,18 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-pointer-service-boundary-test
+  PointerServiceBoundaryTest.cpp
+)
+
+target_link_libraries(loom-pointer-service-boundary-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendCompilation
+  LoomNativeSimulationOracle
+  LoomSimulator
+)
+
 add_executable(loom-structured-address-index-narrowing-test
   StructuredAddressIndexNarrowingTest.cpp
 )

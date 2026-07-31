@@ -20,6 +20,8 @@ namespace loom::sim {
 struct NativeCapturedMemoryObject {
   std::vector<std::uint8_t> initialBytes;
   std::vector<std::uint8_t> finalBytes;
+  std::vector<RuntimeMemoryPointer> initialPointers;
+  std::vector<RuntimeMemoryPointer> finalPointers;
 };
 
 struct NativeSimulationCallCapture {

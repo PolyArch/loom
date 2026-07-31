@@ -88,8 +88,8 @@ dataflow.graph private @g_memory_without_classification(
 }
 
 // -----
-// Capability rejection applies recursively to aggregate value ports.
-// expected-error @+1 {{value input #0 contains memory capability type 'tuple<i32, !llvm.ptr>'}}
+// Pointer values are scalar transfer payloads rather than aggregate aliases.
+// expected-error @+1 {{value input #0 contains a nested LLVM pointer value in type 'tuple<i32, !llvm.ptr>'}}
 dataflow.graph private @g_nested_memory_value(
     %ctrl: none, %aggregate: tuple<i32, !llvm.ptr>) -> ()
     attributes {input_segments = array<i32: 1, 0, 0>,
@@ -144,36 +144,18 @@ func.func @launch_outside_thread() {
 }
 
 // -----
-// Pointer import is restricted to integral address space zero.
+// A pointer value cannot be silently reinterpreted as a memory capability.
 dataflow.graph private @g_linear_import(%ctrl: none, %memory: memref<?xf32>)
     -> ()
     attributes {input_segments = array<i32: 0, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
   dataflow.graph.return %ctrl : none
 }
-dataflow.thread private @t_nonzero_pointer_import
-    domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr<1>)
-    ctrl (%ctrl: none) {
-  // expected-error @+1 {{memory input #0 cannot bind pointer address space 1 to canonical graph memref 'memref<?xf32>'}}
-  %done = dataflow.graph.launch @g_linear_import deps(%ctrl) values()
-      stream_inputs() memories(%pointer) stream_outputs()
-      : (none, !llvm.ptr<1>) -> none
-  dataflow.thread.yield
-}
-
-// -----
-// Pointer import cannot invent a static or shaped extent at the graph boundary.
-dataflow.graph private @g_static_import(%ctrl: none, %memory: memref<4xf32>)
-    -> ()
-    attributes {input_segments = array<i32: 0, 0, 1>,
-                result_segments = array<i32: 0, 0, 0>} {
-  dataflow.graph.return %ctrl : none
-}
-dataflow.thread private @t_static_pointer_import
+dataflow.thread private @t_pointer_memory_import
     domain(#dataflow.thread_domain<dense>)(%pointer: !llvm.ptr)
     ctrl (%ctrl: none) {
-  // expected-error @+1 {{memory input #0 pointer view target 'memref<4xf32>' must be a rank-one dynamic identity-layout memref in the default memory space}}
-  %done = dataflow.graph.launch @g_static_import deps(%ctrl) values()
+  // expected-error @+1 {{memory input #0 type '!llvm.ptr' does not match callee payload type 'memref<?xf32>'}}
+  %done = dataflow.graph.launch @g_linear_import deps(%ctrl) values()
       stream_inputs() memories(%pointer) stream_outputs()
       : (none, !llvm.ptr) -> none
   dataflow.thread.yield

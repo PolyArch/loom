@@ -5,6 +5,7 @@
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
@@ -27,7 +28,7 @@ using namespace fabric;
 namespace {
 
 constexpr llvm::StringLiteral accessFixture = R"mlir(
-module {
+module attributes {llvm.data_layout = "e-p:64:64:64:64"} {
   func.func @element_f32(%mem: memref<8xf32>, %address: index, %ctrl: none)
       -> (f32, none) {
     %data, %done = dataflow.load %mem[%address] %ctrl : memref<8xf32>
@@ -56,6 +57,20 @@ module {
                                             source_alignment_bytes = 4>}
         : memref<8xf32>
     return %data, %done : f32, none
+  }
+
+  func.func @pointer_address(%mem: memref<8xi32>, %address: !llvm.ptr,
+                             %ctrl: none) -> (i32, none) {
+    %data, %done = dataflow.load %mem[%address] %ctrl
+        : memref<8xi32>, !llvm.ptr
+    return %data, %done : i32, none
+  }
+
+  func.func @pointer_payload(%mem: memref<1xi64>, %address: index,
+                             %ctrl: none) -> (!llvm.ptr, none) {
+    %data, %done = dataflow.load %mem[%address] %ctrl
+        : memref<1xi64>, index, !llvm.ptr
+    return %data, %done : !llvm.ptr, none
   }
 }
 )mlir";
@@ -386,6 +401,58 @@ void checkReducedAccessRelation() {
       "access trailing bytes", decodeParameterizedMemoryAccessDomain(bytes));
 }
 
+void checkPointerCapabilityMembership(mlir::ModuleOp module) {
+  const PointerFormat p64{0, 64, 64, loom::PointerLayoutKind::StableIntegral};
+  const PointerFormat p32{0, 32, 32, loom::PointerLayoutKind::StableIntegral};
+  auto pointerAddressClass = [&](PointerFormat format) {
+    return take("pointer address class",
+                MemoryAccessClass::create(
+                    MemoryAccessForm::Element, singleton(32), singleton(1),
+                    {MaskInactivePair{MemoryMaskForm::Absent,
+                                      InactiveLaneSemantics::NotApplicable}},
+                    scalarAlignment(), readExact(), writeNotApplicable(),
+                    MemoryAddressForm::PointerAddressed,
+                    PointerFormatRelation::get({format})));
+  };
+  CanonicalMemoryAccessView pointerAddress =
+      accessView(module, "pointer_address");
+  require("pointer address capability",
+          pointerAddressClass(p64).contains(pointerAddress),
+          "exact pointer-address format was rejected");
+  require("pointer address capability",
+          !pointerAddressClass(p32).contains(pointerAddress),
+          "wrong pointer-address format was accepted by width coincidence");
+
+  CanonicalMemoryAccessView pointerPayload =
+      accessView(module, "pointer_payload");
+  MemoryAccessClass ordinaryData =
+      accessClass(MemoryAccessForm::Element, 64, 1);
+  require("pointer data capability", !ordinaryData.contains(pointerPayload),
+          "ordinary wide data admitted pointer payload provenance");
+  MemoryAccessClass pointerData =
+      take("pointer data class",
+           MemoryAccessClass::create(
+               MemoryAccessForm::Element, singleton(64), singleton(1),
+               {MaskInactivePair{MemoryMaskForm::Absent,
+                                 InactiveLaneSemantics::NotApplicable}},
+               scalarAlignment(), readExact(), writeNotApplicable(),
+               MemoryAddressForm::RootRelative, {},
+               PointerFormatRelation::get({p64})));
+  require("pointer data capability", pointerData.contains(pointerPayload),
+          "exact pointer payload format was rejected");
+
+  ParameterizedMemoryAccessDomain domain = take(
+      "pointer capability codec", ParameterizedMemoryAccessDomain::create(
+                                      {pointerAddressClass(p64), pointerData}));
+  auto bytes = take("pointer capability codec",
+                    encodeParameterizedMemoryAccessDomain(domain));
+  auto decoded = take("pointer capability codec",
+                      decodeParameterizedMemoryAccessDomain(bytes));
+  require("pointer capability codec",
+          decoded.contains(pointerAddress) && decoded.contains(pointerPayload),
+          "pointer capability relation did not round-trip");
+}
+
 } // namespace
 
 int main() {
@@ -393,10 +460,9 @@ int main() {
   checkEnumCodecs();
 
   mlir::DialectRegistry registry;
-  registry
-      .insert<DataflowDialect, mlir::func::FuncDialect, mlir::DLTIDialect>();
-  mlir::MLIRContext context(registry,
-                            mlir::MLIRContext::Threading::DISABLED);
+  registry.insert<DataflowDialect, mlir::func::FuncDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(accessFixture, &context);
@@ -404,5 +470,6 @@ int main() {
     fail("access fixture", "failed to parse");
   checkTypedAccessMembership(*module);
   checkReducedAccessRelation();
+  checkPointerCapabilityMembership(*module);
   return EXIT_SUCCESS;
 }

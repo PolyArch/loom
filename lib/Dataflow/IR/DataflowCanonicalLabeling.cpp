@@ -384,6 +384,10 @@ llvm::Error SemanticGraph::detectCarriers(ModuleOp module) {
                   nullptr, input});
       return;
     }
+    if (isa<MemoryServiceOp>(op)) {
+      recordOp(op, {CanonicalDataflowEntityKind::LogicalMemoryRoot, 0, op});
+      return;
+    }
     if (isa<ThreadLaunchOp>(op) || isa<GraphLaunchOp>(op)) {
       SymbolRefAttr symbol;
       if (auto thread = dyn_cast<ThreadLaunchOp>(op))
@@ -411,8 +415,9 @@ llvm::Error SemanticGraph::detectCarriers(ModuleOp module) {
                       graph.getOperation()});
         return;
       }
-      // A fresh canonical allocation is a root-defining value in its own right;
-      // its result carries the entity ID and it needs no owning-graph entity.
+      // A fresh canonical allocation is a root-defining value in its own
+      // right; its result carries the entity ID and it needs no owning-graph
+      // entity.
       if (isa<memref::AllocOp>(op))
         recordOp(op, {CanonicalDataflowEntityKind::LogicalMemoryRoot, 0, op});
     }

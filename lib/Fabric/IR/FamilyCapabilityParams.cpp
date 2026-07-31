@@ -67,6 +67,15 @@ llvm::Expected<std::uint32_t> requirePositiveU32(DictionaryAttr params,
   return static_cast<std::uint32_t>(value.getValue().getZExtValue());
 }
 
+llvm::Expected<std::uint32_t> requireU32(DictionaryAttr params,
+                                         llvm::StringRef field) {
+  auto value = dyn_cast_or_null<IntegerAttr>(params.get(field));
+  if (!value || value.getValue().isNegative() ||
+      value.getValue().getActiveBits() > 32)
+    return reject("hw_params field '" + field + "' must be a uint32");
+  return static_cast<std::uint32_t>(value.getValue().getZExtValue());
+}
+
 llvm::Expected<IntegerWidth> parseIntegerWidth(Attribute attr,
                                                llvm::StringRef field) {
   auto integer = dyn_cast<IntegerAttr>(attr);
@@ -361,17 +370,69 @@ parseResolvedIndexWidths(DictionaryAttr params, llvm::StringRef field) {
   return widths;
 }
 
+llvm::Expected<PointerFormatRelation>
+parsePointerFormats(DictionaryAttr params, llvm::StringRef field) {
+  Attribute raw = params.get(field);
+  if (!raw)
+    return PointerFormatRelation{};
+  auto values = dyn_cast<ArrayAttr>(raw);
+  if (!values)
+    return reject("hw_params field '" + field + "' must be an array");
+  if (values.empty())
+    return reject("hw_params field '" + field + "' must be omitted when empty");
+
+  PointerFormatRelation relation;
+  for (Attribute value : values) {
+    auto format = dyn_cast<DictionaryAttr>(value);
+    if (!format)
+      return reject("hw_params field '" + field +
+                    "' must contain pointer-format dictionaries");
+    if (llvm::Error error =
+            checkFields(format, {"address_space", "representation_bits",
+                                 "address_bits", "kind"}))
+      return std::move(error);
+    auto addressSpace = requireU32(format, "address_space");
+    if (!addressSpace)
+      return addressSpace.takeError();
+    auto representationBits = requirePositiveU32(format, "representation_bits");
+    if (!representationBits)
+      return representationBits.takeError();
+    auto addressBits = requirePositiveU32(format, "address_bits");
+    if (!addressBits)
+      return addressBits.takeError();
+    auto kind = requireString(format, "kind");
+    if (!kind)
+      return kind.takeError();
+    if (kind->getValue() != "stable_integral")
+      return reject("hw_params pointer format kind is not supported");
+    PointerFormat parsed{*addressSpace, *representationBits, *addressBits,
+                         ::loom::PointerLayoutKind::StableIntegral};
+    if (relation.contains(parsed))
+      return reject("hw_params field '" + field +
+                    "' contains a duplicate pointer format");
+    if (!relation.insert(parsed))
+      return reject("hw_params field '" + field +
+                    "' contains an invalid pointer format");
+  }
+  return relation;
+}
+
 llvm::Expected<FamilyCapabilityParams>
 parseParams(CapabilityParamsSchemaId schema, DictionaryAttr params) {
   using Schema = CapabilityParamsSchemaId;
   switch (schema) {
   case Schema::ScalarIntegerParams: {
-    if (llvm::Error error = checkFields(params, {"integer_widths"}))
+    if (llvm::Error error =
+            checkFields(params, {"integer_widths"}, {"pointer_formats"}))
       return std::move(error);
     auto widths = parseIntegerWidths(params, "integer_widths");
     if (!widths)
       return widths.takeError();
-    return FamilyCapabilityParams(ScalarIntegerParams{*widths});
+    auto pointerFormats = parsePointerFormats(params, "pointer_formats");
+    if (!pointerFormats)
+      return pointerFormats.takeError();
+    return FamilyCapabilityParams(
+        ScalarIntegerParams{*widths, *pointerFormats});
   }
   case Schema::ScalarIntegerCompareMinMaxParams: {
     if (llvm::Error error =
@@ -813,6 +874,24 @@ ArrayAttr integerFloatPairsAttr(OpBuilder &builder,
   return builder.getArrayAttr(encoded);
 }
 
+ArrayAttr pointerFormatsAttr(OpBuilder &builder,
+                             const PointerFormatRelation &relation) {
+  llvm::SmallVector<Attribute, 4> encoded;
+  encoded.reserve(relation.size());
+  for (const PointerFormat &format : relation.formats()) {
+    encoded.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("address_space",
+                             integerAttr(builder, format.addressSpace)),
+        builder.getNamedAttr("representation_bits",
+                             integerAttr(builder, format.representationBits)),
+        builder.getNamedAttr("address_bits",
+                             integerAttr(builder, format.addressBits)),
+        builder.getNamedAttr("kind", builder.getStringAttr("stable_integral")),
+    }));
+  }
+  return builder.getArrayAttr(encoded);
+}
+
 } // namespace
 
 llvm::Expected<FamilyCapabilityParams>
@@ -832,9 +911,15 @@ fabric::getFamilyCapabilityParamsAttr(MLIRContext *context,
       [&](const auto &typed) -> DictionaryAttr {
         using T = std::decay_t<decltype(typed)>;
         if constexpr (std::is_same_v<T, ScalarIntegerParams>) {
-          return builder.getDictionaryAttr({builder.getNamedAttr(
+          llvm::SmallVector<NamedAttribute, 2> fields;
+          fields.push_back(builder.getNamedAttr(
               "integer_widths",
-              integerWidthsAttr(builder, typed.integerWidths))});
+              integerWidthsAttr(builder, typed.integerWidths)));
+          if (!typed.pointerFormats.empty())
+            fields.push_back(builder.getNamedAttr(
+                "pointer_formats",
+                pointerFormatsAttr(builder, typed.pointerFormats)));
+          return builder.getDictionaryAttr(fields);
         } else if constexpr (std::is_same_v<T,
                                             ScalarIntegerCompareMinMaxParams>) {
           constexpr std::array<arith::CmpIPredicate, 10> predicates = {
