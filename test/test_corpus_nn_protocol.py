@@ -338,6 +338,33 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_s4_vec_mat_protocol_decodes_packed_input_for_oracle(self) -> None:
+        workload = _workload("arm-nn-vec-mat-mult-t-s4")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+
+        self.assertIn("arm_nn_vec_mat_mult_t_s4(", source)
+        self.assertIn("unpack_s4(kPackedRhs, packed_index)", source)
+        self.assertIn("kLhs[column] + kInputOffset", source)
+        self.assertIn("output[row] != expected", source)
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("arm_nn_vec_mat_mult_t_s4",),
+        )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",

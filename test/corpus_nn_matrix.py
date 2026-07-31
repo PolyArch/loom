@@ -64,6 +64,13 @@ _SVDF_S8_CALL = (
     "const int32_t, const int32_t, const int32_t, const int32_t, "
     "const int32_t, const int32_t, const int32_t, const int32_t)",
 )
+_S4_VEC_MAT_CALL = (
+    "arm_nn_vec_mat_mult_t_s4",
+    "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+    "const int32_t *, int8_t *, const int32_t, const int32_t, "
+    "const int32_t, const int32_t, const int32_t, const int32_t, "
+    "const int32_t, const int32_t)",
+)
 
 
 def _render_s32_nt_t(_wrapper_symbol: str) -> str:
@@ -456,6 +463,79 @@ int main(void)
 """
 
 
+def _render_s4_vec_mat(_wrapper_symbol: str) -> str:
+    return """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {
+    kColumnCount = 4,
+    kRowCount = 3,
+    kInputOffset = 3,
+    kOutputOffset = 5,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -100,
+    kActivationMax = 100,
+};
+
+static const int8_t kLhs[kColumnCount] = {7, -3, 12, -5};
+static const int8_t kPackedRhs[(kRowCount * kColumnCount) / 2] = {
+    (int8_t)0xe3, 0x15,
+    0x7a, (int8_t)0xd2,
+    0x17, 0x6b,
+};
+static const int32_t kBias[kRowCount] = {11, -23, 37};
+
+static int32_t unpack_s4(const int8_t *packed, size_t index)
+{
+    const uint8_t byte = (uint8_t)packed[index / 2];
+    const uint8_t nibble =
+        (index & 1) == 0 ? (byte & 0x0f) : (byte >> 4);
+    return nibble < 8 ? (int32_t)nibble : (int32_t)nibble - 16;
+}
+
+int main(void)
+{
+    int8_t output[kRowCount] = {0};
+    const arm_cmsis_nn_status status = arm_nn_vec_mat_mult_t_s4(
+        kLhs, kPackedRhs, kBias, output, kInputOffset, kOutputOffset,
+        kMultiplier, kShift, kColumnCount, kRowCount,
+        kActivationMin, kActivationMax);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+
+    for (size_t row = 0; row < kRowCount; ++row)
+    {
+        int32_t expected = kBias[row];
+        for (size_t column = 0; column < kColumnCount; ++column)
+        {
+            const size_t packed_index = row * kColumnCount + column;
+            const int32_t rhs = unpack_s4(kPackedRhs, packed_index);
+            expected += (kLhs[column] + kInputOffset) * rhs;
+        }
+        expected += kOutputOffset;
+        if (expected < kActivationMin)
+        {
+            expected = kActivationMin;
+        }
+        if (expected > kActivationMax)
+        {
+            expected = kActivationMax;
+        }
+        if (output[row] != expected)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+"""
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _S32_NT_T_CALL:
         return _render_s32_nt_t
@@ -470,4 +550,6 @@ def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
         return _s8_vec_mat_renderer(*s8_vec_mat)
     if call == _SVDF_S8_CALL:
         return _render_svdf_s8
+    if call == _S4_VEC_MAT_CALL:
+        return _render_s4_vec_mat
     return None
