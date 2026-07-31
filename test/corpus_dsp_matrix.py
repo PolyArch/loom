@@ -15,8 +15,10 @@ from corpus_workload_errors import WorkloadProviderError
 class MatrixMultiplicationProtocol:
     symbol: str
     signature: str
-    test_class: str
+    benchmark_test_class: str
+    official_test_class: str
     test_method: str
+    shift_symbol: str
     scalar_type: str
     bit_width: int
     input_a_pattern: str
@@ -33,7 +35,9 @@ _PROTOCOLS = (
         "arm_mat_mult_fast_q15",
         "i32(ptr,ptr,ptr,ptr)",
         "BinaryQ15",
+        "BinaryTestsQ15",
         "test_mat_mult_fast_q15",
+        "arm_shift_q15",
         "q15_t",
         16,
         "InputA1_q15.txt",
@@ -44,7 +48,9 @@ _PROTOCOLS = (
         "arm_mat_mult_q7",
         "i32(ptr,ptr,ptr,ptr)",
         "BinaryQ7",
+        "BinaryTestsQ7",
         "test_mat_mult_q7",
+        "arm_shift_q7",
         "q7_t",
         8,
         "InputA1_q7.txt",
@@ -52,11 +58,6 @@ _PROTOCOLS = (
         False,
     ),
 )
-_PROTOCOL_BY_CALL = {
-    (protocol.symbol, protocol.signature): protocol for protocol in _PROTOCOLS
-}
-
-
 def matrix_multiplication_protocol(
     workload: corpus_inventory.ProgramWorkload,
 ) -> MatrixMultiplicationProtocol | None:
@@ -65,21 +66,30 @@ def matrix_multiplication_protocol(
         workload.suite != "cmsis-dsp"
         or workload.target_profile != corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE
         or not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer)
-        or producer.selector_kind != "benchmark-only"
-        or len(workload.protocol) != 1
     ):
         return None
-    call = workload.protocol[0]
-    protocol = _PROTOCOL_BY_CALL.get((call.symbol, call.signature))
-    if protocol is None:
-        return None
-    if (
-        producer.test_class != protocol.test_class
-        or producer.test_method != protocol.test_method
-        or producer.vector_ordinal != 0
-    ):
-        return None
-    return protocol
+    calls = tuple((call.symbol, call.signature) for call in workload.protocol)
+    for protocol in _PROTOCOLS:
+        benchmark_calls = ((protocol.symbol, protocol.signature),)
+        official_calls = (
+            (protocol.shift_symbol, "void(ptr,i8,ptr,i32)"),
+            (protocol.symbol, protocol.signature),
+        )
+        expected_class = (
+            protocol.benchmark_test_class
+            if producer.selector_kind == "benchmark-only" and calls == benchmark_calls
+            else protocol.official_test_class
+            if producer.selector_kind == "official" and calls == official_calls
+            else None
+        )
+        if (
+            expected_class is not None
+            and producer.test_class == expected_class
+            and producer.test_method == protocol.test_method
+            and producer.vector_ordinal == 0
+        ):
+            return protocol
+    return None
 
 
 def _decode_signed(raw: bytes, bit_width: int, name: str) -> tuple[int, ...]:
@@ -134,7 +144,7 @@ def _matrix_product(
 
 def render_matrix_multiplication_protocol(
     workload: corpus_inventory.ProgramWorkload,
-    patterns: Path,
+    patterns: Path | None,
     dimensions: tuple[int, int, int],
     protocol_symbol: str,
 ) -> str:
@@ -147,29 +157,58 @@ def render_matrix_multiplication_protocol(
     if min(dimensions) <= 0:
         raise WorkloadProviderError("CMSIS-DSP matrix dimensions must be positive")
 
-    segments = corpus_dsp_protocol.pattern_segments(patterns)
-    input_a = _decode_signed(
-        corpus_dsp_protocol.require_pattern_segment(segments, protocol.input_a_pattern),
-        protocol.bit_width,
-        "input A",
-    )
-    input_b = _decode_signed(
-        corpus_dsp_protocol.require_pattern_segment(segments, protocol.input_b_pattern),
-        protocol.bit_width,
-        "input B",
-    )
-    input_a = input_a[: rows * inner]
-    input_b = input_b[: inner * columns]
+    if patterns is None:
+        input_a = (
+            (16384, -8192, 4096, 12288)
+            if protocol.bit_width == 16
+            else (64, -32, 16, 48)
+        )
+        input_b = (
+            (8192, 4096, -2048, 16384)
+            if protocol.bit_width == 16
+            else (32, 16, -8, 64)
+        )
+    else:
+        segments = corpus_dsp_protocol.pattern_segments(patterns)
+        input_a = _decode_signed(
+            corpus_dsp_protocol.require_pattern_segment(
+                segments, protocol.input_a_pattern
+            ),
+            protocol.bit_width,
+            "input A",
+        )
+        input_b = _decode_signed(
+            corpus_dsp_protocol.require_pattern_segment(
+                segments, protocol.input_b_pattern
+            ),
+            protocol.bit_width,
+            "input B",
+        )
+        input_a = input_a[: rows * inner]
+        input_b = input_b[: inner * columns]
     if len(input_a) != rows * inner or len(input_b) != inner * columns:
         raise WorkloadProviderError(
             "CMSIS-DSP matrix pattern is smaller than its selected dimensions"
         )
     expected = _matrix_product(input_a, input_b, rows, inner, columns, protocol)
+    use_shift = len(workload.protocol) == 2
+    shifted_declaration = (
+        f"  {protocol.scalar_type} shifted_a[kRows * kInner]{{}};\n"
+        if use_shift
+        else ""
+    )
+    shift_call = (
+        f"  {protocol.shift_symbol}(input_a, 0, shifted_a, kRows * kInner);\n"
+        if use_shift
+        else ""
+    )
+    matrix_input = "shifted_a" if use_shift else "input_a"
 
     format_array = corpus_dsp_protocol.format_cpp_array
     return f"""#include <cstddef>
 #include <cstdint>
 
+#include "dsp/basic_math_functions.h"
 #include "dsp/{protocol.owner_header}"
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -208,8 +247,9 @@ extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
     const {protocol.scalar_type} *input_b,
     {protocol.scalar_type} *output,
     {protocol.scalar_type} *scratch) {{
+{shifted_declaration}{shift_call}  const {protocol.scalar_type} *matrix_input = {matrix_input};
   arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_a{{
-      kRows, kInner, const_cast<{protocol.scalar_type} *>(input_a)}};
+      kRows, kInner, const_cast<{protocol.scalar_type} *>(matrix_input)}};
   arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_b{{
       kInner, kColumns, const_cast<{protocol.scalar_type} *>(input_b)}};
   arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_output{{

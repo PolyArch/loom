@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 import corpus_inventory
+import corpus_dsp_atomic
 import corpus_dsp_fft
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
@@ -780,6 +781,8 @@ _CMSIS_DSP_BASIC_F32_PROTOCOLS = {
 def _cmsis_dsp_direct_protocol_family(
     workload: corpus_inventory.ProgramWorkload,
 ) -> str | None:
+    if corpus_dsp_atomic.atomic_protocol(workload) is not None:
+        return "atomic-multicall"
     if corpus_dsp_filter_generated.stateful_filter_protocol(workload) is not None:
         return "generated-stateful-filter"
     if corpus_dsp_filter_generated.sequence_protocol(workload) is not None:
@@ -1673,6 +1676,35 @@ def materialize_cmsis_dsp_harness(
                 protocol_owner,
                 0,
             )
+        elif direct_family == "atomic-multicall":
+            protocol = corpus_dsp_atomic.atomic_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP atomic protocol is inconsistent"
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_atomic.render_atomic_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
         elif direct_family == "stateless-matrix-multiplication":
             suite = _cmsis_dsp_suite_chain(
                 root,
@@ -1680,11 +1712,14 @@ def materialize_cmsis_dsp_harness(
                 workload.producer.test_class,
             )[-1]
             direct_source = generated / "OperatorProtocol.cpp"
+            official_atomic = len(workload.protocol) == 2
             direct_source.write_text(
                 corpus_dsp_matrix.render_matrix_multiplication_protocol(
                     workload,
-                    shared_patterns,
-                    _cmsis_dsp_named_dimensions(
+                    None if official_atomic else shared_patterns,
+                    (2, 2, 2)
+                    if official_atomic
+                    else _cmsis_dsp_named_dimensions(
                         suite,
                         ("NBR", "NBI", "NBC"),
                         workload.producer.vector_ordinal,
@@ -1694,7 +1729,13 @@ def materialize_cmsis_dsp_harness(
                 encoding="utf-8",
             )
             protocol_owner = (
-                external_root / "cmsis-dsp" / "Include" / "dsp" / "matrix_functions.h"
+                external_root / "cmsis-dsp" / "Include" / "arm_math.h"
+                if len(workload.protocol) == 2
+                else external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "matrix_functions.h"
             )
             record_direct_protocol(
                 workload,
