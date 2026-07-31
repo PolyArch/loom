@@ -77,6 +77,41 @@ class SvmProtocol:
         )
 
 
+@dataclass(frozen=True)
+class BiquadProtocol:
+    test_class: str
+    test_method: str
+    suffix: str
+    value_type: str
+    bits: int | None
+    operation_stem: str
+    instance_type: str
+    state_type: str
+    state_values_per_stage: int
+    channels: int
+    random_configs: bool
+    owner_header: str
+    coefficient_values_per_stage: int = 5
+    post_shift: int | None = None
+    absolute_error: str | None = None
+    relative_error: str | None = None
+    integer_error: int | None = None
+
+    @property
+    def calls(self) -> tuple[tuple[str, str], ...]:
+        init_tail = ",i8" if self.post_shift is not None else ""
+        return (
+            (
+                f"arm_{self.operation_stem}_init_{self.suffix}",
+                f"void(ptr,i8,ptr,ptr{init_tail})",
+            ),
+            (
+                f"arm_{self.operation_stem}_{self.suffix}",
+                "void(ptr,ptr,ptr,i32)",
+            ),
+        )
+
+
 _FIR_PROTOCOLS = {
     ("FIRF16", "test_fir_f16"): FirProtocol(
         test_class="FIRF16",
@@ -169,6 +204,169 @@ _SVM_KERNELS = (
     SvmKernel(name="rbf", pattern_ordinal=3, scalar_parameter_count=1),
     SvmKernel(name="sigmoid", pattern_ordinal=4, scalar_parameter_count=2),
 )
+_BIQUAD_PROTOCOLS = {
+    ("BIQUADF16", "test_biquad_cascade_df1_rand"): BiquadProtocol(
+        test_class="BIQUADF16",
+        test_method="test_biquad_cascade_df1_rand",
+        suffix="f16",
+        value_type="float16_t",
+        bits=None,
+        operation_stem="biquad_cascade_df1",
+        instance_type="arm_biquad_casd_df1_inst_f16",
+        state_type="float16_t",
+        state_values_per_stage=4,
+        channels=1,
+        random_configs=True,
+        owner_header="filtering_functions_f16.h",
+        absolute_error="1.0e-1f",
+        relative_error="5.0e-2f",
+    ),
+    ("BIQUADF16", "test_biquad_cascade_df2T_rand"): BiquadProtocol(
+        test_class="BIQUADF16",
+        test_method="test_biquad_cascade_df2T_rand",
+        suffix="f16",
+        value_type="float16_t",
+        bits=None,
+        operation_stem="biquad_cascade_df2T",
+        instance_type="arm_biquad_cascade_df2T_instance_f16",
+        state_type="float16_t",
+        state_values_per_stage=2,
+        channels=1,
+        random_configs=True,
+        owner_header="filtering_functions_f16.h",
+        absolute_error="1.0e-1f",
+        relative_error="5.0e-2f",
+    ),
+    ("BIQUADF16", "test_biquad_cascade_stereo_df2T_rand"): BiquadProtocol(
+        test_class="BIQUADF16",
+        test_method="test_biquad_cascade_stereo_df2T_rand",
+        suffix="f16",
+        value_type="float16_t",
+        bits=None,
+        operation_stem="biquad_cascade_stereo_df2T",
+        instance_type="arm_biquad_cascade_stereo_df2T_instance_f16",
+        state_type="float16_t",
+        state_values_per_stage=4,
+        channels=2,
+        random_configs=True,
+        owner_header="filtering_functions_f16.h",
+        absolute_error="1.0e-1f",
+        relative_error="5.0e-2f",
+    ),
+    ("BIQUADF32", "test_biquad_cascade_df1_rand"): BiquadProtocol(
+        test_class="BIQUADF32",
+        test_method="test_biquad_cascade_df1_rand",
+        suffix="f32",
+        value_type="float32_t",
+        bits=None,
+        operation_stem="biquad_cascade_df1",
+        instance_type="arm_biquad_casd_df1_inst_f32",
+        state_type="float32_t",
+        state_values_per_stage=4,
+        channels=1,
+        random_configs=True,
+        owner_header="filtering_functions.h",
+        absolute_error="0.0f",
+        relative_error="2.0e-4f",
+    ),
+    ("BIQUADF32", "test_biquad_cascade_df2T_rand"): BiquadProtocol(
+        test_class="BIQUADF32",
+        test_method="test_biquad_cascade_df2T_rand",
+        suffix="f32",
+        value_type="float32_t",
+        bits=None,
+        operation_stem="biquad_cascade_df2T",
+        instance_type="arm_biquad_cascade_df2T_instance_f32",
+        state_type="float32_t",
+        state_values_per_stage=2,
+        channels=1,
+        random_configs=True,
+        owner_header="filtering_functions.h",
+        absolute_error="0.0f",
+        relative_error="2.0e-4f",
+    ),
+    ("BIQUADF32", "test_biquad_cascade_stereo_df2T_rand"): BiquadProtocol(
+        test_class="BIQUADF32",
+        test_method="test_biquad_cascade_stereo_df2T_rand",
+        suffix="f32",
+        value_type="float32_t",
+        bits=None,
+        operation_stem="biquad_cascade_stereo_df2T",
+        instance_type="arm_biquad_cascade_stereo_df2T_instance_f32",
+        state_type="float32_t",
+        state_values_per_stage=4,
+        channels=2,
+        random_configs=True,
+        owner_header="filtering_functions.h",
+        absolute_error="0.0f",
+        relative_error="2.0e-4f",
+    ),
+    ("BIQUADF64", "test_biquad_cascade_df2T_rand"): BiquadProtocol(
+        test_class="BIQUADF64",
+        test_method="test_biquad_cascade_df2T_rand",
+        suffix="f64",
+        value_type="float64_t",
+        bits=None,
+        operation_stem="biquad_cascade_df2T",
+        instance_type="arm_biquad_cascade_df2T_instance_f64",
+        state_type="float64_t",
+        state_values_per_stage=2,
+        channels=1,
+        random_configs=True,
+        owner_header="filtering_functions.h",
+        absolute_error="0.0",
+        relative_error="1.2e-3",
+    ),
+    ("BIQUADQ15", "test_biquad_cascade_df1"): BiquadProtocol(
+        test_class="BIQUADQ15",
+        test_method="test_biquad_cascade_df1",
+        suffix="q15",
+        value_type="q15_t",
+        bits=16,
+        operation_stem="biquad_cascade_df1",
+        instance_type="arm_biquad_casd_df1_inst_q15",
+        state_type="q15_t",
+        state_values_per_stage=4,
+        channels=1,
+        random_configs=False,
+        owner_header="filtering_functions.h",
+        coefficient_values_per_stage=6,
+        post_shift=2,
+        integer_error=500,
+    ),
+    ("BIQUADQ31", "test_biquad_cascade_df1"): BiquadProtocol(
+        test_class="BIQUADQ31",
+        test_method="test_biquad_cascade_df1",
+        suffix="q31",
+        value_type="q31_t",
+        bits=32,
+        operation_stem="biquad_cascade_df1",
+        instance_type="arm_biquad_casd_df1_inst_q31",
+        state_type="q31_t",
+        state_values_per_stage=4,
+        channels=1,
+        random_configs=False,
+        owner_header="filtering_functions.h",
+        post_shift=2,
+        integer_error=1000,
+    ),
+    ("BIQUADQ31", "test_biquad_cascade_df1_32x64"): BiquadProtocol(
+        test_class="BIQUADQ31",
+        test_method="test_biquad_cascade_df1_32x64",
+        suffix="q31",
+        value_type="q31_t",
+        bits=32,
+        operation_stem="biquad_cas_df1_32x64",
+        instance_type="arm_biquad_cas_df1_32x64_ins_q31",
+        state_type="q63_t",
+        state_values_per_stage=4,
+        channels=1,
+        random_configs=False,
+        owner_header="filtering_functions.h",
+        post_shift=2,
+        integer_error=25,
+    ),
+}
 
 
 def fir_protocol(
@@ -210,6 +408,24 @@ def svm_protocol(
             return None
         return protocol
     return None
+
+
+def biquad_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> BiquadProtocol | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    if producer.selector_kind != "official":
+        return None
+    protocol = _BIQUAD_PROTOCOLS.get((producer.test_class, producer.test_method))
+    if protocol is None:
+        return None
+    if tuple((call.symbol, call.signature) for call in workload.protocol) != (
+        protocol.calls
+    ):
+        return None
+    return protocol
 
 
 def _decode_f16_pattern(raw: bytes, name: str) -> tuple[str, ...]:
@@ -542,6 +758,193 @@ int main() {{
   std::int32_t output[kSampleCount];
   {protocol_symbol}(kSamples, kSupportVectors, kDualCoefficients, kIntercept,
                     kClasses, output{main_tail});
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def _biquad_oracle_body(protocol: BiquadProtocol) -> str:
+    if protocol.integer_error is not None:
+        return f"""    const std::int64_t actual = output[index];
+    const std::int64_t expected = kExpected[index];
+    const std::int64_t difference =
+        actual > expected ? actual - expected : expected - actual;
+    if (difference > {protocol.integer_error})
+      return false;"""
+    if protocol.absolute_error is None or protocol.relative_error is None:
+        raise WorkloadProviderError("CMSIS-DSP Biquad float tolerance is incomplete")
+    comparison_type = "float64_t" if protocol.suffix == "f64" else "float32_t"
+    return f"""    const {comparison_type} actual =
+        static_cast<{comparison_type}>(output[index]);
+    const {comparison_type} expected =
+        static_cast<{comparison_type}>(kExpected[index]);
+    if (!(actual == actual))
+      return false;
+    const {comparison_type} difference =
+        actual > expected ? actual - expected : expected - actual;
+    const {comparison_type} magnitude = expected < 0 ? -expected : expected;
+    if (difference > {protocol.absolute_error} +
+                         {protocol.relative_error} * magnitude)
+      return false;"""
+
+
+def render_biquad_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    protocol_symbol: str,
+) -> str:
+    protocol = biquad_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError("CMSIS-DSP Biquad protocol is inconsistent")
+    segments = corpus_dsp_protocol.pattern_segments(patterns)
+    suffix = protocol.suffix
+
+    if protocol.random_configs:
+        config_values = corpus_dsp_protocol.decode_i16_pattern(
+            corpus_dsp_protocol.require_pattern_segment(
+                segments, "AllBiquadConfigs2_s16.txt"
+            ),
+            "Biquad configuration",
+        )
+        input_name = (
+            f"AllBiquadStereoInputs2_{suffix}.txt"
+            if protocol.channels == 2
+            else f"AllBiquadInputs2_{suffix}.txt"
+        )
+        expected_name = (
+            f"AllBiquadStereoRefs2_{suffix}.txt"
+            if protocol.channels == 2
+            else f"AllBiquadRefs2_{suffix}.txt"
+        )
+        coefficient_name = f"AllBiquadCoefs2_{suffix}.txt"
+        passes_per_config = 1
+    else:
+        input_name = f"BiquadInput1_{suffix}.txt"
+        expected_name = f"BiquadOutput1_{suffix}.txt"
+        coefficient_name = f"BiquadCoefs1_{suffix}.txt"
+        input_bytes = corpus_dsp_protocol.require_pattern_segment(segments, input_name)
+        value_bytes = protocol.bits // 8 if protocol.bits is not None else 0
+        if value_bytes == 0 or len(input_bytes) % (2 * value_bytes) != 0:
+            raise WorkloadProviderError(
+                "CMSIS-DSP fixed Biquad input cannot be split into two blocks"
+            )
+        config_values = (3, len(input_bytes) // (2 * value_bytes))
+        passes_per_config = 2
+
+    if len(config_values) % 2 != 0 or not config_values:
+        raise WorkloadProviderError("CMSIS-DSP Biquad configuration is not paired")
+    configs = tuple(zip(config_values[0::2], config_values[1::2], strict=True))
+    if any(stages <= 0 or block <= 0 for stages, block in configs):
+        raise WorkloadProviderError("CMSIS-DSP Biquad configuration is nonpositive")
+
+    inputs = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(segments, input_name),
+        "Biquad input",
+    )
+    coefficients = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(segments, coefficient_name),
+        "Biquad coefficients",
+    )
+    expected = _decode_values(
+        suffix,
+        protocol.bits,
+        corpus_dsp_protocol.require_pattern_segment(segments, expected_name),
+        "Biquad reference",
+    )
+    expected_value_count = sum(
+        passes_per_config * protocol.channels * block for _, block in configs
+    )
+    if len(inputs) != expected_value_count or len(expected) != expected_value_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP Biquad input/reference projection is not total"
+        )
+    expected_coefficient_count = sum(
+        stages * protocol.coefficient_values_per_stage for stages, _ in configs
+    )
+    if len(coefficients) != expected_coefficient_count:
+        raise WorkloadProviderError(
+            "CMSIS-DSP Biquad coefficient projection is not total"
+        )
+    state_count = max(stages * protocol.state_values_per_stage for stages, _ in configs)
+    init_symbol, process_symbol = (call[0] for call in protocol.calls)
+    init_tail = f", {protocol.post_shift}" if protocol.post_shift is not None else ""
+    headers = '#include "arm_math.h"'
+    if suffix == "f16":
+        headers = (
+            '#include "arm_math_types_f16.h"\n#include "dsp/filtering_functions_f16.h"'
+        )
+
+    return f"""#include <cstddef>
+#include <cstdint>
+
+{headers}
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::size_t kConfigCount = {len(configs)};
+constexpr std::size_t kOutputCount = {len(expected)};
+constexpr std::size_t kPassesPerConfig = {passes_per_config};
+constexpr std::size_t kChannels = {protocol.channels};
+constexpr std::size_t kStateCount = {state_count};
+constexpr {protocol.value_type} kInput[] = {{
+{corpus_dsp_protocol.format_cpp_array(inputs)}
+}};
+constexpr {protocol.value_type} kCoefficients[] = {{
+{corpus_dsp_protocol.format_cpp_array(coefficients)}
+}};
+constexpr std::int16_t kConfigs[] = {{
+{corpus_dsp_protocol.format_cpp_array(tuple(str(value) for value in config_values))}
+}};
+constexpr {protocol.value_type} kExpected[] = {{
+{corpus_dsp_protocol.format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const {protocol.value_type} *output) {{
+  for (std::size_t index = 0; index < kOutputCount; ++index) {{
+{_biquad_oracle_body(protocol)}
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    const {protocol.value_type} *input,
+    const {protocol.value_type} *coefficients,
+    const std::int16_t *configs, {protocol.state_type} *state,
+    {protocol.value_type} *output) {{
+  std::size_t coefficient_offset = 0;
+  std::size_t value_offset = 0;
+  for (std::size_t config = 0; config < kConfigCount; ++config) {{
+    const std::uint8_t num_stages =
+        static_cast<std::uint8_t>(configs[2 * config]);
+    const std::uint32_t block_size =
+        static_cast<std::uint32_t>(configs[2 * config + 1]);
+    {protocol.instance_type} instance;
+    {init_symbol}(&instance, num_stages,
+                  coefficients + coefficient_offset, state{init_tail});
+    for (std::size_t pass = 0; pass < kPassesPerConfig; ++pass) {{
+      {process_symbol}(&instance, input + value_offset,
+                       output + value_offset, block_size);
+      value_offset += kChannels * block_size;
+    }}
+    coefficient_offset +=
+        num_stages * {protocol.coefficient_values_per_stage};
+  }}
+}}
+
+int main() {{
+  {protocol.state_type} state[kStateCount];
+  {protocol.value_type} output[kOutputCount];
+  {protocol_symbol}(kInput, kCoefficients, kConfigs, state, output);
   return oracle_matches(output) ? 0 : 1;
 }}
 """
