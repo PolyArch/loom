@@ -19,6 +19,7 @@ import corpus_inventory
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
 import corpus_dsp_matrix
+import corpus_dsp_pid
 import corpus_dsp_protocol
 import corpus_dsp_stateful
 import corpus_nn_protocol
@@ -787,6 +788,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "generated-lifecycle"
     if corpus_dsp_matrix.matrix_multiplication_protocol(workload) is not None:
         return "stateless-matrix-multiplication"
+    if corpus_dsp_pid.pid_protocol(workload) is not None:
+        return "stateful-pid"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -1619,6 +1622,38 @@ def materialize_cmsis_dsp_harness(
             )
             protocol_owner = (
                 external_root / "cmsis-dsp" / "Include" / "dsp" / "matrix_functions.h"
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateful-pid":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_pid.render_pid_protocol(
+                    workload,
+                    shared_patterns,
+                    _cmsis_dsp_first_parameter(suite),
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "controller_functions.h"
             )
             record_direct_protocol(
                 workload,

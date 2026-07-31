@@ -72,6 +72,11 @@ MATRIX_MULTIPLICATION_CASES = {
     "arm-mat-mult-fast-q15",
     "arm-mat-mult-q7",
 }
+PID_CASES = {
+    "arm-pid-f32",
+    "arm-pid-q15",
+    "arm-pid-q31",
+}
 
 
 class CmsisDspGeneratedProtocolTests(unittest.TestCase):
@@ -377,6 +382,50 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                 self.assertEqual(source.count(f"{symbol}("), 1)
                 self.assertNotIn(f"{symbol}(", oracle)
                 self.assertIn("kExpected", protocol)
+                self.assertIn("output_matches_expected(output)", oracle)
+
+    def test_pid_protocols_have_one_typed_owner(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in PID_CASES
+            and workload.producer.selector_kind == "benchmark-only"
+        )
+
+        self.assertEqual(len(workloads), len(PID_CASES))
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                self.assertTrue(
+                    corpus_workload_provider.supports_cmsis_dsp_harness(workload)
+                )
+
+    def test_pid_provider_keeps_init_and_process_atomic(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in PID_CASES
+            and workload.producer.selector_kind == "benchmark-only"
+        )
+        self.assertEqual(len(workloads), len(PID_CASES))
+
+        harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "pid-harness",
+        )
+        for workload in workloads:
+            with self.subTest(case=workload.case):
+                source_path, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
+                )
+                self.assertEqual(authoritative_owner.name, "controller_functions.h")
+                source = source_path.read_text(encoding="utf-8")
+                protocol, oracle = source.split("int main()", maxsplit=1)
+                for call in workload.protocol:
+                    self.assertEqual(protocol.count(f"{call.symbol}("), 1)
+                    self.assertNotIn(f"{call.symbol}(", oracle)
                 self.assertIn("output_matches_expected(output)", oracle)
 
 
