@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 import corpus_inventory
+import corpus_dsp_generated
 import corpus_dsp_protocol
 import corpus_dsp_stateful
 import corpus_nn_protocol
@@ -116,7 +117,7 @@ class _CmsisDspCmakeTarget:
     target: str
     generated: Path
     shared: Path
-    test_class: str
+    test_class: str | None = None
     source_group: str | None = None
     direct_source: Path | None = None
     compiler_flags: tuple[str, ...] = ()
@@ -126,6 +127,8 @@ class _CmsisDspCmakeTarget:
             raise ValueError(
                 "CMSIS-DSP target must select one descriptor or direct source"
             )
+        if self.source_group is not None and self.test_class is None:
+            raise ValueError("CMSIS-DSP descriptor target has no test class")
 
 
 @dataclass(frozen=True)
@@ -772,6 +775,8 @@ _CMSIS_DSP_BASIC_F32_PROTOCOLS = {
 def _cmsis_dsp_direct_protocol_family(
     workload: corpus_inventory.ProgramWorkload,
 ) -> str | None:
+    if corpus_dsp_generated.transform_query_protocol(workload) is not None:
+        return "generated-transform-query"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -821,10 +826,11 @@ def supports_cmsis_dsp_harness(
     workload: corpus_inventory.ProgramWorkload,
 ) -> bool:
     producer = workload.producer
-    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
-        return False
-    return producer.selector_kind == "official" or (
-        _cmsis_dsp_direct_protocol_family(workload) is not None
+    family = _cmsis_dsp_direct_protocol_family(workload)
+    if isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer):
+        return family == "generated-transform-query"
+    return isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer) and (
+        producer.selector_kind == "official" or family is not None
     )
 
 
@@ -915,9 +921,14 @@ def _render_cmsis_dsp_harness_cmake(
     for item in targets:
         if item.source_group is None:
             continue
+        assert item.test_class is not None
         suite_libraries.setdefault(
             item.shared,
-            (f"loom_dsp_{item.shared.name}", item.test_class, item.source_group),
+            (
+                f"loom_dsp_{item.shared.name}",
+                item.test_class,
+                item.source_group,
+            ),
         )
 
     suite_blocks = []
@@ -1100,12 +1111,17 @@ def materialize_cmsis_dsp_harness(
         protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
         expected_entry_results.append(expected_entry_result)
         protocol_source_owners.append((direct_source, protocol_owner))
+        producer = workload.producer
         cmake_targets.append(
             _CmsisDspCmakeTarget(
                 target=target,
                 generated=generated,
                 shared=shared_generated,
-                test_class=workload.producer.test_class,
+                test_class=(
+                    producer.test_class
+                    if isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer)
+                    else None
+                ),
                 direct_source=direct_source,
                 compiler_flags=workload.compiler_flags,
             )
@@ -1113,7 +1129,11 @@ def materialize_cmsis_dsp_harness(
 
     for workload in workloads:
         if workload.suite != "cmsis-dsp" or not isinstance(
-            workload.producer, corpus_inventory.CmsisDspWorkloadProducer
+            workload.producer,
+            (
+                corpus_inventory.CmsisDspWorkloadProducer,
+                corpus_inventory.CmsisDspGeneratedWorkloadProducer,
+            ),
         ):
             raise WorkloadProviderError(
                 f"workload is not owned by the CMSIS-DSP provider: {workload.identity}"
@@ -1150,6 +1170,42 @@ def materialize_cmsis_dsp_harness(
         if target in targets:
             raise WorkloadProviderError(
                 f"CMSIS-DSP harness repeats a target: {workload.identity}"
+            )
+        direct_family = _cmsis_dsp_direct_protocol_family(workload)
+        if direct_family == "generated-transform-query":
+            protocol = corpus_dsp_generated.transform_query_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP transform query protocol is inconsistent"
+                )
+            generated = generated_root / target
+            generated.mkdir()
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_generated.render_transform_query_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            targets.append(target)
+            shared_directories.append(source_dir)
+            protocol_methods.append(("TransformQuery", protocol.symbol))
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                source_dir,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+            continue
+        if not isinstance(workload.producer, corpus_inventory.CmsisDspWorkloadProducer):
+            raise WorkloadProviderError(
+                f"CMSIS-DSP generated workload has no provider: {workload.identity}"
             )
         descriptor = Path(workload.producer.definition)
         expected_prefix = Path("externals/cmsis-dsp/Testing")
@@ -1221,7 +1277,6 @@ def materialize_cmsis_dsp_harness(
         protocol_methods.append(
             (workload.producer.test_class, workload.producer.test_method)
         )
-        direct_family = _cmsis_dsp_direct_protocol_family(workload)
         if direct_family == "stateless-abs-f32":
             suite = _cmsis_dsp_suite_chain(
                 root,

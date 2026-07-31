@@ -997,7 +997,13 @@ def prepare_workload_providers(
     cmsis_dsp = [
         case
         for case in cases
-        if isinstance(case.producer, corpus_inventory.CmsisDspWorkloadProducer)
+        if isinstance(
+            case.producer,
+            (
+                corpus_inventory.CmsisDspWorkloadProducer,
+                corpus_inventory.CmsisDspGeneratedWorkloadProducer,
+            ),
+        )
         and has_target_profile_provider(case.suite, case.target_profile)
         and supports_cmsis_dsp_harness(case)
     ]

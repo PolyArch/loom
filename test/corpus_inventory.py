@@ -148,6 +148,25 @@ class CmsisDspWorkloadProducer:
 
 
 @dataclass(frozen=True)
+class CmsisDspGeneratedWorkloadProducer:
+    definitions: tuple[str, ...]
+    variant: str
+    selector_kind: str
+
+    @property
+    def kind(self) -> str:
+        return "cmsis-dsp-operator-harness"
+
+    def as_dict(self) -> dict[str, str | list[str]]:
+        return {
+            "definitions": list(self.definitions),
+            "kind": self.kind,
+            "selector_kind": self.selector_kind,
+            "variant": self.variant,
+        }
+
+
+@dataclass(frozen=True)
 class OperatorProtocolCall:
     symbol: str
     signature: str
@@ -170,6 +189,7 @@ class ProgramWorkload:
         | CmsisNnWorkloadProducer
         | CmsisNnGeneratedWorkloadProducer
         | CmsisDspWorkloadProducer
+        | CmsisDspGeneratedWorkloadProducer
     )
     operator_id: str
     vector_identity: str
@@ -586,6 +606,7 @@ def _parse_operator_gate_workload(
             | CmsisNnWorkloadProducer
             | CmsisNnGeneratedWorkloadProducer
             | CmsisDspWorkloadProducer
+            | CmsisDspGeneratedWorkloadProducer
         ) = CmsisDspWorkloadProducer(
             definition=definitions[0],
             variant=producer_variant,
@@ -593,6 +614,26 @@ def _parse_operator_gate_workload(
             test_class=_require_string(selector["class"], "CMSIS-DSP test class"),
             test_method=_require_string(selector["method"], "CMSIS-DSP test method"),
             vector_ordinal=ordinal,
+        )
+        executable = operator_workload_target(operator_id)
+    elif (
+        producer_kind == "cmsis-dsp-operator-harness"
+        and selector_kind == "transform-query"
+    ):
+        if set(selector) != {"kind", "ordinal"} or selector["ordinal"] != 0:
+            raise InventoryError(
+                "CMSIS-DSP transform query must select its sole protocol vector"
+            )
+        if len(protocol) != 1:
+            raise InventoryError("CMSIS-DSP transform query must own one public call")
+        if vector_identity != f"transform-query:{protocol[0].symbol}:0":
+            raise InventoryError(
+                "CMSIS-DSP transform query identity does not match its public call"
+            )
+        producer = CmsisDspGeneratedWorkloadProducer(
+            definitions=definitions,
+            variant=producer_variant,
+            selector_kind=selector_kind,
         )
         executable = operator_workload_target(operator_id)
     elif producer_kind == "cmsis-nn-operator-harness" and selector_kind == "upstream":
