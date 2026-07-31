@@ -31,6 +31,19 @@ target_link_libraries(loom-pre-mapping-compilation-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-structured-address-index-narrowing-test
+  StructuredAddressIndexNarrowingTest.cpp
+)
+
+target_include_directories(loom-structured-address-index-narrowing-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Frontend/Compilation
+)
+
+target_link_libraries(loom-structured-address-index-narrowing-test PRIVATE
+  LoomFrontendCompilation
+  MLIRParser
+)
+
 add_executable(loom-structured-thread-domain-test
   StructuredThreadDomainTest.cpp
 )

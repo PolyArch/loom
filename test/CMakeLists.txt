@@ -73,6 +73,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-temporal-switch-resource-contract-test
   loom-frontend-dfg-integration-test
   loom-static-global-memory-test
+  loom-structured-address-index-narrowing-test
   loom-structured-program-artifact-test
   loom-structured-thread-domain-test
   loom-pre-mapping-compilation-test

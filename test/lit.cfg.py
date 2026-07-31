@@ -98,6 +98,7 @@ tools = [
     "loom-simulator-structured-program-wire-test",
     "loom-simulator-synchronization-test",
     "loom-simulator-vector-boundary-test",
+    "loom-structured-address-index-narrowing-test",
     "loom-structured-program-artifact-test",
     "loom-structured-thread-domain-test",
     "loom-pre-mapping-compilation-test",

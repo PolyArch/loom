@@ -183,8 +183,7 @@ std::optional<ThreadDomainSignedRange>
 inferThreadDomainSignedRange(mlir::Value value, unsigned indexWidth);
 
 std::optional<ThreadDomainSignedRange>
-inferThreadDomainUnsignedExtensionRange(mlir::Value value,
-                                        unsigned indexWidth,
+inferThreadDomainUnsignedExtensionRange(mlir::Value value, unsigned indexWidth,
                                         unsigned resultWidth) {
   auto sourceWidth = semanticIntegerWidth(value.getType(), indexWidth);
   if (!sourceWidth || *sourceWidth == 0 || *sourceWidth > 64 ||
@@ -234,14 +233,13 @@ inferThreadDomainSignedRange(mlir::Value value, unsigned indexWidth) {
     return inferThreadDomainUnsignedExtensionRange(cast.getIn(), indexWidth,
                                                    *resultWidth);
   if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
-    auto source =
-        inferThreadDomainSignedRange(extension.getIn(), indexWidth);
+    auto source = inferThreadDomainSignedRange(extension.getIn(), indexWidth);
     return source ? projectThreadDomainSignedCast(*source, *resultWidth)
                   : std::nullopt;
   }
   if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>())
-    return inferThreadDomainUnsignedExtensionRange(
-        extension.getIn(), indexWidth, *resultWidth);
+    return inferThreadDomainUnsignedExtensionRange(extension.getIn(),
+                                                   indexWidth, *resultWidth);
   if (auto maximum = value.getDefiningOp<mlir::arith::MaxSIOp>()) {
     auto lhs = inferThreadDomainSignedRange(maximum.getLhs(), indexWidth);
     auto rhs = inferThreadDomainSignedRange(maximum.getRhs(), indexWidth);
@@ -276,8 +274,8 @@ std::optional<ThreadDomainSignedRange>
 inferThreadDomainSignedRange(mlir::OpFoldResult value, unsigned indexWidth) {
   if (auto dynamic = llvm::dyn_cast<mlir::Value>(value))
     return inferThreadDomainSignedRange(dynamic, indexWidth);
-  auto integer = llvm::dyn_cast<mlir::IntegerAttr>(
-      llvm::cast<mlir::Attribute>(value));
+  auto integer =
+      llvm::dyn_cast<mlir::IntegerAttr>(llvm::cast<mlir::Attribute>(value));
   if (!integer || integer.getValue().getBitWidth() > 64)
     return std::nullopt;
   const __int128 exact = integer.getValue().getSExtValue();
@@ -899,7 +897,8 @@ rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
       }
     }
 
-    llvm::SmallVector<mlir::Value, 4> nextOffsets(arguments.size());
+    llvm::SmallVector<mlir::Value, 4> nextOffsets(
+        loop.getConditionOp().getArgs().size());
     llvm::SmallPtrSet<mlir::Operation *, 4> skippedUpdates;
     for (const PointerInductionLane &lane : plan.lanes) {
       mlir::LLVM::GEPOp update = lane.update;
@@ -1013,8 +1012,7 @@ bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
   auto stepRange = inferThreadDomainSignedRange(step, targetWidth);
   auto targetRange = fullThreadDomainSignedRange(targetWidth);
   if (!lowerRange || !upperRange || !stepRange || !targetRange ||
-      stepRange->minimum <= 0 ||
-      lowerRange->minimum < targetRange->minimum ||
+      stepRange->minimum <= 0 || lowerRange->minimum < targetRange->minimum ||
       lowerRange->maximum > targetRange->maximum ||
       upperRange->minimum < targetRange->minimum ||
       upperRange->maximum > targetRange->maximum ||
