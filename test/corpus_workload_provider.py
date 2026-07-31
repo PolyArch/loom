@@ -20,6 +20,7 @@ import corpus_dsp_atomic
 import corpus_dsp_fft
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
+import corpus_dsp_inline
 import corpus_dsp_lms
 import corpus_dsp_matrix
 import corpus_dsp_pid
@@ -784,6 +785,8 @@ _CMSIS_DSP_BASIC_F32_PROTOCOLS = {
 def _cmsis_dsp_direct_protocol_family(
     workload: corpus_inventory.ProgramWorkload,
 ) -> str | None:
+    if corpus_dsp_inline.header_defined_protocol(workload) is not None:
+        return "header-defined-inline"
     if corpus_dsp_atomic.atomic_protocol(workload) is not None:
         return "atomic-multicall"
     if corpus_dsp_transform.transform_protocol(workload) is not None:
@@ -1451,7 +1454,34 @@ def materialize_cmsis_dsp_harness(
         protocol_methods.append(
             (workload.producer.test_class, workload.producer.test_method)
         )
-        if direct_family == "stateless-abs-f32":
+        if direct_family == "header-defined-inline":
+            protocol = corpus_dsp_inline.header_defined_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP header-defined protocol is inconsistent"
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_inline.render_header_defined_protocol(
+                    workload,
+                    shared_patterns,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateless-abs-f32":
             suite = _cmsis_dsp_suite_chain(
                 root,
                 tree_module.TreeElem.SUITE,
