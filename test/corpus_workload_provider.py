@@ -18,6 +18,7 @@ from typing import Sequence
 import corpus_inventory
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
+import corpus_dsp_lms
 import corpus_dsp_matrix
 import corpus_dsp_pid
 import corpus_dsp_protocol
@@ -790,6 +791,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateless-matrix-multiplication"
     if corpus_dsp_pid.pid_protocol(workload) is not None:
         return "stateful-pid"
+    if corpus_dsp_lms.lms_protocol(workload) is not None:
+        return "stateful-lms"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -877,24 +880,24 @@ def _cmsis_dsp_first_parameter(suite: object) -> int:
     return first
 
 
-def _cmsis_dsp_matrix_dimensions(
-    suite: object, vector_ordinal: int
-) -> tuple[int, int, int]:
+def _cmsis_dsp_named_dimensions(
+    suite: object, names: tuple[str, ...], vector_ordinal: int
+) -> tuple[int, ...]:
     parameter_id = suite.data.get("PARAMID")
     matching = [values for _, name, values in suite.parameters if name == parameter_id]
-    if len(matching) != 1 or len(matching[0]) != 3:
+    if len(matching) != 1 or len(matching[0]) != len(names):
         raise WorkloadProviderError(
-            "CMSIS-DSP matrix protocol requires one parameter row"
+            "CMSIS-DSP typed protocol requires one parameter row"
         )
-    if tuple(suite.params.full) != ("NBR", "NBI", "NBC"):
+    if tuple(suite.params.full) != names:
         raise WorkloadProviderError(
-            "CMSIS-DSP matrix protocol has an invalid dimension schema"
+            "CMSIS-DSP typed protocol has an invalid dimension schema"
         )
     dimensions = []
     for expected_name, column in zip(suite.params.full, matching[0], strict=True):
         if column.get("NAME") != expected_name:
             raise WorkloadProviderError(
-                "CMSIS-DSP matrix protocol has an invalid dimension column"
+                "CMSIS-DSP typed protocol has an invalid dimension column"
             )
         values = column.get("INTS")
         if (
@@ -905,10 +908,10 @@ def _cmsis_dsp_matrix_dimensions(
             or values[vector_ordinal] <= 0
         ):
             raise WorkloadProviderError(
-                "CMSIS-DSP matrix protocol has invalid dimensions"
+                "CMSIS-DSP typed protocol has invalid dimensions"
             )
         dimensions.append(values[vector_ordinal])
-    return dimensions[0], dimensions[1], dimensions[2]
+    return tuple(dimensions)
 
 
 def _cmsis_dsp_literal_test_extent(
@@ -1613,8 +1616,10 @@ def materialize_cmsis_dsp_harness(
                 corpus_dsp_matrix.render_matrix_multiplication_protocol(
                     workload,
                     shared_patterns,
-                    _cmsis_dsp_matrix_dimensions(
-                        suite, workload.producer.vector_ordinal
+                    _cmsis_dsp_named_dimensions(
+                        suite,
+                        ("NBR", "NBI", "NBC"),
+                        workload.producer.vector_ordinal,
                     ),
                     _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
                 ),
@@ -1654,6 +1659,42 @@ def materialize_cmsis_dsp_harness(
                 / "Include"
                 / "dsp"
                 / "controller_functions.h"
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+        elif direct_family == "stateful-lms":
+            suite = _cmsis_dsp_suite_chain(
+                root,
+                tree_module.TreeElem.SUITE,
+                workload.producer.test_class,
+            )[-1]
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_lms.render_lms_protocol(
+                    workload,
+                    shared_patterns,
+                    _cmsis_dsp_named_dimensions(
+                        suite,
+                        ("NumTaps", "NB"),
+                        workload.producer.vector_ordinal,
+                    ),
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / "filtering_functions.h"
             )
             record_direct_protocol(
                 workload,
