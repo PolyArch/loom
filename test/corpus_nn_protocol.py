@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 import corpus_inventory
+import corpus_nn_lstm
 import corpus_nn_matrix
 import corpus_nn_matrix_kernel
 import corpus_nn_transpose
@@ -1673,6 +1674,7 @@ def _renderer_for(
         return None
     return (
         _RENDERERS.get(calls[0])
+        or corpus_nn_lstm.renderer_for(calls[0])
         or corpus_nn_matrix.renderer_for(calls[0])
         or corpus_nn_matrix_kernel.renderer_for(calls[0])
         or corpus_nn_transpose.renderer_for(calls[0])

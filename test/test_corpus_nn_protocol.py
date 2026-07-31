@@ -29,6 +29,14 @@ def _workload(case: str) -> corpus_inventory.ProgramWorkload:
     )
 
 
+def _workload_any_profile(case: str) -> corpus_inventory.ProgramWorkload:
+    return next(
+        workload
+        for workload in corpus_inventory.load_workload_inventory(ROOT)
+        if workload.suite == "cmsis-nn" and workload.case == case
+    )
+
+
 class GeneratedCmsisNnProtocolTest(unittest.TestCase):
     def test_inventory_preserves_generated_public_provider_identity(self) -> None:
         workload = _workload("arm-relu-q7")
@@ -161,10 +169,12 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
         self.assertTrue(
             corpus_workload_provider.supports_cmsis_nn_harness(_workload("arm-relu-q7"))
         )
+        mve_only = _workload_any_profile(
+            "arm-nn-mat-mult-nt-interleaved-t-even-s4"
+        )
+        self.assertEqual(mve_only.target_profile, "mve")
         self.assertFalse(
-            corpus_workload_provider.supports_cmsis_nn_harness(
-                _workload("arm-nn-mat-mul-core-1x-s8")
-            )
+            corpus_workload_provider.supports_cmsis_nn_harness(mve_only)
         )
 
     def test_generated_softmax_protocols_use_official_tfl_oracle(self) -> None:
@@ -302,6 +312,54 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         harness.protocol_symbols(workload.executable),
                         (workload.protocol[0].symbol,),
                     )
+
+    def test_generated_lstm_protocols_use_composed_primitive_oracles(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        expectations = {
+            "arm-nn-lstm-calculate-gate-s16": (
+                "arm_nn_vec_mat_mul_result_acc_s16(",
+                "reference_gate_s16(",
+            ),
+            "arm-nn-lstm-calculate-gate-s8-s16": (
+                "arm_nn_vec_mat_mul_result_acc_s8_s16(",
+                "reference_gate_s8_s16(",
+            ),
+            "arm-nn-lstm-step-s16": (
+                "arm_elementwise_mul_acc_s16(",
+                "reference_step_s16(",
+            ),
+            "arm-nn-lstm-step-s8": (
+                "arm_elementwise_mul_s16_s8(",
+                "reference_step_s8(",
+            ),
+        }
+
+        for case, snippets in expectations.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+
+                symbol = workload.protocol[0].symbol
+                self.assertEqual(source.count(f"{symbol}("), 1)
+                self.assertIn("arm_nn_activation_s16(", source)
+                for snippet in snippets:
+                    self.assertIn(snippet, source)
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable),
+                    (symbol,),
+                )
 
     def test_generated_s8_vec_mat_protocols_preserve_offsets_and_stride(self) -> None:
         external_root = corpus_inventory.resolve_externals_root(ROOT)
