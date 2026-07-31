@@ -75,6 +75,14 @@ bool isGraphRegionControlOperation(::mlir::Operation *op) {
 } // namespace
 
 GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
+  // Some generic native carriers do not expose MLIR's memory-effect
+  // interface. An exact registered Compute schema is nevertheless the
+  // Dataflow owner's proof that this instance is a pure compute actor. The
+  // typed selector must match first, so an unregistered instance of the same
+  // carrier remains unsupported.
+  bool isEffectFree = ::mlir::isMemoryEffectFree(op) ||
+                      ::dataflow::isCanonicalDataflowActor(
+                          op, ::dataflow::CanonicalDataflowActorKind::Compute);
   // Movability is tested first because it is what the frontier fallback needs.
   // A leaf with an in-place rewrite can still require the move afterwards:
   // `lowerOperations` retargets a dataflow.constant's control token and then
@@ -85,7 +93,7 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
   // speculatability: selection lowering projects every captured operand and
   // branch-local constant through the selected lane, so a conditionally
   // defined actor still fires only when that lane receives its operand tokens.
-  if (op->getNumRegions() == 0 && ::mlir::isMemoryEffectFree(op) &&
+  if (op->getNumRegions() == 0 && isEffectFree &&
       (::dataflow::isCanonicalDataflowActor(op) ||
        isGraphMemoryAddressLeaf(op)))
     return GraphLeafLowering::Movable;
