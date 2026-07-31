@@ -95,6 +95,7 @@ LEGACY_CFFT_CASES = {
     "arm-cfft-radix4-q15",
     "arm-cfft-radix4-q31",
 }
+RADIX8_F16_CASE = "arm-radix8-butterfly-f16"
 
 
 class CmsisDspGeneratedProtocolTests(unittest.TestCase):
@@ -542,6 +543,35 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                         self.assertEqual(protocol.count(f"{call.symbol}("), 1)
                         self.assertNotIn(f"{call.symbol}(", oracle)
                     self.assertIn("output_matches_independent_dft", oracle)
+
+    def test_radix8_f16_generated_protocol_has_source_owned_oracle(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case == RADIX8_F16_CASE
+        )
+        self.assertEqual(len(workloads), 1)
+        workload = workloads[0]
+        self.assertTrue(
+            corpus_workload_provider.supports_cmsis_dsp_harness(workload)
+        )
+
+        harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+            workloads,
+            corpus_inventory.resolve_externals_root(ROOT),
+            self.work / "radix8-f16-harness",
+        )
+        source_path, authoritative_owner = harness.protocol_source_owner(
+            workload.executable
+        )
+        self.assertEqual(authoritative_owner.name, "arm_cfft_radix8_f16.c")
+        source = source_path.read_text(encoding="utf-8")
+        protocol, oracle = source.split("int main()", maxsplit=1)
+        call = workload.protocol[0]
+        self.assertEqual(protocol.count(f"{call.symbol}("), 2)
+        self.assertNotIn(f"{call.symbol}(", oracle)
+        self.assertIn("output_matches_independent_dft", oracle)
 
 
 if __name__ == "__main__":

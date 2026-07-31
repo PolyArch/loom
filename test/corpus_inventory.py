@@ -619,6 +619,7 @@ def _parse_operator_gate_workload(
     elif producer_kind == "cmsis-dsp-operator-harness" and selector_kind in {
         "filter-completion",
         "lifecycle-completion",
+        "radix8-f16",
         "transform-query",
     }:
         if set(selector) != {"kind", "ordinal"} or selector["ordinal"] != 0:

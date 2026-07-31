@@ -796,6 +796,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "stateful-lms"
     if corpus_dsp_fft.legacy_cfft_protocol(workload) is not None:
         return "legacy-cfft"
+    if corpus_dsp_fft.radix8_f16_protocol(workload) is not None:
+        return "generated-radix8-f16"
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
         return None
@@ -849,6 +851,7 @@ def supports_cmsis_dsp_harness(
     if isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer):
         return family in {
             "generated-lifecycle",
+            "generated-radix8-f16",
             "generated-sequence",
             "generated-stateful-filter",
             "generated-transform-query",
@@ -1281,6 +1284,7 @@ def materialize_cmsis_dsp_harness(
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
         if direct_family in {
             "generated-lifecycle",
+            "generated-radix8-f16",
             "generated-sequence",
             "generated-stateful-filter",
             "generated-transform-query",
@@ -1291,6 +1295,7 @@ def materialize_cmsis_dsp_harness(
             )
             transform_query = corpus_dsp_generated.transform_query_protocol(workload)
             lifecycle = corpus_dsp_generated.lifecycle_protocol(workload)
+            radix8_f16 = corpus_dsp_fft.radix8_f16_protocol(workload)
             protocols = tuple(
                 protocol
                 for protocol in (
@@ -1298,6 +1303,7 @@ def materialize_cmsis_dsp_harness(
                     stateful_filter,
                     transform_query,
                     lifecycle,
+                    radix8_f16,
                 )
                 if protocol is not None
             )
@@ -1323,10 +1329,20 @@ def materialize_cmsis_dsp_harness(
                 else corpus_dsp_generated.render_lifecycle_protocol(
                     workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
                 )
+                if lifecycle is not None
+                else corpus_dsp_fft.render_radix8_f16_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                )
             )
             direct_source.write_text(rendered, encoding="utf-8")
             protocol_owner = (
-                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+                external_root / "cmsis-dsp" / radix8_f16.owner_source
+                if radix8_f16 is not None
+                else external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / protocol.owner_header
             )
             targets.append(target)
             shared_directories.append(source_dir)

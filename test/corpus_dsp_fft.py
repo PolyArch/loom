@@ -53,6 +53,16 @@ class LegacyCfftProtocol:
         return f"ComplexInputSamples_Noisy_512_6_{self.suffix}.txt"
 
 
+@dataclass(frozen=True)
+class Radix8F16Protocol:
+    symbol: str
+    signature: str
+
+    @property
+    def owner_source(self) -> Path:
+        return Path("Source/TransformFunctions/arm_cfft_radix8_f16.c")
+
+
 _SCALARS = (
     ("f16", "float16_t", None, "TransformF16"),
     ("f32", "float32_t", None, "TransformF32"),
@@ -63,6 +73,10 @@ _PROTOCOLS = tuple(
     LegacyCfftProtocol(radix, suffix, value_type, bits, test_class)
     for radix in (2, 4)
     for suffix, value_type, bits, test_class in _SCALARS
+)
+_RADIX8_F16_PROTOCOL = Radix8F16Protocol(
+    "arm_radix8_butterfly_f16",
+    "void(ptr,i16,ptr,i16)",
 )
 
 
@@ -93,6 +107,25 @@ def legacy_cfft_protocol(
         ):
             return protocol
     return None
+
+
+def radix8_f16_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> Radix8F16Protocol | None:
+    producer = workload.producer
+    protocol = _RADIX8_F16_PROTOCOL
+    if (
+        workload.suite != "cmsis-dsp"
+        or not isinstance(producer, corpus_inventory.CmsisDspGeneratedWorkloadProducer)
+        or producer.selector_kind != "radix8-f16"
+        or workload.target_profile
+        != corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE
+        or workload.vector_identity != f"radix8-f16:{protocol.symbol}:0"
+        or tuple((call.symbol, call.signature) for call in workload.protocol)
+        != ((protocol.symbol, protocol.signature),)
+    ):
+        return None
+    return protocol
 
 
 def _decode_input(
@@ -136,10 +169,16 @@ def _decode_input(
 def _independent_dft(
     protocol: LegacyCfftProtocol, values: tuple[float, ...], fft_length: int
 ) -> tuple[str, ...]:
+    fixed_scale = 1.0 / fft_length if protocol.bits is not None else 1.0
+    return _independent_dft_values(values, fft_length, fixed_scale)
+
+
+def _independent_dft_values(
+    values: tuple[float, ...], fft_length: int, output_scale: float
+) -> tuple[str, ...]:
     samples = tuple(
         complex(values[2 * index], values[2 * index + 1]) for index in range(fft_length)
     )
-    fixed_scale = 1.0 / fft_length if protocol.bits is not None else 1.0
     expected: list[str] = []
     for frequency in range(fft_length):
         value = sum(
@@ -147,7 +186,7 @@ def _independent_dft(
             for index, sample in enumerate(samples)
         )
         expected.extend(
-            ((value.real * fixed_scale).hex(), (value.imag * fixed_scale).hex())
+            ((value.real * output_scale).hex(), (value.imag * output_scale).hex())
         )
     return tuple(expected)
 
@@ -239,5 +278,94 @@ int main() {{
     return true;
   }};
   return status == ARM_MATH_SUCCESS && output_matches_independent_dft() ? 0 : 1;
+}}
+"""
+
+
+def render_radix8_f16_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    protocol_symbol: str,
+) -> str:
+    protocol = radix8_f16_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP workload has no radix-8 f16 provider: {workload.identity}"
+        )
+
+    numeric_inputs = (
+        0.5,
+        -0.25,
+        -0.75,
+        0.125,
+        0.25,
+        0.375,
+        -0.5,
+        -0.625,
+        0.875,
+        0.0,
+        -0.125,
+        0.5,
+        0.625,
+        -0.375,
+        -0.25,
+        0.75,
+    )
+    inputs = tuple(
+        f"static_cast<float16_t>({value.hex()}f)" for value in numeric_inputs
+    )
+    expected = _independent_dft_values(numeric_inputs, 8, 1.0)
+    format_array = corpus_dsp_protocol.format_cpp_array
+    return f"""#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "dsp/transform_functions_f16.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+extern "C" void {protocol.symbol}(
+    float16_t *data, std::uint16_t fft_length,
+    const float16_t *twiddle, std::uint16_t twiddle_modifier);
+
+namespace {{
+constexpr std::uint16_t kFftLength = 8;
+constexpr std::size_t kScalarCount = 2 * kFftLength;
+constexpr float16_t kInput[kScalarCount] = {{
+{format_array(inputs)}
+}};
+constexpr float16_t kTwiddle[2] = {{
+  static_cast<float16_t>(1.0f), static_cast<float16_t>(0.0f)
+}};
+constexpr double kExpected[kScalarCount] = {{
+{format_array(expected)}
+}};
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(float16_t *data) {{
+  {protocol.symbol}(data, kFftLength, kTwiddle, 1);
+}}
+
+int main() {{
+  float16_t output[kScalarCount];
+  for (std::size_t index = 0; index < kScalarCount; ++index) {{
+    output[index] = kInput[index];
+  }}
+  {protocol_symbol}(output);
+  const auto output_matches_independent_dft = [&]() {{
+    for (std::size_t index = 0; index < kScalarCount; ++index) {{
+      const double actual = static_cast<double>(output[index]);
+      const double expected = kExpected[index];
+      const double tolerance = 3.0e-2 + 3.0e-2 * std::fabs(expected);
+      if (!std::isfinite(actual) || std::fabs(actual - expected) > tolerance) {{
+        return false;
+      }}
+    }}
+    return true;
+  }};
+  return output_matches_independent_dft() ? 0 : 1;
 }}
 """
