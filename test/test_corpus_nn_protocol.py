@@ -240,6 +240,45 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_buffer_size_queries_use_typed_inputs(self) -> None:
+        expected_oracles = {
+            "arm-avgpool-s8-get-buffer-size-dsp": "kChannels * sizeof(int32_t)",
+            "arm-avgpool-s8-get-buffer-size-mve": "0",
+            "arm-avgpool-s16-get-buffer-size-dsp": "kChannels * sizeof(int32_t)",
+            "arm-avgpool-s16-get-buffer-size-mve": "0",
+            "arm-fully-connected-s8-get-buffer-size-dsp": "0",
+            "arm-fully-connected-s8-get-buffer-size-mve": (
+                "kDimensions.c * sizeof(int32_t)"
+            ),
+            "arm-fully-connected-s16-get-buffer-size-dsp": "0",
+            "arm-fully-connected-s16-get-buffer-size-mve": "0",
+            "arm-svdf-s8-get-buffer-size-dsp": "0",
+            "arm-svdf-s8-get-buffer-size-mve": ("kDimensions.n * sizeof(int32_t)"),
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, expected in expected_oracles.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(f"const int32_t expected = {expected};", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

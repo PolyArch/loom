@@ -345,6 +345,35 @@ def _render_concatenation_z(wrapper_symbol: str) -> str:
     return _render_concatenation(wrapper_symbol, "z")
 
 
+def _query_renderer(
+    symbol: str,
+    arguments: str,
+    expected: str,
+) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+
+enum {{ kOutputWidth = 7, kChannels = 13 }};
+static const cmsis_nn_dims kDimensions = {{
+    .n = 7,
+    .h = 5,
+    .w = 3,
+    .c = 11,
+}};
+
+int main(void)
+{{
+    const int32_t result = {symbol}({arguments});
+    const int32_t expected = {expected};
+    return result == expected ? 0 : 1;
+}}
+"""
+
+    return render
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -389,6 +418,86 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "void (const int8_t *, const uint16_t, const uint16_t, const uint16_t, "
         "const uint16_t, int8_t *, const uint16_t, const uint32_t)",
     ): _render_concatenation_z,
+    (
+        "arm_avgpool_s8_get_buffer_size_dsp",
+        "int32_t (const int, const int)",
+    ): _query_renderer(
+        "arm_avgpool_s8_get_buffer_size_dsp",
+        "kOutputWidth, kChannels",
+        "kChannels * sizeof(int32_t)",
+    ),
+    (
+        "arm_avgpool_s8_get_buffer_size_mve",
+        "int32_t (const int, const int)",
+    ): _query_renderer(
+        "arm_avgpool_s8_get_buffer_size_mve",
+        "kOutputWidth, kChannels",
+        "0",
+    ),
+    (
+        "arm_avgpool_s16_get_buffer_size_dsp",
+        "int32_t (const int, const int)",
+    ): _query_renderer(
+        "arm_avgpool_s16_get_buffer_size_dsp",
+        "kOutputWidth, kChannels",
+        "kChannels * sizeof(int32_t)",
+    ),
+    (
+        "arm_avgpool_s16_get_buffer_size_mve",
+        "int32_t (const int, const int)",
+    ): _query_renderer(
+        "arm_avgpool_s16_get_buffer_size_mve",
+        "kOutputWidth, kChannels",
+        "0",
+    ),
+    (
+        "arm_fully_connected_s8_get_buffer_size_dsp",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_fully_connected_s8_get_buffer_size_dsp",
+        "&kDimensions",
+        "0",
+    ),
+    (
+        "arm_fully_connected_s8_get_buffer_size_mve",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_fully_connected_s8_get_buffer_size_mve",
+        "&kDimensions",
+        "kDimensions.c * sizeof(int32_t)",
+    ),
+    (
+        "arm_fully_connected_s16_get_buffer_size_dsp",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_fully_connected_s16_get_buffer_size_dsp",
+        "&kDimensions",
+        "0",
+    ),
+    (
+        "arm_fully_connected_s16_get_buffer_size_mve",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_fully_connected_s16_get_buffer_size_mve",
+        "&kDimensions",
+        "0",
+    ),
+    (
+        "arm_svdf_s8_get_buffer_size_dsp",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_svdf_s8_get_buffer_size_dsp",
+        "&kDimensions",
+        "0",
+    ),
+    (
+        "arm_svdf_s8_get_buffer_size_mve",
+        "int32_t (const cmsis_nn_dims *)",
+    ): _query_renderer(
+        "arm_svdf_s8_get_buffer_size_mve",
+        "&kDimensions",
+        "kDimensions.n * sizeof(int32_t)",
+    ),
 }
 
 
