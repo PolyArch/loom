@@ -254,6 +254,9 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "arm-fully-connected-s16-get-buffer-size-mve": "0",
             "arm-svdf-s8-get-buffer-size-dsp": "0",
             "arm-svdf-s8-get-buffer-size-mve": ("kDimensions.n * sizeof(int32_t)"),
+            "arm-convolve-s8-get-buffer-size-mve": "704",
+            "arm-depthwise-conv-s8-opt-get-buffer-size-dsp": "330",
+            "arm-depthwise-conv-s8-opt-get-buffer-size-mve": "7440",
         }
         external_root = corpus_inventory.resolve_externals_root(ROOT)
 

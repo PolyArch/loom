@@ -374,6 +374,34 @@ int main(void)
     return render
 
 
+def _dimension_pair_query_renderer(
+    symbol: str,
+    expected: int,
+) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "arm_nnsupportfunctions.h"
+
+static const cmsis_nn_dims kInputDimensions = {{
+    .n = 1, .h = 5, .w = 7, .c = 11,
+}};
+static const cmsis_nn_dims kFilterDimensions = {{
+    .n = 13, .h = 3, .w = 5, .c = 11,
+}};
+
+int main(void)
+{{
+    const int32_t result = {symbol}(&kInputDimensions, &kFilterDimensions);
+    const int32_t expected = {expected};
+    return result == expected ? 0 : 1;
+}}
+"""
+
+    return render
+
+
 def _render_elementwise_mul_batch(
     symbol: str,
     output_type: str,
@@ -987,6 +1015,22 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "arm_svdf_s8_get_buffer_size_mve",
         "&kDimensions",
         "kDimensions.n * sizeof(int32_t)",
+    ),
+    (
+        "arm_convolve_s8_get_buffer_size_mve",
+        "int32_t (const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): _dimension_pair_query_renderer("arm_convolve_s8_get_buffer_size_mve", 704),
+    (
+        "arm_depthwise_conv_s8_opt_get_buffer_size_dsp",
+        "int32_t (const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): _dimension_pair_query_renderer(
+        "arm_depthwise_conv_s8_opt_get_buffer_size_dsp", 330
+    ),
+    (
+        "arm_depthwise_conv_s8_opt_get_buffer_size_mve",
+        "int32_t (const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ): _dimension_pair_query_renderer(
+        "arm_depthwise_conv_s8_opt_get_buffer_size_mve", 7440
     ),
     (
         "arm_elementwise_mul_s16_batch_offset",
