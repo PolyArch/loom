@@ -754,6 +754,119 @@ module {
           "runtime allocation did not resolve to one finite capture object");
 }
 
+void unrelatedPointerStoresStayOutsideTheSelectedObjectClosure() {
+  const char *test = __func__;
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail(test, "cannot initialize the native target");
+  auto target = take(test, llvm::orc::JITTargetMachineBuilder::detectHost());
+  llvm::DataLayout layout = take(test, target.getDefaultDataLayoutForTarget());
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  llvm.func @kernel(%root: !llvm.ptr, %scratch: !llvm.ptr) {
+    %value = llvm.mlir.constant(42 : i32) : i32
+    llvm.store %value, %root : i32, !llvm.ptr
+    llvm.return
+  }
+
+  llvm.func @main() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %scratch = llvm.alloca %one x !llvm.ptr : (i64) -> !llvm.ptr
+    %address = llvm.mlir.constant(4096 : i64) : i64
+    %external = llvm.inttoptr %address : i64 to !llvm.ptr
+    llvm.store %external, %scratch : !llvm.ptr, !llvm.ptr
+    %root = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    llvm.call @kernel(%root, %scratch) : (!llvm.ptr, !llvm.ptr) -> ()
+    %result = llvm.load %root : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail(test, "cannot parse the unrelated-pointer-store program");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout",
+      mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+
+  loom::frontend::StructuredProgramCandidate source =
+      take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+  auto view = take(test, source.view());
+  std::optional<loom::frontend::StructuredEntityRef> mainRef;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function && function.getName() == "main") {
+      mainRef = entity.reference;
+      break;
+    }
+  }
+  require(test, mainRef.has_value(), "cannot find the exact main reference");
+
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{*mainRef};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(test, loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  auto runtimeInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                                     runtimeDraft, workload, view));
+
+  auto kernel = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("kernel");
+  require(test, static_cast<bool>(kernel), "cannot find the selected kernel");
+  const loom::ArtifactIdentity &identity = source.identity();
+  dataflow::RootedGraphLaunchRef launch{
+      dataflow::RootThreadLaunchRef{identity, dataflow::RootThreadLaunchId(0)},
+      dataflow::StaticGraphLaunchRef{identity,
+                                     dataflow::StaticGraphLaunchId(0)}};
+  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{
+      launch, {}, {}, {}, {}};
+  plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
+                                  identity, dataflow::LogicalMemoryRootId(0)},
+                              kernel.getArgument(0)});
+  mlir::OwningOpRef<mlir::ModuleOp> selectedScratchModule(
+      llvm::cast<mlir::ModuleOp>(module->clone()));
+
+  std::vector<loom::sim::NativeSimulationCallCapture> calls;
+  if (llvm::Error error = loom::sim::visitWorkloadBackedSimulationInputCaptures(
+          std::move(module), kernel.getOperation(), plan, source, workload,
+          runtimeInput, 1024 * 1024,
+          [&](loom::sim::NativeSimulationCallCapture &&capture) {
+            calls.push_back(std::move(capture));
+            return llvm::Error::success();
+          }))
+    fail(test, llvm::toString(std::move(error)));
+  require(test,
+          calls.size() == 1 && calls.front().objects.size() == 1 &&
+              calls.front().objects.front().finalBytes ==
+                  std::vector<std::uint8_t>{42, 0, 0, 0},
+          "an unrelated pointer store polluted the selected object closure");
+
+  auto scratchKernel =
+      selectedScratchModule->lookupSymbol<mlir::LLVM::LLVMFuncOp>("kernel");
+  require(test, static_cast<bool>(scratchKernel),
+          "the cloned program lost the selected kernel");
+  plan.memoryRoots.front().boundaryPointer = scratchKernel.getArgument(1);
+  llvm::Error error = loom::sim::visitWorkloadBackedSimulationInputCaptures(
+      std::move(selectedScratchModule), scratchKernel.getOperation(), plan,
+      source, workload, runtimeInput, 1024 * 1024,
+      [&](loom::sim::NativeSimulationCallCapture &&) {
+        return llvm::Error::success();
+      });
+  require(test, static_cast<bool>(error),
+          "an observed pointer target outside the registry was accepted");
+  const std::string message = llvm::toString(std::move(error));
+  require(test,
+          message.find("captured pointer target is outside the runtime object "
+                       "registry") != std::string::npos,
+          "an observed unknown pointer target used the wrong failure");
+}
+
 } // namespace
 
 int main() {
@@ -765,6 +878,7 @@ int main() {
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();
   runtimeAllocationsEnterTheCaptureRegistry();
+  unrelatedPointerStoresStayOutsideTheSelectedObjectClosure();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;
 }

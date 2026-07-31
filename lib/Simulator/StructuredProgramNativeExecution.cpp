@@ -121,7 +121,7 @@ struct TrackedPointerPayload final {
   std::uint64_t storageByteOffset = 0;
   std::uint32_t addressSpace = 0;
   std::uint32_t representationBits = 0;
-  PointerTarget target;
+  std::optional<PointerTarget> target;
 };
 
 using TrackedPointerKey = std::pair<std::uint64_t, std::uint64_t>;
@@ -426,12 +426,6 @@ void workloadCapturePointerWrite(void *storage, void *value,
         "a selected activation");
     return;
   }
-  if (!valueTarget) {
-    recordWorkloadCaptureError(
-        std::make_error_code(std::errc::not_supported),
-        "pointer-write value is outside the runtime object registry");
-    return;
-  }
   const std::uint64_t pointerBytes = representationBits / 8;
   if (pointerBytes >
       activeWorkloadCapture->runtimeObjects[storageTarget->first].second -
@@ -447,11 +441,12 @@ void workloadCapturePointerWrite(void *storage, void *value,
   pointer.storageByteOffset = storageTarget->second;
   pointer.addressSpace = static_cast<std::uint32_t>(addressSpace);
   pointer.representationBits = static_cast<std::uint32_t>(representationBits);
-  pointer.target = PointerTarget{
-      valueTarget->first, hintedOffset
-                              ? *hintedOffset
-                              : llvm::APInt(static_cast<unsigned>(addressBits),
-                                            valueTarget->second)};
+  if (valueTarget)
+    pointer.target = PointerTarget{
+        valueTarget->first,
+        hintedOffset ? *hintedOffset
+                     : llvm::APInt(static_cast<unsigned>(addressBits),
+                                   valueTarget->second)};
   activeWorkloadCapture->pointerPayloads[{pointer.storageObjectOrdinal,
                                           pointer.storageByteOffset}] =
       std::move(pointer);
@@ -467,8 +462,14 @@ bool projectTrackedPointers(WorkloadCaptureContext &context,
         llvm::find(active.runtimeObjectOrdinals, pointer.storageObjectOrdinal);
     if (storage == active.runtimeObjectOrdinals.end())
       continue;
+    if (!pointer.target) {
+      recordWorkloadCaptureError(
+          std::make_error_code(std::errc::not_supported),
+          "captured pointer target is outside the runtime object registry");
+      return false;
+    }
     auto target =
-        llvm::find(active.runtimeObjectOrdinals, pointer.target.objectOrdinal);
+        llvm::find(active.runtimeObjectOrdinals, pointer.target->objectOrdinal);
     if (target == active.runtimeObjectOrdinals.end()) {
       recordWorkloadCaptureError(
           std::make_error_code(std::errc::not_supported),
@@ -481,7 +482,7 @@ bool projectTrackedPointers(WorkloadCaptureContext &context,
         std::distance(active.runtimeObjectOrdinals.begin(), target);
     RuntimeMemoryPointer projected{
         pointer.storageByteOffset, pointer.addressSpace,
-        PointerTarget{targetOrdinal, pointer.target.byteOffset}};
+        PointerTarget{targetOrdinal, pointer.target->byteOffset}};
     auto &destination = initial ? objects[storageOrdinal].initialPointers
                                 : objects[storageOrdinal].finalPointers;
     destination.push_back(std::move(projected));
