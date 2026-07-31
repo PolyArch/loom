@@ -1333,6 +1333,16 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "arm_nn_read_s16x2", "int16_t", "uint16_t", 2, False
     ),
     (
+        "arm_nn_read_s8x2_ia",
+        "int32_t (const int8_t **)",
+    ): _header_packed_read_renderer(
+        "arm_nn_read_s8x2_ia", "int8_t", "uint8_t", 2, True
+    ),
+    (
+        "arm_nn_read_s8x2",
+        "int32_t (const int8_t *)",
+    ): _header_packed_read_renderer("arm_nn_read_s8x2", "int8_t", "uint8_t", 2, False),
+    (
         "arm_nn_read_s8x4_ia",
         "int32_t (const int8_t **)",
     ): _header_packed_read_renderer(
@@ -1461,6 +1471,8 @@ _HEADER_ONLY_PROTOCOLS = {
     "arm_nn_requantize_s64",
     "arm_nn_read_q15x2_ia",
     "arm_nn_read_s16x2",
+    "arm_nn_read_s8x2",
+    "arm_nn_read_s8x2_ia",
     "arm_nn_read_s8x4",
     "arm_nn_read_s8x4_ia",
     "arm_nn_write_q15x2_ia",

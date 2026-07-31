@@ -415,6 +415,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
         cases = (
             "arm-nn-read-q15x2-ia",
             "arm-nn-read-s16x2",
+            "arm-nn-read-s8x2-ia",
+            "arm-nn-read-s8x2",
             "arm-nn-read-s8x4-ia",
             "arm-nn-read-s8x4",
             "arm-nn-write-q15x2-ia",
