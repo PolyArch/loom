@@ -320,6 +320,38 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_header_defined_fixed_point_protocols_use_literal_oracles(self) -> None:
+        expected_literals = {
+            "arm-nn-doubling-high-mult": "2147483647",
+            "arm-nn-doubling-high-mult-no-sat": "56779306",
+            "arm-nn-divide-by-power-of-two": "964506",
+            "arm-nn-requantize": "3520317",
+            "arm-nn-requantize-s64": "134213632",
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, expected in expected_literals.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(expected, source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        ("loom_corpus_operator_protocol",),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

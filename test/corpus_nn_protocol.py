@@ -513,6 +513,59 @@ int main(void)
 """
 
 
+def _header_scalar_renderer(
+    symbol: str,
+    parameters: str,
+    fields: str,
+    wrapper_arguments: str,
+    vector_arguments: str,
+    vectors: str,
+) -> Callable[[str], str]:
+    def render(wrapper_symbol: str) -> str:
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+typedef struct
+{{
+{fields}
+    int32_t expected;
+}} TestVector;
+
+static const TestVector kVectors[] = {{
+{vectors}
+}};
+
+LOOM_NOINLINE int32_t {wrapper_symbol}({parameters})
+{{
+    return {symbol}({wrapper_arguments});
+}}
+
+int main(void)
+{{
+    const size_t vector_count = sizeof(kVectors) / sizeof(kVectors[0]);
+    for (size_t index = 0; index < vector_count; ++index)
+    {{
+        const TestVector *vector = &kVectors[index];
+        if ({wrapper_symbol}({vector_arguments}) != vector->expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -665,10 +718,107 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "const int32_t, int16_t *, const int32_t, const int32_t, "
         "const int32_t, const int32_t, const int32_t, const int32_t)",
     ): _render_elementwise_mul_acc_s16,
+    (
+        "arm_nn_doubling_high_mult",
+        "int32_t (const int32_t, const int32_t)",
+    ): _header_scalar_renderer(
+        "arm_nn_doubling_high_mult",
+        "int32_t lhs, int32_t rhs",
+        "    int32_t lhs;\n    int32_t rhs;\n",
+        "lhs, rhs",
+        "vector->lhs, vector->rhs",
+        """    {0, 123456789, 0},
+    {1073741824, 1073741824, 536870912},
+    {-1073741824, 1073741824, -536870912},
+    {INT32_MIN, INT32_MIN, 2147483647},
+    {123456789, 987654321, 56779306},
+    {-123456789, 987654321, -56779306},
+    {INT32_MAX, INT32_MAX, 2147483646},""",
+    ),
+    (
+        "arm_nn_doubling_high_mult_no_sat",
+        "int32_t (int32_t, int32_t)",
+    ): _header_scalar_renderer(
+        "arm_nn_doubling_high_mult_no_sat",
+        "int32_t lhs, int32_t rhs",
+        "    int32_t lhs;\n    int32_t rhs;\n",
+        "lhs, rhs",
+        "vector->lhs, vector->rhs",
+        """    {0, 123456789, 0},
+    {1073741824, 1073741824, 536870912},
+    {-1073741824, 1073741824, -536870912},
+    {123456789, 987654321, 56779306},
+    {-123456789, 987654321, -56779306},
+    {INT32_MAX, INT32_MAX, 2147483646},""",
+    ),
+    (
+        "arm_nn_divide_by_power_of_two",
+        "int32_t (const int32_t, const int32_t)",
+    ): _header_scalar_renderer(
+        "arm_nn_divide_by_power_of_two",
+        "int32_t value, int32_t exponent",
+        "    int32_t value;\n    int32_t exponent;\n",
+        "value, exponent",
+        "vector->value, vector->exponent",
+        """    {-17, 2, -4},
+    {-7, 1, -4},
+    {-5, 1, -3},
+    {-3, 1, -2},
+    {-1, 1, -1},
+    {0, 7, 0},
+    {1, 1, 1},
+    {3, 1, 2},
+    {5, 1, 3},
+    {7, 1, 4},
+    {17, 2, 4},
+    {123456789, 7, 964506},""",
+    ),
+    (
+        "arm_nn_requantize",
+        "int32_t (const int32_t, const int32_t, const int32_t)",
+    ): _header_scalar_renderer(
+        "arm_nn_requantize",
+        "int32_t value, int32_t multiplier, int32_t shift",
+        "    int32_t value;\n    int32_t multiplier;\n    int32_t shift;\n",
+        "value, multiplier, shift",
+        "vector->value, vector->multiplier, vector->shift",
+        """    {12345, 1073741824, 1, 12345},
+    {-12345, 1073741824, 1, -12345},
+    {12345, 1073741824, 0, 6173},
+    {-12345, 1073741824, 0, -6172},
+    {12345, 1073741824, -1, 3087},
+    {-12345, 1073741824, -1, -3086},
+    {7654321, 123456789, 3, 3520317},
+    {-7654321, 123456789, -4, -27503},""",
+    ),
+    (
+        "arm_nn_requantize_s64",
+        "int32_t (const int64_t, const int32_t, const int32_t)",
+    ): _header_scalar_renderer(
+        "arm_nn_requantize_s64",
+        "int64_t value, int32_t multiplier, int32_t shift",
+        "    int64_t value;\n    int32_t multiplier;\n    int32_t shift;\n",
+        "value, multiplier, shift",
+        "vector->value, vector->multiplier, vector->shift",
+        """    {0, 32767, 0, 0},
+    {123456789, 12345, 0, 46511049},
+    {-123456789, 12345, 0, -46511049},
+    {123456789, 16384, -3, 7716049},
+    {-123456789, 16384, -3, -7716049},
+    {987654321, 32767, -4, 61726511},
+    {-987654321, 32767, -4, -61726511},
+    {1048576, 32767, 7, 134213632},
+    {-1048576, 32767, 7, -134213632},""",
+    ),
 }
 
 
 _HEADER_ONLY_PROTOCOLS = {
+    "arm_nn_divide_by_power_of_two",
+    "arm_nn_doubling_high_mult",
+    "arm_nn_doubling_high_mult_no_sat",
+    "arm_nn_requantize",
+    "arm_nn_requantize_s64",
     "arm_memcpy_s8",
     "arm_memcpy_q15",
     "arm_memset_s8",
