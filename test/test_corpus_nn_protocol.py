@@ -372,6 +372,43 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         ("loom_corpus_operator_protocol",),
                     )
 
+    def test_s16_activation_protocol_uses_lut_dependency_and_literal_oracle(
+        self,
+    ) -> None:
+        workload = _workload("arm-nn-activation-s16")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+            self.assertIn("kExpectedSigmoid", source)
+            self.assertIn("32179", source)
+            self.assertIn("kExpectedTanh", source)
+            self.assertIn("-32746", source)
+            self.assertEqual(
+                harness.protocol_symbols(workload.executable),
+                ("arm_nn_activation_s16",),
+            )
+            compiled_owner, _ = harness.protocol_source_owner(workload.executable)
+            self.assertEqual(
+                compiled_owner,
+                external_root
+                / "cmsis-nn"
+                / "Source"
+                / "ActivationFunctions"
+                / "arm_nn_activation_s16.c",
+            )
+
     def test_header_defined_packed_memory_protocols_preserve_pointer_state(
         self,
     ) -> None:

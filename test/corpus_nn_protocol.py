@@ -88,6 +88,61 @@ def _render_relu6_s8(_wrapper_symbol: str) -> str:
     )
 
 
+def _render_activation_s16(_wrapper_symbol: str) -> str:
+    return """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+
+enum { kElementCount = 15 };
+
+static const int16_t kInput[kElementCount] = {
+    -32768, -16384, -8192, -2048, -512, -128, -1, 0,
+    1, 128, 512, 2048, 8192, 16384, 32767,
+};
+static const int16_t kExpectedSigmoid[2][kElementCount] = {
+    {11, 589, 3906, 12371, 15361, 16128, 16382, 16384,
+     16386, 16640, 17407, 20397, 28862, 32179, 32757},
+    {589, 3906, 8812, 14346, 15872, 16256, 16383, 16384,
+     16385, 16512, 16896, 18422, 23956, 28862, 32178},
+};
+static const int16_t kExpectedTanh[2][kElementCount] = {
+    {-32767, -32746, -31589, -15143, -4075, -1024, -8, 0,
+     8, 1024, 4075, 15143, 31589, 32746, 32767},
+    {-32767, -32767, -32746, -24956, -8026, -2045, -16, 0,
+     16, 2045, 8026, 24956, 32746, 32767, 32767},
+};
+
+static int check_activation(
+    arm_nn_activation_type type, int32_t shift, const int16_t *expected)
+{
+    int16_t output[kElementCount];
+    const arm_cmsis_nn_status status = arm_nn_activation_s16(
+        kInput, output, kElementCount, shift, type);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+    for (size_t index = 0; index < kElementCount; ++index)
+    {
+        if (output[index] != expected[index])
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void)
+{
+    return check_activation(ARM_SIGMOID, 0, kExpectedSigmoid[0]) ||
+        check_activation(ARM_SIGMOID, -1, kExpectedSigmoid[1]) ||
+        check_activation(ARM_TANH, 0, kExpectedTanh[0]) ||
+        check_activation(ARM_TANH, 1, kExpectedTanh[1]);
+}
+"""
+
+
 def _render_reshape_s8(_wrapper_symbol: str) -> str:
     return """#include <stddef.h>
 #include <stdint.h>
@@ -948,6 +1003,11 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
     ("arm_relu6_s8", "void (int8_t *, uint16_t)"): _render_relu6_s8,
+    (
+        "arm_nn_activation_s16",
+        "arm_cmsis_nn_status (const int16_t *, int16_t *, const int32_t, "
+        "const int32_t, const arm_nn_activation_type)",
+    ): _render_activation_s16,
     (
         "arm_reshape_s8",
         "void (const int8_t *, int8_t *, const uint32_t)",
