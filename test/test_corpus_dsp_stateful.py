@@ -61,6 +61,51 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                 if workload.case.endswith("q15"):
                     self.assertIn("(void)arm_fir_init_q15", source)
 
+    def test_svm_variants_keep_model_init_and_predictions_atomic(self) -> None:
+        cases = {
+            "arm-svm-linear-predict-f32",
+            "arm-svm-polynomial-predict-f16",
+        }
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp" and workload.case in cases
+        )
+        self.assertEqual(len(workloads), len(cases))
+
+        for ordinal, workload in enumerate(workloads):
+            with self.subTest(case=workload.case):
+                harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+                    (workload,),
+                    corpus_inventory.resolve_externals_root(ROOT),
+                    self.work / f"svm-harness-{ordinal}",
+                )
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable),
+                    ("loom_corpus_operator_protocol",),
+                )
+                self.assertEqual(harness.expected_entry_result(workload.executable), 0)
+                compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
+                )
+                self.assertIn("svm_functions", authoritative_owner.name)
+                source = compiled_owner.read_text(encoding="utf-8")
+                kernel = workload.case.removeprefix("arm-svm-").split("-predict-")[0]
+                suffix = workload.case.rsplit("-", maxsplit=1)[1]
+                protocol = source.split("int main()", maxsplit=1)[0]
+                self.assertEqual(protocol.count(f"arm_svm_{kernel}_init_{suffix}("), 1)
+                self.assertEqual(
+                    protocol.count(f"arm_svm_{kernel}_predict_{suffix}("), 1
+                )
+                self.assertIn(
+                    "for (std::size_t sample = 0; sample < kSampleCount; ++sample)",
+                    protocol,
+                )
+                self.assertNotIn("instance{}", protocol)
+                self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
+                if kernel == "polynomial":
+                    self.assertIn("kDegree", protocol)
+
 
 if __name__ == "__main__":
     unittest.main()

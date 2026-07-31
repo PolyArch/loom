@@ -33,6 +33,50 @@ class FirProtocol:
         )
 
 
+@dataclass(frozen=True)
+class SvmValueType:
+    test_class: str
+    suffix: str
+    value_type: str
+    scalar_signature: str
+    owner_header: str
+
+
+@dataclass(frozen=True)
+class SvmKernel:
+    name: str
+    pattern_ordinal: int
+    scalar_parameter_count: int
+    has_degree: bool = False
+
+
+@dataclass(frozen=True)
+class SvmProtocol:
+    value: SvmValueType
+    kernel: SvmKernel
+
+    @property
+    def test_method(self) -> str:
+        return f"test_svm_{self.kernel.name}_predict_{self.value.suffix}"
+
+    @property
+    def calls(self) -> tuple[tuple[str, str], ...]:
+        tail = ""
+        if self.kernel.has_degree:
+            tail += ",i32"
+        tail += f",{self.value.scalar_signature}" * self.kernel.scalar_parameter_count
+        return (
+            (
+                f"arm_svm_{self.kernel.name}_init_{self.value.suffix}",
+                f"void(ptr,i32,i32,{self.value.scalar_signature},ptr,ptr,ptr{tail})",
+            ),
+            (
+                f"arm_svm_{self.kernel.name}_predict_{self.value.suffix}",
+                "void(ptr,ptr,ptr)",
+            ),
+        )
+
+
 _FIR_PROTOCOLS = {
     ("FIRF16", "test_fir_f16"): FirProtocol(
         test_class="FIRF16",
@@ -98,6 +142,33 @@ _FIR_PROTOCOLS = {
         integer_error=2,
     ),
 }
+_SVM_VALUE_TYPES = {
+    "SVMF16": SvmValueType(
+        test_class="SVMF16",
+        suffix="f16",
+        value_type="float16_t",
+        scalar_signature="half",
+        owner_header="svm_functions_f16.h",
+    ),
+    "SVMF32": SvmValueType(
+        test_class="SVMF32",
+        suffix="f32",
+        value_type="float32_t",
+        scalar_signature="float",
+        owner_header="svm_functions.h",
+    ),
+}
+_SVM_KERNELS = (
+    SvmKernel(name="linear", pattern_ordinal=1, scalar_parameter_count=0),
+    SvmKernel(
+        name="polynomial",
+        pattern_ordinal=2,
+        scalar_parameter_count=2,
+        has_degree=True,
+    ),
+    SvmKernel(name="rbf", pattern_ordinal=3, scalar_parameter_count=1),
+    SvmKernel(name="sigmoid", pattern_ordinal=4, scalar_parameter_count=2),
+)
 
 
 def fir_protocol(
@@ -118,6 +189,29 @@ def fir_protocol(
     return protocol
 
 
+def svm_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> SvmProtocol | None:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer):
+        return None
+    if producer.selector_kind != "official":
+        return None
+    value = _SVM_VALUE_TYPES.get(producer.test_class)
+    if value is None:
+        return None
+    for kernel in _SVM_KERNELS:
+        protocol = SvmProtocol(value=value, kernel=kernel)
+        if producer.test_method != protocol.test_method:
+            continue
+        if tuple((call.symbol, call.signature) for call in workload.protocol) != (
+            protocol.calls
+        ):
+            return None
+        return protocol
+    return None
+
+
 def _decode_f16_pattern(raw: bytes, name: str) -> tuple[str, ...]:
     if len(raw) % 2 != 0:
         raise WorkloadProviderError(f"CMSIS-DSP {name} is not f16-aligned")
@@ -130,16 +224,18 @@ def _decode_f16_pattern(raw: bytes, name: str) -> tuple[str, ...]:
     return tuple(f"static_cast<float16_t>({value.hex()}f)" for value in values)
 
 
-def _decode_values(protocol: FirProtocol, raw: bytes, name: str) -> tuple[str, ...]:
-    if protocol.suffix == "f16":
+def _decode_values(
+    suffix: str, bits: int | None, raw: bytes, name: str
+) -> tuple[str, ...]:
+    if suffix == "f16":
         return _decode_f16_pattern(raw, name)
-    if protocol.suffix == "f32":
+    if suffix == "f32":
         return corpus_dsp_protocol.decode_f32_pattern(raw, name)
-    if protocol.suffix == "f64":
+    if suffix == "f64":
         return corpus_dsp_protocol.decode_f64_pattern(raw, name)
-    if protocol.bits is None:
-        raise WorkloadProviderError("CMSIS-DSP FIR value type is incomplete")
-    return corpus_dsp_protocol.decode_integer_pattern(raw, protocol.bits, True, name)
+    if bits is None:
+        raise WorkloadProviderError("CMSIS-DSP numeric value type is incomplete")
+    return corpus_dsp_protocol.decode_integer_pattern(raw, bits, True, name)
 
 
 def _oracle_body(protocol: FirProtocol) -> str:
@@ -176,21 +272,24 @@ def render_fir_protocol(
     segments = corpus_dsp_protocol.pattern_segments(patterns)
     suffix = protocol.suffix
     inputs = _decode_values(
-        protocol,
+        protocol.suffix,
+        protocol.bits,
         corpus_dsp_protocol.require_pattern_segment(
             segments, f"FirInput1_{suffix}.txt"
         ),
         "FIR input",
     )
     coefficients = _decode_values(
-        protocol,
+        protocol.suffix,
+        protocol.bits,
         corpus_dsp_protocol.require_pattern_segment(
             segments, f"FirCoefs1_{suffix}.txt"
         ),
         "FIR coefficients",
     )
     expected = _decode_values(
-        protocol,
+        protocol.suffix,
+        protocol.bits,
         corpus_dsp_protocol.require_pattern_segment(segments, f"FirRefs1_{suffix}.txt"),
         "FIR reference",
     )
@@ -284,6 +383,165 @@ int main() {{
   {protocol.value_type} state[kStateCount]{{}};
   {protocol.value_type} output[kOutputCount]{{}};
   {protocol_symbol}(kInput, kCoefficients, kConfigs, state, output);
+  return oracle_matches(output) ? 0 : 1;
+}}
+"""
+
+
+def render_svm_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+    patterns: Path,
+    protocol_symbol: str,
+) -> str:
+    protocol = svm_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError("CMSIS-DSP SVM protocol is inconsistent")
+    value = protocol.value
+    kernel = protocol.kernel
+    ordinal = kernel.pattern_ordinal
+    segments = corpus_dsp_protocol.pattern_segments(patterns)
+    dims = corpus_dsp_protocol.decode_i16_pattern(
+        corpus_dsp_protocol.require_pattern_segment(segments, f"Dims{ordinal}_s16.txt"),
+        "SVM dimensions",
+    )
+    expected_dim_count = 7 if kernel.has_degree else 6
+    if len(dims) != expected_dim_count or dims[0] != ordinal:
+        raise WorkloadProviderError("CMSIS-DSP SVM dimensions are noncanonical")
+    classes = dims[1:3]
+    sample_count, vector_dimension, support_vector_count = dims[3:6]
+    if sample_count <= 0 or vector_dimension <= 0 or support_vector_count <= 0:
+        raise WorkloadProviderError("CMSIS-DSP SVM dimensions are nonpositive")
+    if classes[0] == classes[1]:
+        raise WorkloadProviderError("CMSIS-DSP SVM classes are not distinct")
+
+    parameters = _decode_values(
+        value.suffix,
+        None,
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Params{ordinal}_{value.suffix}.txt"
+        ),
+        "SVM parameters",
+    )
+    support_value_count = vector_dimension * support_vector_count
+    expected_parameter_count = (
+        support_value_count + support_vector_count + 1 + kernel.scalar_parameter_count
+    )
+    if len(parameters) != expected_parameter_count:
+        raise WorkloadProviderError("CMSIS-DSP SVM parameter projection is not total")
+    support_vectors = parameters[:support_value_count]
+    dual_coefficients = parameters[
+        support_value_count : support_value_count + support_vector_count
+    ]
+    scalar_parameters = parameters[support_value_count + support_vector_count :]
+    intercept = scalar_parameters[0]
+    kernel_scalars = scalar_parameters[1:]
+
+    samples = _decode_values(
+        value.suffix,
+        None,
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Samples{ordinal}_{value.suffix}.txt"
+        ),
+        "SVM samples",
+    )
+    if len(samples) != sample_count * vector_dimension:
+        raise WorkloadProviderError("CMSIS-DSP SVM sample projection is not total")
+    expected = corpus_dsp_protocol.decode_integer_pattern(
+        corpus_dsp_protocol.require_pattern_segment(
+            segments, f"Reference{ordinal}_s32.txt"
+        ),
+        32,
+        True,
+        "SVM reference",
+    )
+    if len(expected) != sample_count:
+        raise WorkloadProviderError("CMSIS-DSP SVM reference projection is not total")
+
+    headers = '#include "arm_math.h"'
+    if value.suffix == "f16":
+        headers = '#include "arm_math_types_f16.h"\n#include "dsp/svm_functions_f16.h"'
+    constants = ""
+    init_tail = ""
+    main_tail = ""
+    if kernel.has_degree:
+        degree = dims[6]
+        if degree <= 0:
+            raise WorkloadProviderError("CMSIS-DSP SVM degree is nonpositive")
+        constants += f"constexpr std::int32_t kDegree = {degree};\n"
+        init_tail += ", kDegree"
+    scalar_names = (
+        ("kCoef0", "kGamma")[-kernel.scalar_parameter_count :]
+        if kernel.scalar_parameter_count
+        else ()
+    )
+    for name, literal in zip(scalar_names, kernel_scalars, strict=True):
+        constants += f"constexpr {value.value_type} {name} = {literal};\n"
+        init_tail += f", {name.lower().removeprefix('k')}"
+        main_tail += f", {name}"
+    wrapper_scalar_parameters = "".join(
+        f", {value.value_type} {name.lower().removeprefix('k')}"
+        for name in scalar_names
+    )
+
+    return f"""#include <cstddef>
+#include <cstdint>
+
+{headers}
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+constexpr std::size_t kSampleCount = {sample_count};
+constexpr std::size_t kVectorDimension = {vector_dimension};
+constexpr std::size_t kSupportVectorCount = {support_vector_count};
+constexpr {value.value_type} kSamples[] = {{
+{corpus_dsp_protocol.format_cpp_array(samples)}
+}};
+constexpr {value.value_type} kSupportVectors[] = {{
+{corpus_dsp_protocol.format_cpp_array(support_vectors)}
+}};
+constexpr {value.value_type} kDualCoefficients[] = {{
+{corpus_dsp_protocol.format_cpp_array(dual_coefficients)}
+}};
+constexpr {value.value_type} kIntercept = {intercept};
+constexpr std::int32_t kClasses[] = {{{classes[0]}, {classes[1]}}};
+{constants}constexpr std::int32_t kExpected[] = {{
+{corpus_dsp_protocol.format_cpp_array(expected)}
+}};
+
+bool oracle_matches(const std::int32_t *output) {{
+  for (std::size_t sample = 0; sample < kSampleCount; ++sample) {{
+    if (output[sample] != kExpected[sample])
+      return false;
+  }}
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    const {value.value_type} *samples,
+    const {value.value_type} *support_vectors,
+    const {value.value_type} *dual_coefficients,
+    {value.value_type} intercept, const std::int32_t *classes,
+    std::int32_t *output{wrapper_scalar_parameters}) {{
+  arm_svm_{kernel.name}_instance_{value.suffix} instance;
+  arm_svm_{kernel.name}_init_{value.suffix}(
+      &instance, kSupportVectorCount, kVectorDimension, intercept,
+      dual_coefficients, support_vectors, classes{init_tail});
+  for (std::size_t sample = 0; sample < kSampleCount; ++sample) {{
+    arm_svm_{kernel.name}_predict_{value.suffix}(
+        &instance, samples + sample * kVectorDimension, output + sample);
+  }}
+}}
+
+int main() {{
+  std::int32_t output[kSampleCount];
+  {protocol_symbol}(kSamples, kSupportVectors, kDualCoefficients, kIntercept,
+                    kClasses, output{main_tail});
   return oracle_matches(output) ? 0 : 1;
 }}
 """
