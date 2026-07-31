@@ -374,6 +374,145 @@ int main(void)
     return render
 
 
+def _render_elementwise_mul_batch(
+    symbol: str,
+    output_type: str,
+    activation_min: int,
+    activation_max: int,
+) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "arm_nnsupportfunctions.h"
+
+enum {{
+    kBlockSize = 17,
+    kBatchSize = 3,
+    kBatchOffset = 2,
+    kInputCount = kBlockSize * kBatchSize,
+    kOutputCount = kBlockSize * (1 + (kBatchSize - 1) * kBatchOffset),
+    kOutputOffset = 7,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+}};
+
+int main(void)
+{{
+    int16_t input_1[kInputCount];
+    int16_t input_2[kInputCount];
+    {output_type} output[kOutputCount];
+    {output_type} expected[kOutputCount];
+    for (size_t index = 0; index < kInputCount; ++index)
+    {{
+        input_1[index] = (int16_t)((index * 37 % 257) - 128);
+        input_2[index] = (int16_t)((index * 19 % 127) - 63);
+    }}
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        output[index] = ({output_type})-101;
+        expected[index] = ({output_type})-101;
+    }}
+
+    const arm_cmsis_nn_status status = {symbol}(
+        input_1, input_2, output, kOutputOffset, kMultiplier, kShift,
+        kBlockSize, kBatchSize, kBatchOffset);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+
+    for (size_t batch = 0; batch < kBatchSize; ++batch)
+    {{
+        for (size_t lane = 0; lane < kBlockSize; ++lane)
+        {{
+            const size_t index = batch * kBlockSize + lane;
+            const size_t destination = batch * kBatchOffset * kBlockSize + lane;
+            int32_t reference = input_1[index] * input_2[index] + kOutputOffset;
+            if (reference < {activation_min})
+            {{
+                reference = {activation_min};
+            }}
+            if (reference > {activation_max})
+            {{
+                reference = {activation_max};
+            }}
+            expected[destination] = ({output_type})reference;
+        }}
+    }}
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        if (output[index] != expected[index])
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
+def _render_elementwise_mul_acc_s16(_wrapper_symbol: str) -> str:
+    return """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "arm_nnsupportfunctions.h"
+
+enum {
+    kElementCount = 33,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -12000,
+    kActivationMax = 12000,
+};
+
+int main(void)
+{
+    int16_t input_1[kElementCount];
+    int16_t input_2[kElementCount];
+    int16_t initial_output[kElementCount];
+    int16_t output[kElementCount];
+    for (size_t index = 0; index < kElementCount; ++index)
+    {
+        input_1[index] = (int16_t)((index * 37 % 257) - 128);
+        input_2[index] = (int16_t)((index * 19 % 127) - 63);
+        initial_output[index] = (int16_t)((index * 23 % 401) - 200);
+        output[index] = initial_output[index];
+    }
+
+    const arm_cmsis_nn_status status = arm_elementwise_mul_acc_s16(
+        input_1, input_2, 0, 0, output, 0, kMultiplier, kShift,
+        kActivationMin, kActivationMax, kElementCount);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+
+    for (size_t index = 0; index < kElementCount; ++index)
+    {
+        int32_t reference = initial_output[index] + input_1[index] * input_2[index];
+        if (reference < kActivationMin)
+        {
+            reference = kActivationMin;
+        }
+        if (reference > kActivationMax)
+        {
+            reference = kActivationMax;
+        }
+        if (output[index] != (int16_t)reference)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+"""
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -498,6 +637,34 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "&kDimensions",
         "kDimensions.n * sizeof(int32_t)",
     ),
+    (
+        "arm_elementwise_mul_s16_batch_offset",
+        "arm_cmsis_nn_status (const int16_t *, const int16_t *, int16_t *, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t)",
+    ): _render_elementwise_mul_batch(
+        "arm_elementwise_mul_s16_batch_offset",
+        "int16_t",
+        -32768,
+        32767,
+    ),
+    (
+        "arm_elementwise_mul_s16_s8",
+        "arm_cmsis_nn_status (const int16_t *, const int16_t *, int8_t *, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t)",
+    ): _render_elementwise_mul_batch(
+        "arm_elementwise_mul_s16_s8",
+        "int8_t",
+        -128,
+        127,
+    ),
+    (
+        "arm_elementwise_mul_acc_s16",
+        "arm_cmsis_nn_status (const int16_t *, const int16_t *, const int32_t, "
+        "const int32_t, int16_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): _render_elementwise_mul_acc_s16,
 }
 
 

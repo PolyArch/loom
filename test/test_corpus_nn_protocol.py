@@ -279,6 +279,47 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_elementwise_mul_protocols_use_independent_oracles(self) -> None:
+        expectations = {
+            "arm-elementwise-mul-s16-batch-offset": (
+                "arm_elementwise_mul_s16_batch_offset(",
+                "reference = input_1[index] * input_2[index] + kOutputOffset",
+            ),
+            "arm-elementwise-mul-s16-s8": (
+                "arm_elementwise_mul_s16_s8(",
+                "reference = input_1[index] * input_2[index] + kOutputOffset",
+            ),
+            "arm-elementwise-mul-acc-s16": (
+                "arm_elementwise_mul_acc_s16(",
+                "reference = initial_output[index] + input_1[index] * input_2[index]",
+                '#include "arm_nnsupportfunctions.h"',
+            ),
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, snippets in expectations.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    for snippet in snippets:
+                        self.assertIn(snippet, source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
