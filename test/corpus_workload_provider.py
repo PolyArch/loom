@@ -776,6 +776,8 @@ _CMSIS_DSP_BASIC_F32_PROTOCOLS = {
 def _cmsis_dsp_direct_protocol_family(
     workload: corpus_inventory.ProgramWorkload,
 ) -> str | None:
+    if corpus_dsp_filter_generated.stateful_filter_protocol(workload) is not None:
+        return "generated-stateful-filter"
     if corpus_dsp_filter_generated.sequence_protocol(workload) is not None:
         return "generated-sequence"
     if corpus_dsp_generated.transform_query_protocol(workload) is not None:
@@ -836,6 +838,7 @@ def supports_cmsis_dsp_harness(
         return family in {
             "generated-lifecycle",
             "generated-sequence",
+            "generated-stateful-filter",
             "generated-transform-query",
         }
     return isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer) and (
@@ -1184,14 +1187,23 @@ def materialize_cmsis_dsp_harness(
         if direct_family in {
             "generated-lifecycle",
             "generated-sequence",
+            "generated-stateful-filter",
             "generated-transform-query",
         }:
             sequence = corpus_dsp_filter_generated.sequence_protocol(workload)
+            stateful_filter = corpus_dsp_filter_generated.stateful_filter_protocol(
+                workload
+            )
             transform_query = corpus_dsp_generated.transform_query_protocol(workload)
             lifecycle = corpus_dsp_generated.lifecycle_protocol(workload)
             protocols = tuple(
                 protocol
-                for protocol in (sequence, transform_query, lifecycle)
+                for protocol in (
+                    sequence,
+                    stateful_filter,
+                    transform_query,
+                    lifecycle,
+                )
                 if protocol is not None
             )
             if len(protocols) != 1:
@@ -1205,6 +1217,10 @@ def materialize_cmsis_dsp_harness(
                     workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
                 )
                 if sequence is not None
+                else corpus_dsp_filter_generated.render_stateful_filter_protocol(
+                    workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
+                )
+                if stateful_filter is not None
                 else corpus_dsp_generated.render_transform_query_protocol(
                     workload, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
                 )
