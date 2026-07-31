@@ -139,8 +139,6 @@ class _CmsisNnCmakeTarget:
             raise ValueError(
                 "CMSIS-NN target must select one Unity case or direct source"
             )
-        if self.direct_source is not None and not self.operator_sources:
-            raise ValueError("direct CMSIS-NN target has no operator sources")
 
 
 def _render_unity_runner(test_function: str) -> str:
@@ -276,7 +274,10 @@ def _rename_staged_cmake_target(
 
 
 def _cmsis_nn_operator_sources(
-    workload: corpus_inventory.ProgramWorkload, external_root: Path
+    workload: corpus_inventory.ProgramWorkload,
+    external_root: Path,
+    *,
+    allow_empty: bool = False,
 ) -> tuple[Path, ...]:
     owner = Path("externals/cmsis-nn")
     sources: list[Path] = []
@@ -293,7 +294,7 @@ def _cmsis_nn_operator_sources(
                 f"CMSIS-NN operator source is unavailable: {source}"
             )
         sources.append(relative)
-    if not sources:
+    if not sources and not allow_empty:
         raise WorkloadProviderError(
             f"CMSIS-NN direct protocol has no implementation sources: {workload.identity}"
         )
@@ -496,7 +497,7 @@ def materialize_cmsis_nn_harness(
             corpus_inventory.CmsisNnGeneratedWorkloadProducer,
         ):
             projection = corpus_nn_protocol.render_generated_cmsis_nn_protocol(
-                workload, external_root
+                workload, external_root, _CORPUS_OPERATOR_PROTOCOL_SYMBOL
             )
             generated = source_dir / "generated" / "targets" / target
             generated.mkdir(parents=True)
@@ -505,7 +506,10 @@ def materialize_cmsis_nn_harness(
             targets.append(target)
             protocol_symbol_sets.append((projection.protocol_symbol,))
             protocol_source_owners.append(
-                (projection.compiled_owner, projection.authoritative_owner)
+                (
+                    projection.compiled_owner or direct_source,
+                    projection.authoritative_owner,
+                )
             )
             expected_entry_results.append(0)
             cmake_targets.append(
@@ -513,7 +517,9 @@ def materialize_cmsis_nn_harness(
                     target,
                     direct_source=direct_source,
                     operator_sources=_cmsis_nn_operator_sources(
-                        workload, external_root
+                        workload,
+                        external_root,
+                        allow_empty=projection.compiled_owner is None,
                     ),
                 )
             )

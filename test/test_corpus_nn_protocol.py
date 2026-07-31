@@ -167,6 +167,79 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             )
         )
 
+    def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
+        expectations = {
+            "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
+            "arm-memcpy-q15": "arm_memcpy_q15(output, input, byte_count);",
+            "arm-memset-s8": "arm_memset_s8(output, value, byte_count);",
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, invocation in expectations.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source_path = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    )
+                    source = source_path.read_text()
+                    self.assertEqual(source.count(invocation), 1)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        ("loom_corpus_operator_protocol",),
+                    )
+                    self.assertEqual(
+                        harness.protocol_source_owner(workload.executable),
+                        (
+                            source_path,
+                            external_root
+                            / "cmsis-nn"
+                            / "Include"
+                            / "arm_nnsupportfunctions.h",
+                        ),
+                    )
+
+    def test_generated_concatenation_protocols_cover_each_axis(self) -> None:
+        expected_calls = {
+            "arm-concatenation-s8-w": "arm_concatenation_s8_w(",
+            "arm-concatenation-s8-x": "arm_concatenation_s8_x(",
+            "arm-concatenation-s8-y": "arm_concatenation_s8_y(",
+            "arm-concatenation-s8-z": "arm_concatenation_s8_z(",
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, invocation in expected_calls.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertEqual(source.count(invocation), 1)
+                    self.assertIn("expected[destination] = input[source];", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
