@@ -793,6 +793,7 @@ def _header_packed_write_renderer(
     element_type: str,
     unsigned_type: str,
     lane_count: int,
+    value_type: str = "int32_t",
 ) -> Callable[[str], str]:
     bit_width = 8 if element_type == "int8_t" else 16
     mask = "UINT8_MAX" if element_type == "int8_t" else "UINT16_MAX"
@@ -817,7 +818,7 @@ static const uint32_t kValues[kGroupCount] = {{
     0x2468ace0u, 0x80000001u, 0x55aa33ccu,
 }};
 
-LOOM_NOINLINE void {wrapper_symbol}({element_type} **output, int32_t value)
+LOOM_NOINLINE void {wrapper_symbol}({element_type} **output, {value_type} value)
 {{
     {symbol}(output, value);
 }}
@@ -828,7 +829,7 @@ int main(void)
     {element_type} *cursor = output;
     for (size_t group = 0; group < kGroupCount; ++group)
     {{
-        {wrapper_symbol}(&cursor, (int32_t)kValues[group]);
+        {wrapper_symbol}(&cursor, ({value_type})kValues[group]);
         const {element_type} *expected_cursor =
             output + (group + 1) * kLaneCount;
         if (cursor != expected_cursor)
@@ -1346,6 +1347,12 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "void (int16_t **, int32_t)",
     ): _header_packed_write_renderer("arm_nn_write_q15x2_ia", "int16_t", "uint16_t", 2),
     (
+        "arm_nn_write_s8x2_ia",
+        "void (int8_t **, int16_t)",
+    ): _header_packed_write_renderer(
+        "arm_nn_write_s8x2_ia", "int8_t", "uint8_t", 2, "int16_t"
+    ),
+    (
         "arm_nn_write_s8x4_ia",
         "void (int8_t **, int32_t)",
     ): _header_packed_write_renderer("arm_nn_write_s8x4_ia", "int8_t", "uint8_t", 4),
@@ -1457,6 +1464,7 @@ _HEADER_ONLY_PROTOCOLS = {
     "arm_nn_read_s8x4",
     "arm_nn_read_s8x4_ia",
     "arm_nn_write_q15x2_ia",
+    "arm_nn_write_s8x2_ia",
     "arm_nn_write_s8x4_ia",
     "arm_check_broadcast_required",
     "arm_nn_is_convolve_1_x_n",

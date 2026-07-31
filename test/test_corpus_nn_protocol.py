@@ -418,6 +418,7 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "arm-nn-read-s8x4-ia",
             "arm-nn-read-s8x4",
             "arm-nn-write-q15x2-ia",
+            "arm-nn-write-s8x2-ia",
             "arm-nn-write-s8x4-ia",
         )
         external_root = corpus_inventory.resolve_externals_root(ROOT)
