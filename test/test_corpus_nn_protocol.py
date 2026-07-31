@@ -234,6 +234,39 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 ("arm_nn_mat_mult_nt_t_s8_s32",),
             )
 
+    def test_generated_s16_vec_mat_protocols_use_dot_product_reference(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        cases = (
+            "arm-nn-vec-mat-mult-t-s16",
+            "arm-nn-vec-mat-mult-t-s16-s16",
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(f"{workload.protocol[0].symbol}(", source)
+                    self.assertIn("kReducedMultiplier = 16384", source)
+                    self.assertIn("kShift = 1", source)
+                    self.assertIn("expected += kLhs[column] *", source)
+                    self.assertIn("kRhs[row * kColumnCount + column]", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",

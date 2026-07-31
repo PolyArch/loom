@@ -12,6 +12,20 @@ _S32_NT_T_CALL = (
     "const int32_t, const int32_t, const int32_t, const int32_t, "
     "const int32_t)",
 )
+_S16_VEC_MAT_CALLS = {
+    (
+        "arm_nn_vec_mat_mult_t_s16",
+        "arm_cmsis_nn_status (const int16_t *, const int8_t *, "
+        "const int64_t *, int16_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): ("arm_nn_vec_mat_mult_t_s16", "int8_t"),
+    (
+        "arm_nn_vec_mat_mult_t_s16_s16",
+        "arm_cmsis_nn_status (const int16_t *, const int16_t *, "
+        "const int64_t *, int16_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t)",
+    ): ("arm_nn_vec_mat_mult_t_s16_s16", "int16_t"),
+}
 
 
 def _render_s32_nt_t(_wrapper_symbol: str) -> str:
@@ -86,7 +100,77 @@ int main(void)
 """
 
 
+def _s16_vec_mat_renderer(symbol: str, rhs_type: str) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        rhs_values = (
+            "3, -2, 5, 1, -4, -6, 7, 2, -3, 4, 8, 1, -5, 6, -2"
+            if rhs_type == "int8_t"
+            else "300, -200, 50, 100, -40, -60, 700, 20, -30, 40, "
+            "80, 10, -50, 60, -20"
+        )
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {{
+    kColumnCount = 5,
+    kRowCount = 3,
+    kReducedMultiplier = 16384,
+    kShift = 1,
+    kActivationMin = -32768,
+    kActivationMax = 32767,
+}};
+
+static const int16_t kLhs[kColumnCount] = {{7, -3, 12, -5, 9}};
+static const {rhs_type} kRhs[kRowCount * kColumnCount] = {{
+    {rhs_values},
+}};
+static const int64_t kBias[kRowCount] = {{11, -23, 37}};
+
+int main(void)
+{{
+    int16_t output[kRowCount] = {{0}};
+    const arm_cmsis_nn_status status = {symbol}(
+        kLhs, kRhs, kBias, output, kReducedMultiplier, kShift,
+        kColumnCount, kRowCount, kActivationMin, kActivationMax);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+
+    for (size_t row = 0; row < kRowCount; ++row)
+    {{
+        int64_t expected = kBias[row];
+        for (size_t column = 0; column < kColumnCount; ++column)
+        {{
+            expected += kLhs[column] *
+                kRhs[row * kColumnCount + column];
+        }}
+        if (expected < kActivationMin)
+        {{
+            expected = kActivationMin;
+        }}
+        if (expected > kActivationMax)
+        {{
+            expected = kActivationMax;
+        }}
+        if (output[row] != (int16_t)expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _S32_NT_T_CALL:
         return _render_s32_nt_t
+    vec_mat = _S16_VEC_MAT_CALLS.get(call)
+    if vec_mat is not None:
+        return _s16_vec_mat_renderer(*vec_mat)
     return None
