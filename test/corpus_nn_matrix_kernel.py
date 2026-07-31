@@ -27,6 +27,12 @@ _CALLS = {
         "const int32_t *, const int32_t *, const int32_t, const int32_t, "
         "const int32_t, const cmsis_nn_bias_data *const, int16_t *)",
     ): ("arm_nn_mat_mult_kernel_s16", "s16"),
+    (
+        "arm_nn_mat_mult_kernel_s4_s16",
+        "int8_t *(const int8_t *, const int16_t *, const uint16_t, "
+        "const int32_t *, const int32_t *, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t *const, int8_t *)",
+    ): ("arm_nn_mat_mult_kernel_s4_s16", "s4"),
 }
 
 
@@ -170,8 +176,99 @@ int main(void)
     return render
 
 
+def _s4_renderer(symbol: str) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {{
+    kOutputChannels = 4,
+    kColumns = 4,
+    kOutputCount = 2 * kOutputChannels,
+    kOutputOffset = 5,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -100,
+    kActivationMax = 100,
+}};
+
+static const int8_t kPackedInputA[(kOutputChannels * kColumns) / 2] = {{
+    (int8_t)0xe3, 0x15,
+    0x7a, (int8_t)0xd2,
+    0x17, 0x6b,
+    0x2c, (int8_t)0x93,
+}};
+static const int16_t kInputB[2 * kColumns] = {{
+    7, -3, 12, -5,
+    -6, 8, 2, 4,
+}};
+static const int32_t kBias[kOutputChannels] = {{11, -23, 37, -19}};
+static const int32_t kMultipliers[kOutputChannels] = {{
+    kMultiplier, kMultiplier, kMultiplier, kMultiplier,
+}};
+static const int32_t kShifts[kOutputChannels] = {{
+    kShift, kShift, kShift, kShift,
+}};
+
+static int32_t unpack_s4(const int8_t *packed, size_t index)
+{{
+    const uint8_t byte = (uint8_t)packed[index / 2];
+    const uint8_t nibble =
+        (index & 1) == 0 ? (byte & 0x0f) : (byte >> 4);
+    return nibble < 8 ? (int32_t)nibble : (int32_t)nibble - 16;
+}}
+
+int main(void)
+{{
+    int8_t output[kOutputCount] = {{0}};
+    int8_t *returned = {symbol}(
+        kPackedInputA, kInputB, kOutputChannels, kShifts, kMultipliers,
+        kOutputOffset, kActivationMin, kActivationMax, kColumns, kBias,
+        output);
+    if (returned != output + kOutputCount)
+    {{
+        return 1;
+    }}
+
+    for (size_t vector = 0; vector < 2; ++vector)
+    {{
+        for (size_t channel = 0; channel < kOutputChannels; ++channel)
+        {{
+            int32_t expected = kBias[channel];
+            for (size_t column = 0; column < kColumns; ++column)
+            {{
+                const size_t packed_index = channel * kColumns + column;
+                const int32_t weight = unpack_s4(kPackedInputA, packed_index);
+                expected += weight * kInputB[vector * kColumns + column];
+            }}
+            expected += kOutputOffset;
+            if (expected < kActivationMin)
+            {{
+                expected = kActivationMin;
+            }}
+            if (expected > kActivationMax)
+            {{
+                expected = kActivationMax;
+            }}
+            if (output[vector * kOutputChannels + channel] != expected)
+            {{
+                return 1;
+            }}
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     configuration = _CALLS.get(call)
     if configuration is None:
         return None
+    if configuration[1] == "s4":
+        return _s4_renderer(configuration[0])
     return _renderer(*configuration)

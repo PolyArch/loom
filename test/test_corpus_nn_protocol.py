@@ -432,6 +432,33 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     (workload.protocol[0].symbol,),
                 )
 
+    def test_generated_s4_convolution_kernel_decodes_weight_rows(self) -> None:
+        workload = _workload("arm-nn-mat-mult-kernel-s4-s16")
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                external_root,
+                Path(directory) / "harness",
+            )
+            source = (
+                harness.source_dir
+                / "generated"
+                / "targets"
+                / workload.executable
+                / "OperatorProtocol.c"
+            ).read_text()
+
+        self.assertIn("arm_nn_mat_mult_kernel_s4_s16(", source)
+        self.assertIn("unpack_s4(kPackedInputA, packed_index)", source)
+        self.assertIn("kInputB[vector * kColumns + column]", source)
+        self.assertIn("returned != output + kOutputCount", source)
+        self.assertEqual(
+            harness.protocol_symbols(workload.executable),
+            ("arm_nn_mat_mult_kernel_s4_s16",),
+        )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
