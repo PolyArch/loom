@@ -163,9 +163,49 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
         )
         self.assertFalse(
             corpus_workload_provider.supports_cmsis_nn_harness(
-                _workload("arm-softmax-u8")
+                _workload("arm-nn-mat-mul-core-1x-s8")
             )
         )
+
+    def test_generated_softmax_protocols_use_official_tfl_oracle(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        expectations = {
+            "arm-nn-softmax-common-s8": (
+                "arm_nn_softmax_common_s8(",
+                "softmax_output_ref[index]",
+            ),
+            "arm-softmax-u8": (
+                "arm_softmax_u8(",
+                "softmax_output_ref[index] + 128",
+            ),
+        }
+
+        for case, snippets in expectations.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(
+                        '#include "TestCases/TestData/softmax/test_data.h"',
+                        source,
+                    )
+                    for snippet in snippets:
+                        self.assertIn(snippet, source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
 
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {

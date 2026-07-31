@@ -1000,6 +1000,62 @@ int main(void)
 """
 
 
+def _softmax_renderer(symbol: str, unsigned_output: bool) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        input_type = "uint8_t" if unsigned_output else "int8_t"
+        output_type = "uint8_t" if unsigned_output else "int8_t"
+        input_projection = (
+            "(uint8_t)((int32_t)softmax_input[index] + 128)"
+            if unsigned_output
+            else "softmax_input[index]"
+        )
+        output_projection = (
+            "(uint8_t)((int32_t)softmax_output_ref[index] + 128)"
+            if unsigned_output
+            else "softmax_output_ref[index]"
+        )
+        call = (
+            f"{symbol}(input, SOFTMAX_NUM_ROWS, SOFTMAX_ROW_SIZE, "
+            "SOFTMAX_INPUT_MULT, SOFTMAX_INPUT_LEFT_SHIFT, SOFTMAX_DIFF_MIN, "
+            "output);"
+            if unsigned_output
+            else f"{symbol}(input, SOFTMAX_NUM_ROWS, SOFTMAX_ROW_SIZE, "
+            "SOFTMAX_INPUT_MULT, SOFTMAX_INPUT_LEFT_SHIFT, SOFTMAX_DIFF_MIN, "
+            "false, output);"
+        )
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "arm_nnsupportfunctions.h"
+#include "TestCases/TestData/softmax/test_data.h"
+
+int main(void)
+{{
+    {input_type} input[SOFTMAX_DST_SIZE];
+    {output_type} output[SOFTMAX_DST_SIZE];
+    for (size_t index = 0; index < SOFTMAX_DST_SIZE; ++index)
+    {{
+        input[index] = {input_projection};
+    }}
+
+    {call}
+
+    for (size_t index = 0; index < SOFTMAX_DST_SIZE; ++index)
+    {{
+        const {output_type} expected = {output_projection};
+        if (output[index] != expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -1017,6 +1073,16 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "arm_q7_to_q15_with_offset",
         "void (const int8_t *, int16_t *, int32_t, int16_t)",
     ): _render_q7_to_q15_with_offset,
+    (
+        "arm_nn_softmax_common_s8",
+        "void (const int8_t *, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const bool, void *)",
+    ): _softmax_renderer("arm_nn_softmax_common_s8", False),
+    (
+        "arm_softmax_u8",
+        "void (const uint8_t *, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, uint8_t *)",
+    ): _softmax_renderer("arm_softmax_u8", True),
     (
         "arm_memcpy_s8",
         "void (int8_t *restrict, const int8_t *restrict, uint32_t)",
