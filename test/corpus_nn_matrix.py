@@ -40,6 +40,30 @@ _ACCUMULATING_VEC_MAT_CALLS = {
         "const int32_t, const int32_t, const int32_t, const int32_t)",
     ): ("arm_nn_vec_mat_mul_result_acc_s8_s16", "int8_t", "int32_t"),
 }
+_S8_VEC_MAT_CALLS = {
+    (
+        "arm_nn_vec_mat_mult_t_s8",
+        "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+        "const int32_t *, const int32_t *, int8_t *, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t)",
+    ): ("arm_nn_vec_mat_mult_t_s8", False),
+    (
+        "arm_nn_vec_mat_mult_t_per_ch_s8",
+        "arm_cmsis_nn_status (const int8_t *, const int8_t *, "
+        "const int32_t *, const int32_t *, int8_t *, const int32_t, "
+        "const int32_t, const int32_t *, const int32_t *, const int32_t, "
+        "const int32_t, const int32_t, const int32_t, const int32_t, "
+        "const int32_t)",
+    ): ("arm_nn_vec_mat_mult_t_per_ch_s8", True),
+}
+_SVDF_S8_CALL = (
+    "arm_nn_vec_mat_mult_t_svdf_s8",
+    "arm_cmsis_nn_status (const int8_t *, const int8_t *, int16_t *, "
+    "const int32_t, const int32_t, const int32_t, const int32_t, "
+    "const int32_t, const int32_t, const int32_t, const int32_t)",
+)
 
 
 def _render_s32_nt_t(_wrapper_symbol: str) -> str:
@@ -266,6 +290,172 @@ int main(void)
     return render
 
 
+def _s8_vec_mat_renderer(symbol: str, per_channel: bool) -> Callable[[str], str]:
+    def render(_wrapper_symbol: str) -> str:
+        quant_declarations = (
+            "static const int32_t kMultipliers[kRowCount] = {\n"
+            "    kMultiplier, kMultiplier, kMultiplier,\n};\n"
+            "static const int32_t kShifts[kRowCount] = {\n"
+            "    kShift, kShift, kShift,\n};"
+            if per_channel
+            else ""
+        )
+        multiplier_argument = "kMultipliers" if per_channel else "kMultiplier"
+        shift_argument = "kShifts" if per_channel else "kShift"
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {{
+    kColumnCount = 5,
+    kRowCount = 3,
+    kInputOffset = 3,
+    kOutputOffset = 5,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -100,
+    kActivationMax = 100,
+    kAddressOffset = 2,
+    kOutputCount = (kRowCount - 1) * kAddressOffset + 1,
+}};
+
+static const int8_t kLhs[kColumnCount] = {{7, -3, 12, -5, 9}};
+static const int8_t kRhs[kRowCount * kColumnCount] = {{
+    3, -2, 5, 1, -4,
+    -6, 7, 2, -3, 4,
+    8, 1, -5, 6, -2,
+}};
+static const int32_t kBias[kRowCount] = {{11, -23, 37}};
+{quant_declarations}
+
+int main(void)
+{{
+    int8_t output[kOutputCount];
+    int8_t expected[kOutputCount];
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        output[index] = -101;
+        expected[index] = -101;
+    }}
+
+    const arm_cmsis_nn_status status = {symbol}(
+        kLhs, kRhs, NULL, kBias, output, kInputOffset, kOutputOffset,
+        {multiplier_argument}, {shift_argument}, kColumnCount, kRowCount,
+        kActivationMin, kActivationMax, kAddressOffset, 0);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+
+    for (size_t row = 0; row < kRowCount; ++row)
+    {{
+        int32_t value = kBias[row];
+        for (size_t column = 0; column < kColumnCount; ++column)
+        {{
+            value += (kLhs[column] + kInputOffset) *
+                kRhs[row * kColumnCount + column];
+        }}
+        value += kOutputOffset;
+        if (value < kActivationMin)
+        {{
+            value = kActivationMin;
+        }}
+        if (value > kActivationMax)
+        {{
+            value = kActivationMax;
+        }}
+        expected[row * kAddressOffset] = (int8_t)value;
+    }}
+
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {{
+        if (output[index] != expected[index])
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
+def _render_svdf_s8(_wrapper_symbol: str) -> str:
+    return """#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+enum {
+    kColumnCount = 5,
+    kRowCount = 3,
+    kInputOffset = 3,
+    kAddressOffset = 2,
+    kMultiplier = 1 << 30,
+    kShift = 1,
+    kActivationMin = -20000,
+    kActivationMax = 20000,
+    kOutputCount = (kRowCount - 1) * kAddressOffset + 1,
+};
+
+static const int8_t kLhs[kColumnCount] = {7, -3, 12, -5, 9};
+static const int8_t kRhs[kRowCount * kColumnCount] = {
+    3, -2, 5, 1, -4,
+    -6, 7, 2, -3, 4,
+    8, 1, -5, 6, -2,
+};
+
+int main(void)
+{
+    int16_t output[kOutputCount];
+    int16_t expected[kOutputCount];
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {
+        output[index] = -30000;
+        expected[index] = -30000;
+    }
+
+    const arm_cmsis_nn_status status = arm_nn_vec_mat_mult_t_svdf_s8(
+        kLhs, kRhs, output, kInputOffset, kAddressOffset, kMultiplier,
+        kShift, kColumnCount, kRowCount, kActivationMin, kActivationMax);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {
+        return 1;
+    }
+
+    for (size_t row = 0; row < kRowCount; ++row)
+    {
+        int32_t value = 0;
+        for (size_t column = 0; column < kColumnCount; ++column)
+        {
+            value += (kLhs[column] + kInputOffset) *
+                kRhs[row * kColumnCount + column];
+        }
+        if (value < kActivationMin)
+        {
+            value = kActivationMin;
+        }
+        if (value > kActivationMax)
+        {
+            value = kActivationMax;
+        }
+        expected[row * kAddressOffset] = (int16_t)value;
+    }
+
+    for (size_t index = 0; index < kOutputCount; ++index)
+    {
+        if (output[index] != expected[index])
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+"""
+
+
 def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     if call == _S32_NT_T_CALL:
         return _render_s32_nt_t
@@ -275,4 +465,9 @@ def renderer_for(call: tuple[str, str]) -> Callable[[str], str] | None:
     accumulating = _ACCUMULATING_VEC_MAT_CALLS.get(call)
     if accumulating is not None:
         return _accumulating_vec_mat_renderer(*accumulating)
+    s8_vec_mat = _S8_VEC_MAT_CALLS.get(call)
+    if s8_vec_mat is not None:
+        return _s8_vec_mat_renderer(*s8_vec_mat)
+    if call == _SVDF_S8_CALL:
+        return _render_svdf_s8
     return None

@@ -303,6 +303,41 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
+    def test_generated_s8_vec_mat_protocols_preserve_offsets_and_stride(self) -> None:
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        cases = (
+            "arm-nn-vec-mat-mult-t-s8",
+            "arm-nn-vec-mat-mult-t-per-ch-s8",
+            "arm-nn-vec-mat-mult-t-svdf-s8",
+        )
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn(f"{workload.protocol[0].symbol}(", source)
+                    self.assertIn("kInputOffset = 3", source)
+                    self.assertIn("kAddressOffset = 2", source)
+                    self.assertIn("kLhs[column] + kInputOffset", source)
+                    self.assertIn("row * kAddressOffset", source)
+                    self.assertIn("output[index] != expected[index]", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        (workload.protocol[0].symbol,),
+                    )
+
     def test_header_defined_memory_protocols_use_a_mechanical_wrapper(self) -> None:
         expectations = {
             "arm-memcpy-s8": "arm_memcpy_s8(output, input, byte_count);",
