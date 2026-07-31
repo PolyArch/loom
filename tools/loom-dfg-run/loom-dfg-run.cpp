@@ -236,6 +236,8 @@ compileTarget(std::unique_ptr<llvm::Module> module,
        {loom::evaluation::MetricRequestOrdinal(0),
         loom::dse::ObjectiveDirection::Minimize, 1},
        candidateJobs}};
+  exploration.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
   exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
   exploration.ownership.functionalReplayLimits.maxWavefrontSteps =
       maxEventSteps;

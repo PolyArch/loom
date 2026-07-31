@@ -22,6 +22,11 @@ struct ResolvedConfig;
 
 namespace loom::dse {
 
+enum class StructuredOwnershipSelectionMode : std::uint8_t {
+  BenefitQualified,
+  SemanticConformance,
+};
+
 struct StructuredOwnershipExplorationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   PointMetricTopKSelection selection;
@@ -33,6 +38,8 @@ struct StructuredOwnershipExplorationOptions final {
   /// statically resolved direct callees. The Structured Program remains the
   /// sole program authority.
   std::vector<frontend::StructuredEntityRef> protocolCallableRoots{};
+  StructuredOwnershipSelectionMode selectionMode =
+      StructuredOwnershipSelectionMode::BenefitQualified;
 };
 
 /// One exact parent-local ownership decision that produced a child candidate.

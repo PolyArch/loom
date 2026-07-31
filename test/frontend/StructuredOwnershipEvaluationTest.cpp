@@ -1031,6 +1031,45 @@ void runEvaluationAnchor() {
       exploredSelection->selected.front().derivations.size() != 1)
     fail("central ownership exploration lost Spatial work or lineage");
 
+  auto benefitOnlySource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto benefitOnlyExploration = exploration;
+  benefitOnlyExploration.ownership.protocolCallableRoots = {
+      findCallable(benefitOnlySource.structuredProgram, "tiny")};
+  auto benefitOnly = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(benefitOnlySource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(),
+      benefitOnlyExploration, store));
+  const auto *benefitOnlySelection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&benefitOnly);
+  if (!benefitOnlySelection || benefitOnlySelection->selected.size() != 1 ||
+      !benefitOnlySelection->selected.front().derivations.empty())
+    fail("benefit-qualified ownership did not retain the host baseline");
+
+  auto semanticOnlySource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto semanticOnlyExploration = benefitOnlyExploration;
+  semanticOnlyExploration.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  semanticOnlyExploration.ownership.protocolCallableRoots = {
+      findCallable(semanticOnlySource.structuredProgram, "tiny")};
+  auto semanticOnly = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(semanticOnlySource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(),
+      semanticOnlyExploration, store));
+  const auto *semanticOnlySelection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&semanticOnly);
+  if (!semanticOnlySelection || semanticOnlySelection->selected.size() != 1 ||
+      semanticOnlySelection->selected.front().derivations.size() != 1 ||
+      !semanticOnlySelection->selected.front().functionalReplay ||
+      semanticOnlySelection->selected.front().functionalReplay->status !=
+          loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+    fail("semantic conformance did not select the executed equivalent graph");
+  auto semanticOnlyView = take(semanticOnlySelection->selected.front()
+                                   .compilation.canonicalDataflow.view());
+  if (semanticOnlyView.graphs().empty() || semanticOnlyView.actors().empty())
+    fail("semantic conformance selected a graph-free candidate");
+
   auto parallelExploration = exploration;
   parallelExploration.ownership.candidateWorkerCount = 2;
   auto parallelSource = take(loom::frontend::raiseLlvmModuleToStructured(
