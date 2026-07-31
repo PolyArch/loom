@@ -566,6 +566,160 @@ int main(void)
     return render
 
 
+def _header_packed_read_renderer(
+    symbol: str,
+    element_type: str,
+    unsigned_type: str,
+    lane_count: int,
+    incrementing: bool,
+) -> Callable[[str], str]:
+    bit_width = 8 if element_type == "int8_t" else 16
+    initializer = (
+        "(int8_t)((int32_t)((index * 37) % 251) - 125)"
+        if element_type == "int8_t"
+        else "(int16_t)((int32_t)((index * 733) % 65521) - 32760)"
+    )
+
+    def render(wrapper_symbol: str) -> str:
+        wrapper_parameter = (
+            f"const {element_type} **input"
+            if incrementing
+            else f"const {element_type} *input"
+        )
+        main_setup = (
+            f"    const {element_type} *cursor = input;\n" if incrementing else ""
+        )
+        main_call = (
+            f"{wrapper_symbol}(&cursor)"
+            if incrementing
+            else f"{wrapper_symbol}(expected_cursor)"
+        )
+        cursor_check = (
+            """        if (cursor != expected_cursor)
+        {
+            return 1;
+        }
+"""
+            if incrementing
+            else ""
+        )
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+enum {{ kGroupCount = 9, kLaneCount = {lane_count} }};
+
+LOOM_NOINLINE int32_t {wrapper_symbol}({wrapper_parameter})
+{{
+    return {symbol}(input);
+}}
+
+int main(void)
+{{
+    {element_type} input[kGroupCount * kLaneCount];
+    for (size_t index = 0; index < kGroupCount * kLaneCount; ++index)
+    {{
+        input[index] = {initializer};
+    }}
+{main_setup}
+    for (size_t group = 0; group < kGroupCount; ++group)
+    {{
+        const {element_type} *expected_cursor =
+            input + (group + {1 if incrementing else 0}) * kLaneCount;
+        const uint32_t actual = (uint32_t){main_call};
+{cursor_check}        uint32_t expected = 0;
+        for (size_t lane = 0; lane < kLaneCount; ++lane)
+        {{
+            const size_t source = group * kLaneCount + lane;
+            expected |= (uint32_t)({unsigned_type})input[source]
+                        << ({bit_width} * lane);
+        }}
+        if (actual != expected)
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
+def _header_packed_write_renderer(
+    symbol: str,
+    element_type: str,
+    unsigned_type: str,
+    lane_count: int,
+) -> Callable[[str], str]:
+    bit_width = 8 if element_type == "int8_t" else 16
+    mask = "UINT8_MAX" if element_type == "int8_t" else "UINT16_MAX"
+
+    def render(wrapper_symbol: str) -> str:
+        return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnsupportfunctions.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+enum {{ kGroupCount = 9, kLaneCount = {lane_count} }};
+
+static const uint32_t kValues[kGroupCount] = {{
+    0x00000000u, 0x01020304u, 0x7f80ff00u,
+    0x89abcdefu, 0xffffffffu, 0x13579bdfu,
+    0x2468ace0u, 0x80000001u, 0x55aa33ccu,
+}};
+
+LOOM_NOINLINE void {wrapper_symbol}({element_type} **output, int32_t value)
+{{
+    {symbol}(output, value);
+}}
+
+int main(void)
+{{
+    {element_type} output[kGroupCount * kLaneCount] = {{0}};
+    {element_type} *cursor = output;
+    for (size_t group = 0; group < kGroupCount; ++group)
+    {{
+        {wrapper_symbol}(&cursor, (int32_t)kValues[group]);
+        const {element_type} *expected_cursor =
+            output + (group + 1) * kLaneCount;
+        if (cursor != expected_cursor)
+        {{
+            return 1;
+        }}
+    }}
+    for (size_t group = 0; group < kGroupCount; ++group)
+    {{
+        for (size_t lane = 0; lane < kLaneCount; ++lane)
+        {{
+            const {unsigned_type} expected = ({unsigned_type})(
+                (kValues[group] >> ({bit_width} * lane)) & {mask});
+            if (({unsigned_type})output[group * kLaneCount + lane] != expected)
+            {{
+                return 1;
+            }}
+        }}
+    }}
+    return 0;
+}}
+"""
+
+    return render
+
+
 _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     ("arm_relu_q7", "void (int8_t *, uint16_t)"): _render_relu_q7,
     ("arm_relu_q15", "void (int16_t *, uint16_t)"): _render_relu_q15,
@@ -810,6 +964,36 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
     {1048576, 32767, 7, 134213632},
     {-1048576, 32767, 7, -134213632},""",
     ),
+    (
+        "arm_nn_read_q15x2_ia",
+        "int32_t (const int16_t **)",
+    ): _header_packed_read_renderer(
+        "arm_nn_read_q15x2_ia", "int16_t", "uint16_t", 2, True
+    ),
+    (
+        "arm_nn_read_s16x2",
+        "int32_t (const int16_t *)",
+    ): _header_packed_read_renderer(
+        "arm_nn_read_s16x2", "int16_t", "uint16_t", 2, False
+    ),
+    (
+        "arm_nn_read_s8x4_ia",
+        "int32_t (const int8_t **)",
+    ): _header_packed_read_renderer(
+        "arm_nn_read_s8x4_ia", "int8_t", "uint8_t", 4, True
+    ),
+    (
+        "arm_nn_read_s8x4",
+        "int32_t (const int8_t *)",
+    ): _header_packed_read_renderer("arm_nn_read_s8x4", "int8_t", "uint8_t", 4, False),
+    (
+        "arm_nn_write_q15x2_ia",
+        "void (int16_t **, int32_t)",
+    ): _header_packed_write_renderer("arm_nn_write_q15x2_ia", "int16_t", "uint16_t", 2),
+    (
+        "arm_nn_write_s8x4_ia",
+        "void (int8_t **, int32_t)",
+    ): _header_packed_write_renderer("arm_nn_write_s8x4_ia", "int8_t", "uint8_t", 4),
 }
 
 
@@ -819,6 +1003,12 @@ _HEADER_ONLY_PROTOCOLS = {
     "arm_nn_doubling_high_mult_no_sat",
     "arm_nn_requantize",
     "arm_nn_requantize_s64",
+    "arm_nn_read_q15x2_ia",
+    "arm_nn_read_s16x2",
+    "arm_nn_read_s8x4",
+    "arm_nn_read_s8x4_ia",
+    "arm_nn_write_q15x2_ia",
+    "arm_nn_write_s8x4_ia",
     "arm_memcpy_s8",
     "arm_memcpy_q15",
     "arm_memset_s8",

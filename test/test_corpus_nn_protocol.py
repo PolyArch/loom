@@ -352,6 +352,42 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         ("loom_corpus_operator_protocol",),
                     )
 
+    def test_header_defined_packed_memory_protocols_preserve_pointer_state(
+        self,
+    ) -> None:
+        cases = (
+            "arm-nn-read-q15x2-ia",
+            "arm-nn-read-s16x2",
+            "arm-nn-read-s8x4-ia",
+            "arm-nn-read-s8x4",
+            "arm-nn-write-q15x2-ia",
+            "arm-nn-write-s8x4-ia",
+        )
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case in cases:
+            with self.subTest(case=case):
+                workload = _workload(case)
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+                    self.assertIn("kGroupCount", source)
+                    self.assertIn("expected_cursor", source)
+                    self.assertEqual(
+                        harness.protocol_symbols(workload.executable),
+                        ("loom_corpus_operator_protocol",),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
