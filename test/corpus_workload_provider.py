@@ -42,7 +42,7 @@ class CmsisDspHarness:
     shared_directories: tuple[Path, ...]
     protocol_methods: tuple[tuple[str, str], ...]
     protocol_symbol_sets: tuple[tuple[str, ...], ...]
-    protocol_source_owners: tuple[tuple[Path, Path], ...]
+    protocol_sources: tuple[Path, ...]
     expected_entry_results: tuple[int | None, ...] = ()
 
     def generated_directory(self, target: str) -> Path:
@@ -60,8 +60,8 @@ class CmsisDspHarness:
     def protocol_symbols(self, target: str) -> tuple[str, ...]:
         return self.protocol_symbol_sets[self.targets.index(self._target(target))]
 
-    def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
-        return self.protocol_source_owners[self.targets.index(self._target(target))]
+    def protocol_source(self, target: str) -> Path:
+        return self.protocol_sources[self.targets.index(self._target(target))]
 
     def expected_entry_result(self, target: str) -> int | None:
         ordinal = self.targets.index(self._target(target))
@@ -80,7 +80,6 @@ class ProducedWorkload:
     target_build_dir: Path
     target_executable: Path
     protocol_symbols: tuple[str, ...]
-    protocol_source_owners: tuple[tuple[Path, Path], ...]
     expected_entry_result: int | None = None
 
 
@@ -526,7 +525,7 @@ def materialize_cmsis_dsp_harness(
     shared_directories: list[Path] = []
     protocol_methods: list[tuple[str, str]] = []
     protocol_symbol_sets: list[tuple[str, ...]] = []
-    protocol_source_owners: list[tuple[Path, Path]] = []
+    protocol_sources: list[Path] = []
     expected_entry_results: list[int | None] = []
     cmake_targets: list[corpus_dsp_cmake.CmakeTarget] = []
     operator_compile_options: dict[Path, tuple[str, ...]] = {}
@@ -575,7 +574,7 @@ def materialize_cmsis_dsp_harness(
             )
         protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
         expected_entry_results.append(expected_entry_result)
-        protocol_source_owners.append((direct_source, protocol_owner))
+        protocol_sources.append(direct_source)
         producer = workload.producer
         cmake_targets.append(
             corpus_dsp_cmake.CmakeTarget(
@@ -1521,7 +1520,7 @@ def materialize_cmsis_dsp_harness(
                 )
             protocol_symbol_sets.append(())
             expected_entry_results.append(None)
-            protocol_source_owners.append((protocol_source, protocol_source))
+            protocol_sources.append(protocol_source)
             cmake_targets.append(
                 corpus_dsp_cmake.CmakeTarget(
                     target=target,
@@ -1562,7 +1561,7 @@ int main() { return testmain(patternData); }
         tuple(shared_directories),
         tuple(protocol_methods),
         tuple(protocol_symbol_sets),
-        tuple(protocol_source_owners),
+        tuple(protocol_sources),
         tuple(expected_entry_results),
     )
 

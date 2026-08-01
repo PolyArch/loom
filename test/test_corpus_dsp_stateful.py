@@ -46,11 +46,8 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                     ("loom_corpus_operator_protocol",),
                 )
                 self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
+                compiled_owner = harness.protocol_source(workload.executable)
                 self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-                self.assertIn("filtering_functions", authoritative_owner.name)
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
                 suffix = workload.case.removeprefix("arm-fir-")
@@ -85,10 +82,7 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                     ("loom_corpus_operator_protocol",),
                 )
                 self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertIn("svm_functions", authoritative_owner.name)
+                compiled_owner = harness.protocol_source(workload.executable)
                 source = compiled_owner.read_text(encoding="utf-8")
                 kernel = workload.case.removeprefix("arm-svm-").split("-predict-")[0]
                 suffix = workload.case.rsplit("-", maxsplit=1)[1]
@@ -130,10 +124,7 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                     harness.protocol_symbols(workload.executable),
                     ("loom_corpus_operator_protocol",),
                 )
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertIn("filtering_functions", authoritative_owner.name)
+                compiled_owner = harness.protocol_source(workload.executable)
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
                 self.assertEqual(protocol.count(f"{workload.protocol[0].symbol}("), 1)
@@ -163,10 +154,7 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                     harness.protocol_symbols(workload.executable),
                     ("loom_corpus_operator_protocol",),
                 )
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                compiled_owner = harness.protocol_source(workload.executable)
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
                 self.assertEqual(protocol.count(f"{workload.protocol[0].symbol}("), 1)

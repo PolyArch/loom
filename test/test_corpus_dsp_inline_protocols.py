@@ -69,11 +69,8 @@ class CmsisDspInlineProtocolTests(unittest.TestCase):
                         self.assertEqual(
                             harness.expected_entry_result(workload.executable), 0
                         )
-                        compiled_owner, authoritative_owner = (
-                            harness.protocol_source_owner(workload.executable)
-                        )
+                        compiled_owner = harness.protocol_source(workload.executable)
                         self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-                        self.assertTrue(authoritative_owner.is_file())
                         source = compiled_owner.read_text(encoding="utf-8")
                         protocol = source.split("int main()", maxsplit=1)[0]
                         self.assertIn("LOOM_NOINLINE", protocol)

@@ -60,10 +60,7 @@ class CmsisDspConvolutionProtocolTests(unittest.TestCase):
 
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 symbol = workload.protocol[0].symbol

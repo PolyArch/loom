@@ -89,14 +89,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 self.assertEqual(
                     harness.protocol_symbols(workload.executable), (symbol,)
                 )
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
+                compiled_owner = harness.protocol_source(workload.executable)
                 self.assertEqual(compiled_owner, external_root / "cmsis-nn" / owner)
-                self.assertEqual(
-                    authoritative_owner,
-                    external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
-                )
 
     def test_generated_convolution_protocols_preserve_atomic_call_sequences(
         self,
@@ -160,11 +154,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 )
                 self.assertIn("output_ref", source)
                 self.assertEqual(
-                    harness.protocol_source_owner(workload.executable),
-                    (
-                        source_path,
-                        external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
-                    ),
+                    harness.protocol_source(workload.executable),
+                    source_path,
                 )
 
     def test_generated_layout_protocols_own_production_sources(self) -> None:
@@ -207,14 +198,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     source = source_path.read_text()
 
                 self.assertEqual(source.count(invocation), 1)
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
+                compiled_owner = harness.protocol_source(workload.executable)
                 self.assertEqual(compiled_owner, external_root / "cmsis-nn" / owner)
-                self.assertEqual(
-                    authoritative_owner,
-                    external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
-                )
 
     def test_inventory_preserves_generated_public_provider_identity(self) -> None:
         workload = _workload("arm-relu-q7")
@@ -250,9 +235,7 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 harness.protocol_symbols(workload.executable),
                 ("arm_relu_q7",),
             )
-            compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                workload.executable
-            )
+            compiled_owner = harness.protocol_source(workload.executable)
             self.assertEqual(
                 compiled_owner,
                 external_root
@@ -260,10 +243,6 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 / "Source"
                 / "ActivationFunctions"
                 / "arm_relu_q7.c",
-            )
-            self.assertEqual(
-                authoritative_owner,
-                external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
             )
 
             source = (
@@ -797,14 +776,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         ("loom_corpus_operator_protocol",),
                     )
                     self.assertEqual(
-                        harness.protocol_source_owner(workload.executable),
-                        (
-                            source_path,
-                            external_root
-                            / "cmsis-nn"
-                            / "Include"
-                            / "arm_nnsupportfunctions.h",
-                        ),
+                        harness.protocol_source(workload.executable),
+                        source_path,
                     )
 
     def test_generated_concatenation_protocols_cover_each_axis(self) -> None:
@@ -998,7 +971,7 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                 harness.protocol_symbols(workload.executable),
                 ("arm_nn_activation_s16",),
             )
-            compiled_owner, _ = harness.protocol_source_owner(workload.executable)
+            compiled_owner = harness.protocol_source(workload.executable)
             self.assertEqual(
                 compiled_owner,
                 external_root

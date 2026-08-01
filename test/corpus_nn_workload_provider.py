@@ -20,7 +20,7 @@ class CmsisNnHarness:
     unity_source: Path | None
     targets: tuple[str, ...]
     protocol_symbol_sets: tuple[tuple[str, ...], ...]
-    protocol_source_owners: tuple[tuple[Path, Path], ...]
+    protocol_sources: tuple[Path, ...]
     expected_entry_results: tuple[int, ...]
 
     def executable(self, build_dir: Path, target: str) -> Path:
@@ -31,8 +31,8 @@ class CmsisNnHarness:
     def protocol_symbols(self, target: str) -> tuple[str, ...]:
         return self.protocol_symbol_sets[self.targets.index(self._target(target))]
 
-    def protocol_source_owner(self, target: str) -> tuple[Path, Path]:
-        return self.protocol_source_owners[self.targets.index(self._target(target))]
+    def protocol_source(self, target: str) -> Path:
+        return self.protocol_sources[self.targets.index(self._target(target))]
 
     def expected_entry_result(self, target: str) -> int:
         return self.expected_entry_results[self.targets.index(self._target(target))]
@@ -274,7 +274,7 @@ def materialize_cmsis_nn_harness(
 
     targets: list[str] = []
     protocol_symbol_sets: list[tuple[str, ...]] = []
-    protocol_source_owners: list[tuple[Path, Path]] = []
+    protocol_sources: list[Path] = []
     expected_entry_results: list[int] = []
     cmake_targets: list[_CmakeTarget] = []
     for workload in workloads:
@@ -317,12 +317,7 @@ def materialize_cmsis_nn_harness(
             direct_source.write_text(projection.source, encoding="utf-8")
             targets.append(target)
             protocol_symbol_sets.append((projection.protocol_symbol,))
-            protocol_source_owners.append(
-                (
-                    projection.compiled_owner or direct_source,
-                    projection.authoritative_owner,
-                )
-            )
+            protocol_sources.append(projection.compiled_owner or direct_source)
             expected_entry_results.append(0)
             cmake_targets.append(
                 _CmakeTarget(
@@ -380,7 +375,7 @@ def materialize_cmsis_nn_harness(
         )
         targets.append(target)
         protocol_symbol_sets.append((workload.producer.test_function,))
-        protocol_source_owners.append((wrapper, original_wrapper))
+        protocol_sources.append(wrapper)
         expected_entry_results.append(0)
         cmake_targets.append(
             _CmakeTarget(
@@ -398,7 +393,7 @@ def materialize_cmsis_nn_harness(
         unity_source,
         tuple(targets),
         tuple(protocol_symbol_sets),
-        tuple(protocol_source_owners),
+        tuple(protocol_sources),
         tuple(expected_entry_results),
     )
 

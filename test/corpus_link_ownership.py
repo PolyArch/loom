@@ -76,15 +76,6 @@ def _canonical_corpus_source(
         return None
 
 
-def _is_external_test_harness_source(source: str) -> bool:
-    parts = Path(source).parts
-    return (
-        len(parts) >= 3
-        and parts[0] == "externals"
-        and parts[2].casefold() in {"test", "tests", "testing"}
-    )
-
-
 def _resolve_provenance_path(
     raw_path: str,
     linked: LinkedWorkloadModules,
@@ -122,36 +113,8 @@ def resolve_selected_corpus_sources(
     external_root: Path,
     repo_root: Path,
     allowed_sources: frozenset[str],
-    protocol_source_owners: Sequence[tuple[Path, Path]] = (),
 ) -> tuple[tuple[str, ...] | None, str | None]:
     known_sources = frozenset(source.resolve() for _, source in linked.object_sources)
-    owner_projection: dict[Path, str] = {}
-    test_harness_owners: set[Path] = set()
-    for compiled_source, authoritative_source in protocol_source_owners:
-        compiled = compiled_source.resolve()
-        if compiled not in known_sources:
-            return None, (
-                "protocol owner source is absent from the exact linked "
-                f"compilation closure: {compiled_source}"
-            )
-        canonical = _canonical_corpus_source(
-            authoritative_source, external_root, repo_root
-        )
-        if canonical is None:
-            return None, (
-                "protocol owner source has no repository identity: "
-                f"{authoritative_source}"
-            )
-        if _is_external_test_harness_source(canonical):
-            test_harness_owners.add(compiled)
-            continue
-        previous = owner_projection.get(compiled)
-        if previous is not None and previous != canonical:
-            return None, (
-                "compiled protocol source has multiple authoritative owners: "
-                f"{compiled_source}"
-            )
-        owner_projection[compiled] = canonical
 
     selected_sources: set[str] = set()
     for source_file in selected_source_files:
@@ -160,21 +123,12 @@ def resolve_selected_corpus_sources(
         )
         if source is None:
             continue
-        if source in test_harness_owners:
-            return None, (
-                "test harness source cannot own a selected operator protocol: "
-                f"{source}"
-            )
-        protocol_owner = owner_projection.get(source)
-        if protocol_owner is not None:
-            selected_sources.add(protocol_owner)
-            continue
         canonical = _canonical_corpus_source(source, external_root, repo_root)
         if canonical is not None and canonical in allowed_sources:
             selected_sources.add(canonical)
     if not selected_sources:
         return None, (
             "selected graph source provenance does not cover an exact corpus source "
-            "row or protocol owner"
+            "row"
         )
     return tuple(sorted(selected_sources)), None

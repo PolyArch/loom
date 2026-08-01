@@ -73,11 +73,8 @@ class CmsisDspAtomicProtocolTests(unittest.TestCase):
                     ("loom_corpus_operator_protocol",),
                 )
                 self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
+                compiled_owner = harness.protocol_source(workload.executable)
                 self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-                self.assertTrue(authoritative_owner.is_file())
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
                 positions = []
@@ -119,11 +116,8 @@ class CmsisDspAtomicProtocolTests(unittest.TestCase):
                         harness.protocol_symbols(workload.executable),
                         ("loom_corpus_operator_protocol",),
                     )
-                    compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                        workload.executable
-                    )
+                    compiled_owner = harness.protocol_source(workload.executable)
                     self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-                    self.assertIn("transform_functions", authoritative_owner.name)
                     source = compiled_owner.read_text(encoding="utf-8")
                     protocol = source.split("int main()", maxsplit=1)[0]
                     positions = []

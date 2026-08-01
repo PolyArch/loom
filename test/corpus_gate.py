@@ -1092,11 +1092,12 @@ def prepare_workload_providers(
                         )
                         continue
                     results[case.identity] = ProducedWorkload(
-                        target_build,
-                        target_executable,
-                        protocol_symbols,
-                        (harness.protocol_source_owner(case.executable),),
-                        harness.expected_entry_result(case.executable),
+                        target_build_dir=target_build,
+                        target_executable=target_executable,
+                        protocol_symbols=protocol_symbols,
+                        expected_entry_result=harness.expected_entry_result(
+                            case.executable
+                        ),
                     )
                     continue
                 if failure is None:
@@ -1214,7 +1215,6 @@ def run_case(
         expected_entry_result: int | None = None
         if case.producer.kind == "direct-source":
             protocol_symbols = tuple(call.symbol for call in case.protocol)
-            protocol_source_owners: tuple[tuple[Path, Path], ...] = ()
             prepared = prepare_linked_workload(
                 case,
                 toolchain,
@@ -1233,7 +1233,6 @@ def run_case(
             if isinstance(produced, StepFailure):
                 return finish(produced.category, produced.detail)
             protocol_symbols = produced.protocol_symbols
-            protocol_source_owners = produced.protocol_source_owners
             expected_entry_result = produced.expected_entry_result
             prepared = import_produced_workload(
                 produced,
@@ -1281,7 +1280,6 @@ def run_case(
                 external_root,
                 ROOT,
                 allowed_sources,
-                protocol_source_owners,
             )
             if defect is not None:
                 return finish(CATEGORY_SOURCE_COVERAGE, defect)

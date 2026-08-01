@@ -184,32 +184,29 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                     ("loom_corpus_operator_protocol",),
                 )
                 self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-                compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
+                compiled_owner = harness.protocol_source(workload.executable)
                 self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-                self.assertEqual(authoritative_owner.name, "transform_functions.h")
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
                 self.assertIn(f"{workload.protocol[0].symbol}(", protocol)
                 self.assertIn("int main()", source)
                 self.assertNotIn("int main(int", source)
 
-        cfft_source = harness.protocol_source_owner(
+        cfft_source = harness.protocol_source(
             by_case["arm-cfft-output-buffer-size"].executable
-        )[0].read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8")
         self.assertIn("ARM_MATH_F32", cfft_source)
         self.assertIn("2 * sample_count", cfft_source)
 
-        rfft_tmp_source = harness.protocol_source_owner(
+        rfft_tmp_source = harness.protocol_source(
             by_case["arm-rfft-tmp-buffer-size"].executable
-        )[0].read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8")
         self.assertIn("ARM_MATH_SCALAR_ARCH", rfft_tmp_source)
         self.assertIn("!= 0", rfft_tmp_source)
 
-        mfcc_source = harness.protocol_source_owner(
+        mfcc_source = harness.protocol_source(
             by_case["arm-mfcc-tmp-buffer-size"].executable
-        )[0].read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8")
         self.assertIn("use_cfft", mfcc_source)
         self.assertIn("buf_id", mfcc_source)
         self.assertIn("2 * sample_count", mfcc_source)
@@ -256,8 +253,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         by_case = {workload.case: workload for workload in workloads}
 
         matrix = by_case["arm-mat-init-f32"]
-        matrix_source, matrix_owner = harness.protocol_source_owner(matrix.executable)
-        self.assertEqual(matrix_owner.name, "matrix_functions.h")
+        matrix_source = harness.protocol_source(matrix.executable)
         rendered_matrix = matrix_source.read_text(encoding="utf-8")
         self.assertIn(
             "arm_mat_init_f32(&instance, rows, columns, data)", rendered_matrix
@@ -269,8 +265,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         self.assertNotIn("data[6]{}", rendered_matrix)
 
         reset = by_case["arm-pid-reset-q15"]
-        reset_source, reset_owner = harness.protocol_source_owner(reset.executable)
-        self.assertEqual(reset_owner.name, "controller_functions.h")
+        reset_source = harness.protocol_source(reset.executable)
         rendered_reset = reset_source.read_text(encoding="utf-8")
         self.assertIn("arm_pid_reset_q15(&instance)", rendered_reset)
         self.assertIn("instance.state[index] != 0", rendered_reset)
@@ -317,10 +312,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         )
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 symbol = workload.protocol[0].symbol
@@ -379,10 +371,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         )
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 for call in workload.protocol:
@@ -423,10 +412,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         )
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "matrix_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 symbol = workload.protocol[0].symbol
@@ -454,13 +440,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             )
             for workload in selected:
                 with self.subTest(case=workload.case):
-                    source_path, authoritative_owner = harness.protocol_source_owner(
-                        workload.executable
-                    )
-                    self.assertIn(
-                        authoritative_owner.name,
-                        {"matrix_functions.h", "matrix_functions_f16.h"},
-                    )
+                    source_path = harness.protocol_source(workload.executable)
                     source = source_path.read_text(encoding="utf-8")
                     protocol, oracle = source.split("int main()", maxsplit=1)
                     symbol = workload.protocol[0].symbol
@@ -490,13 +470,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             self.assertNotIn("loom_cmsis_dsp_framework", cmake)
             for workload in selected:
                 with self.subTest(case=workload.case):
-                    source_path, authoritative_owner = harness.protocol_source_owner(
-                        workload.executable
-                    )
-                    self.assertIn(
-                        authoritative_owner.name,
-                        {"matrix_functions.h", "matrix_functions_f16.h"},
-                    )
+                    source_path = harness.protocol_source(workload.executable)
                     source = source_path.read_text(encoding="utf-8")
                     protocol, oracle = source.split("int main()", maxsplit=1)
                     symbol = workload.protocol[0].symbol
@@ -537,10 +511,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         )
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "controller_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 for call in workload.protocol:
@@ -581,10 +552,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
         )
         for workload in workloads:
             with self.subTest(case=workload.case):
-                source_path, authoritative_owner = harness.protocol_source_owner(
-                    workload.executable
-                )
-                self.assertEqual(authoritative_owner.name, "filtering_functions.h")
+                source_path = harness.protocol_source(workload.executable)
                 source = source_path.read_text(encoding="utf-8")
                 protocol, oracle = source.split("int main()", maxsplit=1)
                 for call in workload.protocol:
@@ -631,13 +599,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             )
             for workload in selected:
                 with self.subTest(case=workload.case):
-                    source_path, authoritative_owner = harness.protocol_source_owner(
-                        workload.executable
-                    )
-                    self.assertIn(
-                        authoritative_owner.name,
-                        {"transform_functions.h", "transform_functions_f16.h"},
-                    )
+                    source_path = harness.protocol_source(workload.executable)
                     source = source_path.read_text(encoding="utf-8")
                     protocol, oracle = source.split("int main()", maxsplit=1)
                     for call in workload.protocol:
@@ -660,10 +622,7 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             corpus_inventory.resolve_externals_root(ROOT),
             self.work / "radix8-f16-harness",
         )
-        source_path, authoritative_owner = harness.protocol_source_owner(
-            workload.executable
-        )
-        self.assertEqual(authoritative_owner.name, "arm_cfft_radix8_f16.c")
+        source_path = harness.protocol_source(workload.executable)
         source = source_path.read_text(encoding="utf-8")
         protocol, oracle = source.split("int main()", maxsplit=1)
         call = workload.protocol[0]

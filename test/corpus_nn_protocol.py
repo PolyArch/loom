@@ -24,7 +24,6 @@ class GeneratedCmsisNnProtocol:
     source: str
     protocol_symbol: str
     compiled_owner: Path | None
-    authoritative_owner: Path
 
 
 def _render_in_place_activation(
@@ -1587,10 +1586,10 @@ def _owned_path(raw_path: str, external_root: Path) -> Path:
     return resolved
 
 
-def _declaration_owner(
+def _validate_protocol_declarations(
     workload: corpus_inventory.ProgramWorkload,
     external_root: Path,
-) -> Path:
+) -> None:
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisNnGeneratedWorkloadProducer):
         raise WorkloadProviderError(
@@ -1619,7 +1618,6 @@ def _declaration_owner(
             "generated CMSIS-NN protocol must resolve one declaration owner: "
             f"{workload.identity}"
         )
-    return owners[0]
 
 
 def _compiled_definition_owner(
@@ -1668,11 +1666,11 @@ def render_generated_cmsis_nn_protocol(
                 "generated CMSIS-NN protocol has an empty implementation closure: "
                 f"{workload.identity}"
             )
+        _validate_protocol_declarations(workload, external_root)
         return GeneratedCmsisNnProtocol(
             source=renderer(wrapper_symbol),
             protocol_symbol=wrapper_symbol,
             compiled_owner=None,
-            authoritative_owner=_declaration_owner(workload, external_root),
         )
 
     public_symbol = workload.protocol[0].symbol
@@ -1695,11 +1693,11 @@ def render_generated_cmsis_nn_protocol(
         if header_only
         else _compiled_definition_owner(public_symbol, source_owners)
     )
+    _validate_protocol_declarations(workload, external_root)
     return GeneratedCmsisNnProtocol(
         source=renderer(wrapper_symbol),
         protocol_symbol=wrapper_symbol if header_only else public_symbol,
         compiled_owner=compiled_owner,
-        authoritative_owner=_declaration_owner(workload, external_root),
     )
 
 

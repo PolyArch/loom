@@ -9,6 +9,7 @@ per-case deadline process-group cleanup, and no failure-as-pass.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -536,14 +537,11 @@ class InventoryAggregationTest(CorpusGateTestBase):
             runner = runner_path.read_text()
             calls = re.findall(r"RUN_TEST\((test_[A-Za-z0-9_]+)\);", runner)
             self.assertEqual(calls, [workload.producer.test_function])
-            compiled_owner, authoritative_owner = harness.protocol_source_owner(
-                workload.executable
-            )
+            compiled_owner = harness.protocol_source(workload.executable)
             self.assertEqual(
                 compiled_owner,
                 runner_path.parent.parent / runner_path.name.replace("_runner", ""),
             )
-            self.assertTrue(authoritative_owner.is_file())
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         for workload in workloads:
             self.assertIn(
@@ -591,17 +589,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ("loom_corpus_operator_protocol",),
         )
         self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-        compiled_owner, authoritative_owner = harness.protocol_source_owner(
-            workload.executable
-        )
+        compiled_owner = harness.protocol_source(workload.executable)
         self.assertEqual(compiled_owner.name, "OperatorProtocol.c")
-        self.assertEqual(
-            authoritative_owner,
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-nn"
-            / "Include"
-            / "arm_nnfunctions.h",
-        )
         source = compiled_owner.read_text()
         protocol = source.split("int main(void)", maxsplit=1)[0]
         self.assertIn("arm_convolve_1x1_s8_fast_get_buffer_size", protocol)
@@ -637,18 +626,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ("loom_corpus_operator_protocol",),
         )
         self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-        compiled_owner, authoritative_owner = harness.protocol_source_owner(
-            workload.executable
-        )
+        compiled_owner = harness.protocol_source(workload.executable)
         self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-        self.assertEqual(
-            authoritative_owner,
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-dsp"
-            / "Include"
-            / "dsp"
-            / "basic_math_functions.h",
-        )
         source = compiled_owner.read_text()
         protocol = source.split("int main()", maxsplit=1)[0]
         self.assertIn("arm_abs_f32(input, output, count)", protocol)
@@ -729,7 +708,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ("loom_corpus_operator_protocol",),
         )
         self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-        source = harness.protocol_source_owner(workload.executable)[0].read_text()
+        source = harness.protocol_source(workload.executable).read_text()
         protocol = source.split("int main()", maxsplit=1)[0]
         self.assertIn("arm_add_f32(input_a, input_b, output, count)", protocol)
         self.assertIn("kInputA", source)
@@ -740,7 +719,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertNotIn("Testing/testmain.cpp", cmake)
 
         clip = by_identity[DSP_CLIP_F32_WORKLOAD_ID]
-        clip_source = harness.protocol_source_owner(clip.executable)[0].read_text()
+        clip_source = harness.protocol_source(clip.executable).read_text()
         self.assertIn("constexpr std::uint32_t kSampleCount = 259;", clip_source)
         self.assertIn("input_a, output, -0.5f, -0.1f, kSampleCount", clip_source)
 
@@ -770,23 +749,23 @@ class InventoryAggregationTest(CorpusGateTestBase):
             )
             self.assertEqual(harness.expected_entry_result(workload.executable), 0)
 
-        add_source = harness.protocol_source_owner(
+        add_source = harness.protocol_source(
             by_identity[DSP_ADD_Q15_WORKLOAD_ID].executable
-        )[0].read_text()
+        ).read_text()
         self.assertIn("arm_add_q15(input_a, input_b, output, count)", add_source)
         self.assertIn("kAbsoluteError = 2;", add_source)
         self.assertIn("within_absolute_error", add_source)
 
-        dot_source = harness.protocol_source_owner(
+        dot_source = harness.protocol_source(
             by_identity[DSP_DOT_Q31_WORKLOAD_ID].executable
-        )[0].read_text()
+        ).read_text()
         self.assertIn("q63_t *output", dot_source)
         self.assertIn("arm_dot_prod_q31(input_a, input_b, count", dot_source)
         self.assertIn("kAbsoluteError = 131072;", dot_source)
 
-        clip_source = harness.protocol_source_owner(
+        clip_source = harness.protocol_source(
             by_identity[DSP_CLIP_Q7_WORKLOAD_ID].executable
-        )[0].read_text()
+        ).read_text()
         self.assertIn("input_a, output, -64, -13, kSampleCount", clip_source)
 
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
@@ -824,16 +803,16 @@ class InventoryAggregationTest(CorpusGateTestBase):
             )
             self.assertEqual(harness.expected_entry_result(workload.executable), 0)
 
-        welch_source = harness.protocol_source_owner(
+        welch_source = harness.protocol_source(
             by_identity[DSP_WELCH_F32_WORKLOAD_ID].executable
-        )[0].read_text()
+        ).read_text()
         self.assertIn("arm_welch_f32(output, count)", welch_source)
         self.assertIn("kAbsoluteError = 2.0e-6f", welch_source)
         self.assertIn("kSampleCount = 128", welch_source)
 
-        hamming_source = harness.protocol_source_owner(
+        hamming_source = harness.protocol_source(
             by_identity[DSP_HAMMING_F64_WORKLOAD_ID].executable
-        )[0].read_text()
+        ).read_text()
         self.assertIn("arm_hamming_f64(output, count)", hamming_source)
         self.assertIn("kAbsoluteError = 3.0e-15", hamming_source)
 
@@ -880,36 +859,27 @@ class InventoryAggregationTest(CorpusGateTestBase):
             self.assertEqual(harness.expected_entry_result(workload.executable), 0)
 
         vexp = by_identity[DSP_VEXP_F32_WORKLOAD_ID]
-        vexp_compiled, vexp_owner = harness.protocol_source_owner(vexp.executable)
+        vexp_compiled = harness.protocol_source(vexp.executable)
         vexp_source = vexp_compiled.read_text()
         self.assertIn("arm_vexp_f32(input, output, count)", vexp_source)
         self.assertIn("constexpr float32_t kExpected[]", vexp_source)
-        self.assertEqual(vexp_owner.name, "fast_math_functions.h")
 
         entropy = by_identity[DSP_ENTROPY_F32_WORKLOAD_ID]
-        entropy_source = harness.protocol_source_owner(entropy.executable)[
-            0
-        ].read_text()
+        entropy_source = harness.protocol_source(entropy.executable).read_text()
         self.assertIn(
             "arm_entropy_f32(input + offset, dimensions[index])", entropy_source
         )
         self.assertIn("constexpr std::uint32_t kDimensions[]", entropy_source)
 
         divergence = by_identity[DSP_KL_F64_WORKLOAD_ID]
-        divergence_source = harness.protocol_source_owner(divergence.executable)[
-            0
-        ].read_text()
+        divergence_source = harness.protocol_source(divergence.executable).read_text()
         self.assertIn(
             "arm_kullback_leibler_f64(input_a + offset, input_b + offset,",
             divergence_source,
         )
-        self.assertEqual(
-            harness.protocol_source_owner(divergence.executable)[1].name,
-            "statistics_functions.h",
-        )
 
         sqrt = by_identity[DSP_SQRT_F32_WORKLOAD_ID]
-        sqrt_source = harness.protocol_source_owner(sqrt.executable)[0].read_text()
+        sqrt_source = harness.protocol_source(sqrt.executable).read_text()
         self.assertIn("arm_sqrt_f32(input[index], &output[index])", sqrt_source)
         self.assertIn("status[index]", sqrt_source)
         self.assertIn("ARM_MATH_ARGUMENT_ERROR", sqrt_source)
@@ -959,18 +929,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ("loom_corpus_operator_protocol",),
         )
         self.assertIsNone(harness.expected_entry_result(workload.executable))
-        compiled_owner, authoritative_owner = harness.protocol_source_owner(
-            workload.executable
-        )
+        compiled_owner = harness.protocol_source(workload.executable)
         self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-        self.assertEqual(
-            authoritative_owner,
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-dsp"
-            / "Include"
-            / "dsp"
-            / "controller_functions.h",
-        )
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         self.assertNotIn("Testing/Source/Benchmarks/ControllerF32.cpp", cmake)
         source = compiled_owner.read_text()
@@ -1000,18 +960,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ("loom_corpus_operator_protocol",),
         )
         self.assertEqual(harness.expected_entry_result(workload.executable), 0)
-        compiled_owner, authoritative_owner = harness.protocol_source_owner(
-            workload.executable
-        )
+        compiled_owner = harness.protocol_source(workload.executable)
         self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
-        self.assertEqual(
-            authoritative_owner,
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-dsp"
-            / "Include"
-            / "dsp"
-            / "filtering_functions.h",
-        )
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         self.assertNotIn("Testing/Source/Tests/FIRF32.cpp", cmake)
         source = compiled_owner.read_text()
@@ -1038,7 +988,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ),
             ((), ()),
             tuple(
-                (self.work / f"protocol-{index}.cpp",) * 2
+                self.work / f"protocol-{index}.cpp"
                 for index in range(len(workloads))
             ),
         )
@@ -1080,10 +1030,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
             results[workloads[0].identity].protocol_symbols,
             tuple(call.symbol for call in workloads[0].protocol),
         )
-        self.assertEqual(
-            results[workloads[0].identity].protocol_source_owners,
-            ((self.work / "protocol-0.cpp", self.work / "protocol-0.cpp"),),
-        )
         self.assertIsInstance(results[workloads[1].identity], corpus_gate.StepFailure)
 
     def test_provider_requires_an_atomic_wrapper_for_multi_call_protocol(self) -> None:
@@ -1099,7 +1045,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             (self.work / "shared",),
             ((workload.producer.test_class, workload.producer.test_method),),
             ((),),
-            (((self.work / "protocol.cpp"),) * 2,),
+            (self.work / "protocol.cpp",),
         )
         target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
 
@@ -1144,7 +1090,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             (self.work / "shared",),
             ((workload.producer.test_class, workload.producer.test_method),),
             ((workload.protocol[0].symbol,),),
-            (((self.work / "protocol.cpp"),) * 2,),
+            (self.work / "protocol.cpp",),
         )
         configure_commands: list[list[str]] = []
 
@@ -1261,10 +1207,9 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         prepared = corpus_gate.import_produced_workload(
             corpus_gate.ProducedWorkload(
-                build_dir,
-                executable,
-                ("protocol",),
-                (),
+                target_build_dir=build_dir,
+                target_executable=executable,
+                protocol_symbols=("protocol",),
             ),
             toolchain,
             case_dir,
@@ -1328,72 +1273,21 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIsNone(selected)
         self.assertIn("does not cover an exact corpus source row", defect)
 
-    def test_selected_source_projection_accepts_production_protocol_owner(self) -> None:
-        wrapper_object = self.work / "wrapper.o"
-        wrapper_source = self.work / "generated" / "operator_protocol.c"
-        wrapper_source.parent.mkdir()
-        wrapper_source.write_text("void test_kernel(void) {}\n")
-        upstream_owner = (
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-nn"
-            / "Include"
-            / "arm_nnsupportfunctions.h"
-        )
-        linked = corpus_gate.LinkedWorkloadModules(
-            target=self.work / "program.ll",
-            resolution=self.work / "program.resolution.txt",
-            link_root=self.work,
-            object_sources=((wrapper_object, wrapper_source),),
-        )
+    def test_selected_source_projection_has_no_owner_alias(self) -> None:
+        parameters = inspect.signature(
+            corpus_gate.resolve_selected_corpus_sources
+        ).parameters
 
-        selected, defect = corpus_gate.resolve_selected_corpus_sources(
-            linked,
-            (str(wrapper_source),),
-            corpus_inventory.resolve_externals_root(ROOT),
-            ROOT,
-            frozenset({"externals/cmsis-nn/Source/kernel.c"}),
-            ((wrapper_source, upstream_owner),),
-        )
-
-        self.assertIsNone(defect)
         self.assertEqual(
-            selected,
-            ("externals/cmsis-nn/Include/arm_nnsupportfunctions.h",),
+            tuple(parameters),
+            (
+                "linked",
+                "selected_source_files",
+                "external_root",
+                "repo_root",
+                "allowed_sources",
+            ),
         )
-
-    def test_selected_source_projection_rejects_test_protocol_owner(self) -> None:
-        wrapper_object = self.work / "wrapper.o"
-        wrapper_source = self.work / "generated" / "unity_test_kernel.c"
-        wrapper_source.parent.mkdir()
-        wrapper_source.write_text("void test_kernel(void) {}\n")
-        test_owner = (
-            corpus_inventory.resolve_externals_root(ROOT)
-            / "cmsis-nn"
-            / "Tests"
-            / "UnitTest"
-            / "TestCases"
-            / "test_kernel"
-            / "Unity"
-            / "unity_test_kernel.c"
-        )
-        linked = corpus_gate.LinkedWorkloadModules(
-            target=self.work / "program.ll",
-            resolution=self.work / "program.resolution.txt",
-            link_root=self.work,
-            object_sources=((wrapper_object, wrapper_source),),
-        )
-
-        selected, defect = corpus_gate.resolve_selected_corpus_sources(
-            linked,
-            (str(wrapper_source),),
-            corpus_inventory.resolve_externals_root(ROOT),
-            ROOT,
-            frozenset({"externals/cmsis-nn/Source/kernel.c"}),
-            ((wrapper_source, test_owner),),
-        )
-
-        self.assertIsNone(selected)
-        self.assertIn("test harness source cannot own", defect)
 
     def test_llvm_gate_selection_is_the_source_inventory(self) -> None:
         inventory = corpus_inventory.load_source_inventory(corpus_inventory.ROOT)
