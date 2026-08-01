@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -108,6 +109,18 @@ bool artifactRootReferenceLess(const ArtifactRootReference &lhs,
 std::vector<std::uint8_t>
 encodeArtifactRootReference(const ArtifactRootReference &reference);
 
+/// One root reference decoded from the beginning of a larger canonical wire.
+/// byteCount is the exact prefix length consumed by the Common-owned framing.
+struct DecodedArtifactRootReferencePrefix {
+  ArtifactRootReference reference;
+  std::size_t byteCount;
+};
+
+/// Strictly decodes the Common-owned root-reference framing at the beginning
+/// of bytes. Trailing bytes belong to the enclosing owner and are not consumed.
+llvm::Expected<DecodedArtifactRootReferencePrefix>
+decodeArtifactRootReferencePrefix(llvm::ArrayRef<std::uint8_t> bytes);
+
 /// Canonical binary framing of one heterogeneous local reference:
 /// the root-reference framing of the containing Artifact
 ///   || u32be(owner-local kind)
@@ -122,11 +135,9 @@ encodeArtifactLocalReference(const EncodedArtifactLocalReference &reference);
 /// Any type erasure stays inside the owner codec: no untyped view crosses the
 /// Common boundary.
 struct ArtifactLocalReferenceCodec {
-  llvm::Error (*validateCanonicalPayload)(
-      llvm::ArrayRef<std::uint8_t> payload);
-  llvm::Error (*validateTarget)(
-      const CanonicalSemanticBytes &artifactBytes,
-      const EncodedArtifactLocalReference &reference);
+  llvm::Error (*validateCanonicalPayload)(llvm::ArrayRef<std::uint8_t> payload);
+  llvm::Error (*validateTarget)(const CanonicalSemanticBytes &artifactBytes,
+                                const EncodedArtifactLocalReference &reference);
 };
 
 enum class ArtifactLocalReferenceErrorKind : std::uint8_t {
@@ -173,8 +184,7 @@ findArtifactLocalReferenceSchema(llvm::StringRef identity,
 /// Resolves the registered owner codec and validates only the canonical owner
 /// payload. This boundary performs no Artifact lookup and is suitable for
 /// strict parsing before an exact ArtifactStore is available.
-llvm::Error
-validateArtifactLocalReferencePayload(
+llvm::Error validateArtifactLocalReferencePayload(
     const EncodedArtifactLocalReference &reference);
 
 /// Full import of one heterogeneous local reference: resolves the registered
@@ -183,9 +193,9 @@ validateArtifactLocalReferencePayload(
 /// canonical bytes. Unknown schemas or kinds remain capability failures;
 /// missing objects propagate the store failure; malformed or noncanonical
 /// payloads, Artifact bytes, and owner-rejected targets are invalid.
-llvm::Error validateArtifactLocalReference(
-    const ArtifactStore &store,
-    const EncodedArtifactLocalReference &reference);
+llvm::Error
+validateArtifactLocalReference(const ArtifactStore &store,
+                               const EncodedArtifactLocalReference &reference);
 
 } // namespace loom
 

@@ -1,5 +1,5 @@
-#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
 
 #include "ArtifactLocalReferenceRegistry.h"
@@ -80,9 +80,9 @@ private:
 };
 
 constexpr ArtifactSchemaDescriptor testSchema{"loom.test.local_reference",
-                                               {1, 0}};
+                                              {1, 0}};
 constexpr ArtifactSchemaDescriptor otherSchema{"loom.test.other_reference",
-                                                {1, 0}};
+                                               {1, 0}};
 constexpr std::uint32_t testKind = 7;
 
 CanonicalSemanticBytes semantic(std::initializer_list<std::uint8_t> bytes) {
@@ -100,9 +100,8 @@ llvm::Error validateCanonicalPayload(llvm::ArrayRef<std::uint8_t> payload) {
   return llvm::Error::success();
 }
 
-llvm::Error
-validateTarget(const CanonicalSemanticBytes &artifactBytes,
-               const EncodedArtifactLocalReference &reference) {
+llvm::Error validateTarget(const CanonicalSemanticBytes &artifactBytes,
+                           const EncodedArtifactLocalReference &reference) {
   if (reference.artifact.schemaIdentity != testSchema.identity ||
       reference.artifact.schemaVersion != testSchema.version ||
       reference.ownerLocalKind != testKind)
@@ -110,8 +109,9 @@ validateTarget(const CanonicalSemanticBytes &artifactBytes,
                                    "wrong test local-reference owner");
   if (finalizeArtifactIdentity(testSchema, artifactBytes) !=
       reference.artifact.artifact)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "test artifact identity does not match bytes");
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "test artifact identity does not match bytes");
   const llvm::ArrayRef<std::uint8_t> bytes = artifactBytes.bytes();
   if (bytes.empty() || bytes.size() != static_cast<std::size_t>(bytes[0]) + 1)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -139,6 +139,35 @@ EncodedArtifactLocalReference reference(const ArtifactRootReference &artifact,
   return EncodedArtifactLocalReference{artifact, testKind, {0, target}};
 }
 
+void rootReferencePrefixRoundTripsExactly() {
+  const CanonicalSemanticBytes bytes = semantic({2, 3, 5});
+  const ArtifactRootReference expected =
+      root(testSchema, finalizeArtifactIdentity(testSchema, bytes));
+  std::vector<std::uint8_t> encoded = encodeArtifactRootReference(expected);
+  const std::size_t referenceSize = encoded.size();
+  encoded.push_back(0xa5);
+
+  auto decoded =
+      takeExpected(__func__, decodeArtifactRootReferencePrefix(encoded));
+  require(__func__, decoded.reference == expected,
+          "decoded root reference differs from the encoded reference");
+  require(__func__, decoded.byteCount == referenceSize,
+          "root-reference decoder consumed trailing bytes");
+  require(__func__,
+          encodeArtifactRootReference(decoded.reference) ==
+              std::vector<std::uint8_t>(encoded.begin(),
+                                        encoded.begin() + referenceSize),
+          "decoded root-reference prefix is not canonical");
+
+  for (std::size_t size = 0; size < referenceSize; ++size)
+    expectErrorContains(
+        __func__,
+        decodeArtifactRootReferencePrefix(
+            llvm::ArrayRef<std::uint8_t>(encoded).take_front(size))
+            .takeError(),
+        "truncated artifact root reference");
+}
+
 void payloadValidationDoesNotResolveArtifact() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
@@ -151,9 +180,9 @@ void payloadValidationDoesNotResolveArtifact() {
 
   EncodedArtifactLocalReference noncanonical = reference(absent, 3);
   noncanonical.payload[0] = 1;
-  expectErrorContains(
-      __func__, validateArtifactLocalReferencePayload(noncanonical),
-      "noncanonical test target payload");
+  expectErrorContains(__func__,
+                      validateArtifactLocalReferencePayload(noncanonical),
+                      "noncanonical test target payload");
   expectErrorContains(__func__,
                       validateArtifactLocalReference(store, noncanonical),
                       "noncanonical test target payload");
@@ -200,11 +229,12 @@ void unavailableCodecPrecedesArtifactLookup() {
   ArtifactStore store(directory.path());
   const CanonicalSemanticBytes bytes = semantic({1, 3});
   EncodedArtifactLocalReference unknown{
-      root(otherSchema, finalizeArtifactIdentity(otherSchema, bytes)), testKind,
+      root(otherSchema, finalizeArtifactIdentity(otherSchema, bytes)),
+      testKind,
       {0, 3}};
 
-  expectOwnerCodecUnavailable(
-      __func__, validateArtifactLocalReference(store, unknown));
+  expectOwnerCodecUnavailable(__func__,
+                              validateArtifactLocalReference(store, unknown));
 }
 
 } // namespace
@@ -213,6 +243,7 @@ int main() {
   llvm::cantFail(registerArtifactLocalReferenceKind(
       testSchema, testKind,
       ArtifactLocalReferenceCodec{validateCanonicalPayload, validateTarget}));
+  rootReferencePrefixRoundTripsExactly();
   payloadValidationDoesNotResolveArtifact();
   exactStoreBackedValidationSucceeds();
   missingArtifactPropagatesStoreFailure();

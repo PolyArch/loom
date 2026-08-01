@@ -7,6 +7,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -16,6 +18,17 @@ namespace {
 
 llvm::Error framingError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+}
+
+llvm::Expected<std::uint32_t>
+readRootReferenceU32(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
+  if (offset > bytes.size() || bytes.size() - offset < 4)
+    return framingError("truncated artifact root reference");
+  std::uint32_t value = 0;
+  for (unsigned index = 0; index < 4; ++index)
+    value = (value << 8) | bytes[offset + index];
+  offset += 4;
+  return value;
 }
 
 llvm::Error
@@ -108,6 +121,48 @@ encodeArtifactRootReference(const ArtifactRootReference &reference) {
   return bytes;
 }
 
+llvm::Expected<DecodedArtifactRootReferencePrefix>
+decodeArtifactRootReferencePrefix(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::size_t offset = 0;
+  auto schemaLength = readRootReferenceU32(bytes, offset);
+  if (!schemaLength)
+    return schemaLength.takeError();
+  constexpr std::size_t fixedTailSize =
+      2 * sizeof(std::uint32_t) + ArtifactIdentity::byteSize;
+  if (offset > bytes.size() ||
+      static_cast<std::size_t>(*schemaLength) > bytes.size() - offset ||
+      bytes.size() - offset - static_cast<std::size_t>(*schemaLength) <
+          fixedTailSize)
+    return framingError("truncated artifact root reference");
+
+  const llvm::ArrayRef<std::uint8_t> schemaBytes =
+      bytes.slice(offset, *schemaLength);
+  std::string schemaIdentity(schemaBytes.begin(), schemaBytes.end());
+  offset += *schemaLength;
+
+  auto major = readRootReferenceU32(bytes, offset);
+  if (!major)
+    return major.takeError();
+  auto minor = readRootReferenceU32(bytes, offset);
+  if (!minor)
+    return minor.takeError();
+  auto identity = ArtifactIdentity::fromBytes(
+      bytes.slice(offset, ArtifactIdentity::byteSize));
+  if (!identity)
+    return identity.takeError();
+  offset += ArtifactIdentity::byteSize;
+
+  DecodedArtifactRootReferencePrefix decoded{
+      ArtifactRootReference{
+          std::move(schemaIdentity), {*major, *minor}, std::move(*identity)},
+      offset};
+  const std::vector<std::uint8_t> canonical =
+      encodeArtifactRootReference(decoded.reference);
+  if (!std::equal(canonical.begin(), canonical.end(), bytes.begin()))
+    return framingError("noncanonical artifact root reference");
+  return decoded;
+}
+
 std::vector<std::uint8_t>
 encodeArtifactLocalReference(const EncodedArtifactLocalReference &reference) {
   std::vector<std::uint8_t> bytes =
@@ -161,8 +216,7 @@ findArtifactLocalReferenceSchema(llvm::StringRef identity,
   return std::nullopt;
 }
 
-llvm::Error
-validateArtifactLocalReferencePayload(
+llvm::Error validateArtifactLocalReferencePayload(
     const EncodedArtifactLocalReference &reference) {
   llvm::Expected<ArtifactLocalReferenceCodec> codec = resolveCodec(reference);
   if (!codec)
@@ -170,14 +224,13 @@ validateArtifactLocalReferencePayload(
   return codec->validateCanonicalPayload(reference.payload);
 }
 
-llvm::Error validateArtifactLocalReference(
-    const ArtifactStore &store,
-    const EncodedArtifactLocalReference &reference) {
+llvm::Error
+validateArtifactLocalReference(const ArtifactStore &store,
+                               const EncodedArtifactLocalReference &reference) {
   llvm::Expected<ArtifactLocalReferenceCodec> codec = resolveCodec(reference);
   if (!codec)
     return codec.takeError();
-  if (llvm::Error error =
-          codec->validateCanonicalPayload(reference.payload))
+  if (llvm::Error error = codec->validateCanonicalPayload(reference.payload))
     return error;
   llvm::Expected<CanonicalSemanticBytes> artifactBytes =
       store.get(reference.artifact);
