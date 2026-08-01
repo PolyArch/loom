@@ -730,7 +730,7 @@ llvm::Error registerStructuredFabricAnalyticModel() {
 
 llvm::Expected<StructuredFabricAnalyticRequestContext>
 prepareStructuredFabricAnalyticInvocation(
-    llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot> structuredPrograms,
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput,
@@ -745,26 +745,18 @@ prepareStructuredFabricAnalyticInvocation(
 
   std::vector<ArtifactRootReference> candidates;
   candidates.reserve(structuredPrograms.size());
-  for (const StructuredFabricAnalyticCandidateRoot &root : structuredPrograms) {
-    if (!root.candidate ||
-        root.reference.schemaIdentity !=
+  for (const ArtifactRootReference &root : structuredPrograms) {
+    if (root.schemaIdentity !=
             frontend::structuredProgramArtifactSchema.identity ||
-        root.reference.schemaVersion !=
-            frontend::structuredProgramArtifactSchema.version ||
-        root.reference.artifact != root.candidate->identity())
+        root.schemaVersion != frontend::structuredProgramArtifactSchema.version)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
-          "structured_fabric_model_invalid: analytic invocation contains an "
-          "unsealed or foreign Structured candidate");
-    auto stored = artifactStore.get(root.reference);
+          "structured_fabric_model_invalid: analytic invocation contains a "
+          "foreign Structured candidate");
+    auto stored = artifactStore.get(root);
     if (!stored)
       return stored.takeError();
-    if (!stored->bytes().equals(root.candidate->canonicalBytes().bytes()))
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "structured_fabric_model_invalid: published candidate bytes differ "
-          "from the sealed owner view");
-    candidates.push_back(root.reference);
+    candidates.push_back(root);
   }
   llvm::sort(candidates, artifactRootReferenceLess);
   candidates.erase(std::unique(candidates.begin(), candidates.end()),
@@ -803,12 +795,8 @@ prepareStructuredFabricEvaluation(
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
     const ArtifactStore &artifactStore) {
-  auto program =
-      frontend::importStructuredProgram(structuredProgram, artifactStore);
-  if (!program)
-    return program.takeError();
   auto invocation = prepareStructuredFabricAnalyticInvocation(
-      {{structuredProgram, &*program}}, fabricReference, workload, runtimeInput,
+      {structuredProgram}, fabricReference, workload, runtimeInput,
       artifactStore);
   if (!invocation)
     return invocation.takeError();

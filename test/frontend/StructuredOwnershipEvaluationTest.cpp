@@ -677,10 +677,8 @@ void runEvaluationAnchor() {
 
   auto analyticInvocation =
       take(loom::evaluation::models::prepareStructuredFabricAnalyticInvocation(
-          {{baselineRef, &compiled.structuredProgram},
-           {spatialRef, &spatial.structuredProgram}},
-          design.roots().front().reference(), inputs.workloadReference,
-          inputs.runtimeInputReference, store));
+          {baselineRef, spatialRef}, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference, store));
   auto strictSpatialEvaluation =
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
           spatialRef, design.roots().front().reference(),

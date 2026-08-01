@@ -30,7 +30,7 @@ class FinalizedFabricRoot;
 namespace loom::frontend {
 struct StructuredBlockActivityLineage;
 class StructuredProgramCandidate;
-}
+} // namespace loom::frontend
 
 namespace loom::sim {
 class CanonicalSimulationRuntimeInput;
@@ -44,14 +44,6 @@ struct PreparedStructuredFabricEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
   CaseSubjectRoleRef candidateRole;
-};
-
-/// One already sealed candidate and its exact published root. This ephemeral
-/// pair lets an owner-local DSE invocation prove publication without importing
-/// a candidate it has just finalized.
-struct StructuredFabricAnalyticCandidateRoot final {
-  ArtifactRootReference reference;
-  const ::loom::frontend::StructuredProgramCandidate *candidate = nullptr;
 };
 
 /// One invocation-local resolution of the exact source inputs, Fabric closure,
@@ -80,9 +72,9 @@ private:
 
   friend llvm::Expected<StructuredFabricAnalyticRequestContext>
   prepareStructuredFabricAnalyticInvocation(
-      llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot>,
+      llvm::ArrayRef<ArtifactRootReference>, const ArtifactRootReference &,
       const ArtifactRootReference &, const ArtifactRootReference &,
-      const ArtifactRootReference &, const ArtifactStore &);
+      const ArtifactStore &);
   friend llvm::Expected<PreparedStructuredFabricEvaluation>
   prepareStructuredFabricEvaluation(
       const ArtifactRootReference &,
@@ -94,13 +86,12 @@ private:
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredFabricAnalyticModel();
 
-/// Validates the already sealed and published candidates, then strictly
-/// resolves the immutable workload, runtime input, and Fabric closure shared
-/// by one finite central DSE candidate set. Every candidate remains identified
-/// only by its exact ArtifactRootReference.
+/// Resolves the already published candidates, immutable workload, runtime
+/// input, and Fabric closure shared by one finite central DSE candidate set.
+/// Every candidate remains identified only by its exact ArtifactRootReference.
 llvm::Expected<StructuredFabricAnalyticRequestContext>
 prepareStructuredFabricAnalyticInvocation(
-    llvm::ArrayRef<StructuredFabricAnalyticCandidateRoot> structuredPrograms,
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
     const ::loom::ArtifactRootReference &fabric,
     const ::loom::ArtifactRootReference &workload,
     const ::loom::ArtifactRootReference &runtimeInput,
