@@ -699,10 +699,6 @@ def _parse_operator_gate_workload(
             raise InventoryError(
                 "generated CMSIS-NN protocol must select its sole vector"
             )
-        if len(protocol) < 2:
-            raise InventoryError(
-                "generated CMSIS-NN protocol must own multiple public calls"
-            )
         protocol_identity = "+".join(call.symbol for call in protocol)
         expected_identity = f"generated-protocol:{protocol_identity}:0"
         if vector_identity != expected_identity:

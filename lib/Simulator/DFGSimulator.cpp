@@ -1732,7 +1732,7 @@ requireRetiredDfgExecution(llvm::Expected<DFGSimulationReport> report,
   if (report->status == "blocked" && report->wavefrontSteps == maxEventSteps &&
       llvm::is_contained(report->diagnostics, "maximum event steps reached"))
     return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
-  if (report->status == "blocked")
+  if (report->status == "blocked" || report->status == "invalid")
     return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
   return llvm::createStringError(std::errc::state_not_recoverable, "%s",
                                  message.c_str());

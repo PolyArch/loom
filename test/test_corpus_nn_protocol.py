@@ -46,6 +46,15 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "cmsis-nn:arm-convolve-1-x-n-s8:2cc042282d20eae9": (
                 "conv_1_x_n_6_generic"
             ),
+            "cmsis-nn:arm-convolve-1x1-s4:25dfe57f4c542670": (
+                "kernel1x1_stride_x_int4"
+            ),
+            "cmsis-nn:arm-convolve-1x1-s4:7e12981fa9f43304": (
+                "kernel1x1_stride_x_y_1_int4"
+            ),
+            "cmsis-nn:arm-convolve-1x1-s4:c8b25ce5f069e621": (
+                "kernel1x1_stride_x_y_int4"
+            ),
             "cmsis-nn:arm-depthwise-conv-wrapper-s8:ebf14bd1129c3b78": (
                 "depthwise_kernel_3x3"
             ),

@@ -86,6 +86,42 @@ module {
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
+dataflow::CanonicalDataflowArtifact nonRetiringProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @detached_actor(%start: none, %input: i32) -> (i32)
+      attributes {
+        input_segments = array<i32: 1, 0, 0>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %published:2 = dataflow.sync %start, %input
+        : (none, i32) -> (none, i32)
+    %first = arith.addi %input, %input : i32
+    %detached = arith.addi %first, %input : i32
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    %input = arith.constant 7 : i32
+    %value, %done = dataflow.graph.launch @detached_actor deps(%ctrl)
+        values(%input) stream_inputs() memories() stream_outputs()
+        : (none, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %thread = dataflow.thread.launch @worker()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("failed to parse the non-retiring fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
 dataflow::RootedGraphLaunchRef
 onlyLaunch(const dataflow::CanonicalDataflowProgramView &view) {
   require(view.rootThreadLaunches().size() == 1 &&
@@ -166,9 +202,41 @@ void incrementalExecutionMatchesRunToCompletion() {
           "incremental and run-to-completion execution diverged");
 }
 
+void typedRetiredApiPreservesRetirementFailure() {
+  dataflow::CanonicalDataflowArtifact artifact = nonRetiringProgram();
+  auto view = take(artifact.view());
+  const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
+
+  loom::sim::SpatialSimulationWorkload workloadDraft{launch};
+  workloadDraft.valueInputPlan = {loom::sim::RuntimeValueInput{}};
+  workloadDraft.observableContract.valueResults = {0};
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, view));
+  loom::sim::SpatialSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  runtimeDraft.runtimeValues = {{0, value(7)}};
+  auto runtime = take(
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+
+  auto execution =
+      loom::sim::simulateRetiredDfgWorkload(artifact, workload, runtime);
+  if (execution)
+    fail("detached actor unexpectedly satisfied graph retirement");
+  bool sawRetirementFailure = false;
+  llvm::handleAllErrors(
+      execution.takeError(),
+      [&](const loom::sim::NonRetiredDFGExecutionError &failure) {
+        sawRetirementFailure = failure.report().status == "invalid";
+      },
+      [&](const llvm::ErrorInfoBase &failure) { fail(failure.message()); });
+  require(sawRetirementFailure,
+          "typed retired API erased the retirement failure class");
+}
+
 } // namespace
 
 int main() {
   incrementalExecutionMatchesRunToCompletion();
+  typedRetiredApiPreservesRetirementFailure();
   return EXIT_SUCCESS;
 }
