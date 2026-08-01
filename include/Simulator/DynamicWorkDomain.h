@@ -1,96 +1,17 @@
 #ifndef LOOM_SIMULATOR_DYNAMICWORKDOMAIN_H
 #define LOOM_SIMULATOR_DYNAMICWORKDOMAIN_H
 
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
+#include "Simulator/ThreadDispatchIdentity.h"
+
 #include "llvm/Support/Error.h"
 
-#include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <system_error>
 
 namespace loom {
 namespace sim {
-
-/// Caller-supplied execution-local observation identity of one dynamic work
-/// domain instance. It is never a persistent artifact id or an authorization
-/// credential. Distinct DynamicWorkDomain coordinators may use the same value
-/// while remaining isolated by their private control state.
-class DomainInstanceId {
-public:
-  explicit constexpr DomainInstanceId(std::uint64_t value) : value_(value) {}
-
-  constexpr std::uint64_t value() const { return value_; }
-
-  friend constexpr bool operator==(DomainInstanceId lhs, DomainInstanceId rhs) {
-    return lhs.value_ == rhs.value_;
-  }
-  friend constexpr bool operator!=(DomainInstanceId lhs, DomainInstanceId rhs) {
-    return !(lhs == rhs);
-  }
-  friend constexpr bool operator<(DomainInstanceId lhs, DomainInstanceId rhs) {
-    return lhs.value_ < rhs.value_;
-  }
-
-private:
-  std::uint64_t value_;
-};
-
-/// The exact runtime identity of one dynamic work item:
-/// `(domain instance, root-or-parent item, child launch ordinal)`. The root is
-/// `(instance, Root, 0)`; every other item recursively names its parent and the
-/// zero-based program-order ordinal it was spawned at. The identity is a pure
-/// value: naming an item never acquires responsibility, which the domain owns.
-///
-/// The ancestry is stored as the ordinal path from the root, so the root is the
-/// one-element path `{0}`, its child at ordinal k is `{0, k}`, and the empty
-/// path is the distinguished Root parent, which is never an item.
-class WorkItemId {
-public:
-  /// The canonical root identity of one domain instance: `(instance, Root, 0)`.
-  static WorkItemId root(DomainInstanceId instance);
-
-  /// The identity of `parent`'s child at a zero-based ordinal. It names the
-  /// child without acquiring any responsibility.
-  static WorkItemId child(const WorkItemId &parent, std::uint64_t ordinal);
-
-  DomainInstanceId instance() const { return instance_; }
-
-  /// The child launch ordinal of this item within its parent. The root's is 0.
-  std::uint64_t ordinal() const { return ordinals_.back(); }
-
-  /// The parent identity, or nullopt when the parent is the distinguished Root.
-  std::optional<WorkItemId> parent() const;
-
-  /// True for the root identity, whose parent is Root.
-  bool isRoot() const { return ordinals_.size() == 1; }
-
-  friend bool operator==(const WorkItemId &lhs, const WorkItemId &rhs) {
-    return lhs.instance_ == rhs.instance_ && lhs.ordinals_ == rhs.ordinals_;
-  }
-  friend bool operator!=(const WorkItemId &lhs, const WorkItemId &rhs) {
-    return !(lhs == rhs);
-  }
-  /// Total order over the exact identity, used only to index domain state.
-  friend bool operator<(const WorkItemId &lhs, const WorkItemId &rhs) {
-    if (lhs.instance_ != rhs.instance_)
-      return lhs.instance_ < rhs.instance_;
-    return std::lexicographical_compare(
-        lhs.ordinals_.begin(), lhs.ordinals_.end(), rhs.ordinals_.begin(),
-        rhs.ordinals_.end());
-  }
-
-private:
-  WorkItemId(DomainInstanceId instance, llvm::ArrayRef<std::uint64_t> ordinals)
-      : instance_(instance), ordinals_(ordinals.begin(), ordinals.end()) {}
-
-  DomainInstanceId instance_;
-  llvm::SmallVector<std::uint64_t, 4> ordinals_;
-};
 
 class DynamicWorkDomain;
 
@@ -172,7 +93,7 @@ private:
 /// ordinal, changes no active membership, and produces no completion.
 class DynamicWorkDomain {
 public:
-  explicit DynamicWorkDomain(DomainInstanceId instance);
+  explicit DynamicWorkDomain(ThreadDispatchOccurrenceId dispatchOccurrence);
 
   // Copying would duplicate termination authority. Moving would introduce
   // coordinator-transfer semantics that this standalone kernel does not own.

@@ -19,14 +19,15 @@ namespace loom {
 namespace sim {
 
 struct WorkResponsibility::ControlState {
-  explicit ControlState(DomainInstanceId instance) : instance(instance) {}
+  explicit ControlState(ThreadDispatchOccurrenceId dispatchOccurrence)
+      : dispatchOccurrence(dispatchOccurrence) {}
 
   ControlState(const ControlState &) = delete;
   ControlState &operator=(const ControlState &) = delete;
   ControlState(ControlState &&) = delete;
   ControlState &operator=(ControlState &&) = delete;
 
-  DomainInstanceId instance;
+  ThreadDispatchOccurrenceId dispatchOccurrence;
   bool rootSourceClosed = false;
   std::map<WorkItemId, detail::ChildOrdinalCursor> childCursor;
   std::set<WorkItemId> active;
@@ -41,7 +42,8 @@ std::string describe(const WorkItemId &item) {
 
   std::string text;
   llvm::raw_string_ostream stream(text);
-  stream << "work item (instance " << item.instance().value() << ", ordinals ";
+  stream << "work item (dispatch " << item.domainInstance().value()
+         << ", ordinals ";
   for (std::size_t i = 0; i < path.size(); ++i) {
     if (i != 0)
       stream << '.';
@@ -58,22 +60,22 @@ llvm::Error reject(DynamicWorkDomainError::Kind kind,
 
 } // namespace
 
-WorkItemId WorkItemId::root(DomainInstanceId instance) {
+WorkItemId WorkItemId::root(ThreadDispatchOccurrenceId domainInstance) {
   const std::uint64_t rootOrdinal = 0;
-  return WorkItemId(instance, rootOrdinal);
+  return WorkItemId(domainInstance, rootOrdinal);
 }
 
 WorkItemId WorkItemId::child(const WorkItemId &parent, std::uint64_t ordinal) {
   llvm::SmallVector<std::uint64_t, 4> ordinals(parent.ordinals_.begin(),
                                                parent.ordinals_.end());
   ordinals.push_back(ordinal);
-  return WorkItemId(parent.instance_, ordinals);
+  return WorkItemId(parent.domainInstance_, ordinals);
 }
 
 std::optional<WorkItemId> WorkItemId::parent() const {
   if (isRoot())
     return std::nullopt;
-  return WorkItemId(instance_,
+  return WorkItemId(domainInstance_,
                     llvm::ArrayRef<std::uint64_t>(ordinals_).drop_back());
 }
 
@@ -94,8 +96,9 @@ std::error_code DynamicWorkDomainError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-DynamicWorkDomain::DynamicWorkDomain(DomainInstanceId instance)
-    : control_(std::make_shared<ControlState>(instance)) {}
+DynamicWorkDomain::DynamicWorkDomain(
+    ThreadDispatchOccurrenceId dispatchOccurrence)
+    : control_(std::make_shared<ControlState>(dispatchOccurrence)) {}
 
 std::size_t DynamicWorkDomain::activeCount() const {
   return control_->active.size();
@@ -121,10 +124,11 @@ llvm::Error DynamicWorkDomain::validateCapability(
 llvm::Expected<WorkResponsibility> DynamicWorkDomain::admitRoot() {
   if (control_->rootSourceClosed)
     return reject(DynamicWorkDomainError::Kind::RootAlreadyAdmitted,
-                  "domain instance " + llvm::Twine(control_->instance.value()) +
+                  "dispatch occurrence " +
+                      llvm::Twine(control_->dispatchOccurrence.value()) +
                       " already admitted its root");
 
-  WorkItemId root = WorkItemId::root(control_->instance);
+  WorkItemId root = WorkItemId::root(control_->dispatchOccurrence);
   if (!control_->active.insert(root).second)
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: duplicate active root");

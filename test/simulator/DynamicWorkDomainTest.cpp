@@ -1,4 +1,5 @@
 #include "Simulator/DynamicWorkDomain.h"
+#include "Simulator/ThreadDispatchIdentity.h"
 
 #include "DynamicWorkOrdinal.h"
 #include "llvm/ADT/StringRef.h"
@@ -10,6 +11,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 using namespace loom::sim;
 
@@ -56,7 +58,19 @@ namespace {
 
 using Kind = DynamicWorkDomainError::Kind;
 
-constexpr DomainInstanceId kInstance(7);
+constexpr ThreadDispatchOccurrenceId kDispatch(7);
+
+[[noreturn]] void fail(llvm::StringRef message);
+
+dataflow::RootThreadLaunchRef rootLaunch(std::uint8_t seed,
+                                         std::uint64_t entity) {
+  loom::ArtifactIdentity::Storage bytes{};
+  bytes.fill(seed);
+  auto identity = loom::ArtifactIdentity::fromBytes(bytes);
+  if (!identity)
+    fail(llvm::toString(identity.takeError()));
+  return {*identity, dataflow::RootThreadLaunchId(entity)};
+}
 
 [[noreturn]] void fail(llvm::StringRef message) {
   llvm::errs() << "DynamicWorkDomainTest: " << message << "\n";
@@ -92,17 +106,17 @@ void expectEffect(llvm::Expected<RetirementEffect> value, RetirementEffect want,
 }
 
 void rootIdentityAndImmediateSourceClosure() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   require(domain.activeCount() == 0 && !domain.completed(),
           "a fresh domain is neither active nor completed");
 
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkItemId rootId = root.id();
-  require(rootId == WorkItemId::root(kInstance),
+  require(rootId == WorkItemId::root(kDispatch),
           "the admitted root is not the canonical root identity");
-  require(rootId.instance() == kInstance && rootId.isRoot() &&
+  require(rootId.domainInstance() == kDispatch && rootId.isRoot() &&
               rootId.ordinal() == 0 && !rootId.parent(),
-          "the root identity is not (instance, Root, 0)");
+          "the root identity is not (dispatch occurrence, Root, 0)");
   require(domain.activeCount() == 1,
           "root admission did not acquire responsibility before publication");
   require(!domain.completed(), "a domain with an active root is completed");
@@ -120,7 +134,7 @@ void rootIdentityAndImmediateSourceClosure() {
 }
 
 void deterministicChildOrdinals() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkItemId rootId = root.id();
 
@@ -146,7 +160,7 @@ void deterministicChildOrdinals() {
 }
 
 void descendantsPreventEarlyCompletion() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkResponsibility child = takeExpected(domain.spawnChild(root));
   require(domain.activeCount() == 2,
@@ -165,7 +179,7 @@ void descendantsPreventEarlyCompletion() {
 }
 
 void completionTransitionIsExactlyOnce() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkResponsibility a = takeExpected(domain.spawnChild(root));
   WorkResponsibility b = takeExpected(domain.spawnChild(root));
@@ -187,7 +201,7 @@ void completionTransitionIsExactlyOnce() {
 }
 
 void movedFromCapabilityRejectsAtomically() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility original = takeExpected(domain.admitRoot());
   WorkResponsibility owner(std::move(original));
 
@@ -209,7 +223,7 @@ void movedFromCapabilityRejectsAtomically() {
 }
 
 void observationMutationCannotRewriteCapability() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkItemId rootId = root.id();
 
@@ -232,28 +246,60 @@ void observationMutationCannotRewriteCapability() {
                "observation mutation changed root responsibility");
 }
 
-void observationsAndSameIdDomainsCannotAuthorize() {
-  DynamicWorkDomain left(kInstance);
-  DynamicWorkDomain right(kInstance);
+void logicalPointsRetainRootAndDispatchIdentity() {
+  dataflow::RootThreadLaunchRef firstRoot = rootLaunch(0x11, 3);
+  dataflow::RootThreadLaunchRef secondRoot = rootLaunch(0x11, 4);
+
+  DenseLogicalThreadPoint dense{firstRoot, {2, 5}};
+  require(dense.rootThreadLaunch == firstRoot &&
+              dense.coordinates.size() == 2 && dense.coordinates[0] == 2 &&
+              dense.coordinates[1] == 5,
+          "a dense logical point lost its rooted coordinate tuple");
+  require(!(dense == DenseLogicalThreadPoint{secondRoot, {2, 5}}),
+          "dense points from distinct root launches were conflated");
+
+  WorkItemId item = WorkItemId::child(WorkItemId::root(kDispatch), 9);
+  DynamicLogicalThreadPoint dynamic{firstRoot, item};
+  require(dynamic.rootThreadLaunch == firstRoot && dynamic.workItem == item &&
+              dynamic.workItem.domainInstance() == kDispatch,
+          "a dynamic logical point lost its root or dispatch occurrence");
+  require(!(dynamic == DynamicLogicalThreadPoint{secondRoot, item}),
+          "dynamic points from distinct root launches were conflated");
+
+  LogicalThreadPoint densePoint = dense;
+  LogicalThreadPoint dynamicPoint = dynamic;
+  require(std::holds_alternative<DenseLogicalThreadPoint>(densePoint) &&
+              std::holds_alternative<DynamicLogicalThreadPoint>(dynamicPoint),
+          "logical thread point alternatives are not closed and typed");
+}
+
+void observationsFromDistinctDispatchesCannotAuthorize() {
+  constexpr ThreadDispatchOccurrenceId leftDispatch(7);
+  constexpr ThreadDispatchOccurrenceId rightDispatch(8);
+  DynamicWorkDomain left(leftDispatch);
+  DynamicWorkDomain right(rightDispatch);
   WorkResponsibility leftRoot = takeExpected(left.admitRoot());
   WorkResponsibility rightRoot = takeExpected(right.admitRoot());
 
-  WorkItemId predictedRoot = WorkItemId::root(kInstance);
-  WorkItemId predictedChild = WorkItemId::child(predictedRoot, 0);
-  require(leftRoot.id() == predictedRoot && rightRoot.id() == predictedRoot,
-          "same-id domains do not expose the same root observation");
+  WorkItemId leftPredictedRoot = WorkItemId::root(leftDispatch);
+  WorkItemId rightPredictedRoot = WorkItemId::root(rightDispatch);
+  require(leftRoot.id() == leftPredictedRoot &&
+              rightRoot.id() == rightPredictedRoot &&
+              leftRoot.id() != rightRoot.id(),
+          "distinct dispatch occurrences produced the same root observation");
 
   expectRejected(left.spawnChild(rightRoot), Kind::ForeignDomain,
-                 "a same-id foreign capability authorized child spawn");
+                 "a foreign dispatch capability authorized child spawn");
   expectRejected(left.retire(std::move(rightRoot)), Kind::ForeignDomain,
-                 "a same-id foreign capability authorized retirement");
+                 "a foreign dispatch capability authorized retirement");
   require(left.activeCount() == 1 && right.activeCount() == 1 &&
               !left.completed() && !right.completed(),
           "cross-domain rejection changed either active set");
 
   WorkResponsibility leftChild = takeExpected(left.spawnChild(leftRoot));
   WorkResponsibility rightChild = takeExpected(right.spawnChild(rightRoot));
-  require(leftChild.id() == predictedChild && rightChild.id() == predictedChild,
+  require(leftChild.id() == WorkItemId::child(leftPredictedRoot, 0) &&
+              rightChild.id() == WorkItemId::child(rightPredictedRoot, 0),
           "rejected cross-domain operations consumed an ordinal");
 
   expectEffect(left.retire(std::move(leftChild)),
@@ -271,7 +317,7 @@ void observationsAndSameIdDomainsCannotAuthorize() {
 }
 
 void independentOrdinalSequencesForInterleavedParents() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkItemId rootId = root.id();
 
@@ -298,7 +344,7 @@ void independentOrdinalSequencesForInterleavedParents() {
 }
 
 void retiredParentRejectsSpawnAtomically() {
-  DynamicWorkDomain domain(kInstance);
+  DynamicWorkDomain domain(kDispatch);
   WorkResponsibility root = takeExpected(domain.admitRoot());
   WorkResponsibility parent = takeExpected(domain.spawnChild(root));
 
@@ -342,7 +388,8 @@ int main() {
   completionTransitionIsExactlyOnce();
   movedFromCapabilityRejectsAtomically();
   observationMutationCannotRewriteCapability();
-  observationsAndSameIdDomainsCannotAuthorize();
+  logicalPointsRetainRootAndDispatchIdentity();
+  observationsFromDistinctDispatchesCannotAuthorize();
   independentOrdinalSequencesForInterleavedParents();
   retiredParentRejectsSpawnAtomically();
   maximumChildOrdinalPrecedesExhaustion();
