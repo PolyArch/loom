@@ -29,7 +29,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
-#include <cerrno>
 #include <cstdlib>
 #include <memory>
 #include <optional>
@@ -69,14 +68,12 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value,
 class TemporaryTree final {
 public:
   explicit TemporaryTree(llvm::StringRef test) : test_(test.str()) {
-    std::error_code error = llvm::sys::fs::create_directories("temp");
+    llvm::SmallString<128> root;
+    std::error_code error = llvm::sys::fs::createUniqueDirectory(
+        "loom-instruction-core-binary", root);
     if (error)
       fail(test_, error.message());
-    std::string model = "temp/instruction-core-binary-XXXXXX";
-    char *created = ::mkdtemp(model.data());
-    if (!created)
-      fail(test_, std::error_code(errno, std::generic_category()).message());
-    root_ = created;
+    root_ = root.str().str();
     createDirectory("artifacts");
     createDirectory("blobs");
   }
