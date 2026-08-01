@@ -1,0 +1,2 @@
+# RUN: %python %S/test_corpus_math_contract.py
+
