@@ -135,6 +135,22 @@ target_link_libraries(loom-simulator-dfg-execution-session-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-spatial-store-test
+  SpatialSimulationStoreTest.cpp
+)
+
+target_link_libraries(loom-simulator-spatial-store-test PRIVATE
+  LoomCommon
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-simulator-structured-program-native-execution-test
   StructuredProgramNativeExecutionTest.cpp
 )

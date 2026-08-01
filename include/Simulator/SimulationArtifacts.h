@@ -2,6 +2,7 @@
 #define LOOM_SIMULATOR_SIMULATIONARTIFACTS_H
 
 #include "Common/Artifact.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
@@ -14,10 +15,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-namespace dataflow {
-class CanonicalDataflowProgramView;
-} // namespace dataflow
 
 namespace loom {
 class ArtifactStore;
@@ -496,6 +493,12 @@ struct ImportedStructuredProgramSimulationInputs {
   CanonicalSimulationRuntimeInput runtimeInput;
 };
 
+struct ImportedSpatialSimulationInputs {
+  dataflow::CanonicalDataflowArtifact dataflow;
+  CanonicalSimulationWorkload workload;
+  CanonicalSimulationRuntimeInput runtimeInput;
+};
+
 llvm::Expected<::loom::ArtifactRootReference>
 publishSimulationWorkload(const CanonicalSimulationWorkload &workload,
                           const ::loom::ArtifactStore &store);
@@ -512,6 +515,14 @@ importStructuredProgramSimulationInputs(
     const ::loom::ArtifactRootReference &workload,
     const ::loom::ArtifactRootReference &runtimeInput,
     const ::loom::ArtifactStore &store);
+
+/// Strictly imports one stored Spatial workload/runtime pair and recovers its
+/// sole Canonical Dataflow owner from the workload's RootedGraphLaunchRef.
+/// No caller-provided program reference or path participates.
+llvm::Expected<ImportedSpatialSimulationInputs>
+importSpatialSimulationInputs(const ::loom::ArtifactRootReference &workload,
+                              const ::loom::ArtifactRootReference &runtimeInput,
+                              const ::loom::ArtifactStore &store);
 
 /// Failure-atomic finalization. Validates the complete spatial workload
 /// against the exact Dataflow owner view -- rooted-launch ownership, dense
