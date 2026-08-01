@@ -139,9 +139,7 @@ endforeach()
     for item in targets:
         if item.direct_source is None:
             continue
-        compile_options = " ".join(
-            ("-fno-inline-functions", *item.compiler_flags)
-        )
+        compile_options = " ".join(("-fno-inline-functions", *item.compiler_flags))
         operator_sources = "\n".join(
             f'  "${{LOOM_CMSIS_NN_SOURCE}}/{_cmake_quote(source)}"'
             for source in item.operator_sources
@@ -288,8 +286,7 @@ def materialize_cmsis_nn_harness(
             ),
         ):
             raise WorkloadProviderError(
-                f"workload is not owned by the CMSIS-NN provider: "
-                f"{workload.identity}"
+                f"workload is not owned by the CMSIS-NN provider: {workload.identity}"
             )
         target = workload.executable
         try:

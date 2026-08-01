@@ -45,9 +45,7 @@ _CONVOLVE_S4_STRIDE_X_CALLS = (
     ("arm_convolve_1x1_s4_fast", _CONVOLUTION_SIGNATURE),
     ("arm_convolve_1x1_s4", _CONVOLUTION_SIGNATURE),
 )
-_CONVOLVE_S4_DIRECT_CALLS = (
-    ("arm_convolve_1x1_s4", _CONVOLUTION_SIGNATURE),
-)
+_CONVOLVE_S4_DIRECT_CALLS = (("arm_convolve_1x1_s4", _CONVOLUTION_SIGNATURE),)
 _CONVOLVE_S4_WRAPPER_CALLS = (
     (
         "arm_convolve_wrapper_s4_get_buffer_size",
@@ -65,6 +63,15 @@ _DEPTHWISE_WRAPPER_CALLS = (
         "const cmsis_nn_dims *, const cmsis_nn_dims *)",
     ),
     ("arm_depthwise_conv_wrapper_s8", _DEPTHWISE_SIGNATURE),
+)
+_DEPTHWISE_S4_DIRECT_CALLS = (("arm_depthwise_conv_s4", _DEPTHWISE_SIGNATURE),)
+_DEPTHWISE_S4_WRAPPER_CALLS = (
+    (
+        "arm_depthwise_conv_wrapper_s4_get_buffer_size",
+        "int32_t (const cmsis_nn_dw_conv_params *, const cmsis_nn_dims *, "
+        "const cmsis_nn_dims *, const cmsis_nn_dims *)",
+    ),
+    ("arm_depthwise_conv_wrapper_s4", _DEPTHWISE_SIGNATURE),
 )
 
 
@@ -206,8 +213,7 @@ def _render_convolve_1_x_n(wrapper_symbol: str) -> str:
         macro_name="CONV_1_X_N_6_GENERIC",
         query_symbol="arm_convolve_1_x_n_s8_get_buffer_size",
         query_arguments=(
-            "&parameters, &input_dimensions, &filter_dimensions, "
-            "&output_dimensions"
+            "&parameters, &input_dimensions, &filter_dimensions, &output_dimensions"
         ),
         operation_symbol="arm_convolve_1_x_n_s8",
     )
@@ -221,7 +227,7 @@ def _render_s4_convolution(
     protocol: str,
 ) -> str:
     if protocol == "fast-then-direct":
-        operation = f"""
+        operation = """
     const int32_t required =
         arm_convolve_1x1_s4_fast_get_buffer_size(&input_dimensions);
     if (required < 0 || (size_t)required > scratch_capacity)
@@ -526,6 +532,160 @@ int main(void)
 """
 
 
+def _render_s4_depthwise(
+    wrapper_symbol: str,
+    *,
+    data_name: str,
+    macro_name: str,
+    query_symbol: str | None,
+    query_arguments: str = "",
+    operation_symbol: str,
+) -> str:
+    query = (
+        f"""const int32_t required = {query_symbol}({query_arguments});
+    if (required < 0 || (size_t)required > scratch_capacity)
+    {{
+        return ARM_CMSIS_NN_ARG_ERROR;
+    }}
+    context.buf = required == 0 ? NULL : scratch;
+    context.size = required;"""
+        if query_symbol is not None
+        else (
+            "(void)scratch;\n"
+            "    (void)scratch_capacity;\n"
+            "    context.buf = NULL;\n"
+            "    context.size = 0;"
+        )
+    )
+    return f"""#include <stddef.h>
+#include <stdint.h>
+
+#include "arm_nnfunctions.h"
+#include "TestCases/TestData/{data_name}/test_data.h"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+enum {{ kScratchCapacity = 4096 }};
+
+LOOM_NOINLINE arm_cmsis_nn_status {wrapper_symbol}(
+    const int8_t *input,
+    const int8_t *weights,
+    const int32_t *biases,
+    const int32_t *multipliers,
+    const int32_t *shifts,
+    void *scratch,
+    size_t scratch_capacity,
+    int8_t *output)
+{{
+    cmsis_nn_context context = {{0}};
+    cmsis_nn_dw_conv_params parameters = {{0}};
+    cmsis_nn_per_channel_quant_params quantization = {{0}};
+    cmsis_nn_dims input_dimensions = {{0}};
+    cmsis_nn_dims filter_dimensions = {{0}};
+    cmsis_nn_dims bias_dimensions = {{0}};
+    cmsis_nn_dims output_dimensions = {{0}};
+
+    input_dimensions.n = {macro_name}_INPUT_BATCHES;
+    input_dimensions.h = {macro_name}_INPUT_H;
+    input_dimensions.w = {macro_name}_INPUT_W;
+    input_dimensions.c = {macro_name}_IN_CH;
+    filter_dimensions.n = 1;
+    filter_dimensions.h = {macro_name}_FILTER_Y;
+    filter_dimensions.w = {macro_name}_FILTER_X;
+    filter_dimensions.c = {macro_name}_OUT_CH;
+    bias_dimensions.n = 1;
+    bias_dimensions.h = 1;
+    bias_dimensions.w = 1;
+    bias_dimensions.c = {macro_name}_OUT_CH;
+    output_dimensions.n = {macro_name}_INPUT_BATCHES;
+    output_dimensions.h = {macro_name}_OUTPUT_H;
+    output_dimensions.w = {macro_name}_OUTPUT_W;
+    output_dimensions.c = {macro_name}_OUT_CH;
+    parameters.padding.h = {macro_name}_PAD_Y;
+    parameters.padding.w = {macro_name}_PAD_X;
+    parameters.stride.h = {macro_name}_STRIDE_Y;
+    parameters.stride.w = {macro_name}_STRIDE_X;
+    parameters.dilation.h = {macro_name}_DILATION_Y;
+    parameters.dilation.w = {macro_name}_DILATION_X;
+    parameters.ch_mult = {macro_name}_CH_MULT;
+    parameters.input_offset = {macro_name}_INPUT_OFFSET;
+    parameters.output_offset = {macro_name}_OUTPUT_OFFSET;
+    parameters.activation.min = {macro_name}_OUT_ACTIVATION_MIN;
+    parameters.activation.max = {macro_name}_OUT_ACTIVATION_MAX;
+    quantization.multiplier = (int32_t *)multipliers;
+    quantization.shift = (int32_t *)shifts;
+
+    {query}
+    return {operation_symbol}(
+        &context,
+        &parameters,
+        &quantization,
+        &input_dimensions,
+        input,
+        &filter_dimensions,
+        weights,
+        &bias_dimensions,
+        biases,
+        &output_dimensions,
+        output);
+}}
+
+int main(void)
+{{
+    int8_t output[{macro_name}_DST_SIZE] = {{0}};
+    uint8_t scratch[kScratchCapacity] = {{0}};
+    const arm_cmsis_nn_status status = {wrapper_symbol}(
+        {data_name}_input,
+        {data_name}_weights,
+        {data_name}_biases,
+        {data_name}_output_mult,
+        {data_name}_output_shift,
+        scratch,
+        sizeof(scratch),
+        output);
+    if (status != ARM_CMSIS_NN_SUCCESS)
+    {{
+        return 1;
+    }}
+    for (size_t index = 0; index < {macro_name}_DST_SIZE; ++index)
+    {{
+        if (output[index] != {data_name}_output_ref[index])
+        {{
+            return 1;
+        }}
+    }}
+    return 0;
+}}
+"""
+
+
+def _render_s4_depthwise_direct(wrapper_symbol: str) -> str:
+    return _render_s4_depthwise(
+        wrapper_symbol,
+        data_name="depthwise_int4_3",
+        macro_name="DEPTHWISE_INT4_3",
+        query_symbol=None,
+        operation_symbol="arm_depthwise_conv_s4",
+    )
+
+
+def _render_s4_depthwise_wrapper(wrapper_symbol: str) -> str:
+    return _render_s4_depthwise(
+        wrapper_symbol,
+        data_name="depthwise_int4_4",
+        macro_name="DEPTHWISE_INT4_4",
+        query_symbol="arm_depthwise_conv_wrapper_s4_get_buffer_size",
+        query_arguments=(
+            "&parameters, &input_dimensions, &filter_dimensions, &output_dimensions"
+        ),
+        operation_symbol="arm_depthwise_conv_wrapper_s4",
+    )
+
+
 _RENDERERS: dict[
     tuple[tuple[str, str], ...],
     Callable[[str], str],
@@ -536,6 +696,8 @@ _RENDERERS: dict[
     _CONVOLVE_S4_DIRECT_CALLS: _render_s4_direct,
     _CONVOLVE_S4_WRAPPER_CALLS: _render_s4_wrapper,
     _DEPTHWISE_WRAPPER_CALLS: _render_depthwise_wrapper,
+    _DEPTHWISE_S4_DIRECT_CALLS: _render_s4_depthwise_direct,
+    _DEPTHWISE_S4_WRAPPER_CALLS: _render_s4_depthwise_wrapper,
 }
 
 

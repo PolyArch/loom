@@ -116,6 +116,10 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             "cmsis-nn:arm-depthwise-conv-wrapper-s8:ebf14bd1129c3b78": (
                 "depthwise_kernel_3x3"
             ),
+            "cmsis-nn:arm-depthwise-conv-s4:52e8c29c0bd635ef": ("depthwise_int4_3"),
+            "cmsis-nn:arm-depthwise-conv-wrapper-s4:88305effd8e2882b": (
+                "depthwise_int4_4"
+            ),
         }
         external_root = corpus_inventory.resolve_externals_root(ROOT)
         workloads = corpus_inventory.load_workload_inventory(ROOT)
