@@ -17,6 +17,7 @@ from typing import Sequence
 import corpus_inventory
 import corpus_dsp_atomic
 import corpus_dsp_convolution
+import corpus_dsp_distance
 import corpus_dsp_fft
 import corpus_dsp_filter_generated
 import corpus_dsp_generated
@@ -265,6 +266,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "atomic-multicall"
     if corpus_dsp_convolution.partial_convolution_protocol(workload) is not None:
         return "stateless-partial-convolution"
+    if corpus_dsp_distance.distance_protocol(workload) is not None:
+        return "stateless-distance"
     if corpus_dsp_transform.transform_protocol(workload) is not None:
         return "atomic-transform"
     if corpus_dsp_filter_generated.stateful_filter_protocol(workload) is not None:
@@ -788,6 +791,38 @@ def materialize_cmsis_dsp_harness(
                 f"CMSIS-DSP harness repeats a target: {workload.identity}"
             )
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
+        if direct_family == "stateless-distance":
+            protocol = corpus_dsp_distance.distance_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP distance protocol is inconsistent"
+                )
+            generated = generated_root / target
+            generated.mkdir()
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_distance.render_distance_protocol(
+                    workload,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            targets.append(target)
+            shared_directories.append(source_dir)
+            protocol_methods.append(("Distance", protocol.symbol))
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                source_dir,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+            continue
         if direct_family == "stateless-partial-convolution":
             protocol = corpus_dsp_convolution.partial_convolution_protocol(workload)
             if protocol is None:
