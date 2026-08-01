@@ -87,6 +87,9 @@ void builtinPresetsExpandThroughPublicBuilder() {
                         loom::fabric::FabricEntityKind::AccCoreOccurrence) ==
                 expected.accCores &&
             entityCount(root.view(),
+                        loom::fabric::FabricEntityKind::HostCoreOccurrence) ==
+                1 &&
+            entityCount(root.view(),
                         loom::fabric::FabricEntityKind::SystemMemoryService) ==
                 1 &&
             entityCount(
@@ -95,6 +98,42 @@ void builtinPresetsExpandThroughPublicBuilder() {
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
+    const loom::fabric::HostCoreOccurrenceRef host(uniqueEntity(
+        test, root.view(), loom::fabric::FabricEntityKind::HostCoreOccurrence));
+    const auto *hostArchitecture = systemView.instructionCoreArchitecture(host);
+    const auto *hostMicroarchitecture =
+        systemView.instructionCoreMicroarchitecture(host);
+    require(test,
+            hostArchitecture && hostMicroarchitecture &&
+                hostArchitecture->xlen() == loom::fabric::RiscVXLen::X64 &&
+                llvm::is_contained(hostArchitecture->abiCapabilities(),
+                                   loom::fabric::RiscVAbi::Lp64d),
+            "builtin HostCore lost its exact InstructionCore contracts");
+    std::size_t projectedAccCores = 0;
+    for (std::uint64_t id = 0;; ++id) {
+      const auto kind = root.view().entityKind(id);
+      if (!kind)
+        break;
+      if (*kind != loom::fabric::FabricEntityKind::AccCoreOccurrence)
+        continue;
+      const loom::fabric::InstructionCoreContextRef instruction{
+          loom::fabric::AccCoreOccurrenceRef(id)};
+      const auto *coreArchitecture =
+          systemView.instructionCoreArchitecture(instruction);
+      const auto *coreMicroarchitecture =
+          systemView.instructionCoreMicroarchitecture(instruction);
+      require(test,
+              coreArchitecture && coreMicroarchitecture &&
+                  coreArchitecture->xlen() == hostArchitecture->xlen() &&
+                  coreArchitecture->endianness() ==
+                      hostArchitecture->endianness() &&
+                  llvm::is_contained(coreArchitecture->abiCapabilities(),
+                                     loom::fabric::RiscVAbi::Lp64d),
+              "builtin AccCore left the HostCore ISA and ABI cohort");
+      ++projectedAccCores;
+    }
+    require(test, projectedAccCores == expected.accCores,
+            "builtin System view lost an AccCore InstructionCore contract");
     std::size_t memoryAttachments = 0;
     for (const auto &attachment : systemView.spatialAttachments())
       memoryAttachments +=

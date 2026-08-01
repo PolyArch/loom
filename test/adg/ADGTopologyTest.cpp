@@ -214,9 +214,10 @@ void heterogeneousSystemFinalizes() {
   auto secondImported =
       take(test, system.importSpatialCore(moduleClosure.roots()[1]));
   auto architecture = instructionArchitecture(test);
+  auto inOrder = inOrderMicroarchitecture(test);
+  auto host = take(test, system.addHostCore(architecture, inOrder));
   auto firstCore =
-      take(test, system.addAccCore(architecture, inOrderMicroarchitecture(test),
-                                   firstImported));
+      take(test, system.addAccCore(architecture, inOrder, firstImported));
   auto secondCore = take(
       test, system.addAccCore(architecture, outOfOrderMicroarchitecture(test),
                               secondImported));
@@ -250,7 +251,7 @@ void heterogeneousSystemFinalizes() {
   auto clockContract =
       take(test, loom::fabric::ClockDomainContractRecord::create(1'000, 0));
   if (llvm::Error error = clock.close(
-          {firstCore.instructionCoreDomainMember(),
+          {host.domainMember(), firstCore.instructionCoreDomainMember(),
            firstCore.spatialCoreDomainMember(),
            secondCore.instructionCoreDomainMember(),
            secondCore.spatialCoreDomainMember(), transport.domainMember(),

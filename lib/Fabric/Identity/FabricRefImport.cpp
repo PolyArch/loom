@@ -746,6 +746,44 @@ FabricSystemRootView::spatialAttachments() const {
   return artifact_.storage_->data.spatialAttachments;
 }
 
+const InstructionCoreArchitecturalContract *
+FabricSystemRootView::instructionCoreArchitecture(
+    HostCoreOccurrenceRef core) const {
+  const detail::FabricEntityViewData *entity = artifact_.storage_->entity(core);
+  return entity && entity->instructionCoreArchitecture
+             ? &*entity->instructionCoreArchitecture
+             : nullptr;
+}
+
+const InstructionCoreArchitecturalContract *
+FabricSystemRootView::instructionCoreArchitecture(
+    InstructionCoreContextRef core) const {
+  const detail::FabricEntityViewData *entity =
+      artifact_.storage_->entity(core.core);
+  return entity && entity->instructionCoreArchitecture
+             ? &*entity->instructionCoreArchitecture
+             : nullptr;
+}
+
+const InstructionCoreMicroarchitecturalRealization *
+FabricSystemRootView::instructionCoreMicroarchitecture(
+    HostCoreOccurrenceRef core) const {
+  const detail::FabricEntityViewData *entity = artifact_.storage_->entity(core);
+  return entity && entity->instructionCoreMicroarchitecture
+             ? &*entity->instructionCoreMicroarchitecture
+             : nullptr;
+}
+
+const InstructionCoreMicroarchitecturalRealization *
+FabricSystemRootView::instructionCoreMicroarchitecture(
+    InstructionCoreContextRef core) const {
+  const detail::FabricEntityViewData *entity =
+      artifact_.storage_->entity(core.core);
+  return entity && entity->instructionCoreMicroarchitecture
+             ? &*entity->instructionCoreMicroarchitecture
+             : nullptr;
+}
+
 std::optional<FabricImportedModuleTargetRef>
 FabricSystemRootView::spatialCoreTarget(AccCoreOccurrenceRef core) const {
   const detail::FabricEntityViewData *entity = artifact_.storage_->entity(core);

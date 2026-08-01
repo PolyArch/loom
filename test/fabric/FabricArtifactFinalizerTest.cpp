@@ -207,16 +207,27 @@ void setFuCapabilityDomain(
   return take(test, ::fabric::ResourceContract::create(declaration));
 }
 
-std::vector<std::uint8_t> instructionArchitecture(llvm::StringRef test) {
+std::vector<std::uint8_t> instructionArchitecture(llvm::StringRef test,
+                                                  bool x64 = true,
+                                                  bool floatingAbi = false) {
   loom::fabric::RiscVArchitectureDeclaration declaration;
-  declaration.xlen = loom::fabric::RiscVXLen::X64;
+  declaration.xlen =
+      x64 ? loom::fabric::RiscVXLen::X64 : loom::fabric::RiscVXLen::X32;
   declaration.base = loom::fabric::RiscVBase::I;
   declaration.extensions = {loom::fabric::RiscVExtension::M,
                             loom::fabric::RiscVExtension::Zicsr};
+  if (floatingAbi) {
+    declaration.extensions.push_back(loom::fabric::RiscVExtension::F);
+    declaration.extensions.push_back(loom::fabric::RiscVExtension::D);
+  }
   declaration.endianness = loom::fabric::InstructionEndianness::Little;
-  declaration.physicalAddressWidthBits = 48;
+  declaration.physicalAddressWidthBits = x64 ? 48 : 32;
   declaration.privilegeModes = {loom::fabric::PrivilegeMode::Machine};
-  declaration.abiCapabilities = {loom::fabric::RiscVAbi::Lp64};
+  declaration.abiCapabilities = {
+      x64 ? (floatingAbi ? loom::fabric::RiscVAbi::Lp64d
+                         : loom::fabric::RiscVAbi::Lp64)
+          : (floatingAbi ? loom::fabric::RiscVAbi::Ilp32d
+                         : loom::fabric::RiscVAbi::Ilp32)};
   declaration.memoryOrdering = loom::fabric::RiscVMemoryOrdering::Rvwmo;
   declaration.syncScopes = {loom::fabric::InstructionSyncScope::Hart};
   declaration.codeModels = {loom::fabric::RiscVCodeModel::MediumAny};
@@ -247,20 +258,41 @@ std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
                   realization));
 }
 
+std::string hostCoreSource(llvm::StringRef test, bool x64 = true,
+                           bool floatingAbi = false) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.host_core architecture = "
+         << denseI8Assembly(instructionArchitecture(test, x64, floatingAbi))
+         << " microarchitecture = "
+         << denseI8Assembly(instructionMicroarchitecture(test)) << "\n";
+  return text;
+}
+
+std::string
+accCoreSource(llvm::StringRef test,
+              const loom::fabric::FabricImportedModuleTargetRef &target,
+              bool x64 = true, bool floatingAbi = false) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "fabric.system.acc_core architecture = "
+         << denseI8Assembly(instructionArchitecture(test, x64, floatingAbi))
+         << " microarchitecture = "
+         << denseI8Assembly(instructionMicroarchitecture(test))
+         << " spatial_core = "
+         << denseI8Assembly(
+                loom::fabric::encodeFabricImportedModuleTargetRef(target))
+         << "\n";
+  return text;
+}
+
 std::string
 accCoreSystemSource(llvm::StringRef test,
                     const loom::fabric::FabricImportedModuleTargetRef &target) {
   std::string text;
   llvm::raw_string_ostream stream(text);
   stream << "module { fabric.system @soc {\n"
-         << "fabric.system.acc_core architecture = "
-         << denseI8Assembly(instructionArchitecture(test))
-         << " microarchitecture = "
-         << denseI8Assembly(instructionMicroarchitecture(test))
-         << " spatial_core = "
-         << denseI8Assembly(
-                loom::fabric::encodeFabricImportedModuleTargetRef(target))
-         << "\n} }\n";
+         << hostCoreSource(test) << accCoreSource(test, target) << "\n} }\n";
   return text;
 }
 
@@ -288,7 +320,7 @@ std::string attachedAccCoreSystemSource(
   std::string text;
   llvm::raw_string_ostream stream(text);
   stream << "module { fabric.system @soc {\n"
-         << "fabric.system.acc_core architecture = "
+         << hostCoreSource(test) << "fabric.system.acc_core architecture = "
          << denseI8Assembly(instructionArchitecture(test))
          << " microarchitecture = "
          << denseI8Assembly(instructionMicroarchitecture(test))
@@ -395,17 +427,17 @@ std::string systemConnection(std::uint64_t sourceId,
   return text;
 }
 
-std::string connectedTransportSystemSource(llvm::StringRef name,
-                                           std::uint64_t sourceId,
-                                           std::uint64_t destinationId,
-                                           bool reverseOrder) {
-  const llvm::StringRef test = __func__;
+std::string connectedTransportSystemSource(
+    llvm::StringRef name, llvm::StringRef test,
+    const loom::fabric::FabricImportedModuleTargetRef &target,
+    std::uint64_t sourceId, std::uint64_t destinationId, bool reverseOrder) {
   const std::string source = transportResource(test, sourceId, 8);
   const std::string destination = transportResource(test, destinationId, 16);
   const std::string connection = systemConnection(sourceId, destinationId);
   std::string text;
   llvm::raw_string_ostream stream(text);
-  stream << "module { fabric.system @" << name << " {\n";
+  stream << "module { fabric.system @" << name << " {\n"
+         << hostCoreSource(test) << accCoreSource(test, target);
   if (reverseOrder)
     stream << destination << connection << source;
   else
@@ -431,6 +463,15 @@ uniqueModuleTemplate(llvm::StringRef test,
   if (!result)
     fail(test, "fixture has no canonical module template");
   return *result;
+}
+
+FinalizedFabricRoot publishEmptySpatialCore(llvm::StringRef test,
+                                            ArtifactStore &store) {
+  auto source = parse(test, R"mlir(
+    module { fabric.module @empty() { fabric.yield } }
+  )mlir");
+  return take(test,
+              loom::fabric::finalizeFabricRoot(root(test, *source), store));
 }
 
 loom::fabric::FabricFuTemplateRef
@@ -880,6 +921,53 @@ void systemPublicationUsesExactImportedModule() {
           "strict System import changed its AccCore SpatialCore target");
 }
 
+void systemRequiresOneCompatibleHostCore() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto moduleSource = parse(test, R"mlir(
+    module { fabric.module @empty() { fabric.yield } }
+  )mlir");
+  FinalizedFabricRoot module = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *moduleSource), store));
+  const loom::fabric::FabricImportedModuleTargetRef target{
+      0, uniqueModuleTemplate(test, module.view())};
+
+  auto finalize = [&](llvm::StringRef source) {
+    auto parsed = parse(test, source);
+    return loom::fabric::finalizeFabricRoot(systemRoot(test, *parsed),
+                                            {module.reference()}, store);
+  };
+
+  const std::string missing = "module { fabric.system @missing { " +
+                              accCoreSource(test, target) + "} }";
+  expectRejected(test, finalize(missing), "exactly one HostCore");
+
+  const std::string duplicate = "module { fabric.system @duplicate { " +
+                                hostCoreSource(test) + hostCoreSource(test) +
+                                accCoreSource(test, target) + "} }";
+  expectRejected(test, finalize(duplicate), "exactly one HostCore");
+
+  auto hostOnlySource = parse(test, "module { fabric.system @host_only { " +
+                                        hostCoreSource(test) + "} }");
+  expectRejected(test,
+                 loom::fabric::finalizeFabricRoot(
+                     systemRoot(test, *hostOnlySource), {}, store),
+                 "at least one AccCore");
+
+  const std::string incompatible = "module { fabric.system @incompatible { " +
+                                   hostCoreSource(test, /*x64=*/false) +
+                                   accCoreSource(test, target) + "} }";
+  expectRejected(test, finalize(incompatible),
+                 "common InstructionCore XLEN and endianness");
+
+  const std::string disjointAbis =
+      "module { fabric.system @disjoint_abis { " +
+      hostCoreSource(test, /*x64=*/true, /*floatingAbi=*/true) +
+      accCoreSource(test, target) + "} }";
+  expectRejected(test, finalize(disjointAbis), "no common InstructionCore ABI");
+}
+
 void systemPublishesCompleteSpatialAttachments() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -993,33 +1081,41 @@ void systemRejectsImplicitConnectionFanout() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
+  FinalizedFabricRoot module = publishEmptySpatialCore(test, store);
+  const loom::fabric::FabricImportedModuleTargetRef target{
+      0, uniqueModuleTemplate(test, module.view())};
   std::string source;
   llvm::raw_string_ostream stream(source);
   stream << "module { fabric.system @soc {\n"
+         << hostCoreSource(test) << accCoreSource(test, target)
          << transportResource(test, 10, 8) << transportResource(test, 20, 16)
          << transportResource(test, 30, 32) << systemConnection(10, 20)
          << systemConnection(10, 30) << "} }\n";
   auto systemSource = parse(test, source);
-  expectRejected(test,
-                 loom::fabric::finalizeFabricRoot(
-                     systemRoot(test, *systemSource), {}, store),
-                 "point connection source is connected more than once");
+  expectRejected(
+      test,
+      loom::fabric::finalizeFabricRoot(systemRoot(test, *systemSource),
+                                       {module.reference()}, store),
+      "point connection source is connected more than once");
 }
 
 void systemPublicationIgnoresAuthoringIdentityAndOrder() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
-  auto firstSource =
-      parse(test, connectedTransportSystemSource("first", 10, 20, false));
-  auto secondSource =
-      parse(test, connectedTransportSystemSource("second", 91, 4, true));
-  FinalizedFabricRoot first =
-      take(test, loom::fabric::finalizeFabricRoot(
-                     systemRoot(test, *firstSource), {}, store));
-  FinalizedFabricRoot second =
-      take(test, loom::fabric::finalizeFabricRoot(
-                     systemRoot(test, *secondSource), {}, store));
+  FinalizedFabricRoot module = publishEmptySpatialCore(test, store);
+  const loom::fabric::FabricImportedModuleTargetRef target{
+      0, uniqueModuleTemplate(test, module.view())};
+  auto firstSource = parse(test, connectedTransportSystemSource(
+                                     "first", test, target, 10, 20, false));
+  auto secondSource = parse(test, connectedTransportSystemSource(
+                                      "second", test, target, 91, 4, true));
+  FinalizedFabricRoot first = take(
+      test, loom::fabric::finalizeFabricRoot(systemRoot(test, *firstSource),
+                                             {module.reference()}, store));
+  FinalizedFabricRoot second = take(
+      test, loom::fabric::finalizeFabricRoot(systemRoot(test, *secondSource),
+                                             {module.reference()}, store));
   require(test, first.reference().artifact == second.reference().artifact,
           "System authoring names, IDs, or order changed artifact identity");
 }
@@ -1028,19 +1124,24 @@ void systemRequiresExplicitClockCrossing() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
+  FinalizedFabricRoot module = publishEmptySpatialCore(test, store);
+  const loom::fabric::FabricImportedModuleTargetRef target{
+      0, uniqueModuleTemplate(test, module.view())};
 
   std::string hidden;
   llvm::raw_string_ostream hiddenStream(hidden);
   hiddenStream << "module { fabric.system @hidden {\n"
+               << hostCoreSource(test) << accCoreSource(test, target)
                << transportResource(test, 10, 8)
                << transportResource(test, 30, 32) << clockDomain(test, 40, 10)
                << clockDomain(test, 50, 30) << systemConnection(10, 30)
                << "} }\n";
   auto hiddenSource = parse(test, hidden);
-  expectRejected(test,
-                 loom::fabric::finalizeFabricRoot(
-                     systemRoot(test, *hiddenSource), {}, store),
-                 "crosses Clock domains without an explicit crossing resource");
+  expectRejected(
+      test,
+      loom::fabric::finalizeFabricRoot(systemRoot(test, *hiddenSource),
+                                       {module.reference()}, store),
+      "crosses Clock domains without an explicit crossing resource");
 
   const loom::fabric::SystemTransportResourceRef crossingResource(20);
   auto crossing = take(
@@ -1055,6 +1156,7 @@ void systemRequiresExplicitClockCrossing() {
   std::string explicitCrossing;
   llvm::raw_string_ostream explicitStream(explicitCrossing);
   explicitStream << "module { fabric.system @explicit {\n"
+                 << hostCoreSource(test) << accCoreSource(test, target)
                  << transportResource(test, 10, 8)
                  << transportResource(test, 20, 16, crossingBytes)
                  << transportResource(test, 30, 32) << transferPattern(test, 20)
@@ -1062,9 +1164,9 @@ void systemRequiresExplicitClockCrossing() {
                  << systemConnection(10, 20) << systemConnection(20, 30)
                  << "} }\n";
   auto explicitSource = parse(test, explicitCrossing);
-  FinalizedFabricRoot finalized =
-      take(test, loom::fabric::finalizeFabricRoot(
-                     systemRoot(test, *explicitSource), {}, store));
+  FinalizedFabricRoot finalized = take(
+      test, loom::fabric::finalizeFabricRoot(systemRoot(test, *explicitSource),
+                                             {module.reference()}, store));
   auto view = take(test, loom::fabric::requireSystemRoot(finalized.view()));
   require(test, view.transportResources().size() == 3,
           "explicit crossing System lost a transport resource");
@@ -1085,6 +1187,7 @@ int main() {
   spatialSwitchConnectivityBecomesTraversals();
   fuCapabilityTemplatesComeFromThePhysicalGraph();
   systemPublicationUsesExactImportedModule();
+  systemRequiresOneCompatibleHostCore();
   systemPublishesCompleteSpatialAttachments();
   systemRejectsUnusedImportedModule();
   systemRejectsWrongImportedModuleTarget();

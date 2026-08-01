@@ -283,9 +283,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<PortType> moduleInputs(scale.gatewayCount, *bits128);
   moduleInputs.push_back(*managerMemory);
   std::vector<PortType> moduleOutputTypes(scale.gatewayCount, *bits128);
-  auto spatial = design.createSpatialCore(
-      (descriptor.name + "-spatial-core").str(), moduleInputs,
-      moduleOutputTypes);
+  auto spatial =
+      design.createSpatialCore((descriptor.name + "-spatial-core").str(),
+                               moduleInputs, moduleOutputTypes);
   if (!spatial)
     return spatial.takeError();
 
@@ -637,6 +637,9 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   auto outOfOrder = outOfOrderMicroarchitecture();
   if (!outOfOrder)
     return outOfOrder.takeError();
+  auto host = system->addHostCore(*architecture, *inOrder);
+  if (!host)
+    return host.takeError();
 
   std::vector<AccCore> cores;
   cores.reserve(descriptor.scale.accCoreCount);
@@ -657,7 +660,8 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     return bits128.takeError();
   std::vector<HardwareDomainMember> clockMembers;
   clockMembers.reserve(cores.size() * (2 + descriptor.scale.gatewayCount * 2) +
-                       2);
+                       3);
+  clockMembers.push_back(host->domainMember());
   for (const AccCore &core : cores) {
     clockMembers.push_back(core.instructionCoreDomainMember());
     clockMembers.push_back(core.spatialCoreDomainMember());

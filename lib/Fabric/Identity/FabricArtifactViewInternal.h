@@ -68,6 +68,10 @@ struct FabricEntityViewData {
   std::optional<FabricNestedOwnerViewData> spatialCore;
   std::optional<FabricImportedModuleTargetRef> spatialCoreTarget;
   std::optional<FabricNestedOwnerViewData> instructionCore;
+  std::optional<InstructionCoreArchitecturalContract>
+      instructionCoreArchitecture;
+  std::optional<InstructionCoreMicroarchitecturalRealization>
+      instructionCoreMicroarchitecture;
   std::optional<FabricNestedOwnerViewData> localMemoryService;
   std::optional<FabricFuTemplateRef> fuTemplate;
   std::optional<FabricHardwareDomainKind> hardwareDomainKind;

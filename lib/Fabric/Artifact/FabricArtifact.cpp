@@ -26,6 +26,7 @@
 #include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricSystemCanonicalLabeling.h"
+#include "FabricSystemValidation.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -907,15 +908,11 @@ resolveImportedModuleBoundary(
   return &endpoints[reference.target.ordinal];
 }
 
-llvm::Expected<detail::FabricNestedOwnerViewData>
-instructionCoreView(DenseI8ArrayAttr microarchitecture) {
-  auto realization = decodeInstructionCoreMicroarchitecturalRealization(
-      unsignedBytes(microarchitecture));
-  if (!realization)
-    return realization.takeError();
+detail::FabricNestedOwnerViewData instructionCoreView(
+    const InstructionCoreMicroarchitecturalRealization &realization) {
   detail::FabricNestedOwnerViewData owner;
   owner.inventoryCounts = emptyInventories();
-  owner.resourceContract = realization->resourceContract();
+  owner.resourceContract = realization.resourceContract();
   return owner;
 }
 
@@ -985,6 +982,8 @@ llvm::Error
 validateSystemRelations(::fabric::SystemOp root,
                         const FabricSystemRootView &systemView,
                         llvm::ArrayRef<StrictImportResult> importedModules) {
+  if (llvm::Error error = detail::validateInstructionCoreCohort(root))
+    return error;
   const FabricArtifactView &view = systemView.artifact();
   const FabricImportBinding binding{view.identity(), FabricRootKind::System};
   std::set<FabricEntityId> externalBoundariesWithEndpoints;
@@ -1250,10 +1249,19 @@ buildSystemView(::fabric::SystemOp root,
     entity.owner.inventoryCounts = emptyInventories();
 
     if (auto host = dyn_cast<::fabric::SystemHostCoreOp>(carrier.op)) {
-      auto owner = instructionCoreView(host.getMicroarchitectureAttr());
-      if (!owner)
-        return owner.takeError();
-      entity.owner.resourceContract = owner->resourceContract;
+      auto architecture = decodeInstructionCoreArchitecturalContract(
+          unsignedBytes(host.getArchitectureAttr()));
+      if (!architecture)
+        return architecture.takeError();
+      auto microarchitecture =
+          decodeInstructionCoreMicroarchitecturalRealization(
+              unsignedBytes(host.getMicroarchitectureAttr()));
+      if (!microarchitecture)
+        return microarchitecture.takeError();
+      entity.instructionCoreArchitecture = std::move(*architecture);
+      entity.instructionCoreMicroarchitecture = std::move(*microarchitecture);
+      entity.owner.resourceContract =
+          entity.instructionCoreMicroarchitecture->resourceContract();
       continue;
     }
 
@@ -1267,10 +1275,19 @@ buildSystemView(::fabric::SystemOp root,
         return module.takeError();
       dependencyUsed[target->dependencyOrdinal] = true;
       entity.spatialCoreTarget = *target;
-      auto instruction = instructionCoreView(core.getMicroarchitectureAttr());
-      if (!instruction)
-        return instruction.takeError();
-      entity.instructionCore = std::move(*instruction);
+      auto architecture = decodeInstructionCoreArchitecturalContract(
+          unsignedBytes(core.getArchitectureAttr()));
+      if (!architecture)
+        return architecture.takeError();
+      auto microarchitecture =
+          decodeInstructionCoreMicroarchitecturalRealization(
+              unsignedBytes(core.getMicroarchitectureAttr()));
+      if (!microarchitecture)
+        return microarchitecture.takeError();
+      entity.instructionCoreArchitecture = std::move(*architecture);
+      entity.instructionCoreMicroarchitecture = std::move(*microarchitecture);
+      entity.instructionCore =
+          instructionCoreView(*entity.instructionCoreMicroarchitecture);
       auto spatial = spatialCoreView(**module);
       if (!spatial)
         return spatial.takeError();

@@ -187,6 +187,19 @@ RuntimeService =
     ThreadDispatch | SpatialLaunch | MemoryAllocation | AtomicRuntime
 ```
 
+A root-complete `fabric.system` contains exactly one HostCore and one or more
+AccCores. For `N` AccCores, these are the `N + 1` stored-program engines of the
+System. The HostCore remains a distinct `HostCoreOccurrenceRef`; it is not an
+AccCore occurrence and owns no SpatialCore attachment.
+
+All `N + 1` Architectural Contracts must form one executable ISA and ABI
+cohort: they have the same XLEN and endianness, and the intersection of their
+declared ABI-capability sets is nonempty. Extensions, privilege support,
+physical-address width, code and relocation models, runtime services, and
+Microarchitectural Realizations remain exact per-core capabilities. Later
+Compiler Target Binding and Deployment validation select values admitted by
+each exact core and cannot widen this Fabric-owned cohort.
+
 The canonical set order is the closed wire-enum order shown above. Duplicate,
 unknown, or noncanonical set entries are invalid. `E` requires `X32`; `D`
 requires `F`; an `*f` or `*d` ABI requires the corresponding extension; an

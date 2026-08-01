@@ -24,6 +24,15 @@ class FabricSystemRootView final {
 public:
   const FabricArtifactView &artifact() const { return artifact_; }
 
+  const InstructionCoreArchitecturalContract *
+  instructionCoreArchitecture(HostCoreOccurrenceRef core) const;
+  const InstructionCoreArchitecturalContract *
+  instructionCoreArchitecture(InstructionCoreContextRef core) const;
+  const InstructionCoreMicroarchitecturalRealization *
+  instructionCoreMicroarchitecture(HostCoreOccurrenceRef core) const;
+  const InstructionCoreMicroarchitecturalRealization *
+  instructionCoreMicroarchitecture(InstructionCoreContextRef core) const;
+
   /// Exact imported Module target selected by one AccCore's SpatialCore field.
   /// This is a sealed projection of the owner field, not an attachment-derived
   /// inference. A wrong-kind or unknown occurrence has no target.
