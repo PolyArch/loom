@@ -1251,19 +1251,26 @@ def materialize_cmsis_dsp_harness(
                 0,
             )
         elif direct_family == "stateless-matrix-multiplication":
+            matrix_protocol = corpus_dsp_matrix.matrix_multiplication_protocol(workload)
+            if matrix_protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP matrix multiplication protocol is inconsistent"
+                )
             suite = _cmsis_dsp_suite_chain(
                 root,
                 tree_module.TreeElem.SUITE,
                 workload.producer.test_class,
             )[-1]
             direct_source = generated / "OperatorProtocol.cpp"
-            official_atomic = len(workload.protocol) == 2
+            fixed_anchor = (
+                len(workload.protocol) == 2 or matrix_protocol.input_a_pattern is None
+            )
             direct_source.write_text(
                 corpus_dsp_matrix.render_matrix_multiplication_protocol(
                     workload,
-                    None if official_atomic else shared_patterns,
+                    None if fixed_anchor else shared_patterns,
                     (2, 2, 2)
-                    if official_atomic
+                    if fixed_anchor
                     else _cmsis_dsp_named_dimensions(
                         suite,
                         ("NBR", "NBI", "NBC"),

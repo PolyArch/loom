@@ -68,15 +68,17 @@ STATEFUL_FILTER_CASES = {
     "arm-iir-lattice-q15",
     "arm-iir-lattice-q31",
 }
-MATRIX_MULTIPLICATION_CASES = {
-    "arm-mat-mult-fast-q15",
-    "arm-mat-mult-q7",
+MATRIX_MULTIPLICATION_VARIANTS = {
+    ("arm-mat-mult-fast-q15", "benchmark-only"),
+    ("arm-mat-mult-fast-q31", "official"),
+    ("arm-mat-mult-q7", "benchmark-only"),
 }
 FLOATING_MATRIX_CASES = {
     "arm-householder-f16",
     "arm-householder-f32",
     "arm-householder-f64",
     "arm-mat-cmplx-mult-f16",
+    "arm-mat-cmplx-mult-f32",
     "arm-mat-inverse-f16",
     "arm-mat-inverse-f32",
     "arm-mat-inverse-f64",
@@ -387,11 +389,11 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             workload
             for workload in corpus_inventory.load_workload_inventory(ROOT)
             if workload.suite == "cmsis-dsp"
-            and workload.case in MATRIX_MULTIPLICATION_CASES
-            and workload.producer.selector_kind == "benchmark-only"
+            and (workload.case, workload.producer.selector_kind)
+            in MATRIX_MULTIPLICATION_VARIANTS
         )
 
-        self.assertEqual(len(workloads), len(MATRIX_MULTIPLICATION_CASES))
+        self.assertEqual(len(workloads), len(MATRIX_MULTIPLICATION_VARIANTS))
         for workload in workloads:
             with self.subTest(case=workload.case):
                 self.assertTrue(
@@ -403,10 +405,10 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
             workload
             for workload in corpus_inventory.load_workload_inventory(ROOT)
             if workload.suite == "cmsis-dsp"
-            and workload.case in MATRIX_MULTIPLICATION_CASES
-            and workload.producer.selector_kind == "benchmark-only"
+            and (workload.case, workload.producer.selector_kind)
+            in MATRIX_MULTIPLICATION_VARIANTS
         )
-        self.assertEqual(len(workloads), len(MATRIX_MULTIPLICATION_CASES))
+        self.assertEqual(len(workloads), len(MATRIX_MULTIPLICATION_VARIANTS))
 
         harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
             workloads,

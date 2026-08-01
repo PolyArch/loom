@@ -4,11 +4,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import corpus_dsp_protocol
 import corpus_inventory
 from corpus_workload_errors import WorkloadProviderError
+
+
+class MatrixArithmeticKind(Enum):
+    Q7 = "q7"
+    FAST_Q15 = "fast-q15"
+    FAST_Q31 = "fast-q31"
 
 
 @dataclass(frozen=True)
@@ -18,12 +25,13 @@ class MatrixMultiplicationProtocol:
     benchmark_test_class: str
     official_test_class: str
     test_method: str
-    shift_symbol: str
+    shift_symbol: str | None
     scalar_type: str
     bit_width: int
-    input_a_pattern: str
-    input_b_pattern: str
-    fast_q15: bool
+    input_a_pattern: str | None
+    input_b_pattern: str | None
+    arithmetic: MatrixArithmeticKind
+    uses_scratch: bool
 
     @property
     def owner_header(self) -> str:
@@ -78,7 +86,22 @@ _PROTOCOLS = (
         16,
         "InputA1_q15.txt",
         "InputB1_q15.txt",
+        MatrixArithmeticKind.FAST_Q15,
         True,
+    ),
+    MatrixMultiplicationProtocol(
+        "arm_mat_mult_fast_q31",
+        "i32(ptr,ptr,ptr)",
+        "BinaryQ31",
+        "BinaryTestsQ31",
+        "test_mat_mult_fast_q31",
+        None,
+        "q31_t",
+        32,
+        None,
+        None,
+        MatrixArithmeticKind.FAST_Q31,
+        False,
     ),
     MatrixMultiplicationProtocol(
         "arm_mat_mult_q7",
@@ -91,7 +114,8 @@ _PROTOCOLS = (
         8,
         "InputA1_q7.txt",
         "InputB1_q7.txt",
-        False,
+        MatrixArithmeticKind.Q7,
+        True,
     ),
 )
 
@@ -122,6 +146,16 @@ _FLOATING_PROTOCOLS = (
         "float16_t",
         "complex-multiply",
         "6.0e-2",
+    ),
+    FloatingMatrixProtocol(
+        "arm_mat_cmplx_mult_f32",
+        "i32(ptr,ptr,ptr)",
+        "BinaryTestsF32",
+        "test_mat_cmplx_mult_f32",
+        "f32",
+        "float32_t",
+        "complex-multiply",
+        "2.0e-5",
     ),
     FloatingMatrixProtocol(
         "arm_mat_mult_f16",
@@ -721,8 +755,9 @@ def matrix_multiplication_protocol(
     for protocol in _PROTOCOLS:
         benchmark_calls = ((protocol.symbol, protocol.signature),)
         official_calls = (
-            (protocol.shift_symbol, "void(ptr,i8,ptr,i32)"),
-            (protocol.symbol, protocol.signature),
+            ((protocol.shift_symbol, "void(ptr,i8,ptr,i32)"), benchmark_calls[0])
+            if protocol.shift_symbol is not None
+            else benchmark_calls
         )
         expected_class = (
             protocol.benchmark_test_class
@@ -743,7 +778,7 @@ def matrix_multiplication_protocol(
 
 def _decode_signed(raw: bytes, bit_width: int, name: str) -> tuple[int, ...]:
     byte_width = bit_width // 8
-    if bit_width not in {8, 16} or len(raw) % byte_width != 0:
+    if bit_width not in {8, 16, 32} or len(raw) % byte_width != 0:
         raise WorkloadProviderError(
             f"CMSIS-DSP matrix pattern {name} has an invalid scalar width"
         )
@@ -766,7 +801,7 @@ def _matrix_product(
     output = []
     for row in range(rows):
         for column in range(columns):
-            if protocol.fast_q15:
+            if protocol.arithmetic is MatrixArithmeticKind.FAST_Q15:
                 accumulator = 0
                 for index in range(inner):
                     product = (
@@ -782,6 +817,26 @@ def _matrix_product(
                 output.append(narrowed if narrowed < 0x8000 else narrowed - 0x10000)
                 continue
 
+            if protocol.arithmetic is MatrixArithmeticKind.FAST_Q31:
+                accumulator = 0
+                for index in range(inner):
+                    product = (
+                        input_a[row * inner + index] * input_b[index * columns + column]
+                    )
+                    accumulator = (accumulator + (product >> 32)) & 0xFFFFFFFF
+                signed = (
+                    accumulator
+                    if accumulator < 0x80000000
+                    else accumulator - 0x100000000
+                )
+                narrowed = (signed << 1) & 0xFFFFFFFF
+                output.append(
+                    narrowed if narrowed < 0x80000000 else narrowed - 0x100000000
+                )
+                continue
+
+            if protocol.arithmetic is not MatrixArithmeticKind.Q7:
+                raise WorkloadProviderError("unknown matrix arithmetic kind")
             accumulator = sum(
                 input_a[row * inner + index] * input_b[index * columns + column]
                 for index in range(inner)
@@ -807,15 +862,18 @@ def render_matrix_multiplication_protocol(
         raise WorkloadProviderError("CMSIS-DSP matrix dimensions must be positive")
 
     if patterns is None:
-        input_a = (
-            (16384, -8192, 4096, 12288)
-            if protocol.bit_width == 16
-            else (64, -32, 16, 48)
-        )
-        input_b = (
-            (8192, 4096, -2048, 16384) if protocol.bit_width == 16 else (32, 16, -8, 64)
-        )
+        if protocol.arithmetic is MatrixArithmeticKind.FAST_Q15:
+            input_a = (16384, -8192, 4096, 12288)
+            input_b = (8192, 4096, -2048, 16384)
+        elif protocol.arithmetic is MatrixArithmeticKind.FAST_Q31:
+            input_a = (1073741824, 536870912, 268435456, 805306368)
+            input_b = (536870912, 268435456, 134217728, 1073741824)
+        else:
+            input_a = (64, -32, 16, 48)
+            input_b = (32, 16, -8, 64)
     else:
+        if protocol.input_a_pattern is None or protocol.input_b_pattern is None:
+            raise WorkloadProviderError("matrix protocol has no pattern identity")
         segments = corpus_dsp_protocol.pattern_segments(patterns)
         input_a = _decode_signed(
             corpus_dsp_protocol.require_pattern_segment(
@@ -838,7 +896,7 @@ def render_matrix_multiplication_protocol(
             "CMSIS-DSP matrix pattern is smaller than its selected dimensions"
         )
     expected = _matrix_product(input_a, input_b, rows, inner, columns, protocol)
-    use_shift = len(workload.protocol) == 2
+    use_shift = protocol.shift_symbol is not None and len(workload.protocol) == 2
     shifted_declaration = (
         f"  {protocol.scalar_type} shifted_a[kRows * kInner]{{}};\n"
         if use_shift
@@ -850,6 +908,16 @@ def render_matrix_multiplication_protocol(
         else ""
     )
     matrix_input = "shifted_a" if use_shift else "input_a"
+    matrix_suffix = {8: "q7", 16: "q15", 32: "q31"}[protocol.bit_width]
+    scratch_parameter = (
+        f",\n    {protocol.scalar_type} *scratch" if protocol.uses_scratch else ""
+    )
+    scratch_argument = ", scratch" if protocol.uses_scratch else ""
+    scratch_declaration = (
+        f"  {protocol.scalar_type} scratch[kInner * kColumns]{{}};\n"
+        if protocol.uses_scratch
+        else ""
+    )
 
     format_array = corpus_dsp_protocol.format_cpp_array
     return f"""#include <cstddef>
@@ -892,23 +960,22 @@ bool output_matches_expected(const {protocol.scalar_type} *output) {{
 extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
     const {protocol.scalar_type} *input_a,
     const {protocol.scalar_type} *input_b,
-    {protocol.scalar_type} *output,
-    {protocol.scalar_type} *scratch) {{
+    {protocol.scalar_type} *output{scratch_parameter}) {{
 {shifted_declaration}{shift_call}  const {protocol.scalar_type} *matrix_input = {matrix_input};
-  arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_a{{
+  arm_matrix_instance_{matrix_suffix} matrix_a{{
       kRows, kInner, const_cast<{protocol.scalar_type} *>(matrix_input)}};
-  arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_b{{
+  arm_matrix_instance_{matrix_suffix} matrix_b{{
       kInner, kColumns, const_cast<{protocol.scalar_type} *>(input_b)}};
-  arm_matrix_instance_{"q15" if protocol.bit_width == 16 else "q7"} matrix_output{{
+  arm_matrix_instance_{matrix_suffix} matrix_output{{
       kRows, kColumns, output}};
-  return {protocol.symbol}(&matrix_a, &matrix_b, &matrix_output, scratch);
+  return {protocol.symbol}(
+      &matrix_a, &matrix_b, &matrix_output{scratch_argument});
 }}
 
 int main() {{
   {protocol.scalar_type} output[kOutputCount]{{}};
-  {protocol.scalar_type} scratch[kInner * kColumns]{{}};
-  const arm_status status = {protocol_symbol}(
-      kInputA, kInputB, output, scratch);
+{scratch_declaration}  const arm_status status = {protocol_symbol}(
+      kInputA, kInputB, output{scratch_argument});
   return status == ARM_MATH_SUCCESS && output_matches_expected(output) ? 0 : 1;
 }}
 """
