@@ -96,6 +96,23 @@ _PROTOCOLS = (
 )
 
 _FLOATING_PROTOCOLS = (
+    *(
+        FloatingMatrixProtocol(
+            f"arm_householder_{suffix}",
+            signature,
+            f"UnaryTests{suffix.upper()}",
+            f"test_householder_{suffix}",
+            suffix,
+            scalar_type,
+            "householder",
+            tolerance,
+        )
+        for suffix, scalar_type, signature, tolerance in (
+            ("f16", "float16_t", "half(ptr,half,i32,ptr)", "4.0e-3"),
+            ("f32", "float32_t", "float(ptr,float,i32,ptr)", "2.0e-7"),
+            ("f64", "float64_t", "double(ptr,double,i32,ptr)", "2.0e-15"),
+        )
+    ),
     FloatingMatrixProtocol(
         "arm_mat_cmplx_mult_f16",
         "i32(ptr,ptr,ptr)",
@@ -499,6 +516,45 @@ int main() {{
     )
 
 
+def _render_floating_householder(
+    protocol: FloatingMatrixProtocol, protocol_symbol: str
+) -> str:
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
+namespace {{
+constexpr Scalar kInput[] = {{
+{_cpp_values((0.0, 0.5, 0.0))}
+}};
+constexpr double kExpected[] = {{
+{_cpp_values((1.0, -1.0, 0.0))}
+}};
+constexpr double kExpectedBeta = 1.0;
+
+bool output_matches_expected(const Scalar *output, Scalar beta) {{
+  if (!close_enough(beta, kExpectedBeta))
+    return false;
+  for (std::size_t index = 0; index < 3; ++index)
+    if (!close_enough(output[index], kExpected[index]))
+      return false;
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE Scalar {protocol_symbol}(
+    const Scalar *input, Scalar *output) {{
+  return {protocol.symbol}(input, static_cast<Scalar>(0.0), 3, output);
+}}
+
+int main() {{
+  Scalar output[3]{{}};
+  const Scalar beta = {protocol_symbol}(kInput, output);
+  return output_matches_expected(output, beta) ? 0 : 1;
+}}
+"""
+    )
+
+
 def _render_floating_ldlt(
     protocol: FloatingMatrixProtocol, protocol_symbol: str
 ) -> str:
@@ -638,6 +694,8 @@ def render_floating_matrix_protocol(
         )
     if protocol.kind in {"multiply", "complex-multiply"}:
         return _render_floating_multiply(protocol, protocol_symbol)
+    if protocol.kind == "householder":
+        return _render_floating_householder(protocol, protocol_symbol)
     if protocol.kind == "inverse":
         return _render_floating_inverse(protocol, protocol_symbol)
     if protocol.kind == "ldlt":

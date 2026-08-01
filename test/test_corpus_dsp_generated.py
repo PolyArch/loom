@@ -73,6 +73,9 @@ MATRIX_MULTIPLICATION_CASES = {
     "arm-mat-mult-q7",
 }
 FLOATING_MATRIX_CASES = {
+    "arm-householder-f16",
+    "arm-householder-f32",
+    "arm-householder-f64",
     "arm-mat-cmplx-mult-f16",
     "arm-mat-inverse-f16",
     "arm-mat-inverse-f32",
