@@ -66,6 +66,12 @@ from corpus_link_ownership import (  # noqa: E402
     load_compilation_owners,
     resolve_selected_corpus_sources,
 )
+from corpus_gate_scheduler import (  # noqa: E402
+    CaseResourceLimiter as _CaseResourceLimiter,
+    case_resource_slots,
+    default_case_timeout,
+    default_jobs,
+)
 from corpus_workload_provider import (  # noqa: E402
     CmakeToolchain,
     CmsisDspHarness,
@@ -171,15 +177,11 @@ TOOL_FILE_NAMES = {
 }
 LLVM_TOOL_KEYS = frozenset({"lld", "llvm_dis"})
 
-DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
-DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 30.0
 DEFAULT_DFG_SIMULATION_TIMEOUT_SECONDS = 15.0
 DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_MAX_WAVEFRONT_STEPS = 1_000_000
 DEFAULT_DFG_MAX_EVENT_COUNT = 10_000_000
 DEFAULT_DFG_MAX_CAPTURE_BYTES = 256 * 1024 * 1024
-RESERVED_DEVELOPMENT_CPUS = 4
-MAX_CASE_WORKERS = 128
 
 
 class GateConfigError(ValueError):
@@ -1385,10 +1387,13 @@ def run_cases(
         max(DEFAULT_PROVIDER_SETUP_TIMEOUT_SECONDS, case_timeout),
     )
     results: list[CaseResult | None] = [None] * len(cases)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {
-            pool.submit(
-                run_case,
+    limiter = _CaseResourceLimiter(jobs)
+
+    def execute(case):
+        slots = case_resource_slots(case, stage, jobs)
+        limiter.acquire(slots)
+        try:
+            return run_case(
                 case,
                 stage,
                 toolchain,
@@ -1401,7 +1406,13 @@ def run_cases(
                 dfg_simulation_timeout,
                 provider_results,
                 allowed_sources_by_suite[case.suite],
-            ): index
+            )
+        finally:
+            limiter.release(slots)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {
+            pool.submit(execute, case): index
             for index, case in enumerate(cases)
         }
         for future in concurrent.futures.as_completed(futures):
@@ -1410,17 +1421,6 @@ def run_cases(
         if result is None:  # unreachable: run_case never raises
             raise AssertionError("missing case result")
     return [result for result in results if result is not None]
-
-
-def default_jobs() -> int:
-    available = (os.cpu_count() or 1) - RESERVED_DEVELOPMENT_CPUS
-    return max(1, min(available, MAX_CASE_WORKERS))
-
-
-def default_case_timeout(stage: str) -> float:
-    if stage == "dfg-sim":
-        return DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS
-    return DEFAULT_CASE_TIMEOUT_SECONDS
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:

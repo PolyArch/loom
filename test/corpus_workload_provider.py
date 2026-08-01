@@ -530,6 +530,33 @@ def materialize_cmsis_dsp_harness(
     expected_entry_results: list[int | None] = []
     cmake_targets: list[corpus_dsp_cmake.CmakeTarget] = []
     operator_compile_options: dict[Path, tuple[str, ...]] = {}
+    try:
+        compile_option_authority = corpus_inventory.load_workload_inventory(
+            external_root.parent
+        )
+    except corpus_inventory.InventoryError as exc:
+        raise WorkloadProviderError(
+            f"cannot resolve CMSIS-DSP source compile options: {exc}"
+        ) from exc
+    for owner in compile_option_authority:
+        if owner.suite != "cmsis-dsp" or owner.target_profile != target_profile:
+            continue
+        for source_name in owner.sources:
+            source = Path(source_name)
+            try:
+                relative_source = source.relative_to("externals/cmsis-dsp")
+            except ValueError as exc:
+                raise WorkloadProviderError(
+                    f"CMSIS-DSP operator source escapes its owner: {source}"
+                ) from exc
+            previous = operator_compile_options.setdefault(
+                relative_source, owner.compiler_flags
+            )
+            if previous != owner.compiler_flags:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP workloads assign conflicting compiler flags to "
+                    f"operator source {source}"
+                )
 
     def record_direct_protocol(
         workload: corpus_inventory.ProgramWorkload,
@@ -593,14 +620,6 @@ def materialize_cmsis_dsp_harness(
             if not (external_root / "cmsis-dsp" / relative_source).is_file():
                 raise WorkloadProviderError(
                     f"CMSIS-DSP operator source is unavailable: {source}"
-                )
-            previous = operator_compile_options.setdefault(
-                relative_source, workload.compiler_flags
-            )
-            if previous != workload.compiler_flags:
-                raise WorkloadProviderError(
-                    "CMSIS-DSP workloads assign conflicting compiler flags to "
-                    f"operator source {source}"
                 )
         target = workload.executable
         if target != corpus_inventory.operator_workload_target(workload.operator_id):
