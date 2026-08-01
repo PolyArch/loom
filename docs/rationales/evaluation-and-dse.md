@@ -141,6 +141,42 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+## Why Objective Facts Have Several Projections
+
+One semantic fact must have one source and normalization, but not every
+consumer asks the same question. Pareto selection compares dimensions
+componentwise. Final TopK selection needs a total lexicographic order and a
+stable candidate-key tie break. Annealing needs one local energy scale whose
+difference controls acceptance.
+
+Packing all dimensions into one mixed-radix integer would preserve one chosen
+lexicographic order, but it would also make an unrelated dimension bound
+rescale local annealing deltas. It would not represent Pareto incomparability.
+Loom therefore owns each source, direction, and exact affine quantization once,
+then derives ObjectiveVector, WeightedLevel, TotalOrdering, and SearchEnergy
+for their distinct uses.
+
+Only Point metrics enter an objective because they denote one scalar. Choosing
+an interval midpoint or a censored bound would create an estimator not owned by
+the model descriptor. A policy that needs such an estimate must request a
+different model whose completed output is a Point rather than hiding the
+choice in DSE.
+
+## Why Quality Gates Are Three-Valued
+
+An interval may prove a threshold, disprove it, or straddle it. A censored
+observation and `NotApplicable` have the same need for an explicit unknown
+truth state. Treating these as false would discard candidates for lack of
+proof; treating them as true would silently waive the gate.
+
+Metric and Finding gates therefore produce definitely true, definitely false,
+or indeterminate truth. Every referenced atom is a required obligation, so one
+indeterminate atom makes promotion incomplete rather than being hidden by
+another branch of a disjunction. Fully determined atoms then use ordinary CNF.
+Gates remain acceptance predicates, not numeric objectives. Search guidance
+names the underlying metric explicitly instead of inventing a gate-deviation
+score with no metric owner or unit.
+
 ## Why Semantic Work And Execution Limits Differ
 
 The amount of formal exploration can change the result. Candidate counts,
@@ -181,6 +217,21 @@ A structured argv and explicit environment avoid a second shell language.
 Tool versions and result-affecting options enter model identity; executable
 paths, module locations, license endpoints, and temporary directories remain
 nonsemantic bindings.
+
+External tools may create descendant process trees, so a per-process address-
+space limit or periodic process sampling cannot enforce an aggregate memory
+budget. When a hard process-tree limit is requested, ToolRunner requires one
+kernel-enforced containment owner that accounts all descendants, reports a
+local OOM event, records aggregate peak memory, and terminates the complete
+tree. The specification names the behavior rather than one operating-system
+service API.
+
+Touching a hard threshold is not equivalent to failure because reclaim can
+allow execution to continue. Conversely, an ordinary allocation failure does
+not prove that the containment owner killed the process tree. The terminal
+status is therefore committed only from the owner-local hard-limit event. Peak
+memory remains a raw execution fact; an Evaluation model must explicitly
+interpret it before it can become a metric or Evidence.
 
 ## Why Training Produces Immutable Candidates
 

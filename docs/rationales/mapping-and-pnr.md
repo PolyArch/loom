@@ -4,7 +4,8 @@ Normative contracts are owned by
 [Mapping Artifact](../spec-mapping-artifact.md),
 [Mapping Identity](../spec-mapping-identity.md),
 [Mapping Memory](../spec-mapping-memory.md),
-[Mapping Verification](../spec-mapping-verification.md), and
+[Mapping Verification](../spec-mapping-verification.md),
+[TechMapping Generation](../spec-tech-mapping.md), and
 [Place And Route](../spec-pnr.md).
 
 ## Why Mapping Has Three Profiles
@@ -45,6 +46,28 @@ semantics remain in Dataflow, capability remains in Fabric, and configured
 software projections are reconstructed from both. SpatialMapping then chooses
 an occurrence of the same Fabric FU definition; it cannot re-group actors or
 copy a configured graph.
+
+## Why TechMapping Uses Lazy Exact Cover
+
+TechMapping rows are finite and exact, but the set of complete covers is not
+generally small. Even a graph whose actors each have two independent legal
+realizations has exponentially many covers. Requiring the generator to
+enumerate all of them would turn an implementation accident into a semantic
+obligation and would spend the expensive downstream Evaluation budget on
+nearly equivalent materializations.
+
+The generator therefore constructs complete typed rows, propagates forced
+choices, factors independent incidence components, and returns a deterministic
+finite prefix. This is still exact: every published candidate has complete
+coverage and passes the independent verifier. The finite prefix limits the
+invocation domain without relabeling unexplored alternatives as infeasible.
+
+Global CP-SAT was rejected as the primary TechMapping search. The row problem
+already has a small direct exact-cover model, while placing it in the same
+solver as physical routing or later repair would duplicate Mapping state and
+couple a semantic realization decision to a backend search mechanism. CP-SAT
+is reserved for a closed local repair region after ordinary Spatial or System
+search has identified a concrete conflict.
 
 ## Why PnR Has Exact Immutable Inputs
 
@@ -124,6 +147,21 @@ Bounded exact repair is a final focused solver for a small unresolved closure,
 not a global replacement for annealing and routing. It consumes an explicit
 bounded problem and cannot publish a best-so-far invalid Mapping.
 
+Generic sink-subset proposals were rejected. Their powerset is large, their
+container representation is unstable, and they add no essential routing
+operation. Whole-net, one-sink, existing-subtree, witness-closure, and global
+scopes compose to express the useful neighborhoods while retaining a finite
+typed action algebra.
+
+OR-Tools remains a required pinned implementation of bounded exact repair, but
+its internal time estimates, incumbent order, and solution-pool order are not
+Loom semantics. Only proof-bearing optimum and infeasible results may affect a
+candidate. Canonical variable fixing after a proven optimum prevents an
+upstream solver heuristic or version-internal ordering from selecting a
+different persistent Mapping. A local infeasible repair region proves only
+infeasibility under its fixed boundary; it is not global proof unless the
+region is the complete exact problem.
+
 ## Why Legality And QoR Are Separate
 
 Mapping's local solver cost can measure domain-independent facts such as
@@ -136,6 +174,19 @@ Some Fabric configurations preserve function but change performance, such as
 FIFO bypass. Mapping selects them, but Evaluation supplies the relevant cycle,
 timing, power, or bandwidth feedback. This preserves one metric and evidence
 system across compiler, mapper, and hardware DSE.
+
+The same separation applies inside resource accounting. Fabric integer claims
+and capacities decide legality exactly. Normalized fixed-point values are
+useful for comparing pressure across unlike resources, but rounding each claim
+up can make several individually small claims appear to exceed capacity. Those
+values therefore order search only; they cannot create a capacity violation.
+
+Objective facts also do not imply one universal scalar. Final ordering, Pareto
+dominance, and annealing energy ask different questions. They share the same
+central dimensions and exact normalized codes, but derive a lexicographic
+ordering, a componentwise vector relation, or one selected weighted energy.
+Changing an unrelated dimension bound must not rescale the acceptance
+probability of a local search move.
 
 ## Why Tags Are Local Allocation
 
@@ -165,6 +216,26 @@ and authorizes the immutable selected resources; it cannot remap them.
 Hierarchical System PnR reuses immutable SpatialMappings. A flattened global
 mode remains a search option, not a different artifact authority. Both produce
 the same SystemMapping schema and face the same final verifier.
+
+## Why The System Search Domain Is Target-Free
+
+System binding relations can cover large Presburger domains or finite dynamic
+stable-key domains. Expanding every point is impractical, while storing a
+chosen target in the search-domain view would duplicate the candidate and
+eventually the SystemMapping.
+
+The immutable `H` view therefore owns only a complete partition into typed
+atoms and the legal target domains mechanically derived for each atom. The
+candidate selects targets, and finalization merges equal-target atoms into the
+existing persistent binding relation. This permits block, cyclic, affinity,
+and stable-key grouping without a new schedule, predicate language, or shadow
+mapping.
+
+Keeping partition shape target-free also preserves software ownership. A
+search policy may choose how coarsely to group a logical may-domain, but it
+cannot alter coordinates, extents, launch parameters, channel correspondence,
+or introduce physical coordinates. Different shapes are different resolved
+invocations, not mutable hidden state within one run.
 
 ## Why System Spatial-Temporal Is A Spectrum
 

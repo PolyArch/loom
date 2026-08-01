@@ -3,6 +3,7 @@
 This document is the normative owner of Loom Spatial and System PnR
 algorithms, native state, deterministic search protocols, final closure, and
 the common Spatial and System MappingConstraintSet semantic and wire algebra.
+`docs/spec-tech-mapping.md` separately owns production TechMapping generation.
 The Mapping profile documents own persistent Mapping Artifact spelling and
 canonical serialization; this document separately owns the constraint-family
 roots and clause wire schema.
@@ -128,19 +129,20 @@ The separate immutable System MappingConstraintSet `K` is governed solely by
 the System contract below. System PnR does not invent a system-wide TechMapping
 input. `C` has the same resolved-view contract as Spatial PnR and
 includes the exact Evaluation binding table used by its
-`ObjectiveProjection`.
+`PnrObjectiveProjection`.
 
 `H` is the immutable, canonical-framed finite search-domain view mechanically
 elaborated from `D`, `F`, `R`, resolved Compilation and DSE policy, and `K`.
 It owns finite binding atoms and the legal AccCore, SpatialCore, service, and
 endpoint domains for each atom. It is not an artifact, Mapping result, or
-second config authority. Its canonical identity participates in the native
+second config authority. Its canonical digest participates in the native
 cache key and its exact descriptor and digest are recorded in the
 `InvocationManifest`, so a changed candidate domain is a changed invocation.
 
 `R`, `H`, `C`, and `K` affect search, closure, and admission but do not enter
 the semantic identity of a selected SystemMapping. The `InvocationManifest`
-binds their exact references or component-view descriptors and digests. The
+binds their exact references, the component-view descriptor and digest for
+`C`, and the owner-specific view descriptor and digest for `H`. The
 persistent root owns `D`, `F`, the non-empty root thread launch set, the exact
 derived SpatialMapping imports, and its selected records.
 
@@ -148,6 +150,82 @@ An InstructionCore-only closure may have no SpatialMapping catalog or reopened
 Spatial subproblem. That case still uses the ordinary SystemMapping and System
 MappingConstraintSet profiles; it never creates a dummy graph or
 SpatialMapping.
+
+### System Search-Domain View
+
+`H` atomizes each Dataflow-owned execution or service relation without
+selecting a target. Its only binding-partition shape is:
+
+```text
+BindingPartitionShape =
+    PresburgerCells {
+      canonical non-empty Presburger cell sequence
+    }
+  | StableKeyGroups {
+      canonical non-empty stable-key group sequence
+    }
+```
+
+For every `RootThreadLaunchRef` and reachable `RootedGraphLaunchRef`, one shape
+is a complete, disjoint partition of the exact legal may-domain owned by `D`.
+Presburger cells are canonical integer sets over Dataflow-owned coordinates
+and launch parameters. Stable-key groups are canonical non-empty finite sets
+of values from the Dataflow-owned stable-key projection. Empty, overlapping,
+gapped, foreign-domain, duplicate, or mixed-representation partitions are
+invalid.
+
+The shape contains no AccCore, SpatialMapping, SpatialCore, service, endpoint,
+route, or other selected target. For each resulting atom, `H` mechanically
+derives the applicable finite legal domains from exact `D/F/R/C/K`:
+
+```text
+SystemSearchAtomDomains {
+  compatible_acc_cores
+  compatible_spatial_mappings
+  compatible_service_regions
+  compatible_transport_endpoints
+}
+```
+
+The owner-specific view descriptor identity is
+`loom.system_pnr_search_domain`, version 1.0. Its exact descriptor bytes are
+the ASCII bytes `loom.system_pnr_search_domain.1.0`, without a trailing zero
+byte. Canonical view bytes order thread bindings, rooted graph bindings, and
+service obligations by their complete typed semantic keys. Presburger cells
+use their canonical integer-set bytes. Stable keys are sorted within each
+group, groups are sorted by complete key sequence, and every legal target
+domain is sorted by complete target semantic key. Counts and ordinals use
+fixed-width big-endian integer framing. The digest is:
+
+```text
+SHA-256(
+  bytes("loom.system.pnr.search.domain.digest.v1\0")
+  || u32be(length(schema_descriptor_bytes))
+  || schema_descriptor_bytes
+  || u64be(length(canonical_view_bytes))
+  || canonical_view_bytes
+)
+```
+
+This digest is an invocation/cache integrity value, not Common
+`ComponentViewDigest`, ArtifactIdentity, or persistent SystemMapping content.
+
+Only fields applicable to that typed atom are present; an empty required
+domain is proven infeasibility for that invocation rather than permission to
+invent a target. CandidateState selects one legal target for each atom through
+the ordinary System Actions. Finalization merges atoms with the same selected
+target and mechanically reconstructs the existing
+`BindingRelation<AccCoreOccurrenceRef>` or
+`BindingRelation<SpatialMappingImportRef>`. It does not persist the atomization
+or a second relation.
+
+`H` cannot change logical coordinates, extents, launch parameters, stable
+keys, schedule, channel `source_map`, or may-domain predicates. It cannot use
+physical coordinates or synthesize a predicate. Different partition shapes
+are separate resolved generator invocations with distinct owner-specific view
+digests; they are not mutable alternatives inside one `H`. A changed digest
+changes invocation and cache lineage but may still produce the same canonical
+SystemMapping identity.
 
 ## Spatial MappingConstraintSet Contract
 
@@ -490,7 +568,7 @@ and capacity schemas, use patterns, service contracts, and physical refinement
 domains. Mapping selects only declared alternatives and owns physical legality
 and the domain-independent PnR measures `V` and `G`. Evaluation owns all
 accelerator- and workload-aware observations `Q`. The central resolved
-`ObjectiveProjection` is the only composition of `V`, `G`, and `Q`.
+`PnrObjectiveProjection` is the only PnR composition of `V`, `G`, and `Q`.
 
 MappingConstraintSet adds hard restrictions to the profile's base legality.
 `C` exposes resolved search policy, derived deterministic
@@ -939,16 +1017,19 @@ default is `ProjectedSigned` and its schedule-family default is
 `GeometricDecay`. Exact numeric defaults belong only to the versioned config
 schema and resolver; PnR kernels have no hidden fallback values.
 
-For traversal `a`, normalized claim `q(a,r)`, usage `u(r)`, and capacity
-`cap(r)`, define:
+For traversal `a` and each claimed resource-state capacity dimension `r`, use
+the cost-only projections defined by `Resource Use, Tags, Buffers, And Memory`:
 
 ```text
-base_cost(a,r) = q(a,r)
-lower_bound_cost(a) = sum_r q(a,r)
-X(a,r) = max(0, u(r) + q(a,r) - cap(r))
+base_cost(a,r) = q_cost(a,r)
+lower_bound_cost(a) = sum_r q_cost(a,r)
 
-MultiplicativeCost(a,r) = q(a,r) * (1 + P * X(a,r)) * (1 + H(r))
-AdditiveCost(a,r)       = q(a,r) + P * X(a,r) + q(a,r) * H(r)
+MultiplicativeCost(a,r) =
+  q_cost(a,r) * (1 + P * x_cost(a,r)) * (1 + H(r))
+
+AdditiveCost(a,r) =
+  q_cost(a,r) + P * x_cost(a,r) + q_cost(a,r) * H(r)
+
 arc_cost(a)             = sum_r ResourceCost(a,r)
 ```
 
@@ -960,7 +1041,7 @@ working overlay, and installs its new claims. `P` and `H` remain frozen within
 the iteration. The next iteration uses:
 
 ```text
-O_k(r) = max(0, U_k(r) - capacity(r))
+O_k(r) = overuse_cost_k(r)
 H_(k+1)(r) = H_k(r) + history_pressure_increment * O_k(r)
 P_(k+1) = ceil_mul_div(P_k,
                        present_pressure_growth_numerator,
@@ -987,7 +1068,7 @@ route_state_rank(n):
   2 = other participating net
 
 generic_conflict_pressure_k(n) =
-  sum_r claim_k(n,r) * max(0, occupancy_k(r) - capacity(r))
+  sum_r q_cost_k(n,r) * overuse_cost_k(r)
 ```
 
 A shared Route Tree prefix contributes once under normalized claim semantics.
@@ -998,17 +1079,19 @@ index make the key total. It is recomputed only from the next complete overlay,
 never from per-net Gauss-Seidel updates. There is no seeded shuffle, permanent
 container order, ordering plugin, or hidden weight.
 
-DualSubgradient routes every net independently against a fixed price snapshot,
-aggregates normalized claims in canonical net order, and updates prices only
-after the complete synchronous iteration. Region-external fixed occupancy is
-first subtracted from physical capacity to obtain effective `C(r)`. At price
-snapshot `lambda_k`, each selected traversal uses:
+DualSubgradient routes every net independently against a fixed price snapshot
+and updates prices only after the complete synchronous iteration. Region-
+external fixed occupancy is subtracted from raw physical capacity before
+normalization. At price snapshot `lambda_k`, each selected traversal uses:
 
 ```text
-dual_arc_cost(a) = sum_r q(a,r) * (1 + lambda_k(r))
+dual_arc_cost(a) = sum_r q_cost(a,r) * (1 + lambda_k(r))
 ```
 
-After routing the complete region:
+After routing the complete region, `U_k(r)` is the total raw selected amount
+normalized once with the same `Q` scale, and `C(r)` is the effective raw
+capacity normalized once. Per-claim rounded costs are not summed to determine
+the pressure sign:
 
 ```text
 g_k(r) = U_k(r) - C(r)
@@ -1082,14 +1165,14 @@ eligible only after every participating net and claim aggregation completes.
 A zero negotiated violation vector returns immediately. A non-closed iterate
 may be retained only when all remaining violations are admitted by
 `TemporaryViolationPolicy`; it is ranked through the existing
-`ObjectiveProjection` using route-related Mapping `V/G`, not A* cost or private
-prices. Equal rank retains the earlier canonical iterate. Work exhaustion is
-not infeasibility. Zero violation is the only normal early-convergence test;
-there is no epsilon, stagnation window, route-signature cycle detector, or
-hidden no-progress threshold. Exhausting the routing policy's owner-local work
-limit returns the best admissible temporary iterate only for a non-final
-Action; otherwise it returns typed non-closure and rolls back. Final global
-closure never returns a temporary iterate.
+`PnrObjectiveProjection` using route-related Mapping `V/G`, not A* cost or
+private prices. Equal rank retains the earlier canonical iterate. Work
+exhaustion is not infeasibility. Zero violation is the only normal early-
+convergence test; there is no epsilon, stagnation window, route-signature cycle
+detector, or hidden no-progress threshold. Exhausting the routing policy's
+owner-local work limit returns the best admissible temporary iterate only for
+a non-final Action; otherwise it returns typed non-closure and rolls back.
+Final global closure never returns a temporary iterate.
 
 Only the selected overlay is applied once through `MoveTransaction`.
 PathFinder pressure/history, Dual prices/directions, best-iterate metadata,
@@ -1108,6 +1191,52 @@ selected use site to one Fabric-owned use pattern and maintains the resulting
 event-relative claims in native state. The Fabric pattern remains the sole
 owner of parameter order and domains, raw capacity, duration, latency,
 initiation interval, periodicity, and service guarantees.
+
+Capacity legality and search cost use separate numeric projections. For each
+Fabric-owned resource-state capacity dimension `r`:
+
+```text
+amount(a, r) = exact integer sum of the Fabric uint32 claims induced by a
+capacity(r)  = exact Fabric uint32 capacity
+
+usage_raw(r)   = exact integer sum of all selected and fixed amounts
+overuse_raw(r) = max(0, usage_raw(r) - capacity(r))
+```
+
+Each equation is evaluated for one exact owner-derived concurrent occupancy
+query. "All selected and fixed" means every claim in that event-relative
+overlap envelope, not every `ResourceUse` record in the artifact regardless of
+time. Fabric use patterns and Mapping activation algebra remain the only owner
+of those envelopes.
+
+Base legality, temporary `CapacityOveruse`, and final zero-overuse closure use
+only these raw integers. An individual atomic claim envelope whose amount
+exceeds capacity is inadmissible before search. A zero-capacity dimension
+therefore admits only zero amount. A normalized or rounded value must never
+decide capacity legality.
+
+Search cost alone uses the fixed scale `Q = 2^32`:
+
+```text
+q_cost(a, r) = ceil(amount(a, r) * Q / capacity(r))
+
+x_cost(a, r) =
+  ceil(max(0,
+           usage_raw_before(a, r) + amount(a, r) - capacity(r))
+       * Q / capacity(r))
+
+overuse_cost(r) = ceil(overuse_raw(r) * Q / capacity(r))
+```
+
+These divisions are evaluated only for positive capacity. A zero amount on a
+zero-capacity dimension has zero cost; every positive amount was already
+rejected as inadmissible.
+
+`usage_raw_before` is the exact working occupancy after removing only the old
+claims replaced by the current proposal. All products, sums, and ceilings use
+checked widened integer arithmetic and produce checked `uint64` values. A
+positive amount therefore has positive `q_cost`; zero amount has zero cost.
+Rounding may change proposal order but cannot create or erase a raw violation.
 
 Each stateful Fabric resource schema also owns its closed typed
 `ResourceState` set, canonical initial state, capacity dimensions, atomic
@@ -1208,14 +1337,34 @@ ResolvedPnrConfigView {
   DeterminismPolicy
   DeterministicWorkBudgetView
   TemporaryViolationPolicy
-  ObjectiveProjection
+  PnrObjectiveProjection
   ResolvedEvaluationBinding[]
 }
 ```
 
-The canonical binding table is referenced by `ObjectiveProjection` and
-optional route guidance through `ResolvedEvaluationBindingRef`. Its entries are
-exact resolved inputs, not another policy or model-selection mechanism.
+The projection has exactly this shape:
+
+```text
+PnrObjectiveProjection {
+  total_ordering: TotalOrderingRef
+  search_energy: SearchEnergyRef
+  focused_closure_dimensions:
+    canonical set<ObjectiveDimensionRef>
+}
+```
+
+`TotalOrderingRef`, `SearchEnergyRef`, and `ObjectiveDimensionRef` are the
+config-local references owned by `docs/spec-dse-feedback.md`. The complete
+objective-dimension closure is derived transitively from the selected total
+ordering, search energy, and focused-closure set; it is not copied into this
+record. Every focused-closure dimension must use an
+`EvaluationMetricSource`. An empty focused-closure set disables metric-
+triggered focused closure without changing annealing or final rank.
+
+The canonical binding table is referenced by every selected Evaluation metric
+dimension and by optional route guidance through
+`ResolvedEvaluationBindingRef`. Its entries are exact resolved inputs, not
+another policy or model-selection mechanism.
 
 `SearchPolicy` owns exploration, including initialization, Action proposal,
 annealing, negotiated routing, focused closure, and exact repair. Its
@@ -1247,6 +1396,55 @@ cannot override or reinterpret a work unit. Worker count, wall time, memory
 reservation, licenses, process retries, and external cancellation are
 execution controls and cannot change the formal candidate sequence.
 
+### Deterministic Initialization And Action Proposal
+
+Each fixed initializer attempt starts from the same immutable FrozenModel and
+an empty selected-decision assignment. It uses this exact bounded protocol:
+
+1. propagate singleton domains and hard relation consequences to a fixed
+   point;
+2. if every decision is assigned, run one explicit global
+   `TransportRoutingAction` and validate the resulting seed;
+3. otherwise choose the unbound decision with the smallest current legal
+   domain, breaking ties by its canonical typed decision key;
+4. derive a without-replacement choice order from that canonical domain; and
+5. attempt each choice, propagate, and either recurse or roll back the complete
+   assignment and all derived state on contradiction.
+
+Seed attempt zero uses canonical choice order. Every other seed uses only its
+`InitializerDiversification` PRNG stream: repeated `nextBounded(remaining)`
+selection over the canonical remaining domain defines its deterministic
+without-replacement permutation. One attempted assignment consumes one
+initializer work unit. A work-limit stop is incomplete initialization, not
+infeasibility. The configured seed-attempt slots are fixed before execution;
+a failed slot is never replaced by an extra attempt.
+
+Transport-routing intent has exactly these scopes:
+
+```text
+TransportRoutingScope =
+    WholeNet(exact logical net or service leg)
+  | SingleSink(exact sink obligation)
+  | RootedSubtree(exact net, current route-tree root node)
+  | WitnessRegion(exact typed unresolved witness)
+  | Global
+```
+
+`RootedSubtree` denotes the complete current subtree rooted at the selected
+node. `WitnessRegion` is the deterministic Action dependency closure of one
+typed Mapping or Evaluation witness. Neither form carries an arbitrary sink
+set. There is no generic sink-subset powerset, hidden route list, or callback
+scope. These scopes compose through successive Actions and therefore retain
+whole-net, branch, local-region, and full-design repair capability.
+
+For every Action proposal, the dynamic domain contains only kinds with at
+least one legal anchor and choice. The selector reduces the configured
+nonnegative kind weights by GCD, calls `nextBounded(sum_of_live_weights)` once
+to choose the kind, then calls `nextBounded` over the canonical anchor domain
+and canonical typed choice domain. It does not retry through empty anchors,
+use container order, or consume host entropy. Each proposal slot has the same
+formal selection calls whether the later transaction commits or rolls back.
+
 ### Objective Projection
 
 Mapping owns the closed `V` descriptors:
@@ -1262,17 +1460,37 @@ HardProgressViolation
 HardServiceContractShortfall
 ```
 
-Mapping also owns every domain-independent `G` measure. Evaluation owns
-`MetricKind`, `MetricObservation`, and typed findings for `Q`. Structural
-invalidity, a `K` failure, or a base-verifier failure is never converted into
-`V` or an objective penalty.
+The typed static registry descriptor identity is
+`loom.mapping.pnr.objective`, version 1.0. A
+`MappingViolationDescriptorRef` is that descriptor plus the zero-based ordinal
+in the closed catalog order shown above; it is not a string key. Each
+descriptor owns one exact nonnegative integer magnitude. Mapping also owns the
+initial closed domain-independent `G` catalog, which contains exactly:
 
-The source algebra, exact resolved Evaluation bindings, metric and finding
-queries, quality-gate CNF, objective dimensions, normalization, weighted
-levels, and checked `ObjectiveCode` encoding are owned only by
+```text
+TotalSelectedTraversalClaim
+```
+
+`MappingMeasureDescriptorRef` uses the same registry descriptor and a
+zero-based owner-local ordinal in this separate typed catalog. Version 1.0 has
+the single ordinal zero.
+
+Its value is the checked sum of `q_cost` over every unique selected traversal
+claim envelope in the candidate. One shared Route Tree prefix contributes
+once, regardless of sink count. A selected traversal with no claim contributes
+zero. PathFinder pressure, history, dual price, A* queue state, proposal count,
+and search order are scratch and never enter `G`.
+
+Evaluation owns `MetricKind`, `MetricObservation`, and typed findings for `Q`.
+Structural invalidity, a `K` failure, or a base-verifier failure is never
+converted into `V` or an objective penalty.
+
+The source algebra, exact resolved Evaluation bindings, objective dimensions,
+exact affine quantization, ObjectiveVector, WeightedLevel, TotalOrdering,
+SearchEnergyRef, and quality-gate CNF are owned only by
 `docs/spec-dse-feedback.md` and `docs/spec-evaluation-metrics.md`.
-`ResolvedPnrConfigView` carries their mechanically derived references for this
-invocation; PnR does not restate or extend those schemas.
+`ResolvedPnrConfigView` carries mechanically derived references to those
+records for this invocation; PnR does not restate or extend their schemas.
 
 Before freeze, PnR preflights the exact projection and every selected hot
 Evaluation binding against its candidate subject projection, requested
@@ -1282,29 +1500,37 @@ already resolved; an unavailable required source produces typed
 `ObjectiveUnavailable` and cannot select another provider, become zero,
 infinity, NaN, or invoke a private fallback. A temporary violation kind that
 SearchPolicy admits into committed candidates must have a positive objective
-term so search cannot erase its closure obligation.
+term in the WeightedLevel selected by `PnrObjectiveProjection.search_energy`
+so search cannot erase its closure obligation. Specifically, that `V`
+descriptor must be referenced by a Minimize dimension with `origin = 0`,
+`quantum = 1`, and a positive reduced weight.
 
-SearchPolicy may explicitly include central metric or gate-deviation sources
-as ephemeral `Q` guidance. Those sources create no formal Request, Evidence,
+Evaluation metric dimensions reached from `PnrObjectiveProjection` provide
+ephemeral `Q` guidance. Those dimensions create no formal Request, Evidence,
 or pre-publication gate obligation. Formal quality-gate truth and candidate
-selection remain post-publication `Promote` behavior. PnR sees only the exact
-resolved projection and its deterministic `ObjectiveCode` evaluator.
+selection remain post-publication `Promote` behavior. A quality gate is never
+converted to a numeric deviation.
 
 ```text
-energy(candidate) = ObjectiveCode(candidate)
+energy(candidate) =
+  value(PnrObjectiveProjection.search_energy, ObjectiveVector(candidate))
 
 rank(candidate) =
-  (ObjectiveCode ascending,
+  (TotalOrdering.weighted_level_values lexicographically ascending,
    canonical candidate semantic key ascending)
 
 reward(old, new) =
-  signed_difference(ObjectiveCode(old), ObjectiveCode(new))
+  signed_difference(energy(old), energy(new))
 ```
 
-The semantic candidate key breaks equal-code rank ties but does not enter the
-annealing delta. Seed initialization, negotiated best iterate, annealing,
-focused closure, repair, final rank, and RL all call this same evaluator. PnR
-does not own another score, gate, direction, normalization, or ordering.
+The semantic candidate key breaks equal-rank ties but does not enter the
+annealing delta. Seed initialization, negotiated best iterate, focused
+closure, repair, and final local rank consume the same resolved
+TotalOrdering. Annealing and RL consume the explicitly selected
+SearchEnergyRef.
+Pareto remains a post-publication central Promote operation over the shared
+ObjectiveVector dimensions. PnR does not own another score, gate, direction,
+normalization, or ordering.
 
 ### Annealing And Replay
 
@@ -1402,7 +1628,8 @@ may continue only after route preparation has left every net as either a
 complete valid Route Tree or an explicit policy-admitted unrouted violation;
 partial trees are forbidden. It then establishes authoritative `fullPnrCost`
 for `V/G`, every exact resolved hot-model input for `Q`, and the central
-objective code required by the annealer.
+ObjectiveVector, TotalOrdering rank, and SearchEnergyRef required by the
+search.
 
 The PnR generator runs every viable fixed attempt as its own restart with the
 original stable attempt ordinal; failed attempts are not refilled. Each restart
@@ -1415,8 +1642,9 @@ candidate set.
 The annealer interleaves binding, routing, and resource Actions. There is no
 global placement freeze before routing. A binding move performs bounded local
 route closure for incident nets in the same transaction. A
-`TransportRoutingAction` explicitly requests whole-net, subtree, sink-subset,
-region, or global negotiated routing. Full-design negotiation occurs only in
+`TransportRoutingAction` explicitly selects `WholeNet`, `SingleSink`,
+`RootedSubtree`, `WitnessRegion`, or `Global` negotiated routing. Full-design
+negotiation occurs only in
 the initializer, an explicitly configured routing Action, or final global
 closure; it is never an implicit temperature-boundary mutation. The final
 global negotiated closure is the last budgeted `TransportRoutingAction` and
@@ -1437,9 +1665,11 @@ the ordinary SystemMapping.
 Every viable restart candidate receives the same deterministic focused timing
 and buffer closure. The already resolved ephemeral Evaluation binding first
 runs the full oracle for its selected model; this creates no formal Request,
-Evidence, or Artifact. Closure is triggered only by a nonzero central quality-
-gate deviation or typed metric explicitly selected for QoR polish by
-SearchPolicy. Mapping owns no private frequency, timing, or buffer target.
+Evidence, or Artifact. Closure is triggered only when a metric dimension in
+`PnrObjectiveProjection.focused_closure_dimensions` has nonzero directed code.
+The dimension uses the central source, bound, and quantization contract;
+Mapping owns no private frequency, timing, buffer target, or quality-gate
+deviation.
 
 An ephemeral `ClosureRegion` is derived from Evaluation critical paths,
 recurrences, bottlenecks, and findings, then expanded through the ordinary
@@ -1449,24 +1679,29 @@ witness first, optional Evaluation priority descending, and canonical Action
 key. Each probe uses `MoveTransaction`; only the strictly best rank-improving
 Action commits. Equal rank does not commit, and there is no random acceptance.
 
-Closure stops when all selected QoR deviations reach zero, no strict
-improvement exists, the deterministic proposal budget is exhausted, or a
-required hot Evaluation binding fails. It then runs full Mapping and
-Evaluation checkpoints. Remaining Mapping `V` must enter bounded exact repair
-or prevent finalization. Remaining `Q` may enter repair when SearchPolicy asks
-for it, but cannot prevent publication of a base-valid Mapping that passes the
-exact `K` admission; only post-publication `Promote` applies formal
-quality gates. Finalization cannot silently repair either class.
+Closure stops when every selected metric dimension reaches directed code zero,
+no strict improvement exists, the deterministic proposal budget is
+exhausted, or a required hot Evaluation binding fails. It then runs full
+Mapping and Evaluation checkpoints. Remaining Mapping `V` must enter bounded
+exact repair or prevent finalization. Remaining `Q` may enter repair when
+SearchPolicy asks for it, but cannot prevent publication of a base-valid
+Mapping that passes the exact `K` admission; only post-publication `Promote`
+applies formal quality gates. Finalization cannot silently repair either
+class.
 
 ### Bounded Exact Repair
 
-Exact repair is either disabled or the explicitly selected in-process C++
-OR-Tools `CpSat_1_0` protocol. It solves only a complete bounded dependency
-region derived from one canonical unresolved Mapping or Evaluation witness.
-The ephemeral inputs are `FrozenModel`, resolved `C`, current `CandidateState`,
-the closed conflict region, and the exact Evaluation model and constraint
-identities. There is no repair artifact, alternate candidate authority,
-solver plugin schema, Python path, or external solver binary.
+Loom builds one required in-process C++ OR-Tools `CpSat_1_0` adapter pinned to
+OR-Tools v9.15 commit
+`551ad10d94835c99e5e1e684500d3db398c0e345`. SearchPolicy decides whether a
+candidate has bounded exact-repair work; adapter availability is not a runtime
+provider alternative. There is no repair artifact, alternate candidate
+authority, solver plugin schema, Python path, or external solver binary.
+
+The adapter solves only a complete bounded dependency region derived from one
+canonical unresolved Mapping or Evaluation witness. The ephemeral inputs are
+`FrozenModel`, resolved `C`, current `CandidateState`, the closed conflict
+region, and the exact Evaluation model and constraint identities.
 
 Region closure includes affected realizations, nets and route branches,
 attachments, contexts, tags, buffers, memory and service bindings,
@@ -1475,14 +1710,55 @@ are fixed and their claims are subtracted from available capacity. If the
 complete closure exceeds `max_region_decisions`, the result is
 `RegionTooLarge`; truncation is forbidden.
 
+The repair policy owns exactly two semantic work limits:
+
+```text
+max_region_decisions
+max_solver_calls
+```
+
+One model decision admitted to the complete closed region consumes one region
+decision. Every call into CP-SAT consumes one solver call before cache or
+result reuse. OR-Tools branch count, conflict count, wall time, and
+`deterministic_time` are not Loom semantic work units. Wall-time, memory, and
+cancellation controls may interrupt execution, but an interrupted repair
+cannot change the original candidate.
+
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
 variants. One `MoveTransaction` applies the batch atomically. Mapping hard
-constraints and exactly representable objective terms may enter the solver.
+constraints and the exactly representable WeightedLevel selected by
+`PnrObjectiveProjection.search_energy` may enter the solver. TotalOrdering and
+Pareto are not flattened into a solver-private scalar.
 Approximate Evaluation information may order exploration but cannot prove
 feasibility. When required `Q` is not exactly encodable, Mapping-feasible
 assignments are reconstructed in canonical order and checked by the exact
 full Evaluation model under its deterministic evaluation budget.
+
+Every solver call uses one worker, the fixed restart-derived seed, integer
+decision and objective encodings, and the complete explicit `CpSat_1_0`
+parameter record. The adapter does not request an unordered solution pool.
+Only `OPTIMAL` and `INFEASIBLE` are proof-bearing statuses. `FEASIBLE` is an
+unproven incumbent, `UNKNOWN` is unproven termination, and `MODEL_INVALID` is
+an adapter `InternalError`.
+
+Canonical extraction is one fixed protocol:
+
+1. solve the exact selected repair objective, when present, and require
+   `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;
+2. fix the proven objective value in the model;
+3. visit decision variables in canonical typed decision-key order;
+4. test each variable's legal values in canonical order using pure feasibility
+   calls, fixing the first value that returns `OPTIMAL` and skipping values
+   that return `INFEASIBLE`; and
+5. require one complete assignment, then rebuild and verify it through the
+   ordinary Mapping and exact Evaluation owners.
+
+This yields the lexicographically smallest assignment among exact optimum, or
+among exact feasible assignments when no objective is present. A `FEASIBLE`,
+`UNKNOWN`, execution interruption, or exhaustion of `max_solver_calls` at any
+point returns `UnknownBudgetExhausted` before mutation. The order in which
+OR-Tools discovers incumbents is never observable.
 
 The result vocabulary is:
 
@@ -1497,10 +1773,12 @@ InternalError
 
 Only an exhaustive whole-candidate domain with every required constraint
 exactly represented, or exhaustive finite enumeration with full Evaluation,
-can be reported as global `ProvenInfeasible`. The adapter uses one CP-SAT
-worker, a seed derived from the restart's `ExactRepair` stream, and a pinned
-deterministic work limit. Budget exhaustion leaves the original candidate
-unchanged.
+can be reported as global `ProvenInfeasible`. A local `INFEASIBLE` result is
+only `RegionInfeasibleUnderFixedBoundary`. It becomes global
+`ProvenInfeasible` only when that region is the complete candidate domain and
+all required Mapping and Evaluation constraints are represented exactly.
+Approximate `Q` can never support that proof. Every non-repaired outcome leaves
+the original candidate unchanged.
 
 ## Evaluation Transaction
 
@@ -1510,7 +1788,9 @@ Every Action uses one online protocol:
 S' = ApplyAndClose(S, Action) in shadow state
 VG' = exact Mapping incremental evaluation of S'
 Q'  = exact resolved EvaluationModel evaluation of S'
-code' = ObjectiveProjection(VG', Q')
+vector' = ObjectiveVector(VG', Q')
+rank' = TotalOrdering(vector')
+energy' = value(PnrObjectiveProjection.search_energy, vector')
 accept or reject
 commit or roll back Mapping and Evaluation state atomically
 ```
@@ -1638,10 +1918,17 @@ Tests protect semantic anchors rather than implementation shape:
   rejection of result-time subjects and extension escapes;
 * deterministic aggregate freeze, MLIR-to-native projection, factorized
   domains, cache framing, native index capacity, and derived work-budget view;
+* System `H` Presburger and stable-key partitions, overlap/gap and target-in-
+  shape rejection, same-target canonical merge, and changed-view digest with
+  unchanged possible Mapping identity;
 * complete internal-edge accounting for configured FU, configured
   `fabric.mem`, temporal register-file absorption, and residual logical nets;
 * endpoint-only A*, multi-sink route trees, explicit broadcast, checked route
-  cost, PathFinder net order and termination, and all negotiation kernels;
+  cost, PathFinder net order and termination, all negotiation kernels, and the
+  five closed TransportRouting scopes without arbitrary sink subsets;
+* raw capacity legality versus Q32 cost-only normalization, including a legal
+  set of small claims whose individually rounded costs exceed one capacity
+  unit, normalized history update, and shared-prefix `G` accounting;
 * route-wide widening acceptance plus rejection of a narrowing bottleneck or
   attempted payload borrowing from tag bits;
 * exact memory access-form, element, lane, mask, and use-pattern domain freeze,
@@ -1652,10 +1939,13 @@ Tests protect semantic anchors rather than implementation shape:
 * atomic Action commit and rollback across placement, routes, resources, and
   exact preflighted Evaluation adapters without candidate copying;
 * stable logical slots across cache, retry, replicate, and resume; fixed seed
-  attempts; central `Promote` separation; replay-stable annealing; focused
-  closure; and exact-repair taxonomy;
-* shared objective dimensions, CNF truth/deviation agreement, independent full
-  `V/G` and `Q`, objective code, base verification, and exact admission;
+  attempts; deterministic initializer backtracking and Action selection;
+  central `Promote` separation; replay-stable annealing; focused closure; and
+  exact-repair taxonomy, proof-bearing statuses, solver-call budget, and
+  lexicographically canonical extraction;
+* shared objective dimensions, three-valued CNF truth, independent full `V/G`
+  and `Q`, TotalOrdering versus SearchEnergy separation, base verification,
+  and exact admission;
 * `ServicePlan` versus `ResourceUse` ownership, trigger/release and atomic
   activation derivation, progress outcome classification, and hierarchical/flat
   persistent-result equivalence.

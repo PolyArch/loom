@@ -3,7 +3,8 @@
 This document is the authority for observable verification behavior of the
 three immutable Mapping profiles. `docs/spec-mapping-artifact.md` owns their
 persistent records and schema. `docs/spec-mapping-identity.md` owns identity
-and reference semantics. `docs/spec-pnr.md` owns the complete Spatial and
+and reference semantics. `docs/spec-tech-mapping.md` owns production
+TechMapping generation, while `docs/spec-pnr.md` owns the complete Spatial and
 System MappingConstraintSet family and admission algebra.
 
 A profile verifier proves intrinsic legality and closure for one complete

@@ -1037,35 +1037,173 @@ only canonical input and output Artifact sets.
 
 ### Objectives and Quality Gates
 
-One central dimension type owns the fact being optimized and its direction:
+One central dimension type owns the fact being optimized, its direction, and
+its exact normalization:
 
 ```text
 ObjectiveDimension {
   source: ObjectiveScalarSourceRef
   direction: Minimize | Maximize
+  normalization: ExactAffineQuantization
 }
 ```
 
-`TopK` references a `TotalOrdering` composed from ordered weighted levels;
-`Pareto` references a canonical nonempty set of the same dimensions. Domain
-objective projections derive from the same dimensions and ordering. Source,
-direction, normalization, rank, energy, and reward therefore have one semantic
-owner and are not Evaluation outputs.
+The source algebra is closed:
+
+```text
+ObjectiveScalarSourceRef =
+    MappingViolationSource(MappingViolationDescriptorRef)
+  | MappingMeasureSource(MappingMeasureDescriptorRef)
+  | EvaluationMetricSource(EvidenceObligationTemplateRef,
+                           MetricRequestOrdinal)
+```
+
+`EvidenceObligationTemplateRef` is the canonical local ordinal in the exact
+ResolvedDseConfigView obligation-template table. It is meaningful only with
+that component view and never becomes a persistent cross-config reference.
+
+Mapping owns the referenced `V` and `G` descriptor semantics. The resolved DSE
+configuration owns only the typed references. An Evaluation source resolves
+one exact metric request in one obligation template. Its Metric descriptor
+must have scalar `IntegerValue` or `DecimalValue` form, and the source accepts
+only a Completed `Point` observation. A non-scalar Point, `Interval`,
+`Censored`, `NotApplicable`, a missing result, or any non-Completed Evidence
+outcome makes that objective source `ObjectiveUnavailable`; no midpoint,
+bound, zero, infinity, NaN, or provider fallback is permitted.
+
+The quantization record is:
+
+```text
+ExactAffineQuantization {
+  origin: exact value in the source value domain
+  quantum: positive exact value in the same domain and unit
+  lower_index: uint64
+  upper_index: uint64
+}
+```
+
+`lower_index <= upper_index`. Integer and canonical `DecimalValue` inputs are
+converted to exact rational arithmetic without binary floating point. For
+source value `x`:
+
+```text
+index = floor((x - origin) / quantum)
+require lower_index <= index <= upper_index
+
+directed_code(Minimize) = index - lower_index
+directed_code(Maximize) = upper_index - index
+```
+
+The result is a bounded `uint64`. Mapping integer sources use `origin = 0` and
+`quantum = 1`; their declared bounds still remain explicit. Every conversion,
+subtraction, division, product, sum, and bound calculation is checked. An
+out-of-domain value or arithmetic overflow is a resolved-policy or model
+contract failure, never a clamp or candidate penalty.
+
+The resolved configuration assigns canonical local references to dimensions
+and derives exactly these three consumers:
+
+```text
+ObjectiveVector = canonical sequence<(ObjectiveDimensionRef, uint64 code)>
+
+WeightedLevel {
+  canonical non-empty sequence<{
+    dimension: ObjectiveDimensionRef
+    weight: positive uint64
+  }>
+}
+
+TotalOrdering = ordered non-empty sequence<WeightedLevelRef>
+
+SearchEnergyRef = WeightedLevelRef
+```
+
+Dimensions are unique and sorted by complete source key, direction, origin,
+quantum, and bounds before `ObjectiveDimensionRef` ordinals are assigned.
+ObjectiveVector follows ascending dimension ordinal. Canonical integer and
+DecimalValue codecs from the metric registry encode origin and quantum; there
+is no text-number or binary-floating representation. WeightedLevels are
+normalized before duplicate elimination and `WeightedLevelRef` assignment.
+TotalOrdering level order remains semantic and is not sorted; duplicate level
+references are invalid. Pareto dimension references form a sorted unique set.
+`SearchEnergyRef` is a role-specific use of an existing `WeightedLevelRef`; it
+does not create a second registry, ordinal, or record.
+
+A `WeightedLevel` sorts terms by dimension reference, rejects duplicate
+dimensions, and divides all weights by their greatest common divisor. Its
+value is the checked `uint128` sum of `weight * directed_code`. Its signed
+difference is represented as a sign plus a checked `uint128` magnitude, so the
+difference of two valid level values cannot overflow a signed host integer.
+
+`TotalOrdering` compares WeightedLevel values lexicographically, then compares
+the canonical candidate semantic key. `TopK` references one TotalOrdering.
+`Pareto` references a canonical non-empty dimension set and uses componentwise
+comparison over the corresponding ObjectiveVector codes. A domain search
+policy that needs annealing energy or reward references one SearchEnergyRef;
+energy is that one WeightedLevel value and reward is its signed difference.
+
+Objective facts and normalized dimension codes therefore have one owner, but
+total rank, Pareto dominance, and local search energy remain distinct derived
+projections. There is no universal mixed-radix objective code, hidden domain
+score, or implicit conversion between these consumers.
 
 A quality gate is finite canonical conjunctive normal form:
 
 ```text
 QualityGatePolicy =
   canonical AND<canonical nonempty OR<QualityGateAtom>>
+
+QualityGateAtom = MetricGate | FindingGate
+
+MetricGate {
+  metric: (EvidenceObligationTemplateRef, MetricRequestOrdinal)
+  comparator: LT | LE | EQ | NE | GE | GT
+  threshold: exact value in the metric's canonical value domain and unit
+}
+
+FindingGate {
+  finding: (EvidenceObligationTemplateRef, FindingRequestOrdinal)
+  required_state: Present | Absent
+}
 ```
 
-The only atoms are typed `MetricGate` and `FindingGate`. An empty policy means
-no quality constraint; an empty clause is invalid. Finalization canonicalizes
-clauses and removes duplicates. It does not add a predicate language,
-callbacks, SAT representation, or Boolean-equivalence engine. Every referenced
-atom creates an Evidence obligation, so Boolean short-circuiting does not hide
-required evaluation. Clause deviation may guide search, but final acceptance
-uses CNF truth rather than a weighted penalty.
+An empty policy means no quality constraint; an empty clause is invalid.
+Finalization validates each request-local reference and threshold, sorts atoms
+and clauses by their complete canonical keys, and removes exact duplicates. It
+does not add a predicate language, callbacks, SAT representation, or Boolean-
+equivalence engine. Every referenced atom creates an Evidence obligation, so
+Boolean short-circuiting cannot suppress acquisition of required Evidence.
+
+Gate comparison uses exactly three proof values:
+
+```text
+GateTruth = DefinitelyTrue | DefinitelyFalse | Indeterminate
+```
+
+The metric registry defines the set of exact values represented by a Point,
+Interval, or Censored observation. A MetricGate is `DefinitelyTrue` only when
+every represented value satisfies the comparator and threshold, and
+`DefinitelyFalse` only when no represented value satisfies it. A straddling
+set is `Indeterminate`. If the registered censored form does not establish a
+closed represented set sufficient for either proof, the result is
+`Indeterminate`. `NotApplicable` is also `Indeterminate`.
+
+A FindingGate compares the completed result state directly. The requested
+state is `DefinitelyTrue`, the opposite `Present` or `Absent` state is
+`DefinitelyFalse`, and `NotApplicable` is `Indeterminate`. Missing,
+Unsupported, ExecutionFailed, and CancelledOrTimeout results remain incomplete
+Evidence obligations rather than gate truth values.
+
+Every referenced atom is required. If any atom is `Indeterminate`, promotion
+returns `Incomplete` before Boolean CNF selection even when another atom in
+the same disjunction is definitely true. Once every atom is determinate, OR
+and AND use their ordinary Boolean definitions. Incomplete Evidence has the
+same promotion outcome. Neither case can remove or accept the candidate
+through a fallback value.
+
+Quality gates own acceptance only. There is no numeric gate-deviation source.
+Search guidance must reference the underlying Metric as an explicit
+ObjectiveDimension; a Finding does not acquire an implicit severity score.
 
 ### Resolved Configuration View
 
@@ -1075,7 +1213,9 @@ The fully elaborated component view is:
 ResolvedDseConfigView {
   model_authorizations
   evidence_obligation_templates
-  objective_dimensions_and_orderings
+  objective_dimensions_with_exact_affine_quantizations
+  weighted_levels
+  total_orderings
   quality_gate_policies
   resolved_plan_nodes
 }
@@ -1271,16 +1411,19 @@ Mapping and Evaluation meet through `CostVector = (V, G, Q)`:
 
 - Mapping owns `V`, the closed typed set of temporary closure violations
   recomputed from Fabric contracts and Mapping selections.
-- Mapping owns `G`, domain-independent PnR costs derived from topology,
-  connectivity, routes, occupancy, distance, and generic congestion.
+- Mapping owns `G`, the closed domain-independent PnR measure catalog. Its
+  initial member is the normalized total selected traversal claim defined by
+  the PnR owner; dynamic congestion prices and search state are excluded.
 - Evaluation owns `Q`, accelerator-aware metrics and findings such as latency,
   throughput, timing, memory performance, area, power, and energy.
 
 Structural invalidity is rejected directly. Mapping does not copy `Q`, and
 Evaluation does not copy Mapping legality. Central resolved policy projects
-`V`, `G`, and `Q` into ranking, search energy, reward, and quality gates. A
-finalizable Mapping has no remaining `V`; failure of a quality gate over `Q`
-does not become Mapping illegality.
+`V`, `G`, and Point-valued `Q` into shared objective dimensions and derives
+ranking, Pareto dominance, search energy, and reward. Quality gates consume
+their exact Evaluation metric or finding requests directly. A finalizable
+Mapping has no remaining `V`; failure of a quality gate over `Q` does not
+become Mapping illegality.
 
 PnR may use an ephemeral domain-specific incremental adapter for hot probes.
 Its full model remains the oracle, its cache is removable, and probes create no
@@ -1327,7 +1470,9 @@ The closed core has one owner for every semantic fact:
   each Artifact family owns its imported local target references;
 - the condition registry owns condition payload, location, assignment-key, and
   canonicalization semantics;
-- `ObjectiveDimension`, ordering, and CNF gates own optimization policy;
+- `ObjectiveDimension`, exact affine quantization, ObjectiveVector,
+  WeightedLevel, TotalOrdering, SearchEnergy, and three-valued CNF gates own
+  optimization policy;
 - `PlanOutputRef` owns all typed plan use-def, while Generate and Promote own
   central candidate expansion, Evidence acquisition, and narrowing;
 - owner policies own semantic work limits;
@@ -1364,6 +1509,16 @@ Only these stable semantic anchors belong at this boundary:
 - Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
   replay or resume with the same run closure and stable work ordinals produces
   the same formal selection as uninterrupted execution.
+- Exact affine quantization covers Minimize and Maximize direction, decimal and
+  integer inputs, explicit bounds, overflow rejection, and no floating-point
+  or clamping path.
+- TotalOrdering, Pareto, and SearchEnergy consume the same dimension codes but
+  preserve lexicographic, componentwise, and local-energy semantics
+  respectively; changing an unrelated dimension bound cannot rescale the
+  selected SearchEnergy.
+- Metric Point, interval, censored, and NotApplicable observations and Finding
+  states exercise definitely true, definitely false, and indeterminate CNF
+  outcomes without a numeric gate-deviation projection.
 - Template, Fabric rewrite, and implementation-flow generators preserve their
   distinct typed owners while the central plan composes and deduplicates their
   ordinary Artifact outputs.

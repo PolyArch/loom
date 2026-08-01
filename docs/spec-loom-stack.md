@@ -291,7 +291,9 @@ Mapping persistence is specified by [Mapping Artifact](spec-mapping-artifact.md)
 and [Mapping Identity](spec-mapping-identity.md). Fabric-local persistent
 targets are owned by
 [Fabric Persistent Identity And References](spec-fabric-identity.md). The PnR
-algorithm and native state are owned by [Place And Route](spec-pnr.md).
+algorithm and native state are owned by [Place And Route](spec-pnr.md), while
+the production semantic-realization generator is owned by
+[TechMapping Generation](spec-tech-mapping.md).
 Focused Mapping specs are derived views of those owners, not parallel schemas.
 
 ## Simulation And Backend Evidence
@@ -592,6 +594,12 @@ the revision selected by the CMSIS-NN validation owner. It supplies the real
 CMSIS-NN assertion runtime and runner ABI only; it is not a Loom product
 runtime, compiler semantic registry, or distributed dependency of generated
 accelerator programs.
+
+OR-Tools is an unmodified upstream submodule at `externals/or-tools`, pinned to
+v9.15 commit `551ad10d94835c99e5e1e684500d3db398c0e345`. Loom links its
+in-process C++ CP-SAT library only through the bounded exact-repair adapter
+owned by [Place And Route](spec-pnr.md). It is not a plugin, external solver
+binary, Python runtime dependency, or TechMapping search authority.
 
 ## Verification Boundary
 
