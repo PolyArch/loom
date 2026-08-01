@@ -512,10 +512,13 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 runner_path.parent.parent / runner_path.name.replace("_runner", ""),
             )
             self.assertTrue(authoritative_owner.is_file())
-        self.assertIn(
-            "target_compile_options(${target} PRIVATE -fno-inline-functions)",
-            (harness.source_dir / "CMakeLists.txt").read_text(),
-        )
+        cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+        for workload in workloads:
+            self.assertIn(
+                f"target_compile_options({workload.executable} PRIVATE "
+                "-fno-inline-functions)",
+                cmake,
+            )
 
     def test_cmsis_nn_harness_isolates_profiles_of_the_same_test(self) -> None:
         workloads = tuple(
@@ -573,7 +576,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn("arm_convolve_1x1_s8_fast", protocol)
         self.assertIn('"TestCases/TestData/kernel1x1/test_data.h"', source)
         self.assertIn("kernel1x1_output_ref", source)
-        self.assertIn("return oracle_matches(output) ? 0 : 1;", source)
+        self.assertIn(
+            "output[index] != kernel1x1_output_ref[index]",
+            source,
+        )
         cmake = (harness.source_dir / "CMakeLists.txt").read_text()
         self.assertNotIn("LOOM_UNITY_SOURCE", cmake)
         self.assertNotIn("target_link_libraries", cmake)

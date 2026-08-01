@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed generated-public CMSIS-NN workload protocols."""
+"""Typed generated CMSIS-NN workload protocols."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 import corpus_inventory
+import corpus_nn_convolution
 import corpus_nn_layout
 import corpus_nn_lstm
 import corpus_nn_matrix
@@ -1579,12 +1580,20 @@ def _owned_path(raw_path: str, external_root: Path) -> Path:
 
 
 def _declaration_owner(
-    producer: corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+    workload: corpus_inventory.ProgramWorkload,
     external_root: Path,
 ) -> Path:
-    declaration = re.compile(
-        rf"\b{re.escape(producer.public_symbol)}\s*\([^;{{}}]*\)\s*(?:;|{{)",
-        re.DOTALL,
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisNnGeneratedWorkloadProducer):
+        raise WorkloadProviderError(
+            f"workload is not a generated CMSIS-NN protocol: {workload.identity}"
+        )
+    declarations = tuple(
+        re.compile(
+            rf"\b{re.escape(call.symbol)}\s*\([^;{{}}]*\)\s*(?:;|{{)",
+            re.DOTALL,
+        )
+        for call in workload.protocol
     )
     owners = [
         owner
@@ -1592,22 +1601,25 @@ def _declaration_owner(
             _owned_path(definition, external_root)
             for definition in producer.definitions
         )
-        if declaration.search(owner.read_text(encoding="utf-8"))
+        if all(
+            declaration.search(owner.read_text(encoding="utf-8"))
+            for declaration in declarations
+        )
     ]
     if len(owners) != 1:
         raise WorkloadProviderError(
-            "generated CMSIS-NN protocol must resolve one public declaration: "
-            f"{producer.public_symbol}"
+            "generated CMSIS-NN protocol must resolve one declaration owner: "
+            f"{workload.identity}"
         )
     return owners[0]
 
 
 def _compiled_definition_owner(
-    producer: corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+    symbol: str,
     source_owners: tuple[Path, ...],
 ) -> Path:
     definition = re.compile(
-        rf"\b{re.escape(producer.public_symbol)}\s*\([^;{{}}]*\)\s*{{",
+        rf"\b{re.escape(symbol)}\s*\([^;{{}}]*\)\s*{{",
         re.DOTALL,
     )
     owners = [
@@ -1618,7 +1630,7 @@ def _compiled_definition_owner(
     if len(owners) != 1:
         raise WorkloadProviderError(
             "generated CMSIS-NN protocol must resolve one compiled definition: "
-            f"{producer.public_symbol}"
+            f"{symbol}"
         )
     return owners[0]
 
@@ -1638,7 +1650,25 @@ def render_generated_cmsis_nn_protocol(
         raise WorkloadProviderError(
             f"generated CMSIS-NN protocol is unsupported: {workload.identity}"
         )
-    header_only = producer.public_symbol in _HEADER_ONLY_PROTOCOLS
+    if workload.target_profile != corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE:
+        raise WorkloadProviderError(
+            f"generated CMSIS-NN protocol has an unsupported target: {workload.identity}"
+        )
+    if producer.selector_kind == "generated-protocol":
+        if not workload.sources:
+            raise WorkloadProviderError(
+                "generated CMSIS-NN protocol has an empty implementation closure: "
+                f"{workload.identity}"
+            )
+        return GeneratedCmsisNnProtocol(
+            source=renderer(wrapper_symbol),
+            protocol_symbol=wrapper_symbol,
+            compiled_owner=None,
+            authoritative_owner=_declaration_owner(workload, external_root),
+        )
+
+    public_symbol = workload.protocol[0].symbol
+    header_only = public_symbol in _HEADER_ONLY_PROTOCOLS
     if header_only and workload.sources:
         raise WorkloadProviderError(
             "generated CMSIS-NN protocol has an invalid implementation closure: "
@@ -1653,13 +1683,15 @@ def render_generated_cmsis_nn_protocol(
         _owned_path(source, external_root) for source in workload.sources
     )
     compiled_owner = (
-        None if header_only else _compiled_definition_owner(producer, source_owners)
+        None
+        if header_only
+        else _compiled_definition_owner(public_symbol, source_owners)
     )
     return GeneratedCmsisNnProtocol(
         source=renderer(wrapper_symbol),
-        protocol_symbol=wrapper_symbol if header_only else producer.public_symbol,
+        protocol_symbol=wrapper_symbol if header_only else public_symbol,
         compiled_owner=compiled_owner,
-        authoritative_owner=_declaration_owner(producer, external_root),
+        authoritative_owner=_declaration_owner(workload, external_root),
     )
 
 
@@ -1669,13 +1701,16 @@ def _renderer_for(
     producer = workload.producer
     if not isinstance(producer, corpus_inventory.CmsisNnGeneratedWorkloadProducer):
         return None
+    if workload.target_profile != corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE:
+        return None
     calls = tuple((call.symbol, call.signature) for call in workload.protocol)
+    if producer.selector_kind == "generated-protocol":
+        return corpus_nn_convolution.renderer_for(workload)
     if (
-        len(calls) != 1
-        or producer.public_symbol != calls[0][0]
-        or workload.target_profile != corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE
+        producer.selector_kind != "generated-public"
+        or len(calls) != 1
         or workload.oracle.kind != "generated-native-reference"
-        or workload.oracle.path != producer.public_symbol
+        or workload.oracle.path != calls[0][0]
     ):
         return None
     return (

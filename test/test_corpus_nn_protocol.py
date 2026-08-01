@@ -38,6 +38,67 @@ def _workload_any_profile(case: str) -> corpus_inventory.ProgramWorkload:
 
 
 class GeneratedCmsisNnProtocolTest(unittest.TestCase):
+    def test_generated_convolution_protocols_preserve_atomic_call_sequences(
+        self,
+    ) -> None:
+        expectations = {
+            "cmsis-nn:arm-convolve-1x1-s8-fast:e4fc696adf47aaf4": "kernel1x1",
+            "cmsis-nn:arm-convolve-1-x-n-s8:2cc042282d20eae9": (
+                "conv_1_x_n_6_generic"
+            ),
+            "cmsis-nn:arm-depthwise-conv-wrapper-s8:ebf14bd1129c3b78": (
+                "depthwise_kernel_3x3"
+            ),
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        workloads = corpus_inventory.load_workload_inventory(ROOT)
+
+        for identity, test_data in expectations.items():
+            with self.subTest(identity=identity):
+                workload = next(row for row in workloads if row.identity == identity)
+                self.assertIsInstance(
+                    workload.producer,
+                    corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+                )
+                self.assertEqual(workload.producer.selector_kind, "generated-protocol")
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source_path = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    )
+                    source = source_path.read_text()
+
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable),
+                    ("loom_corpus_operator_protocol",),
+                )
+                protocol = source.split("int main(void)", maxsplit=1)[0]
+                for call in workload.protocol:
+                    self.assertIn(f"{call.symbol}(", protocol)
+                self.assertIn(
+                    f'"TestCases/TestData/{test_data}/test_data.h"',
+                    source,
+                )
+                self.assertIn("output_ref", source)
+                self.assertEqual(
+                    harness.protocol_source_owner(workload.executable),
+                    (
+                        source_path,
+                        external_root
+                        / "cmsis-nn"
+                        / "Include"
+                        / "arm_nnfunctions.h",
+                    ),
+                )
+
     def test_generated_layout_protocols_own_production_sources(self) -> None:
         expectations = {
             "arm-pad-s8": (
@@ -94,7 +155,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
             workload.producer,
             corpus_inventory.CmsisNnGeneratedWorkloadProducer,
         )
-        self.assertEqual(workload.producer.public_symbol, "arm_relu_q7")
+        self.assertEqual(workload.producer.selector_kind, "generated-public")
+        self.assertEqual(workload.protocol[0].symbol, "arm_relu_q7")
         self.assertEqual(
             workload.producer.definitions,
             (

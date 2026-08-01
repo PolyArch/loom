@@ -107,17 +107,17 @@ class CmsisNnWorkloadProducer:
 class CmsisNnGeneratedWorkloadProducer:
     definitions: tuple[str, ...]
     variant: str
-    public_symbol: str
+    selector_kind: str
 
     @property
     def kind(self) -> str:
-        return "cmsis-nn-generated-public"
+        return "cmsis-nn-generated-protocol"
 
     def as_dict(self) -> dict[str, str | list[str]]:
         return {
             "definitions": list(self.definitions),
             "kind": self.kind,
-            "public_symbol": self.public_symbol,
+            "selector_kind": self.selector_kind,
             "variant": self.variant,
         }
 
@@ -688,7 +688,38 @@ def _parse_operator_gate_workload(
         producer = CmsisNnGeneratedWorkloadProducer(
             definitions=definitions,
             variant=producer_variant,
-            public_symbol=public_symbol,
+            selector_kind=selector_kind,
+        )
+        executable = operator_workload_target(operator_id)
+    elif (
+        producer_kind == "cmsis-nn-operator-harness"
+        and selector_kind == "generated-protocol"
+    ):
+        if set(selector) != {"kind", "ordinal"} or selector["ordinal"] != 0:
+            raise InventoryError(
+                "generated CMSIS-NN protocol must select its sole vector"
+            )
+        if len(protocol) < 2:
+            raise InventoryError(
+                "generated CMSIS-NN protocol must own multiple public calls"
+            )
+        protocol_identity = "+".join(call.symbol for call in protocol)
+        expected_identity = f"generated-protocol:{protocol_identity}:0"
+        if vector_identity != expected_identity:
+            raise InventoryError(
+                "generated CMSIS-NN identity does not match its public calls"
+            )
+        if (
+            oracle.kind != "cmsis-nn-test-data"
+            or oracle.path != protocol_identity
+        ):
+            raise InventoryError(
+                "generated CMSIS-NN protocol lacks its exact test-data oracle"
+            )
+        producer = CmsisNnGeneratedWorkloadProducer(
+            definitions=definitions,
+            variant=producer_variant,
+            selector_kind=selector_kind,
         )
         executable = operator_workload_target(operator_id)
     else:
