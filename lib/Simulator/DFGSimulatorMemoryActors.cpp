@@ -501,13 +501,6 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
     }
 
     const std::uint64_t base = pointer->byteOffset.getLimitedValue();
-    if (base < static_cast<std::uint64_t>(view.byteOffset)) {
-      diagnostics.push_back(
-          (diagnosticLabel +
-           " pointer is outside the selected memory-service region")
-              .str());
-      return std::nullopt;
-    }
     slots.reserve(activeLanes.popcount());
     for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
       if (!activeLanes[lane])

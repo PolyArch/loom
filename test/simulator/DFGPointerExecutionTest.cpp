@@ -313,7 +313,7 @@ void pointerGepLoadPreservesObjectProvenance() {
                                            llvm::APInt(64, 0))}}}};
   inputDraft.memoryObjects = {std::move(object)};
   inputDraft.memoryRootBindings = {
-      RuntimeMemoryBindingDraft{rootAtService(view), 0, 0}};
+      RuntimeMemoryBindingDraft{rootAtService(view), 0, 12}};
   llvm::Expected<CanonicalSimulationRuntimeInput> input =
       finalizeSimulationRuntimeInput(inputDraft, *workload, view);
   if (!input)
