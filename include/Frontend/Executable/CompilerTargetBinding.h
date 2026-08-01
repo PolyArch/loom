@@ -14,6 +14,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -310,6 +311,12 @@ resolveSystemCompilerTargetBindings(const fabric::FinalizedFabricRoot &system,
 /// provider.
 llvm::Error validateModuleCompilerTarget(const llvm::Module &module,
                                          const CompilerTargetBinding &binding);
+
+/// Emits one relocatable object using only the exact target selection stored
+/// by the binding. The module is consumed and is never retargeted or repaired.
+llvm::Expected<std::vector<std::uint8_t>>
+emitCompilerTargetObject(std::unique_ptr<llvm::Module> module,
+                         const CompilerTargetBinding &binding);
 
 } // namespace loom
 

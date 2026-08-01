@@ -37,6 +37,7 @@ void initializeTargets() {
   std::call_once(once, [] {
     llvm::InitializeAllTargets();
     llvm::InitializeAllTargetMCs();
+    llvm::InitializeAllAsmPrinters();
   });
 }
 
@@ -206,10 +207,6 @@ llvm::Expected<ReconstructedCompilerTarget> reconstructCompilerTarget(
     return targetError("relocation_model_not_admitted",
                        "the Fabric architecture does not admit the selected "
                        "relocation model");
-  if (backendCpu.empty())
-    return targetError("backend_cpu_invalid", "backend CPU must be nonempty");
-
-  initializeTargets();
   ReconstructedCompilerTarget result;
   result.provider = buildSelectedLlvmProvider();
   result.targetTriple = targetTriple(architecture);
@@ -217,17 +214,40 @@ llvm::Expected<ReconstructedCompilerTarget> reconstructCompilerTarget(
   result.backendFeatures = targetFeatures(architecture);
   result.targetScopeBindings = targetScopes(architecture);
 
+  auto machine = createCompilerTargetMachine(
+      result.targetTriple, backendAbi, selectedCodeModel,
+      selectedRelocationModel, backendCpu, result.backendFeatures);
+  if (!machine)
+    return machine.takeError();
+  result.dataLayout = (*machine)->createDataLayout().getStringRepresentation();
+  if (result.dataLayout.empty())
+    return targetError("compiler_target_reconstruction_mismatch",
+                       "the selected target machine produced no DataLayout");
+  return result;
+}
+
+llvm::Expected<std::unique_ptr<llvm::TargetMachine>>
+createCompilerTargetMachine(llvm::StringRef targetTriple,
+                            fabric::RiscVAbi backendAbi,
+                            fabric::RiscVCodeModel selectedCodeModel,
+                            fabric::RelocationModel selectedRelocationModel,
+                            llvm::StringRef backendCpu,
+                            llvm::ArrayRef<std::string> backendFeatures) {
+  if (backendCpu.empty())
+    return targetError("backend_cpu_invalid", "backend CPU must be nonempty");
+
+  initializeTargets();
   std::string lookupError;
   const llvm::Target *target = llvm::TargetRegistry::lookupTarget(
-      llvm::Triple(result.targetTriple), lookupError);
+      llvm::Triple(targetTriple), lookupError);
   if (!target)
     return targetError("compiler_target_provider_unavailable",
                        "the pinned LLVM provider has no target for '" +
-                           result.targetTriple + "': " + lookupError);
-  const std::string featureString = llvm::join(result.backendFeatures, ",");
+                           targetTriple + "': " + lookupError);
+  const std::string featureString = llvm::join(backendFeatures, ",");
   std::unique_ptr<llvm::MCSubtargetInfo> subtarget(
-      target->createMCSubtargetInfo(llvm::Triple(result.targetTriple),
-                                    backendCpu, featureString));
+      target->createMCSubtargetInfo(llvm::Triple(targetTriple), backendCpu,
+                                    featureString));
   if (!subtarget || !subtarget->isCPUStringValid(backendCpu) ||
       !subtarget->checkFeatures(featureString))
     return targetError("compiler_target_provider_unavailable",
@@ -237,13 +257,13 @@ llvm::Expected<ReconstructedCompilerTarget> reconstructCompilerTarget(
   llvm::TargetOptions options;
   options.MCOptions.ABIName = abiSpelling(backendAbi).str();
   std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-      llvm::Triple(result.targetTriple), backendCpu, featureString, options,
+      llvm::Triple(targetTriple), backendCpu, featureString, options,
       relocationModel(selectedRelocationModel), codeModel(selectedCodeModel)));
   if (!machine)
     return targetError("compiler_target_provider_unavailable",
                        "the pinned LLVM provider could not construct the "
                        "selected target machine");
-  if (machine->getTargetTriple().normalize() != result.targetTriple ||
+  if (machine->getTargetTriple().normalize() != targetTriple ||
       machine->getTargetCPU() != backendCpu ||
       machine->getTargetFeatureString() != featureString ||
       machine->getRelocationModel() !=
@@ -252,11 +272,7 @@ llvm::Expected<ReconstructedCompilerTarget> reconstructCompilerTarget(
     return targetError("compiler_target_reconstruction_mismatch",
                        "the pinned LLVM provider changed an exact target "
                        "selection field");
-  result.dataLayout = machine->createDataLayout().getStringRepresentation();
-  if (result.dataLayout.empty())
-    return targetError("compiler_target_reconstruction_mismatch",
-                       "the selected target machine produced no DataLayout");
-  return result;
+  return machine;
 }
 
 } // namespace loom::detail

@@ -5,15 +5,21 @@
 
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -316,6 +322,47 @@ void systemCohortAndModuleTargetValidation() {
               "module_data_layout_mismatch");
 }
 
+void exactBindingEmitsRiscVObject() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  auto targets = take(test, loom::resolveSystemCompilerTargetBindings(
+                                design.roots().front(), policy(), store));
+  const auto &binding = targets.instructionGroups().front().binding().binding();
+
+  llvm::LLVMContext context;
+  auto module = std::make_unique<llvm::Module>("instruction", context);
+  module->setTargetTriple(llvm::Triple(binding.targetTriple()));
+  module->setDataLayout(binding.dataLayout());
+  llvm::Function *entry = llvm::Function::Create(
+      llvm::FunctionType::get(llvm::Type::getInt64Ty(context),
+                              {llvm::Type::getInt64Ty(context)}, false),
+      llvm::GlobalValue::ExternalLinkage, "loom_instruction_entry", *module);
+  llvm::BasicBlock *block = llvm::BasicBlock::Create(context, "entry", entry);
+  llvm::IRBuilder<> builder(block);
+  llvm::Value *argument = entry->getArg(0);
+  builder.CreateRet(builder.CreateAdd(argument, argument));
+
+  const std::vector<std::uint8_t> objectBytes =
+      take(test, loom::emitCompilerTargetObject(std::move(module), binding));
+  llvm::MemoryBufferRef objectBuffer(
+      llvm::StringRef(reinterpret_cast<const char *>(objectBytes.data()),
+                      objectBytes.size()),
+      "instruction.o");
+  auto object =
+      take(test, llvm::object::ObjectFile::createObjectFile(objectBuffer));
+  require(test, object->getArch() == llvm::Triple::riscv64,
+          "exact binding emitted a non-RISC-V object");
+  bool foundEntry = false;
+  for (const llvm::object::SymbolRef &symbol : object->symbols()) {
+    auto name = take(test, symbol.getName());
+    foundEntry |= name == "loom_instruction_entry";
+  }
+  require(test, foundEntry, "target object lost the instruction entry symbol");
+}
+
 } // namespace
 
 int main() {
@@ -323,5 +370,6 @@ int main() {
   bindingRoundTripAndCompatibility();
   invalidAbiAndTamperedFingerprintFailClosed();
   systemCohortAndModuleTargetValidation();
+  exactBindingEmitsRiscVObject();
   return 0;
 }

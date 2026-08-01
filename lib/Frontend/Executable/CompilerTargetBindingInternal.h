@@ -5,8 +5,13 @@
 
 #include "llvm/Support/Error.h"
 
+#include <memory>
 #include <string>
 #include <vector>
+
+namespace llvm {
+class TargetMachine;
+}
 
 namespace loom::detail {
 
@@ -43,6 +48,14 @@ llvm::Expected<ReconstructedCompilerTarget> reconstructCompilerTarget(
     const fabric::InstructionCoreArchitecturalContract &architecture,
     fabric::RiscVAbi backendAbi, fabric::RiscVCodeModel codeModel,
     fabric::RelocationModel relocationModel, llvm::StringRef backendCpu);
+
+llvm::Expected<std::unique_ptr<llvm::TargetMachine>>
+createCompilerTargetMachine(llvm::StringRef targetTriple,
+                            fabric::RiscVAbi backendAbi,
+                            fabric::RiscVCodeModel codeModel,
+                            fabric::RelocationModel relocationModel,
+                            llvm::StringRef backendCpu,
+                            llvm::ArrayRef<std::string> backendFeatures);
 
 std::string
 serializeCompilerTargetBinding(const CompilerTargetBinding &binding);
