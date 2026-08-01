@@ -90,6 +90,12 @@ FLOATING_MATRIX_CASES = {
     "arm-mat-qr-f16",
     "arm-mat-qr-f32",
     "arm-mat-qr-f64",
+    "arm-mat-solve-lower-triangular-f16",
+    "arm-mat-solve-lower-triangular-f32",
+    "arm-mat-solve-lower-triangular-f64",
+    "arm-mat-solve-upper-triangular-f16",
+    "arm-mat-solve-upper-triangular-f32",
+    "arm-mat-solve-upper-triangular-f64",
 }
 MATRIX_VECTOR_CASES = {
     "arm-mat-vec-mult-f16",

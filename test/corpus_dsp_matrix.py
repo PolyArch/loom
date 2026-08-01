@@ -237,6 +237,24 @@ _FLOATING_PROTOCOLS = (
             ("f64", "float64_t", "i32(ptr,double,ptr,ptr,ptr,ptr,ptr)", "2.0e-11"),
         )
     ),
+    *(
+        FloatingMatrixProtocol(
+            f"arm_mat_solve_{direction}_triangular_{suffix}",
+            "i32(ptr,ptr,ptr)",
+            f"UnaryTests{suffix.upper()}",
+            f"test_solve_{direction}_triangular_{suffix}",
+            suffix,
+            scalar_type,
+            f"solve-{direction}",
+            tolerance,
+        )
+        for direction in ("lower", "upper")
+        for suffix, scalar_type, tolerance in (
+            ("f16", "float16_t", "2.0e-2"),
+            ("f32", "float32_t", "2.0e-5"),
+            ("f64", "float64_t", "2.0e-12"),
+        )
+    ),
 )
 
 _MATRIX_VECTOR_PROTOCOLS = (
@@ -718,6 +736,59 @@ int main() {{
     )
 
 
+def _render_floating_triangular_solve(
+    protocol: FloatingMatrixProtocol, protocol_symbol: str
+) -> str:
+    if protocol.kind == "solve-upper":
+        triangular = (2.0, 1.0, 0.0, 4.0)
+        right_hand_side = (5.0, 8.0, 12.0, 16.0)
+    else:
+        triangular = (2.0, 0.0, 1.0, 4.0)
+        right_hand_side = (2.0, 4.0, 13.0, 18.0)
+    expected = (1.0, 2.0, 3.0, 4.0)
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
+namespace {{
+constexpr Scalar kTriangular[] = {{
+{_cpp_values(triangular)}
+}};
+constexpr Scalar kRightHandSide[] = {{
+{_cpp_values(right_hand_side)}
+}};
+constexpr double kExpected[] = {{
+{_cpp_values(expected)}
+}};
+
+bool output_matches_expected(const Scalar *output) {{
+  for (std::size_t index = 0; index < 4; ++index)
+    if (!close_enough(output[index], kExpected[index]))
+      return false;
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
+    const Scalar *triangular, const Scalar *right_hand_side,
+    Scalar *output) {{
+  Matrix triangular_matrix{{2, 2, const_cast<Scalar *>(triangular)}};
+  Matrix right_hand_side_matrix{{2, 2,
+                                  const_cast<Scalar *>(right_hand_side)}};
+  Matrix output_matrix{{2, 2, output}};
+  return {protocol.symbol}(
+      &triangular_matrix, &right_hand_side_matrix, &output_matrix);
+}}
+
+int main() {{
+  Scalar output[4]{{}};
+  const arm_status status =
+      {protocol_symbol}(kTriangular, kRightHandSide, output);
+  return status == ARM_MATH_SUCCESS && output_matches_expected(output) ? 0 : 1;
+}}
+"""
+    )
+
+
 def render_floating_matrix_protocol(
     workload: corpus_inventory.ProgramWorkload, protocol_symbol: str
 ) -> str:
@@ -736,6 +807,8 @@ def render_floating_matrix_protocol(
         return _render_floating_ldlt(protocol, protocol_symbol)
     if protocol.kind == "qr":
         return _render_floating_qr(protocol, protocol_symbol)
+    if protocol.kind in {"solve-lower", "solve-upper"}:
+        return _render_floating_triangular_solve(protocol, protocol_symbol)
     raise WorkloadProviderError(
         f"CMSIS-DSP matrix protocol has an unknown kind: {protocol.kind}"
     )
