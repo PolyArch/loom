@@ -96,6 +96,7 @@ def parse_dfg_simulation_report(
         return None, f"DFG simulation report is not a JSON object: {path}"
     expected_fields = {
         "actors",
+        "compiler_target",
         "dynamic_calls",
         "event_count",
         "floating_variance_bytes",
@@ -118,6 +119,42 @@ def parse_dfg_simulation_report(
         )
     if payload["kind"] != "source_backed_dfg_comparison" or payload["status"] != "pass":
         return None, f"DFG simulation report has invalid kind or status: {path}"
+
+    target = payload["compiler_target"]
+    target_fields = {
+        "data_layout",
+        "host_binding",
+        "instruction_bindings",
+        "instruction_core_count",
+        "target_triple",
+    }
+    if not isinstance(target, dict) or set(target) != target_fields:
+        return None, f"DFG simulation report has invalid compiler target: {path}"
+
+    def is_artifact_identity(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    instruction_bindings = target["instruction_bindings"]
+    instruction_core_count = target["instruction_core_count"]
+    if (
+        not is_artifact_identity(target["host_binding"])
+        or not isinstance(instruction_bindings, list)
+        or not instruction_bindings
+        or any(not is_artifact_identity(value) for value in instruction_bindings)
+        or len(instruction_bindings) != len(set(instruction_bindings))
+        or isinstance(instruction_core_count, bool)
+        or not isinstance(instruction_core_count, int)
+        or instruction_core_count < len(instruction_bindings)
+        or not isinstance(target["target_triple"], str)
+        or not target["target_triple"]
+        or not isinstance(target["data_layout"], str)
+        or not target["data_layout"]
+    ):
+        return None, f"DFG simulation report has invalid compiler target: {path}"
 
     integers: dict[str, int] = {}
     for field in (

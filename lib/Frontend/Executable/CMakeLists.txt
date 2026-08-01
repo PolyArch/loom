@@ -1,6 +1,7 @@
 add_mlir_library(LoomFrontendExecutable
   CompilerTargetBinding.cpp
   CompilerTargetBindingCodec.cpp
+  CompilerTargetCohort.cpp
   CompilerTargetMachine.cpp
 
   PARTIAL_SOURCES_INTENDED

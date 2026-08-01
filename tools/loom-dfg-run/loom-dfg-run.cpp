@@ -5,6 +5,7 @@
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Raising/StructuredRaising.h"
@@ -299,6 +300,7 @@ llvm::Error
 writeReport(llvm::StringRef path, std::uint64_t graphCount,
             std::uint64_t actorCount,
             llvm::ArrayRef<std::string> selectedSourceFiles,
+            const loom::SystemCompilerTargetBindings &compilerTargets,
             const loom::sim::SourceBackedDfgValidationResult &replay) {
   llvm::SmallString<256> parent(path);
   llvm::sys::path::remove_filename(parent);
@@ -328,6 +330,23 @@ writeReport(llvm::StringRef path, std::uint64_t graphCount,
                 replay.simulationSeconds
           : 0.0;
   root["operation_firings"] = std::move(firings);
+  llvm::json::Object target;
+  target["host_binding"] = loom::formatArtifactIdentityHex(
+      compilerTargets.host().reference().artifact);
+  llvm::json::Array instructionBindings;
+  std::uint64_t instructionCoreCount = 0;
+  for (const auto &group : compilerTargets.instructionGroups()) {
+    instructionBindings.push_back(
+        loom::formatArtifactIdentityHex(group.binding().reference().artifact));
+    instructionCoreCount += group.processors().size();
+  }
+  target["instruction_bindings"] = std::move(instructionBindings);
+  target["instruction_core_count"] = instructionCoreCount;
+  const auto &instruction =
+      compilerTargets.instructionGroups().front().binding().binding();
+  target["target_triple"] = instruction.targetTriple();
+  target["data_layout"] = instruction.dataLayout();
+  root["compiler_target"] = std::move(target);
   llvm::json::Array sourceFiles;
   for (const std::string &file : selectedSourceFiles)
     sourceFiles.push_back(file);
@@ -398,6 +417,20 @@ int main(int argc, char **argv) {
   auto target = readModule(targetContext, targetModulePath);
   if (!target)
     return reportError(target.takeError());
+  const loom::CompilerTargetPolicy targetPolicy{
+      loom::fabric::RiscVAbi::Lp64d,
+      loom::fabric::RiscVCodeModel::MediumAny,
+      loom::fabric::RelocationModel::Static,
+      "generic-rv64",
+      {}};
+  auto compilerTargets = loom::resolveSystemCompilerTargetBindings(
+      design->roots().front(), targetPolicy, store);
+  if (!compilerTargets)
+    return reportError(compilerTargets.takeError());
+  for (const auto &group : compilerTargets->instructionGroups())
+    if (llvm::Error error = loom::validateModuleCompilerTarget(
+            **target, group.binding().binding()))
+      return reportError(std::move(error));
   auto selected = compileTarget(std::move(*target), design->roots().front(),
                                 *config, store);
   if (!selected)
@@ -427,7 +460,7 @@ int main(int argc, char **argv) {
     return reportError(sourceFiles.takeError());
   if (llvm::Error error =
           writeReport(outputPath, view->graphs().size(), view->actors().size(),
-                      *sourceFiles, replay))
+                      *sourceFiles, *compilerTargets, replay))
     return reportError(std::move(error));
   return 0;
 }

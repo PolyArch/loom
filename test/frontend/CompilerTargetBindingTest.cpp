@@ -3,12 +3,16 @@
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <system_error>
@@ -255,11 +259,69 @@ void invalidAbiAndTamperedFingerprintFailClosed() {
       "compiler_target_reconstruction_mismatch");
 }
 
+void systemCohortAndModuleTargetValidation() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  auto design = take(test, loom::adg::buildBuiltinTarget(
+                               store, loom::adg::BuiltinTargetPreset::Small));
+  const auto &system = design.roots().front();
+  auto cohort = take(
+      test, loom::resolveSystemCompilerTargetBindings(system, policy(), store));
+  require(test, cohort.instructionGroups().size() == 1,
+          "equal InstructionCore architectures did not share one binding");
+  require(test, cohort.instructionGroups().front().processors().size() == 4,
+          "shared binding did not retain every exact InstructionCore ref");
+  require(test, cohort.host().binding().processorArchitecture().isHost(),
+          "System cohort lost its exact HostCore binding");
+  for (const auto &group : cohort.instructionGroups())
+    require(test, !group.binding().binding().processorArchitecture().isHost(),
+            "System cohort replaced an InstructionCore binding with HostCore");
+
+  llvm::LLVMContext context;
+  llvm::Module compatible("compatible", context);
+  const auto &instruction =
+      cohort.instructionGroups().front().binding().binding();
+  compatible.setTargetTriple(llvm::Triple(instruction.targetTriple()));
+  compatible.setDataLayout(instruction.dataLayout());
+  if (llvm::Error error =
+          loom::validateModuleCompilerTarget(compatible, instruction))
+    fail(test, llvm::toString(std::move(error)));
+
+  llvm::SmallVector<llvm::StringRef, 16> layoutComponents;
+  instruction.dataLayout().split(layoutComponents, '-');
+  std::reverse(layoutComponents.begin(), layoutComponents.end());
+  const std::string equivalentLayout = llvm::join(layoutComponents, "-");
+  require(test, equivalentLayout != instruction.dataLayout(),
+          "equivalent DataLayout fixture did not change spelling");
+  llvm::Module equivalent("equivalent-layout", context);
+  equivalent.setTargetTriple(llvm::Triple(instruction.targetTriple()));
+  equivalent.setDataLayout(equivalentLayout);
+  if (llvm::Error error =
+          loom::validateModuleCompilerTarget(equivalent, instruction))
+    fail(test, llvm::toString(std::move(error)));
+
+  llvm::Module wrongTriple("wrong-triple", context);
+  wrongTriple.setTargetTriple(llvm::Triple("x86_64-unknown-linux-gnu"));
+  wrongTriple.setDataLayout(instruction.dataLayout());
+  expectError(test,
+              loom::validateModuleCompilerTarget(wrongTriple, instruction),
+              "module_target_triple_mismatch");
+
+  llvm::Module wrongLayout("wrong-layout", context);
+  wrongLayout.setTargetTriple(llvm::Triple(instruction.targetTriple()));
+  wrongLayout.setDataLayout("e-m:e-p:32:32-i64:64-n32-S128");
+  expectError(test,
+              loom::validateModuleCompilerTarget(wrongLayout, instruction),
+              "module_data_layout_mismatch");
+}
+
 } // namespace
 
 int main() {
   architectureFingerprintTracksIsa();
   bindingRoundTripAndCompatibility();
   invalidAbiAndTamperedFingerprintFailClosed();
+  systemCohortAndModuleTargetValidation();
   return 0;
 }

@@ -188,6 +188,13 @@ VALID_DFG_REPORT = (
     json.dumps(
         {
             "actors": 3,
+            "compiler_target": {
+                "data_layout": corpus_gate.LLVM_DATALAYOUT_LINE.split('"')[1],
+                "host_binding": "01" * 32,
+                "instruction_bindings": ["02" * 32],
+                "instruction_core_count": 1,
+                "target_triple": corpus_gate.LLVM_TRIPLE_LINE.split('"')[1],
+            },
             "dynamic_calls": 1,
             "event_count": 11,
             "floating_variance_bytes": 0,
@@ -212,6 +219,17 @@ VALID_DFG_REPORT = (
 
 
 class CorpusGateExecutionPolicyTest(unittest.TestCase):
+    def test_dfg_report_rejects_noncanonical_compiler_target_projection(self) -> None:
+        payload = json.loads(VALID_DFG_REPORT)
+        payload["compiler_target"]["instruction_bindings"] *= 2
+        with tempfile.TemporaryDirectory(prefix="loom-target-report-") as root:
+            report_path = Path(root) / "report.json"
+            report_path.write_text(json.dumps(payload))
+            report, defect = corpus_gate.parse_dfg_simulation_report(report_path)
+
+        self.assertIsNone(report)
+        self.assertIn("invalid compiler target", defect)
+
     def test_defaults_reserve_development_cpus_and_bound_dfg_sim_time(self) -> None:
         with mock.patch.object(corpus_gate.os, "cpu_count", return_value=32):
             self.assertEqual(corpus_gate.default_jobs(), 28)

@@ -19,6 +19,7 @@ target_link_libraries(loom-dfg-run PRIVATE
   LoomCommon
   LoomDSE
   LoomFrontendCompilation
+  LoomFrontendExecutable
   LoomNativeSimulationOracle
   LoomSimulator
 )

@@ -129,3 +129,20 @@ config.substitutions.insert(
 config.substitutions.insert(
     5, ("%objdump-h",
         os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))
+
+# Source-backed execution anchors must enter the runner with the exact target
+# selected by the builtin Small Fabric. The runner's CompilerTargetBinding
+# remains authoritative and rejects this invocation projection if it drifts.
+_small_c_headers = os.path.join(
+    config.loom_src_root, "test", "frontend", "Inputs", "minimal-c-runtime")
+_small_cc = " ".join([
+    os.path.join(_loom_cc_dir, "loom-cc"),
+    "--target=riscv64-unknown-elf",
+    "-march=rv64imafdc_zicsr_zifencei",
+    "-mabi=lp64d",
+    "-mcmodel=medany",
+    "-mcpu=generic-rv64",
+    "-isystem",
+    _small_c_headers,
+])
+config.substitutions.insert(0, ("%loom-small-cc\\b", _small_cc))

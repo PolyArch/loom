@@ -18,9 +18,16 @@
 #include <variant>
 #include <vector>
 
+namespace llvm {
+class Module;
+}
+
 namespace loom {
 
 class ArtifactStore;
+namespace fabric {
+class FinalizedFabricRoot;
+}
 
 inline constexpr ArtifactSchemaDescriptor compilerTargetBindingSchema{
     "loom.compiler_target_binding", SchemaVersion{1, 0}};
@@ -228,6 +235,56 @@ private:
                               const ArtifactStore &);
 };
 
+class InstructionCompilerTargetGroup final {
+public:
+  const FinalizedCompilerTargetBinding &binding() const { return binding_; }
+  llvm::ArrayRef<CompilerProcessorArchitectureRef::Instruction>
+  processors() const {
+    return processors_;
+  }
+
+private:
+  InstructionCompilerTargetGroup(
+      FinalizedCompilerTargetBinding binding,
+      std::vector<CompilerProcessorArchitectureRef::Instruction> processors)
+      : binding_(std::move(binding)), processors_(std::move(processors)) {}
+
+  FinalizedCompilerTargetBinding binding_;
+  std::vector<CompilerProcessorArchitectureRef::Instruction> processors_;
+
+  friend llvm::Expected<class SystemCompilerTargetBindings>
+  resolveSystemCompilerTargetBindings(const fabric::FinalizedFabricRoot &,
+                                      const CompilerTargetPolicy &,
+                                      const ArtifactStore &);
+};
+
+/// Invocation-local projection of the exact CompilerTargetBindings selected
+/// for every stored-program engine of one finalized System Fabric. Equal
+/// same-kind InstructionCore contracts share one binding group. Each binding
+/// remains an independently exact Artifact; this aggregate is not persistent.
+class SystemCompilerTargetBindings final {
+public:
+  const FinalizedCompilerTargetBinding &host() const { return host_; }
+  llvm::ArrayRef<InstructionCompilerTargetGroup> instructionGroups() const {
+    return instructionGroups_;
+  }
+
+private:
+  SystemCompilerTargetBindings(
+      FinalizedCompilerTargetBinding host,
+      std::vector<InstructionCompilerTargetGroup> instructionGroups)
+      : host_(std::move(host)),
+        instructionGroups_(std::move(instructionGroups)) {}
+
+  FinalizedCompilerTargetBinding host_;
+  std::vector<InstructionCompilerTargetGroup> instructionGroups_;
+
+  friend llvm::Expected<SystemCompilerTargetBindings>
+  resolveSystemCompilerTargetBindings(const fabric::FinalizedFabricRoot &,
+                                      const CompilerTargetPolicy &,
+                                      const ArtifactStore &);
+};
+
 llvm::Expected<FinalizedCompilerTargetBinding>
 resolveCompilerTargetBinding(const CompilerProcessorArchitectureRef &processor,
                              const CompilerTargetPolicy &policy,
@@ -241,6 +298,18 @@ llvm::Error requireCompilerTargetCompatibility(
     const CompilerTargetBinding &binding,
     const CompilerProcessorArchitectureRef &processor,
     const ArtifactStore &store);
+
+llvm::Expected<SystemCompilerTargetBindings>
+resolveSystemCompilerTargetBindings(const fabric::FinalizedFabricRoot &system,
+                                    const CompilerTargetPolicy &policy,
+                                    const ArtifactStore &store);
+
+/// Validates one LLVM module against an exact binding without rewriting
+/// either owner. The target triple must already use the binding's canonical
+/// spelling; DataLayout compatibility is structural under the pinned LLVM
+/// provider.
+llvm::Error validateModuleCompilerTarget(const llvm::Module &module,
+                                         const CompilerTargetBinding &binding);
 
 } // namespace loom
 
