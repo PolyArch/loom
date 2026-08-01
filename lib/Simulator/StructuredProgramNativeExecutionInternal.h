@@ -75,6 +75,7 @@ struct WorkloadCaptureCallbackNames final {
   std::optional<std::string> value;
   std::optional<std::string> result;
   std::optional<std::string> memoryWrite;
+  std::optional<std::string> pointerRead;
   std::optional<std::string> pointerWrite;
 };
 

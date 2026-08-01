@@ -40,6 +40,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -105,17 +106,6 @@ struct WorkloadCaptureValueShape final {
   std::optional<SimulationPointerValueTargetCapture> pointerTarget;
 };
 
-struct WorkloadCaptureActiveCall final {
-  std::size_t captureIndex = 0;
-  std::uint64_t retainedBytes = 0;
-  std::uint64_t nextCoordinate = 0;
-  std::uint64_t nextRoot = 0;
-  std::uint64_t nextValue = 0;
-  std::uint64_t nextResult = 0;
-  std::vector<std::uint64_t> runtimeObjectOrdinals;
-  std::vector<std::uint8_t *> objectBases;
-};
-
 struct TrackedPointerPayload final {
   std::uint64_t storageObjectOrdinal = 0;
   std::uint64_t storageByteOffset = 0;
@@ -125,6 +115,20 @@ struct TrackedPointerPayload final {
 };
 
 using TrackedPointerKey = std::pair<std::uint64_t, std::uint64_t>;
+
+struct WorkloadCaptureActiveCall final {
+  std::size_t captureIndex = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t nextCoordinate = 0;
+  std::uint64_t nextRoot = 0;
+  std::uint64_t nextValue = 0;
+  std::uint64_t nextResult = 0;
+  std::vector<std::uint64_t> runtimeObjectOrdinals;
+  std::vector<std::uint8_t *> objectBases;
+  std::map<TrackedPointerKey, TrackedPointerPayload> initialPointerPayloads;
+  std::set<TrackedPointerKey> relevantPointerPayloads;
+  std::set<TrackedPointerKey> writtenPointerPayloads;
+};
 
 struct WorkloadCaptureContext final {
   std::vector<std::optional<NativeSimulationCallCapture>> captures;
@@ -365,6 +369,72 @@ void workloadCaptureMemoryWrite(void *storage, std::uint64_t byteCount) {
   eraseTrackedPointers(resolved->first, resolved->second, byteCount);
 }
 
+bool validatePointerCaptureLayout(std::uint64_t addressSpace,
+                                  std::uint64_t representationBits,
+                                  std::uint64_t addressBits,
+                                  llvm::StringRef operation) {
+  if (addressSpace <= std::numeric_limits<std::uint32_t>::max() &&
+      representationBits != 0 && representationBits % 8 == 0 &&
+      representationBits <= std::numeric_limits<std::uint32_t>::max() &&
+      addressBits != 0 &&
+      addressBits <= std::numeric_limits<std::uint32_t>::max())
+    return true;
+  recordWorkloadCaptureError(
+      std::make_error_code(std::errc::io_error),
+      (llvm::Twine(operation) + " has an invalid DataLayout projection").str());
+  return false;
+}
+
+void workloadCapturePointerRead(void *storage, void *value,
+                                std::uint64_t addressSpace,
+                                std::uint64_t representationBits,
+                                std::uint64_t addressBits) {
+  if (!activeWorkloadCapture || activeWorkloadCapture->error ||
+      activeWorkloadCapture->activeCalls.empty())
+    return;
+  if (!validatePointerCaptureLayout(addressSpace, representationBits,
+                                    addressBits, "pointer read"))
+    return;
+  auto storageTarget = resolveRuntimeObject(storage);
+  if (!storageTarget) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "pointer-read storage is outside the runtime object registry");
+    return;
+  }
+  WorkloadCaptureActiveCall &active = activeWorkloadCapture->activeCalls.back();
+  if (active.nextRoot != activeWorkloadCapture->rootCount ||
+      llvm::find(active.runtimeObjectOrdinals, storageTarget->first) ==
+          active.runtimeObjectOrdinals.end()) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "selected pointer read has no imported memory service");
+    return;
+  }
+  auto valueTarget = resolveRuntimeObject(value, /*admitOnePast=*/true);
+  if (!valueTarget) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "captured pointer target is outside the runtime object registry");
+    return;
+  }
+
+  const TrackedPointerKey key{storageTarget->first, storageTarget->second};
+  TrackedPointerPayload pointer{
+      storageTarget->first, storageTarget->second,
+      static_cast<std::uint32_t>(addressSpace),
+      static_cast<std::uint32_t>(representationBits),
+      PointerTarget{valueTarget->first,
+                    llvm::APInt(static_cast<unsigned>(addressBits),
+                                valueTarget->second)}};
+  active.relevantPointerPayloads.insert(key);
+  if (active.writtenPointerPayloads.find(key) ==
+      active.writtenPointerPayloads.end())
+    active.initialPointerPayloads.insert_or_assign(key, pointer);
+  activeWorkloadCapture->pointerPayloads.insert_or_assign(key,
+                                                          std::move(pointer));
+}
+
 void workloadCapturePointerWrite(void *storage, void *value,
                                  std::uint64_t addressSpace,
                                  std::uint64_t representationBits,
@@ -372,16 +442,9 @@ void workloadCapturePointerWrite(void *storage, void *value,
                                  std::uint64_t rootHint) {
   if (!activeWorkloadCapture || activeWorkloadCapture->error)
     return;
-  if (addressSpace > std::numeric_limits<std::uint32_t>::max() ||
-      representationBits == 0 || representationBits % 8 != 0 ||
-      representationBits > std::numeric_limits<std::uint32_t>::max() ||
-      addressBits == 0 ||
-      addressBits > std::numeric_limits<std::uint32_t>::max()) {
-    recordWorkloadCaptureError(
-        std::make_error_code(std::errc::io_error),
-        "pointer write has an invalid DataLayout projection");
+  if (!validatePointerCaptureLayout(addressSpace, representationBits,
+                                    addressBits, "pointer write"))
     return;
-  }
   auto storageTarget = resolveRuntimeObject(storage);
   std::optional<std::pair<std::uint64_t, std::uint64_t>> valueTarget;
   std::optional<llvm::APInt> hintedOffset;
@@ -450,43 +513,46 @@ void workloadCapturePointerWrite(void *storage, void *value,
   activeWorkloadCapture->pointerPayloads[{pointer.storageObjectOrdinal,
                                           pointer.storageByteOffset}] =
       std::move(pointer);
+  if (!activeWorkloadCapture->activeCalls.empty()) {
+    WorkloadCaptureActiveCall &active =
+        activeWorkloadCapture->activeCalls.back();
+    const TrackedPointerKey key{storageTarget->first, storageTarget->second};
+    active.relevantPointerPayloads.insert(key);
+    active.writtenPointerPayloads.insert(key);
+  }
 }
 
-bool projectTrackedPointers(WorkloadCaptureContext &context,
-                            const WorkloadCaptureActiveCall &active,
-                            std::vector<NativeCapturedMemoryObject> &objects,
-                            bool initial) {
-  for (const auto &[key, pointer] : context.pointerPayloads) {
-    (void)key;
-    auto storage =
-        llvm::find(active.runtimeObjectOrdinals, pointer.storageObjectOrdinal);
-    if (storage == active.runtimeObjectOrdinals.end())
-      continue;
-    if (!pointer.target) {
-      recordWorkloadCaptureError(
-          std::make_error_code(std::errc::not_supported),
-          "captured pointer target is outside the runtime object registry");
-      return false;
-    }
-    auto target =
-        llvm::find(active.runtimeObjectOrdinals, pointer.target->objectOrdinal);
-    if (target == active.runtimeObjectOrdinals.end()) {
-      recordWorkloadCaptureError(
-          std::make_error_code(std::errc::not_supported),
-          "captured pointer target has no imported memory service");
-      return false;
-    }
-    const std::uint64_t storageOrdinal =
-        std::distance(active.runtimeObjectOrdinals.begin(), storage);
-    const std::uint64_t targetOrdinal =
-        std::distance(active.runtimeObjectOrdinals.begin(), target);
-    RuntimeMemoryPointer projected{
-        pointer.storageByteOffset, pointer.addressSpace,
-        PointerTarget{targetOrdinal, pointer.target->byteOffset}};
-    auto &destination = initial ? objects[storageOrdinal].initialPointers
-                                : objects[storageOrdinal].finalPointers;
-    destination.push_back(std::move(projected));
+bool projectTrackedPointer(const WorkloadCaptureActiveCall &active,
+                           std::vector<NativeCapturedMemoryObject> &objects,
+                           const TrackedPointerPayload &pointer, bool initial) {
+  auto storage =
+      llvm::find(active.runtimeObjectOrdinals, pointer.storageObjectOrdinal);
+  if (storage == active.runtimeObjectOrdinals.end())
+    return true;
+  if (!pointer.target) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "captured pointer target is outside the runtime object registry");
+    return false;
   }
+  auto target =
+      llvm::find(active.runtimeObjectOrdinals, pointer.target->objectOrdinal);
+  if (target == active.runtimeObjectOrdinals.end()) {
+    recordWorkloadCaptureError(
+        std::make_error_code(std::errc::not_supported),
+        "captured pointer target has no imported memory service");
+    return false;
+  }
+  const std::uint64_t storageOrdinal =
+      std::distance(active.runtimeObjectOrdinals.begin(), storage);
+  const std::uint64_t targetOrdinal =
+      std::distance(active.runtimeObjectOrdinals.begin(), target);
+  RuntimeMemoryPointer projected{
+      pointer.storageByteOffset, pointer.addressSpace,
+      PointerTarget{targetOrdinal, pointer.target->byteOffset}};
+  auto &destination = initial ? objects[storageOrdinal].initialPointers
+                              : objects[storageOrdinal].finalPointers;
+  destination.push_back(std::move(projected));
   return true;
 }
 
@@ -534,10 +600,6 @@ void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
   capture.memoryRootObjectOrdinals.push_back(objectOrdinal);
   capture.memoryRootByteOffsets.push_back(resolved->second);
   ++active.nextRoot;
-  if (active.nextRoot == context.rootCount &&
-      !projectTrackedPointers(context, active, capture.objects,
-                              /*initial=*/true))
-    return;
 }
 
 CanonicalValueSequence
@@ -681,9 +743,20 @@ void workloadCaptureEnd() {
     return;
   }
   NativeSimulationCallCapture &capture = *context.captures[active.captureIndex];
-  if (!projectTrackedPointers(context, active, capture.objects,
-                              /*initial=*/false))
-    return;
+  for (const auto &[key, pointer] : active.initialPointerPayloads) {
+    (void)key;
+    if (!projectTrackedPointer(active, capture.objects, pointer,
+                               /*initial=*/true))
+      return;
+  }
+  for (const TrackedPointerKey &key : active.relevantPointerPayloads) {
+    auto pointer = context.pointerPayloads.find(key);
+    if (pointer == context.pointerPayloads.end())
+      continue;
+    if (!projectTrackedPointer(active, capture.objects, pointer->second,
+                               /*initial=*/false))
+      return;
+  }
   for (auto [ordinal, base] : llvm::enumerate(active.objectBases)) {
     const std::uint64_t runtimeOrdinal = active.runtimeObjectOrdinals[ordinal];
     if (!reserveWorkloadCaptureBytes(
@@ -1272,6 +1345,10 @@ llvm::Error runInstrumentedExecution(
     if (workloadCaptureNames->memoryWrite)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->memoryWrite)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureMemoryWrite),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->pointerRead)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->pointerRead)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCapturePointerRead),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
     if (workloadCaptureNames->pointerWrite)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->pointerWrite)] = {

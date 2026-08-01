@@ -754,7 +754,7 @@ module {
           "runtime allocation did not resolve to one finite capture object");
 }
 
-void unrelatedPointerStoresStayOutsideTheSelectedObjectClosure() {
+void pointerCaptureFollowsSelectedMemoryEffects() {
   const char *test = __func__;
   if (llvm::InitializeNativeTarget() ||
       llvm::InitializeNativeTargetAsmPrinter())
@@ -764,22 +764,33 @@ void unrelatedPointerStoresStayOutsideTheSelectedObjectClosure() {
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
-  llvm.func @kernel(%root: !llvm.ptr, %scratch: !llvm.ptr) {
+  llvm.func @kernel(%root: !llvm.ptr) {
     %value = llvm.mlir.constant(42 : i32) : i32
     llvm.store %value, %root : i32, !llvm.ptr
     llvm.return
   }
 
+  llvm.func @pointer_kernel(%scratch: !llvm.ptr) -> i32 {
+    %loaded = llvm.load %scratch : !llvm.ptr -> !llvm.ptr
+    %bits = llvm.ptrtoint %loaded : !llvm.ptr to i64
+    %value = llvm.trunc %bits : i64 to i32
+    llvm.return %value : i32
+  }
+
   llvm.func @main() -> i32 {
-    %one = llvm.mlir.constant(1 : i64) : i64
-    %scratch = llvm.alloca %one x !llvm.ptr : (i64) -> !llvm.ptr
+    %two = llvm.mlir.constant(2 : i64) : i64
+    %storage = llvm.alloca %two x !llvm.ptr : (i64) -> !llvm.ptr
     %address = llvm.mlir.constant(4096 : i64) : i64
     %external = llvm.inttoptr %address : i64 to !llvm.ptr
-    llvm.store %external, %scratch : !llvm.ptr, !llvm.ptr
-    %root = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
-    llvm.call @kernel(%root, %scratch) : (!llvm.ptr, !llvm.ptr) -> ()
+    llvm.store %external, %storage : !llvm.ptr, !llvm.ptr
+    %root = llvm.getelementptr %storage[1]
+        : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+    llvm.call @kernel(%root) : (!llvm.ptr) -> ()
+    %observed = llvm.call @pointer_kernel(%storage)
+        : (!llvm.ptr) -> i32
     %result = llvm.load %root : !llvm.ptr -> i32
-    llvm.return %result : i32
+    %combined = llvm.xor %result, %observed : i32
+    llvm.return %combined : i32
   }
 }
 )mlir",
@@ -843,15 +854,21 @@ module {
     fail(test, llvm::toString(std::move(error)));
   require(test,
           calls.size() == 1 && calls.front().objects.size() == 1 &&
-              calls.front().objects.front().finalBytes ==
-                  std::vector<std::uint8_t>{42, 0, 0, 0},
-          "an unrelated pointer store polluted the selected object closure");
+              calls.front().objects.front().finalBytes.size() == 16 &&
+              calls.front().objects.front().finalBytes[8] == 42 &&
+              calls.front().objects.front().finalBytes[9] == 0 &&
+              calls.front().objects.front().finalBytes[10] == 0 &&
+              calls.front().objects.front().finalBytes[11] == 0 &&
+              calls.front().memoryRootByteOffsets ==
+                  std::vector<std::uint64_t>{8},
+          "an unobserved pointer field polluted the selected memory effect");
 
   auto scratchKernel =
-      selectedScratchModule->lookupSymbol<mlir::LLVM::LLVMFuncOp>("kernel");
+      selectedScratchModule->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "pointer_kernel");
   require(test, static_cast<bool>(scratchKernel),
-          "the cloned program lost the selected kernel");
-  plan.memoryRoots.front().boundaryPointer = scratchKernel.getArgument(1);
+          "the cloned program lost the pointer-reading kernel");
+  plan.memoryRoots.front().boundaryPointer = scratchKernel.getArgument(0);
   llvm::Error error = loom::sim::visitWorkloadBackedSimulationInputCaptures(
       std::move(selectedScratchModule), scratchKernel.getOperation(), plan,
       source, workload, runtimeInput, 1024 * 1024,
@@ -878,7 +895,7 @@ int main() {
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();
   runtimeAllocationsEnterTheCaptureRegistry();
-  unrelatedPointerStoresStayOutsideTheSelectedObjectClosure();
+  pointerCaptureFollowsSelectedMemoryEffects();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;
 }

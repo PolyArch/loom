@@ -239,9 +239,16 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         "workload-backed callable capture requires one structured block");
 
   llvm::SmallVector<mlir::LLVM::StoreOp, 16> originalStores;
+  llvm::SmallVector<mlir::LLVM::LoadOp, 8> selectedPointerLoads;
   if (!plan.memoryRoots.empty())
     module.walk(
         [&](mlir::LLVM::StoreOp store) { originalStores.push_back(store); });
+  if (!plan.memoryRoots.empty()) {
+    selectedOperation->walk([&](mlir::LLVM::LoadOp load) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(load.getResult().getType()))
+        selectedPointerLoads.push_back(load);
+    });
+  }
 
   llvm::Expected<std::vector<ProgramObjectCaptureSite>> objectSites =
       plan.memoryRoots.empty()
@@ -270,6 +277,8 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64});
   const mlir::Type pointerWriteType = mlir::LLVM::LLVMFunctionType::get(
       voidType, {pointer, pointer, i64, i64, i64, i64});
+  const mlir::Type pointerReadType = mlir::LLVM::LLVMFunctionType::get(
+      voidType, {pointer, pointer, i64, i64, i64});
 
   WorkloadCaptureCallbackNames names;
   names.begin = uniqueMlirSymbolName(module, "__loom_workload_capture_begin");
@@ -302,6 +311,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       }))
     names.pointerWrite =
         uniqueMlirSymbolName(module, "__loom_workload_capture_pointer_write");
+  if (!selectedPointerLoads.empty())
+    names.pointerRead =
+        uniqueMlirSymbolName(module, "__loom_workload_capture_pointer_read");
 
   mlir::LLVM::LLVMFuncOp::create(declarations, location, names.begin,
                                  lifecycleType);
@@ -328,6 +340,9 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (names.pointerWrite)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.pointerWrite,
                                    pointerWriteType);
+  if (names.pointerRead)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.pointerRead,
+                                   pointerReadType);
 
   if (names.registerObject) {
     auto materializeExtentFactor =
@@ -656,6 +671,42 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     mlir::LLVM::CallOp::create(after, store.getLoc(), mlir::TypeRange{},
                                *names.memoryWrite,
                                mlir::ValueRange{store.getAddr(), bytes});
+  }
+  for (mlir::LLVM::LoadOp load : selectedPointerLoads) {
+    auto storageType =
+        llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(load.getAddr().getType());
+    auto pointerType =
+        llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(load.getResult().getType());
+    if (!names.pointerRead || !storageType || !pointerType ||
+        storageType.getAddressSpace() != 0 ||
+        pointerType.getAddressSpace() != 0)
+      return unsupported(
+          "workload-backed pointer reads require address-space-zero storage "
+          "and payloads");
+    auto layout =
+        ::loom::resolvePointerLayout(load, pointerType.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    if (layout->kind != ::loom::PointerLayoutKind::StableIntegral ||
+        layout->representationBits % 8 != 0)
+      return unsupported(
+          "workload-backed pointer reads have no stable-integral "
+          "representation");
+    mlir::OpBuilder after(load);
+    after.setInsertionPointAfter(load);
+    mlir::Value addressSpace = mlir::LLVM::ConstantOp::create(
+        after, load.getLoc(), i64,
+        after.getI64IntegerAttr(pointerType.getAddressSpace()));
+    mlir::Value representationBits = mlir::LLVM::ConstantOp::create(
+        after, load.getLoc(), i64,
+        after.getI64IntegerAttr(layout->representationBits));
+    mlir::Value addressBits = mlir::LLVM::ConstantOp::create(
+        after, load.getLoc(), i64,
+        after.getI64IntegerAttr(layout->addressBits));
+    mlir::LLVM::CallOp::create(
+        after, load.getLoc(), mlir::TypeRange{}, *names.pointerRead,
+        mlir::ValueRange{load.getAddr(), load.getResult(), addressSpace,
+                         representationBits, addressBits});
   }
   if (mlir::failed(mlir::verify(module)))
     return invalid("workload-backed capture instrumentation does not verify");
