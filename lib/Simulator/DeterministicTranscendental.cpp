@@ -32,6 +32,8 @@ bool isSupportedSemantic(const llvm::fltSemantics &semantics) {
 }
 
 using MpfrUnaryOperation = int (*)(mpfr_ptr, mpfr_srcptr, mpfr_rnd_t);
+using MpfrBinaryOperation = int (*)(mpfr_ptr, mpfr_srcptr, mpfr_srcptr,
+                                    mpfr_rnd_t);
 
 MpfrUnaryOperation mpfrOperation(dataflow::OperationSchemaId schema) {
   using Schema = dataflow::OperationSchemaId;
@@ -73,6 +75,26 @@ MpfrUnaryOperation mpfrOperation(dataflow::OperationSchemaId schema) {
   }
 }
 
+MpfrBinaryOperation mpfrBinaryOperation(dataflow::OperationSchemaId schema) {
+  switch (schema) {
+  case dataflow::OperationSchemaId::MathPowF:
+    return &mpfr_pow;
+  default:
+    return nullptr;
+  }
+}
+
+llvm::APFloat roundedResult(mpfr_srcptr result,
+                            const llvm::fltSemantics &semantics) {
+  llvm::APFloat rounded(mpfr_get_d(result, MPFR_RNDN));
+  if (&semantics != &llvm::APFloat::IEEEdouble()) {
+    bool losesInformation = false;
+    (void)rounded.convert(semantics, llvm::RoundingMode::NearestTiesToEven,
+                          &losesInformation);
+  }
+  return rounded;
+}
+
 } // namespace
 
 llvm::Expected<llvm::APFloat>
@@ -100,13 +122,40 @@ evaluateDeterministicUnaryMath(dataflow::OperationSchemaId schema,
   mpfr_set_d(input.get(), operand.convertToDouble(), MPFR_RNDN);
   operation(result.get(), input.get(), MPFR_RNDN);
 
-  llvm::APFloat rounded(mpfr_get_d(result.get(), MPFR_RNDN));
-  if (&semantics != &llvm::APFloat::IEEEdouble()) {
-    bool losesInformation = false;
-    (void)rounded.convert(semantics, llvm::RoundingMode::NearestTiesToEven,
-                          &losesInformation);
-  }
-  return rounded;
+  return roundedResult(result.get(), semantics);
+}
+
+llvm::Expected<llvm::APFloat>
+evaluateDeterministicBinaryMath(dataflow::OperationSchemaId schema,
+                                const llvm::APFloat &lhs,
+                                const llvm::APFloat &rhs) {
+  static_assert(std::numeric_limits<double>::is_iec559 &&
+                std::numeric_limits<double>::digits == 53);
+
+  MpfrBinaryOperation operation = mpfrBinaryOperation(schema);
+  if (!operation)
+    return llvm::createStringError(
+        std::errc::not_supported, "%s is not deterministic binary math",
+        dataflow::operationSchemaSpelling(schema).str().c_str());
+  const llvm::fltSemantics &semantics = lhs.getSemantics();
+  if (&rhs.getSemantics() != &semantics)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "deterministic binary math requires identical operand semantics");
+  if (!isSupportedSemantic(semantics))
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "deterministic binary math supports only f16, bf16, f32, and f64");
+
+  const mpfr_prec_t inputPrecision =
+      llvm::APFloat::semanticsPrecision(llvm::APFloat::IEEEdouble());
+  MpfrValue left(inputPrecision);
+  MpfrValue right(inputPrecision);
+  MpfrValue result(llvm::APFloat::semanticsPrecision(semantics));
+  mpfr_set_d(left.get(), lhs.convertToDouble(), MPFR_RNDN);
+  mpfr_set_d(right.get(), rhs.convertToDouble(), MPFR_RNDN);
+  operation(result.get(), left.get(), right.get(), MPFR_RNDN);
+  return roundedResult(result.get(), semantics);
 }
 
 } // namespace loom::sim::detail

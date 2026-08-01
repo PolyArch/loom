@@ -41,6 +41,7 @@
 #include <mutex>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -59,6 +60,14 @@ constexpr llvm::StringLiteral unaryMathF32Symbol =
     "__loom_native_unary_math_f32_1_0";
 constexpr llvm::StringLiteral unaryMathF64Symbol =
     "__loom_native_unary_math_f64_1_0";
+constexpr llvm::StringLiteral binaryMathF16Symbol =
+    "__loom_native_binary_math_f16_1_0";
+constexpr llvm::StringLiteral binaryMathBF16Symbol =
+    "__loom_native_binary_math_bf16_1_0";
+constexpr llvm::StringLiteral binaryMathF32Symbol =
+    "__loom_native_binary_math_f32_1_0";
+constexpr llvm::StringLiteral binaryMathF64Symbol =
+    "__loom_native_binary_math_f64_1_0";
 
 template <typename Bits>
 Bits deterministicUnaryMathBits(const llvm::fltSemantics &semantics,
@@ -90,10 +99,50 @@ std::uint64_t deterministicUnaryMathF64(std::uint32_t schema,
   return deterministicUnaryMathBits(llvm::APFloat::IEEEdouble(), schema, bits);
 }
 
+template <typename Bits>
+Bits deterministicBinaryMathBits(const llvm::fltSemantics &semantics,
+                                 std::uint32_t schemaOrdinal, Bits lhsBits,
+                                 Bits rhsBits) {
+  llvm::APFloat lhs(
+      semantics,
+      llvm::APInt(sizeof(Bits) * 8, static_cast<std::uint64_t>(lhsBits)));
+  llvm::APFloat rhs(
+      semantics,
+      llvm::APInt(sizeof(Bits) * 8, static_cast<std::uint64_t>(rhsBits)));
+  llvm::APFloat result = llvm::cantFail(evaluateDeterministicBinaryMath(
+      static_cast<dataflow::OperationSchemaId>(schemaOrdinal), lhs, rhs));
+  return static_cast<Bits>(result.bitcastToAPInt().getZExtValue());
+}
+
+std::uint16_t deterministicBinaryMathF16(std::uint32_t schema,
+                                         std::uint16_t lhs, std::uint16_t rhs) {
+  return deterministicBinaryMathBits(llvm::APFloat::IEEEhalf(), schema, lhs,
+                                     rhs);
+}
+
+std::uint16_t deterministicBinaryMathBF16(std::uint32_t schema,
+                                          std::uint16_t lhs,
+                                          std::uint16_t rhs) {
+  return deterministicBinaryMathBits(llvm::APFloat::BFloat(), schema, lhs, rhs);
+}
+
+std::uint32_t deterministicBinaryMathF32(std::uint32_t schema,
+                                         std::uint32_t lhs, std::uint32_t rhs) {
+  return deterministicBinaryMathBits(llvm::APFloat::IEEEsingle(), schema, lhs,
+                                     rhs);
+}
+
+std::uint64_t deterministicBinaryMathF64(std::uint32_t schema,
+                                         std::uint64_t lhs, std::uint64_t rhs) {
+  return deterministicBinaryMathBits(llvm::APFloat::IEEEdouble(), schema, lhs,
+                                     rhs);
+}
+
 struct DeterministicMathCallback final {
   llvm::StringLiteral symbol;
   llvm::orc::ExecutorAddr address;
   unsigned bitWidth = 0;
+  unsigned operandCount = 0;
 };
 
 std::optional<DeterministicMathCallback>
@@ -101,19 +150,40 @@ unaryMathCallback(llvm::Type *scalarType) {
   if (scalarType->isHalfTy())
     return DeterministicMathCallback{
         unaryMathF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF16), 16};
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF16), 16, 1};
   if (scalarType->isBFloatTy())
     return DeterministicMathCallback{
         unaryMathBF16Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathBF16), 16};
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathBF16), 16, 1};
   if (scalarType->isFloatTy())
     return DeterministicMathCallback{
         unaryMathF32Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF32), 32};
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF32), 32, 1};
   if (scalarType->isDoubleTy())
     return DeterministicMathCallback{
         unaryMathF64Symbol,
-        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF64), 64};
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicUnaryMathF64), 64, 1};
+  return std::nullopt;
+}
+
+std::optional<DeterministicMathCallback>
+binaryMathCallback(llvm::Type *scalarType) {
+  if (scalarType->isHalfTy())
+    return DeterministicMathCallback{
+        binaryMathF16Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicBinaryMathF16), 16, 2};
+  if (scalarType->isBFloatTy())
+    return DeterministicMathCallback{
+        binaryMathBF16Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicBinaryMathBF16), 16, 2};
+  if (scalarType->isFloatTy())
+    return DeterministicMathCallback{
+        binaryMathF32Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicBinaryMathF32), 32, 2};
+  if (scalarType->isDoubleTy())
+    return DeterministicMathCallback{
+        binaryMathF64Symbol,
+        llvm::orc::ExecutorAddr::fromPtr(&deterministicBinaryMathF64), 64, 2};
   return std::nullopt;
 }
 
@@ -150,6 +220,13 @@ unaryMathSchema(llvm::Intrinsic::ID intrinsic) {
   }
 }
 
+std::optional<dataflow::OperationSchemaId>
+binaryMathSchema(llvm::Intrinsic::ID intrinsic) {
+  if (intrinsic == llvm::Intrinsic::pow)
+    return dataflow::OperationSchemaId::MathPowF;
+  return std::nullopt;
+}
+
 template <typename SourceOp, typename TargetOp>
 llvm::Error materializeDeterministicUnaryMath(mlir::ModuleOp module) {
   llvm::SmallVector<SourceOp> operations;
@@ -176,6 +253,33 @@ llvm::Error materializeDeterministicUnaryMath(mlir::ModuleOp module) {
   return llvm::Error::success();
 }
 
+template <typename SourceOp, typename TargetOp>
+llvm::Error materializeDeterministicBinaryMath(mlir::ModuleOp module) {
+  llvm::SmallVector<SourceOp> operations;
+  module.walk([&](SourceOp operation) { operations.push_back(operation); });
+  for (SourceOp operation : operations) {
+    mlir::Type type = operation.getType();
+    auto vector = llvm::dyn_cast<mlir::VectorType>(type);
+    if (vector && vector.isScalable())
+      return unsupported(
+          "deterministic native binary math does not support scalable vectors");
+    mlir::Type scalarType = vector ? vector.getElementType() : type;
+    if (!llvm::isa<mlir::Float16Type, mlir::BFloat16Type, mlir::Float32Type,
+                   mlir::Float64Type>(scalarType))
+      return unsupported(
+          "deterministic native binary math has an unsupported scalar type");
+    mlir::OpBuilder builder(operation);
+    TargetOp replacement =
+        TargetOp::create(builder, operation.getLoc(), type,
+                         operation->getOperand(0), operation->getOperand(1),
+                         mlir::arith::convertArithFastMathAttrToLLVM(
+                             operation.getFastMathFlagsAttr()));
+    operation.replaceAllUsesWith(replacement.getResult());
+    operation.erase();
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error materializeDeterministicMathMlir(mlir::ModuleOp module) {
 #define LOOM_MATERIALIZE_UNARY_MATH(SourceOp, TargetOp)                        \
   if (llvm::Error error =                                                      \
@@ -194,6 +298,10 @@ llvm::Error materializeDeterministicMathMlir(mlir::ModuleOp module) {
   LOOM_MATERIALIZE_UNARY_MATH(mlir::math::Log10Op, mlir::LLVM::Log10Op);
   LOOM_MATERIALIZE_UNARY_MATH(mlir::math::SqrtOp, mlir::LLVM::SqrtOp);
 #undef LOOM_MATERIALIZE_UNARY_MATH
+  if (llvm::Error error =
+          materializeDeterministicBinaryMath<mlir::math::PowFOp,
+                                             mlir::LLVM::PowOp>(module))
+    return error;
   if (mlir::failed(mlir::verify(module)))
     return invalid("deterministic native math projection does not verify");
   return llvm::Error::success();
@@ -403,26 +511,31 @@ llvm::Error retargetStructuredOracle(llvm::Module &module,
 llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
                                            llvm::orc::LLJIT &jit) {
   using MathCall =
-      std::pair<llvm::IntrinsicInst *, dataflow::OperationSchemaId>;
+      std::tuple<llvm::IntrinsicInst *, dataflow::OperationSchemaId, unsigned>;
   std::vector<MathCall> mathCalls;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
         if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&instruction);
-            intrinsic)
+            intrinsic) {
           if (auto schema = unaryMathSchema(intrinsic->getIntrinsicID()))
-            mathCalls.emplace_back(intrinsic, *schema);
+            mathCalls.emplace_back(intrinsic, *schema, 1);
+          else if (auto schema = binaryMathSchema(intrinsic->getIntrinsicID()))
+            mathCalls.emplace_back(intrinsic, *schema, 2);
+        }
   llvm::DenseMap<llvm::StringRef, DeterministicMathCallback> callbacks;
-  for (const auto &[intrinsic, schema] : mathCalls) {
+  for (const auto &[intrinsic, schema, operandCount] : mathCalls) {
     (void)schema;
     llvm::Type *type = intrinsic->getType();
     if (type->isScalableTy())
       return unsupported(
-          "deterministic native unary math does not support scalable vectors");
-    auto callback = unaryMathCallback(type->getScalarType());
+          "deterministic native math does not support scalable vectors");
+    auto callback = operandCount == 1
+                        ? unaryMathCallback(type->getScalarType())
+                        : binaryMathCallback(type->getScalarType());
     if (!callback)
       return unsupported(
-          "deterministic native unary math has an unsupported scalar type");
+          "deterministic native math has an unsupported scalar type");
     callbacks.try_emplace(callback->symbol, *callback);
   }
   if (callbacks.empty())
@@ -436,41 +549,51 @@ llvm::Error prepareDeterministicMathOracle(llvm::Module &module,
     llvm::IntegerType *bits =
         llvm::IntegerType::get(module.getContext(), callback.bitWidth);
     llvm::IntegerType *schema = llvm::Type::getInt32Ty(module.getContext());
+    llvm::SmallVector<llvm::Type *, 3> arguments = {schema};
+    arguments.append(callback.operandCount, bits);
     llvm::FunctionCallee declaration = module.getOrInsertFunction(
-        symbol, llvm::FunctionType::get(bits, {schema, bits}, false));
+        symbol, llvm::FunctionType::get(bits, arguments, false));
     declarations.try_emplace(symbol, declaration);
   }
 
-  for (const auto &[intrinsic, schema] : mathCalls) {
+  for (const auto &[intrinsic, schema, operandCount] : mathCalls) {
     llvm::Type *type = intrinsic->getType();
     const DeterministicMathCallback callback =
-        *unaryMathCallback(type->getScalarType());
+        operandCount == 1 ? *unaryMathCallback(type->getScalarType())
+                          : *binaryMathCallback(type->getScalarType());
     const std::uint32_t schemaValue = static_cast<std::uint32_t>(schema);
     llvm::FunctionCallee declaration = declarations.lookup(callback.symbol);
     llvm::IRBuilder<> builder(intrinsic);
     builder.SetCurrentDebugLocation(intrinsic->getDebugLoc());
-    auto evaluateScalar = [&](llvm::Value *value) {
+    auto evaluateScalar = [&](llvm::ArrayRef<llvm::Value *> values) {
       llvm::IntegerType *bits =
           llvm::IntegerType::get(module.getContext(), callback.bitWidth);
-      llvm::Value *inputBits = builder.CreateBitCast(value, bits);
+      llvm::SmallVector<llvm::Value *, 3> arguments;
       llvm::Value *schemaOrdinal = llvm::ConstantInt::get(
           llvm::Type::getInt32Ty(module.getContext()), schemaValue);
-      llvm::Value *resultBits =
-          builder.CreateCall(declaration, {schemaOrdinal, inputBits});
-      return builder.CreateBitCast(resultBits, value->getType());
+      arguments.push_back(schemaOrdinal);
+      for (llvm::Value *value : values)
+        arguments.push_back(builder.CreateBitCast(value, bits));
+      llvm::Value *resultBits = builder.CreateCall(declaration, arguments);
+      return builder.CreateBitCast(resultBits, values.front()->getType());
     };
 
     llvm::Value *replacement = nullptr;
     if (auto *vector = llvm::dyn_cast<llvm::FixedVectorType>(type)) {
       replacement = llvm::PoisonValue::get(vector);
       for (unsigned lane = 0; lane < vector->getNumElements(); ++lane) {
-        llvm::Value *element =
-            builder.CreateExtractElement(intrinsic->getArgOperand(0), lane);
+        llvm::SmallVector<llvm::Value *, 2> elements;
+        for (unsigned operand = 0; operand < operandCount; ++operand)
+          elements.push_back(builder.CreateExtractElement(
+              intrinsic->getArgOperand(operand), lane));
         replacement = builder.CreateInsertElement(
-            replacement, evaluateScalar(element), lane);
+            replacement, evaluateScalar(elements), lane);
       }
     } else {
-      replacement = evaluateScalar(intrinsic->getArgOperand(0));
+      llvm::SmallVector<llvm::Value *, 2> operands;
+      for (unsigned operand = 0; operand < operandCount; ++operand)
+        operands.push_back(intrinsic->getArgOperand(operand));
+      replacement = evaluateScalar(operands);
     }
     intrinsic->replaceAllUsesWith(replacement);
     intrinsic->eraseFromParent();

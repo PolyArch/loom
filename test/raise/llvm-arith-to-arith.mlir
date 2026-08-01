@@ -232,12 +232,15 @@ llvm.func @typed_elementary_math(%single: f32, %double: f64) {
     %4 = llvm.intr.floor(%single) : (f32) -> f32
     // CHECK: %{{.*}} = math.trunc %arg1 : f64
     %5 = llvm.intr.trunc(%double) : (f64) -> f64
+    // CHECK: %{{.*}} = math.powf %arg0, %arg0 fastmath<afn> : f32
+    %6 = llvm.intr.pow(%single, %single) {fastmathFlags = #llvm.fastmath<afn>} : (f32, f32) -> f32
     // CHECK-NOT: llvm.intr.sqrt
     // CHECK-NOT: llvm.intr.exp
     // CHECK-NOT: llvm.intr.log
     // CHECK-NOT: llvm.intr.ceil
     // CHECK-NOT: llvm.intr.floor
     // CHECK-NOT: llvm.intr.trunc
+    // CHECK-NOT: llvm.intr.pow
     llvm.return
 }
 

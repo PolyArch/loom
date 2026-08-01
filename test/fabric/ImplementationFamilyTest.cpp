@@ -156,9 +156,12 @@ bool checkDescriptorRelations() {
   llvm::StringSet<> keywords;
   const std::uint32_t families = implementationFamilyCount();
   const std::uint32_t schemas = dataflow::operationSchemaCount();
-  if (families != 68) {
-    llvm::errs() << "the registry must contain exactly 68 families, found "
-                 << families << '\n';
+  const std::uint32_t expectedFamilies =
+      static_cast<std::uint32_t>(ImplementationFamilyId::ScalarMathPow) + 1;
+  if (families != expectedFamilies) {
+    llvm::errs() << "the generated family registry is not dense, found "
+                 << families << " entries through ordinal "
+                 << expectedFamilies - 1 << '\n';
     ok = false;
   }
 
@@ -257,6 +260,10 @@ bool checkMembership() {
                              OperationSchemaId::LLVMGetElementPtr) ||
       admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
                             OperationSchemaId::ArithMulI) ||
+      !admitsOperationSchema(ImplementationFamilyId::ScalarMathPow,
+                             OperationSchemaId::MathPowF) ||
+      admitsOperationSchema(ImplementationFamilyId::ScalarFloatMultiply,
+                            OperationSchemaId::MathPowF) ||
       !admitsOperationSchema(ImplementationFamilyId::LoopStream,
                              OperationSchemaId::DataflowStream) ||
       admitsOperationSchema(ImplementationFamilyId::LoopStream,

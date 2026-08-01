@@ -12,6 +12,11 @@ llvm::Expected<llvm::APFloat>
 evaluateDeterministicUnaryMath(dataflow::OperationSchemaId schema,
                                const llvm::APFloat &operand);
 
+llvm::Expected<llvm::APFloat>
+evaluateDeterministicBinaryMath(dataflow::OperationSchemaId schema,
+                                const llvm::APFloat &lhs,
+                                const llvm::APFloat &rhs);
+
 } // namespace loom::sim::detail
 
 #endif // LOOM_SIMULATOR_DETERMINISTIC_TRANSCENDENTAL_H

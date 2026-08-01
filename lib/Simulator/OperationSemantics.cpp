@@ -93,6 +93,7 @@ primitiveOperationProvider(dataflow::OperationSchemaId schema) {
   case Schema::MathSqrt:
   case Schema::MathRsqrt:
   case Schema::MathErf:
+  case Schema::MathPowF:
   case Schema::MathFma:
   case Schema::MathCountLeadingZeros:
   case Schema::MathCountTrailingZeros:
@@ -788,6 +789,33 @@ llvm::Expected<PrimitiveValue> evaluateRegisteredPrimitiveOperation(
     if (llvm::Error arity = requireArity(schema, operands, 2))
       return std::move(arity);
     return evaluateFloatBinary(descriptor, operands);
+
+  case Schema::MathPowF: {
+    if (llvm::Error arity = requireArity(schema, operands, 2))
+      return std::move(arity);
+    auto payload = requirePayload<dataflow::FloatingPointPayload>(descriptor);
+    if (!payload)
+      return payload.takeError();
+    if (auto exceptional = strictExceptionalResult(operands))
+      return *exceptional;
+    auto type = floatInputType(descriptor, 0);
+    if (!type)
+      return type.takeError();
+    auto lhs = asFloat(schema, operands[0], *type);
+    auto rhs = asFloat(schema, operands[1], *type);
+    if (!lhs)
+      return lhs.takeError();
+    if (!rhs)
+      return rhs.takeError();
+    llvm::APFloat values[] = {*lhs, *rhs};
+    if (violatesFloatingAssumptions(**payload, values))
+      return PrimitiveValue::poison();
+    auto result =
+        loom::sim::detail::evaluateDeterministicBinaryMath(schema, *lhs, *rhs);
+    if (!result)
+      return result.takeError();
+    return PrimitiveValue::floating(*result);
+  }
 
   case Schema::ArithNegF:
   case Schema::MathAbsF:

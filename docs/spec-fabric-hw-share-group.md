@@ -275,6 +275,7 @@ ScalarMathRoundEven         = { math.roundeven }
 ScalarMathSqrt              = { math.sqrt }
 ScalarMathRsqrt             = { math.rsqrt }
 ScalarMathErf               = { math.erf }
+ScalarMathPow               = { math.powf }
 ```
 
 Integer divider capabilities use the scalar integer-width record. Floating

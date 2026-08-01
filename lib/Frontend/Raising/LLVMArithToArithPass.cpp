@@ -527,6 +527,7 @@ struct LLVMArithToArithPass
         FloatBinaryAlias<::mlir::LLVM::FMulOp, ::mlir::arith::MulFOp>,
         FloatBinaryAlias<::mlir::LLVM::FDivOp, ::mlir::arith::DivFOp>,
         FloatBinaryAlias<::mlir::LLVM::FRemOp, ::mlir::arith::RemFOp>,
+        FloatBinaryAlias<::mlir::LLVM::PowOp, ::mlir::math::PowFOp>,
 
         // floating minimum and maximum. The two families differ in what they
         // state about NaN and signed zero, so each keeps its own identity:

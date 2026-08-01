@@ -137,6 +137,8 @@ std::uint64_t familyComplexity(::fabric::ImplementationFamilyId family,
   case Family::ScalarFloatDivide:
   case Family::ScalarFloatRemainder:
     return 24;
+  case Family::ScalarMathPow:
+    return 36;
   default:
     break;
   }

@@ -1109,6 +1109,8 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
       scalarFloat(ImplementationFamilyId::ScalarFloatDivide, {0, 1}));
   resources.push_back(
       scalarFloat(ImplementationFamilyId::ScalarFloatRemainder, {0, 1}));
+  resources.push_back(
+      scalarFloat(ImplementationFamilyId::ScalarMathPow, {0, 1}));
   constexpr std::array<ImplementationFamilyId, 21> unaryFamilies = {
       ImplementationFamilyId::ScalarMathSin,
       ImplementationFamilyId::ScalarMathCos,

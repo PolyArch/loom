@@ -398,7 +398,8 @@ void publicFuLibraryBuildsTypedGraphs() {
               llvm::StringRef(text).contains("LoopInvariant") &&
               llvm::StringRef(text).contains("LoopGate") &&
               llvm::StringRef(text).contains("FixedVectorFloatFma") &&
-              llvm::StringRef(text).contains("ScalarMathSqrt"),
+              llvm::StringRef(text).contains("ScalarMathSqrt") &&
+              llvm::StringRef(text).contains("ScalarMathPow"),
           "public FU helpers lost generated implementation-family bindings");
 }
 

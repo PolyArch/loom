@@ -261,6 +261,8 @@ def MathErf : ActorSchema<65, 0x4c530242, "::mlir::math::ErfOp", "Compute",
     ArithFloatingPoint>;
 def MathFma : ActorSchema<66, 0x4c530243, "::mlir::math::FmaOp", "Compute",
     ArithFloatingPoint>;
+def MathPowF : ActorSchema<106, 0x4c53026b, "::mlir::math::PowFOp", "Compute",
+    ArithFloatingPoint>;
 def MathCountLeadingZeros : ActorSchema<93, 0x4c53025e,
     "::mlir::math::CountLeadingZerosOp", "Compute", NoSemanticPayload>;
 def MathCountTrailingZeros : ActorSchema<101, 0x4c530266,
@@ -574,5 +576,7 @@ def FixedVectorIntegerCountZeros : ImplementationFamily<67,
     [MathCountLeadingZeros, MathCountTrailingZeros, LLVMCountLeadingZeros,
      LLVMCountTrailingZeros], FixedVectorIntegerParams,
     FixedVectorUnaryIntegerAdmission>;
+def ScalarMathPow : ImplementationFamily<68, [MathPowF],
+    ScalarFloatParams, ScalarUniformFloatAdmission>;
 
 #endif // LOOM_OPERATION_SCHEMAS_TD

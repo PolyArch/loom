@@ -1097,6 +1097,9 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
     inputCount = 2;
     hasArithmeticRounding = true;
     break;
+  case OperationSchemaId::MathPowF:
+    inputCount = 2;
+    break;
   case OperationSchemaId::MathFma:
     inputCount = 3;
     hasArithmeticRounding = true;

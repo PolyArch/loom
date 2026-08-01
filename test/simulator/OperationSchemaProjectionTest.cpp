@@ -468,6 +468,20 @@ void checkDeterministicElementaryMathProvider() {
             definedBits(__func__, result) == llvm::APInt(32, entry.expected),
             "elementary math produced the wrong IEEE result");
   }
+
+  require(__func__,
+          loom::sim::isSupportedPrimitiveOperation(OperationSchemaId::MathPowF),
+          "typed power has no deterministic primitive provider");
+  PrimitiveOperationDescriptor power =
+      descriptor(OperationSchemaId::MathPowF,
+                 mlir::FunctionType::get(&context, {f32, f32}, {f32}),
+                 dataflow::FloatingPointPayload{}, 32, 32);
+  PrimitiveValue powerResult = takeValue(
+      __func__, loom::sim::evaluatePrimitiveOperation(
+                    power, {floating32(0x40000000U), floating32(0x40400000U)}));
+  require(__func__,
+          definedBits(__func__, powerResult) == llvm::APInt(32, 0x41000000U),
+          "typed power produced the wrong IEEE result");
 }
 
 } // namespace
