@@ -168,6 +168,24 @@ target_link_libraries(loom-simulator-simulation-execution-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-dfg-evaluation-test
+  DFGEvaluationTest.cpp
+)
+
+target_link_libraries(loom-simulator-dfg-evaluation-test PRIVATE
+  LoomCommon
+  LoomEvaluation
+  LoomSimulator
+  LoomStructuredFabricAnalyticModel
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-simulator-structured-program-native-execution-test
   StructuredProgramNativeExecutionTest.cpp
 )

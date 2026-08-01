@@ -86,9 +86,11 @@ set(LOOM_TEST_DEPENDS
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
+  loom-simulator-dfg-evaluation-test
   loom-simulator-dfg-pointer-execution-test
   loom-simulator-dfg-execution-session-test
   loom-simulator-operation-schema-projection-test
+  loom-simulator-simulation-execution-test
   loom-simulator-simulation-wire-test
   loom-simulator-structured-program-native-execution-test
   loom-simulator-synchronization-test

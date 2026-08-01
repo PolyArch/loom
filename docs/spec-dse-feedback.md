@@ -264,6 +264,7 @@ Schema 1.0 initially registers these exact pre-Mapping case signatures:
 | 0 | `structured_program_with_fabric` | `0: Structured Program Candidate`, `1: Fabric` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 1 | `canonical_dataflow_with_fabric` | `0: Canonical Dataflow Program`, `1: Fabric` | both forbidden |
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
+| 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 
 The matching initial model descriptors are:
 
@@ -272,16 +273,28 @@ The matching initial model descriptors are:
 | 2 | `structured_fabric_low_confidence` | 0 | deterministic Analytic point estimates for whole-case Runtime, limiting clock frequency, total area, dynamic power, and leakage power |
 | 3 | `canonical_dataflow_fabric_low_confidence` | 1 | the same deterministic Analytic metric set for a Canonical Dataflow/Fabric pair |
 | 4 | `structured_program_functional` | 2 | deterministic Simulation result for the whole-case `functional_mismatch` finding only |
+| 5 | `dfg_simulator` | 3 | deterministic Simulation of the exact Spatial workload, with one `SimulationExecution` output and exact whole-case CycleCount |
 
 Model kinds 2 and 3 consume the exact shared low-confidence config-view
-contract. Model kind 4 consumes a distinct zero-field config view because its
-functional comparison has no cost-model parameters. Model kind 4 compares the
+contract. Model kinds 4 and 5 each consume a distinct zero-field config view
+because neither simulation has semantic model parameters. Physical execution
+limits remain owner-attempt bindings and do not enter either view. Model kind
+4 compares the
 candidate's selected whole-program native execution with the source execution
 owned by the exact workload/runtime pair. Exact Artifact identity is sufficient
 to establish equality for the unchanged source baseline; all other candidates
 must execute. Unsupported projection or execution capability produces typed
 `Unsupported`, provider failure produces typed `ExecutionFailed`, and only
 completed unequal observations produce `functional_mismatch = Present`.
+
+Model kind 5 uses the DFG timing model's `AbstractCycle` as its exact case
+cycle basis. A retired run publishes one `SimulationExecution`; whole-case
+CycleCount is mechanically derived from that execution's launch-accepted and
+graph-retirement progress anchors. Unsupported capability, execution failure,
+or an attempt limit cannot publish a fabricated retired execution. The first
+provider does not emit `Halted`, because no complete terminal-witness owner is
+registered for it; a non-retired run without such a proof is an execution
+failure rather than a guessed deadlock.
 
 This table does not introduce a second case-kind enum or a generic optional
 subject bag. Every real model registers one exact
