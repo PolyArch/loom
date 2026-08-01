@@ -136,11 +136,7 @@ lowerStructuredProgramToCanonicalDataflowWithProjection(
     return finalized.takeError();
   if (finalized->trackedStaticGraphLaunches.size() != spatialRegions.size())
     return invalid("canonical graph launch projection changed cardinality");
-  auto ownedArtifact = dataflow::importCanonicalDataflow(
-      finalized->artifact.identity(), finalized->artifact.canonicalBytes());
-  if (!ownedArtifact)
-    return ownedArtifact.takeError();
-  auto view = ownedArtifact->view();
+  auto view = finalized->artifact.view();
   if (!view)
     return view.takeError();
 
@@ -152,7 +148,7 @@ lowerStructuredProgramToCanonicalDataflowWithProjection(
       return resolved.takeError();
     projections.push_back({region, staticLaunch});
   }
-  return ProjectedCanonicalDataflow{std::move(*ownedArtifact),
+  return ProjectedCanonicalDataflow{std::move(finalized->artifact),
                                     std::move(projections)};
 }
 
