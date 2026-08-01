@@ -1088,6 +1088,42 @@ module attributes {
           "logical root is not owned by the memory service operation");
 }
 
+void exceptionalPointerCannotAcquireMemoryService() {
+  const char *test = "exceptionalPointerCannotAcquireMemoryService";
+  require(test, finalizeRejected(test, R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>,
+  llvm.data_layout = "e-p:64:64"
+} {
+  dataflow.graph private @g(%start: none, %pointer: !llvm.ptr,
+                            %service: memref<?xi32>) -> i32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value, %done = dataflow.load %service[%pointer] %start
+        : memref<?xi32>, !llvm.ptr
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(
+      %pointer: !llvm.ptr) ctrl (%ctrl: none) {
+    %service = dataflow.memory.service %pointer
+        : !llvm.ptr -> memref<?xi32>
+    %value, %done = dataflow.graph.launch @g deps(%ctrl)
+        values(%pointer) stream_inputs() memories(%service) stream_outputs()
+        : (none, !llvm.ptr, memref<?xi32>) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  llvm.func @host() {
+    %pointer = llvm.mlir.undef : !llvm.ptr
+    %token = dataflow.thread.launch @t(%pointer)
+        : (!llvm.ptr) -> !dataflow.thread_token
+    llvm.return
+  }
+}
+)mlir"),
+          "an undef pointer acquired an object-scoped memory service");
+}
+
 void registeredIntrinsicCarrierFinalizes() {
   const char *test = "registeredIntrinsicCarrierFinalizes";
   CanonicalDataflowArtifact artifact = finalize(test, R"mlir(
@@ -1126,6 +1162,7 @@ int main() {
   memoryViewExposureService();
   pointerValueAndLayoutRoundTrip();
   pointerMemoryServiceIsOneLogicalRoot();
+  exceptionalPointerCannotAcquireMemoryService();
   registeredIntrinsicCarrierFinalizes();
   llvm::outs() << "all canonical dataflow artifact tests passed\n";
   return EXIT_SUCCESS;

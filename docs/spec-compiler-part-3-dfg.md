@@ -633,6 +633,16 @@ or integer index is forbidden. Loading or storing a pointer as ordinary data
 is legal only when the memory capability and physical data path admit all
 `P(AS)` bits and preserve the exact pointer kind.
 
+An object-scoped memory service cannot be acquired from a statically
+exceptional pointer. Finalized-program validation resolves each service sourced
+from a thread formal through every exact root `dataflow.thread.launch` binding
+and rejects an `undef` or `poison` binding. Exceptional pointers remain legal
+value-plane data when no memory service is acquired from them. A structured
+candidate that hoists an unobserved exceptional branch placeholder into an
+unconditional service binding is non-finalizable; ownership selection must keep
+the controlling code outside that Spatial slice or choose a smaller
+dependency-closed region.
+
 SCF-to-SCF optimization may choose rooted capability-plus-index addressing,
 first-class pointer execution in a SpatialCore, or InstructionCore ownership.
 That choice is an Evaluation/DSE result, not a type-system prohibition. Every

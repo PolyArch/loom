@@ -1,6 +1,8 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowThreadCompletion.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -299,6 +301,66 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
       });
 }
 
+bool isStaticallyExceptionalPointer(mlir::Value value) {
+  return value.getDefiningOp<mlir::LLVM::UndefOp>() ||
+         value.getDefiningOp<mlir::LLVM::PoisonOp>() ||
+         value.getDefiningOp<mlir::ub::PoisonOp>();
+}
+
+llvm::Error verifyMemoryServiceBindings(mlir::ModuleOp module) {
+  llvm::DenseMap<mlir::Operation *, llvm::SmallSet<unsigned, 2>>
+      serviceArgumentOrdinals;
+  llvm::Error error = llvm::Error::success();
+  module.walk([&](dataflow::MemoryServiceOp service) {
+    if (error)
+      return mlir::WalkResult::interrupt();
+    if (isStaticallyExceptionalPointer(service.getPointer())) {
+      error = programError(
+          "dataflow.memory.service cannot acquire an object-scoped service "
+          "from a statically exceptional pointer");
+      return mlir::WalkResult::interrupt();
+    }
+
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(service.getPointer());
+    dataflow::ThreadOp thread = service->getParentOfType<dataflow::ThreadOp>();
+    if (!argument || !thread ||
+        argument.getOwner() != &thread.getBody().front())
+      return mlir::WalkResult::advance();
+    unsigned ordinal = argument.getArgNumber();
+    if (ordinal < thread.getFunctionType().getNumInputs())
+      serviceArgumentOrdinals[thread].insert(ordinal);
+    return mlir::WalkResult::advance();
+  });
+  if (error)
+    return error;
+
+  mlir::SymbolTableCollection symbols;
+  module.walk([&](dataflow::ThreadLaunchOp launch) {
+    if (error)
+      return mlir::WalkResult::interrupt();
+    dataflow::ThreadOp thread =
+        symbols.lookupNearestSymbolFrom<dataflow::ThreadOp>(
+            launch, launch.getCalleeAttr());
+    if (!thread)
+      return mlir::WalkResult::advance();
+    auto serviceArguments = serviceArgumentOrdinals.find(thread);
+    if (serviceArguments == serviceArgumentOrdinals.end())
+      return mlir::WalkResult::advance();
+    for (unsigned ordinal : serviceArguments->second) {
+      if (ordinal >= launch.getBodyOperands().size() ||
+          !isStaticallyExceptionalPointer(launch.getBodyOperands()[ordinal]))
+        continue;
+      error = programError(
+          llvm::Twine("dataflow.thread.launch @") + thread.getSymName() +
+          " binds memory-service pointer argument #" + llvm::Twine(ordinal) +
+          " to a statically exceptional pointer");
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return error;
+}
+
 // The one per-thread ownership index for stored-program graph completion
 // events. Op verifiers guarantee that every launch is transitively inside
 // exactly one thread definition, so the innermost enclosing thread is a
@@ -465,6 +527,8 @@ llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
   if (hasSpatialCandidate)
     return programError(
         "finalized program contains temporary loom.spatial_region");
+  if (llvm::Error error = verifyMemoryServiceBindings(module))
+    return error;
   ThreadOwnershipIndex ownership = indexThreadOwnership(module);
   if (llvm::Error error = verifyThreadCompletionFrontiers(ownership))
     return error;
