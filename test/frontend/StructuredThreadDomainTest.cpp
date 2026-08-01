@@ -152,7 +152,7 @@ findThreadDecision(const loom::frontend::StructuredProgramCandidate &source,
   auto found = llvm::find_if(
       domain, [&](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
         return point.forallOwnershipShape == Shape::LogicalThreadDomain &&
-               point.canonicalIndexWidth == indexWidth;
+               point.rootRelativeIndexWidth() == indexWidth;
       });
   if (found == domain.end())
     fail("logical thread-domain decision is absent");
@@ -250,7 +250,7 @@ void requireThreadDomainChoice(
       source, selected));
   std::optional<loom::frontend::SpatialOwnershipDecisionPoint> graphDecision;
   for (const loom::frontend::SpatialOwnershipDecisionPoint &decision : domain) {
-    if (decision.canonicalIndexWidth != 64)
+    if (decision.rootRelativeIndexWidth() != 64)
       continue;
     if (decision.forallOwnershipShape == Shape::GraphParallel)
       graphDecision = decision;

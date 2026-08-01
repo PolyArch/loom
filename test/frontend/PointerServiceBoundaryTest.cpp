@@ -71,6 +71,61 @@ entry:
   fail(stream.str());
 }
 
+std::unique_ptr<llvm::Module>
+parsePostTestedPointerLoop(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
+target triple = "riscv64-unknown-unknown-elf"
+
+define internal void @copy(ptr %source, ptr %destination, i16 %count) {
+entry:
+  %remaining.initial = zext i16 %count to i64
+  br label %loop
+
+loop:
+  %remaining = phi i64 [ %remaining.initial, %entry ], [ %remaining.next, %loop ]
+  %source.current = phi ptr [ %source, %entry ], [ %source.next, %loop ]
+  %destination.current = phi ptr [ %destination, %entry ], [ %destination.next, %loop ]
+  %value = load double, ptr %source.current, align 8
+  store double %value, ptr %destination.current, align 8
+  %source.next = getelementptr inbounds i8, ptr %source.current, i64 8
+  %destination.next = getelementptr inbounds i8, ptr %destination.current, i64 8
+  %remaining.next = add i64 %remaining, -1
+  %more = icmp ne i64 %remaining.next, 0
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}
+
+define i32 @main() {
+entry:
+  %source = alloca [2 x double], align 8
+  %destination = alloca [2 x double], align 8
+  %source.0 = getelementptr [2 x double], ptr %source, i64 0, i64 0
+  %source.1 = getelementptr [2 x double], ptr %source, i64 0, i64 1
+  store double 1.250000e+00, ptr %source.0, align 8
+  store double 2.500000e+00, ptr %source.1, align 8
+  call void @copy(ptr %source.0, ptr %destination, i16 2)
+  %destination.1 = getelementptr [2 x double], ptr %destination, i64 0, i64 1
+  %result = load double, ptr %destination.1, align 8
+  %matches = fcmp oeq double %result, 2.500000e+00
+  %status = select i1 %matches, i32 0, i32 1
+  ret i32 %status
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<post-tested-pointer-loop>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (module)
+    return module;
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  diagnostic.print("postTestedPointerLoop", stream);
+  fail(stream.str());
+}
+
 loom::frontend::StructuredEntityRef
 findCallable(const loom::frontend::StructuredProgramCandidate &program,
              llvm::StringRef name) {
@@ -178,6 +233,99 @@ void pointerServiceBoundary() {
     fail("cannot remove artifact store: " + error.message());
 }
 
+void exactPointerAddressingFallback() {
+  llvm::SmallString<128> directory;
+  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+          "loom-pointer-addressing-fallback", directory))
+    fail("cannot create artifact store: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+
+  llvm::LLVMContext context;
+  auto compiled = take(loom::frontend::compileLlvmModuleToPreMapping(
+      parsePostTestedPointerLoop(context), design.roots().front().reference(),
+      store));
+  loom::frontend::SpatialOwnershipScope scope{
+      findCallable(compiled.structuredProgram, "copy")};
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+      compiled.structuredProgram, scope.selection));
+
+  std::optional<loom::frontend::SpatialOwnershipDecisionPoint> rootRelative;
+  std::optional<loom::frontend::SpatialOwnershipDecisionPoint> pointerAddressed;
+  for (const auto &decision : domain) {
+    if (!decision.addressProjection || decision.directCallSpecializationShape)
+      continue;
+    if (const auto *root =
+            std::get_if<loom::frontend::RootRelativeAddressProjection>(
+                &*decision.addressProjection);
+        root && root->canonicalIndexWidth == 64)
+      rootRelative = decision;
+    if (std::holds_alternative<
+            loom::frontend::PointerAddressedAddressProjection>(
+            *decision.addressProjection))
+      pointerAddressed = decision;
+  }
+  if (!rootRelative || !pointerAddressed)
+    fail("address decision domain omitted an exact projection");
+
+  auto normalized = loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, scope, *rootRelative, design.roots().front());
+  if (normalized)
+    fail("unproven root-relative pointer induction was accepted");
+  std::string message = llvm::toString(normalized.takeError());
+  if (message.find("pointer induction offset") == std::string::npos)
+    fail("root-relative rejection lost its proof failure: " + message);
+
+  auto candidate = take(loom::frontend::materializeSpatialOwnershipDecision(
+      compiled.structuredProgram, scope, *pointerAddressed,
+      design.roots().front()));
+  auto view = take(candidate.canonicalDataflow.view());
+  if (view.graphs().size() != 1 || view.actors().empty())
+    fail("pointer-addressed decision did not publish a nonempty graph");
+
+  bool sawPointerCarry = false;
+  bool sawPointerLoad = false;
+  bool sawPointerStore = false;
+  bool sawTypedGep = false;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(actor.op))
+      sawPointerCarry |= dataflow::DataflowDialect::isPointerValueType(
+          carry.getOutput().getType());
+    if (auto load = llvm::dyn_cast<dataflow::LoadOp>(actor.op))
+      sawPointerLoad |= dataflow::DataflowDialect::isPointerValueType(
+          load.getAddr().getType());
+    if (auto store = llvm::dyn_cast<dataflow::StoreOp>(actor.op))
+      sawPointerStore |= dataflow::DataflowDialect::isPointerValueType(
+          store.getAddr().getType());
+    sawTypedGep |= llvm::isa<mlir::LLVM::GEPOp>(actor.op);
+  }
+  if (!sawPointerCarry || !sawPointerLoad || !sawPointerStore || !sawTypedGep)
+    fail("pointer-addressed graph lost its exact address representation");
+
+  auto sourceView = take(compiled.structuredProgram.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      findCallable(compiled.structuredProgram, "main")};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload =
+      take(loom::sim::finalizeSimulationWorkload(workloadDraft, sourceView));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft runtimeDraft{
+      workload.identity()};
+  auto runtimeInput = take(loom::sim::finalizeSimulationRuntimeInput(
+      runtimeDraft, workload, sourceView));
+  auto replay = take(loom::sim::validateSourceBackedDfgReplay(
+      compiled.structuredProgram, scope, *pointerAddressed, candidate, workload,
+      runtimeInput,
+      {/*maxWavefrontSteps=*/1000, /*maxEventCount=*/10000,
+       /*maxRetainedCaptureBytes=*/1024 * 1024}));
+  if (replay.status != loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
+      replay.dynamicActivations != 1 || replay.eventCount == 0)
+    fail("pointer-addressed replay was not exactly equivalent");
+
+  if (std::error_code error = llvm::sys::fs::remove_directories(directory))
+    fail("cannot remove artifact store: " + error.message());
+}
+
 } // namespace
 
 int main() {
@@ -185,6 +333,7 @@ int main() {
       llvm::InitializeNativeTargetAsmPrinter())
     fail("cannot initialize the native target");
   pointerServiceBoundary();
+  exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";
   return EXIT_SUCCESS;
 }

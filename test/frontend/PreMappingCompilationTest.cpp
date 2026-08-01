@@ -793,8 +793,7 @@ void explicitWholeCallableSpatialOwnership() {
   auto decisionDomain =
       take(test, loom::frontend::enumerateSpatialOwnershipDecisionDomain(
                      compiled.structuredProgram, callable));
-  if (decisionDomain.size() != 1 ||
-      decisionDomain.front().canonicalIndexWidth ||
+  if (decisionDomain.size() != 1 || decisionDomain.front().addressProjection ||
       decisionDomain.front().fmuladdExecutionShape)
     fail(test, "constant GEP invented a dynamic ownership decision");
   auto selected = take(
@@ -1010,11 +1009,11 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
   if (candidate)
     fail(test, "whole-callable ownership silently selected an index width");
   std::string message = llvm::toString(candidate.takeError());
-  if (message.find("explicit canonical index width") == std::string::npos)
-    fail(test, "missing index decision was not diagnosed: " + message);
+  if (message.find("explicit address projection") == std::string::npos)
+    fail(test, "missing address decision was not diagnosed: " + message);
 
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
   auto selected =
       take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
@@ -1075,12 +1074,13 @@ void wholeCallableNormalizesPointerInduction() {
                      compiled.structuredProgram, callable));
   bool saw64BitAddressDomain = false;
   for (const auto &decision : decisions)
-    saw64BitAddressDomain |= decision.canonicalIndexWidth == 64;
+    saw64BitAddressDomain |= decision.rootRelativeIndexWidth() == 64;
   if (!saw64BitAddressDomain)
     fail(test, "pointer induction did not request a canonical address domain");
 
   loom::frontend::SpatialOwnershipOptions narrowOptions;
-  narrowOptions.canonicalIndexWidth = 32;
+  narrowOptions.addressProjection =
+      loom::frontend::RootRelativeAddressProjection{32};
   auto narrow = loom::frontend::materializeSpatialOwnership(
       compiled.structuredProgram, callable, design.roots().front(),
       narrowOptions);
@@ -1092,7 +1092,7 @@ void wholeCallableNormalizesPointerInduction() {
          "insufficient pointer induction width was misdiagnosed: " + message);
 
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 64;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{64};
   auto selected = take(test, loom::frontend::materializeSpatialOwnership(
                                  compiled.structuredProgram, callable,
                                  design.roots().front(), options));
@@ -1189,7 +1189,7 @@ void wholeCallableNormalizesNestedPointerInduction() {
                      parseNestedPointerInductionModule(test, context),
                      design.roots().front().reference(), store));
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 64;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{64};
   auto selected = take(test, loom::frontend::materializeSpatialOwnership(
                                  compiled.structuredProgram,
                                  findCallable(test, compiled.structuredProgram,
@@ -1233,12 +1233,12 @@ void explicitOperationSpatialOwnership() {
   if (implicit)
     fail(test, "operation ownership silently selected an index width");
   std::string implicitMessage = llvm::toString(implicit.takeError());
-  if (implicitMessage.find("explicit canonical index width") ==
-      std::string::npos)
-    fail(test, "missing index decision was not diagnosed: " + implicitMessage);
+  if (implicitMessage.find("explicit address projection") == std::string::npos)
+    fail(test,
+         "missing address decision was not diagnosed: " + implicitMessage);
 
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
   auto selected = take(test, loom::frontend::materializeSpatialOwnership(
                                  compiled.structuredProgram, loop,
                                  design.roots().front(), options));
@@ -1384,7 +1384,7 @@ void operationOwnershipInternalizesConstants() {
                                  parseByteOffsetOwnershipModule(test, context),
                                  design.roots().front().reference(), store));
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
   auto selected = take(
       test,
       loom::frontend::materializeSpatialOwnership(
@@ -1557,7 +1557,7 @@ void operationFmulAddDecisionIsCandidateLocal() {
                                  parseOperationFmulAddModule(test, context),
                                  design.roots().front().reference(), store));
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
   options.fmuladdExecutionShape = loom::raising::FMulAddExecutionShape::Fused;
   auto selected = take(
       test,
@@ -1615,10 +1615,12 @@ void ownershipDecisionDomainIsScopeLocalAndTyped() {
 
   using Shape = loom::raising::FMulAddExecutionShape;
   const std::vector<loom::frontend::SpatialOwnershipDecisionPoint> expected = {
-      {Shape::Fused, 32},
-      {Shape::Split, 32},
-      {Shape::Fused, 64},
-      {Shape::Split, 64},
+      {Shape::Fused, loom::frontend::RootRelativeAddressProjection{32}},
+      {Shape::Split, loom::frontend::RootRelativeAddressProjection{32}},
+      {Shape::Fused, loom::frontend::RootRelativeAddressProjection{64}},
+      {Shape::Split, loom::frontend::RootRelativeAddressProjection{64}},
+      {Shape::Fused, loom::frontend::PointerAddressedAddressProjection{}},
+      {Shape::Split, loom::frontend::PointerAddressedAddressProjection{}},
   };
   if (domain != expected)
     fail(test, "scope-local decision domain is incomplete or noncanonical");
@@ -1668,7 +1670,8 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
     fail(test, "unified domain omitted the operation ownership scope");
 
   loom::frontend::SpatialOwnershipDecisionPoint decision{
-      loom::raising::FMulAddExecutionShape::Fused, 32};
+      loom::raising::FMulAddExecutionShape::Fused,
+      loom::frontend::RootRelativeAddressProjection{32}};
   auto selected =
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, *operationScope, decision,
@@ -1706,7 +1709,7 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
                                  parseEscapedLoopModule(test, context),
                                  design.roots().front().reference(), store));
   loom::frontend::SpatialOwnershipOptions options;
-  options.canonicalIndexWidth = 32;
+  options.addressProjection = loom::frontend::RootRelativeAddressProjection{32};
   auto selected = take(
       test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,

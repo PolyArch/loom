@@ -1358,7 +1358,8 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                                  design.roots().front().reference(), store));
 
   loom::frontend::SpatialOwnershipOptions ownership;
-  ownership.canonicalIndexWidth = 32;
+  ownership.addressProjection =
+      loom::frontend::RootRelativeAddressProjection{32};
   auto candidate =
       take(test, loom::frontend::materializeSpatialOwnership(
                      compiled.structuredProgram,
@@ -1578,7 +1579,8 @@ void staticTableExecutesThroughTypedDfgInput() {
                                  design.roots().front().reference(), store));
 
   loom::frontend::SpatialOwnershipOptions ownership;
-  ownership.canonicalIndexWidth = 64;
+  ownership.addressProjection =
+      loom::frontend::RootRelativeAddressProjection{64};
   auto candidate = take(
       test, loom::frontend::materializeSpatialOwnership(
                 compiled.structuredProgram,

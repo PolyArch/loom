@@ -1477,14 +1477,17 @@ enumerateSpatialOwnershipDecisionDomain(
     return mlir::WalkResult::advance();
   });
 
-  llvm::SmallVector<std::optional<unsigned>, 2> indexWidths;
+  llvm::SmallVector<std::optional<SpatialAddressProjection>, 3>
+      addressProjections;
   if (detail::requiresCanonicalAddressIndexDecision(parent.module(),
                                                     operation)) {
     for (::fabric::ResolvedIndexWidth width :
          ::fabric::resolvedIndexWidthDomain)
-      indexWidths.push_back(::fabric::getResolvedIndexBitWidth(width));
+      addressProjections.push_back(RootRelativeAddressProjection{
+          ::fabric::getResolvedIndexBitWidth(width)});
+    addressProjections.push_back(PointerAddressedAddressProjection{});
   } else {
-    indexWidths.push_back(std::nullopt);
+    addressProjections.push_back(std::nullopt);
   }
 
   llvm::SmallVector<std::optional<raising::FMulAddExecutionShape>, 2>
@@ -1517,15 +1520,16 @@ enumerateSpatialOwnershipDecisionDomain(
         DirectCallSpecializationShape::UniformExactConstants);
 
   std::vector<SpatialOwnershipDecisionPoint> result;
-  result.reserve(indexWidths.size() * executionShapes.size() *
+  result.reserve(addressProjections.size() * executionShapes.size() *
                  forallShapes.size() * callSpecializations.size());
-  for (std::optional<unsigned> indexWidth : indexWidths)
+  for (const std::optional<SpatialAddressProjection> &addressProjection :
+       addressProjections)
     for (std::optional<raising::FMulAddExecutionShape> shape : executionShapes)
       for (std::optional<ForallOwnershipShape> forallShape : forallShapes)
         for (std::optional<DirectCallSpecializationShape> callSpecialization :
              callSpecializations)
           result.push_back(SpatialOwnershipDecisionPoint{
-              shape, indexWidth, forallShape, callSpecialization});
+              shape, addressProjection, forallShape, callSpecialization});
   return result;
 }
 
@@ -1575,12 +1579,11 @@ prepareSpatialOwnershipSelection(
   if (!domain)
     return domain.takeError();
   if (llvm::find(*domain, decision) == domain->end()) {
-    if (!decision.canonicalIndexWidth &&
+    if (!decision.addressProjection &&
         llvm::all_of(*domain, [](const SpatialOwnershipDecisionPoint &point) {
-          return point.canonicalIndexWidth.has_value();
+          return point.addressProjection.has_value();
         }))
-      return invalid(
-          "selected scope requires an explicit canonical index width");
+      return invalid("selected scope requires an explicit address projection");
     if (!decision.fmuladdExecutionShape &&
         llvm::all_of(*domain, [](const SpatialOwnershipDecisionPoint &point) {
           return point.fmuladdExecutionShape.has_value();
@@ -1611,8 +1614,12 @@ prepareSpatialOwnershipSelection(
       forall && decision.forallOwnershipShape ==
                     ForallOwnershipShape::LogicalThreadDomain) {
     unsigned indexWidth = 0;
-    if (decision.canonicalIndexWidth) {
-      indexWidth = *decision.canonicalIndexWidth;
+    const auto *rootRelative = decision.addressProjection
+                                   ? std::get_if<RootRelativeAddressProjection>(
+                                         &*decision.addressProjection)
+                                   : nullptr;
+    if (rootRelative) {
+      indexWidth = rootRelative->canonicalIndexWidth;
     } else {
       auto resolved = ::loom::getIndexBitWidth(forall);
       if (!resolved)
@@ -1660,13 +1667,24 @@ prepareSpatialOwnershipSelection(
     blockLineage.try_emplace(replacement, bindingIndex);
     return llvm::Error::success();
   };
-  auto normalized = detail::materializeAddressIndexContract(
-      selection->clone.get(), operation, decision.canonicalIndexWidth,
-      observeBlockReplacement);
-  if (!normalized)
-    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-                  normalized.takeError());
-  operation = *normalized;
+  const bool pointerAddressed =
+      decision.addressProjection &&
+      std::holds_alternative<PointerAddressedAddressProjection>(
+          *decision.addressProjection);
+  if (!pointerAddressed) {
+    std::optional<unsigned> canonicalIndexWidth;
+    if (decision.addressProjection)
+      canonicalIndexWidth =
+          std::get<RootRelativeAddressProjection>(*decision.addressProjection)
+              .canonicalIndexWidth;
+    auto normalized = detail::materializeAddressIndexContract(
+        selection->clone.get(), operation, canonicalIndexWidth,
+        observeBlockReplacement);
+    if (!normalized)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    normalized.takeError());
+    operation = *normalized;
+  }
   if (decision.fmuladdExecutionShape)
     raising::materializeFMulAddInOperation(*operation,
                                            *decision.fmuladdExecutionShape);
@@ -1743,7 +1761,7 @@ materializeSpatialOwnership(const StructuredProgramCandidate &parent,
                             const SpatialOwnershipOptions &options) {
   return materializeSpatialOwnershipDecision(
       parent, {selection},
-      {options.fmuladdExecutionShape, options.canonicalIndexWidth,
+      {options.fmuladdExecutionShape, options.addressProjection,
        options.forallOwnershipShape, options.directCallSpecializationShape},
       fabric, options.lowering);
 }

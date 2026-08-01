@@ -293,11 +293,12 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
 
 void requireCompleteAccounting(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 3)
+  if (selection.dispositions.size() != 4)
     fail("candidate domain included a declaration or omitted an attempt");
   bool sawScopeRejection = false;
   bool sawDecisionRejection = false;
-  bool sawSuccessfulDecision = false;
+  bool sawRootRelativeDecision = false;
+  bool sawPointerAddressedDecision = false;
   for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
        selection.dispositions) {
     const auto *rejection =
@@ -316,7 +317,7 @@ void requireCompleteAccounting(
       sawScopeRejection = true;
       continue;
     }
-    if (disposition.coordinate.decision->canonicalIndexWidth == 32) {
+    if (disposition.coordinate.decision->rootRelativeIndexWidth() == 32) {
       if (!rejection ||
           rejection->kind !=
               loom::frontend::SpatialOwnershipCandidateRejectionKind::
@@ -326,19 +327,26 @@ void requireCompleteAccounting(
       sawDecisionRejection = true;
       continue;
     }
-    if (disposition.coordinate.decision->canonicalIndexWidth == 64) {
+    if (disposition.coordinate.decision->rootRelativeIndexWidth() == 64) {
       if (!candidate)
         fail("valid 64-bit ownership decision did not retain its child");
-      sawSuccessfulDecision = true;
+      sawRootRelativeDecision = true;
+      continue;
+    }
+    if (disposition.coordinate.decision->isPointerAddressed()) {
+      if (!candidate)
+        fail("valid pointer-addressed decision did not retain its child");
+      sawPointerAddressedDecision = true;
     }
   }
-  if (!sawScopeRejection || !sawDecisionRejection || !sawSuccessfulDecision)
+  if (!sawScopeRejection || !sawDecisionRejection || !sawRootRelativeDecision ||
+      !sawPointerAddressedDecision)
     fail("candidate domain accounting was incomplete");
 }
 
 void requireDeterministicScopeExpansionBudget(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 2)
+  if (selection.dispositions.size() != 3)
     fail("scope expansion budget did not retain one complete decision domain");
   for (const loom::dse::StructuredOwnershipCandidateDisposition &disposition :
        selection.dispositions) {

@@ -12,7 +12,8 @@
 //                      [--whole-callable-spatial=<symbol>]
 //                      [--operation-spatial=<symbol>
 //                       --operation-spatial-scope-index=<index>
-//                       --canonical-index-width=<bits>]
+//                       (--canonical-index-width=<bits> |
+//                        --pointer-addressed)]
 //                      [--fmuladd-shape=fused|split]
 //                      [--candidate-jobs=<positive count>]
 //                      [-o output.mlir] input.ll
@@ -121,6 +122,12 @@ namespace {
     ::llvm::cl::desc("explicit canonical index width materialized for a "
                      "selected Spatial candidate"),
     ::llvm::cl::value_desc("bits"), ::llvm::cl::init(0));
+
+::llvm::cl::opt<bool> pointerAddressed(
+    "pointer-addressed",
+    ::llvm::cl::desc("retain exact LLVM pointer addressing in a selected "
+                     "Spatial candidate"),
+    ::llvm::cl::init(false));
 
 enum class FMulAddShapeOption { Unspecified, Fused, Split };
 
@@ -332,6 +339,14 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "canonical index width requires a Spatial selection"));
+  if (pointerAddressed && !hasExplicitSelection)
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "pointer-addressed projection requires a Spatial selection"));
+  if (pointerAddressed && canonicalIndexWidth != 0)
+    return reportError(::llvm::createStringError(
+        ::llvm::inconvertibleErrorCode(),
+        "pointer-addressed and canonical index width are exclusive"));
   if (operationSpatialScopeIndex.getNumOccurrences() != 0 &&
       operationSpatial.empty())
     return reportError(::llvm::createStringError(
@@ -415,7 +430,11 @@ int main(int argc, char **argv) {
     loom::frontend::SpatialOwnershipOptions ownershipOptions;
     ownershipOptions.lowering = compilationOptions.lowering;
     if (canonicalIndexWidth != 0)
-      ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
+      ownershipOptions.addressProjection =
+          loom::frontend::RootRelativeAddressProjection{canonicalIndexWidth};
+    else if (pointerAddressed)
+      ownershipOptions.addressProjection =
+          loom::frontend::PointerAddressedAddressProjection{};
     if (fmuladdShape == FMulAddShapeOption::Fused)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Fused;
@@ -439,7 +458,11 @@ int main(int argc, char **argv) {
     loom::frontend::SpatialOwnershipOptions ownershipOptions;
     ownershipOptions.lowering = compilationOptions.lowering;
     if (canonicalIndexWidth != 0)
-      ownershipOptions.canonicalIndexWidth = canonicalIndexWidth;
+      ownershipOptions.addressProjection =
+          loom::frontend::RootRelativeAddressProjection{canonicalIndexWidth};
+    else if (pointerAddressed)
+      ownershipOptions.addressProjection =
+          loom::frontend::PointerAddressedAddressProjection{};
     if (fmuladdShape == FMulAddShapeOption::Fused)
       ownershipOptions.fmuladdExecutionShape =
           loom::raising::FMulAddExecutionShape::Fused;

@@ -54,6 +54,31 @@ enum class DirectCallSpecializationShape : std::uint8_t {
   UniformExactConstants = 0,
 };
 
+/// A root-relative Spatial address projection materializes one fixed-width
+/// integer element-offset domain. The width is part of the selected Structured
+/// Program decision rather than an ambient lowering default.
+struct RootRelativeAddressProjection final {
+  unsigned canonicalIndexWidth;
+
+  friend bool operator==(const RootRelativeAddressProjection &lhs,
+                         const RootRelativeAddressProjection &rhs) {
+    return lhs.canonicalIndexWidth == rhs.canonicalIndexWidth;
+  }
+};
+
+/// An exact pointer-addressed Spatial projection retains the source LLVM
+/// pointer recurrence and acquires no synthetic canonical index width.
+struct PointerAddressedAddressProjection final {
+  friend bool operator==(const PointerAddressedAddressProjection &,
+                         const PointerAddressedAddressProjection &) {
+    return true;
+  }
+};
+
+using SpatialAddressProjection =
+    std::variant<RootRelativeAddressProjection,
+                 PointerAddressedAddressProjection>;
+
 /// Typed decisions that must be materialized in the selected Structured
 /// Program before the mechanical Dataflow boundary. An absent decision never
 /// selects a default; a selected region that still contains such a choice
@@ -61,7 +86,7 @@ enum class DirectCallSpecializationShape : std::uint8_t {
 struct SpatialOwnershipOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
-  std::optional<unsigned> canonicalIndexWidth;
+  std::optional<SpatialAddressProjection> addressProjection;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
       std::nullopt;
@@ -73,15 +98,30 @@ struct SpatialOwnershipOptions final {
 /// admission.
 struct SpatialOwnershipDecisionPoint final {
   std::optional<raising::FMulAddExecutionShape> fmuladdExecutionShape;
-  std::optional<unsigned> canonicalIndexWidth;
+  std::optional<SpatialAddressProjection> addressProjection;
   std::optional<ForallOwnershipShape> forallOwnershipShape = std::nullopt;
   std::optional<DirectCallSpecializationShape> directCallSpecializationShape =
       std::nullopt;
 
+  std::optional<unsigned> rootRelativeIndexWidth() const {
+    if (!addressProjection)
+      return std::nullopt;
+    const auto *root =
+        std::get_if<RootRelativeAddressProjection>(&*addressProjection);
+    return root ? std::optional<unsigned>(root->canonicalIndexWidth)
+                : std::nullopt;
+  }
+
+  bool isPointerAddressed() const {
+    return addressProjection &&
+           std::holds_alternative<PointerAddressedAddressProjection>(
+               *addressProjection);
+  }
+
   friend bool operator==(const SpatialOwnershipDecisionPoint &lhs,
                          const SpatialOwnershipDecisionPoint &rhs) {
     return lhs.fmuladdExecutionShape == rhs.fmuladdExecutionShape &&
-           lhs.canonicalIndexWidth == rhs.canonicalIndexWidth &&
+           lhs.addressProjection == rhs.addressProjection &&
            lhs.forallOwnershipShape == rhs.forallOwnershipShape &&
            lhs.directCallSpecializationShape ==
                rhs.directCallSpecializationShape;
@@ -246,7 +286,8 @@ enumerateSpatialOwnershipScopeDomain(
     llvm::ArrayRef<StructuredEntityRef> callableRoots);
 
 /// Derives the finite typed decision domain for one exact ownership scope.
-/// Canonical address widths come from the closed Fabric index-width schema;
+/// Root-relative widths come from the closed Fabric index-width schema, while
+/// an exact pointer-addressed choice retains the source LLVM representation;
 /// exact concrete target admission remains part of candidate materialization.
 /// Fmuladd alternatives are exposed only when the selected scope contains the
 /// corresponding unresolved LLVM operation. A callable whose exact closed
