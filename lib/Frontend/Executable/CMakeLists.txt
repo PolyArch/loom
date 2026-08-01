@@ -4,6 +4,9 @@ add_mlir_library(LoomFrontendExecutable
   CompilerTargetCodegen.cpp
   CompilerTargetCohort.cpp
   CompilerTargetMachine.cpp
+  InstructionCoreBinary.cpp
+  InstructionCoreBinaryCodec.cpp
+  InstructionCoreElf.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -15,5 +18,6 @@ add_mlir_library(LoomFrontendExecutable
   LoomFabricArtifact
   LoomFabricIdentity
   LoomFrontendPayload
+  MLIRDataflow
   LLVM
 )

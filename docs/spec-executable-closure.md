@@ -181,6 +181,15 @@ unresolved import must appear in the closed typed `runtime_imports` set and
 resolve to exactly one dynamic support component of that binding. ABI symbol
 names are externally visible linkage semantics, not entity identity.
 
+For ELF schema 1.0, the executable entry catalog is derived from defined global
+function symbols named `__loom_thread_entry_<ordinal>`, where `<ordinal>` is
+the canonical unsigned decimal spelling with no leading zero except the value
+zero itself. The ordinals must form the dense interval `[0, entry_count)`.
+These generated ABI symbols locate binary entries only: they never identify a
+Dataflow definition or launch, and they are not serialized into the Artifact.
+Stripping this catalog makes the binary non-importable. Other source and helper
+symbols have no executable-closure meaning.
+
 `load_segments[]` is the canonical parsed load manifest of `code_blob`. Each
 entry stores segment ordinal, virtual address, file offset and size, memory
 size, alignment, and read/write/execute permissions. Code, read-only data,
@@ -189,6 +198,12 @@ relocation, and initialization rules of the binding. The final executable
 bytes are referenced by BlobDigest; segment bytes are not copied. A binary does
 not embed its own artifact identity, a Deployment identity, or runtime device
 addresses.
+
+ELF load segments are sorted by virtual address, file offset, flags, file size,
+memory size, and alignment; `segment_ordinal` is their zero-based position in
+that order. Import reparses the exact blob and requires the complete stored
+manifest to equal this projection. At least one load segment and one executable
+load segment are required.
 
 One binary may serve several SystemMapping-selected InstructionCores only when
 their Architectural Contracts resolve to that exact binding. Deployment must

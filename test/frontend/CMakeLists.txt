@@ -10,6 +10,29 @@ target_link_libraries(loom-compiler-target-binding-test PRIVATE
   LoomFrontendExecutable
 )
 
+add_executable(loom-instruction-core-binary-test
+  InstructionCoreBinaryTest.cpp
+)
+
+target_link_libraries(loom-instruction-core-binary-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendExecutable
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSupport
+)
+
+target_compile_definitions(loom-instruction-core-binary-test PRIVATE
+  LOOM_TEST_LLD_PATH="${LLVM_TOOLS_BINARY_DIR}/ld.lld"
+)
+
 add_executable(loom-structured-program-artifact-test
   StructuredProgramArtifactTest.cpp
 )
