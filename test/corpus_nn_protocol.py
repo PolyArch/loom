@@ -14,6 +14,7 @@ import corpus_nn_layout
 import corpus_nn_lstm
 import corpus_nn_matrix
 import corpus_nn_matrix_kernel
+import corpus_nn_pooling
 import corpus_nn_transpose
 from corpus_workload_errors import WorkloadProviderError
 
@@ -1006,7 +1007,9 @@ int main(void)
 """
 
 
-def _softmax_renderer(symbol: str, unsigned_output: bool) -> Callable[[str], str]:
+def _softmax_renderer(
+    symbol: str, unsigned_output: bool, common_s8: bool = False
+) -> Callable[[str], str]:
     def render(_wrapper_symbol: str) -> str:
         input_type = "uint8_t" if unsigned_output else "int8_t"
         output_type = "uint8_t" if unsigned_output else "int8_t"
@@ -1020,14 +1023,14 @@ def _softmax_renderer(symbol: str, unsigned_output: bool) -> Callable[[str], str
             if unsigned_output
             else "softmax_output_ref[index]"
         )
+        arguments = (
+            "input, SOFTMAX_NUM_ROWS, SOFTMAX_ROW_SIZE, SOFTMAX_INPUT_MULT, "
+            "SOFTMAX_INPUT_LEFT_SHIFT, SOFTMAX_DIFF_MIN"
+        )
         call = (
-            f"{symbol}(input, SOFTMAX_NUM_ROWS, SOFTMAX_ROW_SIZE, "
-            "SOFTMAX_INPUT_MULT, SOFTMAX_INPUT_LEFT_SHIFT, SOFTMAX_DIFF_MIN, "
-            "output);"
-            if unsigned_output
-            else f"{symbol}(input, SOFTMAX_NUM_ROWS, SOFTMAX_ROW_SIZE, "
-            "SOFTMAX_INPUT_MULT, SOFTMAX_INPUT_LEFT_SHIFT, SOFTMAX_DIFF_MIN, "
-            "false, output);"
+            f"{symbol}({arguments}, false, output);"
+            if common_s8
+            else f"{symbol}({arguments}, output);"
         )
         return f"""#include <stddef.h>
 #include <stdint.h>
@@ -1083,7 +1086,12 @@ _RENDERERS: dict[tuple[str, str], Callable[[str], str]] = {
         "arm_nn_softmax_common_s8",
         "void (const int8_t *, const int32_t, const int32_t, const int32_t, "
         "const int32_t, const int32_t, const bool, void *)",
-    ): _softmax_renderer("arm_nn_softmax_common_s8", False),
+    ): _softmax_renderer("arm_nn_softmax_common_s8", False, True),
+    (
+        "arm_softmax_s8",
+        "void (const int8_t *, const int32_t, const int32_t, const int32_t, "
+        "const int32_t, const int32_t, int8_t *)",
+    ): _softmax_renderer("arm_softmax_s8", False),
     (
         "arm_softmax_u8",
         "void (const uint8_t *, const int32_t, const int32_t, const int32_t, "
@@ -1719,6 +1727,7 @@ def _renderer_for(
         or corpus_nn_lstm.renderer_for(calls[0])
         or corpus_nn_matrix.renderer_for(calls[0])
         or corpus_nn_matrix_kernel.renderer_for(calls[0])
+        or corpus_nn_pooling.renderer_for(calls[0])
         or corpus_nn_transpose.renderer_for(calls[0])
     )
 

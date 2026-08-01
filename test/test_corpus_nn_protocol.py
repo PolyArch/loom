@@ -38,14 +38,72 @@ def _workload_any_profile(case: str) -> corpus_inventory.ProgramWorkload:
 
 
 class GeneratedCmsisNnProtocolTest(unittest.TestCase):
+    def test_pooling_and_softmax_protocols_use_atomic_public_owners(self) -> None:
+        expectations = {
+            "cmsis-nn:arm-max-pool-s16:2d6c70832d251dd9": (
+                "arm_max_pool_s16",
+                "TestCases/TestData/maxpool_int16_1/test_data.h",
+                "Source/PoolingFunctions/arm_max_pool_s16.c",
+            ),
+            "cmsis-nn:arm-max-pool-s8:bde49c7b1730684c": (
+                "arm_max_pool_s8",
+                "TestCases/TestData/maxpooling_1/test_data.h",
+                "Source/PoolingFunctions/arm_max_pool_s8.c",
+            ),
+            "cmsis-nn:arm-softmax-s8:da2b3649f58c169c": (
+                "arm_softmax_s8",
+                "TestCases/TestData/softmax/test_data.h",
+                "Source/SoftmaxFunctions/arm_softmax_s8.c",
+            ),
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+        workloads = corpus_inventory.load_workload_inventory(ROOT)
+
+        for identity, (symbol, test_data, owner) in expectations.items():
+            with self.subTest(identity=identity):
+                workload = next(row for row in workloads if row.identity == identity)
+                self.assertIsInstance(
+                    workload.producer,
+                    corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+                )
+                self.assertEqual(workload.producer.selector_kind, "generated-public")
+                self.assertEqual(
+                    tuple(call.symbol for call in workload.protocol), (symbol,)
+                )
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    ).read_text()
+
+                self.assertIn(f'#include "{test_data}"', source)
+                self.assertEqual(source.count(f"{symbol}("), 1)
+                self.assertEqual(
+                    harness.protocol_symbols(workload.executable), (symbol,)
+                )
+                compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
+                )
+                self.assertEqual(compiled_owner, external_root / "cmsis-nn" / owner)
+                self.assertEqual(
+                    authoritative_owner,
+                    external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
+                )
+
     def test_generated_convolution_protocols_preserve_atomic_call_sequences(
         self,
     ) -> None:
         expectations = {
             "cmsis-nn:arm-convolve-1x1-s8-fast:e4fc696adf47aaf4": "kernel1x1",
-            "cmsis-nn:arm-convolve-1-x-n-s8:2cc042282d20eae9": (
-                "conv_1_x_n_6_generic"
-            ),
+            "cmsis-nn:arm-convolve-1-x-n-s8:2cc042282d20eae9": ("conv_1_x_n_6_generic"),
             "cmsis-nn:arm-convolve-1x1-s4:25dfe57f4c542670": (
                 "kernel1x1_stride_x_int4"
             ),
@@ -101,10 +159,7 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     harness.protocol_source_owner(workload.executable),
                     (
                         source_path,
-                        external_root
-                        / "cmsis-nn"
-                        / "Include"
-                        / "arm_nnfunctions.h",
+                        external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
                     ),
                 )
 
@@ -148,8 +203,8 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     source = source_path.read_text()
 
                 self.assertEqual(source.count(invocation), 1)
-                compiled_owner, authoritative_owner = (
-                    harness.protocol_source_owner(workload.executable)
+                compiled_owner, authoritative_owner = harness.protocol_source_owner(
+                    workload.executable
                 )
                 self.assertEqual(compiled_owner, external_root / "cmsis-nn" / owner)
                 self.assertEqual(
@@ -306,13 +361,9 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
         self.assertTrue(
             corpus_workload_provider.supports_cmsis_nn_harness(_workload("arm-relu-q7"))
         )
-        mve_only = _workload_any_profile(
-            "arm-nn-mat-mult-nt-interleaved-t-even-s4"
-        )
+        mve_only = _workload_any_profile("arm-nn-mat-mult-nt-interleaved-t-even-s4")
         self.assertEqual(mve_only.target_profile, "mve")
-        self.assertFalse(
-            corpus_workload_provider.supports_cmsis_nn_harness(mve_only)
-        )
+        self.assertFalse(corpus_workload_provider.supports_cmsis_nn_harness(mve_only))
 
     def test_generated_softmax_protocols_use_official_tfl_oracle(self) -> None:
         external_root = corpus_inventory.resolve_externals_root(ROOT)
@@ -533,7 +584,9 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         (workload.protocol[0].symbol,),
                     )
 
-    def test_generated_s4_vec_mat_protocol_decodes_packed_input_for_oracle(self) -> None:
+    def test_generated_s4_vec_mat_protocol_decodes_packed_input_for_oracle(
+        self,
+    ) -> None:
         workload = _workload("arm-nn-vec-mat-mult-t-s4")
         external_root = corpus_inventory.resolve_externals_root(ROOT)
 
