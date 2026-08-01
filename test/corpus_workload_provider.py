@@ -274,6 +274,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "generated-lifecycle"
     if corpus_dsp_matrix.floating_matrix_protocol(workload) is not None:
         return "floating-matrix"
+    if corpus_dsp_matrix.matrix_vector_protocol(workload) is not None:
+        return "stateless-matrix-vector"
     if corpus_dsp_matrix.matrix_multiplication_protocol(workload) is not None:
         return "stateless-matrix-multiplication"
     if corpus_dsp_pid.pid_protocol(workload) is not None:
@@ -588,9 +590,34 @@ target_link_libraries({item.target} PRIVATE
 '''
         )
 
-    support_items = "\n".join(
-        f'  "{_cmake_quote(source)}"' for source in support_sources
-    )
+    framework_block = ""
+    if suite_libraries:
+        support_items = "\n".join(
+            f'  "{_cmake_quote(source)}"' for source in support_sources
+        )
+        framework_block = f"""add_library(loom_cmsis_dsp_framework STATIC
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/ArrayMemory.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Calibrate.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Error.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/FPGA.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Generators.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/IORunner.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Pattern.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/PatternMgr.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Test.cpp"
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Timing.cpp")
+target_include_directories(loom_cmsis_dsp_framework PUBLIC
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude")
+target_compile_definitions(loom_cmsis_dsp_framework PRIVATE EMBEDDED NOTIMING)
+target_link_libraries(loom_cmsis_dsp_framework PUBLIC CMSISDSP)
+
+add_library(loom_cmsis_dsp_test_support STATIC
+{support_items})
+target_include_directories(loom_cmsis_dsp_test_support PRIVATE
+  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests")
+target_compile_definitions(loom_cmsis_dsp_test_support PRIVATE EMBEDDED NOTIMING)
+target_link_libraries(loom_cmsis_dsp_test_support PRIVATE CMSISDSP)
+"""
     operator_option_blocks = []
     for source, options in sorted(operator_compile_options.items()):
         for option in options:
@@ -631,29 +658,7 @@ target_include_directories(CMSISDSP PRIVATE
   "${{LOOM_CMSIS_DSP_SOURCE}}/Testing")
 {"".join(operator_option_blocks)}
 
-add_library(loom_cmsis_dsp_framework STATIC
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/ArrayMemory.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Calibrate.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Error.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/FPGA.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Generators.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/IORunner.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Pattern.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/PatternMgr.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Test.cpp"
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkSource/Timing.cpp")
-target_include_directories(loom_cmsis_dsp_framework PUBLIC
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/FrameworkInclude")
-target_compile_definitions(loom_cmsis_dsp_framework PRIVATE EMBEDDED NOTIMING)
-target_link_libraries(loom_cmsis_dsp_framework PUBLIC CMSISDSP)
-
-add_library(loom_cmsis_dsp_test_support STATIC
-{support_items})
-target_include_directories(loom_cmsis_dsp_test_support PRIVATE
-  "${{LOOM_CMSIS_DSP_SOURCE}}/Testing/Include/Tests")
-target_compile_definitions(loom_cmsis_dsp_test_support PRIVATE EMBEDDED NOTIMING)
-target_link_libraries(loom_cmsis_dsp_test_support PRIVATE CMSISDSP)
-
+{framework_block}
 {"".join(suite_blocks)}
 {"".join(target_blocks)}
 """
@@ -780,6 +785,38 @@ def materialize_cmsis_dsp_harness(
                 f"CMSIS-DSP harness repeats a target: {workload.identity}"
             )
         direct_family = _cmsis_dsp_direct_protocol_family(workload)
+        if direct_family == "stateless-matrix-vector":
+            protocol = corpus_dsp_matrix.matrix_vector_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP matrix-vector protocol is inconsistent"
+                )
+            generated = generated_root / target
+            generated.mkdir()
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_matrix.render_matrix_vector_protocol(
+                    workload,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
+            )
+            targets.append(target)
+            shared_directories.append(source_dir)
+            protocol_methods.append(("MatrixVector", protocol.symbol))
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                source_dir,
+                direct_source,
+                protocol_owner,
+                0,
+            )
+            continue
         if direct_family in {
             "generated-lifecycle",
             "generated-radix8-f16",
@@ -1271,11 +1308,7 @@ def materialize_cmsis_dsp_harness(
                 encoding="utf-8",
             )
             protocol_owner = (
-                external_root
-                / "cmsis-dsp"
-                / "Include"
-                / "dsp"
-                / protocol.owner_header
+                external_root / "cmsis-dsp" / "Include" / "dsp" / protocol.owner_header
             )
             record_direct_protocol(
                 workload,

@@ -44,9 +44,25 @@ class FloatingMatrixProtocol:
     @property
     def owner_header(self) -> str:
         return (
-            "matrix_functions_f16.h"
-            if self.suffix == "f16"
-            else "matrix_functions.h"
+            "matrix_functions_f16.h" if self.suffix == "f16" else "matrix_functions.h"
+        )
+
+
+@dataclass(frozen=True)
+class MatrixVectorProtocol:
+    symbol: str
+    test_class: str
+    test_method: str
+    suffix: str
+    scalar_type: str
+    matrix: tuple[str, ...]
+    vector: tuple[str, ...]
+    expected: tuple[str, ...]
+
+    @property
+    def owner_header(self) -> str:
+        return (
+            "matrix_functions_f16.h" if self.suffix == "f16" else "matrix_functions.h"
         )
 
 
@@ -172,6 +188,145 @@ _FLOATING_PROTOCOLS = (
     ),
 )
 
+_MATRIX_VECTOR_PROTOCOLS = (
+    MatrixVectorProtocol(
+        "arm_mat_vec_mult_f16",
+        "UnaryTestsF16",
+        "test_mat_vec_mult_f16",
+        "f16",
+        "float16_t",
+        ("1.0", "2.0", "3.0", "4.0"),
+        ("2.0", "-1.0"),
+        ("0.0", "2.0"),
+    ),
+    MatrixVectorProtocol(
+        "arm_mat_vec_mult_f32",
+        "UnaryTestsF32",
+        "test_mat_vec_mult_f32",
+        "f32",
+        "float32_t",
+        ("1.0f", "2.0f", "3.0f", "4.0f"),
+        ("2.0f", "-1.0f"),
+        ("0.0f", "2.0f"),
+    ),
+    MatrixVectorProtocol(
+        "arm_mat_vec_mult_q15",
+        "UnaryTestsQ15",
+        "test_mat_vec_mult_q15",
+        "q15",
+        "q15_t",
+        ("16384", "8192", "-16384", "4096"),
+        ("16384", "-16384"),
+        ("4096", "-10240"),
+    ),
+    MatrixVectorProtocol(
+        "arm_mat_vec_mult_q31",
+        "UnaryTestsQ31",
+        "test_mat_vec_mult_q31",
+        "q31",
+        "q31_t",
+        ("1073741824", "536870912", "-1073741824", "268435456"),
+        ("1073741824", "-1073741824"),
+        ("268435456", "-671088640"),
+    ),
+    MatrixVectorProtocol(
+        "arm_mat_vec_mult_q7",
+        "UnaryTestsQ7",
+        "test_mat_vec_mult_q7",
+        "q7",
+        "q7_t",
+        ("64", "32", "-64", "16"),
+        ("64", "-64"),
+        ("16", "-40"),
+    ),
+)
+
+
+def matrix_vector_protocol(
+    workload: corpus_inventory.ProgramWorkload,
+) -> MatrixVectorProtocol | None:
+    producer = workload.producer
+    if (
+        workload.suite != "cmsis-dsp"
+        or not isinstance(producer, corpus_inventory.CmsisDspWorkloadProducer)
+        or producer.selector_kind != "official"
+        or producer.vector_ordinal != 0
+        or len(workload.protocol) != 1
+    ):
+        return None
+    call = workload.protocol[0]
+    for protocol in _MATRIX_VECTOR_PROTOCOLS:
+        expected_profile = (
+            corpus_inventory.STANDARD_FLOAT16_TARGET_PROFILE
+            if protocol.suffix == "f16"
+            else corpus_inventory.PORTABLE_SCALAR_TARGET_PROFILE
+        )
+        if (
+            workload.target_profile == expected_profile
+            and producer.test_class == protocol.test_class
+            and producer.test_method == protocol.test_method
+            and call.symbol == protocol.symbol
+            and call.signature == "void(ptr,ptr,ptr)"
+        ):
+            return protocol
+    return None
+
+
+def render_matrix_vector_protocol(
+    workload: corpus_inventory.ProgramWorkload, protocol_symbol: str
+) -> str:
+    protocol = matrix_vector_protocol(workload)
+    if protocol is None:
+        raise WorkloadProviderError(
+            f"CMSIS-DSP workload has no matrix-vector provider: {workload.identity}"
+        )
+    matrix_values = corpus_dsp_protocol.format_cpp_array(protocol.matrix)
+    vector_values = corpus_dsp_protocol.format_cpp_array(protocol.vector)
+    expected_values = corpus_dsp_protocol.format_cpp_array(protocol.expected)
+    return f"""#include <cstddef>
+
+#include "dsp/{protocol.owner_header}"
+
+#if defined(__clang__) || defined(__GNUC__)
+#define LOOM_NOINLINE __attribute__((noinline))
+#else
+#define LOOM_NOINLINE
+#endif
+
+namespace {{
+using Scalar = {protocol.scalar_type};
+using Matrix = arm_matrix_instance_{protocol.suffix};
+constexpr Scalar kMatrix[] = {{
+{matrix_values}
+}};
+constexpr Scalar kVector[] = {{
+{vector_values}
+}};
+constexpr Scalar kExpected[] = {{
+{expected_values}
+}};
+
+bool output_matches_expected(const Scalar *output) {{
+  for (std::size_t index = 0; index < 2; ++index)
+    if (output[index] != kExpected[index])
+      return false;
+  return true;
+}}
+}} // namespace
+
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    const Scalar *matrix_data, const Scalar *vector, Scalar *output) {{
+  Matrix matrix{{2, 2, const_cast<Scalar *>(matrix_data)}};
+  {protocol.symbol}(&matrix, vector, output);
+}}
+
+int main() {{
+  Scalar output[2]{{}};
+  {protocol_symbol}(kMatrix, kVector, output);
+  return output_matches_expected(output) ? 0 : 1;
+}}
+"""
+
 
 def floating_matrix_protocol(
     workload: corpus_inventory.ProgramWorkload,
@@ -253,8 +408,12 @@ def _render_floating_multiply(
     if protocol.kind == "complex-multiply":
         complex_a = (1 + 2j, 3 - 1j, 0.5 + 0.25j, -2 + 1j)
         complex_b = (2 - 1j, 1 + 0j, 0.5 + 2j, -1 + 3j)
-        input_a = tuple(part for value in complex_a for part in (value.real, value.imag))
-        input_b = tuple(part for value in complex_b for part in (value.real, value.imag))
+        input_a = tuple(
+            part for value in complex_a for part in (value.real, value.imag)
+        )
+        input_b = tuple(
+            part for value in complex_b for part in (value.real, value.imag)
+        )
         expected = _complex_product(complex_a, complex_b)
         count = 8
     else:
@@ -262,7 +421,9 @@ def _render_floating_multiply(
         input_b = (2.0, 1.0, -1.0, 4.0)
         expected = (4.5, -6.75, 5.5, 5.0)
         count = 4
-    return _floating_matrix_prelude(protocol) + f"""
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
 namespace {{
 constexpr Scalar kInputA[] = {{
 {_cpp_values(input_a)}
@@ -296,12 +457,15 @@ int main() {{
   return status == ARM_MATH_SUCCESS && output_matches_expected(output) ? 0 : 1;
 }}
 """
+    )
 
 
 def _render_floating_inverse(
     protocol: FloatingMatrixProtocol, protocol_symbol: str
 ) -> str:
-    return _floating_matrix_prelude(protocol) + f"""
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
 namespace {{
 constexpr Scalar kInput[] = {{
 {_cpp_values((4.0, 7.0, 2.0, 6.0))}
@@ -332,12 +496,15 @@ int main() {{
   return status == ARM_MATH_SUCCESS && output_matches_expected(output) ? 0 : 1;
 }}
 """
+    )
 
 
 def _render_floating_ldlt(
     protocol: FloatingMatrixProtocol, protocol_symbol: str
 ) -> str:
-    return _floating_matrix_prelude(protocol) + f"""
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
 namespace {{
 constexpr Scalar kInput[] = {{
 {_cpp_values((9.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 1.0))}
@@ -384,12 +551,13 @@ int main() {{
              : 1;
 }}
 """
+    )
 
 
-def _render_floating_qr(
-    protocol: FloatingMatrixProtocol, protocol_symbol: str
-) -> str:
-    return _floating_matrix_prelude(protocol) + f"""
+def _render_floating_qr(protocol: FloatingMatrixProtocol, protocol_symbol: str) -> str:
+    return (
+        _floating_matrix_prelude(protocol)
+        + f"""
 namespace {{
 constexpr std::uint16_t kRows = 2;
 constexpr std::uint16_t kColumns = 2;
@@ -457,6 +625,7 @@ int main() {{
              : 1;
 }}
 """
+    )
 
 
 def render_floating_matrix_protocol(
@@ -586,9 +755,7 @@ def render_matrix_multiplication_protocol(
             else (64, -32, 16, 48)
         )
         input_b = (
-            (8192, 4096, -2048, 16384)
-            if protocol.bit_width == 16
-            else (32, 16, -8, 64)
+            (8192, 4096, -2048, 16384) if protocol.bit_width == 16 else (32, 16, -8, 64)
         )
     else:
         segments = corpus_dsp_protocol.pattern_segments(patterns)
