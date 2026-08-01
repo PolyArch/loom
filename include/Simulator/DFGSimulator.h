@@ -94,6 +94,8 @@ struct RetiredDFGSimulation {
   SpatialFunctionalObservations observations;
 };
 
+class DfgExecutionSession;
+
 /// Disposable execution cache for repeated activations of one exact rooted
 /// graph. The plan owns a strict import of the Canonical Dataflow artifact and
 /// derives every provider, channel, and actor entry from that owner. It is not
@@ -121,7 +123,66 @@ private:
       const PreparedDfgExecution &, const CanonicalSimulationWorkload &,
       const CanonicalSimulationRuntimeInput &, std::uint64_t,
       std::optional<std::chrono::steady_clock::time_point>);
+  friend llvm::Expected<DfgExecutionSession>
+  startDfgExecutionSession(const PreparedDfgExecution &,
+                           const CanonicalSimulationWorkload &,
+                           const CanonicalSimulationRuntimeInput &);
 };
+
+/// Transient lifecycle of one exact DFG activation. Runnable means the
+/// activation can be advanced without reconstructing prior dynamic state.
+/// Retired and Stopped are terminal and idempotent under further advances.
+enum class DfgExecutionSessionState { Runnable, Retired, Stopped };
+
+/// One pausable activation of a prepared rooted graph. This is an ephemeral
+/// execution object shared by standalone DFG-sim and system adapters; it is
+/// neither an Artifact nor another simulation-mode authority. The prepared
+/// execution, workload, and runtime input must outlive the session.
+class DfgExecutionSession {
+public:
+  DfgExecutionSession(DfgExecutionSession &&) noexcept;
+  DfgExecutionSession &operator=(DfgExecutionSession &&) noexcept;
+  ~DfgExecutionSession();
+
+  DfgExecutionSession(const DfgExecutionSession &) = delete;
+  DfgExecutionSession &operator=(const DfgExecutionSession &) = delete;
+
+  DfgExecutionSessionState state() const;
+  std::uint64_t wavefrontSteps() const;
+
+  /// Advances by at most maxWavefrontSteps committed wavefronts. A retirement
+  /// observed on the last wave is also checked for post-retirement activity
+  /// before returning. Wall time is an external interruption limit and never
+  /// changes the semantic wavefront budget.
+  llvm::Expected<DfgExecutionSessionState> advance(
+      std::uint64_t maxWavefrontSteps,
+      std::optional<std::chrono::steady_clock::time_point> executionDeadline =
+          std::nullopt);
+
+  /// Projects the canonical report and functional observations exactly once.
+  /// The session must have reached Retired.
+  llvm::Expected<RetiredDFGSimulation> takeRetiredSimulation();
+
+private:
+  struct Impl;
+  explicit DfgExecutionSession(std::unique_ptr<Impl> impl);
+
+  std::unique_ptr<Impl> impl_;
+
+  friend llvm::Expected<DfgExecutionSession>
+  startDfgExecutionSession(const PreparedDfgExecution &,
+                           const CanonicalSimulationWorkload &,
+                           const CanonicalSimulationRuntimeInput &);
+  friend llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
+      const PreparedDfgExecution &, const CanonicalSimulationWorkload &,
+      const CanonicalSimulationRuntimeInput &, std::uint64_t,
+      std::optional<std::chrono::steady_clock::time_point>);
+};
+
+llvm::Expected<DfgExecutionSession>
+startDfgExecutionSession(const PreparedDfgExecution &prepared,
+                         const CanonicalSimulationWorkload &workload,
+                         const CanonicalSimulationRuntimeInput &runtimeInput);
 
 llvm::Expected<PreparedDfgExecution>
 prepareDfgExecution(const dataflow::CanonicalDataflowArtifact &program,

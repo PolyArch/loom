@@ -878,6 +878,449 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail
 } // namespace loom::sim
+
+namespace {
+
+struct DfgRun {
+  dataflow::GraphOp graph;
+  const PreparedGraphExecution &execution;
+  SimulatorState &state;
+  DFGSimulationReport &report;
+  bool retirementObserved = false;
+  bool finalized = false;
+};
+
+std::size_t outputCount(const DfgRun &run, mlir::Value value) {
+  auto it = run.state.observedOutputs.find(value);
+  return it == run.state.observedOutputs.end() ? 0 : it->second.size();
+}
+
+bool completionReady(const DfgRun &run) {
+  const GraphReturnObservation &observation = run.execution.returnObservation;
+  return !observation.complete.empty() &&
+         llvm::all_of(observation.complete, [&](mlir::Value witness) {
+           return outputCount(run, witness) != 0;
+         });
+}
+
+mlir::Operation *unclosedStatefulActor(DfgRun &run) {
+  mlir::Block &entry = run.graph.getBody().front();
+  for (mlir::Operation &op : entry.without_terminator()) {
+    if (auto stream = mlir::dyn_cast<dataflow::StreamOp>(op)) {
+      auto it = run.state.streamStates.find(stream.getOperation());
+      if (it != run.state.streamStates.end() &&
+          it->second.mode != StreamMode::Idle)
+        return &op;
+      continue;
+    }
+    if (auto carry = mlir::dyn_cast<dataflow::CarryOp>(op)) {
+      auto it = run.state.carryStates.find(carry.getOperation());
+      if (it != run.state.carryStates.end() &&
+          it->second.semanticState != PhaseSemanticState::Initial)
+        return &op;
+      continue;
+    }
+    if (auto invariant = mlir::dyn_cast<dataflow::InvariantOp>(op)) {
+      auto it = run.state.invariantStates.find(invariant.getOperation());
+      if (it != run.state.invariantStates.end() &&
+          (it->second.semanticState != PhaseSemanticState::Initial ||
+           it->second.latched.has_value()))
+        return &op;
+      continue;
+    }
+    if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
+      if (run.state.gateContinueStates.contains(gate.getOperation()))
+        return &op;
+  }
+  return nullptr;
+}
+
+bool streamInputsCommitted(DfgRun &run) {
+  mlir::Block &entry = run.graph.getBody().front();
+  for (unsigned index = 0; index < run.execution.applicationInputCount;
+       ++index) {
+    if (run.graph.getInputPortKind(index) != dataflow::GraphPortKind::Stream)
+      continue;
+    mlir::BlockArgument argument = entry.getArgument(index + 1);
+    for (mlir::OpOperand &use : argument.getUses())
+      if (hasToken(run.state, use))
+        return false;
+  }
+  return true;
+}
+
+void observeRetirement(DfgRun &run) {
+  if (run.retirementObserved || !completionReady(run))
+    return;
+  run.retirementObserved = true;
+  for (mlir::Value witness : run.execution.returnObservation.complete) {
+    if (outputCount(run, witness) != 1) {
+      run.report.status = "invalid";
+      run.report.diagnostics.push_back(
+          "completion witness produced multiple tokens before retirement");
+      return;
+    }
+  }
+  if (!streamInputsCommitted(run)) {
+    run.report.status = "invalid";
+    run.report.diagnostics.push_back(
+        "graph retired before all stream input tokens were committed");
+    return;
+  }
+  if (mlir::Operation *actor = unclosedStatefulActor(run)) {
+    run.report.status = "invalid";
+    run.report.diagnostics.push_back(
+        ("graph retired before stateful actor close/reset: " +
+         actor->getName().getStringRef())
+            .str());
+    return;
+  }
+  for (auto [index, value] :
+       llvm::enumerate(run.execution.returnObservation.values)) {
+    const std::size_t count = outputCount(run, value);
+    if (count == 1)
+      continue;
+    run.report.status = "invalid";
+    run.report.diagnostics.push_back(
+        llvm::formatv("value output #{0} produced {1} tokens at retirement",
+                      index, count)
+            .str());
+    return;
+  }
+}
+
+enum class DfgAdvanceStop { Yielded, Retired, Stopped, ExecutionLimit };
+
+DfgAdvanceStop advanceDfgRun(
+    DfgRun &run, std::uint64_t maxWavefrontSteps,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
+  if (run.report.status != "pass" || run.state.failure != RunFailure::None)
+    return DfgAdvanceStop::Stopped;
+
+  const std::uint64_t initialWavefront = run.report.wavefrontSteps;
+  auto reachedExecutionDeadline = [&]() {
+    return executionDeadline &&
+           std::chrono::steady_clock::now() >= *executionDeadline;
+  };
+  auto stopAtExecutionDeadline = [&]() {
+    run.report.status = "execution_limit";
+    run.report.diagnostics.push_back("DFG execution wall-time limit reached");
+  };
+  llvm::SmallBitVector candidates(run.execution.actorPlans.size(), false);
+
+  while ((run.report.wavefrontSteps - initialWavefront < maxWavefrontSteps ||
+          run.retirementObserved) &&
+         run.report.status != "invalid") {
+    if (reachedExecutionDeadline()) {
+      stopAtExecutionDeadline();
+      return DfgAdvanceStop::ExecutionLimit;
+    }
+    if (!admitReadyPlainMemoryActions(run.state))
+      return DfgAdvanceStop::Stopped;
+
+    candidates.swap(run.state.nextActorCandidates);
+    run.state.nextActorCandidates.reset();
+    bool fired = false;
+    unsigned actorsVisited = 0;
+    for (int ordinal = candidates.find_first(); ordinal >= 0;
+         ordinal = candidates.find_next(ordinal)) {
+      if (++actorsVisited % 256 == 0 && reachedExecutionDeadline()) {
+        stopAtExecutionDeadline();
+        return DfgAdvanceStop::ExecutionLimit;
+      }
+      const ActorExecutionPlan &plan = run.execution.actorPlans[ordinal];
+      mlir::Operation *operation = plan.operation;
+      FireOutcome outcome = fireOperation(plan, run.state);
+      if (outcome == FireOutcome::Fired)
+        scheduleActor(run.state, static_cast<unsigned>(ordinal));
+      if (run.state.failure != RunFailure::None)
+        return DfgAdvanceStop::Stopped;
+      if (run.retirementObserved && outcome != FireOutcome::NotReady) {
+        run.report.status = "invalid";
+        run.report.diagnostics.push_back(
+            ("actor '" + operation->getName().getStringRef() +
+             (outcome == FireOutcome::Fired
+                  ? "' fired after graph retirement"
+                  : "' failed after graph retirement"))
+                .str());
+        return DfgAdvanceStop::Stopped;
+      }
+      fired |= outcome == FireOutcome::Fired;
+    }
+    if (run.report.status != "pass" || run.state.failure != RunFailure::None)
+      return DfgAdvanceStop::Stopped;
+    if (!fired)
+      return run.retirementObserved ? DfgAdvanceStop::Retired
+                                    : DfgAdvanceStop::Stopped;
+
+    flushPendingTokens(run.state);
+    ++run.report.wavefrontSteps;
+    observeRetirement(run);
+  }
+
+  return run.report.status == "pass" ? DfgAdvanceStop::Yielded
+                                     : DfgAdvanceStop::Stopped;
+}
+
+llvm::Expected<DFGSimulationReport>
+finalizeDfgRun(DfgRun &run, const CanonicalSimulationWorkload *typedWorkload,
+               const CanonicalSimulationRuntimeInput *typedRuntimeInput,
+               const ResolvedLaunchContext *typedContext,
+               const dataflow::CanonicalDataflowProgramView *typedProgramView,
+               SpatialFunctionalObservations *retiredObservations) {
+  if (run.finalized)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG execution was already finalized");
+  run.finalized = true;
+
+  bool missingReturn = false;
+  bool pendingVectorGroups = false;
+  if (!applyRunFailureTerminal(run.state, run.report)) {
+    if (!run.retirementObserved) {
+      run.report.finalOutputs.push_back("missing");
+      missingReturn = true;
+    } else {
+      mlir::Value witness = run.execution.returnObservation.complete.front();
+      auto serialized =
+          tokenToString(run.state.observedOutputs.find(witness)->second.front(),
+                        witness.getType(), run.graph);
+      if (!serialized)
+        return serialized.takeError();
+      run.report.finalOutputs.push_back(std::move(*serialized));
+    }
+    for (mlir::Value value : run.execution.returnObservation.values) {
+      auto it = run.state.observedOutputs.find(value);
+      if (it == run.state.observedOutputs.end() || it->second.empty()) {
+        run.report.finalOutputs.push_back("missing");
+        missingReturn = true;
+        continue;
+      }
+      auto serialized =
+          tokenToString(it->second.front(), value.getType(), run.graph);
+      if (!serialized)
+        return serialized.takeError();
+      run.report.finalOutputs.push_back(std::move(*serialized));
+    }
+    for (mlir::Value stream : run.execution.returnObservation.streams) {
+      llvm::SmallVector<std::string> tokens;
+      auto it = run.state.observedOutputs.find(stream);
+      if (it != run.state.observedOutputs.end())
+        for (const Token &token : it->second) {
+          auto serialized = tokenToString(token, stream.getType(), run.graph);
+          if (!serialized)
+            return serialized.takeError();
+          tokens.push_back(std::move(*serialized));
+        }
+      run.report.finalStreamOutputs.push_back(std::move(tokens));
+    }
+    if (!typedWorkload)
+      if (llvm::Error error =
+              captureFinalMemoryState(run.graph, run.state, run.report))
+        return std::move(error);
+    pendingVectorGroups = hasPendingVectorGroups(run.state);
+  }
+  if (run.report.status == "pass" && !run.retirementObserved) {
+    run.report.status = "blocked";
+    run.report.diagnostics.push_back(
+        "graph did not fire its retirement frontier");
+  }
+  if (run.report.status == "pass" && !run.state.diagnostics.empty()) {
+    run.report.status = "blocked";
+    run.report.diagnostics.push_back(
+        "DFG-sim stopped with runtime diagnostics");
+  }
+  if (run.report.status == "pass" && (missingReturn || pendingVectorGroups)) {
+    run.report.status = run.retirementObserved ? "invalid" : "blocked";
+    run.report.diagnostics.push_back(
+        run.retirementObserved
+            ? "graph retired with incomplete internal state"
+            : "graph stopped before retirement outputs were complete");
+  }
+  projectRunObservations(run.state, run.report);
+  if (retiredObservations && run.report.status == "pass") {
+    if (!typedWorkload || !typedRuntimeInput || !typedContext ||
+        !typedProgramView)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "typed DFG observation projection has no admitted owner context");
+    auto observations = projectRetiredFunctionalObservations(
+        run.graph, run.state, *typedWorkload, *typedRuntimeInput, *typedContext,
+        *typedProgramView);
+    if (!observations)
+      return observations.takeError();
+    *retiredObservations = std::move(*observations);
+  }
+  return std::move(run.report);
+}
+
+} // namespace
+
+struct loom::sim::DfgExecutionSession::Impl {
+  const CanonicalSimulationWorkload *workload = nullptr;
+  const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
+  const ResolvedLaunchContext *context = nullptr;
+  const dataflow::CanonicalDataflowProgramView *programView = nullptr;
+  SimulatorState dynamicState;
+  DFGSimulationReport report;
+  DfgRun run;
+  DfgExecutionSessionState lifecycle = DfgExecutionSessionState::Runnable;
+  bool resultTaken = false;
+
+  Impl(dataflow::GraphOp graph, const PreparedGraphExecution &execution,
+       DFGSimulationReport initialReport,
+       const CanonicalSimulationWorkload &workload,
+       const CanonicalSimulationRuntimeInput &runtimeInput,
+       const ResolvedLaunchContext &context,
+       const dataflow::CanonicalDataflowProgramView &programView)
+      : workload(&workload), runtimeInput(&runtimeInput), context(&context),
+        programView(&programView), report(std::move(initialReport)),
+        run{graph, execution, dynamicState, report} {}
+};
+
+loom::sim::DfgExecutionSession::DfgExecutionSession(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+loom::sim::DfgExecutionSession::DfgExecutionSession(
+    DfgExecutionSession &&) noexcept = default;
+
+loom::sim::DfgExecutionSession &loom::sim::DfgExecutionSession::operator=(
+    DfgExecutionSession &&) noexcept = default;
+
+loom::sim::DfgExecutionSession::~DfgExecutionSession() = default;
+
+loom::sim::DfgExecutionSessionState
+loom::sim::DfgExecutionSession::state() const {
+  return impl_ ? impl_->lifecycle : DfgExecutionSessionState::Stopped;
+}
+
+std::uint64_t loom::sim::DfgExecutionSession::wavefrontSteps() const {
+  return impl_ ? impl_->report.wavefrontSteps : 0;
+}
+
+llvm::Expected<loom::sim::DfgExecutionSessionState>
+loom::sim::DfgExecutionSession::advance(
+    std::uint64_t maxWavefrontSteps,
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
+  if (!impl_)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG execution session is empty");
+  if (impl_->resultTaken)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG execution result was already taken");
+  if (impl_->lifecycle != DfgExecutionSessionState::Runnable)
+    return impl_->lifecycle;
+  if (maxWavefrontSteps == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "DFG execution advance requires a positive wavefront budget");
+
+  switch (advanceDfgRun(impl_->run, maxWavefrontSteps, executionDeadline)) {
+  case DfgAdvanceStop::Yielded:
+    return impl_->lifecycle;
+  case DfgAdvanceStop::Retired:
+    impl_->lifecycle = DfgExecutionSessionState::Retired;
+    return impl_->lifecycle;
+  case DfgAdvanceStop::Stopped:
+    impl_->lifecycle = DfgExecutionSessionState::Stopped;
+    return impl_->lifecycle;
+  case DfgAdvanceStop::ExecutionLimit:
+    impl_->lifecycle = DfgExecutionSessionState::Stopped;
+    return llvm::createStringError(std::errc::timed_out,
+                                   "DFG execution wall-time limit reached");
+  }
+  llvm_unreachable("closed DFG advance stop");
+}
+
+llvm::Expected<loom::sim::DfgExecutionSession>
+loom::sim::startDfgExecutionSession(
+    const PreparedDfgExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  if (!prepared.impl_)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "prepared DFG execution is empty");
+  const SpatialSimulationWorkload *spatial = workload.spatial();
+  if (!spatial)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "DFG execution session requires a Spatial workload");
+  if (spatial->launchRef != prepared.impl_->launch)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "runtime workload does not name the prepared rooted graph launch");
+
+  auto graphRef =
+      admitDfgSpatialSimulation(workload, runtimeInput, prepared.impl_->view);
+  if (!graphRef)
+    return graphRef.takeError();
+  if (*graphRef != prepared.impl_->context.graph)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "runtime workload resolves to a different prepared graph");
+  auto graphView = prepared.impl_->view.resolve(*graphRef);
+  if (!graphView)
+    return graphView.takeError();
+  dataflow::GraphOp graph = mlir::cast<dataflow::GraphOp>(graphView->op);
+  if (std::optional<std::string> reason = unsupportedTypedDfgInput(
+          workload, runtimeInput, prepared.impl_->context))
+    return llvm::createStringError(std::errc::not_supported, "%s",
+                                   reason->c_str());
+
+  DFGSimulationReport report;
+  report.graph = graph.getSymName().str();
+  report.workload = formatArtifactIdentityHex(workload.identity());
+  report.status = "pass";
+  auto impl = std::make_unique<DfgExecutionSession::Impl>(
+      graph, prepared.impl_->execution, std::move(report), workload,
+      runtimeInput, prepared.impl_->context, prepared.impl_->view);
+  impl->dynamicState.graphScope = graph.getOperation();
+  initializeRunState(impl->dynamicState, prepared.impl_->execution);
+  seedBlockArgument(impl->dynamicState, graph.getStart(), noneToken());
+  if (llvm::Error error =
+          seedTypedDfgInputs(impl->dynamicState, graph, workload, runtimeInput,
+                             prepared.impl_->context))
+    return std::move(error);
+  mlir::Block &entry = graph.getBody().front();
+  if (llvm::Error error = initializeFreshMemoryRoots(entry, impl->dynamicState))
+    return std::move(error);
+  if (llvm::Error error = propagateMemoryAliases(entry, impl->dynamicState))
+    return std::move(error);
+  observeRetirement(impl->run);
+  if (impl->report.status != "pass")
+    impl->lifecycle = DfgExecutionSessionState::Stopped;
+  return DfgExecutionSession(std::move(impl));
+}
+
+llvm::Expected<loom::sim::RetiredDFGSimulation>
+loom::sim::DfgExecutionSession::takeRetiredSimulation() {
+  if (!impl_)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG execution session is empty");
+  if (impl_->resultTaken)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG execution result was already taken");
+  if (impl_->lifecycle != DfgExecutionSessionState::Retired)
+    return llvm::createStringError(
+        std::errc::state_not_recoverable,
+        "DFG execution session has not retired successfully");
+
+  SpatialFunctionalObservations observations;
+  auto report =
+      finalizeDfgRun(impl_->run, impl_->workload, impl_->runtimeInput,
+                     impl_->context, impl_->programView, &observations);
+  impl_->resultTaken = true;
+  if (!report)
+    return report.takeError();
+  if (report->status != "pass") {
+    std::string message = "DFG execution did not retire: " + report->status;
+    if (!report->diagnostics.empty())
+      message += ": " + report->diagnostics.front();
+    return llvm::createStringError(std::errc::state_not_recoverable, "%s",
+                                   message.c_str());
+  }
+  return RetiredDFGSimulation{std::move(*report), std::move(observations)};
+}
+
 static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
     mlir::ModuleOp module, const DFGSimulationOptions &options,
     dataflow::GraphOp admittedGraph,
@@ -1046,8 +1489,6 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   SimulatorState state;
   state.graphScope = graph.getOperation();
   initializeRunState(state, *preparedExecution);
-  const GraphReturnObservation &returnObservation =
-      preparedExecution->returnObservation;
   seedBlockArgument(state, graph.getStart(), noneToken());
 
   if (typedWorkload) {
@@ -1143,246 +1584,17 @@ static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);
 
-  auto outputCount = [&](mlir::Value value) -> size_t {
-    auto it = state.observedOutputs.find(value);
-    return it == state.observedOutputs.end() ? 0 : it->second.size();
-  };
-  auto completionReady = [&]() {
-    return !returnObservation.complete.empty() &&
-           llvm::all_of(returnObservation.complete, [&](mlir::Value witness) {
-             return outputCount(witness) != 0;
-           });
-  };
-
-  auto unclosedStatefulActor = [&]() -> mlir::Operation * {
-    for (mlir::Operation &op : entry.without_terminator()) {
-      if (auto stream = mlir::dyn_cast<dataflow::StreamOp>(op)) {
-        auto it = state.streamStates.find(stream.getOperation());
-        if (it != state.streamStates.end() &&
-            it->second.mode != StreamMode::Idle)
-          return &op;
-        continue;
-      }
-      if (auto carry = mlir::dyn_cast<dataflow::CarryOp>(op)) {
-        auto it = state.carryStates.find(carry.getOperation());
-        if (it != state.carryStates.end() &&
-            it->second.semanticState != PhaseSemanticState::Initial)
-          return &op;
-        continue;
-      }
-      if (auto invariant = mlir::dyn_cast<dataflow::InvariantOp>(op)) {
-        auto it = state.invariantStates.find(invariant.getOperation());
-        if (it != state.invariantStates.end() &&
-            (it->second.semanticState != PhaseSemanticState::Initial ||
-             it->second.latched.has_value()))
-          return &op;
-        continue;
-      }
-      if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
-        if (state.gateContinueStates.contains(gate.getOperation()))
-          return &op;
-    }
-    return nullptr;
-  };
-
-  bool retired = false;
-  auto streamInputsCommitted = [&]() {
-    for (unsigned index = 0; index < applicationInputCount; ++index) {
-      if (graph.getInputPortKind(index) != dataflow::GraphPortKind::Stream)
-        continue;
-      mlir::BlockArgument arg = entry.getArgument(index + 1);
-      for (mlir::OpOperand &use : arg.getUses()) {
-        if (hasToken(state, use))
-          return false;
-      }
-    }
-    return true;
-  };
-  auto observeRetirement = [&]() {
-    if (retired || !completionReady())
-      return;
-    retired = true;
-    for (mlir::Value witness : returnObservation.complete) {
-      if (outputCount(witness) != 1) {
-        report.status = "invalid";
-        report.diagnostics.push_back(
-            "completion witness produced multiple tokens before retirement");
-        return;
-      }
-    }
-    if (!streamInputsCommitted()) {
-      report.status = "invalid";
-      report.diagnostics.push_back(
-          "graph retired before all stream input tokens were committed");
-      return;
-    }
-    if (mlir::Operation *actor = unclosedStatefulActor()) {
-      report.status = "invalid";
-      report.diagnostics.push_back(
-          ("graph retired before stateful actor close/reset: " +
-           actor->getName().getStringRef())
-              .str());
-      return;
-    }
-    for (auto [index, value] : llvm::enumerate(returnObservation.values)) {
-      size_t count = outputCount(value);
-      if (count == 1)
-        continue;
-      report.status = "invalid";
-      report.diagnostics.push_back(
-          llvm::formatv("value output #{0} produced {1} tokens at retirement",
-                        index, count)
-              .str());
-      return;
-    }
-  };
-  observeRetirement();
-
-  llvm::SmallBitVector candidates(preparedExecution->actorPlans.size(), false);
-  auto reachedExecutionDeadline = [&]() {
-    return options.executionDeadline &&
-           std::chrono::steady_clock::now() >= *options.executionDeadline;
-  };
-  auto stopAtExecutionDeadline = [&]() {
-    report.status = "execution_limit";
-    report.diagnostics.push_back("DFG execution wall-time limit reached");
-  };
-  while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
-         report.status != "invalid") {
-    if (reachedExecutionDeadline()) {
-      stopAtExecutionDeadline();
-      break;
-    }
-    if (!admitReadyPlainMemoryActions(state))
-      break;
-    candidates.swap(state.nextActorCandidates);
-    state.nextActorCandidates.reset();
-    bool fired = false;
-    unsigned actorsVisited = 0;
-    for (int ordinal = candidates.find_first(); ordinal >= 0;
-         ordinal = candidates.find_next(ordinal)) {
-      if (++actorsVisited % 256 == 0 && reachedExecutionDeadline()) {
-        stopAtExecutionDeadline();
-        break;
-      }
-      const ActorExecutionPlan &plan = preparedExecution->actorPlans[ordinal];
-      mlir::Operation *op = plan.operation;
-      FireOutcome outcome = fireOperation(plan, state);
-      if (outcome == FireOutcome::Fired)
-        scheduleActor(state, static_cast<unsigned>(ordinal));
-      // The run has already failed at runtime, so it leaves the wave here,
-      // before any later actor observes or mutates state and before this wave
-      // publishes anything. The retained failure overrides the lifecycle
-      // classification below, so the run never continues into a deadlock
-      // witness, an exhausted event budget, or a static-invalid diagnosis
-      // that would relabel it.
-      if (state.failure != RunFailure::None)
-        break;
-      if (retired && outcome != FireOutcome::NotReady) {
-        report.status = "invalid";
-        report.diagnostics.push_back(("actor '" + op->getName().getStringRef() +
-                                      (outcome == FireOutcome::Fired
-                                           ? "' fired after graph retirement"
-                                           : "' failed after graph retirement"))
-                                         .str());
-        break;
-      }
-      fired |= outcome == FireOutcome::Fired;
-    }
-    if (report.status != "pass" || state.failure != RunFailure::None || !fired)
-      break;
-    flushPendingTokens(state);
-    ++report.wavefrontSteps;
-    observeRetirement();
-  }
-  // A runtime failure is definitive: once a plain conflicting access is
-  // rejected or a provider invariant breaks, the run does not become a
-  // deadlock, so an exhausted event budget must not mask it as blocked.
-  if (!retired && report.wavefrontSteps == options.maxEventSteps &&
+  DfgRun run{graph, *preparedExecution, state, report};
+  observeRetirement(run);
+  const DfgAdvanceStop stop =
+      advanceDfgRun(run, options.maxEventSteps, options.executionDeadline);
+  if (stop == DfgAdvanceStop::Yielded && !run.retirementObserved &&
       state.failure == RunFailure::None) {
     report.status = "blocked";
     report.diagnostics.push_back("maximum event steps reached");
   }
-
-  bool missingReturn = false;
-  bool pendingVectorGroups = false;
-  // A failed run has no result, whichever way it failed: diagnostics and
-  // execution evidence remain reportable, but outputs and terminal memory are
-  // not fabricated from a prefix the failed decision never committed.
-  if (!applyRunFailureTerminal(state, report)) {
-    if (!retired) {
-      report.finalOutputs.push_back("missing");
-      missingReturn = true;
-    } else {
-      mlir::Value witness = returnObservation.complete.front();
-      auto serialized =
-          tokenToString(state.observedOutputs.find(witness)->second.front(),
-                        witness.getType(), graph);
-      if (!serialized)
-        return serialized.takeError();
-      report.finalOutputs.push_back(std::move(*serialized));
-    }
-    for (mlir::Value value : returnObservation.values) {
-      auto it = state.observedOutputs.find(value);
-      if (it == state.observedOutputs.end() || it->second.empty()) {
-        report.finalOutputs.push_back("missing");
-        missingReturn = true;
-        continue;
-      }
-      auto serialized =
-          tokenToString(it->second.front(), value.getType(), graph);
-      if (!serialized)
-        return serialized.takeError();
-      report.finalOutputs.push_back(std::move(*serialized));
-    }
-    for (mlir::Value stream : returnObservation.streams) {
-      llvm::SmallVector<std::string> tokens;
-      auto it = state.observedOutputs.find(stream);
-      if (it != state.observedOutputs.end())
-        for (const Token &token : it->second) {
-          auto serialized = tokenToString(token, stream.getType(), graph);
-          if (!serialized)
-            return serialized.takeError();
-          tokens.push_back(std::move(*serialized));
-        }
-      report.finalStreamOutputs.push_back(std::move(tokens));
-    }
-    if (!typedWorkload) {
-      if (llvm::Error error = captureFinalMemoryState(graph, state, report))
-        return std::move(error);
-    }
-    pendingVectorGroups = hasPendingVectorGroups(state);
-  }
-  if (report.status == "pass" && !retired) {
-    report.status = "blocked";
-    report.diagnostics.push_back("graph did not fire its retirement frontier");
-  }
-  if (report.status == "pass" && !state.diagnostics.empty()) {
-    report.status = "blocked";
-    report.diagnostics.push_back("DFG-sim stopped with runtime diagnostics");
-  }
-  if (report.status == "pass" && (missingReturn || pendingVectorGroups)) {
-    report.status = retired ? "invalid" : "blocked";
-    report.diagnostics.push_back(
-        retired ? "graph retired with incomplete internal state"
-                : "graph stopped before retirement outputs were complete");
-  }
-  projectRunObservations(state, report);
-  if (retiredObservations && report.status == "pass") {
-    if (!typedWorkload || !typedRuntimeInput || !typedContext ||
-        !typedProgramView)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "typed DFG observation projection has no admitted owner context");
-    llvm::Expected<SpatialFunctionalObservations> observations =
-        projectRetiredFunctionalObservations(graph, state, *typedWorkload,
-                                             *typedRuntimeInput, *typedContext,
-                                             *typedProgramView);
-    if (!observations)
-      return observations.takeError();
-    *retiredObservations = std::move(*observations);
-  }
-  return report;
+  return finalizeDfgRun(run, typedWorkload, typedRuntimeInput, typedContext,
+                        typedProgramView, retiredObservations);
 }
 
 llvm::Expected<DFGSimulationReport>
@@ -1540,12 +1752,16 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventSteps,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
-  SpatialFunctionalObservations observations;
-  auto report =
-      simulateTypedDfgWorkload(program, workload, runtimeInput, maxEventSteps,
-                               &observations, executionDeadline);
-  return requireRetiredDfgExecution(std::move(report), std::move(observations),
-                                    maxEventSteps);
+  const SpatialSimulationWorkload *spatial = workload.spatial();
+  if (!spatial)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "retired DFG execution requires a Spatial workload");
+  auto prepared = prepareDfgExecution(program, spatial->launchRef);
+  if (!prepared)
+    return prepared.takeError();
+  return simulateRetiredDfgWorkload(*prepared, workload, runtimeInput,
+                                    maxEventSteps, executionDeadline);
 }
 
 llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
@@ -1554,15 +1770,30 @@ llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventSteps,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
-  if (!prepared.impl_)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "prepared DFG execution is empty");
+  if (maxEventSteps == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "retired DFG execution requires a positive wavefront budget");
+  auto session = startDfgExecutionSession(prepared, workload, runtimeInput);
+  if (!session)
+    return session.takeError();
+  auto state = session->advance(maxEventSteps, executionDeadline);
+  if (!state)
+    return state.takeError();
+  if (*state == DfgExecutionSessionState::Retired)
+    return session->takeRetiredSimulation();
+
   SpatialFunctionalObservations observations;
-  auto report = simulateTypedDfgWorkload(
-      *prepared.impl_->program, workload, runtimeInput, maxEventSteps,
-      &observations, executionDeadline, &prepared.impl_->view,
-      &prepared.impl_->context, &prepared.impl_->execution,
-      &prepared.impl_->launch);
+  if (*state == DfgExecutionSessionState::Runnable) {
+    session->impl_->report.status = "blocked";
+    session->impl_->report.diagnostics.push_back("maximum event steps reached");
+    session->impl_->lifecycle = DfgExecutionSessionState::Stopped;
+  }
+  auto report =
+      finalizeDfgRun(session->impl_->run, session->impl_->workload,
+                     session->impl_->runtimeInput, session->impl_->context,
+                     session->impl_->programView, &observations);
+  session->impl_->resultTaken = true;
   return requireRetiredDfgExecution(std::move(report), std::move(observations),
                                     maxEventSteps);
 }

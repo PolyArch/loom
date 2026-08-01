@@ -87,6 +87,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
   loom-simulator-dfg-pointer-execution-test
+  loom-simulator-dfg-execution-session-test
   loom-simulator-operation-schema-projection-test
   loom-simulator-simulation-wire-test
   loom-simulator-structured-program-native-execution-test

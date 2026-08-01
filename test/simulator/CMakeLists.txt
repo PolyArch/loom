@@ -119,6 +119,22 @@ target_link_libraries(loom-simulator-structured-program-wire-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-dfg-execution-session-test
+  DFGExecutionSessionTest.cpp
+)
+
+target_link_libraries(loom-simulator-dfg-execution-session-test PRIVATE
+  LoomCommon
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-simulator-structured-program-native-execution-test
   StructuredProgramNativeExecutionTest.cpp
 )
