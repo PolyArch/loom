@@ -43,6 +43,20 @@ CompilerTargetBinding mechanically selects exact compiler triple, CPU,
 features, ABI, and DataLayout compatible with that contract. Target-specific
 binaries are built under the binding and cannot be substituted by runtime.
 
+One binding may serve several same-kind InstructionCore occurrences because
+microarchitecture is not code-generation identity. That reuse is justified by
+equality of the complete canonical Architectural Contract, not by a friendly
+CPU name or a digest alone. HostCore and InstructionCore bindings remain
+separate because they occupy different executable ownership domains even when
+their RISC-V contracts match.
+
+The target triple, feature list, and DataLayout are derived by the pinned LLVM
+provider rather than copied from a relocatable payload. The payload's module
+DataLayout remains authoritative for that module; final link later proves
+structural compatibility without rewriting either owner. This keeps Fabric,
+compiler policy, LLVM code generation, and source-module identity as four
+non-overlapping facts.
+
 Microarchitectural realization is a different Fabric projection. It may affect
 gem5 timing and capacity but does not change a compatible binary's ISA/ABI.
 Fabric stores neither LLVM target spelling nor a gem5 model name; the two

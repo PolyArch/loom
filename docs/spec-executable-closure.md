@@ -97,6 +97,38 @@ Microarchitectural differences that preserve one Architectural Contract may
 share a binding. An ISA, endian, addressability, ABI, synchronization-scope, or
 required-feature difference changes the binding or makes it incompatible.
 
+The processor reference names one exact same-kind architecture owner. A
+binding selected for one InstructionCore context may cover another
+InstructionCore context only when strict import proves that their complete
+canonical Architectural Contract bytes are equal. HostCore and InstructionCore
+bindings remain independently exact even when those bytes happen to agree.
+`architecture_fingerprint` accelerates this comparison but never discharges
+it.
+
+### RISC-V Target Projection
+
+The first compiler provider projects one RISC-V Architectural Contract and a
+resolved target policy mechanically:
+
+* XLEN and endianness select the canonical LLVM RISC-V architecture name;
+* the object environment is bare-metal ELF;
+* Base E and each admitted extension produce the corresponding canonical
+  positive LLVM target feature in Fabric enum order;
+* the selected ABI, code model, and relocation model must be members of the
+  exact Fabric contract;
+* the backend CPU is an explicit policy input validated by the pinned LLVM
+  provider; and
+* the target triple and exact DataLayout spelling are produced by the resulting
+  LLVM `TargetMachine`.
+
+For schema 1.0, `MediumLow` maps to LLVM's small RISC-V code model and
+`MediumAny` maps to its medium code model. `Static` and
+`PositionIndependent` map to LLVM static and PIC relocation respectively.
+Fabric `SingleThread` and `Hart` synchronization scopes map to LLVM
+`singlethread`; Fabric `System` maps to LLVM `system`. These bindings are
+stored explicitly so later providers do not infer a target scope from its
+name.
+
 ## InstructionCoreBinary
 
 ```text
@@ -272,6 +304,29 @@ and integers use their canonical forms, and every set or table is sorted and
 deduplicated by its complete typed key. Backend feature order, object section
 order, source symbols that are not ABI-visible, paths, timestamps, and emitted
 temporary names do not affect identity.
+
+The canonical `CompilerTargetBinding` 1.0 object has the field order shown in
+its schema above, with `schema` and `schema_version` first. Its processor field
+contains exactly `kind`, the lowercase hexadecimal Fabric ArtifactIdentity,
+and the canonical typed Fabric local-reference spelling. Closed enum spellings
+are lowercase snake case. `backend_features`, `target_scope_bindings`, and
+`support_components` preserve their canonical owner order; support components
+are strictly sorted and unique by role, interface ABI identity, BlobDigest,
+and link mode.
+
+The architecture fingerprint is SHA-256 over this exact preimage:
+
+```text
+"loom.compiler.architecture.fingerprint.v1\0"
+u64be(canonical_architectural_contract_byte_count)
+canonical_architectural_contract_bytes
+```
+
+It is recomputed after resolving the typed Fabric reference. Import also
+reconstructs the pinned LLVM `TargetMachine` from the stored policy fields and
+requires exact provider identity, canonical triple, DataLayout spelling,
+object format, CPU, feature order, code model, relocation model, and target
+scope bindings. Re-encoding must reproduce the stored JSON byte for byte.
 
 Finalization reconstructs the LLVM TargetMachine, validates the exact
 Architectural Contract and binding-owned data layout, proves structural

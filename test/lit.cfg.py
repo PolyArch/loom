@@ -50,6 +50,7 @@ tools = [
     "loom-adg",
     "loom-tblgen",
     "loom-config-test",
+    "loom-compiler-target-binding-test",
     "loom-adg-builder-api-test",
     "loom-dataflow-canonical-artifact-test",
     "loom-dataflow-canonical-reference-test",

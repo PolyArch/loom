@@ -1,5 +1,15 @@
 add_subdirectory(payload)
 
+add_executable(loom-compiler-target-binding-test
+  CompilerTargetBindingTest.cpp
+)
+
+target_link_libraries(loom-compiler-target-binding-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFrontendExecutable
+)
+
 add_executable(loom-structured-program-artifact-test
   StructuredProgramArtifactTest.cpp
 )

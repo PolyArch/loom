@@ -29,6 +29,7 @@ set(LOOM_TEST_DEPENDS
   loom-accelerator-final-link-test
   loom-adg-builder-api-test
   loom-config-test
+  loom-compiler-target-binding-test
   loom-constant-callback-specialization-test
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
