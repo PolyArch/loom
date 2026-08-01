@@ -121,6 +121,23 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                     Path(directory) / "harness",
                 )
 
+    def test_generated_protocol_preserves_workload_compiler_semantics(self) -> None:
+        workload = _workload("arm-nn-mult-by-power-of-two")
+        self.assertEqual(workload.compiler_flags, ("-fwrapv",))
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+            harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                (workload,),
+                corpus_inventory.resolve_externals_root(ROOT),
+                Path(directory) / "harness",
+            )
+            cmake = (harness.source_dir / "CMakeLists.txt").read_text()
+            self.assertIn(
+                f"target_compile_options({workload.executable} PRIVATE "
+                "-fno-inline-functions -fwrapv)",
+                cmake,
+            )
+
     def test_generated_contiguous_array_protocol_families(self) -> None:
         expectations = {
             "arm-relu-q15": (

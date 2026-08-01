@@ -147,6 +147,7 @@ class _CmsisNnCmakeTarget:
     case_directory: str | None = None
     direct_source: Path | None = None
     operator_sources: tuple[Path, ...] = ()
+    compiler_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.case_directory is None) == (self.direct_source is None):
@@ -202,6 +203,11 @@ def _render_harness_cmake(targets: Sequence[_CmsisNnCmakeTarget]) -> str:
         for item in unity_targets
     )
     unity_target_items = " ".join(item.target for item in unity_targets)
+    unity_compile_options = "\n".join(
+        f"target_compile_options({item.target} PRIVATE "
+        f"{' '.join(('-fno-inline-functions', *item.compiler_flags))})"
+        for item in unity_targets
+    )
     unity_setup = ""
     if unity_targets:
         unity_setup = f"""add_subdirectory("${{LOOM_CMSIS_NN_SOURCE}}" cmsis-nn)
@@ -218,15 +224,18 @@ endfunction()
 foreach(target IN ITEMS {unity_target_items})
   target_include_directories(${{target}} PRIVATE
     "${{CMAKE_CURRENT_SOURCE_DIR}}/TestCases/Utils")
-  target_compile_options(${{target}} PRIVATE -fno-inline-functions)
   target_link_libraries(${{target}} PRIVATE unity cmsis-nn)
 endforeach()
+{unity_compile_options}
 """
 
     direct_blocks: list[str] = []
     for item in targets:
         if item.direct_source is None:
             continue
+        compile_options = " ".join(
+            ("-fno-inline-functions", *item.compiler_flags)
+        )
         operator_sources = "\n".join(
             f'  "${{LOOM_CMSIS_NN_SOURCE}}/{_cmake_quote(source)}"'
             for source in item.operator_sources
@@ -238,7 +247,7 @@ endforeach()
 target_include_directories({item.target} PRIVATE
   "${{LOOM_CMSIS_NN_SOURCE}}/Include"
   "${{CMAKE_CURRENT_SOURCE_DIR}}")
-target_compile_options({item.target} PRIVATE -fno-inline-functions)
+target_compile_options({item.target} PRIVATE {compile_options})
 '''
         )
 
@@ -535,6 +544,7 @@ def materialize_cmsis_nn_harness(
                         external_root,
                         allow_empty=projection.compiled_owner is None,
                     ),
+                    compiler_flags=workload.compiler_flags,
                 )
             )
             continue
@@ -587,6 +597,7 @@ def materialize_cmsis_nn_harness(
                     operator_sources=_cmsis_nn_operator_sources(
                         workload, external_root
                     ),
+                    compiler_flags=workload.compiler_flags,
                 )
             )
             continue
@@ -634,7 +645,13 @@ def materialize_cmsis_nn_harness(
         protocol_symbol_sets.append((workload.producer.test_function,))
         protocol_source_owners.append((wrapper, original_wrapper))
         expected_entry_results.append(0)
-        cmake_targets.append(_CmsisNnCmakeTarget(target, case_directory=target))
+        cmake_targets.append(
+            _CmsisNnCmakeTarget(
+                target,
+                case_directory=target,
+                compiler_flags=workload.compiler_flags,
+            )
+        )
 
     (source_dir / "CMakeLists.txt").write_text(
         _render_harness_cmake(cmake_targets), encoding="utf-8"
