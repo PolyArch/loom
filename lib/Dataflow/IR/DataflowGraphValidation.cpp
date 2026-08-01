@@ -1,5 +1,7 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 
+#include "DataflowGraphCausality.h"
+
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/OperationSchema.h"
 
@@ -11,7 +13,6 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
@@ -20,8 +21,14 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <tuple>
 
 namespace {
+
+template <typename... Ts> unsigned denseMapKeyHash(const Ts &...values) {
+  using Key = std::tuple<Ts...>;
+  return llvm::DenseMapInfo<Key>::getHashValue(Key(values...));
+}
 
 llvm::Error graphError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::errc::invalid_argument, message.str());
@@ -114,213 +121,10 @@ bool isRetirementPublication(mlir::Value witness, mlir::Value prerequisite) {
          prerequisite.getDefiningOp() == def;
 }
 
-struct CausalConstraintTransition {
-  unsigned parent;
-  mlir::Value selector;
-  unsigned lane;
-
-  bool operator==(const CausalConstraintTransition &other) const {
-    return parent == other.parent && selector == other.selector &&
-           lane == other.lane;
-  }
-};
-
-struct CausalConstraintTransitionInfo {
-  static CausalConstraintTransition getEmptyKey() {
-    return {std::numeric_limits<unsigned>::max(), {}, 0};
-  }
-  static CausalConstraintTransition getTombstoneKey() {
-    return {std::numeric_limits<unsigned>::max() - 1, {}, 0};
-  }
-  static unsigned getHashValue(const CausalConstraintTransition &key) {
-    return llvm::hash_combine(key.parent, key.selector.getAsOpaquePointer(),
-                              key.lane);
-  }
-  static bool isEqual(const CausalConstraintTransition &lhs,
-                      const CausalConstraintTransition &rhs) {
-    return lhs == rhs;
-  }
-};
-
-struct CausalMemoKey {
-  mlir::Value event;
-  unsigned constraints;
-
-  bool operator==(const CausalMemoKey &other) const {
-    return event == other.event && constraints == other.constraints;
-  }
-};
-
-struct CausalMemoKeyInfo {
-  static CausalMemoKey getEmptyKey() {
-    return {{}, std::numeric_limits<unsigned>::max()};
-  }
-  static CausalMemoKey getTombstoneKey() {
-    return {{}, std::numeric_limits<unsigned>::max() - 1};
-  }
-  static unsigned getHashValue(const CausalMemoKey &key) {
-    return llvm::hash_combine(key.event.getAsOpaquePointer(), key.constraints);
-  }
-  static bool isEqual(const CausalMemoKey &lhs, const CausalMemoKey &rhs) {
-    return lhs == rhs;
-  }
-};
-
-class CausalDependencyAnalysis {
-public:
-  CausalDependencyAnalysis(mlir::Value prerequisite, mlir::Value event)
-      : prerequisite(prerequisite), event(event) {
-    constraintStates.emplace_back();
-    constraintStatesByHash[hashConstraintState(constraintStates.front())]
-        .push_back(0);
-  }
-
-  bool dependsOn() { return reaches(prerequisite, 0); }
-
-private:
-  enum class MemoState : uint8_t { Visiting, False, True };
-
-  mlir::Value prerequisite;
-  mlir::Value event;
-  llvm::DenseMap<mlir::Value, unsigned> selectorIds;
-  llvm::SmallVector<llvm::SmallVector<std::uint64_t, 4>, 8> constraintStates;
-  llvm::DenseMap<std::uint64_t, llvm::SmallVector<unsigned, 1>>
-      constraintStatesByHash;
-  llvm::DenseMap<CausalConstraintTransition, unsigned,
-                 CausalConstraintTransitionInfo>
-      constraintTransitions;
-  llvm::DenseMap<CausalMemoKey, MemoState, CausalMemoKeyInfo> memo;
-
-  static std::uint64_t
-  hashConstraintState(llvm::ArrayRef<std::uint64_t> assignments) {
-    std::uint64_t hash = 1469598103934665603ULL;
-    for (std::uint64_t assignment : assignments) {
-      hash ^= assignment;
-      hash *= 1099511628211ULL;
-    }
-    if (hash >= std::numeric_limits<std::uint64_t>::max() - 1)
-      hash -= 2;
-    return hash;
-  }
-
-  unsigned
-  internConstraintState(llvm::SmallVector<std::uint64_t, 4> assignments) {
-    std::uint64_t hash = hashConstraintState(assignments);
-    auto &bucket = constraintStatesByHash[hash];
-    for (unsigned candidate : bucket) {
-      if (constraintStates[candidate] == assignments)
-        return candidate;
-    }
-    unsigned next = constraintStates.size();
-    constraintStates.push_back(std::move(assignments));
-    bucket.push_back(next);
-    return next;
-  }
-
-  std::optional<unsigned> constrain(unsigned state, mlir::Value selector,
-                                    unsigned lane) {
-    auto selectorIt =
-        selectorIds.try_emplace(selector, selectorIds.size()).first;
-    unsigned selectorId = selectorIt->second;
-    std::uint64_t assignment =
-        (static_cast<std::uint64_t>(selectorId) << 32) | lane;
-    const auto &current = constraintStates[state];
-    unsigned position = 0;
-    while (position != current.size() && (current[position] >> 32) < selectorId)
-      ++position;
-    if (position != current.size() && (current[position] >> 32) == selectorId) {
-      return current[position] == assignment ? std::optional<unsigned>(state)
-                                             : std::nullopt;
-    }
-
-    CausalConstraintTransition transition{state, selector, lane};
-    auto known = constraintTransitions.find(transition);
-    if (known != constraintTransitions.end())
-      return known->second;
-    llvm::SmallVector<std::uint64_t, 4> nextState(current);
-    nextState.insert(nextState.begin() + position, assignment);
-    unsigned next = internConstraintState(std::move(nextState));
-    constraintTransitions.try_emplace(transition, next);
-    return next;
-  }
-
-  bool reaches(mlir::Value value, unsigned state) {
-    if (!value)
-      return false;
-    if (auto result = llvm::dyn_cast<mlir::OpResult>(value)) {
-      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
-        auto constrained =
-            constrain(state, demux.getSel(), result.getResultNumber());
-        if (!constrained)
-          return false;
-        state = *constrained;
-      }
-    }
-
-    CausalMemoKey key{value, state};
-    auto known = memo.find(key);
-    if (known != memo.end())
-      return known->second == MemoState::True;
-    memo.try_emplace(key, MemoState::Visiting);
-    bool result = compute(value, state);
-    memo[key] = result ? MemoState::True : MemoState::False;
-    return result;
-  }
-
-  bool reachesAnyResult(mlir::Operation *operation, unsigned state) {
-    return llvm::any_of(operation->getResults(), [&](mlir::Value result) {
-      return reaches(result, state);
-    });
-  }
-
-  bool compute(mlir::Value value, unsigned state) {
-    if (value == event)
-      return true;
-
-    // Sync outputs are one atomic publication. A memory actor's done result
-    // likewise follows every sibling result from the same retirement event.
-    // These are the only causal edges that are not ordinary operand-to-result
-    // SSA edges.
-    if (value == prerequisite) {
-      if (auto result = llvm::dyn_cast<mlir::OpResult>(value)) {
-        mlir::Operation *owner = result.getOwner();
-        if (llvm::isa<dataflow::SyncOp>(owner) &&
-            reachesAnyResult(owner, state))
-          return true;
-        if (mlir::Value done = dataflow::semantics::getMemoryActorDone(owner);
-            done && value != done && reaches(done, state))
-          return true;
-      }
-    }
-
-    for (mlir::OpOperand &use : value.getUses()) {
-      mlir::Operation *user = use.getOwner();
-      if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(user)) {
-        if (use.getOperandNumber() == 0) {
-          if (reachesAnyResult(user, state))
-            return true;
-          continue;
-        }
-        const unsigned lane = use.getOperandNumber() - 1;
-        auto constrained = constrain(state, mux.getSel(), lane);
-        if (constrained && reachesAnyResult(user, *constrained))
-          return true;
-        continue;
-      }
-      if (reachesAnyResult(user, state))
-        return true;
-    }
-    return false;
-  }
-};
-
-bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
-  return CausalDependencyAnalysis(prerequisite, event).dependsOn();
-}
-
-bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
+bool isCovered(dataflow::detail::GraphCausalDependencyCache &causalDependencies,
+               mlir::Value prerequisite, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
-    return CausalDependencyAnalysis(prerequisite, witness).dependsOn() ||
+    return causalDependencies.dependsOn(witness, prerequisite) ||
            isRetirementPublication(witness, prerequisite);
   });
 }
@@ -491,8 +295,11 @@ enum class AlignmentQueryKind : uint8_t {
   TruePhaseAligned,
 };
 
+using CardinalityAssumptionSetId = unsigned;
+
 struct AlignmentQuery {
-  uint64_t alignmentRevision;
+  CardinalityAssumptionSetId exactOneAssumptions;
+  CardinalityAssumptionSetId alignedCarryAssumptions;
   mlir::Value value;
   mlir::Value parentPhase;
   mlir::Value parentAssumption;
@@ -501,7 +308,8 @@ struct AlignmentQuery {
   AlignmentQueryKind kind;
 
   bool operator==(const AlignmentQuery &other) const {
-    return alignmentRevision == other.alignmentRevision &&
+    return exactOneAssumptions == other.exactOneAssumptions &&
+           alignedCarryAssumptions == other.alignedCarryAssumptions &&
            value == other.value && parentPhase == other.parentPhase &&
            parentAssumption == other.parentAssumption &&
            selector == other.selector && lane == other.lane &&
@@ -511,7 +319,8 @@ struct AlignmentQuery {
 
 struct AlignmentQueryInfo {
   static AlignmentQuery getEmptyKey() {
-    return {std::numeric_limits<uint64_t>::max(),
+    return {std::numeric_limits<CardinalityAssumptionSetId>::max(),
+            std::numeric_limits<CardinalityAssumptionSetId>::max(),
             {},
             {},
             {},
@@ -521,7 +330,8 @@ struct AlignmentQueryInfo {
   }
 
   static AlignmentQuery getTombstoneKey() {
-    return {std::numeric_limits<uint64_t>::max() - 1,
+    return {std::numeric_limits<CardinalityAssumptionSetId>::max() - 1,
+            std::numeric_limits<CardinalityAssumptionSetId>::max() - 1,
             {},
             {},
             {},
@@ -534,10 +344,11 @@ struct AlignmentQueryInfo {
     auto opaque = [](mlir::Value value) {
       return value ? value.getAsOpaquePointer() : nullptr;
     };
-    return llvm::hash_combine(query.alignmentRevision, opaque(query.value),
-                              opaque(query.parentPhase),
-                              opaque(query.parentAssumption),
-                              opaque(query.selector), query.lane, query.kind);
+    return denseMapKeyHash(query.exactOneAssumptions,
+                           query.alignedCarryAssumptions, opaque(query.value),
+                           opaque(query.parentPhase),
+                           opaque(query.parentAssumption),
+                           opaque(query.selector), query.lane, query.kind);
   }
 
   static bool isEqual(const AlignmentQuery &lhs, const AlignmentQuery &rhs) {
@@ -570,8 +381,6 @@ struct CardinalityGraphIndex {
   llvm::DenseMap<mlir::Value, llvm::SmallVector<dataflow::DemuxOp, 4>>
       demuxesBySelector;
 };
-
-using CardinalityAssumptionSetId = unsigned;
 
 // Nested selected-close proofs create analysis views with different local
 // assumptions. Intern the complete assumption sets so equivalent views share
@@ -623,11 +432,11 @@ struct SelectedNestedQueryInfo {
     auto opaque = [](mlir::Value value) {
       return value ? value.getAsOpaquePointer() : nullptr;
     };
-    return llvm::hash_combine(
+    return denseMapKeyHash(
         query.exactOneAssumptions, query.alignedCarryAssumptions,
         opaque(query.result), opaque(query.parentPhase),
         opaque(query.parentAssumption), opaque(query.selector), query.lane,
-        query.truePhaseOnly);
+        static_cast<unsigned>(query.truePhaseOnly));
   }
 
   static bool isEqual(const SelectedNestedQuery &lhs,
@@ -670,14 +479,20 @@ struct CardinalitySharedState {
       selectedNested;
   llvm::DenseSet<SelectedNestedQuery, SelectedNestedQueryInfo>
       selectedNestedActive;
+  llvm::DenseMap<AlignmentQuery, bool, AlignmentQueryInfo> alignment;
+  llvm::DenseSet<AlignmentQuery, AlignmentQueryInfo> alignmentActive;
+  llvm::DenseMap<std::pair<CardinalityAssumptionSetId, mlir::Value>, bool>
+      exactOne;
+  llvm::DenseSet<std::pair<CardinalityAssumptionSetId, mlir::Value>>
+      exactOneActive;
 
 private:
   static std::uint64_t
   hashAssumptions(llvm::ArrayRef<mlir::Value> assumptions) {
-    llvm::hash_code hash = assumptions.size();
+    unsigned hash = denseMapKeyHash(assumptions.size());
     for (mlir::Value assumption : assumptions)
-      hash = llvm::hash_combine(hash, assumption.getAsOpaquePointer());
-    return static_cast<std::uint64_t>(hash);
+      hash = denseMapKeyHash(hash, assumption.getAsOpaquePointer());
+    return hash;
   }
 
   llvm::SmallVector<llvm::SmallVector<mlir::Value, 8>, 8> assumptionSets;
@@ -688,20 +503,24 @@ private:
 
 class GraphCardinalityAnalysis {
 public:
-  explicit GraphCardinalityAnalysis(dataflow::GraphOp graph)
+  GraphCardinalityAnalysis(
+      dataflow::GraphOp graph,
+      dataflow::detail::GraphCausalDependencyCache &causalDependencies)
       : graph(graph),
         sharedState(std::make_shared<CardinalitySharedState>(graph)),
-        graphIndex(sharedState->graphIndex) {}
+        graphIndex(sharedState->graphIndex),
+        causalDependencies(causalDependencies) {}
 
   bool isExactOne(mlir::Value value) {
-    auto known = exactOne.find(value);
-    if (known != exactOne.end())
+    auto query = std::make_pair(internedExactOneAssumptions(), value);
+    auto known = sharedState->exactOne.find(query);
+    if (known != sharedState->exactOne.end())
       return known->second;
-    if (!exactOneActive.insert(value).second)
+    if (!sharedState->exactOneActive.insert(query).second)
       return false;
     bool result = computeExactOne(value);
-    exactOneActive.erase(value);
-    exactOne.try_emplace(value, result);
+    sharedState->exactOneActive.erase(query);
+    sharedState->exactOne.try_emplace(query, result);
     return result;
   }
 
@@ -723,48 +542,69 @@ public:
   }
 
 private:
-  GraphCardinalityAnalysis(dataflow::GraphOp graph,
-                           std::shared_ptr<CardinalitySharedState> sharedState)
+  GraphCardinalityAnalysis(
+      dataflow::GraphOp graph,
+      std::shared_ptr<CardinalitySharedState> sharedState,
+      dataflow::detail::GraphCausalDependencyCache &causalDependencies)
       : graph(graph), sharedState(std::move(sharedState)),
-        graphIndex(this->sharedState->graphIndex) {}
+        graphIndex(this->sharedState->graphIndex),
+        causalDependencies(causalDependencies) {}
 
   dataflow::GraphOp graph;
   std::shared_ptr<CardinalitySharedState> sharedState;
   std::shared_ptr<CardinalityGraphIndex> graphIndex;
-  uint64_t alignmentRevision = 0;
-  llvm::DenseMap<AlignmentQuery, bool, AlignmentQueryInfo> alignment;
-  llvm::DenseSet<AlignmentQuery, AlignmentQueryInfo> alignmentActive;
-  llvm::DenseMap<mlir::Value, bool> exactOne;
-  llvm::DenseSet<mlir::Value> exactOneActive;
+  dataflow::detail::GraphCausalDependencyCache &causalDependencies;
   llvm::DenseMap<mlir::Value, bool> oneClosePhase;
   llvm::DenseSet<mlir::Value> oneCloseActive;
   llvm::DenseSet<mlir::Value> alignedCarryAssumptions;
+  std::optional<CardinalityAssumptionSetId> alignedCarryAssumptionSet = 0;
   llvm::DenseMap<mlir::Value, bool> alignedCarrySystems;
   llvm::DenseSet<mlir::Value> alignedCarrySystemsActive;
   llvm::DenseSet<mlir::Value> exactOneAssumptions;
+  std::optional<CardinalityAssumptionSetId> exactOneAssumptionSet = 0;
+
+  CardinalityAssumptionSetId internedAlignedCarryAssumptions() {
+    if (!alignedCarryAssumptionSet)
+      alignedCarryAssumptionSet =
+          sharedState->internAssumptions(alignedCarryAssumptions);
+    return *alignedCarryAssumptionSet;
+  }
+
+  CardinalityAssumptionSetId internedExactOneAssumptions() {
+    if (!exactOneAssumptionSet)
+      exactOneAssumptionSet =
+          sharedState->internAssumptions(exactOneAssumptions);
+    return *exactOneAssumptionSet;
+  }
+
+  void insertExactOneAssumption(mlir::Value value) {
+    if (exactOneAssumptions.insert(value).second)
+      exactOneAssumptionSet.reset();
+  }
 
   bool insertAlignedCarryAssumption(mlir::Value value) {
     bool inserted = alignedCarryAssumptions.insert(value).second;
     if (inserted)
-      ++alignmentRevision;
+      alignedCarryAssumptionSet.reset();
     return inserted;
   }
 
   void eraseAlignedCarryAssumption(mlir::Value value) {
     if (alignedCarryAssumptions.erase(value))
-      ++alignmentRevision;
+      alignedCarryAssumptionSet.reset();
   }
 
   template <typename Compute>
   bool evaluateAlignment(const AlignmentQuery &query, Compute &&compute) {
-    auto known = alignment.find(query);
-    if (known != alignment.end())
+    auto known = sharedState->alignment.find(query);
+    if (known != sharedState->alignment.end())
       return known->second;
-    if (!alignmentActive.insert(query).second)
+    if (!sharedState->alignmentActive.insert(query).second)
       return false;
-    auto eraseActive = llvm::scope_exit([&] { alignmentActive.erase(query); });
+    auto eraseActive =
+        llvm::scope_exit([&] { sharedState->alignmentActive.erase(query); });
     bool result = compute();
-    alignment.try_emplace(query, result);
+    sharedState->alignment.try_emplace(query, result);
     return result;
   }
 
@@ -828,13 +668,13 @@ private:
 
   bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
                               unsigned lane) {
-    GraphCardinalityAnalysis branch(graph, sharedState);
+    GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
     auto demuxes = graphIndex->demuxesBySelector.find(selector);
     if (demuxes != graphIndex->demuxesBySelector.end()) {
       for (dataflow::DemuxOp demux : demuxes->second) {
         if (lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
           continue;
-        branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+        branch.insertExactOneAssumption(demux.getOutputs()[lane]);
       }
     }
     return branch.isExactOne(value);
@@ -844,7 +684,7 @@ private:
                                         unsigned lane, mlir::Value phase,
                                         mlir::Value assumption,
                                         bool truePhaseOnly) {
-    GraphCardinalityAnalysis branch(graph, sharedState);
+    GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
     auto demuxes = graphIndex->demuxesBySelector.find(selector);
     if (demuxes != graphIndex->demuxesBySelector.end()) {
       for (dataflow::DemuxOp demux : demuxes->second) {
@@ -854,7 +694,7 @@ private:
         if (!isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
                        visited))
           continue;
-        branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+        branch.insertExactOneAssumption(demux.getOutputs()[lane]);
       }
     }
     return branch.isExactOne(value);
@@ -911,7 +751,8 @@ private:
     if (!visited.insert(value).second)
       return false;
     auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          value,
                          {},
                          {},
@@ -1004,7 +845,8 @@ private:
       return false;
     auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
     AlignmentQuery query{
-        alignmentRevision,
+        internedExactOneAssumptions(),
+        internedAlignedCarryAssumptions(),
         value,
         phase,
         assumption,
@@ -1028,7 +870,7 @@ private:
                                            parentAssumption, truePhaseOnly,
                                            visited))
         return false;
-      activation.exactOneAssumptions.insert(value);
+      activation.insertExactOneAssumption(value);
       return true;
     };
 
@@ -1061,7 +903,8 @@ private:
         close.getSel() == selector || close.getSel() == parentPhase)
       return false;
 
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          result,
                          parentPhase,
                          parentAssumption,
@@ -1071,15 +914,14 @@ private:
                              ? AlignmentQueryKind::SelectedTruePhaseClose
                              : AlignmentQueryKind::SelectedClose};
     return evaluateAlignment(query, [&] {
-      SelectedNestedQuery sharedQuery{
-          sharedState->internAssumptions(exactOneAssumptions),
-          sharedState->internAssumptions(alignedCarryAssumptions),
-          result,
-          parentPhase,
-          parentAssumption,
-          selector,
-          lane,
-          truePhaseOnly};
+      SelectedNestedQuery sharedQuery{internedExactOneAssumptions(),
+                                      internedAlignedCarryAssumptions(),
+                                      result,
+                                      parentPhase,
+                                      parentAssumption,
+                                      selector,
+                                      lane,
+                                      truePhaseOnly};
       auto known = sharedState->selectedNested.find(sharedQuery);
       if (known != sharedState->selectedNested.end())
         return known->second;
@@ -1088,7 +930,8 @@ private:
       auto eraseActive = llvm::scope_exit(
           [&] { sharedState->selectedNestedActive.erase(sharedQuery); });
 
-      GraphCardinalityAnalysis activation(graph, sharedState);
+      GraphCardinalityAnalysis activation(graph, sharedState,
+                                          causalDependencies);
       bool proven = initializeSelectedNestedActivation(
                         close.getSel(), selector, lane, parentPhase,
                         parentAssumption, truePhaseOnly, activation) &&
@@ -1109,7 +952,7 @@ private:
       if (!isAligned(value, parentPhase, parentAssumption, truePhaseOnly,
                      visited))
         return false;
-      activation.exactOneAssumptions.insert(value);
+      activation.insertExactOneAssumption(value);
       return true;
     };
 
@@ -1139,7 +982,8 @@ private:
         close.getSel() == parentPhase)
       return false;
 
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          result,
                          parentPhase,
                          parentAssumption,
@@ -1148,7 +992,8 @@ private:
                          truePhaseOnly ? AlignmentQueryKind::TruePhaseClose
                                        : AlignmentQueryKind::Close};
     return evaluateAlignment(query, [&] {
-      GraphCardinalityAnalysis activation(graph, sharedState);
+      GraphCardinalityAnalysis activation(graph, sharedState,
+                                          causalDependencies);
       return initializeNestedActivation(close.getSel(), parentPhase,
                                         parentAssumption, truePhaseOnly,
                                         activation) &&
@@ -1170,7 +1015,8 @@ private:
     if (!stream || gate->getBeforeCond() != stream.getPhase())
       return false;
 
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          value,
                          parentPhase,
                          parentAssumption,
@@ -1178,7 +1024,8 @@ private:
                          lane,
                          AlignmentQueryKind::GateClose};
     return evaluateAlignment(query, [&] {
-      GraphCardinalityAnalysis activation(graph, sharedState);
+      GraphCardinalityAnalysis activation(graph, sharedState,
+                                          causalDependencies);
       return initializeNestedActivation(stream.getPhase(), parentPhase,
                                         parentAssumption,
                                         /*truePhaseOnly=*/true, activation) &&
@@ -1200,7 +1047,8 @@ private:
         selectorGate.getBeforeCond() != parentPhase)
       return false;
 
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          value,
                          parentPhase,
                          parentAssumption,
@@ -1227,15 +1075,16 @@ private:
       return !truePhaseOnly;
     auto cycleResult = [&] {
       return truePhaseOnly &&
-             llvm::any_of(alignedCarryAssumptions,
-                          [&](mlir::Value carryOutput) {
-                            return causallyDependsOn(value, carryOutput);
-                          });
+             llvm::any_of(
+                 alignedCarryAssumptions, [&](mlir::Value carryOutput) {
+                   return causalDependencies.dependsOn(value, carryOutput);
+                 });
     };
     if (!visited.insert(value).second)
       return cycleResult();
     auto eraseVisited = llvm::scope_exit([&] { visited.erase(value); });
-    AlignmentQuery query{alignmentRevision,
+    AlignmentQuery query{internedExactOneAssumptions(),
+                         internedAlignedCarryAssumptions(),
                          value,
                          phase,
                          assumption,
@@ -1243,12 +1092,13 @@ private:
                          0,
                          truePhaseOnly ? AlignmentQueryKind::TruePhaseAligned
                                        : AlignmentQueryKind::Aligned};
-    auto known = alignment.find(query);
-    if (known != alignment.end())
+    auto known = sharedState->alignment.find(query);
+    if (known != sharedState->alignment.end())
       return known->second;
-    if (!alignmentActive.insert(query).second)
+    if (!sharedState->alignmentActive.insert(query).second)
       return cycleResult();
-    auto eraseActive = llvm::scope_exit([&] { alignmentActive.erase(query); });
+    auto eraseActive =
+        llvm::scope_exit([&] { sharedState->alignmentActive.erase(query); });
     bool result = [&]() -> bool {
       auto result = llvm::dyn_cast<mlir::OpResult>(value);
       mlir::Operation *def = result ? result.getOwner() : nullptr;
@@ -1365,7 +1215,7 @@ private:
       }
       return hasRequiredOperand;
     }();
-    alignment.try_emplace(query, result);
+    sharedState->alignment.try_emplace(query, result);
     return result;
   }
 
@@ -1653,7 +1503,8 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     return graphError(
         "nontrivial graph uses raw start as a retirement completion witness");
 
-  GraphCardinalityAnalysis cardinality(graph);
+  dataflow::detail::GraphCausalDependencyCache causalDependencies;
+  GraphCardinalityAnalysis cardinality(graph, causalDependencies);
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
     if (!cardinality.isExactOne(value))
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
@@ -1671,18 +1522,19 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
                         " is not statically one-shot");
 
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
-    if (!isCovered(value, ret.getComplete()))
+    if (!isCovered(causalDependencies, value, ret.getComplete()))
       return graphError(llvm::Twine("retirement frontier does not causally ") +
                         "cover value output #" + llvm::Twine(index));
 
   for (auto [index, stream] : llvm::enumerate(ret.getStreams())) {
     llvm::SmallVector<mlir::Value, 2> closeSignals;
     cardinality.collectStreamCloseSignals(stream, closeSignals);
-    bool covered = closeSignals.empty()
-                       ? isCovered(stream, ret.getComplete())
-                       : llvm::all_of(closeSignals, [&](mlir::Value signal) {
-                           return coversFalseClose(signal, ret.getComplete());
-                         });
+    bool covered =
+        closeSignals.empty()
+            ? isCovered(causalDependencies, stream, ret.getComplete())
+            : llvm::all_of(closeSignals, [&](mlir::Value signal) {
+                return coversFalseClose(signal, ret.getComplete());
+              });
     if (!covered)
       return graphError(llvm::Twine("retirement frontier does not causally ") +
                         "cover stream output #" + llvm::Twine(index));
@@ -1694,14 +1546,14 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
             memory.getType()))
       return graphError("fresh memory export must use a memref result");
     if (isProtocolEstablishedMemory(graph, memory)) {
-      if (!isCovered(graph.getStart(), ret.getComplete()))
+      if (!isCovered(causalDependencies, graph.getStart(), ret.getComplete()))
         return graphError(
             llvm::Twine(
                 "retirement frontier does not cover establishment of ") +
             "memory output #" + llvm::Twine(index));
       continue;
     }
-    if (!isCovered(memory, ret.getComplete()))
+    if (!isCovered(causalDependencies, memory, ret.getComplete()))
       return graphError(
           llvm::Twine("retirement frontier does not causally cover memory ") +
           "output #" + llvm::Twine(index));
@@ -1735,7 +1587,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     if (effectError)
       return mlir::WalkResult::interrupt();
     if (mlir::Value done = semantics::getMemoryActorDone(op)) {
-      if (!isCovered(done, ret.getComplete()))
+      if (!isCovered(causalDependencies, done, ret.getComplete()))
         effectError = graphError(
             llvm::Twine("retirement frontier does not causally cover ") +
             op->getName().getStringRef() + " done");
@@ -1743,10 +1595,11 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
                          : mlir::WalkResult::advance();
     }
     if (auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(op)) {
-      bool covered = !call.getResults().empty() &&
-                     llvm::any_of(call.getResults(), [&](mlir::Value result) {
-                       return isCovered(result, ret.getComplete());
-                     });
+      bool covered =
+          !call.getResults().empty() &&
+          llvm::any_of(call.getResults(), [&](mlir::Value result) {
+            return isCovered(causalDependencies, result, ret.getComplete());
+          });
       if (covered)
         return mlir::WalkResult::advance();
     }
