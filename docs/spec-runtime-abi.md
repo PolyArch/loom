@@ -505,8 +505,11 @@ system, or binary contract.
 HostCore and InstructionCore execution, system memory hierarchy, coherence,
 and Interconnect Implementation microstate belong to gem5 during system
 simulation. The Loom Bridge is invoked only at the Spatial Launch boundary and
-calls the shared SpatialCore DFG, CGRA, or RTL simulation library selected by
-the request.
+calls the shared SpatialCore DFG, CGRA, or RTL execution library selected by
+the exact Evaluation model descriptor. The Bridge does not own another engine
+enum, fallback order, or simulator policy. Standalone simulation and the
+Bridge use the same engine implementation; only the environment adapter and
+time authority differ.
 
 The gem5 event queue is the only whole-system time authority. A SpatialCore
 execution advances to its next system-boundary observable, such as a memory
@@ -527,6 +530,12 @@ maintain a shadow global consistency state.
 Standalone DFG-sim and CGRA-sim tools use the same SpatialCore simulation
 library. Runtime must not route a HostCore Thread Dispatch directly to those
 tools as an alternate launch mode.
+
+The first executable system provider is RISC-V machine-mode bare metal. Its
+exact Deployment, Compiler Target Bindings, binaries, RuntimePlatformBinding,
+and Gem5SimulationBinding remain ordinary typed owners. This provider choice
+does not add an OS-image field to a Simulation Artifact and does not prevent a
+later Linux/full-system provider from registering a distinct exact binding.
 
 ## Diagnostics And Evidence
 

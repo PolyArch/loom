@@ -85,6 +85,20 @@ accelerator side = heterogeneous AccCore cluster + accelerator NoC
 host/accelerator interface = typed service endpoints + system transport
 ```
 
+For a System containing `N` AccCores, execution therefore contains `N + 1`
+stored-program engines: one HostCore and one InstructionCore in each AccCore.
+The HostCore is not an additional AccCore and owns no SpatialCore attachment.
+It executes the residual program, runtime, and fallback work and dispatches
+the exact thread and Spatial launches selected for the AccCore cluster.
+
+Schema 1.0 requires the HostCore and every AccCore InstructionCore in one
+System execution closure to belong to one compatible RISC-V ISA and ABI
+cohort. They may have different Microarchitectural Realizations, capacities,
+runtime-service sets, cache attachments, and performance. Compatibility is
+proved from their Fabric-owned Architectural Contracts and the selected
+Compiler Target Bindings; neither a common processor name nor a gem5 model
+name is an architecture authority.
+
 This partition expresses coupling and ownership, not physical packaging. It
 does not add an accelerator-subsystem artifact or another topology owner. The
 logical endpoints, services, connectivity, and guarantees remain in
@@ -281,6 +295,34 @@ algorithm and native state are owned by [Place And Route](spec-pnr.md).
 Focused Mapping specs are derived views of those owners, not parallel schemas.
 
 ## Simulation And Backend Evidence
+
+Simulation composition has two orthogonal implementation choices but no
+persistent two-dimensional mode field:
+
+```text
+SpatialEngine  = DFG | CGRA | RTL
+Environment    = SpatialOnly | Gem5System
+```
+
+Each concrete combination is one registered Evaluation model descriptor with
+one exact case signature and subject closure. The descriptor selects the
+Spatial engine; the workload root and case signature select whether execution
+is Spatial-only or System. `SimulationExecution` repeats neither choice.
+
+The subject closures are:
+
+```text
+SpatialOnly + DFG  : Canonical Dataflow Program
+SpatialOnly + CGRA : Dataflow + Fabric + complete SpatialMapping
+SpatialOnly + RTL  : HardwareImplementation + Deployment
+Gem5System + any engine : Deployment + Gem5SimulationBinding
+```
+
+The System variants always execute a complete Deployment and SystemMapping
+closure. System + DFG idealizes only the selected SpatialCore execution; it
+does not omit or idealize HostCore, InstructionCore, NoC, cache, external
+memory, dispatch, or runtime execution. Adding another environment or Spatial
+engine requires a registered model descriptor, not another execution schema.
 
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,

@@ -102,6 +102,54 @@ resource use, and deterministic Mapping serialization. CGRA-sim consumes one
 complete SpatialMapping without repairing it; sys-sim consumes Deployment and
 Gem5SimulationBinding without remapping it.
 
+The system anchor exercises all three Spatial engines through the same Bridge
+contract. System + DFG is the first integration gate, followed by System +
+CGRA and System + RTL. The first System + DFG anchor uses a built-in System
+with at least two AccCores, executes nonempty graphs on more than one selected
+AccCore, traverses explicit system transport and external memory, and compares
+the requested terminal observables with the corresponding Spatial-only and
+native references. A host-only execution or an empty Spatial launch cannot
+satisfy this anchor.
+
+## Simulation Execution Budgets
+
+Wall-clock limits are nonsemantic execution controls. Exceeding one produces
+`StoppedByLimit` and `CancelledOrTimeout`; it cannot change candidate order,
+select a best-so-far prefix, prove infeasibility, or authorize fallback.
+
+For conformance, a System execution is paired with a warmed Spatial-only
+execution of the same workload, runtime input, Spatial engine fidelity, trace
+capture level, and semantic limits. Active wall time includes simulator reset
+and input loading, entry or launch acceptance through terminal observation,
+and required observation projection. It excludes compilation, DSE, Mapping,
+artifact construction, gem5 build, RTL compilation, cold process startup, and
+RTL elaboration. Excluded setup is measured separately and reused across
+compatible cases.
+
+The initial reference and budget are:
+
+```text
+spatial_reference = max(median warmed Spatial-only active wall time, 100 ms)
+system_budget = min(3 * spatial_reference,
+                    3 * Spatial-only absolute budget)
+```
+
+The DFG Spatial-only absolute budget is 15 seconds, so its paired System + DFG
+absolute ceiling is 45 seconds. A one-second Spatial-only case still receives
+a three-second System budget, not the ceiling. Tiny cases use a persistent
+warmed simulator and enough deterministic repetitions to make the 100 ms
+floor meaningful. A ratio at or above ten is always a conformance failure.
+The factor three is an initial suite-wide policy and may change only from
+aggregate profiling evidence, never as a per-case exception.
+
+Every paired result reports active wall time, the System-to-Spatial ratio,
+reference cycles per wall second, engine/Bridge/host/observation CPU time,
+event and activation counts, and peak resident memory. System simulation
+targets at least 100 k reference cycles per wall second. Raw gem5 ticks are
+not reference cycles. Corpus orchestration uses at most
+`min(nproc - 4, memory-derived worker limit, 128)` outer workers and does not
+hide nested oversubscription inside one case.
+
 ## Hardware-Implementation And Evidence Anchor
 
 One mapped `vecadd` deployment closes the evidence chain:

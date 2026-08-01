@@ -64,6 +64,48 @@ comparison cannot be contaminated by earlier mutable state.
 SST remains a possible future adapter for large-scale exploration, not a first-
 version second system authority.
 
+## Why Engines And Environments Compose
+
+DFG, CGRA, and RTL are three fidelities of one SpatialCore execution boundary.
+Spatial-only and gem5-backed System execution are two environments around that
+boundary. Treating their Cartesian product as six unrelated simulators would
+duplicate actor semantics, terminal observations, Bridge behavior, and error
+classification. Treating the environment as a field inside
+`SimulationExecution` would duplicate the exact Request and workload root.
+
+The implementation therefore reuses one Spatial engine behind standalone and
+Bridge adapters. The Evaluation model descriptor owns the selected engine;
+the exact case signature and workload root own the environment. This permits
+System + DFG to bring up target binaries, dispatch, NoC, caches, and external
+memory before detailed Spatial resources exist, without pretending that DFG
+timing is CGRA or RTL timing.
+
+The HostCore can be understood as the cluster's additional stored-program
+engine, but not as an AccCore: it has no SpatialCore and no `dataflow.thread`
+identity. Requiring one compatible RISC-V ISA/ABI cohort for the HostCore and
+AccCore InstructionCores keeps the first system executable closure small and
+matches gem5's processor composition model. Their microarchitectures and
+runtime services remain independently Fabric-owned, so this does not flatten
+the distinct physical cores or their persistent references.
+
+## Why System Overhead Has A Paired Budget
+
+A fixed generous System timeout hides integration overhead on small kernels,
+while comparing raw gem5 ticks with DFG or CGRA cycles compares different time
+domains. The conformance gate therefore pairs equal workloads and engine
+fidelities and measures warmed active wall time. Setup that can be shared,
+such as compilation, gem5 construction, and RTL elaboration, is reported but
+does not consume the execution ratio.
+
+The initial factor of three is a performance policy rather than an Artifact
+field or model parameter. It is strict enough to expose repeated startup,
+serialization, polling, or event-loop handoff, while leaving room for actual
+HostCore, NoC, cache, and memory work. Tiny measurements use a floor and
+repetition so timer noise cannot dominate. A tenfold slowdown is rejected
+regardless of the current policy factor because it indicates a different
+execution strategy or an avoidable integration bottleneck rather than the
+intended weakly coupled composition.
+
 ## Why DFG And CGRA Share Functional Semantics
 
 An actor's firing and state transition must mean the same thing at every
