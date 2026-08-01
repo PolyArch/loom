@@ -517,6 +517,16 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                 for call in workload.protocol:
                     self.assertEqual(protocol.count(f"{call.symbol}("), 1)
                     self.assertNotIn(f"{call.symbol}(", oracle)
+                self.assertEqual(
+                    harness.inline_definitions(workload.executable),
+                    (
+                        corpus_inventory.resolve_externals_root(ROOT)
+                        / "cmsis-dsp"
+                        / "Include"
+                        / "dsp"
+                        / "controller_functions.h",
+                    ),
+                )
                 self.assertIn("output_matches_expected(output)", oracle)
 
     def test_lms_protocols_have_one_typed_owner(self) -> None:

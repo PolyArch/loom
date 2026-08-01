@@ -417,7 +417,7 @@ OperatorWorkloadInventory
 
 SourceCoverageEdge
   exact link selection
-  + object or archive-member owner
+  + object, archive-member, or inline-definition owner
   + executable call or data-use provenance
 ```
 
@@ -428,6 +428,15 @@ implementation fragments that require an including translation unit's macro
 environment are not themselves compiler invocations. Every source row must
 pass ordinary drop-in compilation and, when enabled for separate compilation,
 produce a valid frontend-owned relocatable accelerator payload.
+
+A header-defined inline operator remains distinct from a source translation
+unit. Its workload producer resolves one exact pinned definition file for the
+typed public protocol. A selected Spatial graph covers that operator only when
+the compiler-derived operation provenance names that same definition file.
+The generated caller, an included umbrella header, a declaration-only file,
+or a provider-supplied path alias cannot substitute for missing definition
+provenance. This rule extends operator ownership without adding headers to the
+translation-unit inventory.
 
 An operator identity is one independently meaningful typed call protocol, not
 one source file, test function, or input-size combination. A stateful protocol

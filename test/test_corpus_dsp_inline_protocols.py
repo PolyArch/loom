@@ -14,6 +14,7 @@ TEST_ROOT = ROOT / "test"
 sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_inventory  # noqa: E402
+import corpus_dsp_inline  # noqa: E402
 import corpus_workload_provider  # noqa: E402
 
 
@@ -76,6 +77,17 @@ class CmsisDspInlineProtocolTests(unittest.TestCase):
                         self.assertIn("LOOM_NOINLINE", protocol)
                         self.assertEqual(len(workload.protocol), 1)
                         self.assertIn(f"{workload.protocol[0].symbol}(", protocol)
+                        owner = corpus_dsp_inline.header_defined_protocol(workload)
+                        self.assertIsNotNone(owner)
+                        self.assertEqual(
+                            harness.inline_definitions(workload.executable),
+                            (
+                                external_root
+                                / "cmsis-dsp"
+                                / "Include"
+                                / owner.owner_header,
+                            ),
+                        )
                         self.assertNotIn("testmain", source)
                         self.assertNotIn("Testing::", source)
 

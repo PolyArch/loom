@@ -44,6 +44,7 @@ class CmsisDspHarness:
     protocol_symbol_sets: tuple[tuple[str, ...], ...]
     protocol_sources: tuple[Path, ...]
     expected_entry_results: tuple[int | None, ...] = ()
+    inline_definition_sets: tuple[tuple[Path, ...], ...] = ()
 
     def generated_directory(self, target: str) -> Path:
         return self.source_dir / "generated" / "targets" / self._target(target)
@@ -69,6 +70,12 @@ class CmsisDspHarness:
             return None
         return self.expected_entry_results[ordinal]
 
+    def inline_definitions(self, target: str) -> tuple[Path, ...]:
+        ordinal = self.targets.index(self._target(target))
+        if not self.inline_definition_sets:
+            return ()
+        return self.inline_definition_sets[ordinal]
+
     def _target(self, target: str) -> str:
         if target not in self.targets:
             raise WorkloadProviderError(f"unknown CMSIS-DSP harness target: {target}")
@@ -81,6 +88,7 @@ class ProducedWorkload:
     target_executable: Path
     protocol_symbols: tuple[str, ...]
     expected_entry_result: int | None = None
+    inline_definition_sources: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,20 @@ def supports_cmsis_nn_harness(
     workload: corpus_inventory.ProgramWorkload,
 ) -> bool:
     return corpus_nn_workload_provider.supports_cmsis_nn_harness(workload)
+
+
+def _inline_definition_sources(
+    workload: corpus_inventory.ProgramWorkload, protocol_owner: Path
+) -> tuple[Path, ...]:
+    source = protocol_owner.read_text(encoding="utf-8")
+    for call in workload.protocol:
+        definition = re.compile(
+            rf"\b{re.escape(call.symbol)}\s*\([^;{{}}]*\)\s*{{",
+            re.DOTALL,
+        )
+        if definition.search(source):
+            return (protocol_owner,)
+    return ()
 
 
 def _load_cmsis_dsp_codegen(testing_root: Path) -> tuple[object, object, object]:
@@ -527,6 +549,7 @@ def materialize_cmsis_dsp_harness(
     protocol_symbol_sets: list[tuple[str, ...]] = []
     protocol_sources: list[Path] = []
     expected_entry_results: list[int | None] = []
+    inline_definition_sets: list[tuple[Path, ...]] = []
     cmake_targets: list[corpus_dsp_cmake.CmakeTarget] = []
     operator_compile_options: dict[Path, tuple[str, ...]] = {}
     try:
@@ -575,6 +598,9 @@ def materialize_cmsis_dsp_harness(
         protocol_symbol_sets.append((_CORPUS_OPERATOR_PROTOCOL_SYMBOL,))
         expected_entry_results.append(expected_entry_result)
         protocol_sources.append(direct_source)
+        inline_definition_sets.append(
+            _inline_definition_sources(workload, protocol_owner)
+        )
         producer = workload.producer
         cmake_targets.append(
             corpus_dsp_cmake.CmakeTarget(
@@ -1521,6 +1547,7 @@ def materialize_cmsis_dsp_harness(
             protocol_symbol_sets.append(())
             expected_entry_results.append(None)
             protocol_sources.append(protocol_source)
+            inline_definition_sets.append(())
             cmake_targets.append(
                 corpus_dsp_cmake.CmakeTarget(
                     target=target,
@@ -1563,6 +1590,7 @@ int main() { return testmain(patternData); }
         tuple(protocol_symbol_sets),
         tuple(protocol_sources),
         tuple(expected_entry_results),
+        tuple(inline_definition_sets),
     )
 
 

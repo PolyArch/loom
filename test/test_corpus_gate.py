@@ -628,6 +628,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(harness.expected_entry_result(workload.executable), 0)
         compiled_owner = harness.protocol_source(workload.executable)
         self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
+        self.assertEqual(harness.inline_definitions(workload.executable), ())
         source = compiled_owner.read_text()
         protocol = source.split("int main()", maxsplit=1)[0]
         self.assertIn("arm_abs_f32(input, output, count)", protocol)
@@ -988,8 +989,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             ),
             ((), ()),
             tuple(
-                self.work / f"protocol-{index}.cpp"
-                for index in range(len(workloads))
+                self.work / f"protocol-{index}.cpp" for index in range(len(workloads))
             ),
         )
         target_build = self.out_dir / "_providers" / "cmsis-dsp" / "target"
@@ -1272,6 +1272,65 @@ class InventoryAggregationTest(CorpusGateTestBase):
 
         self.assertIsNone(selected)
         self.assertIn("does not cover an exact corpus source row", defect)
+
+    def test_selected_source_projection_accepts_exact_inline_definition(self) -> None:
+        wrapper_object = self.work / "wrapper.o"
+        wrapper_source = self.work / "generated" / "operator_protocol.c"
+        inline_definition = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Include"
+            / "arm_nnsupportfunctions.h"
+        )
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=self.work / "program.resolution.txt",
+            link_root=self.work,
+            object_sources=((wrapper_object, wrapper_source),),
+            inline_definition_sources=(inline_definition,),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            (str(wrapper_source), str(inline_definition)),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset(),
+        )
+
+        self.assertIsNone(defect)
+        self.assertEqual(
+            selected,
+            ("externals/cmsis-nn/Include/arm_nnsupportfunctions.h",),
+        )
+
+    def test_inline_definition_cannot_alias_missing_provenance(self) -> None:
+        wrapper_object = self.work / "wrapper.o"
+        wrapper_source = self.work / "generated" / "operator_protocol.c"
+        inline_definition = (
+            corpus_inventory.resolve_externals_root(ROOT)
+            / "cmsis-nn"
+            / "Include"
+            / "arm_nnsupportfunctions.h"
+        )
+        linked = corpus_gate.LinkedWorkloadModules(
+            target=self.work / "program.ll",
+            resolution=self.work / "program.resolution.txt",
+            link_root=self.work,
+            object_sources=((wrapper_object, wrapper_source),),
+            inline_definition_sources=(inline_definition,),
+        )
+
+        selected, defect = corpus_gate.resolve_selected_corpus_sources(
+            linked,
+            (str(wrapper_source),),
+            corpus_inventory.resolve_externals_root(ROOT),
+            ROOT,
+            frozenset(),
+        )
+
+        self.assertIsNone(selected)
+        self.assertIn("does not cover an exact corpus source", defect)
 
     def test_selected_source_projection_has_no_owner_alias(self) -> None:
         parameters = inspect.signature(

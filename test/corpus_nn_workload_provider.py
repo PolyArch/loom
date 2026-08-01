@@ -22,6 +22,7 @@ class CmsisNnHarness:
     protocol_symbol_sets: tuple[tuple[str, ...], ...]
     protocol_sources: tuple[Path, ...]
     expected_entry_results: tuple[int, ...]
+    inline_definition_sets: tuple[tuple[Path, ...], ...] = ()
 
     def executable(self, build_dir: Path, target: str) -> Path:
         if target not in self.targets:
@@ -36,6 +37,12 @@ class CmsisNnHarness:
 
     def expected_entry_result(self, target: str) -> int:
         return self.expected_entry_results[self.targets.index(self._target(target))]
+
+    def inline_definitions(self, target: str) -> tuple[Path, ...]:
+        ordinal = self.targets.index(self._target(target))
+        if not self.inline_definition_sets:
+            return ()
+        return self.inline_definition_sets[ordinal]
 
     def _target(self, target: str) -> str:
         if target not in self.targets:
@@ -276,6 +283,7 @@ def materialize_cmsis_nn_harness(
     protocol_symbol_sets: list[tuple[str, ...]] = []
     protocol_sources: list[Path] = []
     expected_entry_results: list[int] = []
+    inline_definition_sets: list[tuple[Path, ...]] = []
     cmake_targets: list[_CmakeTarget] = []
     for workload in workloads:
         if workload.suite != "cmsis-nn" or not isinstance(
@@ -319,6 +327,7 @@ def materialize_cmsis_nn_harness(
             protocol_symbol_sets.append((projection.protocol_symbol,))
             protocol_sources.append(projection.compiled_owner or direct_source)
             expected_entry_results.append(0)
+            inline_definition_sets.append(projection.inline_definition_sources)
             cmake_targets.append(
                 _CmakeTarget(
                     target,
@@ -377,6 +386,7 @@ def materialize_cmsis_nn_harness(
         protocol_symbol_sets.append((workload.producer.test_function,))
         protocol_sources.append(wrapper)
         expected_entry_results.append(0)
+        inline_definition_sets.append(())
         cmake_targets.append(
             _CmakeTarget(
                 target,
@@ -395,6 +405,7 @@ def materialize_cmsis_nn_harness(
         tuple(protocol_symbol_sets),
         tuple(protocol_sources),
         tuple(expected_entry_results),
+        tuple(inline_definition_sets),
     )
 
 

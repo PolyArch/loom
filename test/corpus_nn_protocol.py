@@ -24,6 +24,7 @@ class GeneratedCmsisNnProtocol:
     source: str
     protocol_symbol: str
     compiled_owner: Path | None
+    inline_definition_sources: tuple[Path, ...] = ()
 
 
 def _render_in_place_activation(
@@ -1641,6 +1642,35 @@ def _compiled_definition_owner(
     return owners[0]
 
 
+def _header_definition_owner(
+    symbol: str,
+    workload: corpus_inventory.ProgramWorkload,
+    external_root: Path,
+) -> Path:
+    producer = workload.producer
+    if not isinstance(producer, corpus_inventory.CmsisNnGeneratedWorkloadProducer):
+        raise WorkloadProviderError(
+            f"workload is not a generated CMSIS-NN protocol: {workload.identity}"
+        )
+    definition = re.compile(
+        rf"\b{re.escape(symbol)}\s*\([^;{{}}]*\)\s*{{",
+        re.DOTALL,
+    )
+    owners = [
+        owner
+        for owner in (
+            _owned_path(raw_owner, external_root) for raw_owner in producer.definitions
+        )
+        if definition.search(owner.read_text(encoding="utf-8"))
+    ]
+    if len(owners) != 1:
+        raise WorkloadProviderError(
+            "generated CMSIS-NN inline protocol must resolve one definition "
+            f"owner: {workload.identity}"
+        )
+    return owners[0]
+
+
 def render_generated_cmsis_nn_protocol(
     workload: corpus_inventory.ProgramWorkload,
     external_root: Path,
@@ -1698,6 +1728,11 @@ def render_generated_cmsis_nn_protocol(
         source=renderer(wrapper_symbol),
         protocol_symbol=wrapper_symbol if header_only else public_symbol,
         compiled_owner=compiled_owner,
+        inline_definition_sources=(
+            (_header_definition_owner(public_symbol, workload, external_root),)
+            if header_only
+            else ()
+        ),
     )
 
 

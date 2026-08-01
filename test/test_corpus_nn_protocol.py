@@ -776,6 +776,15 @@ class GeneratedCmsisNnProtocolTest(unittest.TestCase):
                         ("loom_corpus_operator_protocol",),
                     )
                     self.assertEqual(
+                        harness.inline_definitions(workload.executable),
+                        (
+                            external_root
+                            / "cmsis-nn"
+                            / "Include"
+                            / "arm_nnsupportfunctions.h",
+                        ),
+                    )
+                    self.assertEqual(
                         harness.protocol_source(workload.executable),
                         source_path,
                     )

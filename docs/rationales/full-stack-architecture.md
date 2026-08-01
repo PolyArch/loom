@@ -171,6 +171,17 @@ public call needs no synthetic ownership authority. This is why the normative
 allows an exact public symbol for one-call protocols, requires an atomic wrapper
 for multi-call protocols, and rejects test-method fallback.
 
+Header-defined operators require one additional distinction without a new
+authority. A header is not an independently compiled source row, but the
+compiler already preserves its inline definition location through LLVM debug
+provenance. The workload provider therefore identifies the one pinned file
+that contains the typed public protocol body, and the gate intersects that
+file with the selected graph's compiler-derived provenance. Treating the
+generated caller as an alias for the header would allow unrelated wrapper work
+to pass; accepting every included header would have the same defect. Requiring
+the exact intersection preserves both source-inventory meaning and operator
+ownership with no symbol blacklist or parallel provenance system.
+
 The primary semantic-alignment gate needs breadth across operator protocols,
 not a Cartesian product of every profile, build alias, and input vector. It
 therefore chooses one real producer, one exact profile, and one

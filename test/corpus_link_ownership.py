@@ -15,6 +15,7 @@ class LinkedWorkloadModules:
     resolution: Path
     link_root: Path
     object_sources: tuple[tuple[Path, Path], ...]
+    inline_definition_sources: tuple[Path, ...] = ()
 
 
 def load_compilation_owners(
@@ -114,7 +115,22 @@ def resolve_selected_corpus_sources(
     repo_root: Path,
     allowed_sources: frozenset[str],
 ) -> tuple[tuple[str, ...] | None, str | None]:
-    known_sources = frozenset(source.resolve() for _, source in linked.object_sources)
+    object_sources = frozenset(source.resolve() for _, source in linked.object_sources)
+    inline_definitions = frozenset(
+        source.resolve() for source in linked.inline_definition_sources
+    )
+    known_sources = object_sources | inline_definitions
+
+    canonical_inline_definitions: dict[Path, str] = {}
+    for definition in inline_definitions:
+        if not definition.is_file():
+            return None, f"inline definition source is unavailable: {definition}"
+        canonical = _canonical_corpus_source(definition, external_root, repo_root)
+        if canonical is None:
+            return None, (
+                f"inline definition source has no repository identity: {definition}"
+            )
+        canonical_inline_definitions[definition] = canonical
 
     selected_sources: set[str] = set()
     for source_file in selected_source_files:
@@ -123,12 +139,16 @@ def resolve_selected_corpus_sources(
         )
         if source is None:
             continue
+        inline_definition = canonical_inline_definitions.get(source)
+        if inline_definition is not None:
+            selected_sources.add(inline_definition)
+            continue
         canonical = _canonical_corpus_source(source, external_root, repo_root)
         if canonical is not None and canonical in allowed_sources:
             selected_sources.add(canonical)
     if not selected_sources:
         return None, (
             "selected graph source provenance does not cover an exact corpus source "
-            "row"
+            "row or inline definition"
         )
     return tuple(sorted(selected_sources)), None

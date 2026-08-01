@@ -357,6 +357,15 @@ test framework as a fallback. This boundary is consumed by
 [StructuredProgramCandidate](spec-compiler-part-2-scf.md#structuredprogramcandidate)
 without creating a CMSIS-specific candidate mechanism.
 
+For a public protocol defined inline in a pinned CMSIS header, the provider
+mechanically resolves the unique file containing the function body. That file
+is an exact operator-definition owner, not a source translation unit and not a
+replacement for one. The DFG semantic gate accepts it only when operation
+provenance imported from the final linked LLVM module names the same file.
+Provenance naming only the generated protocol caller fails; no caller-to-header
+alias, declaration-only acceptance, or include-directory allowlist is
+permitted.
+
 Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
 `ranlib`, or linker from another LLVM revision is not admissible.
 
@@ -404,6 +413,9 @@ Core CMSIS regression coverage requires:
   and contains definitions associated with its real entry or public API;
 * validation rejects a dataflow artifact whose definitions are unrelated to
   the selected workload entry;
+* a header-defined protocol is accepted only when the selected graph carries
+  the exact pinned inline-definition provenance, while caller-only provenance
+  is rejected;
 * every source row has at least one mechanically verified SourceCoverageEdge
   under an applicable profile and every operator workload has a complete
   producer closure;

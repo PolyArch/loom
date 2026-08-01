@@ -904,6 +904,7 @@ def import_produced_workload(
         resolution=resolution,
         link_root=produced.target_build_dir,
         object_sources=object_sources,
+        inline_definition_sources=produced.inline_definition_sources,
     )
 
 
@@ -1096,6 +1097,9 @@ def prepare_workload_providers(
                         target_executable=target_executable,
                         protocol_symbols=protocol_symbols,
                         expected_entry_result=harness.expected_entry_result(
+                            case.executable
+                        ),
+                        inline_definition_sources=harness.inline_definitions(
                             case.executable
                         ),
                     )
