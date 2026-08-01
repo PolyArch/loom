@@ -72,6 +72,20 @@ MATRIX_MULTIPLICATION_CASES = {
     "arm-mat-mult-fast-q15",
     "arm-mat-mult-q7",
 }
+FLOATING_MATRIX_CASES = {
+    "arm-mat-cmplx-mult-f16",
+    "arm-mat-inverse-f16",
+    "arm-mat-inverse-f32",
+    "arm-mat-inverse-f64",
+    "arm-mat-ldlt-f32",
+    "arm-mat-ldlt-f64",
+    "arm-mat-mult-f16",
+    "arm-mat-mult-f32",
+    "arm-mat-mult-f64",
+    "arm-mat-qr-f16",
+    "arm-mat-qr-f32",
+    "arm-mat-qr-f64",
+}
 PID_CASES = {
     "arm-pid-f32",
     "arm-pid-q15",
@@ -402,6 +416,42 @@ class CmsisDspGeneratedProtocolTests(unittest.TestCase):
                 self.assertNotIn(f"{symbol}(", oracle)
                 self.assertIn("kExpected", protocol)
                 self.assertIn("output_matches_expected(output)", oracle)
+
+    def test_floating_matrix_protocols_have_one_typed_owner(self) -> None:
+        workloads = tuple(
+            workload
+            for workload in corpus_inventory.load_workload_inventory(ROOT)
+            if workload.suite == "cmsis-dsp"
+            and workload.case in FLOATING_MATRIX_CASES
+        )
+        self.assertEqual(len(workloads), len(FLOATING_MATRIX_CASES))
+
+        for profile in {workload.target_profile for workload in workloads}:
+            selected = tuple(
+                workload
+                for workload in workloads
+                if workload.target_profile == profile
+            )
+            harness = corpus_workload_provider.materialize_cmsis_dsp_harness(
+                selected,
+                corpus_inventory.resolve_externals_root(ROOT),
+                self.work / f"floating-matrix-{profile}",
+            )
+            for workload in selected:
+                with self.subTest(case=workload.case):
+                    source_path, authoritative_owner = harness.protocol_source_owner(
+                        workload.executable
+                    )
+                    self.assertIn(
+                        authoritative_owner.name,
+                        {"matrix_functions.h", "matrix_functions_f16.h"},
+                    )
+                    source = source_path.read_text(encoding="utf-8")
+                    protocol, oracle = source.split("int main()", maxsplit=1)
+                    symbol = workload.protocol[0].symbol
+                    self.assertEqual(protocol.count(f"{symbol}("), 1)
+                    self.assertNotIn(f"{symbol}(", oracle)
+                    self.assertIn("output_matches_expected", oracle)
 
     def test_pid_protocols_have_one_typed_owner(self) -> None:
         workloads = tuple(

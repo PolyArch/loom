@@ -272,6 +272,8 @@ def _cmsis_dsp_direct_protocol_family(
         return "generated-transform-query"
     if corpus_dsp_generated.lifecycle_protocol(workload) is not None:
         return "generated-lifecycle"
+    if corpus_dsp_matrix.floating_matrix_protocol(workload) is not None:
+        return "floating-matrix"
     if corpus_dsp_matrix.matrix_multiplication_protocol(workload) is not None:
         return "stateless-matrix-multiplication"
     if corpus_dsp_pid.pid_protocol(workload) is not None:
@@ -1253,6 +1255,36 @@ def materialize_cmsis_dsp_harness(
                 include_directories=(testing_root / "Include" / "Tests",)
                 if isinstance(protocol, corpus_dsp_transform.MfccProtocol)
                 else (),
+            )
+        elif direct_family == "floating-matrix":
+            protocol = corpus_dsp_matrix.floating_matrix_protocol(workload)
+            if protocol is None:
+                raise WorkloadProviderError(
+                    "CMSIS-DSP floating matrix protocol is inconsistent"
+                )
+            direct_source = generated / "OperatorProtocol.cpp"
+            direct_source.write_text(
+                corpus_dsp_matrix.render_floating_matrix_protocol(
+                    workload,
+                    _CORPUS_OPERATOR_PROTOCOL_SYMBOL,
+                ),
+                encoding="utf-8",
+            )
+            protocol_owner = (
+                external_root
+                / "cmsis-dsp"
+                / "Include"
+                / "dsp"
+                / protocol.owner_header
+            )
+            record_direct_protocol(
+                workload,
+                target,
+                generated,
+                shared_generated,
+                direct_source,
+                protocol_owner,
+                0,
             )
         elif direct_family == "stateless-matrix-multiplication":
             suite = _cmsis_dsp_suite_chain(
