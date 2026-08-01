@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 import corpus_inventory
+import corpus_nn_layout
 import corpus_nn_lstm
 import corpus_nn_matrix
 import corpus_nn_matrix_kernel
@@ -1478,6 +1479,11 @@ _STRUCTURED_QUERY_PROTOCOLS = (
     ("arm_convolve_wrapper_s8_get_buffer_size_dsp", "cmsis_nn_conv_params", 672),
     ("arm_convolve_wrapper_s8_get_buffer_size_mve", "cmsis_nn_conv_params", 704),
     (
+        "arm_depthwise_conv_wrapper_s16_get_buffer_size",
+        "cmsis_nn_dw_conv_params",
+        0,
+    ),
+    (
         "arm_depthwise_conv_wrapper_s16_get_buffer_size_dsp",
         "cmsis_nn_dw_conv_params",
         330,
@@ -1674,6 +1680,7 @@ def _renderer_for(
         return None
     return (
         _RENDERERS.get(calls[0])
+        or corpus_nn_layout.renderer_for(calls[0])
         or corpus_nn_lstm.renderer_for(calls[0])
         or corpus_nn_matrix.renderer_for(calls[0])
         or corpus_nn_matrix_kernel.renderer_for(calls[0])

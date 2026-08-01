@@ -38,6 +38,55 @@ def _workload_any_profile(case: str) -> corpus_inventory.ProgramWorkload:
 
 
 class GeneratedCmsisNnProtocolTest(unittest.TestCase):
+    def test_generated_layout_protocols_own_production_sources(self) -> None:
+        expectations = {
+            "arm-pad-s8": (
+                "arm_pad_s8(",
+                "Source/PadFunctions/arm_pad_s8.c",
+            ),
+            "arm-transpose-s8": (
+                "arm_transpose_s8(",
+                "Source/TransposeFunctions/arm_transpose_s8.c",
+            ),
+            "arm-depthwise-conv-wrapper-s16-get-buffer-size": (
+                "arm_depthwise_conv_wrapper_s16_get_buffer_size(",
+                "Source/ConvolutionFunctions/arm_depthwise_conv_get_buffer_sizes_s16.c",
+            ),
+        }
+        external_root = corpus_inventory.resolve_externals_root(ROOT)
+
+        for case, (invocation, owner) in expectations.items():
+            with self.subTest(case=case):
+                workload = _workload(case)
+                self.assertIsInstance(
+                    workload.producer,
+                    corpus_inventory.CmsisNnGeneratedWorkloadProducer,
+                )
+                with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory:
+                    harness = corpus_workload_provider.materialize_cmsis_nn_harness(
+                        (workload,),
+                        external_root,
+                        Path(directory) / "harness",
+                    )
+                    source_path = (
+                        harness.source_dir
+                        / "generated"
+                        / "targets"
+                        / workload.executable
+                        / "OperatorProtocol.c"
+                    )
+                    source = source_path.read_text()
+
+                self.assertEqual(source.count(invocation), 1)
+                compiled_owner, authoritative_owner = (
+                    harness.protocol_source_owner(workload.executable)
+                )
+                self.assertEqual(compiled_owner, external_root / "cmsis-nn" / owner)
+                self.assertEqual(
+                    authoritative_owner,
+                    external_root / "cmsis-nn" / "Include" / "arm_nnfunctions.h",
+                )
+
     def test_inventory_preserves_generated_public_provider_identity(self) -> None:
         workload = _workload("arm-relu-q7")
 
