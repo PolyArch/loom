@@ -420,6 +420,26 @@ struct IntegerTruncationAlias
   }
 };
 
+// llvm.bitcast -> arith.bitcast when the standard operation accepts the exact
+// source/result shape. LLVM also permits equal-total-width casts that reshape
+// a vector into a scalar or a differently shaped vector; arith.bitcast is
+// elementwise, so those operations deliberately retain their LLVM spelling.
+struct BitcastAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::BitcastOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::BitcastOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/false) ||
+        !::mlir::arith::BitcastOp::areCastCompatible(op->getOperandTypes(),
+                                                     op->getResultTypes()))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<::mlir::arith::BitcastOp>(
+        op, op.getRes().getType(), op.getArg());
+    return ::mlir::success();
+  }
+};
+
 // llvm.fpext -> arith.extf and llvm.fptrunc -> arith.truncf. An unflagged
 // source is the exact inverse of the pinned arith-to-llvm lowering, so it is
 // restated directly and stays unflagged rather than acquiring an empty
@@ -555,7 +575,7 @@ struct LLVMArithToArithPass
         ICmpAlias, FCmpAlias, SelectAlias, ConstantAlias,
 
         // integer width casts
-        IntegerTruncationAlias,
+        IntegerTruncationAlias, BitcastAlias,
         PlainCastAlias<::mlir::LLVM::SExtOp, ::mlir::arith::ExtSIOp,
                        /*Floating=*/false>,
         NonNegativeCastAlias<::mlir::LLVM::ZExtOp, ::mlir::arith::ExtUIOp,

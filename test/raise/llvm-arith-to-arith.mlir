@@ -123,6 +123,21 @@ llvm.func @width_and_domain_casts(%narrow: i16, %wide: i32, %single: f32,
     llvm.return
 }
 
+// A scalar LLVM bitcast and an elementwise fixed-vector bitcast have the exact
+// standard spelling. An equal-total-width cast that changes vector shape does
+// not: arith.bitcast is elementwise, so that LLVM operation remains explicit.
+// CHECK-LABEL: llvm.func @bit_reinterpretation
+llvm.func @bit_reinterpretation(%bits: i16, %lanes: vector<2xi16>,
+                                %packed: vector<2xi8>) {
+    // CHECK: %{{.*}} = arith.bitcast %arg0 : i16 to f16
+    %0 = llvm.bitcast %bits : i16 to f16
+    // CHECK: %{{.*}} = arith.bitcast %arg1 : vector<2xi16> to vector<2xf16>
+    %1 = llvm.bitcast %lanes : vector<2xi16> to vector<2xf16>
+    // CHECK: %{{.*}} = llvm.bitcast %arg2 : vector<2xi8> to i16
+    %2 = llvm.bitcast %packed : vector<2xi8> to i16
+    llvm.return
+}
+
 // Neither narrowing cast acquires a rounding mode: an arith cast that states
 // one is a constrained operation, while the source is an ordinary cast in the
 // default floating-point environment. Every source flag that has an exact and
