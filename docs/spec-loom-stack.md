@@ -450,8 +450,8 @@ through a real consumer that selects its definitions. Alternative aggregate
 and individual-source library builds are distinct producer variants and must
 not be linked together.
 
-The checked-in representative semantic gate selects one real producer, one
-applicable target profile, and one deterministic vector for each typed operator
+The checked-in representative conformance gate selects one real producer, one
+exact target profile, and one deterministic vector for each typed operator
 identity. `test/data/corpus-operator-gate-v1.jsonl` records that selection and
 its pinned-input provenance; `test/corpus_inventory.py` strictly imports it and
 rejects stale revisions, duplicate identities, or malformed rows. For the
@@ -471,10 +471,26 @@ selection and review its semantic delta before the strict importer accepts it.
 
 A target profile is a general typed compiler and provider configuration, not a
 suite exception. The repository conformance profiles cover portable scalar
-code, standard floating-point extensions used by the corpus, and any
-target-specific path for which Loom has an exact semantic provider. Defining a
+code, standard floating-point extensions used by the corpus, and selected
+target-specific paths whose exact compatibility remains visible. Defining a
 feature macro without the corresponding compiler and provider semantics does
-not establish coverage.
+not establish execution coverage.
+
+One conformance invocation selects one exact executable ISA/ABI cohort. A
+workload whose target profile is compatible with that cohort must execute the
+complete semantic gate and can only report pass or failure. A profile that
+requires a different instruction-set family reports typed
+`Unsupported(TargetProfileInstructionSetIncompatible)` before provider setup.
+It is neither retargeted to a scalar implementation nor counted as a semantic
+pass. An unknown profile or a missing provider within a compatible ISA family
+is a conformance failure rather than this incompatibility outcome.
+
+The gate report has three disjoint case outcomes: `pass`, `unsupported`, and
+`fail`. A complete conformance invocation succeeds only when every row is a
+semantic pass or has the exact profile/cohort incompatibility above, and no row
+fails. The report preserves all three counts and reasons so conformance success
+cannot be misread as execution of an incompatible profile. A semantic-only
+claim uses the `pass` count, never the conformance total.
 
 A smoke subset is never an alternate inventory definition. SPEC CPU 2026 is a
 separate external conformance corpus rather than part of repository-owned
@@ -541,12 +557,12 @@ boundary. The pre-Mapping workload gate final-links every selected operator
 workload once, then uses the same `loom-cc` or `loom-c++` contract to produce
 LLVM IR, Structured candidates, and a finalized Canonical Dataflow Program
 while resolving one exact Fabric target and using central Evaluation where
-required. The representative vector then executes through the semantic gate
-with its own limit and oracle; extended invocations may execute further owned
-vectors without redefining operator membership. Mapping is outside this gate.
-The harness verifies both coverage anti-joins separately from stage success. A
-typed unsupported outcome remains a tool or target limitation; it is not
-success and cannot be made suite-specific.
+required. Each profile-compatible representative vector then executes through
+the semantic gate with its own limit and oracle; extended invocations may
+execute further owned vectors without redefining operator membership. Mapping
+is outside this gate. The harness verifies both coverage anti-joins separately
+from stage success. A typed unsupported outcome remains a tool or target
+limitation and is never a semantic pass.
 
 Frontend and non-Mapping Evaluation capabilities advance together after at
 least one exact builtin Fabric is available. Hardware-aware compiler decisions

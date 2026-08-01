@@ -150,6 +150,16 @@ not new operators or a blanket multiplication rule. This granularity preserves
 upstream ownership, keeps work modular, and prevents both giant-wrapper and
 per-vector fragmentation.
 
+Target-profile identity and executable-cohort compatibility are deliberately
+separate. Replacing an ARM MVE, DSP, or NEON row with a portable scalar body
+would test a different program, while failing the whole inventory merely
+because the selected System cohort is RISC-V would conflate profile coverage
+with semantic execution. The distilled boundary is therefore a typed
+profile/cohort incompatibility outcome before provider setup. It remains
+separate from semantic pass and from ordinary missing-provider failure, so a
+future exact Arm cohort can execute the same manifest row without changing its
+identity.
+
 The protocol boundary must also exclude the test harness itself. Starting
 candidate discovery from a Unity or descriptor test method admits pattern
 loaders, assertions, statistics, and error-comparison loops that happen to be
@@ -163,11 +173,13 @@ for multi-call protocols, and rejects test-method fallback.
 
 The primary semantic-alignment gate needs breadth across operator protocols,
 not a Cartesian product of every profile, build alias, and input vector. It
-therefore chooses one real producer, one applicable profile, and one
+therefore chooses one real producer, one exact profile, and one
 deterministic vector per typed operator identity. Additional profiles and
 vectors remain useful extended coverage, but multiplying them into the primary
 gate would spend most of its time repeating compilation and DSE rather than
-exposing new compiler semantics.
+exposing new compiler semantics. Under one executable cohort, only compatible
+rows enter semantic execution; incompatible profile rows remain explicit
+conformance outcomes rather than silently changing source paths.
 
 Loom pins the Unity runtime selected upstream and lets upstream build metadata
 select library sources and archive members. Staging generated files outside the

@@ -8,7 +8,6 @@ per-case deadline process-group cleanup, and no failure-as-pass.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import io
 import json
@@ -244,8 +243,12 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
         nine_sources = mock.Mock(sources=tuple(f"s{i}.c" for i in range(9)))
 
         self.assertEqual(corpus_gate.case_resource_slots(one_source, "dfg-sim", 28), 1)
-        self.assertEqual(corpus_gate.case_resource_slots(five_sources, "dfg-sim", 28), 5)
-        self.assertEqual(corpus_gate.case_resource_slots(nine_sources, "dfg-sim", 28), 9)
+        self.assertEqual(
+            corpus_gate.case_resource_slots(five_sources, "dfg-sim", 28), 5
+        )
+        self.assertEqual(
+            corpus_gate.case_resource_slots(nine_sources, "dfg-sim", 28), 9
+        )
         self.assertEqual(corpus_gate.case_resource_slots(nine_sources, "d0", 28), 1)
         self.assertEqual(corpus_gate.case_resource_slots(nine_sources, "dfg-sim", 2), 2)
 
@@ -662,14 +665,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
     def test_cmsis_dsp_source_options_do_not_depend_on_case_selection(self) -> None:
         inventory = corpus_inventory.load_workload_inventory(ROOT)
         mfcc = next(
-            workload
-            for workload in inventory
-            if workload.case == "arm-mfcc-f32"
+            workload for workload in inventory if workload.case == "arm-mfcc-f32"
         )
         vlog = next(
-            workload
-            for workload in inventory
-            if workload.case == "arm-vlog-f32"
+            workload for workload in inventory if workload.case == "arm-vlog-f32"
         )
         external_root = corpus_inventory.resolve_externals_root(ROOT)
 
@@ -1184,8 +1183,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn('set(DISABLEFLOAT16 OFF CACHE BOOL "" FORCE)', cmake)
         self.assertNotIn('set(DISABLEFLOAT16 ON CACHE BOOL "" FORCE)', cmake)
 
-    def test_unimplemented_target_profile_is_provider_unavailable(self) -> None:
-        exit_code, _, summary = self.run_gate(
+    def test_incompatible_target_profile_is_typed_unsupported(self) -> None:
+        exit_code, human, summary = self.run_gate(
             "--case",
             UNSUPPORTED_MVE_WORKLOAD_ID,
             "--stage",
@@ -1194,12 +1193,17 @@ class InventoryAggregationTest(CorpusGateTestBase):
             "1",
         )
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["passed"], 0)
+        self.assertEqual(summary["unsupported"], 1)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["cases"][0]["status"], "unsupported")
         self.assertEqual(
             summary["cases"][0]["category"],
-            corpus_gate.CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
+            corpus_gate.CATEGORY_TARGET_PROFILE_UNSUPPORTED,
         )
-        self.assertIn("target profile provider", summary["cases"][0]["detail"])
+        self.assertIn("requires arm", summary["cases"][0]["detail"])
+        self.assertIn("1 unsupported", human)
 
     def test_whole_program_stage_selects_workload_inventory(self) -> None:
         exit_code, _, summary = self.run_gate(
@@ -1387,7 +1391,8 @@ class InventoryAggregationTest(CorpusGateTestBase):
                 [case.identity for case in expected],
             )
             self.assertEqual(
-                summary["suite_counts"], {suite: {"pass": len(expected), "fail": 0}}
+                summary["suite_counts"],
+                {suite: {"pass": len(expected), "unsupported": 0, "fail": 0}},
             )
 
     def test_source_package_compiles_every_translation_unit(self) -> None:
@@ -1520,6 +1525,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             self.assertIn("--canonical-output=", line)
             self.assertIn("--output=", line)
             self.assertIn("--candidate-jobs=1", line)
+
 
 if __name__ == "__main__":
     unittest.main()

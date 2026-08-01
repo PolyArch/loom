@@ -88,6 +88,14 @@ matches gem5's processor composition model. Their microarchitectures and
 runtime services remain independently Fabric-owned, so this does not flatten
 the distinct physical cores or their persistent references.
 
+This cohort choice does not reinterpret ARM-specific corpus profiles. MVE,
+DSP, and NEON source paths remain exact target-profile identities and are
+typed incompatible with the RISC-V execution cohort before a workload provider
+is built. Counting them as scalar execution would create a second program
+authority; treating their incompatibility as an unknown provider would hide a
+known architectural reason. Keeping `pass`, profile-incompatible
+`Unsupported`, and failure disjoint preserves both facts.
+
 ## Why System Overhead Has A Paired Budget
 
 A fixed generous System timeout hides integration overhead on small kernels,

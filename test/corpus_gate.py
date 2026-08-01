@@ -20,13 +20,15 @@ test/corpus_inventory.py and run through production compiler tools:
 - stage ``dfg-sim``: runs the production pre-Mapping path and typed DFG
   simulator in one invocation. Each exact Spatial invocation is compared with
   the source program under the workload-owned runtime input. Graph-free,
-  unsupported, empty, or malformed executions fail.
+  empty, or malformed executions fail.
 
 A source row whose feature-guarded body is empty under the exact target can
 still pass the ``llvm`` stage. It cannot stand in for a linked workload or a
 Canonical Dataflow result. There are no source skips, no Unsupported-as-pass,
-and no output placeholders; every requested row either passes its selected
-stage or fails with an honest category.
+and no output placeholders. A workload whose exact profile requires another
+instruction-set family reports a distinct Unsupported outcome before provider
+setup; it is not counted as a semantic pass. Every other requested row either
+passes its selected stage or fails with an honest category.
 
 Compilation uses a real configured RISC-V cross sysroot and GCC toolchain,
 given explicitly (--sysroot / --gcc-toolchain or the LOOM_CORPUS_SYSROOT /
@@ -57,6 +59,13 @@ TEST_ROOT = ROOT / "test"
 sys.path.insert(0, str(TEST_ROOT))
 
 import corpus_inventory  # noqa: E402
+import corpus_target_profile  # noqa: E402
+from corpus_gate_outcome import CaseOutcome, CaseResult  # noqa: E402
+from corpus_gate_report import (  # noqa: E402
+    CorpusGateReportContext,
+    render_human,
+    render_json,
+)
 from corpus_simulation_report import (  # noqa: E402
     DfgSimulationMetrics,
     parse_dfg_simulation_report,
@@ -144,6 +153,7 @@ CATEGORY_LINKED_LLVM_ARTIFACT = "linked-llvm-artifact"
 CATEGORY_DFG_SIM = "dfg-sim"
 CATEGORY_DFG_SIM_ARTIFACT = "dfg-sim-artifact"
 CATEGORY_SOURCE_COVERAGE = "source-coverage"
+CATEGORY_TARGET_PROFILE_UNSUPPORTED = "target-profile-unsupported"
 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE = "workload-provider-unavailable"
 CATEGORY_TIMEOUT = "timeout"
 CATEGORY_INTERNAL = "internal"
@@ -221,43 +231,6 @@ class DfgExecutionLimits:
 class StepFailure:
     category: str
     detail: str
-
-
-@dataclass(frozen=True)
-class CaseResult:
-    case: corpus_inventory.SourceTranslationUnit | corpus_inventory.ProgramWorkload
-    passed: bool
-    category: str | None
-    detail: str | None
-    duration_seconds: float
-    graphs: int | None = None
-    actors: int | None = None
-    dfg_simulation: DfgSimulationMetrics | None = None
-    selected_sources: tuple[str, ...] | None = None
-
-    def as_dict(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "case": self.case.case,
-            "category": self.category,
-            "detail": self.detail,
-            "duration_seconds": round(self.duration_seconds, 3),
-            "identity": self.case.identity,
-            "sources": len(self.case.sources),
-            "status": "pass" if self.passed else "fail",
-            "suite": self.case.suite,
-        }
-        # Present only for a passed d0 case: the structured counts that
-        # distinguish a graph-free whole-program result from a nonempty
-        # Spatial graph.
-        if self.graphs is not None:
-            payload["graphs"] = self.graphs
-        if self.actors is not None:
-            payload["actors"] = self.actors
-        if self.dfg_simulation is not None:
-            payload["dfg_simulation"] = self.dfg_simulation.as_dict()
-        if self.selected_sources is not None:
-            payload["selected_sources"] = list(self.selected_sources)
-        return payload
 
 
 def run_quiet(command: Sequence[str], input_text: str | None = None) -> str:
@@ -391,21 +364,15 @@ def target_flags(toolchain: Toolchain) -> list[str]:
 
 
 def target_profile_compile_flags(suite: str, target_profile: str) -> list[str]:
-    if target_profile == TARGET_PROFILE:
-        return []
-    if target_profile == STANDARD_FLOAT16_TARGET_PROFILE and suite == "cmsis-dsp":
-        return ["-D__ARM_FP16_FORMAT_IEEE=1", "-D__fp16=_Float16"]
-    raise GateConfigError(
-        f"target profile provider unavailable for {suite}: {target_profile}"
+    resolved = corpus_target_profile.resolve_target_profile(
+        suite, target_profile, TARGET_TRIPLE
     )
-
-
-def has_target_profile_provider(suite: str, target_profile: str) -> bool:
-    try:
-        target_profile_compile_flags(suite, target_profile)
-    except GateConfigError:
-        return False
-    return True
+    if (
+        resolved.disposition
+        is not corpus_target_profile.TargetProfileDisposition.RUNNABLE
+    ):
+        raise GateConfigError(resolved.detail)
+    return list(resolved.compile_flags)
 
 
 def suite_compile_flags(
@@ -983,6 +950,18 @@ def prepare_workload_providers(
     timeout: float,
 ) -> dict[str, ProducedWorkload | StepFailure]:
     results: dict[str, ProducedWorkload | StepFailure] = {}
+    profile_resolutions = {
+        case.identity: corpus_target_profile.resolve_target_profile(
+            case.suite, case.target_profile, TARGET_TRIPLE
+        )
+        for case in cases
+    }
+    runnable_profiles = {
+        identity
+        for identity, resolved in profile_resolutions.items()
+        if resolved.disposition
+        is corpus_target_profile.TargetProfileDisposition.RUNNABLE
+    }
     cmsis_nn = [
         case
         for case in cases
@@ -993,7 +972,7 @@ def prepare_workload_providers(
                 corpus_inventory.CmsisNnGeneratedWorkloadProducer,
             ),
         )
-        and has_target_profile_provider(case.suite, case.target_profile)
+        and case.identity in runnable_profiles
         and supports_cmsis_nn_harness(case)
     ]
     cmsis_dsp = [
@@ -1006,16 +985,24 @@ def prepare_workload_providers(
                 corpus_inventory.CmsisDspGeneratedWorkloadProducer,
             ),
         )
-        and has_target_profile_provider(case.suite, case.target_profile)
+        and case.identity in runnable_profiles
         and supports_cmsis_dsp_harness(case)
     ]
     implemented = {case.identity for case in (*cmsis_nn, *cmsis_dsp)}
     for case in cases:
-        if not has_target_profile_provider(case.suite, case.target_profile):
+        resolved = profile_resolutions[case.identity]
+        if (
+            resolved.disposition
+            is corpus_target_profile.TargetProfileDisposition.INCOMPATIBLE_ISA
+        ):
+            continue
+        if (
+            resolved.disposition
+            is corpus_target_profile.TargetProfileDisposition.PROVIDER_UNAVAILABLE
+        ):
             results[case.identity] = StepFailure(
                 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
-                "target profile provider unavailable for "
-                f"{case.suite}: {case.target_profile}",
+                resolved.detail,
             )
         elif case.producer.kind != "direct-source" and case.identity not in implemented:
             results[case.identity] = StepFailure(
@@ -1147,11 +1134,17 @@ def run_case(
     dfg_totals = DfgSimulationMetrics.zero()
     selected_sources: tuple[str, ...] | None = None
 
-    def finish(category: str | None, detail: str | None) -> CaseResult:
-        passed = category is None
+    def finish(
+        category: str | None,
+        detail: str | None,
+        outcome: CaseOutcome | None = None,
+    ) -> CaseResult:
+        if outcome is None:
+            outcome = CaseOutcome.PASS if category is None else CaseOutcome.FAIL
+        passed = outcome is CaseOutcome.PASS
         return CaseResult(
             case=case,
-            passed=passed,
+            outcome=outcome,
             category=category,
             detail=detail,
             duration_seconds=time.monotonic() - started,
@@ -1198,11 +1191,25 @@ def run_case(
             return finish(None, None)
 
         assert isinstance(case, corpus_inventory.ProgramWorkload)
-        if not has_target_profile_provider(case.suite, case.target_profile):
+        resolved_profile = corpus_target_profile.resolve_target_profile(
+            case.suite, case.target_profile, TARGET_TRIPLE
+        )
+        if (
+            resolved_profile.disposition
+            is corpus_target_profile.TargetProfileDisposition.INCOMPATIBLE_ISA
+        ):
+            return finish(
+                CATEGORY_TARGET_PROFILE_UNSUPPORTED,
+                resolved_profile.detail,
+                CaseOutcome.UNSUPPORTED,
+            )
+        if (
+            resolved_profile.disposition
+            is corpus_target_profile.TargetProfileDisposition.PROVIDER_UNAVAILABLE
+        ):
             return finish(
                 CATEGORY_WORKLOAD_PROVIDER_UNAVAILABLE,
-                "target profile provider unavailable for "
-                f"{case.suite}: {case.target_profile}",
+                resolved_profile.detail,
             )
         expected_entry_result: int | None = None
         if case.producer.kind == "direct-source":
@@ -1412,8 +1419,7 @@ def run_cases(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
-            pool.submit(execute, case): index
-            for index, case in enumerate(cases)
+            pool.submit(execute, case): index for index, case in enumerate(cases)
         }
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
@@ -1534,136 +1540,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return args
 
 
-def render_human(
-    results: Sequence[CaseResult],
-    stage: str,
-    toolchain: Toolchain,
-    jobs: int,
-    candidate_jobs: int,
-    config_path: Path | None,
-    dfg_limits: DfgExecutionLimits,
-    dfg_simulation_timeout: float,
-    duration_seconds: float,
-) -> str:
-    lines = [
-        f"[corpus-gate] stage={stage} target={TARGET_TRIPLE} "
-        f"march={TARGET_MARCH} mabi={TARGET_MABI} "
-        f"code-model={TARGET_CODE_MODEL} "
-        f"builtin={BUILTIN_TARGET_PRESET} "
-        f"candidate-jobs={candidate_jobs} "
-        f"dfg-limits={dfg_limits.max_wavefront_steps}/"
-        f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
-        f"dfg-wall-time={dfg_simulation_timeout:g}s "
-        f"config={config_path if config_path is not None else '<default>'} "
-        f"sysroot={toolchain.sysroot} gcc-toolchain={toolchain.gcc_toolchain}"
-    ]
-    for result in results:
-        case = result.case
-        label = "PASS" if result.passed else "FAIL"
-        line = (
-            f"{label}  {case.identity}  "
-            f"({len(case.sources)} source(s), {result.duration_seconds:.2f}s)"
-        )
-        if result.passed and result.graphs is not None:
-            line += f"  graphs={result.graphs} actors={result.actors}"
-        if result.dfg_simulation is not None:
-            line += (
-                f" calls={result.dfg_simulation.dynamic_calls}"
-                f" values={result.dfg_simulation.value_lanes_compared}"
-                f" bytes={result.dfg_simulation.memory_bytes_compared}"
-                f" wavefront-hz="
-                f"{result.dfg_simulation.wavefront_steps_per_second:.0f}"
-            )
-        if not result.passed:
-            line += f"  [{result.category}] {result.detail}"
-        lines.append(line)
-    passed = sum(1 for result in results if result.passed)
-    failed = len(results) - passed
-    lines.append(
-        f"[corpus-gate] {passed} passed, {failed} failed, {len(results)} total "
-        f"in {duration_seconds:.1f}s (stage={stage}, jobs={jobs})"
-    )
-    categories: dict[str, int] = {}
-    for result in results:
-        if not result.passed and result.category is not None:
-            categories[result.category] = categories.get(result.category, 0) + 1
-    if categories:
-        summary = ", ".join(
-            f"{category}={categories[category]}" for category in sorted(categories)
-        )
-        lines.append(f"[corpus-gate] failures by category: {summary}")
-    lines.append(f"[corpus-gate] {'PASS' if failed == 0 else 'FAIL'}")
-    return "\n".join(lines) + "\n"
-
-
-def render_json(
-    results: Sequence[CaseResult],
-    stage: str,
-    toolchain: Toolchain,
-    jobs: int,
-    candidate_jobs: int,
-    config_path: Path | None,
-    dfg_limits: DfgExecutionLimits,
-    dfg_simulation_timeout: float,
-    case_timeout: float,
-    duration_seconds: float,
-) -> str:
-    passed = sum(1 for result in results if result.passed)
-    suite_counts: dict[str, dict[str, int]] = {}
-    categories: dict[str, int] = {}
-    for result in results:
-        suite = suite_counts.setdefault(result.case.suite, {"pass": 0, "fail": 0})
-        suite["pass" if result.passed else "fail"] += 1
-        if not result.passed and result.category is not None:
-            categories[result.category] = categories.get(result.category, 0) + 1
-    payload = {
-        "case_count": len(results),
-        "case_timeout_seconds": case_timeout,
-        "candidate_jobs": candidate_jobs,
-        "config": str(config_path) if config_path is not None else None,
-        "dfg_execution_limits": dfg_limits.as_dict(),
-        "dfg_simulation_timeout_seconds": dfg_simulation_timeout,
-        "cases": [result.as_dict() for result in results],
-        "duration_seconds": round(duration_seconds, 3),
-        "failed": len(results) - passed,
-        "failure_categories": categories,
-        "jobs": jobs,
-        "passed": passed,
-        "stage": stage,
-        "suite_counts": suite_counts,
-        "target": {
-            "builtin_preset": BUILTIN_TARGET_PRESET,
-            "code_model": TARGET_CODE_MODEL,
-            "datalayout": LLVM_DATALAYOUT_LINE,
-            "gcc_toolchain": str(toolchain.gcc_toolchain),
-            "mabi": TARGET_MABI,
-            "march": TARGET_MARCH,
-            "sysroot": str(toolchain.sysroot),
-            "triple": TARGET_TRIPLE,
-        },
-        "tools": {
-            "cc": toolchain.cc,
-            "cxx": toolchain.cxx,
-            "dfg_run": toolchain.dfg_run,
-            "lld": toolchain.lld,
-            "llvm_dis": toolchain.llvm_dis,
-            "payload": toolchain.payload,
-            "pre_mapping": toolchain.pre_mapping,
-            "raise": toolchain.raise_tool,
-            "raise_opt": toolchain.raise_opt,
-        },
-    }
-    dfg_totals = DfgSimulationMetrics.zero()
-    has_dfg_result = False
-    for result in results:
-        if result.dfg_simulation is not None:
-            dfg_totals = dfg_totals.combine(result.dfg_simulation)
-            has_dfg_result = True
-    if has_dfg_result:
-        payload["dfg_simulation"] = dfg_totals.as_dict()
-    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
-
-
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
     if args.jobs < 1:
@@ -1752,35 +1628,55 @@ def main(argv: Sequence[str]) -> int:
         args.dfg_simulation_timeout,
     )
     duration = time.monotonic() - started
-
-    sys.stdout.write(
-        render_human(
-            results,
-            args.stage,
-            toolchain,
-            args.jobs,
-            args.candidate_jobs,
-            config_path,
-            dfg_limits,
-            args.dfg_simulation_timeout,
-            duration,
-        )
+    report_context = CorpusGateReportContext(
+        stage=args.stage,
+        jobs=args.jobs,
+        candidate_jobs=args.candidate_jobs,
+        case_timeout_seconds=args.case_timeout,
+        dfg_simulation_timeout_seconds=args.dfg_simulation_timeout,
+        dfg_execution_limits=dfg_limits.as_dict(),
+        config=str(config_path) if config_path is not None else None,
+        duration_seconds=duration,
+        human_header=(
+            f"[corpus-gate] stage={args.stage} target={TARGET_TRIPLE} "
+            f"march={TARGET_MARCH} mabi={TARGET_MABI} "
+            f"code-model={TARGET_CODE_MODEL} builtin={BUILTIN_TARGET_PRESET} "
+            f"candidate-jobs={args.candidate_jobs} "
+            f"dfg-limits={dfg_limits.max_wavefront_steps}/"
+            f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
+            f"dfg-wall-time={args.dfg_simulation_timeout:g}s "
+            f"config={config_path if config_path is not None else '<default>'} "
+            f"sysroot={toolchain.sysroot} "
+            f"gcc-toolchain={toolchain.gcc_toolchain}"
+        ),
+        target={
+            "builtin_preset": BUILTIN_TARGET_PRESET,
+            "code_model": TARGET_CODE_MODEL,
+            "datalayout": LLVM_DATALAYOUT_LINE,
+            "gcc_toolchain": str(toolchain.gcc_toolchain),
+            "mabi": TARGET_MABI,
+            "march": TARGET_MARCH,
+            "sysroot": str(toolchain.sysroot),
+            "triple": TARGET_TRIPLE,
+        },
+        tools={
+            "cc": toolchain.cc,
+            "cxx": toolchain.cxx,
+            "dfg_run": toolchain.dfg_run,
+            "lld": toolchain.lld,
+            "llvm_dis": toolchain.llvm_dis,
+            "payload": toolchain.payload,
+            "pre_mapping": toolchain.pre_mapping,
+            "raise": toolchain.raise_tool,
+            "raise_opt": toolchain.raise_opt,
+        },
     )
+
+    sys.stdout.write(render_human(results, report_context))
     json_path = args.json_path or (out_root / "summary.json")
     try:
         json_path.expanduser().resolve().write_text(
-            render_json(
-                results,
-                args.stage,
-                toolchain,
-                args.jobs,
-                args.candidate_jobs,
-                config_path,
-                dfg_limits,
-                args.dfg_simulation_timeout,
-                args.case_timeout,
-                duration,
-            )
+            render_json(results, report_context)
         )
     except OSError as exc:
         print(
@@ -1788,7 +1684,7 @@ def main(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
-    return 0 if all(result.passed for result in results) else 1
+    return 0 if all(not result.failed for result in results) else 1
 
 
 if __name__ == "__main__":

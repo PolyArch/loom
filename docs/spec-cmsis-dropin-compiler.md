@@ -361,7 +361,8 @@ Both native and Loom builds use the LLVM tools pinned by Loom; a host `ar`,
 `ranlib`, or linker from another LLVM revision is not admissible.
 
 The primary DFG semantic gate chooses one deterministic WorkloadVector per
-typed operator identity and gives it a 15-second wall-time execution limit by
+typed operator identity that is compatible with the invocation's exact
+executable ISA/ABI cohort and gives it a 15-second wall-time execution limit by
 default. Provider configuration, final link, compilation, candidate
 generation, and shared target construction occur outside that simulation
 limit and have separate bounded execution controls. A vector must be compact
@@ -370,6 +371,14 @@ limit. Vectors sharing one operator workload reuse final link and DSE but keep
 independent inputs, oracle comparison, outcome, and timeout. Exceeding a limit
 reports an incomplete execution and cannot change candidate semantics, prove
 graph-free legality, or authorize a passing result.
+
+The representative conformance inventory may also retain an exact ARM DSP,
+MVE, or NEON profile while the selected System execution cohort is RISC-V.
+Such a row must resolve to the profile/cohort incompatibility outcome defined
+by [Corpus](spec-loom-stack.md#corpus) before harness construction. It does not
+enter DFG simulation, does not fall back to scalar source, and does not count
+as an operator semantic pass. Provider absence for a profile that is otherwise
+compatible with the selected cohort remains a failure.
 
 The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public
