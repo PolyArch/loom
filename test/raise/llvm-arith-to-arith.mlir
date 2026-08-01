@@ -226,9 +226,18 @@ llvm.func @typed_elementary_math(%single: f32, %double: f64) {
     %1 = llvm.intr.exp(%single) {fastmathFlags = #llvm.fastmath<afn>} : (f32) -> f32
     // CHECK: %{{.*}} = math.log %arg1 : f64
     %2 = llvm.intr.log(%double) : (f64) -> f64
+    // CHECK: %{{.*}} = math.ceil %arg0 : f32
+    %3 = llvm.intr.ceil(%single) : (f32) -> f32
+    // CHECK: %{{.*}} = math.floor %arg0 : f32
+    %4 = llvm.intr.floor(%single) : (f32) -> f32
+    // CHECK: %{{.*}} = math.trunc %arg1 : f64
+    %5 = llvm.intr.trunc(%double) : (f64) -> f64
     // CHECK-NOT: llvm.intr.sqrt
     // CHECK-NOT: llvm.intr.exp
     // CHECK-NOT: llvm.intr.log
+    // CHECK-NOT: llvm.intr.ceil
+    // CHECK-NOT: llvm.intr.floor
+    // CHECK-NOT: llvm.intr.trunc
     llvm.return
 }
 
