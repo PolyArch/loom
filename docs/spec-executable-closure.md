@@ -142,6 +142,11 @@ InstructionCoreBinary {
   runtime_imports[]
 }
 
+ThreadEntryBinding {
+  root_thread_launch_ref
+  entry_ordinal
+}
+
 RuntimeImport {
   support_component_ordinal
   abi_symbol
@@ -149,8 +154,27 @@ RuntimeImport {
 }
 ```
 
-`thread_entry_table` uses canonical Dataflow thread-definition references and
-binary-local entry ordinals. It does not persist raw source symbols as program
+`thread_entry_table` is the canonical sorted array of `ThreadEntryBinding`.
+Each key is a `RootThreadLaunchRef` owned by the exact
+`canonical_dataflow_ref`, each key occurs at most once in one binary, and
+`entry_ordinal` is an unsigned binary-local executable-entry ordinal. Multiple
+root-launch keys may share one ordinal when they reuse identical compiled
+code. Distinct roots may use distinct ordinals for launch-context
+specialization even when they resolve to the same thread definition.
+
+The table is a compiled-support relation: it states which entry in this exact
+binary implements each admitted root launch. It does not choose an AccCore or
+a concrete Deployment target case. Deployment owns that selection and may
+reference only a `(binary, entry_ordinal)` pair whose binary table contains the
+same root-launch key. A binary may cover a strict subset of the program's root
+launches; the complete Deployment must cover every SystemMapping-required
+root/target case exactly once.
+
+The importer resolves every key through the exact Canonical Dataflow Program,
+rejects foreign, wrong-kind, duplicate, or noncanonical keys, and verifies the
+binary-local entry ordinal against the executable entry catalog derived from
+`code_blob`. It never persists raw source symbols, private definition names,
+operation positions, or a competing thread-definition reference as program
 identity. Each InstructionCore binary references exactly one
 InstructionCore-compatible CompilerTargetBinding. Every
 unresolved import must appear in the closed typed `runtime_imports` set and

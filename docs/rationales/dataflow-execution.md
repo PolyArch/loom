@@ -193,3 +193,10 @@ An event family is the static produced or consumed transfer terminal. Its
 logical coordinate and launch-parameter projection is mechanically derived
 from the exact program rather than persisted again. Runtime occurrences and
 Physical Tags remain transient execution and Mapping facts.
+
+The same ownership rule applies to thread definitions. A root launch already
+has persistent identity and an exact callee relation, while logical coordinates
+identify domain points and runtime owns concrete occurrences. Adding a
+thread-definition EntityId would create a second path to the same definition
+without identifying any dynamic instance. Rooted consumers therefore begin at
+`RootThreadLaunchRef` and recover the definition mechanically.

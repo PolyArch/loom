@@ -46,6 +46,23 @@ retaining the loop result creates a false cross-loop dependence. Projecting
 that result back to the same SSA value removes the accidental state without
 moving the loop, changing termination, or weakening poison and undef semantics.
 
+## Why Thread Parallelism Uses Coordinate Tuples
+
+A scalar thread ID would impose a linear order and flattening convention on
+every logical domain. That would duplicate the extents already carried by a
+dense launch, obscure multidimensional schedules, and tempt consumers to
+equate logical order with physical topology. Loom therefore gives the thread
+body the exact coordinate tuple selected by the Structured candidate. Linear
+IDs, tiles, and source induction variables are ordinary explicit arithmetic
+when the program needs them.
+
+Nested scheduling remains one recursive structured transformation rather than
+a hierarchy of special thread kinds. The candidate projects outer AccCore
+parallelism, graph-static work, and graph-temporal work into explicit `L`,
+`S`, and `T` coordinates and structure. These projections are consumed by the
+existing thread and graph ABIs and disappear as independent analyses. This
+keeps the selected Structured Program as the only schedule authority.
+
 LLVM operations are normalized to registered canonical compute schemas only
 when exact semantics are preserved. A familiar symbol name is not sufficient.
 In particular, `fmuladd` cannot be assumed to be fused; poison, undef, freeze,

@@ -101,6 +101,15 @@ authorized memory handles, and transient completion state. Completion is a
 host-visible runtime event. It is neither a persistent Mapping identity nor a
 replacement for the canonical `!dataflow.thread_token` relation.
 
+Runtime assigns one execution-local `ThreadDispatchOccurrenceId` when a
+dispatch commits. A dense instance is identified transiently by that ID plus
+its coordinate tuple. A DynamicWork domain uses the same ID as the
+`domain_instance` component of every `WorkItemId` in that dispatch. The ID is
+unique only within the owning execution session, is never supplied as an
+implicit thread-body argument, and cannot select Mapping, binary, route, or
+configuration state. Repeated execution of the same root launch therefore
+reuses its persistent bindings while retaining distinct runtime state.
+
 Thread Dispatch never directly invokes a SpatialCore simulator. The selected
 InstructionCore binary issues Spatial Launch requests for its local graph
 launches.
@@ -150,6 +159,7 @@ or incomplete Mapping proof.
 
 Runtime owns transient state only:
 
+* thread-dispatch occurrence IDs and their concrete logical points;
 * concrete logical coordinates and parameters;
 * event-occurrence and completion handles;
 * pending launch, channel, and memory requests;

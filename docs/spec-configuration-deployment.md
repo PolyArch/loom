@@ -301,6 +301,14 @@ missing, extra, or duplicate case is invalid. `instruction_core_entry_ref` is
 a typed reference into the exact executable closure; it cannot be replaced by
 a source symbol, emitted symbol, address, or runtime handle.
 
+For every target case, the referenced InstructionCoreBinary must bind the row's
+exact `RootThreadLaunchRef` to the selected `thread_entry_ordinal`. Deployment
+does not infer this correspondence from a shared callee definition and cannot
+select an ordinal merely because it exists in the binary. The binary owns the
+compiled-support relation; this image owns only the Mapping-specific target
+selection. A missing relation row, wrong Dataflow owner, or mismatched ordinal
+is invalid before runtime-image publication.
+
 `SpatialLaunchImage.payload` is:
 
 ```text

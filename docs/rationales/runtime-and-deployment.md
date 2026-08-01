@@ -102,6 +102,23 @@ services distinct from graph-local value, stream, and memory ports. Generated
 runtime images are projections of exact Mapping and Deployment facts, not
 editable scheduling programs.
 
+## Why Binary Entries Are Root-Launch Bound
+
+A thread definition owns reusable behavior, but a root launch owns the exact
+static context in which that behavior executes: parameters, channel and memory
+bindings, Mapping relations, and Deployment selection. Two root launches may
+call the same definition and share one machine-code entry, or compilation may
+specialize one launch into a different entry. A definition-only key cannot
+express both cases without recreating launch context beside it.
+
+InstructionCoreBinary therefore declares a many-to-one relation from existing
+`RootThreadLaunchRef` keys to binary-local entry ordinals. This is compiled
+capability and provenance, not target selection. Deployment chooses one
+declared binary entry for each mapped root/target case, while runtime creates
+transient occurrences and passes coordinates and parameters to that entry.
+No source symbol, operation position, thread-definition ID, or dynamic
+instance table becomes a competing program authority.
+
 ## Why System Transport Has Three Layers
 
 Software channels describe producer-consumer behavior. Fabric Transport

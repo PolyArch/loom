@@ -673,6 +673,35 @@ reconstructs the tile `[t * 128, (t + 1) * 128)`, with the tile-local loop in a
 coordinates or AccCore selections. SystemMapping alone owns their physical
 binding.
 
+#### Schedule Coordinate Projection
+
+Every selected nested schedule is materialized into the Structured Program
+Candidate through three conceptual coordinate groups:
+
+```text
+L = AccCore-launch logical coordinates
+S = graph-static actor and vector-lane coordinates
+T = graph-temporal stream, recurrence, and state coordinates
+```
+
+`L` becomes the arbitrary-rank dense coordinate suffix of a
+`dataflow.thread`, or the existing stable item projection of a DynamicWork
+domain. `S` becomes explicit graph actor replication or typed vector lanes.
+`T` becomes explicit graph streams, carry, invariant, gate, memory-frontier,
+and state-transition structure. These groups are a materialization rule, not a
+persistent schedule tree or another program representation. Tiling may add
+coordinates, while fusion, linearization, vectorization, and interchange may
+remove or reparameterize them; no equality with source loop depth is required.
+
+Nested `sequence`, `select`, `repeat`, and `parallel` constructs compose
+recursively at both the thread and graph ownership boundaries. A thread may
+launch zero or more graphs sequentially or conditionally, but a graph never
+launches another thread. The selected candidate must make every coordinate,
+guard, source-IV reconstruction, and cross-boundary value explicit before
+mechanical lowering. Neither the Dataflow finalizer nor Mapping may recover a
+hidden schedule from operation position, a source loop tree, or physical
+topology.
+
 ### Complete Candidate Dispositions
 
 An Ownership Generate invocation enumerates one finite scope-local domain in

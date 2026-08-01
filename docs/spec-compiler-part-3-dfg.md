@@ -2103,6 +2103,14 @@ execution-local identity. A future independently referenceable semantic
 object requires an explicit schema catalog change; a consumer cannot mint an
 ID for convenience.
 
+Absence of a thread-definition EntityId does not remove dynamic thread
+identity. The logical-domain contract derives each dense point from a root
+launch and its coordinate tuple, or each dynamic point from a root launch and
+its `WorkItemId`. Runtime adds one execution-local dispatch occurrence for a
+concrete invocation. A definition ID, logical point, dispatch occurrence, and
+physical AccCore binding are different domains and must never be substituted
+for one another.
+
 All five kinds share one Artifact-global unsigned 64-bit `EntityId` namespace.
 Zero is a valid ID and there is no sentinel value. The finalizer assigns the
 dense range `[0, entity_count)` in canonical-slot order, but serialized record

@@ -158,6 +158,37 @@ require explicit atomic software operations and a compatible Fabric
 consistency and coherence realization; DynamicWork does not hide either
 requirement.
 
+### 2.3 Static And Dynamic Thread Identity
+
+The Canonical Dataflow entity catalog identifies a static root launch with a
+`RootThreadLaunchRef`; it does not assign an independent ID to the referenced
+`dataflow.thread` definition. The exact definition is recovered through the
+launch's Dataflow-owned callee relation.
+
+A logical thread point is a derived value in that root-launch context:
+
+```text
+LogicalThreadPoint =
+    DensePoint(RootThreadLaunchRef, coordinate_tuple)
+  | DynamicPoint(RootThreadLaunchRef, WorkItemId)
+```
+
+The exact launch-parameter environment supplies extents and admitted ordinary
+integer parameters used to interpret the point, but does not create another
+identity object. A dense coordinate tuple is body-visible through the trailing
+`index` arguments. It is never implicitly flattened; a program that needs a
+linear identifier computes one explicitly from coordinates and extents.
+
+One static root launch may execute repeatedly. Runtime owns one transient
+`ThreadDispatchOccurrenceId` per concrete dispatch, and a concrete dense
+instance is `(ThreadDispatchOccurrenceId, coordinate_tuple)`. The
+`domain_instance` component of a `WorkItemId` is the same dispatch occurrence,
+not a second counter or persistent identity. Occurrence IDs disappear after
+execution and are unavailable to Mapping. If program behavior or Mapping must
+distinguish repeated launches, the Structured Program must expose that
+distinction as a coordinate, launch parameter, or DynamicWork stable-item
+component rather than relying on a hidden epoch.
+
 ## 3. Source Induction Variables
 
 Source lower bounds and steps are ordinary launch operands. The thread body
@@ -200,6 +231,13 @@ and payload for the existing `StableKeyLookup` relation; Mapping cannot use
 queue order or invent another item identity. Event-relative `ResourceUse`
 separately owns occupancy and release. Neither relation may reinterpret logical
 identity as Cartesian hardware position.
+
+For a dense domain, `B_thread` is evaluated over the exact
+`RootThreadLaunchRef`, coordinate tuple, and Dataflow-owned launch-parameter
+projection. For DynamicWork it uses the root launch plus the stable-item
+projection. The transient dispatch occurrence is deliberately absent: one
+verified relation applies to every execution of the same exposed logical
+domain.
 
 Data partitioning visible to the program is expressed by its ordinary index
 and view computations. Physical placement of storage, memory services, and
