@@ -142,12 +142,24 @@ floor meaningful. A ratio at or above ten is always a conformance failure.
 The factor three is an initial suite-wide policy and may change only from
 aggregate profiling evidence, never as a per-case exception.
 
+CGRA Spatial-only bring-up uses a 45-second bootstrap ceiling while at least
+the ten representative workloads in this specification establish warmed
+active-wall, reference-cycle-rate, event-count, contention, and peak-memory
+evidence. Before System + CGRA conformance begins, the conformance owner must
+publish one suite-wide CGRA Spatial-only absolute budget in tracked gate
+configuration. Its value is selected from that aggregate evidence and the
+100 k reference-cycles-per-wall-second target. It is not an Artifact field,
+semantic limit, model parameter, or per-case override. A later change requires
+new aggregate evidence and one tracked gate update. The paired System + CGRA
+budget consumes that exact published Spatial-only budget through the formula
+above; no caller or simulator may supply a hidden second value.
+
 Every paired result reports active wall time, the System-to-Spatial ratio,
 reference cycles per wall second, engine/Bridge/host/observation CPU time,
 event and activation counts, and peak resident memory. System simulation
 targets at least 100 k reference cycles per wall second. Raw gem5 ticks are
 not reference cycles. Corpus orchestration uses at most
-`min(nproc - 4, memory-derived worker limit, 128)` outer workers and does not
+`min(nproc - 4, memory-derived worker limit, 120)` outer workers and does not
 hide nested oversubscription inside one case.
 
 ## Hardware-Implementation And Evidence Anchor

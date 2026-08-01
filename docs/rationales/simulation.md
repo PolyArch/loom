@@ -114,6 +114,14 @@ regardless of the current policy factor because it indicates a different
 execution strategy or an avoidable integration bottleneck rather than the
 intended weakly coupled composition.
 
+DFG and CGRA require separate Spatial-only absolute budgets because the latter
+models finite routes, resources, arbitration, and contention. Guessing the
+CGRA budget permanently or allowing each workload to choose one would hide
+either simulator defects or difficult mappings. A short bootstrap ceiling is
+therefore replaced, after representative measurements, by one tracked
+suite-wide value. System execution derives its paired ceiling from that value
+instead of creating another timeout authority.
+
 ## Why DFG And CGRA Share Functional Semantics
 
 An actor's firing and state transition must mean the same thing at every
@@ -133,6 +141,13 @@ out-of-tree gem5 component. The gem5 event queue is the sole system time
 authority. The SpatialCore session advances to the next observable boundary,
 such as a memory request, interrupt, result, completion, or wakeup time, then
 returns control.
+
+Keeping the pinned gem5 source unmodified makes the upstream commit the exact
+simulator implementation identity and keeps Loom's protocol correspondence in
+one reviewable owner. A local patch stack would mix bridge semantics with an
+external dependency and make upgrades or replay depend on hidden source state.
+The supported out-of-tree extension boundary provides the required integration
+without creating that second authority.
 
 Running an independent Loom system event loop would require clock
 synchronization, duplicate ordering, and conflict resolution. The bridge is a

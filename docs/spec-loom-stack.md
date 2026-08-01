@@ -601,6 +601,14 @@ in-process C++ CP-SAT library only through the bounded exact-repair adapter
 owned by [Place And Route](spec-pnr.md). It is not a plugin, external solver
 binary, Python runtime dependency, or TechMapping search authority.
 
+gem5 is an unmodified upstream submodule at `externals/gem5`, pinned to commit
+`c8222cc67a399bfc01e8658dd14b30d5bfd634f9`. Loom-owned system integration
+uses gem5's supported out-of-tree component and extension build mechanism.
+Bridge source, typed bindings, generated configuration projections, and build
+identity remain Loom-owned; Loom does not maintain a gem5 patch stack or edit
+the pinned submodule source. A gem5 upgrade is a separate exact dependency
+change with Runtime ABI and System simulation conformance.
+
 ## Verification Boundary
 
 Tests protect stable semantic anchors: canonical schema and identity,
