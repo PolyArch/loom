@@ -411,19 +411,11 @@ llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
       "primitive result type has no scalar simulator representation");
 }
 
-static llvm::Expected<unsigned> integerBitWidth(mlir::Type type,
-                                                mlir::Operation *scope) {
+static llvm::Expected<unsigned> primitiveBitWidth(mlir::Type type,
+                                                  mlir::Operation *scope) {
   if (!type)
     return 0u;
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return intType.getWidth();
-  if (mlir::isa<mlir::IndexType>(type)) {
-    auto width = loom::getIndexBitWidth(scope);
-    if (!width)
-      return width.takeError();
-    return *width;
-  }
-  return 0u;
+  return resolvedTokenTypeBitWidth(type, scope);
 }
 
 llvm::Expected<PrimitiveOperationDescriptor>
@@ -438,10 +430,10 @@ llvm::Expected<PrimitiveOperationDescriptor>
 primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
                     mlir::Operation *op, mlir::Type resultType,
                     mlir::Type operandType) {
-  auto resultBitWidth = integerBitWidth(resultType, op);
+  auto resultBitWidth = primitiveBitWidth(resultType, op);
   if (!resultBitWidth)
     return resultBitWidth.takeError();
-  auto operandBitWidth = integerBitWidth(operandType, op);
+  auto operandBitWidth = primitiveBitWidth(operandType, op);
   if (!operandBitWidth)
     return operandBitWidth.takeError();
   return PrimitiveOperationDescriptor{projection, *resultBitWidth,

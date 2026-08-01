@@ -16,6 +16,8 @@
 // RUN: FileCheck %s --check-prefix=SIGNED-MINMAX < %t.signed-minmax.json
 // RUN: loom-dfg-sim %s --graph count_leading_zeros --output %t.ctlz.json
 // RUN: FileCheck %s --check-prefix=CTLZ < %t.ctlz.json
+// RUN: loom-dfg-sim %s --graph bitcast_roundtrip --output %t.bitcast.json
+// RUN: FileCheck %s --check-prefix=BITCAST < %t.bitcast.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -80,7 +82,24 @@
 // CTLZ-DAG: "math.ctlz": 1
 // CTLZ-DAG: "i32:27"
 
+// BITCAST-DAG: "workload": "bitcast_roundtrip"
+// BITCAST-DAG: "graph": "bitcast_roundtrip"
+// BITCAST-DAG: "status": "pass"
+// BITCAST-DAG: "arith.bitcast": 2
+// BITCAST-DAG: "i16:15360"
+
 module {
+  dataflow.graph private @bitcast_roundtrip(%ctrl: none) -> (i16)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %bits = dataflow.constant %ctrl {const_value = 15360 : i16} : i16
+    %as_float = arith.bitcast %bits : i16 to f16
+    %roundtrip = arith.bitcast %as_float : f16 to i16
+    %published:2 = dataflow.sync %ctrl, %roundtrip
+        : (none, i16) -> (none, i16)
+    dataflow.graph.return %published#0, %published#1 : none, i16
+  }
+
   dataflow.graph private @compare_select(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
