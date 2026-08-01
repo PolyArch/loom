@@ -419,6 +419,7 @@ struct PointerInductionLane final {
 struct PointerInductionLoop final {
   mlir::scf::WhileOp operation;
   unsigned iterationStateWidth;
+  std::optional<llvm::APInt> maximumIterations;
   llvm::SmallVector<PointerInductionLane, 4> lanes;
 };
 
@@ -431,7 +432,13 @@ bool isDefinedOutsideLoop(mlir::Value value, mlir::scf::WhileOp loop) {
   return !owner || (owner != loop.getOperation() && !loop->isAncestor(owner));
 }
 
-std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
+struct UnitStepTermination final {
+  unsigned lane;
+  unsigned stateWidth;
+};
+
+std::optional<UnitStepTermination>
+proveUnitStepTermination(mlir::scf::WhileOp loop) {
   mlir::Block *before = loop.getBeforeBody();
   mlir::Block *after = loop.getAfterBody();
   mlir::scf::ConditionOp condition = loop.getConditionOp();
@@ -472,7 +479,7 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
       comparisonValue = compare.getLhs();
     if (compare.getPredicate() == mlir::arith::CmpIPredicate::ne &&
         comparisonValue && isDefinedOutsideLoop(comparisonValue, loop))
-      return integer.getWidth();
+      return UnitStepTermination{lane, integer.getWidth()};
 
     if (delta.getValue().isOne() && comparisonValue &&
         isDefinedOutsideLoop(comparisonValue, loop)) {
@@ -483,22 +490,22 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
       case mlir::arith::CmpIPredicate::slt:
         if (updateOnLeft && mlir::arith::bitEnumContainsAny(
                                 flags, mlir::arith::IntegerOverflowFlags::nsw))
-          return integer.getWidth();
+          return UnitStepTermination{lane, integer.getWidth()};
         break;
       case mlir::arith::CmpIPredicate::sgt:
         if (updateOnRight && mlir::arith::bitEnumContainsAny(
                                  flags, mlir::arith::IntegerOverflowFlags::nsw))
-          return integer.getWidth();
+          return UnitStepTermination{lane, integer.getWidth()};
         break;
       case mlir::arith::CmpIPredicate::ult:
         if (updateOnLeft && mlir::arith::bitEnumContainsAny(
                                 flags, mlir::arith::IntegerOverflowFlags::nuw))
-          return integer.getWidth();
+          return UnitStepTermination{lane, integer.getWidth()};
         break;
       case mlir::arith::CmpIPredicate::ugt:
         if (updateOnRight && mlir::arith::bitEnumContainsAny(
                                  flags, mlir::arith::IntegerOverflowFlags::nuw))
-          return integer.getWidth();
+          return UnitStepTermination{lane, integer.getWidth()};
         break;
       default:
         break;
@@ -526,7 +533,7 @@ std::optional<unsigned> proveUnitStepTerminationWidth(mlir::scf::WhileOp loop) {
     mlir::IntegerAttr one =
         boundValue ? integerConstant(boundValue) : mlir::IntegerAttr{};
     if (countDown && one && one.getType() == integer && one.getValue().isOne())
-      return integer.getWidth();
+      return UnitStepTermination{lane, integer.getWidth()};
   }
   return std::nullopt;
 }
@@ -563,6 +570,9 @@ std::optional<uint64_t> fixedByteSize(mlir::Operation *scope, mlir::Type type) {
     return std::nullopt;
   return size.getFixedValue();
 }
+
+std::optional<llvm::APInt>
+proveMaximumUnitStepIterations(mlir::scf::WhileOp loop, unsigned iterationLane);
 
 bool collectPointerAccessElementType(mlir::Value pointer,
                                      mlir::Operation *ignored,
@@ -652,15 +662,20 @@ dynamicElementScale(mlir::LLVM::GEPOp update, mlir::Value invariantIndex,
 
 std::optional<PointerInductionLoop>
 analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
-  std::optional<unsigned> iterationWidth = proveUnitStepTerminationWidth(loop);
-  if (!iterationWidth)
+  std::optional<UnitStepTermination> termination =
+      proveUnitStepTermination(loop);
+  if (!termination)
     return std::nullopt;
 
   mlir::Block *before = loop.getBeforeBody();
   mlir::Block *after = loop.getAfterBody();
   mlir::scf::ConditionOp condition = loop.getConditionOp();
   mlir::scf::YieldOp yield = loop.getYieldOp();
-  PointerInductionLoop result{loop, *iterationWidth, {}};
+  PointerInductionLoop result{
+      loop,
+      termination->stateWidth,
+      proveMaximumUnitStepIterations(loop, termination->lane),
+      {}};
   unsigned pointerLanes = 0;
   for (unsigned lane = 0; lane < before->getNumArguments(); ++lane) {
     if (!llvm::isa<mlir::LLVM::LLVMPointerType>(
@@ -734,6 +749,33 @@ struct SignedRange final {
   llvm::APInt maximum;
 };
 
+SignedRange fullSignedRange(unsigned width) {
+  return SignedRange{llvm::APInt::getSignedMinValue(width),
+                     llvm::APInt::getSignedMaxValue(width)};
+}
+
+std::optional<SignedRange> multiplySignedRanges(const SignedRange &lhs,
+                                                const SignedRange &rhs,
+                                                unsigned width) {
+  const unsigned arithmeticWidth = width * 2;
+  llvm::APInt products[] = {
+      lhs.minimum.sext(arithmeticWidth) * rhs.minimum.sext(arithmeticWidth),
+      lhs.minimum.sext(arithmeticWidth) * rhs.maximum.sext(arithmeticWidth),
+      lhs.maximum.sext(arithmeticWidth) * rhs.minimum.sext(arithmeticWidth),
+      lhs.maximum.sext(arithmeticWidth) * rhs.maximum.sext(arithmeticWidth)};
+  llvm::APInt minimum = products[0];
+  llvm::APInt maximum = products[0];
+  for (const llvm::APInt &product : llvm::drop_begin(products)) {
+    if (product.slt(minimum))
+      minimum = product;
+    if (product.sgt(maximum))
+      maximum = product;
+  }
+  if (!minimum.isSignedIntN(width) || !maximum.isSignedIntN(width))
+    return fullSignedRange(width);
+  return SignedRange{minimum.trunc(width), maximum.trunc(width)};
+}
+
 std::optional<SignedRange> signedIndexRange(mlir::Value value) {
   auto type = llvm::dyn_cast<mlir::IntegerType>(value.getType());
   if (!type)
@@ -778,18 +820,145 @@ std::optional<SignedRange> signedIndexRange(mlir::Value value) {
     if (!minimumOverflow && !maximumOverflow)
       return SignedRange{std::move(minimum), std::move(maximum)};
   }
-  return SignedRange{llvm::APInt::getSignedMinValue(width),
-                     llvm::APInt::getSignedMaxValue(width)};
+  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    std::optional<SignedRange> lhs = signedIndexRange(multiply.getLhs());
+    std::optional<SignedRange> rhs = signedIndexRange(multiply.getRhs());
+    if (lhs && rhs)
+      return multiplySignedRanges(*lhs, *rhs, width);
+  }
+  if (auto shift = value.getDefiningOp<mlir::arith::ShRUIOp>()) {
+    mlir::IntegerAttr amount = integerConstant(shift.getRhs());
+    std::optional<SignedRange> source = signedIndexRange(shift.getLhs());
+    if (!amount || !source || !amount.getValue().ult(width))
+      return fullSignedRange(width);
+    const unsigned shiftAmount = amount.getValue().getZExtValue();
+    if (shiftAmount == 0)
+      return source;
+    if (!source->minimum.isNegative())
+      return SignedRange{source->minimum.lshr(shiftAmount),
+                         source->maximum.lshr(shiftAmount)};
+    return SignedRange{llvm::APInt(width, 0),
+                       llvm::APInt::getMaxValue(width).lshr(shiftAmount)};
+  }
+  if (auto bitAnd = value.getDefiningOp<mlir::arith::AndIOp>()) {
+    mlir::IntegerAttr mask = integerConstant(bitAnd.getLhs());
+    if (!mask)
+      mask = integerConstant(bitAnd.getRhs());
+    if (mask && !mask.getValue().isNegative())
+      return SignedRange{llvm::APInt(width, 0), mask.getValue()};
+  }
+  return fullSignedRange(width);
+}
+
+bool enclosingGuardProvesNotEqual(mlir::scf::WhileOp loop, mlir::Value lhs,
+                                  mlir::Value rhs) {
+  mlir::Region *region = loop->getParentRegion();
+  auto conditional =
+      llvm::dyn_cast_or_null<mlir::scf::IfOp>(region->getParentOp());
+  if (!conditional)
+    return false;
+  auto comparison =
+      conditional.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!comparison ||
+      !((comparison.getLhs() == lhs && comparison.getRhs() == rhs) ||
+        (comparison.getLhs() == rhs && comparison.getRhs() == lhs)))
+    return false;
+  const bool inThen = region == &conditional.getThenRegion();
+  const bool inElse = region == &conditional.getElseRegion();
+  return (inThen &&
+          comparison.getPredicate() == mlir::arith::CmpIPredicate::ne) ||
+         (inElse &&
+          comparison.getPredicate() == mlir::arith::CmpIPredicate::eq);
+}
+
+std::optional<llvm::APInt>
+proveMaximumUnitStepIterations(mlir::scf::WhileOp loop,
+                               unsigned iterationLane) {
+  mlir::Block *before = loop.getBeforeBody();
+  mlir::scf::ConditionOp condition = loop.getConditionOp();
+  if (iterationLane >= before->getNumArguments() ||
+      iterationLane >= loop.getInits().size() ||
+      iterationLane >= condition.getArgs().size())
+    return std::nullopt;
+
+  mlir::BlockArgument induction = before->getArgument(iterationLane);
+  auto update =
+      condition.getArgs()[iterationLane].getDefiningOp<mlir::arith::AddIOp>();
+  if (!update)
+    return std::nullopt;
+  mlir::Value deltaValue;
+  if (update.getLhs() == induction)
+    deltaValue = update.getRhs();
+  else if (update.getRhs() == induction)
+    deltaValue = update.getLhs();
+  else
+    return std::nullopt;
+  mlir::IntegerAttr delta = integerConstant(deltaValue);
+  if (!delta || (!delta.getValue().isOne() && !delta.getValue().isAllOnes()))
+    return std::nullopt;
+
+  auto comparison =
+      condition.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!comparison ||
+      comparison.getPredicate() != mlir::arith::CmpIPredicate::ne)
+    return std::nullopt;
+  mlir::Value bound;
+  if (comparison.getLhs() == update.getResult())
+    bound = comparison.getRhs();
+  else if (comparison.getRhs() == update.getResult())
+    bound = comparison.getLhs();
+  else
+    return std::nullopt;
+
+  mlir::Value start = loop.getInits()[iterationLane];
+  std::optional<SignedRange> startRange = signedIndexRange(start);
+  std::optional<SignedRange> boundRange = signedIndexRange(bound);
+  if (!startRange || !boundRange || startRange->minimum.isNegative() ||
+      boundRange->minimum.isNegative())
+    return std::nullopt;
+
+  const bool guarded = enclosingGuardProvesNotEqual(loop, start, bound);
+  llvm::APInt maximumDifference;
+  if (delta.getValue().isAllOnes()) {
+    if (startRange->minimum.slt(boundRange->maximum) ||
+        (startRange->minimum == boundRange->maximum && !guarded))
+      return std::nullopt;
+    const unsigned arithmeticWidth = startRange->maximum.getBitWidth() + 1;
+    maximumDifference = startRange->maximum.zext(arithmeticWidth) -
+                        boundRange->minimum.zext(arithmeticWidth);
+  } else {
+    if (boundRange->minimum.slt(startRange->maximum) ||
+        (boundRange->minimum == startRange->maximum && !guarded))
+      return std::nullopt;
+    const unsigned arithmeticWidth = boundRange->maximum.getBitWidth() + 1;
+    maximumDifference = boundRange->maximum.zext(arithmeticWidth) -
+                        startRange->minimum.zext(arithmeticWidth);
+  }
+  return maximumDifference.isZero()
+             ? std::optional<llvm::APInt>{}
+             : std::optional<llvm::APInt>{std::move(maximumDifference)};
 }
 
 bool scaledAccumulationFits(const SignedRange &range, uint64_t scale,
-                            unsigned iterationWidth, unsigned width) {
-  if (iterationWidth >= width || scale == 0)
+                            unsigned iterationWidth,
+                            const std::optional<llvm::APInt> &maximumIterations,
+                            unsigned width) {
+  if (scale == 0)
     return false;
   llvm::APInt scaleBits(width, scale);
   if (scaleBits.isNegative())
     return false;
-  llvm::APInt maxIterations = llvm::APInt::getLowBitsSet(width, iterationWidth);
+  llvm::APInt maxIterations(width, 0);
+  if (maximumIterations) {
+    if (maximumIterations->isNegative() ||
+        !maximumIterations->isSignedIntN(width))
+      return false;
+    maxIterations = maximumIterations->sextOrTrunc(width);
+  } else {
+    if (iterationWidth >= width)
+      return false;
+    maxIterations = llvm::APInt::getLowBitsSet(width, iterationWidth);
+  }
   for (const llvm::APInt *endpoint : {&range.minimum, &range.maximum}) {
     if (!endpoint->isSignedIntN(width))
       return false;
@@ -824,7 +993,8 @@ bool pointerOffsetsFit(const PointerInductionLoop &loop, unsigned width) {
         range.maximum = range.maximum.ashr(lane.stride.exactSignedDivideShift);
       }
     }
-    if (!scaledAccumulationFits(range, scale, loop.iterationStateWidth, width))
+    if (!scaledAccumulationFits(range, scale, loop.iterationStateWidth,
+                                loop.maximumIterations, width))
       return false;
   }
   return true;

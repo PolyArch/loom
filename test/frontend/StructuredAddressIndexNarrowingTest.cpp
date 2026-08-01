@@ -217,6 +217,67 @@ module attributes {
       fail("widened stride-range retained raw pointer induction");
 }
 
+void normalizesWideCarrierWithNarrowTripCount() {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  llvm.data_layout = "e-m:e-p:64:64-i64:64-n32:64-S128"
+} {
+  llvm.func @matrix_chunks(%base: !llvm.ptr, %rows: i16, %columns: i16) {
+    %c0_i64 = arith.constant 0 : i64
+    %c-1_i64 = arith.constant -1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %rows_i64 = arith.extui %rows : i16 to i64
+    %columns_i64 = arith.extui %columns : i16 to i64
+    %elements = arith.muli %rows_i64, %columns_i64
+        overflow<nsw, nuw> : i64
+    %chunks = arith.shrui %elements, %c2_i64 : i64
+    %empty = arith.cmpi eq, %chunks, %c0_i64 : i64
+    scf.if %empty {
+    } else {
+      %result:2 = scf.while (%cursor = %base, %remaining = %chunks)
+          : (!llvm.ptr, i64) -> (!llvm.ptr, i64) {
+        %value = llvm.load %cursor : !llvm.ptr -> f64
+        %next_cursor = llvm.getelementptr inbounds %cursor[%c32_i64]
+            : (!llvm.ptr, i64) -> !llvm.ptr, i8
+        %next_remaining = arith.addi %remaining, %c-1_i64
+            overflow<nsw> : i64
+        %more = arith.cmpi ne, %next_remaining, %c0_i64 : i64
+        scf.condition(%more) %next_cursor, %next_remaining : !llvm.ptr, i64
+      } do {
+      ^bb0(%cursor: !llvm.ptr, %remaining: i64):
+        scf.yield %cursor, %remaining : !llvm.ptr, i64
+      }
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the narrow trip-count fixture");
+  auto function = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("matrix_chunks");
+  if (!function)
+    fail("narrow trip-count fixture omitted its function");
+
+  auto normalized = loom::frontend::detail::materializeAddressIndexContract(
+      *module, function.getOperation(), 64,
+      [](mlir::Block *, mlir::Block *) { return llvm::Error::success(); });
+  if (!normalized)
+    fail(llvm::toString(normalized.takeError()));
+
+  function.walk([&](mlir::scf::WhileOp loop) {
+    for (mlir::Value init : loop.getInits())
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(init.getType()))
+        fail("narrow trip-count proof retained raw pointer induction");
+  });
+}
+
 void normalizesConditionallyExecutedPointerInduction() {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
@@ -293,6 +354,7 @@ int main() {
   normalizesAsymmetricPointerInduction();
   normalizesInvariantDynamicByteStride();
   preservesNarrowSourceRangeThroughStrideWidening();
+  normalizesWideCarrierWithNarrowTripCount();
   normalizesConditionallyExecutedPointerInduction();
   llvm::outs() << "structured address index narrowing anchor passed\n";
   return EXIT_SUCCESS;
