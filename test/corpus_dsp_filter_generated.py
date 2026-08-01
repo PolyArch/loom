@@ -472,21 +472,22 @@ constexpr {protocol.value_type} kCoefficients[] = {{{_cpp_values(coefficients)}}
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {instance_type} *instance,
     const {protocol.value_type} *input, const {protocol.value_type} *coefficients,
     {protocol.value_type} *state, {protocol.value_type} *output) {{
-  {instance_type} instance{{}};
-  {init_call}(&instance, kTapCount, coefficients, state, kBlockSize);
-  {process_symbol}(&instance, input, output, kBlockSize);
+  {init_call}(instance, kTapCount, coefficients, state, kBlockSize);
+  {process_symbol}(instance, input, output, kBlockSize);
 }}
 
 int main() {{
+  {instance_type} instance{{}};
   {protocol.value_type} state[kBlockSize + kTapCount - 1]{{}};
   {protocol.value_type} reference_state[kBlockSize + kTapCount - 1]{{}};
   {protocol.value_type} output[kBlockSize]{{}};
   {protocol.value_type} reference[kBlockSize]{{}};
   {instance_type} reference_instance{{kTapCount, reference_state, kCoefficients}};
   {baseline_symbol}(&reference_instance, kInput, reference, kBlockSize);
-  {protocol_symbol}(kInput, kCoefficients, state, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, state, output);
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kBlockSize; ++index) {{
       const std::int64_t difference =
@@ -533,21 +534,22 @@ constexpr {protocol.value_type} kCoefficients[] = {{{_cpp_values(coefficients)}}
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {instance_type} *instance,
     const {protocol.value_type} *input, const {protocol.value_type} *coefficients,
     {protocol.value_type} *state, {protocol.value_type} *output) {{
-  {instance_type} instance{{}};
-  (void){init_symbol}(&instance, kTapCount, 2, coefficients, state, kBlockSize);
-  {process_symbol}(&instance, input, output, kBlockSize);
+  (void){init_symbol}(instance, kTapCount, 2, coefficients, state, kBlockSize);
+  {process_symbol}(instance, input, output, kBlockSize);
 }}
 
 int main() {{
+  {instance_type} instance{{}};
   {protocol.value_type} state[kBlockSize + kTapCount - 1]{{}};
   {protocol.value_type} reference_state[kBlockSize + kTapCount - 1]{{}};
   {protocol.value_type} output[kOutputCount]{{}};
   {protocol.value_type} reference[kOutputCount]{{}};
   {instance_type} reference_instance{{2, kTapCount, kCoefficients, reference_state}};
   {baseline_symbol}(&reference_instance, kInput, reference, kBlockSize);
-  {protocol_symbol}(kInput, kCoefficients, state, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, state, output);
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kOutputCount; ++index) {{
       const std::int64_t difference =
@@ -590,21 +592,22 @@ constexpr {protocol.value_type} kCoefficients[] = {{{_cpp_values(coefficients)}}
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    {instance_type} *instance,
     const {protocol.value_type} *input, const {protocol.value_type} *coefficients,
     {protocol.value_type} *state, {protocol.value_type} *output) {{
-  {instance_type} instance{{}};
-  {init_symbol}(&instance, 1, coefficients, state, 0);
-  {process_symbol}(&instance, input, output, kBlockSize);
+  {init_symbol}(instance, 1, coefficients, state, 0);
+  {process_symbol}(instance, input, output, kBlockSize);
 }}
 
 int main() {{
+  {instance_type} instance{{}};
   {protocol.value_type} state[4]{{}};
   {protocol.value_type} reference_state[4]{{}};
   {protocol.value_type} output[kBlockSize]{{}};
   {protocol.value_type} reference[kBlockSize]{{}};
   {instance_type} reference_instance{{1, reference_state, kCoefficients, 0}};
   {baseline_symbol}(&reference_instance, kInput, reference, kBlockSize);
-  {protocol_symbol}(kInput, kCoefficients, state, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, state, output);
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kBlockSize; ++index) {{
       const std::int64_t difference =
@@ -671,14 +674,15 @@ constexpr {protocol.value_type} kCoefficients[] = {{{_half_coefficient(protocol)
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    arm_fir_lattice_instance_{protocol.suffix} *instance,
     const {protocol.value_type} *input, const {protocol.value_type} *coefficients,
     {protocol.value_type} *state, {protocol.value_type} *output) {{
-  arm_fir_lattice_instance_{protocol.suffix} instance{{}};
-  {init_symbol}(&instance, 1, coefficients, state);
-  {process_symbol}(&instance, input, output, kBlockSize);
+  {init_symbol}(instance, 1, coefficients, state);
+  {process_symbol}(instance, input, output, kBlockSize);
 }}
 
 int main() {{
+  arm_fir_lattice_instance_{protocol.suffix} instance{{}};
   {protocol.value_type} state[1]{{}};
   {protocol.value_type} output[kBlockSize]{{}};
   {protocol.value_type} reference[kBlockSize]{{}};
@@ -687,7 +691,7 @@ int main() {{
     reference[index] = kInput[index] + {expected};
     previous = kInput[index];
   }}
-  {protocol_symbol}(kInput, kCoefficients, state, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, state, output);
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kBlockSize; ++index) {{
       if (output[index] != reference[index]) return false;
@@ -703,9 +707,11 @@ def _render_fir_sparse(protocol: StatefulFilterProtocol, protocol_symbol: str) -
     init_symbol, process_symbol = (call[0] for call in protocol.calls)
     inputs = _filter_input(protocol)
     scratch_type = "q31_t" if protocol.suffix in {"q15", "q7"} else None
+    scratch_parameter = ""
     scratch_declaration = ""
     scratch_argument = ""
     if scratch_type is not None:
+        scratch_parameter = f", {scratch_type} *scratch_output"
         scratch_declaration = f"  {scratch_type} scratch_output[kBlockSize]{{}};\n"
         scratch_argument = ", scratch_output"
     return f"""#include <cstddef>
@@ -727,19 +733,20 @@ constexpr {protocol.value_type} kCoefficients[] = {{
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    arm_fir_sparse_instance_{protocol.suffix} *instance,
     const {protocol.value_type} *input, const {protocol.value_type} *coefficients,
     {protocol.value_type} *state, std::int32_t *tap_delay,
-    {protocol.value_type} *scratch_input, {protocol.value_type} *output) {{
-  arm_fir_sparse_instance_{protocol.suffix} instance{{}};
-  {init_symbol}(&instance, 2, coefficients, state, tap_delay, 1, kBlockSize);
-{scratch_declaration}  {process_symbol}(&instance, input, output, scratch_input{scratch_argument},
-                       kBlockSize);
+    {protocol.value_type} *scratch_input, {protocol.value_type} *output{scratch_parameter}) {{
+  {init_symbol}(instance, 2, coefficients, state, tap_delay, 1, kBlockSize);
+  {process_symbol}(instance, input, output, scratch_input{scratch_argument},
+                   kBlockSize);
 }}
 
 int main() {{
+  arm_fir_sparse_instance_{protocol.suffix} instance{{}};
   {protocol.value_type} state[kBlockSize + 1]{{}};
   {protocol.value_type} scratch_input[kBlockSize]{{}};
-  {protocol.value_type} output[kBlockSize]{{}};
+{scratch_declaration}  {protocol.value_type} output[kBlockSize]{{}};
   {protocol.value_type} reference[kBlockSize]{{}};
   std::int32_t tap_delay[] = {{0, 1}};
   {protocol.value_type} previous = 0;
@@ -747,7 +754,8 @@ int main() {{
     reference[index] = {_two_tap_expression(protocol)};
     previous = kInput[index];
   }}
-  {protocol_symbol}(kInput, kCoefficients, state, tap_delay, scratch_input, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, state, tap_delay,
+                    scratch_input, output{scratch_argument});
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kBlockSize; ++index) {{
       if (output[index] != reference[index]) return false;
@@ -779,15 +787,16 @@ constexpr {protocol.value_type} kInput[] = {{{_cpp_values(inputs)}}};
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    arm_iir_lattice_instance_{protocol.suffix} *instance,
     const {protocol.value_type} *input, {protocol.value_type} *reflection,
     {protocol.value_type} *ladder, {protocol.value_type} *state,
     {protocol.value_type} *output) {{
-  arm_iir_lattice_instance_{protocol.suffix} instance{{}};
-  {init_symbol}(&instance, 1, reflection, ladder, state, kBlockSize);
-  {process_symbol}(&instance, input, output, kBlockSize);
+  {init_symbol}(instance, 1, reflection, ladder, state, kBlockSize);
+  {process_symbol}(instance, input, output, kBlockSize);
 }}
 
 int main() {{
+  arm_iir_lattice_instance_{protocol.suffix} instance{{}};
   {protocol.value_type} reflection[] = {{0}};
   {protocol.value_type} ladder[] = {{0, {_half_coefficient(protocol)}}};
   {protocol.value_type} state[kBlockSize + 1]{{}};
@@ -796,7 +805,7 @@ int main() {{
   for (std::size_t index = 0; index < kBlockSize; ++index) {{
     reference[index] = {_half_expression(protocol, "kInput[index]")};
   }}
-  {protocol_symbol}(kInput, reflection, ladder, state, output);
+  {protocol_symbol}(&instance, kInput, reflection, ladder, state, output);
   const auto output_matches_reference = [&]() {{
     for (std::size_t index = 0; index < kBlockSize; ++index) {{
       if (output[index] != reference[index]) return false;

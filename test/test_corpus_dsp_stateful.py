@@ -50,6 +50,9 @@ class CmsisDspStatefulProtocolTests(unittest.TestCase):
                 self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
+                self.assertNotIn(" instance;", protocol)
+                self.assertNotIn(" instance{}", protocol)
+                self.assertNotIn("scratch_output[", protocol)
                 suffix = workload.case.removeprefix("arm-fir-")
                 self.assertEqual(protocol.count(f"arm_fir_init_{suffix}("), 1)
                 self.assertEqual(protocol.count(f"arm_fir_{suffix}("), 2)

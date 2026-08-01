@@ -121,17 +121,17 @@ constexpr float32_t kExpected[kCount] = {{-5.0f, -1.0f, 0.0f, 2.0f,
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
-    float32_t *input, float32_t *output) {{
-  arm_sort_instance_f32 instance;
-  arm_sort_init_f32(&instance, ARM_SORT_BITONIC, ARM_SORT_ASCENDING);
-  arm_sort_f32(&instance, input, output, kCount);
+    arm_sort_instance_f32 *instance, float32_t *input, float32_t *output) {{
+  arm_sort_init_f32(instance, ARM_SORT_BITONIC, ARM_SORT_ASCENDING);
+  arm_sort_f32(instance, input, output, kCount);
 }}
 
 int main() {{
+  arm_sort_instance_f32 instance;
   float32_t input[kCount];
   float32_t output[kCount]{{}};
   for (std::size_t index = 0; index < kCount; ++index) input[index] = kInput[index];
-  {protocol_symbol}(input, output);
+  {protocol_symbol}(&instance, input, output);
   for (std::size_t index = 0; index < kCount; ++index)
     if (output[index] != kExpected[index]) return 1;
   return 0;
@@ -148,18 +148,19 @@ constexpr float32_t kExpected[kCount] = {{-5.0f, -1.0f, 0.0f, 2.0f, 3.0f, 6.0f, 
 }}
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
-    float32_t *input, float32_t *output, float32_t *scratch) {{
-  arm_merge_sort_instance_f32 instance;
-  arm_merge_sort_init_f32(&instance, ARM_SORT_ASCENDING, scratch);
-  arm_merge_sort_f32(&instance, input, output, kCount);
+    arm_merge_sort_instance_f32 *instance, float32_t *input,
+    float32_t *output, float32_t *scratch) {{
+  arm_merge_sort_init_f32(instance, ARM_SORT_ASCENDING, scratch);
+  arm_merge_sort_f32(instance, input, output, kCount);
 }}
 
 int main() {{
+  arm_merge_sort_instance_f32 instance;
   float32_t input[kCount];
   float32_t output[kCount]{{}};
   float32_t scratch[kCount]{{}};
   for (std::size_t index = 0; index < kCount; ++index) input[index] = kInput[index];
-  {protocol_symbol}(input, output, scratch);
+  {protocol_symbol}(&instance, input, output, scratch);
   for (std::size_t index = 0; index < kCount; ++index)
     if (output[index] != kExpected[index]) return 1;
   return 0;
@@ -178,18 +179,20 @@ constexpr float32_t kQueryX[kQueryCount] = {{0.0f, 0.5f, 1.0f, 1.5f, 2.0f}};
 constexpr float32_t kExpected[kQueryCount] = {{1.0f, 2.0f, 3.0f, 4.0f, 5.0f}};
 }}
 
-extern "C" LOOM_NOINLINE void {protocol_symbol}(float32_t *output) {{
-  float32_t coefficients[3 * (kKnownCount - 1)]{{}};
-  float32_t scratch[2 * kKnownCount - 1]{{}};
-  arm_spline_instance_f32 instance;
-  arm_spline_init_f32(&instance, ARM_SPLINE_PARABOLIC_RUNOUT,
+extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    arm_spline_instance_f32 *instance, float32_t *coefficients,
+    float32_t *scratch, float32_t *output) {{
+  arm_spline_init_f32(instance, ARM_SPLINE_PARABOLIC_RUNOUT,
                       kKnownX, kKnownY, kKnownCount, coefficients, scratch);
-  arm_spline_f32(&instance, kQueryX, output, kQueryCount);
+  arm_spline_f32(instance, kQueryX, output, kQueryCount);
 }}
 
 int main() {{
+  arm_spline_instance_f32 instance;
+  float32_t coefficients[3 * (kKnownCount - 1)]{{}};
+  float32_t scratch[2 * kKnownCount - 1]{{}};
   float32_t output[kQueryCount]{{}};
-  {protocol_symbol}(output);
+  {protocol_symbol}(&instance, coefficients, scratch, output);
   for (std::size_t index = 0; index < kQueryCount; ++index)
     if (std::fabs(output[index] - kExpected[index]) > 1.0e-6f) return 1;
   return 0;
@@ -205,32 +208,35 @@ constexpr float32_t kDistances[kExtent * kExtent] = {{0.0f, 4.0f, 4.0f, 0.0f}};
 }}
 
 extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
-    float32_t *distance, int16_t *path, std::uint32_t *path_length,
-    q7_t *window_data) {{
+    arm_matrix_instance_f32 *distances, arm_matrix_instance_f32 *costs,
+    arm_matrix_instance_q7 *window,
+    float32_t *distance, int16_t *path, std::uint32_t *path_length) {{
+  const arm_status distance_status =
+      arm_dtw_distance_f32(distances, nullptr, costs, distance);
+  if (distance_status != ARM_MATH_SUCCESS) return distance_status;
+  arm_dtw_path_f32(costs, path, path_length);
+  return arm_dtw_init_window_q7(ARM_DTW_SAKOE_CHIBA_WINDOW, 0, window);
+}}
+
+int main() {{
   float32_t costs_data[kExtent * kExtent]{{}};
   arm_matrix_instance_f32 distances{{kExtent, kExtent,
       const_cast<float32_t *>(kDistances)}};
   arm_matrix_instance_f32 costs{{kExtent, kExtent, costs_data}};
-  const arm_status distance_status =
-      arm_dtw_distance_f32(&distances, nullptr, &costs, distance);
-  if (distance_status != ARM_MATH_SUCCESS) return distance_status;
-  arm_dtw_path_f32(&costs, path, path_length);
-  arm_matrix_instance_q7 window{{kExtent, kExtent, window_data}};
-  return arm_dtw_init_window_q7(ARM_DTW_SAKOE_CHIBA_WINDOW, 0, &window);
-}}
-
-int main() {{
   float32_t distance = -1.0f;
   int16_t path[2 * (kExtent + kExtent)]{{}};
   std::uint32_t path_length = 0;
-  q7_t window[kExtent * kExtent]{{}};
+  q7_t window_data[kExtent * kExtent]{{}};
+  arm_matrix_instance_q7 window{{kExtent, kExtent, window_data}};
   const arm_status status =
-      {protocol_symbol}(&distance, path, &path_length, window);
+      {protocol_symbol}(&distances, &costs, &window,
+                        &distance, path, &path_length);
   if (status != ARM_MATH_SUCCESS || distance != 0.0f || path_length != 2) return 1;
   if (path[0] != 0 || path[1] != 0 || path[2] != 1 || path[3] != 1) return 1;
-  return window[0] == 1 && window[1] == 0 && window[2] == 0 && window[3] == 1
-             ? 0
-             : 1;
+  const bool window_matches =
+      window_data[0] == 1 && window_data[1] == 0 &&
+      window_data[2] == 0 && window_data[3] == 1;
+  return window_matches ? 0 : 1;
 }}
 """
 

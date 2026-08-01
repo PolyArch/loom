@@ -77,6 +77,10 @@ class CmsisDspAtomicProtocolTests(unittest.TestCase):
                 self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
                 source = compiled_owner.read_text(encoding="utf-8")
                 protocol = source.split("int main()", maxsplit=1)[0]
+                self.assertNotIn(" instance;", protocol)
+                self.assertNotIn(" instance{}", protocol)
+                self.assertNotIn("costs_data[", protocol)
+                self.assertNotIn("coefficients[", protocol)
                 positions = []
                 for call in workload.protocol:
                     self.assertEqual(protocol.count(f"{call.symbol}("), 1)
@@ -120,6 +124,10 @@ class CmsisDspAtomicProtocolTests(unittest.TestCase):
                     self.assertEqual(compiled_owner.name, "OperatorProtocol.cpp")
                     source = compiled_owner.read_text(encoding="utf-8")
                     protocol = source.split("int main()", maxsplit=1)[0]
+                    self.assertNotIn(" instance;", protocol)
+                    self.assertNotIn("mutable_input[", protocol)
+                    self.assertNotIn("scratch[", protocol)
+                    self.assertNotIn("for (", protocol)
                     positions = []
                     for call in workload.protocol:
                         self.assertEqual(protocol.count(f"{call.symbol}("), 1)

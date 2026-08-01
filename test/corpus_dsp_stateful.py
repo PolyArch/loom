@@ -682,6 +682,7 @@ bool oracle_matches(const {protocol.value_type} *output) {{
 }} // namespace
 
 extern "C" LOOM_NOINLINE void {protocol_symbol}(
+    arm_fir_instance_{suffix} *instance,
     const {protocol.value_type} *input,
     const {protocol.value_type} *coefficients,
     const std::int16_t *configs, {protocol.value_type} *state,
@@ -693,11 +694,10 @@ extern "C" LOOM_NOINLINE void {protocol_symbol}(
         static_cast<std::uint32_t>(configs[2 * config]);
     const std::uint16_t num_taps =
         static_cast<std::uint16_t>(configs[2 * config + 1]);
-    arm_fir_instance_{suffix} instance{{}};
-    {init_call}(&instance, num_taps, coefficients + coefficient_offset,
+    {init_call}(instance, num_taps, coefficients + coefficient_offset,
                 state, block_size);
-    arm_fir_{suffix}(&instance, input, output + output_offset, block_size);
-    arm_fir_{suffix}(&instance, input + block_size,
+    arm_fir_{suffix}(instance, input, output + output_offset, block_size);
+    arm_fir_{suffix}(instance, input + block_size,
                      output + output_offset + block_size, block_size);
     coefficient_offset += num_taps;
     output_offset += 2 * block_size;
@@ -705,9 +705,10 @@ extern "C" LOOM_NOINLINE void {protocol_symbol}(
 }}
 
 int main() {{
+  arm_fir_instance_{suffix} instance{{}};
   {protocol.value_type} state[kStateCount]{{}};
   {protocol.value_type} output[kOutputCount]{{}};
-  {protocol_symbol}(kInput, kCoefficients, kConfigs, state, output);
+  {protocol_symbol}(&instance, kInput, kCoefficients, kConfigs, state, output);
   return oracle_matches(output) ? 0 : 1;
 }}
 """

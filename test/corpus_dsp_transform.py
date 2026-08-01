@@ -417,18 +417,19 @@ constexpr {protocol.value_type} kExpected[kScalarCount] = {{
 }}
 
 extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
+    arm_cfft_instance_{protocol.suffix} *instance,
     {protocol.value_type} *data) {{
-  arm_cfft_instance_{protocol.suffix} instance;
-  const arm_status status = arm_cfft_init_{protocol.suffix}(&instance, kFftLength);
+  const arm_status status = arm_cfft_init_{protocol.suffix}(instance, kFftLength);
   if (status == ARM_MATH_SUCCESS)
-    arm_cfft_{protocol.suffix}(&instance, data, 0, 1);
+    arm_cfft_{protocol.suffix}(instance, data, 0, 1);
   return status;
 }}
 
 int main() {{
+  arm_cfft_instance_{protocol.suffix} instance;
   {protocol.value_type} output[kScalarCount];
   for (std::size_t index = 0; index < kScalarCount; ++index) output[index] = kInput[index];
-  if ({protocol_symbol}(output) != ARM_MATH_SUCCESS) return 1;
+  if ({protocol_symbol}(&instance, output) != ARM_MATH_SUCCESS) return 1;
 {_comparison_body(protocol, len(expected))}  return 0;
 }}
 """
@@ -462,9 +463,9 @@ def _render_rfft(
     )
     input_assignment = (
         "mutable_input[index] = static_cast<float16_t>(\n"
-        "        static_cast<float>(input[index]) / 6000.0f);"
+        "        static_cast<float>(kInput[index]) / 6000.0f);"
         if protocol.suffix == "f16"
-        else "mutable_input[index] = input[index];"
+        else "mutable_input[index] = kInput[index];"
     )
     output_rescale = (
         "  for (std::size_t index = 0; index < kExpectedCount; ++index)\n"
@@ -474,13 +475,13 @@ def _render_rfft(
         else ""
     )
     if protocol.kind is TransformKind.FIXED_RFFT:
-        init_call = f"arm_rfft_init_{protocol.suffix}(&instance, kFftLength, 0, 1)"
-        execute_call = f"arm_rfft_{protocol.suffix}(&instance, mutable_input, output)"
+        init_call = f"arm_rfft_init_{protocol.suffix}(instance, kFftLength, 0, 1)"
+        execute_call = f"arm_rfft_{protocol.suffix}(instance, mutable_input, output)"
         instance_type = f"arm_rfft_instance_{protocol.suffix}"
     else:
-        init_call = f"arm_rfft_fast_init_{protocol.suffix}(&instance, kFftLength)"
+        init_call = f"arm_rfft_fast_init_{protocol.suffix}(instance, kFftLength)"
         execute_call = (
-            f"arm_rfft_fast_{protocol.suffix}(&instance, mutable_input, output, 0)"
+            f"arm_rfft_fast_{protocol.suffix}(instance, mutable_input, output, 0)"
         )
         instance_type = f"arm_rfft_fast_instance_{protocol.suffix}"
     return f"""#include <cmath>
@@ -507,20 +508,23 @@ constexpr {protocol.value_type} kExpected[kExpectedCount] = {{
 }}
 
 extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
-    const {protocol.value_type} *input, {protocol.value_type} *output) {{
-  {protocol.value_type} mutable_input[kFftLength];
-  for (std::size_t index = 0; index < kFftLength; ++index)
-    {input_assignment}
-  {instance_type} instance;
+    {instance_type} *instance, {protocol.value_type} *mutable_input,
+    {protocol.value_type} *output) {{
   const arm_status status = {init_call};
   if (status == ARM_MATH_SUCCESS)
     {execute_call};
-{output_rescale}  return status;
+  return status;
 }}
 
 int main() {{
+  {instance_type} instance;
+  {protocol.value_type} mutable_input[kFftLength];
   {protocol.value_type} output[{output_capacity}]{{}};
-  if ({protocol_symbol}(kInput, output) != ARM_MATH_SUCCESS) return 1;
+  for (std::size_t index = 0; index < kFftLength; ++index)
+    {input_assignment}
+  if ({protocol_symbol}(&instance, mutable_input, output) != ARM_MATH_SUCCESS)
+    return 1;
+{output_rescale}
 {_comparison_body(protocol, len(expected))}  return 0;
 }}
 """
@@ -549,7 +553,7 @@ def _render_mfcc(
         raise WorkloadProviderError("CMSIS-DSP MFCC pattern has an invalid extent")
     arrays = corpus_dsp_protocol.format_cpp_array
     scratch_type = protocol.value_type if protocol.floating_point else "q31_t"
-    execute = f"arm_mfcc_{protocol.suffix}(&instance, mutable_input, output, scratch)"
+    execute = f"arm_mfcc_{protocol.suffix}(instance, mutable_input, output, scratch)"
     execute_body = (
         f"  {execute};\n  return ARM_MATH_SUCCESS;"
         if protocol.floating_point
@@ -581,14 +585,11 @@ constexpr {protocol.value_type} kExpected[kOutputCount] = {{
 }}
 
 extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
-    const {protocol.value_type} *input, {protocol.value_type} *output) {{
-  {protocol.value_type} mutable_input[kFftLength];
-  {scratch_type} scratch[2 * kFftLength]{{}};
-  for (std::size_t index = 0; index < kFftLength; ++index)
-    mutable_input[index] = input[index];
-  arm_mfcc_instance_{protocol.suffix} instance;
+    arm_mfcc_instance_{protocol.suffix} *instance,
+    {protocol.value_type} *mutable_input, {protocol.value_type} *output,
+    {scratch_type} *scratch) {{
   const arm_status status = arm_mfcc_init_{protocol.suffix}(
-      &instance, kFftLength, kFilterCount, kOutputCount,
+      instance, kFftLength, kFilterCount, kOutputCount,
       mfcc_dct_coefs_config1_{protocol.suffix},
       mfcc_filter_pos_config3_{protocol.suffix},
       mfcc_filter_len_config3_{protocol.suffix},
@@ -599,8 +600,15 @@ extern "C" LOOM_NOINLINE arm_status {protocol_symbol}(
 }}
 
 int main() {{
+  arm_mfcc_instance_{protocol.suffix} instance;
+  {protocol.value_type} mutable_input[kFftLength];
   {protocol.value_type} output[kOutputCount]{{}};
-  if ({protocol_symbol}(kInput, output) != ARM_MATH_SUCCESS) return 1;
+  {scratch_type} scratch[2 * kFftLength]{{}};
+  for (std::size_t index = 0; index < kFftLength; ++index)
+    mutable_input[index] = kInput[index];
+  if ({protocol_symbol}(&instance, mutable_input, output, scratch) !=
+      ARM_MATH_SUCCESS)
+    return 1;
 {_comparison_body(protocol, output_count)}  return 0;
 }}
 """
