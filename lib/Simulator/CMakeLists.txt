@@ -16,6 +16,8 @@ add_mlir_library(LoomSimulator
   OperationSemantics.cpp
   SimulationAdmission.cpp
   SimulationArtifactStore.cpp
+  SimulationExecution.cpp
+  SimulationFunctionalObservations.cpp
   SimulationInputCapture.cpp
   SimulationPointerCapture.cpp
   SimulationRuntimeInput.cpp
@@ -31,6 +33,7 @@ add_mlir_library(LoomSimulator
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomEvaluation
   MLIRLoom
   MLIRArithDialect
   MLIRDataflow

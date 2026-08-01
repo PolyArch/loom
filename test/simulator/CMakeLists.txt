@@ -151,6 +151,23 @@ target_link_libraries(loom-simulator-spatial-store-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-simulation-execution-test
+  SimulationExecutionTest.cpp
+)
+
+target_link_libraries(loom-simulator-simulation-execution-test PRIVATE
+  LoomCommon
+  LoomEvaluation
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
 add_executable(loom-simulator-structured-program-native-execution-test
   StructuredProgramNativeExecutionTest.cpp
 )

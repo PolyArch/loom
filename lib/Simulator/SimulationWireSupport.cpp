@@ -556,14 +556,61 @@ decodeStreamSequence(WireReader &reader, const LaneShape &shape) {
   return sequence;
 }
 
-void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object) {
-  writer.u64(object.initialBytes.size());
-  writer.u64(object.initialBytes.size());
-  for (const SemanticMemoryByte &byte : object.initialBytes) {
+llvm::Error
+validateSemanticMemoryBytes(llvm::ArrayRef<SemanticMemoryByte> bytes,
+                            const llvm::Twine &what) {
+  for (const SemanticMemoryByte &byte : bytes) {
+    if (static_cast<std::uint32_t>(byte.state) >
+        static_cast<std::uint32_t>(SemanticState::Undef))
+      return invalid(what + ": memory-byte state is out of domain");
+    if (byte.state != SemanticState::Defined && byte.value != 0)
+      return invalid(what +
+                     ": a non-defined memory byte carries a hidden value");
+  }
+  return llvm::Error::success();
+}
+
+void encodeSemanticMemoryByteArray(WireWriter &writer,
+                                   llvm::ArrayRef<SemanticMemoryByte> bytes) {
+  writer.u64(bytes.size());
+  for (const SemanticMemoryByte &byte : bytes) {
     writer.u32(static_cast<std::uint32_t>(byte.state));
     if (byte.state == SemanticState::Defined)
       writer.bytes({byte.value});
   }
+}
+
+llvm::Expected<std::vector<SemanticMemoryByte>>
+decodeSemanticMemoryByteArray(WireReader &reader) {
+  llvm::Expected<std::uint64_t> count = reader.u64();
+  if (!count)
+    return count.takeError();
+  if (llvm::Error error = reader.guardCount(*count, 4))
+    return std::move(error);
+  std::vector<SemanticMemoryByte> bytes;
+  bytes.reserve(*count);
+  for (std::uint64_t index = 0; index < *count; ++index) {
+    llvm::Expected<std::uint32_t> tag = reader.u32();
+    if (!tag)
+      return tag.takeError();
+    if (*tag > static_cast<std::uint32_t>(SemanticState::Undef))
+      return invalid("simulation wire: unknown memory-byte state");
+    SemanticMemoryByte byte;
+    byte.state = static_cast<SemanticState>(*tag);
+    if (byte.state == SemanticState::Defined) {
+      llvm::Expected<llvm::ArrayRef<std::uint8_t>> raw = reader.bytes(1);
+      if (!raw)
+        return raw.takeError();
+      byte.value = raw->front();
+    }
+    bytes.push_back(byte);
+  }
+  return bytes;
+}
+
+void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object) {
+  writer.u64(object.initialBytes.size());
+  encodeSemanticMemoryByteArray(writer, object.initialBytes);
   writer.u64(object.pointerValues.size());
   for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
     writer.u64(pointer.storageByteOffset);
@@ -579,32 +626,15 @@ llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader,
   llvm::Expected<std::uint64_t> byteCount = reader.u64();
   if (!byteCount)
     return byteCount.takeError();
-  llvm::Expected<std::uint64_t> arrayCount = reader.u64();
-  if (!arrayCount)
-    return arrayCount.takeError();
-  if (*arrayCount != *byteCount)
+  llvm::Expected<std::vector<SemanticMemoryByte>> initialBytes =
+      decodeSemanticMemoryByteArray(reader);
+  if (!initialBytes)
+    return initialBytes.takeError();
+  if (initialBytes->size() != *byteCount)
     return invalid(
         "simulation wire: memory object byte count does not match its "
         "initial-byte array");
-  if (llvm::Error error = reader.guardCount(*byteCount, 4))
-    return std::move(error);
-  object.initialBytes.reserve(*byteCount);
-  for (std::uint64_t index = 0; index < *byteCount; ++index) {
-    llvm::Expected<std::uint32_t> tag = reader.u32();
-    if (!tag)
-      return tag.takeError();
-    if (*tag > static_cast<std::uint32_t>(SemanticState::Undef))
-      return invalid("simulation wire: unknown memory-byte state");
-    SemanticMemoryByte byte;
-    byte.state = static_cast<SemanticState>(*tag);
-    if (byte.state == SemanticState::Defined) {
-      llvm::Expected<llvm::ArrayRef<std::uint8_t>> raw = reader.bytes(1);
-      if (!raw)
-        return raw.takeError();
-      byte.value = (*raw)[0];
-    }
-    object.initialBytes.push_back(byte);
-  }
+  object.initialBytes = std::move(*initialBytes);
   llvm::Expected<std::uint64_t> pointerCount = reader.u64();
   if (!pointerCount)
     return pointerCount.takeError();
@@ -757,15 +787,9 @@ llvm::Error validateRuntimeMemoryObjectStructure(
   for (const RuntimeMemoryObject &object : objects) {
     if (object.initialBytes.empty())
       return invalid("simulation runtime input: empty memory object");
-    for (const SemanticMemoryByte &byte : object.initialBytes) {
-      if (static_cast<std::uint32_t>(byte.state) >
-          static_cast<std::uint32_t>(SemanticState::Undef))
-        return invalid(
-            "simulation runtime input: memory-byte state is out of domain");
-      if (byte.state != SemanticState::Defined && byte.value != 0)
-        return invalid("simulation runtime input: a non-defined memory byte "
-                       "carries a hidden value");
-    }
+    if (llvm::Error error = validateSemanticMemoryBytes(
+            object.initialBytes, "simulation runtime input"))
+      return error;
     std::uint64_t previousEnd = 0;
     for (std::size_t index = 0; index < object.pointerValues.size(); ++index) {
       const RuntimeMemoryPointer &pointer = object.pointerValues[index];

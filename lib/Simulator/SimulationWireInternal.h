@@ -227,6 +227,14 @@ void encodeStreamSequence(WireWriter &writer,
 llvm::Expected<CanonicalStreamSequence>
 decodeStreamSequence(WireReader &reader, const LaneShape &shape);
 
+llvm::Error
+validateSemanticMemoryBytes(llvm::ArrayRef<SemanticMemoryByte> bytes,
+                            const llvm::Twine &what);
+void encodeSemanticMemoryByteArray(WireWriter &writer,
+                                   llvm::ArrayRef<SemanticMemoryByte> bytes);
+llvm::Expected<std::vector<SemanticMemoryByte>>
+decodeSemanticMemoryByteArray(WireReader &reader);
+
 void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object);
 llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader,
                                                        mlir::Operation *scope);
