@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import threading
+
+from simulation_conformance import (
+    MAX_OUTER_WORKERS,
+    outer_worker_limit,
+)
 
 
 DEFAULT_CASE_TIMEOUT_SECONDS = 120.0
 DEFAULT_DFG_SIM_CASE_TIMEOUT_SECONDS = 30.0
-RESERVED_DEVELOPMENT_CPUS = 4
-MAX_CASE_WORKERS = 128
+MAX_CASE_WORKERS = MAX_OUTER_WORKERS
 
 
 class CaseResourceLimiter:
@@ -43,8 +46,7 @@ def case_resource_slots(case, stage: str, capacity: int) -> int:
 
 
 def default_jobs() -> int:
-    available = (os.cpu_count() or 1) - RESERVED_DEVELOPMENT_CPUS
-    return max(1, min(available, MAX_CASE_WORKERS))
+    return outer_worker_limit(memory_derived_limit=MAX_CASE_WORKERS)
 
 
 def default_case_timeout(stage: str) -> float:
