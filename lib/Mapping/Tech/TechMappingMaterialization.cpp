@@ -254,7 +254,8 @@ materializeTechMappingCandidate(const TechMappingGenerationInputs &inputs,
     if (error)
       return std::move(error);
   }
-  auto finalized = finalizeTechMapping(root, inputs.store);
+  auto finalized =
+      finalizeTechMapping(root, inputs.dataflow, inputs.fabric, inputs.store);
   if (!finalized)
     return finalized.takeError();
   return finalized->reference();

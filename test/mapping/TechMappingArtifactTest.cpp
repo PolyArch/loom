@@ -535,12 +535,18 @@ void artifactRoundTripAndReferenceValidation() {
   if (!module)
     fail("valid TechMapping fixture did not parse");
   auto roots = module->getOps<::mapping::TechOp>();
-  auto finalized =
-      take(loom::mapping::finalizeTechMapping(*roots.begin(), store));
+  auto finalized = take(loom::mapping::finalizeTechMapping(
+      *roots.begin(), dataflowView, fabricRoot.view(), store));
   if (finalized.view().dataflowIdentity() != dataflowReference.artifact ||
       finalized.view().fabricIdentity() != fabricRoot.reference().artifact ||
       finalized.view().memoryRealizations().size() != 1)
     fail("sealed TechMapping view lost its exact upstream binding");
+
+  TemporaryDirectory emptyDirectory;
+  loom::ArtifactStore emptyStore(emptyDirectory.path());
+  if (!rejected(loom::mapping::finalizeTechMapping(
+          *roots.begin(), dataflowView, fabricRoot.view(), emptyStore)))
+    fail("sealed upstream views bypassed durable publication");
 
   auto imported =
       take(loom::mapping::importTechMapping(finalized.reference(), store));

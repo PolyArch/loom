@@ -176,12 +176,27 @@ private:
   friend llvm::Expected<FinalizedTechMapping>
   finalizeTechMapping(::mapping::TechOp source, const ArtifactStore &store);
   friend llvm::Expected<FinalizedTechMapping>
+  finalizeTechMapping(::mapping::TechOp source,
+                      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                      const ::loom::fabric::FabricArtifactView &fabric,
+                      const ArtifactStore &store);
+  friend llvm::Expected<FinalizedTechMapping>
   importTechMapping(const ArtifactRootReference &reference,
                     const ArtifactStore &store);
 };
 
 llvm::Expected<FinalizedTechMapping>
 finalizeTechMapping(::mapping::TechOp source, const ArtifactStore &store);
+
+/// Finalizes against exact upstream views already sealed by their family
+/// finalizers or strict importers. The corresponding objects must still be
+/// durably present in `store`; this overload only avoids reparsing the same
+/// immutable upstream artifacts for every candidate in one invocation.
+llvm::Expected<FinalizedTechMapping>
+finalizeTechMapping(::mapping::TechOp source,
+                    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                    const ::loom::fabric::FabricArtifactView &fabric,
+                    const ArtifactStore &store);
 
 llvm::Expected<FinalizedTechMapping>
 importTechMapping(const ArtifactRootReference &reference,

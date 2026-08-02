@@ -900,6 +900,32 @@ struct ImportedTechMappingView final {
   std::vector<TechMemoryRealizationView> memory;
 };
 
+struct PreparedTechMapping final {
+  ArtifactRootReference reference;
+  CanonicalSemanticBytes canonicalBytes;
+};
+
+llvm::Expected<PreparedTechMapping>
+prepareTechMapping(::mapping::TechOp source) {
+  auto canonicalBytes = writeCanonicalMappingAssembly(source);
+  if (!canonicalBytes)
+    return canonicalBytes.takeError();
+  ArtifactRootReference reference{
+      mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
+      finalizeArtifactIdentity(mappingArtifactSchema, *canonicalBytes)};
+  return PreparedTechMapping{std::move(reference), std::move(*canonicalBytes)};
+}
+
+llvm::Error publishPreparedTechMapping(const PreparedTechMapping &prepared,
+                                       const ArtifactStore &store) {
+  auto stored = store.put(mappingArtifactSchema, prepared.canonicalBytes);
+  if (!stored)
+    return stored.takeError();
+  if (*stored != prepared.reference.artifact)
+    return invalid("ArtifactStore returned a different Mapping identity");
+  return llvm::Error::success();
+}
+
 llvm::Expected<ImportedTechMappingView>
 importView(const ArtifactIdentity &mappingIdentity, ::mapping::TechOp root,
            const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -1020,6 +1046,48 @@ strictImport(const ArtifactIdentity &mappingIdentity,
   return view;
 }
 
+llvm::Expected<TechMappingView>
+strictImport(const ArtifactIdentity &mappingIdentity,
+             const CanonicalSemanticBytes &canonicalBytes,
+             const ::dataflow::CanonicalDataflowProgramView &dataflow,
+             const ::loom::fabric::FabricArtifactView &fabric) {
+  if (finalizeArtifactIdentity(mappingArtifactSchema, canonicalBytes) !=
+      mappingIdentity)
+    return invalid("mapping identity does not match canonical bytes");
+  auto parsed = parseTechRoot(canonicalBytes);
+  if (!parsed)
+    return parsed.takeError();
+  auto view =
+      TechMappingView::import(mappingIdentity, parsed->root, dataflow, fabric);
+  if (!view)
+    return view.takeError();
+  auto rewritten = writeCanonicalMappingAssembly(parsed->root);
+  if (!rewritten)
+    return rewritten.takeError();
+  if (!rewritten->bytes().equals(canonicalBytes.bytes()))
+    return invalid("stored mapping payload is not canonical");
+  return view;
+}
+
+llvm::Error requirePublishedUpstream(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ArtifactStore &store) {
+  const ArtifactRootReference dataflowReference{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version, dataflow.identity()};
+  auto dataflowBytes = store.get(dataflowReference);
+  if (!dataflowBytes)
+    return dataflowBytes.takeError();
+  const ArtifactRootReference fabricReference{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version, fabric.identity()};
+  auto fabricBytes = store.get(fabricReference);
+  if (!fabricBytes)
+    return fabricBytes.takeError();
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error verifyTechMemoryRealizationClosure(
@@ -1044,21 +1112,38 @@ llvm::Expected<TechMappingView> TechMappingView::import(
 
 llvm::Expected<FinalizedTechMapping>
 finalizeTechMapping(::mapping::TechOp source, const ArtifactStore &store) {
-  auto canonicalBytes = writeCanonicalMappingAssembly(source);
-  if (!canonicalBytes)
-    return canonicalBytes.takeError();
-  ArtifactRootReference reference{
-      mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
-      finalizeArtifactIdentity(mappingArtifactSchema, *canonicalBytes)};
-  auto view = strictImport(reference.artifact, *canonicalBytes, store);
+  auto prepared = prepareTechMapping(source);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = strictImport(prepared->reference.artifact,
+                           prepared->canonicalBytes, store);
   if (!view)
     return view.takeError();
-  auto stored = store.put(mappingArtifactSchema, *canonicalBytes);
-  if (!stored)
-    return stored.takeError();
-  if (*stored != reference.artifact)
-    return invalid("ArtifactStore returned a different Mapping identity");
-  return FinalizedTechMapping(reference, std::move(*canonicalBytes),
+  if (llvm::Error error = publishPreparedTechMapping(*prepared, store))
+    return std::move(error);
+  return FinalizedTechMapping(std::move(prepared->reference),
+                              std::move(prepared->canonicalBytes),
+                              std::move(*view));
+}
+
+llvm::Expected<FinalizedTechMapping>
+finalizeTechMapping(::mapping::TechOp source,
+                    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                    const ::loom::fabric::FabricArtifactView &fabric,
+                    const ArtifactStore &store) {
+  if (llvm::Error error = requirePublishedUpstream(dataflow, fabric, store))
+    return std::move(error);
+  auto prepared = prepareTechMapping(source);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = strictImport(prepared->reference.artifact,
+                           prepared->canonicalBytes, dataflow, fabric);
+  if (!view)
+    return view.takeError();
+  if (llvm::Error error = publishPreparedTechMapping(*prepared, store))
+    return std::move(error);
+  return FinalizedTechMapping(std::move(prepared->reference),
+                              std::move(prepared->canonicalBytes),
                               std::move(*view));
 }
 
