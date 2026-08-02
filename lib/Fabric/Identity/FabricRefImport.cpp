@@ -36,6 +36,7 @@ struct FabricArtifactView::Storage {
   std::vector<FabricBoundaryOccurrenceRef> boundaryOccurrences;
   std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricPhysicalTraversalView> physicalTraversalViews;
+  std::vector<FabricInventoryOwnerRef> moduleResourceOwners;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
@@ -636,6 +637,11 @@ const ::fabric::ResourceContract *FabricArtifactView::resourceContract(
       storage_->inventoryOwner(owner);
   return resolved && resolved->resourceContract ? &*resolved->resourceContract
                                                 : nullptr;
+}
+
+llvm::ArrayRef<FabricInventoryOwnerRef>
+FabricArtifactView::moduleResourceOwners() const {
+  return storage_->moduleResourceOwners;
 }
 
 std::optional<FabricFuNodeKind>
@@ -1572,6 +1578,10 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   storage->pointConnectionKeys = std::move(pointConnectionKeys);
   storage->traversalKeys = std::move(traversalKeys);
   FabricArtifactView view(storage);
+  auto moduleResourceOwners = detail::projectModuleResourceOwners(view);
+  if (!moduleResourceOwners)
+    return moduleResourceOwners.takeError();
+  storage->moduleResourceOwners = std::move(*moduleResourceOwners);
   for (const FabricPointConnectionPayload &connection :
        view.pointConnections()) {
     if (llvm::Error error = validateFabricRef(view, connection.source))

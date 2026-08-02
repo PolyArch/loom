@@ -91,6 +91,7 @@ struct FabricPhysicalTraversalView final {
   FabricPhysicalTraversalRef reference;
   std::vector<FabricTransportEndpointRef> sources;
   std::vector<FabricTransportEndpointRef> destinations;
+  std::vector<FabricResourceStateRef> resourceStates;
 };
 
 class FabricArtifactView;
@@ -172,6 +173,12 @@ public:
   /// are derived from this record and never maintained as parallel counts.
   const ::fabric::ResourceContract *
   resourceContract(const FabricInventoryOwnerRef &owner) const;
+
+  /// Complete canonical inventory of physical owners that embed a resource
+  /// contract in a fully elaborated Module root. Definition-only owners are
+  /// excluded; FU operation contracts are projected through occurrence-node
+  /// owners. Other root kinds have an empty range.
+  llvm::ArrayRef<FabricInventoryOwnerRef> moduleResourceOwners() const;
 
   /// The node kind the owner's configured graph declares at `ordinal`, or
   /// absent when the owner declares no node there. One ordinal never carries

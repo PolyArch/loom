@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -95,6 +96,121 @@ private:
   friend class FrozenSpatialPnrProblemBuilder;
 };
 
+enum class FrozenSpatialGrantPolicyKind : std::uint32_t {
+  None,
+  FixedPriority,
+  RoundRobin,
+};
+
+struct FrozenSpatialCapacityDimension final {
+  std::uint32_t capacity = 0;
+  std::uint32_t initialOccupancy = 0;
+};
+
+struct FrozenSpatialResourceState final {
+  ::loom::fabric::FabricResourceStateRef reference;
+  PnrIndex capacityOffset = 0;
+  PnrIndex capacityCount = 0;
+};
+
+struct FrozenSpatialResourceClaim final {
+  PnrIndex state = 0;
+  std::uint32_t dimension = 0;
+  std::uint32_t amount = 0;
+};
+
+struct FrozenSpatialResourceCommit final {
+  std::uint32_t event = 0;
+  std::uint32_t transition = 0;
+};
+
+struct FrozenSpatialInternalTransaction final {
+  PnrIndex claimOffset = 0;
+  PnrIndex claimCount = 0;
+};
+
+struct FrozenSpatialTimingContract final {
+  PnrIndex eventRankOffset = 0;
+  PnrIndex eventRankCount = 0;
+};
+
+struct FrozenSpatialUsePattern final {
+  ::loom::fabric::FabricUsePatternRef reference;
+  std::uint32_t requester = 0;
+  std::uint32_t eligibility = 0;
+  std::uint32_t acquireEvent = 0;
+  std::uint32_t releaseEvent = 0;
+  std::optional<FrozenSpatialResourceCommit> commit;
+  PnrIndex timingContract = 0;
+  PnrIndex claimOffset = 0;
+  PnrIndex claimCount = 0;
+  PnrIndex transactionOffset = 0;
+  PnrIndex transactionCount = 0;
+};
+
+struct FrozenSpatialResourceOwner final {
+  ::loom::fabric::FabricInventoryOwnerRef reference;
+  PnrIndex stateOffset = 0;
+  PnrIndex stateCount = 0;
+  PnrIndex patternOffset = 0;
+  PnrIndex patternCount = 0;
+  PnrIndex timingOffset = 0;
+  PnrIndex timingCount = 0;
+  PnrIndex grantOrderOffset = 0;
+  PnrIndex grantOrderCount = 0;
+  FrozenSpatialGrantPolicyKind grantPolicy = FrozenSpatialGrantPolicyKind::None;
+  std::optional<std::uint32_t> roundRobinResetRequester;
+  std::uint32_t resourceTransitionCount = 0;
+  std::uint32_t requesterCount = 0;
+  std::uint32_t eligibilityCount = 0;
+  std::uint32_t eventCount = 0;
+};
+
+class FrozenSpatialResourceIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialResourceOwner> resourceOwners() const {
+    return owners_;
+  }
+  llvm::ArrayRef<FrozenSpatialResourceState> resourceStates() const {
+    return states_;
+  }
+  llvm::ArrayRef<FrozenSpatialCapacityDimension> capacityDimensions() const {
+    return capacityDimensions_;
+  }
+  llvm::ArrayRef<FrozenSpatialUsePattern> usePatterns() const {
+    return patterns_;
+  }
+  llvm::ArrayRef<FrozenSpatialResourceClaim> claims() const { return claims_; }
+  llvm::ArrayRef<FrozenSpatialInternalTransaction>
+  internalTransactions() const {
+    return internalTransactions_;
+  }
+  llvm::ArrayRef<PnrIndex> transactionClaims() const {
+    return transactionClaims_;
+  }
+  llvm::ArrayRef<FrozenSpatialTimingContract> timingContracts() const {
+    return timingContracts_;
+  }
+  llvm::ArrayRef<std::uint32_t> eventRanks() const { return eventRanks_; }
+  llvm::ArrayRef<std::uint32_t> grantRequesterOrder() const {
+    return grantRequesterOrder_;
+  }
+
+private:
+  std::vector<FrozenSpatialResourceOwner> owners_;
+  std::vector<FrozenSpatialResourceState> states_;
+  std::vector<FrozenSpatialCapacityDimension> capacityDimensions_;
+  std::vector<FrozenSpatialUsePattern> patterns_;
+  std::vector<FrozenSpatialResourceClaim> claims_;
+  std::vector<FrozenSpatialInternalTransaction> internalTransactions_;
+  std::vector<PnrIndex> transactionClaims_;
+  std::vector<FrozenSpatialTimingContract> timingContracts_;
+  std::vector<std::uint32_t> eventRanks_;
+  std::vector<std::uint32_t> grantRequesterOrder_;
+
+  friend class FrozenSpatialResourceIndexBuilder;
+};
+
 struct FrozenSpatialRoutingEndpoint final {
   ::loom::fabric::FabricTransportEndpointRef reference;
   ::loom::fabric::FabricPortDirection direction;
@@ -107,6 +223,8 @@ struct FrozenSpatialTraversal final {
   PnrIndex sourceCount = 0;
   PnrIndex destinationOffset = 0;
   PnrIndex destinationCount = 0;
+  PnrIndex resourceStateOffset = 0;
+  PnrIndex resourceStateCount = 0;
 };
 
 struct FrozenSpatialRoutingArc final {
@@ -127,6 +245,9 @@ public:
   llvm::ArrayRef<PnrIndex> traversalEndpoints() const {
     return traversalEndpoints_;
   }
+  llvm::ArrayRef<PnrIndex> traversalResourceStates() const {
+    return traversalResourceStates_;
+  }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
@@ -137,6 +258,7 @@ private:
   std::vector<FrozenSpatialRoutingEndpoint> endpoints_;
   std::vector<FrozenSpatialTraversal> traversals_;
   std::vector<PnrIndex> traversalEndpoints_;
+  std::vector<PnrIndex> traversalResourceStates_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<PnrIndex> arcSources_;
   std::vector<FrozenSpatialRoutingArc> arcs_;
@@ -190,6 +312,7 @@ public:
   const FrozenSpatialRealizationIndex &realizations() const {
     return realizations_;
   }
+  const FrozenSpatialResourceIndex &resources() const { return resources_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
@@ -202,6 +325,7 @@ private:
                           std::vector<DeterministicWorkBudgetEntry> workBudget,
                           FrozenConstraintIndex constraints,
                           FrozenSpatialRealizationIndex realizations,
+                          FrozenSpatialResourceIndex resources,
                           FrozenSpatialRoutingGraph routing,
                           FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
@@ -210,7 +334,8 @@ private:
         constraintSetIdentity_(std::move(constraintSetIdentity)),
         config_(std::move(config)), workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
-        realizations_(std::move(realizations)), routing_(std::move(routing)),
+        realizations_(std::move(realizations)),
+        resources_(std::move(resources)), routing_(std::move(routing)),
         cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
@@ -221,6 +346,7 @@ private:
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;
+  FrozenSpatialResourceIndex resources_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialPnrCacheKey cacheKey_;
 

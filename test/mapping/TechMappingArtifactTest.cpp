@@ -638,6 +638,46 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingEndpoints().empty() ||
       frozen->routing().routingArcs().empty())
     fail("aggregate Spatial freeze omitted realizations or routing topology");
+  std::size_t expectedResourceStates = 0;
+  std::size_t expectedUsePatterns = 0;
+  std::size_t expectedCommits = 0;
+  for (const auto &owner : fabricRoot.view().moduleResourceOwners()) {
+    const ::fabric::ResourceContract *contract =
+        fabricRoot.view().resourceContract(owner);
+    if (!contract)
+      fail("physical resource-owner inventory contains no contract");
+    expectedResourceStates += contract->stateCount();
+    expectedUsePatterns += contract->usePatternCount();
+    for (std::uint32_t ordinal = 0; ordinal < contract->usePatternCount();
+         ++ordinal)
+      expectedCommits += contract->usePattern(::fabric::UsePatternKey(ordinal))
+                             .commit.has_value();
+  }
+  if (frozen->resources().resourceOwners().size() !=
+          fabricRoot.view().moduleResourceOwners().size() ||
+      frozen->resources().resourceStates().size() != expectedResourceStates ||
+      frozen->resources().usePatterns().size() != expectedUsePatterns)
+    fail("aggregate Spatial freeze omitted Fabric resource contracts");
+  const std::size_t frozenCommits = llvm::count_if(
+      frozen->resources().usePatterns(),
+      [](const auto &pattern) { return pattern.commit.has_value(); });
+  if (frozenCommits != expectedCommits)
+    fail("aggregate Spatial freeze changed owner-defined commit transitions");
+  const auto traversalViews = fabricRoot.view().physicalTraversals();
+  if (frozen->routing().traversals().size() != traversalViews.size())
+    fail("aggregate Spatial freeze changed the traversal inventory");
+  for (auto [ordinal, traversal] :
+       llvm::enumerate(frozen->routing().traversals())) {
+    if (traversal.resourceStateCount !=
+        traversalViews[ordinal].resourceStates.size())
+      fail("aggregate Spatial freeze changed traversal resource states");
+    const auto frozenStates = frozen->routing().traversalResourceStates().slice(
+        traversal.resourceStateOffset, traversal.resourceStateCount);
+    for (auto [stateOrdinal, state] : llvm::enumerate(frozenStates))
+      if (frozen->resources().resourceStates()[state].reference !=
+          traversalViews[ordinal].resourceStates[stateOrdinal])
+        fail("aggregate Spatial freeze rebound a traversal resource state");
+  }
   if (!frozen->constraints().empty())
     fail("empty MappingConstraintSet produced a nonempty constraint index");
   if (frozen->workBudget().empty())

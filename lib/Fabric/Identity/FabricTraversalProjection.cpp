@@ -1,7 +1,12 @@
 #include "FabricTraversalProjection.h"
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/FifoResourceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 
+#include "llvm/ADT/STLExtras.h"
+
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -43,7 +48,95 @@ directionalEndpoints(const FabricArtifactView &view,
   return result;
 }
 
+FabricResourceStateRef resourceState(const FabricInventoryOwnerRef &owner,
+                                     FabricOrdinal ordinal) {
+  return FabricResourceStateRef{FabricResourceStateOwnerRef(owner), ordinal};
+}
+
+llvm::Error appendPatternStates(const FabricArtifactView &view,
+                                const FabricUsePatternRef &pattern,
+                                std::vector<FabricResourceStateRef> &states) {
+  const FabricInventoryOwnerRef &owner = pattern.owner.catalog();
+  const ::fabric::ResourceContract *contract = view.resourceContract(owner);
+  if (!contract || pattern.ordinal >= contract->usePatternCount())
+    return invalid("physical traversal selects an invalid use pattern");
+  for (const ::fabric::Claim &claim :
+       contract->usePattern(::fabric::UsePatternKey(pattern.ordinal)).claims)
+    states.push_back(resourceState(owner, claim.state.ordinal()));
+  return llvm::Error::success();
+}
+
+void canonicalizeStates(std::vector<FabricResourceStateRef> &states) {
+  llvm::sort(states, [](const FabricResourceStateRef &lhs,
+                        const FabricResourceStateRef &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  states.erase(std::unique(states.begin(), states.end()), states.end());
+}
+
+void appendPhysicalResourceOwner(const FabricArtifactView &view,
+                                 FabricInventoryOwnerRef owner,
+                                 std::vector<FabricInventoryOwnerRef> &owners) {
+  if (view.resourceContract(owner))
+    owners.push_back(std::move(owner));
+}
+
 } // namespace
+
+llvm::Expected<std::vector<FabricInventoryOwnerRef>>
+projectModuleResourceOwners(const FabricArtifactView &view) {
+  std::vector<FabricInventoryOwnerRef> owners;
+  if (view.rootKind() != FabricRootKind::Module)
+    return owners;
+  for (FabricPeOccurrenceRef pe : view.peOccurrences())
+    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(pe), owners);
+  for (FabricFuOccurrenceRef fu : view.fuOccurrences()) {
+    const FabricInventoryOwnerRef fuOwner = FabricInventoryOwnerRef::of(fu);
+    appendPhysicalResourceOwner(view, fuOwner, owners);
+    const std::uint64_t nodeCount =
+        view.inventorySize(fuOwner, FabricInventoryKind::FuNode);
+    for (FabricOrdinal ordinal = 0; ordinal < nodeCount; ++ordinal) {
+      const std::optional<FabricFuNodeKind> kind =
+          view.fuNodeKind(fuOwner, ordinal);
+      if (!kind)
+        return invalid("FU occurrence has an invalid node inventory");
+      appendPhysicalResourceOwner(
+          view,
+          FabricInventoryOwnerRef::of(
+              FabricFuOccurrenceNodeRef{*kind, fu, ordinal}),
+          owners);
+    }
+  }
+  for (FabricMemoryOccurrenceRef memory : view.memoryOccurrences()) {
+    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(memory),
+                                owners);
+    for (FabricMemoryOperationPortRef port : view.memoryOperationPorts(memory))
+      appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(port),
+                                  owners);
+    if (view.declaresLocalMemoryService(memory))
+      appendPhysicalResourceOwner(
+          view,
+          FabricInventoryOwnerRef::of(FabricMemoryServiceRef::local(memory)),
+          owners);
+  }
+  for (FabricSwitchOccurrenceRef resource : view.switchOccurrences())
+    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
+                                owners);
+  for (FabricFifoOccurrenceRef resource : view.fifoOccurrences())
+    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
+                                owners);
+  for (FabricBoundaryOccurrenceRef resource : view.boundaryOccurrences())
+    appendPhysicalResourceOwner(view, FabricInventoryOwnerRef::of(resource),
+                                owners);
+
+  llvm::sort(owners, [](const FabricInventoryOwnerRef &lhs,
+                        const FabricInventoryOwnerRef &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  if (std::adjacent_find(owners.begin(), owners.end()) != owners.end())
+    return invalid("physical resource-owner inventory contains a duplicate");
+  return owners;
+}
 
 llvm::Expected<FabricPhysicalTraversalView>
 projectFabricTraversal(const FabricArtifactView &view,
@@ -81,6 +174,21 @@ projectFabricTraversal(const FabricArtifactView &view,
       return destination.takeError();
     result.sources.push_back(*source);
     result.destinations.push_back(*destination);
+    const FabricInventoryOwnerRef resourceOwner =
+        FabricInventoryOwnerRef::of(payload.owner);
+    if (const ::fabric::ResourceContract *contract =
+            view.resourceContract(resourceOwner)) {
+      const std::uint64_t inputCount =
+          view.inventorySize(resourceOwner, FabricInventoryKind::SwitchInput);
+      const std::uint64_t outputState = inputCount + payload.output;
+      if (payload.input >= contract->stateCount() ||
+          outputState >= contract->stateCount())
+        return invalid("switch traversal resource state is out of range");
+      result.resourceStates.push_back(
+          resourceState(resourceOwner, payload.input));
+      result.resourceStates.push_back(
+          resourceState(resourceOwner, outputState));
+    }
     break;
   }
   case FabricPhysicalTraversalKind::FifoTraversal: {
@@ -97,6 +205,17 @@ projectFabricTraversal(const FabricArtifactView &view,
       return destination.takeError();
     result.sources.push_back(*source);
     result.destinations.push_back(*destination);
+    const FabricInventoryOwnerRef resourceOwner =
+        FabricInventoryOwnerRef::of(payload.owner);
+    const ::fabric::ResourceContract *contract =
+        view.resourceContract(resourceOwner);
+    const FabricOrdinal state = static_cast<FabricOrdinal>(
+        payload.mode == FabricFifoTraversalMode::Buffered
+            ? ::fabric::FifoResourceState::BufferedQueue
+            : ::fabric::FifoResourceState::BypassTransfer);
+    if (!contract || state >= contract->stateCount())
+      return invalid("FIFO traversal resource state is out of range");
+    result.resourceStates.push_back(resourceState(resourceOwner, state));
     break;
   }
   case FabricPhysicalTraversalKind::BoundaryTraversal: {
@@ -125,11 +244,15 @@ projectFabricTraversal(const FabricArtifactView &view,
           "system transfer-pattern traversal has no endpoint relation");
     result.sources.push_back(pattern->ingress());
     result.destinations.push_back(pattern->egresses()[payload.egress]);
+    if (llvm::Error error = appendPatternStates(view, pattern->usePattern(),
+                                                result.resourceStates))
+      return std::move(error);
     break;
   }
   }
   if (result.sources.empty() || result.destinations.empty())
     return invalid("physical traversal has an empty endpoint relation");
+  canonicalizeStates(result.resourceStates);
   return result;
 }
 

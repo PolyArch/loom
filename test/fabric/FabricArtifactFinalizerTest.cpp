@@ -577,6 +577,8 @@ void canonicalPublicationAndStrictImport() {
           "canonical boundary occurrence inventory was not imported");
   require(test, firstResult.view().transportEndpoints().size() == 10,
           "canonical transport endpoint inventory was not imported");
+  require(test, firstResult.view().moduleResourceOwners().size() == 4,
+          "canonical physical resource-owner inventory is incomplete");
 
   const auto traversalViews = firstResult.view().physicalTraversals();
   require(test,
@@ -617,7 +619,8 @@ void canonicalPublicationAndStrictImport() {
   require(test,
           pointTraversal != traversalViews.end() &&
               pointTraversal->sources.size() == 1 &&
-              pointTraversal->destinations.size() == 1,
+              pointTraversal->destinations.size() == 1 &&
+              pointTraversal->resourceStates.empty(),
           "point connection did not project one source and destination");
 
   const auto boundaryTraversal =
@@ -628,7 +631,8 @@ void canonicalPublicationAndStrictImport() {
   require(test,
           boundaryTraversal != traversalViews.end() &&
               boundaryTraversal->sources.size() == 2 &&
-              boundaryTraversal->destinations.size() == 1,
+              boundaryTraversal->destinations.size() == 1 &&
+              boundaryTraversal->resourceStates.empty(),
           "s2t boundary traversal lost its atomic endpoint relation");
 
   std::optional<loom::fabric::FabricFifoOccurrenceRef> nonBypassableFifo;
@@ -659,6 +663,28 @@ void canonicalPublicationAndStrictImport() {
           fifoContract && fifoContract->stateCount() == 1 &&
               fifoContract->usePatternCount() == 3,
           "finalized view did not expose the FIFO owner contract");
+  const auto fifoTraversal =
+      llvm::find_if(traversalViews, [&](const auto &traversal) {
+        if (traversal.reference.kind() !=
+            loom::fabric::FabricPhysicalTraversalKind::FifoTraversal)
+          return false;
+        const auto &payload =
+            std::get<loom::fabric::FabricFifoTraversalPayload>(
+                traversal.reference.payload);
+        return payload.owner == *nonBypassableFifo &&
+               payload.mode == loom::fabric::FabricFifoTraversalMode::Buffered;
+      });
+  require(test,
+          fifoTraversal != traversalViews.end() &&
+              fifoTraversal->resourceStates.size() == 1 &&
+              fifoTraversal->resourceStates.front().owner.catalog() ==
+                  fifoOwner &&
+              fifoTraversal->resourceStates.front().ordinal == 0,
+          "buffered FIFO traversal lost its owner-defined resource state");
+  require(
+      test,
+      llvm::is_contained(firstResult.view().moduleResourceOwners(), fifoOwner),
+      "physical resource-owner inventory omitted a FIFO contract");
   requireFabricError(
       test,
       loom::fabric::validateFabricRef(
@@ -818,6 +844,39 @@ void spatialSwitchConnectivityBecomesTraversals() {
   }
   require(test, input0Output0 && input1Output0 && input1Output1,
           "switch traversal ordinals do not follow the MSB-left convention");
+
+  mlir::OwningOpRef<mlir::ModuleOp> temporal = parse(test, R"mlir(
+    module {
+      fabric.module @temporal_switch_root(
+          %a: !fabric.bits_tag<32, 4>, %b: !fabric.bits_tag<32, 4>)
+          -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>) {
+        %x:2 = fabric.switch [temporal] %a, %b
+          [{connectivity_table = ["11", "11"],
+            route_table_size = 2 : i32,
+            grant_policy = #fabric.switch_round_robin<
+              requester_cycle = [0, 1], reset_requester = 0>}]
+          : (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
+         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
+        fabric.yield %x#0, %x#1
+          : !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot temporalFinalized = take(
+      test, loom::fabric::finalizeFabricRoot(root(test, *temporal), store));
+  require(test, temporalFinalized.view().moduleResourceOwners().size() == 1,
+          "temporal switch resource owner was not canonicalized");
+  unsigned temporalTraversalCount = 0;
+  for (const auto &traversal : temporalFinalized.view().physicalTraversals()) {
+    if (traversal.reference.kind() !=
+        loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal)
+      continue;
+    ++temporalTraversalCount;
+    require(test, traversal.resourceStates.size() == 2,
+            "temporal switch traversal lost ingress or egress state");
+  }
+  require(test, temporalTraversalCount == 4,
+          "temporal switch connectivity changed its traversal domain");
 }
 
 void fuCapabilityTemplatesComeFromThePhysicalGraph() {

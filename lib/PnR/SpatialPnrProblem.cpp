@@ -1,5 +1,7 @@
 #include "PnR/SpatialPnrProblem.h"
 
+#include "SpatialPnrResourceIndex.h"
+
 #include "Common/ComponentViewDigest.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -61,6 +63,12 @@ constexpr PnrCapacityContext traversalEndpointOffsetContext{
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext traversalEndpointCountContext{
     frozenArtifact, "traversal_endpoints", "traversal_endpoints",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext traversalResourceStateOffsetContext{
+    frozenArtifact, "traversals", "traversal_resource_states",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext traversalResourceStateCountContext{
+    frozenArtifact, "traversal_resource_states", "traversal_resource_states",
     PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext arcOffsetContext{
     frozenArtifact, "adjacency", "routing_arcs", PnrCapacityMeasure::Offset};
@@ -222,10 +230,14 @@ public:
         buildRealizations(dataflow, techMapping, fabric, *constraints);
     if (!realizations)
       return realizations.takeError();
-    auto routing = buildRouting(fabric);
+    auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
+    if (!resources)
+      return resources.takeError();
+    auto routing = buildRouting(fabric, *resources);
     if (!routing)
       return routing.takeError();
-    if (llvm::Error error = verifyAggregate(*realizations, *routing))
+    if (llvm::Error error =
+            verifyAggregate(*realizations, *resources, *routing))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -236,8 +248,8 @@ public:
     return FrozenSpatialPnrProblemHandle(new FrozenSpatialPnrProblem(
         dataflow.identity(), techMapping.identity(), fabric.identity(),
         constraintSet.identity(), config, std::move(workBudget),
-        std::move(*constraints), std::move(*realizations), std::move(*routing),
-        cacheKey));
+        std::move(*constraints), std::move(*realizations),
+        std::move(*resources), std::move(*routing), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -275,12 +287,17 @@ public:
 
   static llvm::Error
   verifyAggregate(const FrozenSpatialRealizationIndex &realizations,
+                  const FrozenSpatialResourceIndex &resources,
                   const FrozenSpatialRoutingGraph &routing) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
                               std::size_t size) {
       const std::size_t begin = static_cast<std::size_t>(offset);
       const std::size_t length = static_cast<std::size_t>(count);
       return begin <= size && length <= size - begin;
+    };
+    const auto rangeContains = [](PnrIndex offset, PnrIndex count,
+                                  PnrIndex index) {
+      return index >= offset && index - offset < count;
     };
 
     for (auto [ordinal, realization] :
@@ -316,6 +333,90 @@ public:
           return invalid("memory placement slices are inconsistent");
     }
 
+    for (const FrozenSpatialResourceOwner &owner : resources.resourceOwners()) {
+      if (!rangeFits(owner.stateOffset, owner.stateCount,
+                     resources.resourceStates().size()) ||
+          !rangeFits(owner.patternOffset, owner.patternCount,
+                     resources.usePatterns().size()) ||
+          !rangeFits(owner.timingOffset, owner.timingCount,
+                     resources.timingContracts().size()) ||
+          !rangeFits(owner.grantOrderOffset, owner.grantOrderCount,
+                     resources.grantRequesterOrder().size()))
+        return invalid("resource-owner slices are inconsistent");
+      if ((owner.grantPolicy == FrozenSpatialGrantPolicyKind::None) !=
+              (owner.grantOrderCount == 0) ||
+          (owner.grantPolicy == FrozenSpatialGrantPolicyKind::RoundRobin) !=
+              owner.roundRobinResetRequester.has_value())
+        return invalid("resource-owner grant policy is inconsistent");
+      const auto grantOrder = resources.grantRequesterOrder().slice(
+          owner.grantOrderOffset, owner.grantOrderCount);
+      for (std::uint32_t requester : grantOrder)
+        if (requester >= owner.requesterCount)
+          return invalid("grant policy requester is out of range");
+      if (owner.roundRobinResetRequester &&
+          llvm::find(grantOrder, *owner.roundRobinResetRequester) ==
+              grantOrder.end())
+        return invalid("round-robin reset requester is outside its cycle");
+
+      for (auto [ordinal, state] :
+           llvm::enumerate(resources.resourceStates().slice(
+               owner.stateOffset, owner.stateCount))) {
+        if (state.reference.owner.catalog() != owner.reference ||
+            state.reference.ordinal != ordinal ||
+            !rangeFits(state.capacityOffset, state.capacityCount,
+                       resources.capacityDimensions().size()))
+          return invalid("resource-state projection is inconsistent");
+      }
+      for (const FrozenSpatialTimingContract &timing :
+           resources.timingContracts().slice(owner.timingOffset,
+                                             owner.timingCount))
+        if (timing.eventRankCount != owner.eventCount ||
+            !rangeFits(timing.eventRankOffset, timing.eventRankCount,
+                       resources.eventRanks().size()))
+          return invalid("resource timing projection is inconsistent");
+      for (auto [ordinal, pattern] :
+           llvm::enumerate(resources.usePatterns().slice(owner.patternOffset,
+                                                         owner.patternCount))) {
+        if (pattern.reference.owner.catalog() != owner.reference ||
+            pattern.reference.ordinal != ordinal ||
+            pattern.requester >= owner.requesterCount ||
+            pattern.eligibility >= owner.eligibilityCount ||
+            pattern.acquireEvent >= owner.eventCount ||
+            pattern.releaseEvent >= owner.eventCount ||
+            !rangeContains(owner.timingOffset, owner.timingCount,
+                           pattern.timingContract) ||
+            !rangeFits(pattern.claimOffset, pattern.claimCount,
+                       resources.claims().size()) ||
+            !rangeFits(pattern.transactionOffset, pattern.transactionCount,
+                       resources.internalTransactions().size()))
+          return invalid("resource use-pattern projection is inconsistent");
+        if (pattern.commit &&
+            (pattern.commit->event >= owner.eventCount ||
+             pattern.commit->transition >= owner.resourceTransitionCount))
+          return invalid("resource commit projection is inconsistent");
+        for (const FrozenSpatialResourceClaim &claim : resources.claims().slice(
+                 pattern.claimOffset, pattern.claimCount)) {
+          if (!rangeContains(owner.stateOffset, owner.stateCount, claim.state))
+            return invalid("resource claim names a foreign state");
+          const FrozenSpatialResourceState &state =
+              resources.resourceStates()[claim.state];
+          if (claim.dimension >= state.capacityCount)
+            return invalid("resource claim dimension is out of range");
+        }
+        for (const FrozenSpatialInternalTransaction &transaction :
+             resources.internalTransactions().slice(pattern.transactionOffset,
+                                                    pattern.transactionCount)) {
+          if (!rangeFits(transaction.claimOffset, transaction.claimCount,
+                         resources.transactionClaims().size()))
+            return invalid("internal transaction slice is inconsistent");
+          for (PnrIndex claim : resources.transactionClaims().slice(
+                   transaction.claimOffset, transaction.claimCount))
+            if (!rangeContains(pattern.claimOffset, pattern.claimCount, claim))
+              return invalid("internal transaction names a foreign claim");
+        }
+      }
+    }
+
     if (routing.adjacencyOffsets().size() !=
             routing.routingEndpoints().size() + 1 ||
         routing.arcSources().size() != routing.routingArcs().size() ||
@@ -342,7 +443,10 @@ public:
           !rangeFits(traversal.sourceOffset, traversal.sourceCount,
                      routing.traversalEndpoints().size()) ||
           !rangeFits(traversal.destinationOffset, traversal.destinationCount,
-                     routing.traversalEndpoints().size()))
+                     routing.traversalEndpoints().size()) ||
+          !rangeFits(traversal.resourceStateOffset,
+                     traversal.resourceStateCount,
+                     routing.traversalResourceStates().size()))
         return invalid("traversal endpoint slices are inconsistent");
       for (PnrIndex endpoint : routing.traversalEndpoints().slice(
                traversal.sourceOffset, traversal.sourceCount))
@@ -352,6 +456,10 @@ public:
                traversal.destinationOffset, traversal.destinationCount))
         if (endpoint >= routing.routingEndpoints().size())
           return invalid("traversal destination endpoint is out of range");
+      for (PnrIndex state : routing.traversalResourceStates().slice(
+               traversal.resourceStateOffset, traversal.resourceStateCount))
+        if (state >= resources.resourceStates().size())
+          return invalid("traversal resource state is out of range");
     }
     return llvm::Error::success();
   }
@@ -565,7 +673,8 @@ private:
   }
 
   static llvm::Expected<FrozenSpatialRoutingGraph>
-  buildRouting(const FabricArtifactView &fabric) {
+  buildRouting(const FabricArtifactView &fabric,
+               const FrozenSpatialResourceIndex &resources) {
     const auto endpointRefs = fabric.transportEndpoints();
     const auto traversalViews = fabric.physicalTraversals();
     if (llvm::Error error = preflightPnrIndexCapacity(endpointCountContext,
@@ -592,6 +701,16 @@ private:
                .second)
         return invalid(
             "the canonical Fabric endpoint inventory has a duplicate");
+    }
+    std::map<std::vector<std::uint8_t>, PnrIndex> stateByCanonicalRef;
+    for (auto [ordinal, state] : llvm::enumerate(resources.resourceStates())) {
+      auto index = checked(traversalResourceStateCountContext, ordinal);
+      if (!index)
+        return index.takeError();
+      if (!stateByCanonicalRef
+               .emplace(canonicalFabricBytes(state.reference), *index)
+               .second)
+        return invalid("the frozen resource-state inventory has a duplicate");
     }
 
     struct ArcDraft final {
@@ -660,9 +779,31 @@ private:
           checked(traversalEndpointCountContext, destinations.size());
       if (!destinationCount)
         return destinationCount.takeError();
-      result.traversals_.push_back({traversal.reference, *sourceOffset,
-                                    *sourceCount, *destinationOffset,
-                                    *destinationCount});
+      auto resourceStateOffset =
+          checked(traversalResourceStateOffsetContext,
+                  result.traversalResourceStates_.size());
+      if (!resourceStateOffset)
+        return resourceStateOffset.takeError();
+      if (llvm::Error error =
+              preflightAppend(traversalResourceStateCountContext,
+                              result.traversalResourceStates_.size(),
+                              traversal.resourceStates.size()))
+        return error;
+      for (const FabricResourceStateRef &state : traversal.resourceStates) {
+        const auto found =
+            stateByCanonicalRef.find(canonicalFabricBytes(state));
+        if (found == stateByCanonicalRef.end())
+          return invalid(
+              "a traversal state is absent from the resource inventory");
+        result.traversalResourceStates_.push_back(found->second);
+      }
+      auto resourceStateCount = checked(traversalResourceStateCountContext,
+                                        traversal.resourceStates.size());
+      if (!resourceStateCount)
+        return resourceStateCount.takeError();
+      result.traversals_.push_back(
+          {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
+           *destinationCount, *resourceStateOffset, *resourceStateCount});
 
       for (PnrIndex source : sources) {
         const auto &sourcePath = result.endpoints_[source].dataPath;
