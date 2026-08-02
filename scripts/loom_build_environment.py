@@ -82,7 +82,7 @@ def resolve_compiler_executable(tool: str) -> str:
         resolved = real(candidate)
         if resolved.name == "ccache":
             continue
-        return str(resolved)
+        return str(candidate.absolute())
 
     die(f"could not resolve compiler {tool} on PATH without a ccache wrapper")
 

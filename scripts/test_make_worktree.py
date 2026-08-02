@@ -439,6 +439,8 @@ class MakeWorktreeTest(unittest.TestCase):
             {"or_tools": self.state.or_tools_commit},
         )
         self.assertEqual(or_tools_payload["compilers"]["cxx"]["path"], "/clang++")
+        self.assertIn("-DUSE_GUROBI=OFF", or_tools_payload["semantic_cmake_args"])
+        self.assertIn("-DUSE_XPRESS=OFF", or_tools_payload["semantic_cmake_args"])
 
         legacy_payload = json.loads(same_llvm)
         legacy_payload["dependencies"]["circt"] = "old-circt"
@@ -1476,6 +1478,7 @@ class MakeWorktreeTest(unittest.TestCase):
             dirty = self.capture_die(self.module.check_dependency_pins, paths)
             self.assertIn("externals/or-tools", dirty)
             self.assertIn("tracked modifications", dirty)
+            self.assertIn("update the corresponding parent dependency gitlink", dirty)
             git(paths.or_tools_root, "checkout", "--", "or-tools.txt")
 
             # A clean shared checkout moved off the parent gitlink is drift.
@@ -1597,6 +1600,20 @@ class MakeWorktreeTest(unittest.TestCase):
             with patch.dict(os.environ, {"PATH": f"{ccache_bin}{os.pathsep}{real_bin}"}):
                 resolved = self.module.resolve_compiler_executable("gcc")
             self.assertEqual(Path(resolved).resolve(), real_gcc.resolve())
+
+            # A language-driver symlink is semantically significant. Resolving
+            # clang++ to the clang binary would silently switch C++ links to
+            # C driver mode and omit the C++ runtime.
+            clang_bin = root / "clang-bin"
+            clang_bin.mkdir()
+            clang = clang_bin / "clang"
+            clang.write_text("#!/bin/sh\nexit 0\n")
+            clang.chmod(0o755)
+            clang_cxx = clang_bin / "clang++"
+            clang_cxx.symlink_to(clang)
+            with patch.dict(os.environ, {"PATH": str(clang_bin)}):
+                resolved = self.module.resolve_compiler_executable("clang++")
+            self.assertEqual(Path(resolved), clang_cxx)
 
     def test_explicit_circt_dir_is_exact_package_directory(self):
         cmake = shutil.which("cmake")
@@ -1721,7 +1738,8 @@ class MakeWorktreeTest(unittest.TestCase):
                 "int main() {\n"
                 "  using namespace operations_research::sat;\n"
                 "  CpModelBuilder model;\n"
-                "  const IntVar x = model.NewIntVar(Domain(0, 10));\n"
+                "  const IntVar x = model.NewIntVar(\n"
+                "      operations_research::Domain(0, 10));\n"
                 "  model.AddEquality(x, 7);\n"
                 "  const CpSolverResponse response = Solve(model.Build());\n"
                 "  return SolutionIntegerValue(response, x) == 7 ? 0 : 1;\n"

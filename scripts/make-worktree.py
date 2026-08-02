@@ -568,7 +568,7 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
                 f"shared {label} has tracked modifications:\n{dirty}\n"
                 f"restore the tracked changes, then rerun the gate. If the "
                 f"changes are intentional, make them an upstream commit and "
-                f"update the parent CIRCT and LLVM gitlinks atomically before "
+                f"update the corresponding parent dependency gitlink before "
                 f"rerunning"
             )
 
