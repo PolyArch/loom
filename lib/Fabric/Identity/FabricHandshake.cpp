@@ -234,10 +234,53 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
       return offset.takeError();
     if (!count)
       return count.takeError();
-    model_.fragments_.push_back({*offset, *count});
+
+    HandshakeActivationKind activationKind =
+        HandshakeActivationKind::ExactOwnerSelection;
+    switch (pending.selector.kind) {
+    case HandshakeFragmentSelectorKind::Always:
+      activationKind = HandshakeActivationKind::Always;
+      break;
+    case HandshakeFragmentSelectorKind::AnyTraversal:
+      activationKind = HandshakeActivationKind::AnyTraversal;
+      break;
+    case HandshakeFragmentSelectorKind::AllTraversals:
+      activationKind = HandshakeActivationKind::AllTraversals;
+      break;
+    case HandshakeFragmentSelectorKind::FuCapability:
+    case HandshakeFragmentSelectorKind::FuOperationCase:
+    case HandshakeFragmentSelectorKind::FuOperationInputActive:
+    case HandshakeFragmentSelectorKind::FuOperationResultActive:
+    case HandshakeFragmentSelectorKind::MemoryOperationPlan:
+      break;
+    }
+
+    std::vector<FabricPhysicalTraversalRef> witnesses;
+    if (activationKind == HandshakeActivationKind::AnyTraversal ||
+        activationKind == HandshakeActivationKind::AllTraversals) {
+      witnesses = pending.selector.traversalWitnesses;
+      llvm::sort(witnesses, [](const auto &lhs, const auto &rhs) {
+        return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+      });
+      witnesses.erase(std::unique(witnesses.begin(), witnesses.end()),
+                      witnesses.end());
+      if (witnesses.empty())
+        return invalid("traversal-selected fragment has no witness");
+    }
+    auto witnessOffset =
+        checkedSize(model_.traversalWitnesses_, "handshake witness offset");
+    auto witnessCount = checkedSize(witnesses, "handshake witness count");
+    if (!witnessOffset)
+      return witnessOffset.takeError();
+    if (!witnessCount)
+      return witnessCount.takeError();
+    model_.fragments_.push_back(
+        {*offset, *count, activationKind, *witnessOffset, *witnessCount});
     model_.fragmentContributionOrdinals_.insert(
         model_.fragmentContributionOrdinals_.end(), contributions.begin(),
         contributions.end());
+    model_.traversalWitnesses_.insert(model_.traversalWitnesses_.end(),
+                                      witnesses.begin(), witnesses.end());
     model_.fragmentSelectors_.push_back(std::move(pending.selector));
   }
   return std::move(model_);

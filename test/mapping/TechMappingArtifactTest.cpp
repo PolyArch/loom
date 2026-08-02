@@ -645,6 +645,17 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingEndpoints().empty() ||
       frozen->routing().routingArcs().empty())
     fail("aggregate Spatial freeze omitted realizations or routing topology");
+  const auto &handshake = frozen->handshake();
+  if (handshake.nodeSignals().size() != handshake.nodeCount() ||
+      handshake.adjacencyOffsets().size() != handshake.nodeCount() + 1 ||
+      handshake.reverseAdjacencyOffsets().size() != handshake.nodeCount() + 1)
+    fail("aggregate Spatial freeze omitted handshake node incidence");
+  if (handshake.traversalFragmentOffsets().size() !=
+      frozen->routing().traversals().size() + 1)
+    fail("aggregate Spatial freeze omitted traversal handshake incidence");
+  if (handshake.memoryOperationDomains().empty() ||
+      handshake.memoryOperationPlans().empty())
+    fail("aggregate Spatial freeze omitted memory handshake plan domains");
   if (frozen->transfers().logicalNets().size() !=
           finalized.view().residualLogicalNets().size() ||
       frozen->transfers().logicalNetSinks().size() != 4)
@@ -980,6 +991,11 @@ void computeBoundaryClosure() {
   auto frozen = take(loom::pnr::freezeSpatialPnrProblem(
       dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
       constraints.view()));
+  const auto &handshake = frozen->handshake();
+  if (handshake.computePlacementFragmentOffsets().size() !=
+          frozen->realizations().computePlacements().size() + 1 ||
+      handshake.computePlacementFragments().empty())
+    fail("compute freeze omitted exact placement handshake fragments");
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");

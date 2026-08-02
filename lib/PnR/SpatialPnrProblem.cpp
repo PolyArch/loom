@@ -1,5 +1,6 @@
 #include "PnR/SpatialPnrProblem.h"
 
+#include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
@@ -245,8 +246,12 @@ public:
         dataflow, techMapping, fabric, *realizations, *transfers, *routing);
     if (!ports)
       return ports.takeError();
+    auto handshake = detail::buildFrozenSpatialHandshakeIndex(
+        dataflow, techMapping, fabric, *realizations, *resources, *routing);
+    if (!handshake)
+      return handshake.takeError();
     if (llvm::Error error = verifyAggregate(*realizations, *transfers, *ports,
-                                            *resources, *routing))
+                                            *resources, *routing, *handshake))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -259,7 +264,7 @@ public:
         constraintSet.identity(), config, std::move(workBudget),
         std::move(*constraints), std::move(*realizations),
         std::move(*transfers), std::move(*ports), std::move(*resources),
-        std::move(*routing), cacheKey));
+        std::move(*routing), std::move(*handshake), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -300,7 +305,8 @@ public:
                   const FrozenSpatialTransferIndex &transfers,
                   const FrozenSpatialPortIndex &ports,
                   const FrozenSpatialResourceIndex &resources,
-                  const FrozenSpatialRoutingGraph &routing) {
+                  const FrozenSpatialRoutingGraph &routing,
+                  const FrozenSpatialHandshakeIndex &handshake) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
                               std::size_t size) {
       const std::size_t begin = static_cast<std::size_t>(offset);
@@ -460,7 +466,14 @@ public:
       }
     }
     for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
-      if (traversal.sourceCount == 0 || traversal.destinationCount == 0 ||
+      const bool endpointlessRegisterFifo =
+          traversal.reference.kind() ==
+          FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
+      if ((!endpointlessRegisterFifo &&
+           (traversal.sourceCount == 0 || traversal.destinationCount == 0)) ||
+          (endpointlessRegisterFifo &&
+           (traversal.sourceCount != 0 || traversal.destinationCount != 0 ||
+            traversal.resourceStateCount == 0)) ||
           !rangeFits(traversal.sourceOffset, traversal.sourceCount,
                      routing.traversalEndpoints().size()) ||
           !rangeFits(traversal.destinationOffset, traversal.destinationCount,
@@ -482,6 +495,9 @@ public:
         if (state >= resources.resourceStates().size())
           return invalid("traversal resource state is out of range");
     }
+    if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
+            handshake, realizations, resources, routing))
+      return error;
     return llvm::Error::success();
   }
 

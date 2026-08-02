@@ -4,6 +4,7 @@ add_mlir_library(LoomPnR
   PnrConfig.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
+  SpatialPnrHandshakeIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
   SpatialPnrResourceIndex.cpp
@@ -13,6 +14,7 @@ add_mlir_library(LoomPnR
   ${LOOM_SOURCE_DIR}/include/PnR
 
   LINK_LIBS PUBLIC
+  LoomFabricIdentity
   LoomMappingArtifact
   LLVMSupport
 )

@@ -258,6 +258,19 @@ void atomicBroadcastProjectionIsLinear(std::uint32_t fanout) {
           "broadcast owner node count is not linear in fanout");
   require(test, model.arcs().size() <= 8 * fanout + 8,
           "broadcast owner arc count is not linear in fanout");
+  require(test, model.traversalWitnesses().size() == 2 * fanout,
+          "broadcast activation witness count is not linear in fanout");
+  std::size_t anyTraversalFragments = 0;
+  for (const auto &fragment : model.fragments()) {
+    if (fragment.activationKind !=
+        loom::fabric::HandshakeActivationKind::AnyTraversal)
+      continue;
+    ++anyTraversalFragments;
+    require(test, fragment.witnessCount != 0,
+            "traversal-selected fragment has no witness");
+  }
+  require(test, anyTraversalFragments == fanout + 1,
+          "broadcast activation conditions lost their factorization");
 
   std::vector<FabricPhysicalTraversalRef> selected;
   std::vector<loom::fabric::FabricTransportEndpointRef> outputs;

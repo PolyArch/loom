@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALPNRPROBLEM_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -413,6 +414,127 @@ private:
   friend class FrozenSpatialPnrProblemBuilder;
 };
 
+struct FrozenSpatialHandshakeArc final {
+  PnrIndex source = 0;
+  PnrIndex destination = 0;
+};
+
+struct FrozenSpatialHandshakeFragment final {
+  PnrIndex contributionOffset = 0;
+  PnrIndex contributionCount = 0;
+};
+
+struct FrozenSpatialHandshakeAllTraversalGroup final {
+  PnrIndex witnessOffset = 0;
+  PnrIndex witnessCount = 0;
+  PnrIndex fragment = 0;
+};
+
+struct FrozenSpatialMemoryOperationHandshakeDomain final {
+  PnrIndex placement = 0;
+  PnrIndex actor = 0;
+  PnrIndex planOffset = 0;
+  PnrIndex planCount = 0;
+};
+
+struct FrozenSpatialMemoryOperationHandshakePlan final {
+  PnrIndex usePattern = 0;
+  PnrIndex fragmentOffset = 0;
+  PnrIndex fragmentCount = 0;
+};
+
+/// One immutable, cache-oriented flattening of the Fabric-owned handshake
+/// owner models. Persistent references are retained only in the node reverse
+/// table for cold diagnostics and final projection; every search incidence is
+/// expressed with dense PnrIndex values.
+class FrozenSpatialHandshakeIndex final {
+public:
+  PnrIndex nodeCount() const {
+    return static_cast<PnrIndex>(nodeSignals_.size());
+  }
+  llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
+  nodeSignals() const {
+    return nodeSignals_;
+  }
+  llvm::ArrayRef<FrozenSpatialHandshakeArc> arcs() const { return arcs_; }
+  llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
+    return adjacencyOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets() const {
+    return reverseAdjacencyOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
+    return reverseArcOrdinals_;
+  }
+  llvm::ArrayRef<FrozenSpatialHandshakeFragment> fragments() const {
+    return fragments_;
+  }
+  llvm::ArrayRef<PnrIndex> fragmentArcOrdinals() const {
+    return fragmentArcOrdinals_;
+  }
+  llvm::ArrayRef<PnrIndex> fixedFragments() const { return fixedFragments_; }
+  llvm::ArrayRef<PnrIndex> traversalFragmentOffsets() const {
+    return traversalFragmentOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalFragments() const {
+    return traversalFragments_;
+  }
+  llvm::ArrayRef<FrozenSpatialHandshakeAllTraversalGroup>
+  allTraversalGroups() const {
+    return allTraversalGroups_;
+  }
+  llvm::ArrayRef<PnrIndex> allTraversalGroupWitnesses() const {
+    return allTraversalGroupWitnesses_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalAllGroupOffsets() const {
+    return traversalAllGroupOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalAllGroups() const {
+    return traversalAllGroups_;
+  }
+  llvm::ArrayRef<PnrIndex> computePlacementFragmentOffsets() const {
+    return computePlacementFragmentOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> computePlacementFragments() const {
+    return computePlacementFragments_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryOperationHandshakeDomain>
+  memoryOperationDomains() const {
+    return memoryOperationDomains_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryOperationHandshakePlan>
+  memoryOperationPlans() const {
+    return memoryOperationPlans_;
+  }
+  llvm::ArrayRef<PnrIndex> memoryPlanFragments() const {
+    return memoryPlanFragments_;
+  }
+
+private:
+  std::vector<std::optional<::loom::fabric::HandshakeSignalRef>> nodeSignals_;
+  std::vector<FrozenSpatialHandshakeArc> arcs_;
+  std::vector<PnrIndex> adjacencyOffsets_;
+  std::vector<PnrIndex> reverseAdjacencyOffsets_;
+  std::vector<PnrIndex> reverseArcOrdinals_;
+  std::vector<FrozenSpatialHandshakeFragment> fragments_;
+  std::vector<PnrIndex> fragmentArcOrdinals_;
+  std::vector<PnrIndex> fixedFragments_;
+  std::vector<PnrIndex> traversalFragmentOffsets_;
+  std::vector<PnrIndex> traversalFragments_;
+  std::vector<FrozenSpatialHandshakeAllTraversalGroup> allTraversalGroups_;
+  std::vector<PnrIndex> allTraversalGroupWitnesses_;
+  std::vector<PnrIndex> traversalAllGroupOffsets_;
+  std::vector<PnrIndex> traversalAllGroups_;
+  std::vector<PnrIndex> computePlacementFragmentOffsets_;
+  std::vector<PnrIndex> computePlacementFragments_;
+  std::vector<FrozenSpatialMemoryOperationHandshakeDomain>
+      memoryOperationDomains_;
+  std::vector<FrozenSpatialMemoryOperationHandshakePlan> memoryOperationPlans_;
+  std::vector<PnrIndex> memoryPlanFragments_;
+
+  friend class FrozenSpatialHandshakeIndexBuilder;
+};
+
 class FrozenSpatialPnrCacheKey final {
 public:
   using Storage = std::array<std::uint8_t, 32>;
@@ -463,6 +585,7 @@ public:
   const FrozenSpatialPortIndex &ports() const { return ports_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
+  const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
@@ -475,7 +598,7 @@ private:
       FrozenSpatialRealizationIndex realizations,
       FrozenSpatialTransferIndex transfers, FrozenSpatialPortIndex ports,
       FrozenSpatialResourceIndex resources, FrozenSpatialRoutingGraph routing,
-      FrozenSpatialPnrCacheKey cacheKey)
+      FrozenSpatialHandshakeIndex handshake, FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
@@ -485,7 +608,7 @@ private:
         realizations_(std::move(realizations)),
         transfers_(std::move(transfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), routing_(std::move(routing)),
-        cacheKey_(cacheKey) {}
+        handshake_(std::move(handshake)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -499,6 +622,7 @@ private:
   FrozenSpatialPortIndex ports_;
   FrozenSpatialResourceIndex resources_;
   FrozenSpatialRoutingGraph routing_;
+  FrozenSpatialHandshakeIndex handshake_;
   FrozenSpatialPnrCacheKey cacheKey_;
 
   friend class FrozenSpatialPnrProblemBuilder;

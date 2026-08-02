@@ -106,9 +106,20 @@ struct HandshakeOwnerArc final {
   std::uint32_t destination = 0;
 };
 
+enum class HandshakeActivationKind : std::uint8_t {
+  Always,
+  AnyTraversal,
+  AllTraversals,
+  ExactOwnerSelection,
+};
+
 struct HandshakeActivationFragment final {
   std::uint32_t contributionOffset = 0;
   std::uint32_t contributionCount = 0;
+  HandshakeActivationKind activationKind =
+      HandshakeActivationKind::ExactOwnerSelection;
+  std::uint32_t witnessOffset = 0;
+  std::uint32_t witnessCount = 0;
 };
 
 struct FabricFuOperationHandshakeBinding final {
@@ -289,6 +300,9 @@ public:
   llvm::ArrayRef<std::uint32_t> fragmentContributionOrdinals() const {
     return fragmentContributionOrdinals_;
   }
+  llvm::ArrayRef<FabricPhysicalTraversalRef> traversalWitnesses() const {
+    return traversalWitnesses_;
+  }
 
   std::optional<std::uint32_t>
   nodeForSignal(const HandshakeSignalRef &signal) const;
@@ -302,6 +316,7 @@ private:
   std::vector<HandshakeOwnerArc> arcs_;
   std::vector<HandshakeActivationFragment> fragments_;
   std::vector<std::uint32_t> fragmentContributionOrdinals_;
+  std::vector<FabricPhysicalTraversalRef> traversalWitnesses_;
   std::vector<detail::HandshakeFragmentSelector> fragmentSelectors_;
 
   friend class detail::HandshakeOwnerModelBuilder;
