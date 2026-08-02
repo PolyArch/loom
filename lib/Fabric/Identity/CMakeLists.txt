@@ -7,6 +7,8 @@ add_mlir_library(LoomFabricIdentity
   FabricRefValidation.cpp
   FabricOpCapabilityView.cpp
   FabricFuCapabilityTemplate.cpp
+  FabricHandshake.cpp
+  FabricHandshakeFu.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Identity

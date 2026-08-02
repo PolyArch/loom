@@ -1,4 +1,5 @@
 #include "Fabric/IR/TemporalOperandBuffer.h"
+#include "Fabric/IR/TemporalPeResourceContract.h"
 
 #include "Fabric/IR/FabricEnums.h"
 
@@ -52,6 +53,14 @@ takeContract(const char *test,
   return std::move(*result);
 }
 
+TemporalPeResourceContract
+takePeContract(const char *test,
+               llvm::Expected<TemporalPeResourceContract> result) {
+  if (!result)
+    fail(test, llvm::toString(result.takeError()));
+  return std::move(*result);
+}
+
 void expectViolation(const char *test, const std::string &label,
                      llvm::Expected<TemporalOperandBufferContract> result,
                      TemporalOperandBufferViolation expected) {
@@ -87,9 +96,9 @@ CapacityUnits capacityOf(const TemporalOperandBufferContract &contract,
       .capacity;
 }
 
-// Every mode rejects an absent or zero `operand_buffer_size`: the typed API only
-// ever receives the value the Fabric hardware parameter carries, and zero is
-// exactly what an omitted parameter would mean.
+// Every mode rejects an absent or zero `operand_buffer_size`: the typed API
+// only ever receives the value the Fabric hardware parameter carries, and zero
+// is exactly what an omitted parameter would mean.
 void everyModeRequiresAPositiveEntryCapacity() {
   for (OperandBufferMode mode : kModes) {
     expectViolation(__func__, stringifyOperandBufferMode(mode).str(),
@@ -107,9 +116,9 @@ void everyModeRequiresAPositiveEntryCapacity() {
 // The canonical logical-queue domain is the complete key set in lexicographic
 // order, and each mode projects it onto allocation units exactly as specified.
 void modeProjectionDiffersExactly() {
-  const TemporalOperandBufferContract dedicated = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInstruction, 2)));
+  const TemporalOperandBufferContract dedicated =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 2)));
 
   const llvm::ArrayRef<LogicalOperandQueueKey> queues =
       dedicated.logicalQueues();
@@ -142,9 +151,9 @@ void modeProjectionDiffersExactly() {
   require(__func__, !dedicated.resourceContract().grantPolicy().has_value(),
           "a dedicated queue proves at most one requester per capacity");
 
-  const TemporalOperandBufferContract banked = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInputPort, 2)));
+  const TemporalOperandBufferContract banked =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInputPort, 2)));
   require(__func__, banked.allocationUnitCount() == 3,
           "per_input_port must give one unit per FU ingress");
   const FuInputUnit expectedBanks[] = {{0, 0}, {0, 1}, {1, 0}};
@@ -167,9 +176,9 @@ void modeProjectionDiffersExactly() {
               "per_input_port membership differs at " + std::to_string(unit));
   }
 
-  const TemporalOperandBufferContract shared = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 2)));
+  const TemporalOperandBufferContract shared =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 2)));
   require(__func__, shared.allocationUnitCount() == 1,
           "all_fu_share must project onto the whole temporal PE");
   const auto *pe = std::get_if<WholeTemporalPeUnit>(&shared.allocationUnit(0));
@@ -186,9 +195,9 @@ void modeProjectionDiffersExactly() {
 // appends through its own commit transition. The pool and the queue are state,
 // never claims, so nothing an enqueue holds can be released by a later dequeue.
 void enqueueClaimsOneServiceAndCommitsADurableAppend() {
-  const TemporalOperandBufferContract contract = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 4)));
+  const TemporalOperandBufferContract contract =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 4)));
 
   const StateKey pool = contract.entryPoolState(0);
   const StateKey enqueueService = contract.enqueueServiceState(0);
@@ -201,25 +210,24 @@ void enqueueClaimsOneServiceAndCommitsADurableAppend() {
                          OperandEntryPoolDimension::OccupiedEntry)) ==
               CapacityUnits(4),
           "entry pool capacity must equal operand_buffer_size");
-  require(__func__,
-          capacityOf(contract, enqueueService,
+  require(
+      __func__,
+      capacityOf(contract, enqueueService,
+                 static_cast<std::uint32_t>(OperandServiceDimension::Slot)) ==
+              CapacityUnits(1) &&
+          capacityOf(contract, dequeueService,
                      static_cast<std::uint32_t>(
-                         OperandServiceDimension::Slot)) == CapacityUnits(1) &&
-              capacityOf(contract, dequeueService,
-                         static_cast<std::uint32_t>(
-                             OperandServiceDimension::Slot)) ==
-                  CapacityUnits(1),
-          "each allocation unit serves one enqueue and one dequeue per cycle");
+                         OperandServiceDimension::Slot)) == CapacityUnits(1),
+      "each allocation unit serves one enqueue and one dequeue per cycle");
 
   const UsePattern enqueue =
       contract.resourceContract().usePattern(contract.enqueuePattern(0));
   require(__func__,
-          enqueue.claims.size() == 1 && enqueue.claims[0].state ==
-                                            enqueueService,
+          enqueue.claims.size() == 1 &&
+              enqueue.claims[0].state == enqueueService,
           "an enqueue must claim only its enqueue service slot");
   require(__func__,
-          enqueue.acquire ==
-                  key<EventKey>(OperandBufferEvent::EnqueueCommit) &&
+          enqueue.acquire == key<EventKey>(OperandBufferEvent::EnqueueCommit) &&
               enqueue.release ==
                   key<EventKey>(OperandBufferEvent::NextPeClockBoundary),
           "an enqueue must hold its slot until the next PE clock boundary");
@@ -240,9 +248,9 @@ void enqueueClaimsOneServiceAndCommitsADurableAppend() {
 
 // A dequeue mirrors it: one service slot and its own durable removal.
 void dequeueCommitsADurableRemoval() {
-  const TemporalOperandBufferContract contract = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 4)));
+  const TemporalOperandBufferContract contract =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 4)));
 
   const UsePattern dequeue =
       contract.resourceContract().usePattern(contract.dequeuePattern(3));
@@ -250,19 +258,18 @@ void dequeueCommitsADurableRemoval() {
           dequeue.claims.size() == 1 &&
               dequeue.claims[0].state == contract.dequeueServiceState(0),
           "a dequeue must claim only its dequeue service slot");
-  require(__func__,
-          dequeue.eligibility ==
-              key<EligibilityKey>(
-                  OperandBufferEligibility::CycleStartHeadPresent),
-          "a dequeue must observe only a cycle-start head");
+  require(
+      __func__,
+      dequeue.eligibility ==
+          key<EligibilityKey>(OperandBufferEligibility::CycleStartHeadPresent),
+      "a dequeue must observe only a cycle-start head");
   require(__func__,
           dequeue.commit.has_value() &&
               dequeue.commit->event ==
                   key<EventKey>(OperandBufferEvent::DequeueCommit) &&
               dequeue.commit->transition == contract.removeTransition(3),
           "a dequeue must atomically commit RemoveOperand");
-  require(__func__,
-          contract.resourceContract().resourceTransitionCount() == 12,
+  require(__func__, contract.resourceContract().resourceTransitionCount() == 12,
           "every logical queue owns one append and one remove transition");
 }
 
@@ -270,17 +277,16 @@ void dequeueCommitsADurableRemoval() {
 // cannot satisfy that cycle's dequeue, and the next occupancy is exactly
 // `O - D + E`.
 void fullUnitAdmitsPopWithPushWithoutBypass() {
-  const TemporalOperandBufferContract contract = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 2)));
+  const TemporalOperandBufferContract contract =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 2)));
   const CapacityUnits full = contract.entriesPerAllocationUnit();
 
   require(__func__, !contract.admits(full, {false, true}),
           "a full allocation unit must backpressure a lone enqueue");
   require(__func__, contract.admits(full, {true, true}),
           "a dequeue must give same-cycle capacity to an enqueue");
-  require(__func__,
-          contract.occupancyAfter(full, {true, true}) == full,
+  require(__func__, contract.occupancyAfter(full, {true, true}) == full,
           "pop with push must leave occupancy unchanged");
 
   const CapacityUnits empty(0);
@@ -288,26 +294,27 @@ void fullUnitAdmitsPopWithPushWithoutBypass() {
           "an empty queue has no cycle-start head to remove");
   require(__func__, !contract.admits(empty, {true, true}),
           "an operand appended this cycle cannot satisfy this cycle's dequeue");
-  require(__func__, contract.admits(empty, {false, true}) &&
-                        contract.occupancyAfter(empty, {false, true}) ==
-                            CapacityUnits(1),
+  require(__func__,
+          contract.admits(empty, {false, true}) &&
+              contract.occupancyAfter(empty, {false, true}) == CapacityUnits(1),
           "an empty unit must admit an enqueue and hold one operand");
 
   const CapacityUnits one(1);
-  require(__func__, contract.occupancyAfter(one, {true, false}) == empty &&
-                        contract.occupancyAfter(one, {false, true}) == full,
+  require(__func__,
+          contract.occupancyAfter(one, {true, false}) == empty &&
+              contract.occupancyAfter(one, {false, true}) == full,
           "the next occupancy must be exactly O - D + E");
 }
 
 // `per_instruction` depth 1 and depth 2 are different hardware: they differ in
 // the Fabric-owned entry capacity and in backpressure.
 void dedicatedDepthOneAndTwoDiffer() {
-  const TemporalOperandBufferContract depthOne = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInstruction, 1)));
-  const TemporalOperandBufferContract depthTwo = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInstruction, 2)));
+  const TemporalOperandBufferContract depthOne =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 1)));
+  const TemporalOperandBufferContract depthTwo =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 2)));
   require(__func__,
           depthOne.entriesPerAllocationUnit() !=
               depthTwo.entriesPerAllocationUnit(),
@@ -319,8 +326,8 @@ void dedicatedDepthOneAndTwoDiffer() {
 }
 
 // Two logical queues sharing one FU ingress bank contend for its enqueue and
-// dequeue services, which arbitrate through the canonical round-robin order with
-// independent cursors.
+// dequeue services, which arbitrate through the canonical round-robin order
+// with independent cursors.
 void roundRobinContentionBetweenTwoLogicalQueues() {
   const std::uint32_t oneIngress[] = {1};
   TemporalOperandBufferDeclaration declared =
@@ -350,9 +357,9 @@ void roundRobinContentionBetweenTwoLogicalQueues() {
               roundRobin->resetCursor() == contract.requester(0),
           "the requester cycle must be the canonical logical-queue order");
 
-  // Both queues request the enqueue service; the dequeue service is requested by
-  // the second queue alone. The two cursors advance independently and only on a
-  // successful grant.
+  // Both queues request the enqueue service; the dequeue service is requested
+  // by the second queue alone. The two cursors advance independently and only
+  // on a successful grant.
   const bool both[] = {true, true};
   const bool secondOnly[] = {false, true};
 
@@ -389,21 +396,68 @@ void roundRobinContentionBetweenTwoLogicalQueues() {
 // activation. Two required heads in one allocation unit exceed that unit's one
 // dequeue service, so the binding is invalid rather than privately serialized.
 void actorRequiredDequeueOvercapacityIsRejected() {
-  const TemporalOperandBufferContract banked = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::PerInputPort, 2)));
-  require(__func__, banked.admitsActorDequeueSet({0, 1}),
-          "two heads in different FU ingress banks each have their own service");
+  const TemporalOperandBufferContract banked =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInputPort, 2)));
+  require(
+      __func__, banked.admitsActorDequeueSet({0, 1}),
+      "two heads in different FU ingress banks each have their own service");
   require(__func__, !banked.admitsActorDequeueSet({0, 3}),
           "two contexts of one ingress bank exceed its one dequeue service");
 
-  const TemporalOperandBufferContract shared = takeContract(
-      __func__, TemporalOperandBufferContract::create(
-                    declaration(OperandBufferMode::AllFuShare, 2)));
+  const TemporalOperandBufferContract shared =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 2)));
   require(__func__, shared.admitsActorDequeueSet({2}),
           "one head always fits the pooled dequeue service");
   require(__func__, !shared.admitsActorDequeueSet({0, 1}),
           "a shared pool serves one dequeue per PE clock cycle");
+}
+
+void registerFifoPortCountOwnsServiceConcurrency() {
+  const auto declared = [](std::uint32_t ports) {
+    return TemporalPeResourceDeclaration{
+        kPe, 2, kFuInputCounts, OperandBufferMode::PerInputPort, 2,
+        1,   4, ports};
+  };
+  const TemporalPeResourceContract single =
+      takePeContract(__func__, TemporalPeResourceContract::create(declared(1)));
+  const TemporalPeResourceContract dual =
+      takePeContract(__func__, TemporalPeResourceContract::create(declared(2)));
+
+  const UsePattern singleWrite =
+      single.resourceContract().usePattern(single.registerFifoWritePattern(0));
+  const UsePattern singleRead =
+      single.resourceContract().usePattern(single.registerFifoReadPattern(0));
+  require(__func__,
+          singleWrite.claims.size() == 1 && singleRead.claims.size() == 1 &&
+              singleWrite.claims.front().state == single.registerFifoState(0) &&
+              singleRead.claims.front().state == single.registerFifoState(0) &&
+              singleWrite.claims.front().dimension ==
+                  singleRead.claims.front().dimension,
+          "single-port register FIFO read and write must share one service");
+
+  const UsePattern dualWrite =
+      dual.resourceContract().usePattern(dual.registerFifoWritePattern(0));
+  const UsePattern dualRead =
+      dual.resourceContract().usePattern(dual.registerFifoReadPattern(0));
+  require(__func__,
+          dualWrite.claims.size() == 1 && dualRead.claims.size() == 1 &&
+              dualWrite.claims.front().state == dual.registerFifoState(0) &&
+              dualRead.claims.front().state == dual.registerFifoState(0) &&
+              dualWrite.claims.front().dimension !=
+                  dualRead.claims.front().dimension,
+          "dual-port register FIFO read and write need independent services");
+  require(__func__,
+          singleWrite.commit.has_value() && singleRead.commit.has_value() &&
+              dualWrite.commit.has_value() && dualRead.commit.has_value() &&
+              singleWrite.acquire == singleWrite.commit->event &&
+              singleRead.acquire == singleRead.commit->event &&
+              singleWrite.release == singleRead.release &&
+              dualWrite.acquire == dualWrite.commit->event &&
+              dualRead.acquire == dualRead.commit->event &&
+              dualWrite.release == dualRead.release,
+          "register FIFO service and commit timing changed");
 }
 
 } // namespace
@@ -417,5 +471,6 @@ int main() {
   dedicatedDepthOneAndTwoDiffer();
   roundRobinContentionBetweenTwoLogicalQueues();
   actorRequiredDequeueOvercapacityIsRejected();
+  registerFifoPortCountOwnsServiceConcurrency();
   return 0;
 }

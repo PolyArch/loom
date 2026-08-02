@@ -4,8 +4,10 @@
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -13,6 +15,23 @@
 #include <optional>
 
 namespace dataflow::semantics {
+
+/// One possible transition shape of a registered actor schema. The operation
+/// schema remains the sole owner of which logical inputs are consumed and
+/// which results are active. Fabric, Mapping, simulators, and RTL providers
+/// consume this projection rather than maintaining operation-name tables.
+struct ActorHandshakeCase final {
+  std::uint32_t ordinal = 0;
+  llvm::SmallVector<std::uint32_t, 4> consumedInputs;
+  llvm::SmallVector<std::uint32_t, 4> activeResults;
+};
+
+/// Projects every possible transition shape for one actor schema and exact
+/// arity. The result is canonical in case ordinal and logical port ordinal.
+/// Invalid arity rejects instead of falling back to an all-port firing.
+llvm::Expected<llvm::SmallVector<ActorHandshakeCase, 4>>
+projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
+                           std::uint32_t inputCount, std::uint32_t resultCount);
 
 using SemanticInputMask = std::uint8_t;
 

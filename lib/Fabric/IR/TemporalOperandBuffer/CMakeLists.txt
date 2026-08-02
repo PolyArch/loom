@@ -1,5 +1,6 @@
 add_library(LoomFabricTemporalOperandBuffer
   TemporalOperandBuffer.cpp
+  TemporalPeResourceContract.cpp
 )
 
 target_include_directories(LoomFabricTemporalOperandBuffer PUBLIC

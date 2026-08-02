@@ -14,6 +14,7 @@
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/SystemServiceContract.h"
+#include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactDependencyClosureInternal.h"
@@ -72,6 +73,61 @@ llvm::Error ownerUnavailable(const llvm::Twine &message) {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
       "fabric_artifact_owner_contract_unavailable: " + message);
+}
+
+std::vector<std::uint8_t> handshakeSignalKey(const HandshakeSignalRef &signal) {
+  std::vector<std::uint8_t> key = canonicalFabricBytes(signal.endpoint);
+  key.push_back(static_cast<std::uint8_t>(signal.signal));
+  return key;
+}
+
+llvm::Error
+validateUnconditionalHandshakeClosure(const FabricArtifactView &view) {
+  auto arcs = deriveUnconditionalHandshakeDependencyArcs(view);
+  if (!arcs)
+    return arcs.takeError();
+
+  std::set<std::vector<std::uint8_t>> orderedSignals;
+  for (const HandshakeDependencyArc &arc : *arcs) {
+    orderedSignals.insert(handshakeSignalKey(arc.source));
+    orderedSignals.insert(handshakeSignalKey(arc.destination));
+  }
+  std::map<std::vector<std::uint8_t>, std::uint32_t> signalOrdinals;
+  for (const std::vector<std::uint8_t> &signal : orderedSignals)
+    signalOrdinals.emplace(signal,
+                           static_cast<std::uint32_t>(signalOrdinals.size()));
+
+  std::vector<std::vector<std::uint32_t>> adjacency(signalOrdinals.size());
+  std::vector<std::uint32_t> indegree(signalOrdinals.size(), 0);
+  std::set<std::pair<std::uint32_t, std::uint32_t>> uniqueArcs;
+  for (const HandshakeDependencyArc &arc : *arcs) {
+    const std::uint32_t source =
+        signalOrdinals.at(handshakeSignalKey(arc.source));
+    const std::uint32_t destination =
+        signalOrdinals.at(handshakeSignalKey(arc.destination));
+    if (!uniqueArcs.emplace(source, destination).second)
+      continue;
+    adjacency[source].push_back(destination);
+    ++indegree[destination];
+  }
+
+  std::vector<std::uint32_t> ready;
+  ready.reserve(signalOrdinals.size());
+  for (std::uint32_t signal = 0; signal < indegree.size(); ++signal)
+    if (indegree[signal] == 0)
+      ready.push_back(signal);
+  std::size_t retired = 0;
+  while (!ready.empty()) {
+    const std::uint32_t signal = ready.back();
+    ready.pop_back();
+    ++retired;
+    for (std::uint32_t dependent : adjacency[signal])
+      if (--indegree[dependent] == 0)
+        ready.push_back(dependent);
+  }
+  if (retired != signalOrdinals.size())
+    return invalid("UnconditionalCombinationalHandshakeCycle");
+  return llvm::Error::success();
 }
 
 std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> bytes) {
@@ -577,6 +633,11 @@ buildModuleView(::fabric::ModuleOp root,
         return invalid("a PE occurrence has an unknown schedule");
       entity.owner.inventoryCounts[static_cast<std::size_t>(
           FabricInventoryKind::InstructionContext)] = contextCount;
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::RegisterFifo)] =
+          pe.getSchedule() == ::fabric::Schedule::Temporal
+              ? pe.getNumRegFifo().value_or(0)
+              : 0;
       entity.instructionContexts.resize(contextCount);
       for (detail::FabricNestedOwnerViewData &context :
            entity.instructionContexts)
@@ -716,7 +777,22 @@ buildModuleView(::fabric::ModuleOp root,
   if (llvm::Error error = appendPeSelectorTraversals(data))
     return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {
-    if (carrier.kind == FabricEntityKind::FabricFifoOccurrence) {
+    if (carrier.kind == FabricEntityKind::FabricPeOccurrence) {
+      auto pe = cast<::fabric::PeOp>(carrier.op);
+      if (pe.getSchedule() != ::fabric::Schedule::Temporal)
+        continue;
+      const std::uint32_t registerFifoCount = pe.getNumRegFifo().value_or(0);
+      for (std::uint32_t fifo = 0; fifo != registerFifoCount; ++fifo) {
+        data.admittedTraversals.push_back(
+            FabricPhysicalTraversalRef::peRegisterFifo(
+                FabricPeOccurrenceRef(carrier.id), fifo,
+                FabricRegisterFifoPathRole::Write));
+        data.admittedTraversals.push_back(
+            FabricPhysicalTraversalRef::peRegisterFifo(
+                FabricPeOccurrenceRef(carrier.id), fifo,
+                FabricRegisterFifoPathRole::Read));
+      }
+    } else if (carrier.kind == FabricEntityKind::FabricFifoOccurrence) {
       auto fifo = cast<::fabric::FifoOp>(carrier.op);
       data.admittedTraversals.push_back(
           FabricPhysicalTraversalRef::fifoTraversal(
@@ -846,6 +922,8 @@ strictImportModule(const ArtifactRootReference &reference,
   auto view = buildModuleView(root, *labeling, reference.artifact);
   if (!view)
     return view.takeError();
+  if (llvm::Error error = validateUnconditionalHandshakeClosure(*view))
+    return std::move(error);
   return StrictImportResult{
       std::move(decoded), std::move(*view),
       std::move(boundaryProjection.moduleBoundaryInputs),
@@ -1448,6 +1526,8 @@ buildSystemView(::fabric::SystemOp root,
   auto clockReset = validateClockReset(*systemView);
   if (!clockReset)
     return clockReset.takeError();
+  if (llvm::Error error = validateUnconditionalHandshakeClosure(*view))
+    return std::move(error);
   return std::move(*view);
 }
 

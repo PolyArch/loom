@@ -390,9 +390,9 @@ requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
 FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
 FabricArtifactView::handshakeOwners()
-  -> canonical range<FabricHandshakeOwnerRef>
+  -> canonical range<FabricHandshakeOwner>
 compileHandshakeOwnerModel(FabricArtifactView,
-                           FabricHandshakeOwnerRef)
+                           FabricHandshakeOwner)
   -> sealed HandshakeOwnerModel
 resolveSelectedHandshake(
     HandshakeOwnerModel,
@@ -424,9 +424,10 @@ FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
   -> optional<ClockCrossingContractView>
 ```
 
-`FabricHandshakeOwnerRef` and `HandshakeActivationFragmentOrdinal` are sealed
-view-local indexes over existing occurrence-level Fabric owners and their
-compiled behavior. They receive no persistent reference kind or identity.
+`FabricHandshakeOwner` is a sealed view-only union of existing
+occurrence-level Fabric owners and fixed point connections.
+`HandshakeActivationFragmentOrdinal` is an owner-model-local index. Neither
+receives a persistent reference kind or identity.
 `HandshakeOwnerModel` exposes ordered boundary signal bindings, owner-local
 dependency junctions, unique potential arcs, and typed activation fragments.
 Its internal junctions are not transport endpoints and cannot be routed,

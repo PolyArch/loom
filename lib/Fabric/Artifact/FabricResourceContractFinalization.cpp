@@ -4,7 +4,7 @@
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/ResourceContractRecord.h"
-#include "Fabric/IR/TemporalOperandBuffer.h"
+#include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/IR/TemporalSwitchResourceContract.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
@@ -96,10 +96,12 @@ deriveResourceContract(Operation *operation,
     auto entries = pe.getOperandBufferSize();
     if (!contextCount || !mode || !entries)
       return invalid("temporal fabric.pe lacks its verified buffer parameters");
-    auto derived = ::fabric::TemporalOperandBufferContract::create(
-        ::fabric::TemporalOperandBufferDeclaration{FabricPeOccurrenceRef(*peId),
-                                                   *contextCount, fuInputCounts,
-                                                   *mode, *entries});
+    auto derived = ::fabric::TemporalPeResourceContract::create(
+        ::fabric::TemporalPeResourceDeclaration{
+            FabricPeOccurrenceRef(*peId), *contextCount, fuInputCounts, *mode,
+            *entries, pe.getNumRegFifo().value_or(0),
+            pe.getRegFifoDepth().value_or(0),
+            pe.getRegFifoPorts().value_or(1)});
     if (!derived)
       return derived.takeError();
     return std::optional<::fabric::ResourceContract>(

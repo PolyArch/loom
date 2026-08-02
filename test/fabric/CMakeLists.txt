@@ -225,6 +225,10 @@ add_executable(loom-fabric-artifact-finalizer-test
   FabricArtifactFinalizerTest.cpp
 )
 
+add_executable(loom-fabric-handshake-model-test
+  FabricHandshakeModelTest.cpp
+)
+
 add_executable(loom-fabric-system-contract-test
   FabricSystemContractTest.cpp
 )
@@ -299,6 +303,16 @@ target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-handshake-model-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
   MLIRFabric
   MLIRIR
   MLIRParser

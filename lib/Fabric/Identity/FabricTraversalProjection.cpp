@@ -2,12 +2,14 @@
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FifoResourceContract.h"
+#include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace loom::fabric::detail {
@@ -157,9 +159,25 @@ projectFabricTraversal(const FabricArtifactView &view,
     result.destinations.push_back(payload.destination);
     break;
   }
-  case FabricPhysicalTraversalKind::PeRegisterFifoTraversal:
-    return invalid(
-        "PE register-FIFO traversal has no owner endpoint projection");
+  case FabricPhysicalTraversalKind::PeRegisterFifoTraversal: {
+    const auto &payload =
+        std::get<FabricPeRegisterFifoPayload>(reference.payload);
+    const FabricInventoryOwnerRef owner =
+        FabricInventoryOwnerRef::of(payload.owner);
+    const ::fabric::ResourceContract *contract = view.resourceContract(owner);
+    const std::uint64_t registerFifoCount =
+        view.inventorySize(owner, FabricInventoryKind::RegisterFifo);
+    if (!contract ||
+        registerFifoCount > std::numeric_limits<std::uint32_t>::max())
+      return invalid("PE register-FIFO resource contract is unavailable");
+    auto state = ::fabric::resolveTemporalPeRegisterFifoState(
+        *contract, static_cast<std::uint32_t>(registerFifoCount),
+        static_cast<std::uint32_t>(payload.registerFifo));
+    if (!state)
+      return state.takeError();
+    result.resourceStates.push_back(resourceState(owner, state->ordinal()));
+    break;
+  }
   case FabricPhysicalTraversalKind::SwitchTraversal: {
     const auto &payload =
         std::get<FabricSwitchTraversalPayload>(reference.payload);
@@ -250,7 +268,9 @@ projectFabricTraversal(const FabricArtifactView &view,
     break;
   }
   }
-  if (result.sources.empty() || result.destinations.empty())
+  if (reference.kind() !=
+          FabricPhysicalTraversalKind::PeRegisterFifoTraversal &&
+      (result.sources.empty() || result.destinations.empty()))
     return invalid("physical traversal has an empty endpoint relation");
   canonicalizeStates(result.resourceStates);
   return result;
