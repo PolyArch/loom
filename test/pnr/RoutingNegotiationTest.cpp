@@ -1,5 +1,7 @@
 #include "PnR/RoutingNegotiation.h"
 
+#include "Common/ResolvedPnrPolicy.h"
+
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -7,10 +9,12 @@
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <type_traits>
 #include <variant>
 
 using namespace loom::pnr;
+using namespace loom;
 
 namespace {
 
@@ -18,8 +22,6 @@ static_assert(std::is_same_v<RouteCost, std::uint64_t>);
 static_assert(std::is_same_v<DualPrice, std::uint64_t>);
 static_assert(std::is_same_v<DualDirection, std::int64_t>);
 static_assert(std::is_same_v<DualStep, std::uint64_t>);
-static_assert(std::variant_size_v<DualDirectionKernel> == 3);
-static_assert(std::variant_size_v<DualStepSchedule> == 3);
 static_assert(maxFiniteRouteCost + 1 == routeCostInfinity);
 
 using Kind = RoutingNegotiationError::Kind;
@@ -28,6 +30,40 @@ constexpr std::uint64_t u64Max = std::numeric_limits<std::uint64_t>::max();
 constexpr std::int64_t i64Max = std::numeric_limits<std::int64_t>::max();
 constexpr std::int64_t i64Min = std::numeric_limits<std::int64_t>::min();
 constexpr std::uint64_t two63 = std::uint64_t{1} << 63;
+
+ResolvedPathFinderPolicy pathFinderPolicy(ResolvedPathFinderPriceKernel kernel,
+                                          std::uint64_t initial,
+                                          std::uint64_t growthNumerator,
+                                          std::uint64_t growthDenominator,
+                                          std::uint64_t historyIncrement) {
+  return {
+      kernel, initial, {growthNumerator, growthDenominator}, historyIncrement};
+}
+
+ResolvedDualStepSchedule constantStep(std::uint64_t step) {
+  return {ResolvedDualStepScheduleKind::Constant, step, 0, 0, 0};
+}
+
+ResolvedDualStepSchedule geometricStep(std::uint64_t initial,
+                                       std::uint64_t minimum,
+                                       std::uint64_t numerator,
+                                       std::uint64_t denominator) {
+  return {ResolvedDualStepScheduleKind::GeometricDecay, initial, minimum,
+          numerator, denominator};
+}
+
+ResolvedDualStepSchedule harmonicStep(std::uint64_t numerator,
+                                      std::uint64_t offset,
+                                      std::uint64_t minimum) {
+  return {ResolvedDualStepScheduleKind::HarmonicDecay, numerator, offset,
+          minimum, 0};
+}
+
+ResolvedDualSubgradientPolicy
+directionPolicy(ResolvedDualDirectionKernel kind,
+                std::optional<ResolvedExactRatio> momentum = std::nullopt) {
+  return {kind, momentum, constantStep(1)};
+}
 
 void fail(const char *test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -64,10 +100,16 @@ void expectFailure(const char *test, const char *what, llvm::Error error,
   if (!error)
     fail(test, std::string(what) + ": expected a failure");
   bool matched = false;
-  llvm::handleAllErrors(std::move(error),
-                        [&](const RoutingNegotiationError &negotiationError) {
-                          matched = negotiationError.kind() == expected;
-                        });
+  llvm::handleAllErrors(
+      std::move(error),
+      [&](const RoutingNegotiationError &negotiationError) {
+        matched = negotiationError.kind() == expected;
+      },
+      [&](const llvm::StringError &configError) {
+        matched = expected == Kind::InvalidPolicy &&
+                  configError.convertToErrorCode() ==
+                      std::make_error_code(std::errc::invalid_argument);
+      });
   if (!matched)
     fail(test, std::string(what) + ": unexpected error kind");
 }
@@ -99,9 +141,10 @@ void routeCostInfinityBoundary() {
                 Kind::ArithmeticOverflow);
 
   // X = 1, so the cost is 1 + present pressure in both price kernels.
-  const PathFinderPriceKernel multiplicative =
-      PathFinderPriceKernel::Multiplicative;
-  const PathFinderPriceKernel additive = PathFinderPriceKernel::Additive;
+  const ResolvedPathFinderPriceKernel multiplicative =
+      ResolvedPathFinderPriceKernel::Multiplicative;
+  const ResolvedPathFinderPriceKernel additive =
+      ResolvedPathFinderPriceKernel::Additive;
   requireEqual(
       __func__, "multiplicative largest finite",
       takeValue(__func__, pathFinderResourceCost(multiplicative, 1, 0, 0,
@@ -159,7 +202,8 @@ void signedOverflowBoundaries() {
   expectFailure(__func__, "slack below the minimum", dualResidual(0, u64Max),
                 Kind::ArithmeticOverflow);
 
-  const DualDirectionKernel momentum = MomentumDeflectedDirection{1, 2};
+  const ResolvedDualSubgradientPolicy momentum = directionPolicy(
+      ResolvedDualDirectionKernel::MomentumDeflected, ResolvedExactRatio{1, 2});
   expectFailure(__func__, "deflection above the maximum",
                 dualDirectionFromResidual(momentum, i64Max, i64Max),
                 Kind::ArithmeticOverflow);
@@ -169,9 +213,10 @@ void signedOverflowBoundaries() {
 }
 
 void pathFinderCostVectors() {
-  const PathFinderPriceKernel multiplicative =
-      PathFinderPriceKernel::Multiplicative;
-  const PathFinderPriceKernel additive = PathFinderPriceKernel::Additive;
+  const ResolvedPathFinderPriceKernel multiplicative =
+      ResolvedPathFinderPriceKernel::Multiplicative;
+  const ResolvedPathFinderPriceKernel additive =
+      ResolvedPathFinderPriceKernel::Additive;
 
   // q=3, u=4, cap=6, P=2, H=1 gives X=1.
   requireEqual(__func__, "multiplicative congested claim",
@@ -206,33 +251,36 @@ void pathFinderPressureUpdates() {
                 pathFinderHistoryUpdate(u64Max, 1, 1),
                 Kind::ArithmeticOverflow);
 
-  expectValid(__func__, validatePathFinderPressurePolicy(
-                            PathFinderPressurePolicy{1, 3, 2, 1}));
-  expectFailure(
-      __func__, "zero initial pressure",
-      validatePathFinderPressurePolicy(PathFinderPressurePolicy{0, 3, 2, 1}),
-      Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "zero history increment",
-      validatePathFinderPressurePolicy(PathFinderPressurePolicy{1, 3, 2, 0}),
-      Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "decaying growth ratio",
-      validatePathFinderPressurePolicy(PathFinderPressurePolicy{1, 2, 3, 1}),
-      Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "unreduced growth ratio",
-      validatePathFinderPressurePolicy(PathFinderPressurePolicy{1, 4, 2, 1}),
-      Kind::InvalidPolicy);
+  expectValid(__func__,
+              validateResolvedPathFinderPolicy(pathFinderPolicy(
+                  ResolvedPathFinderPriceKernel::Multiplicative, 1, 3, 2, 1)));
+  expectFailure(__func__, "zero initial pressure",
+                validateResolvedPathFinderPolicy(pathFinderPolicy(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 0, 3, 2, 1)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "zero history increment",
+                validateResolvedPathFinderPolicy(pathFinderPolicy(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 1, 3, 2, 0)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "decaying growth ratio",
+                validateResolvedPathFinderPolicy(pathFinderPolicy(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 1, 2, 3, 1)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "unreduced growth ratio",
+                validateResolvedPathFinderPolicy(pathFinderPolicy(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 1, 4, 2, 1)),
+                Kind::InvalidPolicy);
 }
 
 void dualDirectionVectors() {
-  const DualDirectionKernel projected = ProjectedSignedDirection{};
+  const ResolvedDualSubgradientPolicy projected =
+      directionPolicy(ResolvedDualDirectionKernel::ProjectedSigned);
   requireEqualSigned(
       __func__, "projected keeps slack",
       takeValue(__func__, dualDirectionFromResidual(projected, -4, 0)), -4);
 
-  const DualDirectionKernel positiveOnly = PositiveViolationOnlyDirection{};
+  const ResolvedDualSubgradientPolicy positiveOnly =
+      directionPolicy(ResolvedDualDirectionKernel::PositiveViolationOnly);
   requireEqualSigned(
       __func__, "positive-only clamps slack",
       takeValue(__func__, dualDirectionFromResidual(positiveOnly, -4, 0)), 0);
@@ -240,7 +288,8 @@ void dualDirectionVectors() {
       __func__, "positive-only keeps violation",
       takeValue(__func__, dualDirectionFromResidual(positiveOnly, 4, 0)), 4);
 
-  const DualDirectionKernel momentum = MomentumDeflectedDirection{1, 2};
+  const ResolvedDualSubgradientPolicy momentum = directionPolicy(
+      ResolvedDualDirectionKernel::MomentumDeflected, ResolvedExactRatio{1, 2});
   requireEqualSigned(
       __func__, "momentum adds the deflected previous direction",
       takeValue(__func__, dualDirectionFromResidual(momentum, 3, 6)), 6);
@@ -250,15 +299,21 @@ void dualDirectionVectors() {
   requireEqualSigned(
       __func__, "momentum truncates negatives toward zero",
       takeValue(__func__, dualDirectionFromResidual(momentum, 0, -7)), -3);
+
+  const ResolvedDualSubgradientPolicy zeroMomentum = directionPolicy(
+      ResolvedDualDirectionKernel::MomentumDeflected, ResolvedExactRatio{0, 1});
+  requireEqualSigned(
+      __func__, "zero momentum keeps the current residual",
+      takeValue(__func__, dualDirectionFromResidual(zeroMomentum, 5, 99)), 5);
 }
 
 // Canonical schedules resolve to their defined steps; degenerate forms that
 // reduce to Constant belong to the resolver and are rejected here.
 void dualStepScheduleContract() {
   requireEqual(__func__, "constant step",
-               takeValue(__func__, dualStepAt(ConstantStepSchedule{7}, 5)), 7);
+               takeValue(__func__, dualStepAt(constantStep(7), 5)), 7);
 
-  const DualStepSchedule geometric = GeometricDecayStepSchedule{100, 3, 1, 2};
+  const ResolvedDualStepSchedule geometric = geometricStep(100, 3, 1, 2);
   requireEqual(__func__, "geometric initial step",
                takeValue(__func__, dualStepAt(geometric, 0)), 100);
   requireEqual(__func__, "geometric truncated step",
@@ -266,7 +321,7 @@ void dualStepScheduleContract() {
   requireEqual(__func__, "geometric holds at its floor",
                takeValue(__func__, dualStepAt(geometric, 64)), 3);
 
-  const DualStepSchedule harmonic = HarmonicDecayStepSchedule{100, 10, 2};
+  const ResolvedDualStepSchedule harmonic = harmonicStep(100, 10, 2);
   requireEqual(__func__, "harmonic initial step",
                takeValue(__func__, dualStepAt(harmonic, 0)), 10);
   requireEqual(__func__, "harmonic truncated step",
@@ -274,62 +329,68 @@ void dualStepScheduleContract() {
   requireEqual(__func__, "harmonic holds at its floor",
                takeValue(__func__, dualStepAt(harmonic, 1000)), 2);
 
-  expectFailure(
-      __func__, "geometric initial step at the floor",
-      validateDualStepSchedule(GeometricDecayStepSchedule{3, 3, 1, 2}),
-      Kind::InvalidPolicy);
-  expectFailure(__func__, "harmonic pinned to its floor",
-                validateDualStepSchedule(HarmonicDecayStepSchedule{10, 10, 1}),
+  expectFailure(__func__, "geometric initial step at the floor",
+                validateResolvedDualStepSchedule(geometricStep(3, 3, 1, 2)),
                 Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "geometric zero minimum step",
-      validateDualStepSchedule(GeometricDecayStepSchedule{10, 0, 1, 2}),
-      Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "geometric growing decay ratio",
-      validateDualStepSchedule(GeometricDecayStepSchedule{10, 3, 2, 2}),
-      Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "geometric unreduced decay ratio",
-      validateDualStepSchedule(GeometricDecayStepSchedule{10, 3, 2, 4}),
-      Kind::InvalidPolicy);
+  expectFailure(__func__, "harmonic pinned to its floor",
+                validateResolvedDualStepSchedule(harmonicStep(10, 10, 1)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "geometric zero minimum step",
+                validateResolvedDualStepSchedule(geometricStep(10, 0, 1, 2)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "geometric growing decay ratio",
+                validateResolvedDualStepSchedule(geometricStep(10, 3, 2, 2)),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "geometric unreduced decay ratio",
+                validateResolvedDualStepSchedule(geometricStep(10, 3, 2, 4)),
+                Kind::InvalidPolicy);
   expectFailure(__func__, "harmonic zero offset",
-                validateDualStepSchedule(HarmonicDecayStepSchedule{1, 0, 1}),
+                validateResolvedDualStepSchedule(harmonicStep(1, 0, 1)),
                 Kind::InvalidPolicy);
 }
 
 // Public kernels reject inputs outside their contract domain, so an invalid
 // policy, inactive session state, or absent claim cannot execute.
 void publicValidationBoundary() {
-  expectFailure(__func__, "constant step zero",
-                dualStepAt(ConstantStepSchedule{0}, 0), Kind::InvalidPolicy);
-  expectFailure(__func__, "noncanonical geometric schedule",
-                dualStepAt(GeometricDecayStepSchedule{3, 3, 1, 2}, 1),
+  expectFailure(__func__, "constant step zero", dualStepAt(constantStep(0), 0),
                 Kind::InvalidPolicy);
+  expectFailure(__func__, "noncanonical geometric schedule",
+                dualStepAt(geometricStep(3, 3, 1, 2), 1), Kind::InvalidPolicy);
   expectFailure(
       __func__, "momentum beta at one",
-      dualDirectionFromResidual(MomentumDeflectedDirection{1, 1}, 1, 1),
+      dualDirectionFromResidual(
+          directionPolicy(ResolvedDualDirectionKernel::MomentumDeflected,
+                          ResolvedExactRatio{1, 1}),
+          1, 1),
       Kind::InvalidPolicy);
   expectFailure(
       __func__, "momentum beta denominator zero",
-      dualDirectionFromResidual(MomentumDeflectedDirection{1, 0}, 1, 1),
+      dualDirectionFromResidual(
+          directionPolicy(ResolvedDualDirectionKernel::MomentumDeflected,
+                          ResolvedExactRatio{1, 0}),
+          1, 1),
       Kind::InvalidPolicy);
-  expectFailure(__func__, "prior direction outside momentum",
-                dualDirectionFromResidual(ProjectedSignedDirection{}, -4, 99),
-                Kind::InvalidPolicy);
-  expectFailure(__func__, "pathfinder absent claim",
-                pathFinderResourceCost(PathFinderPriceKernel::Multiplicative, 0,
-                                       9, 6, 2, 5),
-                Kind::InvalidPolicy);
+  expectFailure(
+      __func__, "prior direction outside momentum",
+      dualDirectionFromResidual(
+          directionPolicy(ResolvedDualDirectionKernel::ProjectedSigned), -4,
+          99),
+      Kind::InvalidPolicy);
+  expectFailure(
+      __func__, "pathfinder absent claim",
+      pathFinderResourceCost(ResolvedPathFinderPriceKernel::Multiplicative, 0,
+                             9, 6, 2, 5),
+      Kind::InvalidPolicy);
   expectFailure(__func__, "dual arc absent claim", dualArcResourceCost(0, 3),
                 Kind::InvalidPolicy);
 
   // Active policy values reaching a raw kernel are rejected rather than
   // silently degenerating into an identity update.
-  expectFailure(__func__, "zero present pressure",
-                pathFinderResourceCost(PathFinderPriceKernel::Multiplicative, 3,
-                                       4, 6, 0, 1),
-                Kind::InvalidPolicy);
+  expectFailure(
+      __func__, "zero present pressure",
+      pathFinderResourceCost(ResolvedPathFinderPriceKernel::Multiplicative, 3,
+                             4, 6, 0, 1),
+      Kind::InvalidPolicy);
   expectFailure(__func__, "zero history increment",
                 pathFinderHistoryUpdate(2, 0, 4), Kind::InvalidPolicy);
   expectFailure(__func__, "zero dual step", dualPriceUpdate(10, 0, 4),

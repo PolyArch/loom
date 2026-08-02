@@ -148,94 +148,6 @@ llvm::Error requireAtLeast(std::uint64_t value, std::uint64_t minimum,
 
 } // namespace
 
-llvm::Error loom::pnr::validatePathFinderPressurePolicy(
-    const PathFinderPressurePolicy &policy) {
-  if (llvm::Error error = requireAtLeast(policy.presentPressureInitial, 1,
-                                         "present_pressure_initial"))
-    return error;
-  if (llvm::Error error = requireAtLeast(policy.historyPressureIncrement, 1,
-                                         "history_pressure_increment"))
-    return error;
-  if (llvm::Error error = requireAtLeast(policy.growthDenominator, 1,
-                                         "present_pressure_growth_denominator"))
-    return error;
-  if (policy.growthNumerator < policy.growthDenominator)
-    return invalidPolicy("present_pressure growth ratio ",
-                         policy.growthNumerator, "/", policy.growthDenominator,
-                         " is below one; negotiation pressure must not decay");
-  if (std::gcd(policy.growthNumerator, policy.growthDenominator) != 1)
-    return invalidPolicy("present_pressure growth ratio ",
-                         policy.growthNumerator, "/", policy.growthDenominator,
-                         " is not in canonical reduced form");
-  return llvm::Error::success();
-}
-
-llvm::Error
-loom::pnr::validateDualDirectionKernel(const DualDirectionKernel &kernel) {
-  const auto *momentum = std::get_if<MomentumDeflectedDirection>(&kernel);
-  if (momentum == nullptr)
-    return llvm::Error::success();
-  if (momentum->betaDenominator == 0)
-    return invalidPolicy("momentum beta_denominator must be positive");
-  if (momentum->betaNumerator >= momentum->betaDenominator)
-    return invalidPolicy("momentum beta ", momentum->betaNumerator, "/",
-                         momentum->betaDenominator,
-                         " must satisfy 0 <= numerator < denominator");
-  return llvm::Error::success();
-}
-
-llvm::Error
-loom::pnr::validateDualStepSchedule(const DualStepSchedule &schedule) {
-  if (const auto *constant = std::get_if<ConstantStepSchedule>(&schedule))
-    return requireAtLeast(constant->step, 1, "constant step");
-
-  if (const auto *geometric =
-          std::get_if<GeometricDecayStepSchedule>(&schedule)) {
-    if (llvm::Error error =
-            requireAtLeast(geometric->minimumStep, 1, "geometric minimum_step"))
-      return error;
-    // An initial step at or below the floor never decays, so the schedule is
-    // Constant and the resolver must have encoded it as such.
-    if (geometric->initialStep <= geometric->minimumStep)
-      return invalidPolicy("geometric initial_step ", geometric->initialStep,
-                           " must exceed minimum_step ", geometric->minimumStep,
-                           "; a nondecaying schedule is Constant");
-    if (geometric->decayNumerator == 0)
-      return invalidPolicy("geometric decay_numerator must be positive");
-    if (geometric->decayNumerator >= geometric->decayDenominator)
-      return invalidPolicy("geometric decay ratio ", geometric->decayNumerator,
-                           "/", geometric->decayDenominator,
-                           " must be strictly between zero and one");
-    if (std::gcd(geometric->decayNumerator, geometric->decayDenominator) != 1)
-      return invalidPolicy("geometric decay ratio ", geometric->decayNumerator,
-                           "/", geometric->decayDenominator,
-                           " is not in canonical reduced form");
-    return llvm::Error::success();
-  }
-
-  const auto &harmonic = std::get<HarmonicDecayStepSchedule>(schedule);
-  if (llvm::Error error =
-          requireAtLeast(harmonic.numerator, 1, "harmonic numerator"))
-    return error;
-  if (llvm::Error error = requireAtLeast(harmonic.offset, 1, "harmonic offset"))
-    return error;
-  if (llvm::Error error =
-          requireAtLeast(harmonic.minimumStep, 1, "harmonic minimum_step"))
-    return error;
-  // The harmonic term is maximal at iteration zero and only decreases, so a
-  // first term that already sits at the floor is Constant at minimum_step.
-  auto initialTerm = scaleMagnitude(harmonic.numerator, 1, harmonic.offset,
-                                    "harmonic decay step");
-  if (!initialTerm)
-    return initialTerm.takeError();
-  if (*initialTerm <= harmonic.minimumStep)
-    return invalidPolicy("harmonic numerator/offset ", harmonic.numerator, "/",
-                         harmonic.offset, " never exceeds minimum_step ",
-                         harmonic.minimumStep,
-                         "; a schedule pinned to its floor is Constant");
-  return llvm::Error::success();
-}
-
 llvm::Expected<std::int64_t>
 loom::pnr::scaleTowardZero(std::int64_t value, std::uint64_t numerator,
                            std::uint64_t denominator) {
@@ -275,8 +187,8 @@ llvm::Expected<std::uint64_t> loom::pnr::ceilMulDiv(std::uint64_t value,
 }
 
 llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
-    PathFinderPriceKernel kernel, std::uint64_t claim, std::uint64_t usage,
-    std::uint64_t capacity, std::uint64_t presentPressure,
+    ResolvedPathFinderPriceKernel kernel, std::uint64_t claim,
+    std::uint64_t usage, std::uint64_t capacity, std::uint64_t presentPressure,
     std::uint64_t historyPressure) {
   if (llvm::Error error = requireAtLeast(claim, 1, "normalized claim"))
     return std::move(error);
@@ -294,7 +206,7 @@ llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
     return pressureProduct.takeError();
 
   switch (kernel) {
-  case PathFinderPriceKernel::Multiplicative: {
+  case ResolvedPathFinderPriceKernel::Multiplicative: {
     auto pressureFactor =
         checkedAdd(*pressureProduct, 1, "PathFinder present-pressure factor");
     if (!pressureFactor)
@@ -311,7 +223,7 @@ llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
                                 *historyFactor,
                             "PathFinder multiplicative cost");
   }
-  case PathFinderPriceKernel::Additive: {
+  case ResolvedPathFinderPriceKernel::Additive: {
     auto historyProduct = checkedMultiply(
         claim, historyPressure, "PathFinder additive history product");
     if (!historyProduct)
@@ -381,49 +293,50 @@ loom::pnr::dualResidual(std::uint64_t aggregatedUsage,
   return -static_cast<DualDirection>(magnitude);
 }
 
-llvm::Expected<DualDirection>
-loom::pnr::dualDirectionFromResidual(const DualDirectionKernel &kernel,
-                                     DualDirection residual,
-                                     DualDirection previousDirection) {
-  if (llvm::Error error = validateDualDirectionKernel(kernel))
+llvm::Expected<DualDirection> loom::pnr::dualDirectionFromResidual(
+    const ResolvedDualSubgradientPolicy &policy, DualDirection residual,
+    DualDirection previousDirection) {
+  if (llvm::Error error = validateResolvedDualSubgradientPolicy(policy))
     return std::move(error);
-  const auto *momentum = std::get_if<MomentumDeflectedDirection>(&kernel);
   // The prior direction is MomentumDeflected session state. Under the other
   // kernels it is an inactive field, so only zero encodes their absent state.
-  if (momentum == nullptr && previousDirection != 0)
+  if (policy.directionKernel !=
+          ResolvedDualDirectionKernel::MomentumDeflected &&
+      previousDirection != 0)
     return invalidPolicy("previous_direction ", previousDirection,
                          " is inactive outside MomentumDeflected");
-  if (std::holds_alternative<ProjectedSignedDirection>(kernel))
+  if (policy.directionKernel == ResolvedDualDirectionKernel::ProjectedSigned)
     return residual;
-  if (std::holds_alternative<PositiveViolationOnlyDirection>(kernel))
+  if (policy.directionKernel ==
+      ResolvedDualDirectionKernel::PositiveViolationOnly)
     return std::max<DualDirection>(residual, 0);
-  auto deflection = scaleTowardZero(previousDirection, momentum->betaNumerator,
-                                    momentum->betaDenominator);
+  auto deflection =
+      scaleTowardZero(previousDirection, policy.momentum->numerator,
+                      policy.momentum->denominator);
   if (!deflection)
     return deflection.takeError();
   return checkedAddSigned(residual, *deflection,
                           "momentum-deflected direction");
 }
 
-llvm::Expected<DualStep> loom::pnr::dualStepAt(const DualStepSchedule &schedule,
-                                               std::uint64_t iteration) {
-  if (llvm::Error error = validateDualStepSchedule(schedule))
+llvm::Expected<DualStep>
+loom::pnr::dualStepAt(const ResolvedDualStepSchedule &schedule,
+                      std::uint64_t iteration) {
+  if (llvm::Error error = validateResolvedDualStepSchedule(schedule))
     return std::move(error);
-  if (const auto *constant = std::get_if<ConstantStepSchedule>(&schedule))
-    return constant->step;
+  if (schedule.kind == ResolvedDualStepScheduleKind::Constant)
+    return schedule.first;
 
-  if (const auto *geometric =
-          std::get_if<GeometricDecayStepSchedule>(&schedule)) {
-    DualStep step = geometric->initialStep;
+  if (schedule.kind == ResolvedDualStepScheduleKind::GeometricDecay) {
+    DualStep step = schedule.first;
     for (std::uint64_t k = 0; k < iteration; ++k) {
-      auto scaled =
-          scaleMagnitude(step, geometric->decayNumerator,
-                         geometric->decayDenominator, "geometric decay step");
+      auto scaled = scaleMagnitude(step, schedule.third, schedule.fourth,
+                                   "geometric decay step");
       if (!scaled)
         return scaled.takeError();
       // The validated decay ratio is below one, so each scaling strictly
       // decreases the step until it clamps at the floor and stays there.
-      const DualStep next = std::max(geometric->minimumStep, *scaled);
+      const DualStep next = std::max(schedule.second, *scaled);
       if (next == step)
         break;
       step = next;
@@ -431,16 +344,15 @@ llvm::Expected<DualStep> loom::pnr::dualStepAt(const DualStepSchedule &schedule,
     return step;
   }
 
-  const auto &harmonic = std::get<HarmonicDecayStepSchedule>(schedule);
   auto divisor =
-      checkedAdd(harmonic.offset, iteration, "harmonic decay divisor");
+      checkedAdd(schedule.second, iteration, "harmonic decay divisor");
   if (!divisor)
     return divisor.takeError();
   auto scaled =
-      scaleMagnitude(harmonic.numerator, 1, *divisor, "harmonic decay step");
+      scaleMagnitude(schedule.first, 1, *divisor, "harmonic decay step");
   if (!scaled)
     return scaled.takeError();
-  return std::max(harmonic.minimumStep, *scaled);
+  return std::max(schedule.third, *scaled);
 }
 
 llvm::Expected<DualPrice> loom::pnr::dualPriceUpdate(DualPrice price,

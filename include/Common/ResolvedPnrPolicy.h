@@ -201,15 +201,20 @@ enum class ResolvedProfilePreset : std::uint32_t {
   StrictImplementation,
 };
 
-ResolvedPnrPolicyConfig
-resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset);
+ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset);
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs();
 
-llvm::Error validateResolvedObjectiveCatalogs(
-    const ResolvedObjectiveCatalogs &catalogs);
-llvm::Error validateResolvedPnrPolicyConfig(
-    const ResolvedPnrPolicyConfig &policy,
-    const ResolvedObjectiveCatalogs &catalogs);
+llvm::Error
+validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs);
+llvm::Error
+validateResolvedPathFinderPolicy(const ResolvedPathFinderPolicy &policy);
+llvm::Error
+validateResolvedDualStepSchedule(const ResolvedDualStepSchedule &schedule);
+llvm::Error validateResolvedDualSubgradientPolicy(
+    const ResolvedDualSubgradientPolicy &policy);
+llvm::Error
+validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
+                                const ResolvedObjectiveCatalogs &catalogs);
 
 } // namespace loom
 

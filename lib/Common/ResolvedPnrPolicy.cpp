@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -29,23 +30,33 @@ struct BuiltinLimits final {
 constexpr BuiltinLimits limitsFor(ResolvedProfilePreset preset) {
   switch (preset) {
   case ResolvedProfilePreset::ReportOnly:
-    return {1, 4096, 16384, 8, 16, 16, 1, 64,
-            ResolvedPnrExactRepairKind::Disabled, 0, 0};
+    return {
+        1, 4096, 16384, 8, 16, 16, 1, 64, ResolvedPnrExactRepairKind::Disabled,
+        0, 0};
   case ResolvedProfilePreset::QuickExplore:
-    return {2, 16384, 65536, 16, 64, 64, 2, 512,
-            ResolvedPnrExactRepairKind::CpSat, 64, 128};
+    return {
+        2,  16384, 65536, 16, 64, 64, 2, 512, ResolvedPnrExactRepairKind::CpSat,
+        64, 128};
   case ResolvedProfilePreset::BalancedExplore:
-    return {4, 65536, 262144, 64, 256, 128, 8, 4096,
-            ResolvedPnrExactRepairKind::CpSat, 256, 1024};
+    return {4,   65536, 262144,
+            64,  256,   128,
+            8,   4096,  ResolvedPnrExactRepairKind::CpSat,
+            256, 1024};
   case ResolvedProfilePreset::PerformanceExplore:
-    return {8, 262144, 1048576, 128, 512, 256, 16, 8192,
-            ResolvedPnrExactRepairKind::CpSat, 512, 4096};
+    return {8,   262144, 1048576,
+            128, 512,    256,
+            16,  8192,   ResolvedPnrExactRepairKind::CpSat,
+            512, 4096};
   case ResolvedProfilePreset::Implementation:
-    return {16, 524288, 2097152, 256, 1024, 512, 24, 16384,
-            ResolvedPnrExactRepairKind::CpSat, 1024, 8192};
+    return {16,   524288, 2097152,
+            256,  1024,   512,
+            24,   16384,  ResolvedPnrExactRepairKind::CpSat,
+            1024, 8192};
   case ResolvedProfilePreset::StrictImplementation:
-    return {32, 1048576, 4194304, 512, 2048, 1024, 32, 32768,
-            ResolvedPnrExactRepairKind::CpSat, 2048, 16384};
+    return {32,   1048576, 4194304,
+            512,  2048,    1024,
+            32,   32768,   ResolvedPnrExactRepairKind::CpSat,
+            2048, 16384};
   }
   llvm_unreachable("all resolved profile presets are handled");
 }
@@ -62,8 +73,9 @@ ResolvedPnrTemporaryViolationPolicy allTemporaryViolations() {
 }
 
 llvm::Error invalid(const char *detail) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "resolved_pnr_policy_invalid: %s", detail);
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "resolved_pnr_policy_invalid: %s", detail);
 }
 
 bool isReduced(const ResolvedExactRatio &ratio) {
@@ -92,8 +104,9 @@ bool weightedLevelLess(const ResolvedWeightedObjectiveLevel &left,
     return left.terms.size() < right.terms.size();
   return std::lexicographical_compare(
       left.terms.begin(), left.terms.end(), right.terms.begin(),
-      right.terms.end(), [](const ResolvedWeightedObjectiveTerm &a,
-                            const ResolvedWeightedObjectiveTerm &b) {
+      right.terms.end(),
+      [](const ResolvedWeightedObjectiveTerm &a,
+         const ResolvedWeightedObjectiveTerm &b) {
         return std::tie(a.dimension, a.weight) <
                std::tie(b.dimension, b.weight);
       });
@@ -110,31 +123,29 @@ bool totalOrderingLess(const ResolvedTotalOrdering &left,
 
 } // namespace
 
-ResolvedPnrPolicyConfig
-resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
+ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
   const BuiltinLimits limits = limitsFor(preset);
-  return {
-      {ResolvedPnrInitializerPolicy{limits.seeds, limits.assignments},
-       ResolvedPnrActionProposalPolicy{1, 3, 2},
-       ResolvedPnrRoutingPolicy{
-           limits.endpointExpansions,
-           limits.negotiations,
-           ResolvedPathFinderPolicy{
-               ResolvedPathFinderPriceKernel::Multiplicative, 1,
-               ResolvedExactRatio{3, 2}, 1},
-           std::nullopt},
-       ResolvedPnrAnnealingPolicy{
-           limits.calibration, ResolvedExactRatio{3, 4},
-           ResolvedExactRatio{4, 5}, 1024, 1, ResolvedExactRatio{19, 20},
-           limits.levelBase, limits.perMovable},
-       limits.focused,
-       ResolvedPnrExactRepairPolicy{limits.repairKind,
-                                    limits.repairDecisions,
-                                    limits.solverCalls}},
-      ResolvedPnrDeterminismPolicy{
-          0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
-          ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
-      allTemporaryViolations(), ResolvedPnrObjectiveSelection{0, 2, {}}, {}};
+  return {{ResolvedPnrInitializerPolicy{limits.seeds, limits.assignments},
+           ResolvedPnrActionProposalPolicy{1, 3, 2},
+           ResolvedPnrRoutingPolicy{
+               limits.endpointExpansions, limits.negotiations,
+               ResolvedPathFinderPolicy{
+                   ResolvedPathFinderPriceKernel::Multiplicative, 1,
+                   ResolvedExactRatio{3, 2}, 1},
+               std::nullopt},
+           ResolvedPnrAnnealingPolicy{
+               limits.calibration, ResolvedExactRatio{3, 4},
+               ResolvedExactRatio{4, 5}, 1024, 1, ResolvedExactRatio{19, 20},
+               limits.levelBase, limits.perMovable},
+           limits.focused,
+           ResolvedPnrExactRepairPolicy{
+               limits.repairKind, limits.repairDecisions, limits.solverCalls}},
+          ResolvedPnrDeterminismPolicy{
+              0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
+              ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
+          allTemporaryViolations(),
+          ResolvedPnrObjectiveSelection{0, 2, {}},
+          {}};
 }
 
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
@@ -145,10 +156,9 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
         {ResolvedObjectiveSourceKind::MappingViolation, ordinal,
          ResolvedObjectiveDirection::Minimize, 0, 1, 0,
          std::numeric_limits<std::uint64_t>::max()});
-  catalogs.dimensions.push_back(
-      {ResolvedObjectiveSourceKind::MappingMeasure, 0,
-       ResolvedObjectiveDirection::Minimize, 0, 1, 0,
-       std::numeric_limits<std::uint64_t>::max()});
+  catalogs.dimensions.push_back({ResolvedObjectiveSourceKind::MappingMeasure, 0,
+                                 ResolvedObjectiveDirection::Minimize, 0, 1, 0,
+                                 std::numeric_limits<std::uint64_t>::max()});
 
   ResolvedWeightedObjectiveLevel closure;
   ResolvedWeightedObjectiveLevel traversal;
@@ -159,8 +169,8 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   }
   traversal.terms.push_back({8, 1});
   energy.terms.push_back({8, 1});
-  catalogs.weightedLevels =
-      {std::move(traversal), std::move(closure), std::move(energy)};
+  catalogs.weightedLevels = {std::move(traversal), std::move(closure),
+                             std::move(energy)};
   catalogs.totalOrderings.push_back({{1, 0}});
   return catalogs;
 }
@@ -178,16 +188,14 @@ validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
                          const ResolvedObjectiveDimension &b) {
                         return dimensionKey(a) < dimensionKey(b);
                       }) ||
-      std::adjacent_find(catalogs.dimensions.begin(),
-                         catalogs.dimensions.end(),
+      std::adjacent_find(catalogs.dimensions.begin(), catalogs.dimensions.end(),
                          [](const ResolvedObjectiveDimension &a,
                             const ResolvedObjectiveDimension &b) {
                            return dimensionKey(a) == dimensionKey(b);
                          }) != catalogs.dimensions.end())
     return invalid("objective dimensions are not a canonical unique sequence");
 
-  for (const ResolvedWeightedObjectiveLevel &level :
-       catalogs.weightedLevels) {
+  for (const ResolvedWeightedObjectiveLevel &level : catalogs.weightedLevels) {
     if (level.terms.empty())
       return invalid("weighted objective level is empty");
     std::uint64_t commonDivisor = 0;
@@ -209,13 +217,12 @@ validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
   }
   if (!std::is_sorted(catalogs.weightedLevels.begin(),
                       catalogs.weightedLevels.end(), weightedLevelLess) ||
-      std::adjacent_find(catalogs.weightedLevels.begin(),
-                         catalogs.weightedLevels.end(),
-                         [](const ResolvedWeightedObjectiveLevel &a,
-                            const ResolvedWeightedObjectiveLevel &b) {
-                           return !weightedLevelLess(a, b) &&
-                                  !weightedLevelLess(b, a);
-                         }) != catalogs.weightedLevels.end())
+      std::adjacent_find(
+          catalogs.weightedLevels.begin(), catalogs.weightedLevels.end(),
+          [](const ResolvedWeightedObjectiveLevel &a,
+             const ResolvedWeightedObjectiveLevel &b) {
+            return !weightedLevelLess(a, b) && !weightedLevelLess(b, a);
+          }) != catalogs.weightedLevels.end())
     return invalid("weighted objective levels are not canonical and unique");
 
   for (const ResolvedTotalOrdering &ordering : catalogs.totalOrderings) {
@@ -232,20 +239,67 @@ validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
   }
   if (!std::is_sorted(catalogs.totalOrderings.begin(),
                       catalogs.totalOrderings.end(), totalOrderingLess) ||
-      std::adjacent_find(catalogs.totalOrderings.begin(),
-                         catalogs.totalOrderings.end(),
-                         [](const ResolvedTotalOrdering &a,
-                            const ResolvedTotalOrdering &b) {
-                           return !totalOrderingLess(a, b) &&
-                                  !totalOrderingLess(b, a);
-                         }) != catalogs.totalOrderings.end())
+      std::adjacent_find(
+          catalogs.totalOrderings.begin(), catalogs.totalOrderings.end(),
+          [](const ResolvedTotalOrdering &a, const ResolvedTotalOrdering &b) {
+            return !totalOrderingLess(a, b) && !totalOrderingLess(b, a);
+          }) != catalogs.totalOrderings.end())
     return invalid("total orderings are not canonical and unique");
   return llvm::Error::success();
 }
 
-llvm::Error validateResolvedPnrPolicyConfig(
-    const ResolvedPnrPolicyConfig &policy,
-    const ResolvedObjectiveCatalogs &catalogs) {
+llvm::Error
+validateResolvedPathFinderPolicy(const ResolvedPathFinderPolicy &policy) {
+  if (policy.presentPressureInitial == 0 ||
+      policy.historyPressureIncrement == 0 ||
+      !isReduced(policy.presentPressureGrowth) ||
+      policy.presentPressureGrowth.numerator <
+          policy.presentPressureGrowth.denominator)
+    return invalid("PathFinder pressure policy is not canonical");
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateResolvedDualStepSchedule(const ResolvedDualStepSchedule &schedule) {
+  switch (schedule.kind) {
+  case ResolvedDualStepScheduleKind::Constant:
+    if (schedule.first == 0 || schedule.second != 0 || schedule.third != 0 ||
+        schedule.fourth != 0)
+      return invalid("constant dual schedule is not canonical");
+    return llvm::Error::success();
+  case ResolvedDualStepScheduleKind::GeometricDecay: {
+    const ResolvedExactRatio decay{schedule.third, schedule.fourth};
+    if (schedule.second == 0 || schedule.first <= schedule.second ||
+        !isReduced(decay) || !ratioStrictlyBetweenZeroAndOne(decay))
+      return invalid("geometric dual schedule is not canonical");
+    return llvm::Error::success();
+  }
+  case ResolvedDualStepScheduleKind::HarmonicDecay:
+    if (schedule.first == 0 || schedule.second == 0 || schedule.third == 0 ||
+        schedule.fourth != 0 ||
+        schedule.first / schedule.second <= schedule.third)
+      return invalid("harmonic dual schedule is not canonical");
+    return llvm::Error::success();
+  }
+  llvm_unreachable("all resolved dual step schedules are handled");
+}
+
+llvm::Error validateResolvedDualSubgradientPolicy(
+    const ResolvedDualSubgradientPolicy &policy) {
+  if (policy.directionKernel ==
+      ResolvedDualDirectionKernel::MomentumDeflected) {
+    if (!policy.momentum || !isReduced(*policy.momentum) ||
+        policy.momentum->numerator >= policy.momentum->denominator)
+      return invalid("momentum direction requires canonical beta in [0,1)");
+  } else if (policy.momentum) {
+    return invalid("inactive momentum is present");
+  }
+  return validateResolvedDualStepSchedule(policy.stepSchedule);
+}
+
+llvm::Error
+validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
+                                const ResolvedObjectiveCatalogs &catalogs) {
   if (llvm::Error error = validateResolvedObjectiveCatalogs(catalogs))
     return error;
   if (policy.search.initializer.seedAttemptCount == 0 ||
@@ -267,47 +321,18 @@ llvm::Error validateResolvedPnrPolicyConfig(
     return invalid("routing work limits must be positive");
   if (const auto *pathFinder =
           std::get_if<ResolvedPathFinderPolicy>(&routing.negotiation)) {
-    if (pathFinder->presentPressureInitial == 0 ||
-        pathFinder->historyPressureIncrement == 0 ||
-        !isReduced(pathFinder->presentPressureGrowth))
-      return invalid("PathFinder pressure policy is not canonical");
+    if (llvm::Error error = validateResolvedPathFinderPolicy(*pathFinder))
+      return error;
   } else {
-    const auto &dual = std::get<ResolvedDualSubgradientPolicy>(
-        routing.negotiation);
-    if (dual.directionKernel ==
-        ResolvedDualDirectionKernel::MomentumDeflected) {
-      if (!dual.momentum || !isReduced(*dual.momentum) ||
-          !ratioStrictlyBetweenZeroAndOne(*dual.momentum))
-        return invalid("momentum direction requires canonical beta in (0,1)");
-    } else if (dual.momentum) {
-      return invalid("inactive momentum is present");
-    }
-    const ResolvedDualStepSchedule &schedule = dual.stepSchedule;
-    switch (schedule.kind) {
-    case ResolvedDualStepScheduleKind::Constant:
-      if (schedule.first == 0 || schedule.second != 0 ||
-          schedule.third != 0 || schedule.fourth != 0)
-        return invalid("constant dual schedule is not canonical");
-      break;
-    case ResolvedDualStepScheduleKind::GeometricDecay: {
-      const ResolvedExactRatio decay{schedule.third, schedule.fourth};
-      if (schedule.second == 0 || schedule.first < schedule.second ||
-          !isReduced(decay) || !ratioStrictlyBetweenZeroAndOne(decay))
-        return invalid("geometric dual schedule is not canonical");
-      break;
-    }
-    case ResolvedDualStepScheduleKind::HarmonicDecay:
-      if (schedule.first == 0 || schedule.second == 0 ||
-          schedule.third == 0 || schedule.fourth != 0)
-        return invalid("harmonic dual schedule is not canonical");
-      break;
-    }
+    const auto &dual =
+        std::get<ResolvedDualSubgradientPolicy>(routing.negotiation);
+    if (llvm::Error error = validateResolvedDualSubgradientPolicy(dual))
+      return error;
   }
 
   const ResolvedPnrAnnealingPolicy &annealing = policy.search.annealing;
   if (annealing.calibrationProposalCount == 0 ||
-      annealing.fallbackTemperature == 0 ||
-      annealing.minimumTemperature == 0 ||
+      annealing.fallbackTemperature == 0 || annealing.minimumTemperature == 0 ||
       !isReduced(annealing.positiveDeltaQuantile) ||
       !ratioAtMostOne(annealing.positiveDeltaQuantile) ||
       !isReduced(annealing.targetInitialAcceptance) ||

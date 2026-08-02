@@ -1,4 +1,5 @@
 #include "PnR/PnrConfig.h"
+#include "PnR/RoutingNegotiation.h"
 
 #include "Common/ComponentViewDigest.h"
 #include "Common/ResolvedConfig.h"
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -128,6 +130,23 @@ void workBudgetIsDerivedFromTheSelectedPolicy() {
           "exact-repair budget was not derived");
 }
 
+void routingKernelsConsumeTheProjectedOwnerRecord() {
+  const loom::pnr::ResolvedPnrConfigView view =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(
+          loom::defaultResolvedConfig()));
+  const auto *pathFinder = std::get_if<loom::ResolvedPathFinderPolicy>(
+      &view.policy().search.routing.negotiation);
+  require(pathFinder != nullptr, "default view did not select PathFinder");
+  require(take(loom::pnr::pathFinderResourceCost(pathFinder->priceKernel, 3, 4,
+                                                 6, 2, 1)) == 18,
+          "routing kernel did not consume the projected price kernel");
+  require(take(loom::pnr::ceilMulDiv(
+              pathFinder->presentPressureInitial,
+              pathFinder->presentPressureGrowth.numerator,
+              pathFinder->presentPressureGrowth.denominator)) == 2,
+          "routing kernel did not consume the projected growth ratio");
+}
+
 void malformedWireFailsClosed() {
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
@@ -135,9 +154,8 @@ void malformedWireFailsClosed() {
   std::vector<std::uint8_t> trailing(view.canonicalViewBytes().begin(),
                                      view.canonicalViewBytes().end());
   trailing.push_back(0);
-  const loom::ComponentViewDigest trailingDigest =
-      take(loom::computeComponentViewDigest(view.schemaDescriptorBytes(),
-                                            trailing));
+  const loom::ComponentViewDigest trailingDigest = take(
+      loom::computeComponentViewDigest(view.schemaDescriptorBytes(), trailing));
   requireRejected(loom::pnr::adoptResolvedSpatialPnrConfigView(
                       view.schemaDescriptorBytes(), trailing, trailingDigest),
                   "pnr_config_bytes_invalid");
@@ -147,10 +165,10 @@ void malformedWireFailsClosed() {
   staleDigestBytes.back() ^= 1;
   const loom::ComponentViewDigest staleDigest =
       take(loom::ComponentViewDigest::fromBytes(staleDigestBytes));
-  requireRejected(loom::pnr::adoptResolvedSpatialPnrConfigView(
-                      view.schemaDescriptorBytes(),
-                      view.canonicalViewBytes(), staleDigest),
-                  "component_view_digest_mismatch");
+  requireRejected(
+      loom::pnr::adoptResolvedSpatialPnrConfigView(
+          view.schemaDescriptorBytes(), view.canonicalViewBytes(), staleDigest),
+      "component_view_digest_mismatch");
 }
 
 } // namespace
@@ -159,6 +177,7 @@ int main() {
   projectionAndAdoptionAreDomainTyped();
   selectedAndUnselectedRecordsHaveExactDependencies();
   workBudgetIsDerivedFromTheSelectedPolicy();
+  routingKernelsConsumeTheProjectedOwnerRecord();
   malformedWireFailsClosed();
   static_assert(
       !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);

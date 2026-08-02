@@ -1,13 +1,14 @@
 #ifndef LOOM_PNR_ROUTINGNEGOTIATION_H
 #define LOOM_PNR_ROUTINGNEGOTIATION_H
 
+#include "Common/ResolvedPnrPolicy.h"
+
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <system_error>
-#include <variant>
 
 namespace loom::pnr {
 
@@ -25,56 +26,6 @@ using DualStep = std::uint64_t;
 // finite cost indistinguishable from an unreachable arc.
 constexpr RouteCost routeCostInfinity = std::numeric_limits<RouteCost>::max();
 constexpr RouteCost maxFiniteRouteCost = routeCostInfinity - 1;
-
-enum class PathFinderPriceKernel {
-  Multiplicative,
-  Additive,
-};
-
-// Explicit PathFinder pressure parameters. Every value comes from resolved
-// semantic config; there are no kernel-side defaults.
-struct PathFinderPressurePolicy {
-  std::uint64_t presentPressureInitial = 0;
-  std::uint64_t growthNumerator = 0;
-  std::uint64_t growthDenominator = 0;
-  std::uint64_t historyPressureIncrement = 0;
-};
-
-struct ProjectedSignedDirection {};
-struct PositiveViolationOnlyDirection {};
-struct MomentumDeflectedDirection {
-  std::uint64_t betaNumerator = 0;
-  std::uint64_t betaDenominator = 0;
-};
-
-// Closed union of DualSubgradient direction kernels. The momentum ratio is
-// active only for MomentumDeflected; the caller-held previous direction is
-// the only additional session state.
-using DualDirectionKernel =
-    std::variant<ProjectedSignedDirection, PositiveViolationOnlyDirection,
-                 MomentumDeflectedDirection>;
-
-struct ConstantStepSchedule {
-  DualStep step = 0;
-};
-struct GeometricDecayStepSchedule {
-  DualStep initialStep = 0;
-  DualStep minimumStep = 0;
-  std::uint64_t decayNumerator = 0;
-  std::uint64_t decayDenominator = 0;
-};
-struct HarmonicDecayStepSchedule {
-  std::uint64_t numerator = 0;
-  std::uint64_t offset = 0;
-  DualStep minimumStep = 0;
-};
-
-// Closed union of dual step schedules. A schedule only maps an iteration
-// index to its step; iteration count, convergence, and best-iterate
-// selection belong to the caller.
-using DualStepSchedule =
-    std::variant<ConstantStepSchedule, GeometricDecayStepSchedule,
-                 HarmonicDecayStepSchedule>;
 
 class RoutingNegotiationError final
     : public llvm::ErrorInfo<RoutingNegotiationError> {
@@ -98,16 +49,6 @@ private:
   std::string message_;
 };
 
-// Explicit-value validation. Validation enforces the contract domains with
-// no hidden defaults and no canonicalization; reducing ratios and rewriting
-// degenerate schedules into Constant belong to the resolved-config resolver,
-// so noncanonical values are rejected here rather than repaired. Every public
-// kernel below validates the policy it consumes.
-llvm::Error
-validatePathFinderPressurePolicy(const PathFinderPressurePolicy &policy);
-llvm::Error validateDualDirectionKernel(const DualDirectionKernel &kernel);
-llvm::Error validateDualStepSchedule(const DualStepSchedule &schedule);
-
 // Sole rounding authority for rational scaling: the exact
 // trunc-toward-zero quotient of value * numerator / denominator, formed in
 // a checked widened intermediate. The denominator must be positive.
@@ -129,12 +70,11 @@ llvm::Expected<std::uint64_t> ceilMulDiv(std::uint64_t value,
 // The kernel prices one claimed resource, so the claim must be positive, and
 // present pressure is active in both price kernels, so it must be positive
 // too. History pressure starts at zero and may legitimately be zero.
-llvm::Expected<RouteCost> pathFinderResourceCost(PathFinderPriceKernel kernel,
-                                                 std::uint64_t claim,
-                                                 std::uint64_t usage,
-                                                 std::uint64_t capacity,
-                                                 std::uint64_t presentPressure,
-                                                 std::uint64_t historyPressure);
+llvm::Expected<RouteCost>
+pathFinderResourceCost(ResolvedPathFinderPriceKernel kernel,
+                       std::uint64_t claim, std::uint64_t usage,
+                       std::uint64_t capacity, std::uint64_t presentPressure,
+                       std::uint64_t historyPressure);
 
 // Checked arc-cost accumulation over the per-resource costs of one traversal.
 // Callers fold the complete arc locally and publish the result atomically; a
@@ -164,12 +104,13 @@ llvm::Expected<DualDirection> dualResidual(std::uint64_t aggregatedUsage,
 // owned by MomentumDeflected alone; it must be zero under the other kernels
 // and on the first iteration, where no prior direction exists.
 llvm::Expected<DualDirection>
-dualDirectionFromResidual(const DualDirectionKernel &kernel,
+dualDirectionFromResidual(const ResolvedDualSubgradientPolicy &policy,
                           DualDirection residual,
                           DualDirection previousDirection);
 
-// Step produced by the schedule at the given zero-based iteration.
-llvm::Expected<DualStep> dualStepAt(const DualStepSchedule &schedule,
+// Step produced by the owner-typed schedule at the given zero-based
+// iteration.
+llvm::Expected<DualStep> dualStepAt(const ResolvedDualStepSchedule &schedule,
                                     std::uint64_t iteration);
 
 // Projected price update: max(0, price + step * direction). Every scheduled
