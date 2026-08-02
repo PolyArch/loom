@@ -141,6 +141,89 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+## Why Model Parameters Are Ordinary Domain Candidates
+
+A training request Artifact would repeat facts already fixed by the typed
+generator binding, resolved plan, run key, and invocation manifest: exact input
+Evidence, trainer identity, configuration, seed, and occurrence provenance.
+Including those facts in parameter identity would also make two training
+occurrences with identical parameter semantics produce different Artifacts.
+
+Training therefore uses the same `Generate` mechanism as every other domain
+search. Its semantic output is an immutable parameter-bundle candidate. The
+bundle identifies only one registry-owned parameter contract and canonical
+parameter payload; the invocation manifest retains how that payload was
+obtained. Equal payloads under one contract deduplicate, while a contract or
+payload change creates a different identity. A promoted default may later be
+checked into the codebase, but online state never silently changes an existing
+model identity.
+
+One shared bundle family does not make the payload opaque. The exact model
+parameter-contract registry owns the typed adopter, encoder, feature
+projection, and pure inference kernel exactly once. Predictor and validator
+descriptors reference that contract rather than reinterpreting its bytes.
+Creating an Artifact family for every trained model would repeat the same
+framing, storage, and publication machinery; accepting an untyped blob would
+instead erase the semantic owner. The shared typed envelope plus one
+registry-owned contract is the smaller complete abstraction between those
+extremes.
+
+## Why Calibration Uses Bundle And Evidence Subjects
+
+Promotion already associates a candidate through one exact case-subject role.
+Extending it to fill a descriptor-local model input would create a second
+partial shape of `ResolvedModelBinding`, while the resulting bundle would be
+unreachable from Evaluation scope because scope anchors must be case subjects.
+It would also tie the payload contract to one consumer slot even though a
+predictor and an independent validator must share it.
+
+Calibration therefore evaluates one exact bundle together with one exact
+nonempty collection of ground-truth Evidence as ordinary case subjects. Each
+Evidence root retains its Request and complete original subject-role pairing,
+so a case over `(D1,F1)` and another over `(D2,F2)` cannot be flattened into an
+accidental `(D1,F2)` combination. Whole-case calibration metrics then mean
+exactly "this bundle over this Evidence collection", and ordinary Promotion
+recovers the bundle through the unchanged subject role. The bundle is the one
+distinguished candidate role; the Evidence collection arrives through an
+ordinary typed Promote input. Allowing that explicit noncandidate subject
+binding is smaller than either freezing future Evidence identities into the
+resolved configuration or inventing a calibration-specific plan node.
+
+The validator calls the bundle contract's pure feature and inference functions
+directly. The same contract names its prediction and ground-truth case
+signatures and consumes every result-affecting operating condition as a typed
+feature. It does not call another evaluator, hide a downstream Request, drop a
+condition, or duplicate predictor formulas. A selected bundle later enters a
+predictor's ordinary model input slot only after exact contract compatibility
+succeeds. This keeps model consumption distinct from candidate evaluation
+without a parameter-specific Promotion path or candidate-to-Evidence map.
+
+Evidence identity alone is not a sufficient dataset boundary. Two tool runs
+can produce different Evidence roots for the same circuit under different
+seeds or attempts, allowing structural leakage while passing an identity-set
+check. The parameter contract therefore owns a removable sample-group
+projection appropriate to its feature semantics. Training, validation, and
+held-out sets are pairwise disjoint by that key. All three are explicit trainer
+inputs, so ordinary SSA use-def gives admission the complete sets before fitting
+without an implicit scheduler edge. Only the Training slot is visible to the
+fitting callback. Validation can rank candidates, while HeldOut is structurally
+restricted to a terminal release gate. This adds neither a persistent dataset
+Artifact nor a scheduler-dependent prefix.
+
+Operating condition is intentionally not a partition escape hatch. Corner,
+voltage, temperature, and activity change feature values and therefore the
+prediction question, but observations of one underlying circuit remain in one
+sample group. Otherwise the same implementation could leak from training into
+held-out merely by changing a tool seed or corner.
+
+Ordinary relative error divides by the observed value and therefore needs an
+epsilon, infinity, or special rejection when a valid power observation is
+zero. Symmetric relative error instead has one exact zero/zero result and a
+finite closed range without a hidden scale. Median and P90 are not separate
+semantic quantities from other quantiles, so they reuse the existing typed
+`Quantile` condition. This adds four physical-prediction error MetricKinds, not
+eight percentile-specific kinds or a generic metric-of-metric DSL.
+
 ## Why Objective Facts Have Several Projections
 
 One semantic fact must have one source and normalization, but not every
@@ -232,12 +315,3 @@ not prove that the containment owner killed the process tree. The terminal
 status is therefore committed only from the owner-local hard-limit event. Peak
 memory remains a raw execution fact; an Evaluation model must explicitly
 interpret it before it can become a metric or Evidence.
-
-## Why Training Produces Immutable Candidates
-
-Calibration and learned models can improve over time without making a running
-Evaluation mutable. Training consumes exact datasets and parameters and
-produces an immutable model-parameter candidate. The same Evaluation/DSE
-machinery validates and promotes it. A promoted default may later be checked
-into the codebase, but online state never silently changes an existing model
-identity.

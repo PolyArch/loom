@@ -169,14 +169,29 @@ No tool adapter silently falls back to another model.
 ## Calibration And Online Learning
 
 High-fidelity Evidence may be admitted as training or calibration input for a
-faster model through the central DSE plan. Training creates a new immutable
-parameter bundle and resolved model binding. Online updates never mutate a
-model used by an in-flight deterministic invocation.
+faster model through the central DSE plan. An ordinary typed `Generate` node
+creates immutable `loom.model_parameter_bundle 1.0` candidates from exact
+Training Evidence, trainer configuration, and seed; Validation and HeldOut
+Evidence are additional typed admission inputs used only to prove pairwise
+sample-group isolation before fitting. It does not create a separate
+training-request Artifact. Each bundle references one registry-owned parameter
+contract shared by the predictor and calibration validator. Ordinary
+validation and held-out promotion bind the candidate as the bundle subject of
+the `fpa_model_parameter_calibration` case and bind the exact ground-truth
+Evidence collection from the corresponding typed Promote input. Validation may
+rank; HeldOut may only feed the terminal model-release gate. A selected bundle
+enters a new resolved predictor binding only after its contract matches the
+predictor slot. Training provenance remains in `InvocationManifest`, and
+online updates never mutate a bundle or model binding used by an in-flight
+deterministic invocation.
 
 ## Anchor Verification
 
 Stable tests cover semantic versus invocation binding, exact implementation
 parentage, occurrence-scoped recipe identity, derivation-before-evaluation,
-output collection, and typed failure classification. Vendor command lines,
-local module names, licenses, and report text are adapter tests rather than
-global fixture matrices.
+output collection, typed failure classification, canonical parameter payload
+validation before Blob Store publication, producer/consumer parameter-contract
+matching, typed validation/held-out subject binding, pairwise sample-group
+isolation before training, and held-out exclusion from ranking. Vendor command
+lines, local module names, licenses, and report text are adapter tests rather
+than global fixture matrices.

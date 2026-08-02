@@ -21,6 +21,11 @@ Each persistent fact has one owner:
   outcomes;
 * `EvaluationRequest` owns one immutable evaluation input;
 * `EvaluationEvidence` owns normalized evaluation output;
+* the model-parameter contract registry owns each payload, accepted
+  case/condition domain, feature, inference, prediction, and calibration-group
+  contract, while `ModelParameterBundle`
+  owns one immutable typed payload reference under that exact contract as
+  specified by [Evaluation and DSE](spec-dse-feedback.md#model-parameters-and-training);
 * the architecture-only `fabric.system` owns each InstructionCore
   Architectural Contract and Microarchitectural Realization, plus the exact
   Transport Architecture;
@@ -112,6 +117,15 @@ immutable subjects + exact model binding
 EvaluationRequest + typed output bindings
   -> EvaluationEvidence
 
+exact Training, Validation, and HeldOut Evidence partitions
+  + optional prior parameter bundles
+  + exact trainer binding, resolved configuration, and seed
+  -> ModelParameterBundle candidate
+ModelParameterBundle + exact typed Validation or HeldOut Evidence input
+  + exact calibration validator binding
+  -> EvaluationRequest
+  -> EvaluationEvidence
+
 candidate sets + Evidence + resolved DSE policy
   -> CandidateDecision lineage and selected/Pareto artifact set
 ```
@@ -179,6 +193,10 @@ the sole owner of `InvocationManifest` and `ExecutionJournal` fields. This
 traceability view references those records and does not repeat their schema,
 copy artifact fields, or copy normalized Evidence results. Repeated lineage
 paths to identical semantic content converge on the same ArtifactIdentity.
+Training occurrence, dataset, trainer, configuration, seed, and attempt facts
+therefore remain manifest lineage. They are not copied into a parameter bundle;
+two occurrences producing the same canonical payload under the same exact
+registry-owned parameter contract converge on one bundle identity.
 
 One code revision plus one resolved semantic configuration and identical input
 artifacts must produce identical semantic outputs. Wall time, host parallelism,
@@ -404,10 +422,11 @@ semantic artifact, Evaluation result, DSE choice, or deployment.
 
 Stable tests cover the fixed identity preimage, canonicalization invariance,
 store corruption detection, exact consumer coupling, lineage without semantic
-duplication, deterministic replay, and gem5 rejection when any of its three
-InstructionCore compatibility authorities disagree. Tests do not pin path
-layouts beyond the store contract or duplicate every producer/consumer pair in
-a fixture matrix.
+duplication, parameter-bundle convergence across distinct training provenance,
+contract divergence, exact calibration Evidence closure, deterministic replay,
+and gem5 rejection when any of its three InstructionCore compatibility
+authorities disagree. Tests do not pin path layouts beyond the store contract
+or duplicate every producer/consumer pair in a fixture matrix.
 
 Store anchors cover single-object complete-or-absent visibility, successful
 durability acknowledgement, identical concurrent publication, retry after a

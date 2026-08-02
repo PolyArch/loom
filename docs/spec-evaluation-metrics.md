@@ -207,11 +207,45 @@ value type and domain
 physical dimension and canonical unit
 owned EvaluationScope form descriptors
 permitted observation forms and typed reasons
+permitted and required request-specific ConditionApplicabilityPatterns
 ```
 
 The enum and its single registry definition own the exact set of kinds.
 Parsing, printing, enumeration, and descriptor lookup derive mechanically from
 that definition. Components must not repeat spellings or local unit tables.
+
+Required request-condition patterns are checked independently for every
+`MetricRequest` of that kind after ordinary condition location and
+applicability validation. The containing request must include one match for
+each required pattern. Existing assignment-key conflict rules still apply, so
+a required pattern with one assignment key cannot be supplied twice. A model
+descriptor may consume, require, or prove invariant only patterns already
+permitted by the Metric descriptor; it cannot weaken a Metric-owned per-request
+requirement.
+
+The required collection is a canonical duplicate-free subset of the permitted
+collection. Descriptor projection encodes the permitted collection by its
+existing canonical pattern keys, then `u64be(required_count)` and the sorted
+canonical keys of the required subset. An unknown pattern or a required pattern
+not present in the permitted collection is a registry error.
+
+The closed metric-value domain algebra is:
+
+```text
+MetricValueDomain =
+    NonNegative
+  | Positive
+  | ClosedDecimalInterval {
+      lower: canonical DecimalValue
+      upper: canonical DecimalValue
+    }
+```
+
+`ClosedDecimalInterval` is legal only for a `DecimalValue` metric; its bounds
+use the descriptor's canonical unit and satisfy `lower <= upper`. Registry
+admission and Evidence validation use this one domain value; a model cannot add
+a private bound check or widen it. The four prediction-error kinds use
+`ClosedDecimalInterval[0,2]`.
 
 Every registered MetricKind has a nonempty scope-form table. Schema 1.0 gives
 each initial metric one owner-defined form at `ScopeFormRef(0)`:
@@ -224,6 +258,10 @@ LimitingClockFrequency form 0: WholeExactCase
 TotalArea             form 0: WholeExactCase
 DynamicPower          form 0: WholeExactCase
 LeakagePower          form 0: WholeExactCase
+LimitingClockFrequencyPredictionError form 0: WholeExactCase
+TotalAreaPredictionError              form 0: WholeExactCase
+DynamicPowerPredictionError           form 0: WholeExactCase
+LeakagePowerPredictionError           form 0: WholeExactCase
 ```
 
 `Runtime` and the four whole-case physical metrics cover the exact evaluated
@@ -246,6 +284,10 @@ LimitingClockFrequency : positive DecimalValue, hertz
 TotalArea              : nonnegative DecimalValue, square_meter
 DynamicPower           : nonnegative DecimalValue, watt
 LeakagePower           : nonnegative DecimalValue, watt
+LimitingClockFrequencyPredictionError : DecimalValue in [0,2], one
+TotalAreaPredictionError              : DecimalValue in [0,2], one
+DynamicPowerPredictionError           : DecimalValue in [0,2], one
+LeakagePowerPredictionError           : DecimalValue in [0,2], one
 ```
 
 `ClockPeriod` remains the duration of one exact reference cycle.
@@ -255,6 +297,33 @@ invent one local cycle as the whole-case reference cycle. `TotalArea` includes
 cells, macros, and allocated routing footprint. Dynamic power is workload and
 activity dependent; leakage power is not. A model lacking the required
 activity returns typed `Unsupported`, never a hidden toggle-rate default.
+
+Each prediction-error descriptor owns one permitted-and-required
+request-condition pattern: `Quantile` with the exact
+`fpa_model_parameter_calibration` case signature and an empty target tuple.
+Thus each request is admitted only for that case and contains exactly one
+`Quantile`: the required pattern provides at least one and Quantile's empty
+assignment key rejects a duplicate. It reports the nearest-rank quantile over
+the case's nonempty ground-truth Evidence role. Case admission has already
+required one completed Point observation for each of the four source physical
+metrics, so every sample has one exact observed value. For one predicted value
+`p` and observed value `o`, the per-sample symmetric relative error is:
+
+```text
+0                                      when p = 0 and o = 0
+2 * abs(p - o) / (abs(p) + abs(o))     otherwise
+```
+
+The model represents Decimal coefficients, powers of ten, ratio numerators,
+denominators, and comparison cross-products with arbitrary-precision signed
+integers. It normalizes signs and common factors, applies the shared
+nearest-rank rule to exact rational ordering, and converts only the selected
+value to canonical `DecimalValue` using the calibration descriptor's 18-digit
+`RoundToNearestTiesToEven` contract. No finite host-integer width may turn an
+otherwise valid comparison into overflow. There is no epsilon, infinity, host
+floating-point ordering, or per-sample early rounding. Median and P90 are
+therefore ordinary requests with `Quantile(1/2)` and `Quantile(9/10)` rather
+than separate MetricKinds.
 
 Cycle count and physical time are distinct kinds. Total energy and energy per
 work are distinct kinds. Quantities with different ground-truth definitions or
@@ -346,10 +415,11 @@ ExactRatio:
 ```
 
 Discrete counts use `IntegerValue`. Physical time, area, power, energy,
-bandwidth, and other continuous quantities use normalized `DecimalValue` in
-the descriptor's canonical unit. A nonzero decimal removes trailing decimal
-zeros from its coefficient and adds them to its exponent; zero has coefficient
-zero and exponent zero. Overflow during normalization is invalid.
+bandwidth, dimensionless observed metrics, and other continuous quantities use
+normalized `DecimalValue` in the descriptor's canonical unit. A nonzero decimal
+removes trailing decimal zeros from its coefficient and adds them to its
+exponent; zero has coefficient zero and exponent zero. Overflow during
+normalization is invalid.
 
 Evaluators may calculate with tool-native or floating-point values internally.
 Finalization converts them deterministically according to the exact model
@@ -357,13 +427,14 @@ descriptor's precision and rounding contract. Original text and units remain
 owner-attempt or scratch material until the raw detailed-bundle Artifact owner
 is defined.
 
-`ExactRatio` is not a third `MetricValue` form. It is used only by typed fields
-whose semantics are an exact dimensionless ratio or probability, or an exact
-coordinate or phase in reference cycles. Numerator and denominator are `uint64`; the
-denominator is nonzero; the pair is reduced by greatest common divisor; and
-zero has the sole encoding `0/1`. Arithmetic used for validation or
-normalization is checked. Absolute physical quantities remain `DecimalValue`,
-so Decimal and Ratio never compete to encode the same fact.
+`ExactRatio` is not a third `MetricValue` form. It is used only by exact typed
+configuration fields whose semantics are a ratio or probability, or an exact
+coordinate or phase in reference cycles. Numerator and denominator are
+`uint64`; the denominator is nonzero; the pair is reduced by greatest common
+divisor; and zero has the sole encoding `0/1`. Arithmetic used for validation
+or normalization is checked. Observed dimensionless metrics remain
+`DecimalValue` under their model descriptor's fixed precision, so Decimal and
+Ratio never compete to encode the same persistent fact.
 
 ## Evaluation Conditions
 
@@ -411,8 +482,9 @@ Semantic applicability has three nonoverlapping owners:
 
 * the exact `EvaluationCaseSignature` owns a canonical set of complete
   `ConditionApplicabilityPattern` values for Base conditions;
-* a Metric or Finding descriptor owns the corresponding complete patterns for
-  request-specific conditions; and
+* a Metric or Finding descriptor owns the corresponding complete permitted
+  patterns and its per-request required subset for request-specific
+  conditions; and
 * an `EvaluationModelDescriptor` declares which already-permitted exact
   patterns it consumes, requires, or proves irrelevant to all of its requested
   outputs.
@@ -591,10 +663,13 @@ it does not claim physical-world accuracy.
 
 Within persistent `EvaluationEvidence`, a `MetricResult` occupies the exact
 Request-local `MetricRequestOrdinal` array position and stores only its
-observation form, value or bounds, uncertainty, and permitted calibration-input
-references. The Request and registry recover the kind, scope, conditions,
-dimension, unit, and model method. A result must not duplicate them or
-serialize its ordinal.
+observation form, value or bounds, uncertainty, and the canonical
+`calibration_input_slots` set of descriptor-local `ModelInputSlotRef` values
+whose bound Artifacts calibrated that observation. The set may be empty. A
+case subject, including a calibrated bundle, is represented by the Request and
+must not be copied into this field. The Request and registry recover the kind,
+scope, conditions, dimension, unit, and model method. A result must not
+duplicate them or serialize its ordinal.
 
 ## Finding Results
 
@@ -710,6 +785,9 @@ Stable tests cover:
   malformed-payload, and unresolved-corner rejection;
 * value-domain, interval, censored, and not-applicable validation;
 * deterministic query ordering and duplicate rejection;
+* symmetric prediction-error zero handling, exact pre-rounding order, fixed
+  nearest-rank median and P90, and rejection of a missing or duplicate Quantile
+  condition;
 * activity-summary ordinal resolution, destination-target compatibility,
   missing-is-unknown behavior, and rejection of incompatible payload,
   coverage, or lineage, plus deterministic owner-unavailable rejection before

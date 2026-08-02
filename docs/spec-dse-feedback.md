@@ -31,8 +31,7 @@ action algebra.
 
 ## Persistent Evaluation Boundary
 
-The Evaluation black box has exactly two persistent semantic artifact
-families:
+Evaluation itself owns exactly two persistent semantic Artifact families:
 
 ```text
 EvaluationRequest Artifact
@@ -40,11 +39,15 @@ EvaluationRequest Artifact
   -> EvaluationEvidence Artifact
 ```
 
-Request and Evidence are the sole semantic Evaluation input and output. There
-is no persistent `EvaluationResultArtifact`, partial-result artifact, model
-artifact, or evaluator-specific request/result family. Queue entries, running
-jobs, retries, attempts, and checkpoints are execution records rather than
-semantic Evaluation artifacts.
+There is no persistent `EvaluationResultArtifact`, partial-result artifact,
+evaluator-produced model-result artifact, or evaluator-specific request/result
+family. Descriptor-owned typed output Artifacts may cross the evaluator
+interface, but their domain families, not Evaluation, own their schemas and
+identity. A `ModelParameterBundle` is one such separate domain Artifact
+produced by ordinary candidate generation, never an evaluator output family.
+It may later be an Evaluation case subject or a typed model input. Queue
+entries, running jobs, retries, attempts, and checkpoints are execution
+records rather than semantic Evaluation artifacts.
 
 An EvaluationRequest fixes one immutable problem and one exact resolved model
 binding. EvaluationEvidence references that exact Request and is the only
@@ -132,7 +135,12 @@ CaseSubjectRoleDescriptor {
   semantic_role
   accepted Artifact schemas
   cardinality
-  cross-role compatibility
+  verify_cross_role_compatibility(
+      exact subject,
+      complete subject bindings,
+      CaseArtifactResolution,
+      ArtifactStore,
+      BlobStore)
 }
 ```
 
@@ -146,6 +154,15 @@ role, schema, cardinality, and compatibility. An
 only its capability to evaluate that case. If one implementation supports
 incompatible case signatures, the registry exposes separate model
 descriptors.
+
+The compatibility callback may strict-import an accepted subject through its
+Artifact-family owner using the supplied stores. The imported view is
+ephemeral and never enters the case schema or `CaseArtifactResolution`. The
+`BlobStore` is present because a root such as `ModelParameterBundle` cannot be
+strict-imported without validating its referenced logical payload. This
+permits a role whose root schema is shared by several typed contracts to
+validate the exact contract carried by each root without adding a generic
+property path or copying owner fields into Evaluation.
 
 `UniqueReferenceCycle` is an executable case-signature-owned projection, not a
 boolean capability flag. `AbstractCaseCycle` is legal only when the signature's
@@ -256,8 +273,11 @@ model at any point in the stack. The initial production profiles are:
 | hardware-aware Dataflow analysis | Canonical Dataflow Program, Fabric |
 | hardware-only analysis | Fabric |
 | mapped or CGRA analysis | Canonical Dataflow Program, Fabric, Mapping |
+| physical implementation analysis | HardwareImplementation |
+| system simulation | Deployment, Gem5 Simulation Binding |
 
-Schema 1.0 initially registers these exact pre-Mapping case signatures:
+Schema 1.0 initially registers these exact case signatures used by the
+pre-Mapping, DFG-simulation, FPA, and system-simulation flows described here:
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -265,6 +285,9 @@ Schema 1.0 initially registers these exact pre-Mapping case signatures:
 | 1 | `canonical_dataflow_with_fabric` | `0: Canonical Dataflow Program`, `1: Fabric` | both forbidden |
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
+| 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
+| 5 | `hardware_implementation_physical` | `0: HardwareImplementation` | both forbidden |
+| 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 
 The matching initial model descriptors are:
 
@@ -274,12 +297,17 @@ The matching initial model descriptors are:
 | 3 | `canonical_dataflow_fabric_low_confidence` | 1 | the same deterministic Analytic metric set for a Canonical Dataflow/Fabric pair |
 | 4 | `structured_program_functional` | 2 | deterministic Simulation result for the whole-case `functional_mismatch` finding only |
 | 5 | `dfg_simulator` | 3 | deterministic Simulation of the exact Spatial workload, with one `SimulationExecution` output and exact whole-case CycleCount |
+| 6 | `fpa_model_parameter_calibration` | 4 | deterministic Analytic calibration-error quantiles over one exact FPA parameter bundle and one exact ground-truth Evidence set |
+| 7 | `structured_fabric_calibrated_fpa` | 0 | deterministic Analytic point estimates for limiting clock frequency, total area, dynamic power, and leakage power using one exact FPA parameter bundle |
+| 8 | `canonical_dataflow_fabric_calibrated_fpa` | 1 | the same calibrated FPA predictions for one Canonical Dataflow/Fabric pair |
 
 Model kinds 2 and 3 consume the exact shared low-confidence config-view
-contract. Model kinds 4 and 5 each consume a distinct zero-field config view
-because neither simulation has semantic model parameters. Physical execution
-limits remain owner-attempt bindings and do not enter either view. Model kind
-4 compares the
+contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
+view because their semantics are fixed by their descriptor, case, and, for
+kind 6, the bundle's exact parameter contract. Model kinds 7 and 8 each have
+one `ExactlyOne` model-input slot for the exact initial FPA parameter contract
+and use a zero-field config view. Physical execution limits remain
+owner-attempt bindings and do not enter these views. Model kind 4 compares the
 candidate's selected whole-program native execution with the source execution
 owned by the exact workload/runtime pair. Exact Artifact identity is sufficient
 to establish equality for the unchanged source baseline; all other candidates
@@ -295,6 +323,18 @@ or an attempt limit cannot publish a fabricated retired execution. The first
 provider does not emit `Halted`, because no complete terminal-witness owner is
 registered for it; a non-retired run without such a proof is an execution
 failure rather than a guessed deadlock.
+
+Case kinds 0 and 1 admit the exact Fabric-anchored target patterns owned by
+`ProcessCorner`, `SupplyVoltage`, `Temperature`, `RequiredClockPeriod`,
+`RelativeClockSchedule`, and `ActivityBinding`; their model-input closure must
+contain any referenced ImplementationPlatform. Case kind 5 admits the
+corresponding HardwareImplementation-anchored patterns and has no whole-case
+cycle basis. Each model declares the exact permitted subset it consumes,
+requires, or proves invariant. Case kind 6 is the single
+shared system-simulation signature referenced by the Runtime ABI and Fabric
+System contracts. Its exact Deployment/Gem5-binding compatibility and System
+workload/runtime-input coupling are those owners' typed relations, not copied
+fields in Evaluation.
 
 This table does not introduce a second case-kind enum or a generic optional
 subject bag. Every real model registers one exact
@@ -410,8 +450,11 @@ Evaluation library's static typed registry, not an Artifact. It owns:
 - permitted exact `ConditionApplicabilityPattern` consume, require, and
   invariant capabilities;
 - supported metric and finding queries and result forms;
-- descriptor-owned model input slots, role-labeled typed output slots, and
-  resolved model-config schema;
+- descriptor-owned model input slots, including exact accepted parameter
+  contract refs where applicable, role-labeled typed output slots, and resolved
+  model-config schema;
+- one exact decimal-result finalization contract whenever any declared result
+  can contain `DecimalValue`;
 - modeled phenomena, execution method, and determinism contract; and
 - exact optional domain-specific incremental and guidance interaction
   capabilities.
@@ -469,11 +512,25 @@ may be empty for a purely derived model whose exact upstream Evidence inputs
 own all modeled facts. Execution method is exactly one value and is recovered
 from the model descriptor rather than copied into observations.
 
+The closed decimal-result finalization contract is a positive significant-digit
+count in `[1,18]` and `RoundToNearestTiesToEven`. It applies only after exact
+model arithmetic and aggregation have selected the mathematical result. A
+descriptor that can emit `DecimalValue` without this contract, or that carries
+the contract while no result can contain a decimal, is invalid. This field is
+part of descriptor semantic identity; evaluator implementations cannot choose
+host precision or another rounding mode.
+
 The static descriptor's canonical capability projection encodes the phenomenon
 set as `u64be(count)` followed by its sorted `u32be(tag)` values and encodes the
 execution method as one `u32be(tag)`. C++ registration uses the closed enums,
 not strings or raw integers. Human-readable spellings are registry-derived and
 never an identity input.
+
+The same projection encodes decimal finalization as `u32be(0)` when absent or
+`u32be(1) || u32be(significant_decimal_digits) || u32be(0)` when present; the
+final zero is the schema-1.0 tag for `RoundToNearestTiesToEven`. Unknown tags or
+a presence state inconsistent with the descriptor's result capabilities are
+registry errors.
 
 Full Evaluation has no separate domain field. Every registered model must
 implement the public full `evaluate(EvaluationRequest)` contract, and its full
@@ -483,6 +540,21 @@ condition capabilities, metric and finding capabilities, input and output
 slots, resolved config view, mandatory terminal findings, determinism, and
 replicate rules. Copying a second full-domain description would be another
 authority.
+
+Every owner-local static typed registry reference in this document uses one
+canonical key framing:
+
+```text
+u64be(owner_registry_identity byte length)
+|| exact owner_registry_identity bytes
+|| u32be(owner_registry_version.major)
+|| u32be(owner_registry_version.minor)
+|| u32be(owner-local kind)
+```
+
+The owner identity is canonical nonempty ASCII. Each concrete reference type
+names the semantic meaning of its final owner-local kind field; this shared
+framing does not create a generic interchangeable reference type.
 
 Incremental and guidance protocols are optional cross-owner interactions:
 
@@ -524,9 +596,8 @@ route-guidance value. A model that lists the exact ref may support incremental,
 guidance, or both; a model that lists no interaction capabilities remains a
 complete full-only evaluator.
 
-The complete domain-ref canonical key is `u64be(owner_identity_byte_length)`,
-the exact owner-identity bytes,
-`u32be(major)`, `u32be(minor)`, and `u32be(owner_local_domain_kind)`.
+The complete domain-ref canonical key uses the shared owner-local registry
+reference framing with `owner_local_domain_kind` as its final field.
 Capabilities sort by that key. Each capability then encodes
 `u64be(mode_count)` followed by its sorted `u32be(mode_tag)` values. Duplicates,
 unknown owners or kinds, and a mode not implemented by the owner descriptor are
@@ -598,9 +669,37 @@ equivalent integer fields.
 
 `ModelInputSlotRef` is a stable ordinal local to one descriptor version. Its
 slot descriptor alone owns accepted Artifact schemas, cardinality, and
-compatibility. The same mechanism binds parameter bundles, calibration
-bundles, and role-labeled upstream EvaluationEvidence without an unordered
-Evidence bag.
+compatibility. The same mechanism binds parameter bundles and role-labeled
+upstream EvaluationEvidence without an unordered Evidence bag.
+
+```text
+ModelInputSlotDescriptor {
+  slot_ref: ModelInputSlotRef
+  accepted_artifact_schemas
+  cardinality
+  model_parameter_contract_ref: optional<ModelParameterContractRef>
+  verify_compatibility(exact bound roots, exact EvaluationCase,
+                       CaseArtifactResolution, ArtifactStore, BlobStore)
+}
+```
+
+Compatibility receives the exact bound roots, the complete case resolution,
+`ArtifactStore`, and `BlobStore`. A slot owner may strict-import a root and its
+logical blob payload, but cannot copy either owner's codec. Evidence that
+defines the ground-truth question belongs in an Evaluation case-subject role;
+Evidence that supplies implementation material to a derived model belongs in
+a descriptor-owned model-input slot. One Evidence root cannot change roles by
+consumer convention.
+
+A slot that admits `loom.model_parameter_bundle 1.0` references exactly one
+registered `ModelParameterContractRef`. The slot does not own the parameter
+codec or inference semantics. Request verification strict-imports every bound
+bundle through both stores and requires its exact contract reference to equal
+the slot's accepted contract. The descriptor registry rejects a bundle slot
+without this reference
+and rejects a parameter-contract reference on a slot that does not admit the
+bundle schema. A raw-byte validator, untyped property map, consumer-owned
+parameter codec, or schema-only compatibility check is not equivalent.
 
 `ModelOutputSlotRef` is likewise a stable descriptor-local typed ordinal. Its
 descriptor owns role, Artifact schema, and closed cardinality per Evidence
@@ -957,18 +1056,29 @@ reference form:
 ```text
 PlanOutputRef = (producer_node_ordinal, output_slot_ordinal)
 
+CalibrationPartitionRole = Training | Validation | HeldOut
+
 PlanValueRole =
     CandidateSet
   | EvidenceSet
   | SimulationExecutionSet
-  | ModelParameterBundleSet
 
 PlanValueCardinality = ExactlyOne | ZeroOrOne | NonEmptySet | FiniteSet
+
+PlanInputSlotDescriptor {
+  role: PlanValueRole
+  accepted_artifact_schema: ArtifactSchemaDescriptor
+  cardinality: PlanValueCardinality
+  model_parameter_contract_ref: optional<ModelParameterContractRef>
+  calibration_partition_role: optional<CalibrationPartitionRole>
+}
 
 PlanOutputSlotDescriptor {
   role: PlanValueRole
   accepted_artifact_schema: ArtifactSchemaDescriptor
   cardinality: PlanValueCardinality
+  model_parameter_contract_ref: optional<ModelParameterContractRef>
+  calibration_partition_role: optional<CalibrationPartitionRole>
 }
 
 PlanInputBinding =
@@ -981,6 +1091,27 @@ An output slot's immutable runtime value is always a canonical set of exact
 set is therefore the `CandidateSet` role, not a distinct reference mechanism.
 The descriptor and resolved node own slot meaning; neither a container type nor
 the Artifact Store may reinterpret it.
+
+`model_parameter_contract_ref` is required exactly when the accepted schema is
+`loom.model_parameter_bundle 1.0` and is forbidden for every other schema. A
+trainer output slot therefore declares its one produced contract without a
+parameter-specific plan value role. Plan resolution compares that static
+producer contract with every consuming bundle-slot contract before execution;
+a mismatch is an ill-typed use-def edge, not a runtime training outcome.
+
+`calibration_partition_role` is legal exactly for an `EvidenceSet` slot whose
+accepted schema is `evaluation.evidence.1.0`; it is forbidden otherwise. A
+produced Evidence partition and its consuming input must carry the same tag.
+An exact static Evidence set acquires its role from the consuming input slot.
+This slot fact supplies the ordinary use-def needed for partition readiness;
+it is not copied into Evidence identity.
+
+`CalibrationPartitionRole` has stable `u32be` tags in declaration order.
+Optional slot refinements encode `u32be(0)` when absent or `u32be(1)` followed
+by the referenced contract key or partition tag when present. Input and output
+slot descriptors otherwise retain their existing role, schema, and cardinality
+order. Unknown discriminants, tags, or a refinement forbidden by the slot
+schema are invalid.
 
 The plan has two node kinds:
 
@@ -995,13 +1126,19 @@ ResolvedDsePlanNode =
       acquisition_policy
       quality_gate_policy_ref
       selection_policy
+      purpose: CandidateSelection | ModelRelease
     }
 ```
 
+Promote purpose uses stable tags `CandidateSelection = 0` and
+`ModelRelease = 1`; it is part of the resolved plan's canonical node bytes.
+
 An input binds either an explicit canonical set of exact static Artifacts or an
 earlier `PlanOutputRef`. Resolution checks role, exact Artifact schema,
-cardinality, producer-before-consumer ordering, and acyclicity. Independent
-nodes may execute in parallel, but canonical inputs and node policy alone
+cardinality, parameter-contract compatibility when applicable,
+calibration-partition compatibility when applicable, producer-before-consumer
+ordering, and acyclicity. Independent nodes may execute in parallel, but
+canonical inputs and node policy alone
 determine each output. Artifact Store scans, `latest` selection, implicit model
 recursion, and mutation of a resolved plan are invalid dependency mechanisms.
 
@@ -1018,15 +1155,21 @@ typed outputs include the selected candidate set and, when declared, the exact
 Evidence or descriptor-produced Artifacts acquired by that node. For example,
 a simulator promotion may expose both `EvidenceSet` and
 `SimulationExecutionSet`; a later training generator consumes the Evidence and
-produces a `ModelParameterBundleSet`. Evidence-to-candidate association remains
-derived from `EvaluationEvidence -> EvaluationRequest -> subject`; the plan
-does not persist a parallel association map.
+produces a `CandidateSet` whose accepted schema is
+`loom.model_parameter_bundle 1.0`. Evidence-to-candidate association remains
+derived from `EvaluationEvidence -> EvaluationRequest -> candidate case
+subject role`; the plan does not persist a parallel association map.
 
 Acquisition policy owns obligation templates, replicate generation, and its
 owner-local work limits. Selection policy remains `AllPassing`, `TopK`, or
-`Pareto`. There is no `PromotionPolicy`, runtime loop, generic workflow DSL, or
-mutable workflow authority. Repeated finite Generate and Promote nodes express
-cross-domain iteration.
+`Pareto`. Ordinary nodes use `CandidateSelection`. `ModelRelease` is legal
+only for `CandidateSet<loom.model_parameter_bundle 1.0>`, requires
+`AllPassing`, may reference only held-out calibration obligations, and must be
+a terminal consumer of its selected-candidate output. It is a closed purpose
+on the existing Promote node, not a separate release action, mutable model
+registry update, or generic workflow mechanism. There is no `PromotionPolicy`,
+runtime loop, generic workflow DSL, or mutable workflow authority. Repeated
+finite Generate and Promote nodes express cross-domain iteration.
 
 Candidate-generator capabilities live in a static typed descriptor registry.
 A resolved binding fixes typed inputs through the common plan bindings, typed
@@ -1061,6 +1204,11 @@ ObjectiveScalarSourceRef =
 `EvidenceObligationTemplateRef` is the canonical local ordinal in the exact
 ResolvedDseConfigView obligation-template table. It is meaningful only with
 that component view and never becomes a persistent cross-config reference.
+
+An objective source cannot reference an obligation tagged `HeldOut`. A held-out
+obligation is reserved for a terminal `ModelRelease` gate and cannot affect
+candidate generation, TopK/Pareto ranking, search energy, or an ordinary
+`CandidateSelection` gate.
 
 Mapping owns the referenced `V` and `G` descriptor semantics. The resolved DSE
 configuration owns only the typed references. An Evaluation source resolves
@@ -1223,12 +1371,48 @@ ResolvedDseConfigView {
 
 Authoring-level allowed models resolve only to `model_authorizations`.
 Authoring-level required Evidence resolves only to
-`EvidenceObligationTemplate`. A template fixes the exact model binding, case,
-conditions, and metric/finding requests while retaining one descriptor-typed
-candidate `CaseSubjectRoleRef` binding. Promote fills that role to construct
-exact Requests;
-gate and objective references use template-local request ordinals rather than
-copying metric or finding definitions.
+`EvidenceObligationTemplate`:
+
+```text
+EvidenceObligationTemplate {
+  exact model binding, case, conditions, and metric/finding requests
+  candidate_subject_role: exactly-one CaseSubjectRoleRef
+  input_subject_bindings:
+    canonical table<CaseSubjectRoleRef, PromoteInputSlotRef>
+  calibration_partition_role: optional<CalibrationPartitionRole>
+}
+```
+
+`PromoteInputSlotRef` is a stable typed input ordinal owned by the exact
+acquisition policy. A template may leave the distinguished candidate role and
+the explicitly listed input-bound roles unresolved; every other case role is
+fixed exactly in the template. Instantiation fills the candidate role from the
+candidate set, fills each listed role from the consuming Promote node's
+ordinary typed input binding, then runs the ordinary Request verifier. Role
+cardinality and schema must match the input slot, a role cannot be both fixed
+and input-bound, and the candidate role cannot appear in the table. Promotion
+recovers candidate association only through the distinguished role. It cannot
+bind a model input, construct a partial `ResolvedModelBinding`, merge a
+candidate into a collection, or persist a parallel candidate-to-Evidence map.
+
+`input_subject_bindings` sorts by `CaseSubjectRoleRef`, rejects duplicate roles,
+and encodes each pair as two `u32be` ordinals after a
+`u64be(count)`. The optional partition role uses the same optional framing and
+role tag as plan slots. These fields are part of the resolved component-view
+bytes; runtime completion order cannot alter them.
+
+`calibration_partition_role` is absent outside an explicitly partitioned model
+training flow. The acquisition policy's derived EvidenceSet output copies a
+present template tag; one output cannot mix tagged and untagged obligations or
+different partition tags. A training generator descriptor has exactly three
+Evidence input slots tagged `Training`, `Validation`, and `HeldOut`; all three are
+ordinary plan inputs even though only the Training slot supplies fitting
+samples. A case-kind-4 calibration template is tagged `Validation` or
+`HeldOut`, and its ground-truth Evidence role binds the identically tagged
+Promote input. Plan resolution rejects a missing or repeated partition, a tag
+mismatch, or a calibration template tagged `Training`. Gate and objective
+references use template-local request ordinals rather than copying metric or
+finding definitions.
 
 The complete ResolvedConfig is policy SSOT. `ResolvedDseConfigView` is its
 versioned canonical component view. Candidate sets, Evaluation DAG, stable work
@@ -1436,27 +1620,231 @@ Artifact.
 
 ### Model Parameters and Training
 
-Training is separate candidate generation:
+Training is ordinary typed candidate generation. It does not define a
+`ModelTrainingRequest` Artifact:
 
 ```text
-ModelTrainingRequest Artifact
-  -> ModelTrainer
-  -> ModelParameterBundle Artifact
+exact Training, Validation, and HeldOut Evidence partitions
++ optional prior parameter bundles
++ exact trainer descriptor, resolved configuration, and seed
+  -> Generate
+  -> CandidateSet<loom.model_parameter_bundle 1.0>
 ```
 
-The `ModelTrainingRequest` is the sole training input root. It binds exact
-immutable Evidence plus deterministic trainer identity, configuration, and
-seed. Evidence has no detailed-material closure. A trainer that requires an
-execution or, after its Artifact owner exists, a persistent raw payload must
-receive it through a
-descriptor-owned typed Request slot included in canonical Request bytes; it
-must not accept a hidden side input. Training produces a new immutable
-parameter bundle with provenance; parameters never mutate in place. Candidate
-bundles are evaluated
-through ordinary Request/Evidence on fixed validation cases and selected by the
-same central DSE policy, budget, cache, and lineage rules. A new online epoch is
-a new bundle and binding. Updating a released baseline is a separate explicit
-action, not a side effect of Evaluation or training.
+The generator descriptor owns the three partition-tagged Evidence input slots,
+optional prior-bundle slots, trainer semantic identity, resolved configuration,
+determinism, seed interpretation, and work units. Only the Training slot enters
+feature fitting; Validation and HeldOut are admission inputs used only to prove
+sample-group isolation before fitting starts. The resolved plan and
+`DseRunKey` fix all those inputs. The
+`InvocationManifest` alone records training provenance, attempts, and every
+valid lineage path. None of those occurrence facts enter parameter identity.
+
+Parameter semantics are selected through one versioned static typed registry:
+
+```text
+ModelParameterContractRef {
+  owner_registry_identity: canonical nonempty ASCII
+  owner_registry_version: SchemaVersion
+  owner_local_contract_kind: uint32
+}
+
+ModelParameterContractDescriptor {
+  reference: ModelParameterContractRef
+  semantic_definition
+  prediction_case_signatures:
+    canonical nonempty set<EvaluationCaseSignatureRef>
+  ground_truth_case_signatures:
+    canonical nonempty set<EvaluationCaseSignatureRef>
+  consumed_base_condition_patterns:
+    total table<EvaluationCaseSignatureRef,
+                canonical set<ConditionApplicabilityPattern>>
+  prediction_schema_descriptor_bytes
+  prediction_decimal_finalization_contract
+  adopt(canonical payload bytes) -> owner-typed immutable parameters
+  encode(owner-typed immutable parameters) -> canonical payload bytes
+  project_features(exact source case, CaseArtifactResolution,
+                   ArtifactStore, BlobStore)
+    -> owner-typed immutable feature view
+  infer(owner-typed parameters, owner-typed feature view)
+    -> owner-typed immutable prediction view
+  calibration_sample_group_key(
+      exact ground-truth EvaluationEvidence,
+      its exact EvaluationRequest,
+      CaseArtifactResolution,
+      ArtifactStore,
+      BlobStore)
+    -> canonical byte string
+}
+
+ModelParameterBundle {
+  parameter_contract_ref: ModelParameterContractRef
+  payload_blob_digest: BlobDigest
+}
+```
+
+The registry identity, version, and local kind use the same framing discipline
+as every other owner-local typed registry. A registered descriptor owns the
+parameter payload interpretation, accepted prediction/ground-truth case and
+condition domain, owner-typed feature and prediction schemas, feature
+projection, pure inference kernel, prediction finalization, and sample-group
+relation exactly once.
+Predictor models and calibration validators invoke that same descriptor;
+neither calls another evaluator or copies its formulas. Owner-typed parameters,
+feature views and predictions are ephemeral in-process values, not generic
+persistent vectors, property bags, or raw-byte APIs.
+
+The complete contract-reference canonical key uses the shared owner-local
+registry reference framing with `owner_local_contract_kind` as its final
+field. Registry admission requires a known owner and local kind, nonempty
+prediction and ground-truth case sets, a total condition-pattern table over
+their union, nonempty prediction-schema descriptor bytes, and all typed
+operations above. Duplicate references or an
+owner whose registered descriptor changes under one exact version are
+incompatible registry errors. Sample-group keys compare by the returned
+contract-owned canonical bytes and are never persisted as another dataset
+identity.
+
+The one shared bundle schema is `loom.model_parameter_bundle 1.0`; Common
+identity framing supplies that schema descriptor rather than copying it into
+semantic bytes. The exact contract ref and payload digest are the complete
+root. Canonical semantic bytes are the complete contract-reference key followed
+by the fixed 32-byte `BlobDigest`. Canonical JSON uses exactly
+`owner_registry_identity`, integer contract schema-major/schema-minor/local-kind
+fields, and the 64-character lowercase payload digest; unknown or alternate
+fields are invalid. Authoring receives trainer-produced owner-typed parameters,
+encodes them through the resolved contract, adopts those canonical bytes, then
+re-encodes and requires exact byte equality. Only then may it publish the
+validated payload through `BlobStore` and publish the bundle root.
+Import resolves the contract before reading the blob, relies on the Blob Store
+read contract to rehash the logical bytes, performs the same typed adopt and
+re-encode check, and rejects an unknown contract owner or kind, noncanonical
+payload, missing blob, or corrupt blob without repair. A failed root
+publication may leave a complete canonical unreferenced blob; known-invalid
+bytes are never published, and no transaction or cleanup manifest is added.
+
+Identical payload bytes under the same exact contract converge on one bundle
+identity even when distinct training occurrences produced them. Changing the
+contract or payload changes identity. One logical payload reused by different
+contracts may share a `BlobDigest`, but each contract has a distinct bundle
+root. A bundle contains no dataset references, trainer identity, seed, metrics,
+confidence label, mutable epoch, or provenance copy.
+
+One model-parameter trainer descriptor produces bundles for exactly one
+`ModelParameterContractRef`; its bundle output slot carries that exact ref and
+every output candidate must carry it. Plan resolution compares a producer
+slot's contract with every consuming bundle-input slot before execution.
+`RequestVerifier` alone strict-imports each bound bundle and checks its actual
+contract against the consumer slot when constructing an exact Request.
+`EvaluationPlanAdmission` does not repeat either check; it owns only
+authorization, readiness, semantic work, and the calibration partition check
+below. The generic plan does not acquire a parameter-specific type-refinement
+DSL.
+
+The initial contract is
+`ModelParameterContractRef("loom.fpa", 1.0, 0)`. Its prediction case set is
+exactly case kinds 0 and 1, and its ground-truth case set is exactly case kind
+5. For all three signatures, its feature projector consumes every
+result-affecting Base condition: process corner, supply voltage, temperature,
+activity binding, and any present required-clock or relative-clock condition.
+The architecture cases target the exact Fabric-owned domains; the physical
+case targets the exact HardwareImplementation-owned domains and recovers the
+same pre-attempt Fabric structure through implementation lineage. The
+projector validates the typed target relation, includes condition payloads in
+its feature view, and rejects any Base condition outside its declared table.
+Its prediction-schema descriptor bytes are exactly the FPA owner's canonical
+`FpaMetricPredictionView 1.0` descriptor bytes, compared byte-for-byte. Its
+prediction finalization uses 18 significant decimal digits and
+`RoundToNearestTiesToEven`.
+
+Model kinds 7 and 8 consume this contract in model-input slot 0 and one exact
+ImplementationPlatform in model-input slot 1. The platform supplies the
+TechnologyCorner owner needed by architecture-case conditions; the exact
+HardwareImplementation case recovers the same platform through its lineage.
+Changing a condition, platform, bundle, source case, or lineage changes the
+Request or makes projection invalid. The contract never treats two operating
+conditions as one prediction question merely because their structural subject
+matches.
+
+Validation and held-out evaluation use case kind 4. Its complete subject shape
+is:
+
+```text
+fpa_model_parameter_calibration {
+  role 0 parameter_bundle:
+    ExactlyOne loom.model_parameter_bundle 1.0
+    whose contract prediction schema is FpaMetricPredictionView 1.0
+  role 1 ground_truth_evidence:
+    OneOrMore evaluation.evidence.1.0
+  workload: Forbidden
+  runtime_input: Forbidden
+  whole_case_cycle_basis: Absent
+}
+```
+
+The case owner strict-imports the bundle, every Evidence root, and each
+Evidence's exact Request through `ArtifactStore` and `BlobStore`. The supplied
+`CaseArtifactResolution` must be total not only over the bundle and Evidence
+roots, but over every imported source Request's subjects, workload, runtime
+input, model inputs, condition dependencies, and their owner-declared
+dependency closures. The same expanded resolution is passed to feature
+projection and sample-group derivation.
+
+Admission requires byte equality between the bundle contract's prediction
+schema descriptor and the FPA-owned descriptor; requires every source Request
+to use one of that contract's exact ground-truth case signatures; and requires
+every source Base condition to match and be consumed by the contract's table.
+Each source Evidence must be `Completed` and contain exactly one
+`WholeExactCase` `Point` observation for each of
+`LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
+Additional typed results are allowed but do not enter this calibration
+contract. An interval, censored or not-applicable observation, a missing or
+duplicate required metric, or a non-Point form makes that Evidence inadmissible
+for case kind 4 without making it invalid Evidence elsewhere. Keeping
+ground-truth Evidence as one role preserves each original Request's
+multi-subject pairing; the case never flattens software, Fabric, Mapping,
+implementation, or condition collections into an accidental Cartesian
+product.
+
+The calibration model derives features from each imported source case, calls
+the contract-owned `infer`, compares predictions with the corresponding
+ground-truth observations, and returns the registered whole-case calibration
+error metrics. Its descriptor fixes 18 significant decimal digits and
+`RoundToNearestTiesToEven` for the selected error result. Its Evidence therefore
+describes one exact bundle over one exact Evidence collection. Ordinary
+Promotion binds each candidate bundle to case role 0, binds role 1 from the
+template's typed Validation or HeldOut input, and recovers association through
+`Evidence -> Request -> role 0`.
+The selected bundle may subsequently enter an ordinary predictor model input
+slot that accepts the same contract ref. No candidate ever binds directly to a
+model input during Promotion.
+
+Training, validation, and held-out collections are pairwise disjoint by the
+contract-owned `calibration_sample_group_key`, not merely by Evidence identity.
+The key groups semantically shared samples such as one circuit observed under
+different seeds or attempts according to the contract's declared leakage
+boundary. Operating conditions remain projector-consumed features but do not
+split a circuit across partitions. Because the trainer binds all three exact
+partitions as ordinary typed inputs, producer-before-consumer scheduling makes
+them available without an implicit wait edge. `EvaluationPlanAdmission`
+strict-imports their source Evidence and Requests, derives canonical group-key
+bytes through the one contract, and rejects any pairwise overlap before the
+trainer callback executes. The trainer callback receives fitting access only
+to the Training slot.
+
+Validation obligations may feed ordinary candidate selection. HeldOut
+obligations cannot feed an objective, ranking policy, search energy, training
+features, or `CandidateSelection`; they may appear only in the terminal
+`ModelRelease` gate. This is a readiness, leakage, and use-def check on the
+existing plan, not a new plan node or persistent dataset Artifact.
+
+Trainer failure, cancellation, or an exhausted Execution Limit produces no
+partial bundle and leaves the controller `Incomplete`. Unsupported validation
+is ordinary `Unsupported` Evidence and cannot satisfy promotion. Candidate
+bundles are selected by the same central gates, objectives, Pareto policy,
+budget, cache, and lineage rules as every other domain Artifact. A new online
+epoch is a new bundle and binding. Updating a released baseline is a separate
+explicit action, not a side effect of Evaluation or training.
 
 ## E-EXIT Evaluation and DSE Closure
 
@@ -1475,6 +1863,9 @@ The closed core has one owner for every semantic fact:
   optimization policy;
 - `PlanOutputRef` owns all typed plan use-def, while Generate and Promote own
   central candidate expansion, Evidence acquisition, and narrowing;
+- the model-parameter contract registry owns payload, feature, inference, and
+  calibration-group semantics; model slots and trainers reference exact
+  contracts, while `ModelParameterBundle` owns immutable parameter identity;
 - owner policies own semantic work limits;
 - domain Artifacts and Evidence own formal semantic results;
 - InvocationManifest owns one immutable occurrence summary;
@@ -1495,6 +1886,28 @@ Only these stable semantic anchors belong at this boundary:
 - Different model descriptors referencing one exact case signature derive the
   same case key for identical role bindings, workload, runtime input, and
   conditions, while retaining distinct Request identities.
+- Equal canonical payloads under one exact parameter contract converge despite
+  different training lineage; a different contract or payload changes bundle
+  identity.
+- Parameter authoring and import require contract-owned adopt/encode equality;
+  an unknown or mismatched contract, noncanonical payload, missing blob, or
+  corrupt blob fails closed without repair, and invalid bytes are rejected
+  before Blob Store publication.
+- A bundle model-input slot without an exact parameter contract and a contract
+  on a non-bundle slot are registry errors; plan resolution rejects a producer
+  contract mismatch, and Request verification rejects an exact bound bundle
+  whose contract differs from its slot.
+- Calibration Evidence scopes one bundle against one exact nonempty
+  ground-truth Evidence collection, preserves each source Request's subject
+  pairing, binds that collection through a typed Promote input, and remains
+  associated through the bundle case role.
+- FPA calibration rejects a foreign source case, an unconsumed Base condition,
+  or a source Evidence lacking any of the four required completed Point
+  observations; two activity or PVT payloads produce distinct feature views.
+- Any pairwise overlap among training, validation, and held-out sample-group
+  keys is rejected before training; distinct Evidence identities for one
+  leakage group do not evade the check, and a held-out obligation cannot feed
+  an objective, ranking policy, fitting callback, or nonrelease gate.
 - An EvaluationRequest constructor given an explicit EvaluationCase rejects an
   exact-signature mismatch with the resolved model descriptor before
   projecting fields; it never silently rebinds those fields.
