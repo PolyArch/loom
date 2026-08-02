@@ -23,6 +23,8 @@ class CaseResult:
     category: str | None
     detail: str | None
     duration_seconds: float
+    cpu_seconds: float = 0.0
+    peak_resident_bytes: int = 0
     graphs: int | None = None
     actors: int | None = None
     dfg_simulation: DfgSimulationMetrics | None = None
@@ -44,9 +46,11 @@ class CaseResult:
         payload: dict[str, object] = {
             "case": self.case.case,
             "category": self.category,
+            "cpu_seconds": round(self.cpu_seconds, 6),
             "detail": self.detail,
             "duration_seconds": round(self.duration_seconds, 3),
             "identity": self.case.identity,
+            "peak_resident_bytes": self.peak_resident_bytes,
             "sources": len(self.case.sources),
             "status": self.outcome.value,
             "suite": self.case.suite,

@@ -28,8 +28,10 @@
 
 #include <array>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::adg::test {
@@ -662,6 +664,43 @@ void typedPeFuGraphsFinalize() {
           "Fabric HTML did not expose the configured FU graph details");
 }
 
+void temporalResourceGrantFinalizes() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType tagged32 = take(test, PortType::taggedBits(32, 4));
+
+  auto spatial =
+      take(test, design.createSpatialCore("temporal-round-robin",
+                                          {tagged32, tagged32}, {tagged32}));
+  auto routed = take(
+      test,
+      spatial.addSwitch(
+          {take(test, spatial.input(0)), take(test, spatial.input(1))},
+          SwitchSpec::temporal({tagged32, tagged32}, {tagged32}, {{0, 1}}, 4,
+                               ::fabric::TemporalSwitchRoundRobin{{0, 1}, 0})));
+  if (llvm::Error error = spatial.close(routed))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  const auto &view = finalized.roots().front().view();
+  const loom::fabric::FabricSwitchOccurrenceRef sw(uniqueEntity(
+      test, view, loom::fabric::FabricEntityKind::FabricSwitchOccurrence));
+  const ::fabric::ResourceContract *contract =
+      view.resourceContract(loom::fabric::FabricInventoryOwnerRef::of(sw));
+  require(test, contract != nullptr && contract->requesterCount() == 2,
+          "temporal switch lost its competing requesters");
+  const std::optional<::fabric::GrantPolicyView> policy =
+      contract->grantPolicy();
+  const auto *roundRobin =
+      policy ? std::get_if<::fabric::RoundRobinView>(&*policy) : nullptr;
+  require(test,
+          roundRobin && roundRobin->requesterCycle().size() == 2 &&
+              roundRobin->resetCursor().ordinal() == 0,
+          "temporal switch lost its deterministic round-robin policy");
+}
+
 void fuCapabilityRowsCorrelateRoutes() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -951,6 +990,7 @@ void runBuilderTests() {
   foreignHandlesAndIncompleteRootsFailClosed();
   spatialCoreTemplatesInstantiateAndElaborate();
   typedPeFuGraphsFinalize();
+  temporalResourceGrantFinalizes();
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
   publicMemoryLibraryBuildsHybridLocalMemories();

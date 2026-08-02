@@ -163,6 +163,10 @@ class CommandConstructionTest(CorpusGateTestBase):
         self.assertIsNone(defect)
         self.assertEqual(parsed.graphs, 1)
         self.assertEqual(parsed.operation_firings, {"arith.addi": 4})
+        self.assertEqual(parsed.canonical_dataflow_identity, "03" * 32)
+        self.assertEqual(parsed.simulation_workload_identity, "04" * 32)
+        self.assertEqual(parsed.simulation_runtime_input_identity, "05" * 32)
+        self.assertEqual(parsed.execution_terminal, "retired")
 
         payload = json.loads(VALID_DFG_REPORT)
         payload["memory_bytes_compared"] = 0
@@ -251,7 +255,12 @@ class CommandConstructionTest(CorpusGateTestBase):
 
 class DeterministicResultsTest(CorpusGateTestBase):
     def normalize_human(self, text: str) -> str:
-        text = re.sub(r"\(\d+ source\(s\), \d+\.\d+s\)", "(SOURCES)", text)
+        text = re.sub(
+            r"\(\d+ source\(s\), \d+\.\d+s wall, \d+\.\d+s CPU, "
+            r"\d+\.\d+ MiB peak RSS\)",
+            "(SOURCES)",
+            text,
+        )
         text = re.sub(r"in \d+\.\d+s", "in DURATION", text)
         return re.sub(r"jobs=\d+", "jobs=N", text)
 

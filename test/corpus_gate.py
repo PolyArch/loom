@@ -233,6 +233,27 @@ class StepFailure:
     detail: str
 
 
+@dataclass
+class CaseResourceUsage:
+    """Resource usage reaped from one case's process-group leaders."""
+
+    user_cpu_seconds: float = 0.0
+    system_cpu_seconds: float = 0.0
+    peak_resident_bytes: int = 0
+
+    @property
+    def cpu_seconds(self) -> float:
+        return self.user_cpu_seconds + self.system_cpu_seconds
+
+    def account(self, usage) -> None:
+        self.user_cpu_seconds += usage.ru_utime
+        self.system_cpu_seconds += usage.ru_stime
+        self.peak_resident_bytes = max(
+            self.peak_resident_bytes,
+            usage.ru_maxrss * 1024,
+        )
+
+
 def run_quiet(command: Sequence[str], input_text: str | None = None) -> str:
     try:
         completed = subprocess.run(
@@ -658,6 +679,29 @@ def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
     return counts, None
 
 
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process_group(process_group: int) -> bool:
+    if not _process_group_exists(process_group):
+        return False
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    deadline = time.monotonic() + 1.0
+    while _process_group_exists(process_group) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return True
+
+
 def run_step(
     command: Sequence[str],
     log_path: Path,
@@ -665,6 +709,7 @@ def run_step(
     category: str,
     *,
     cwd: Path | None = None,
+    resource_usage: CaseResourceUsage | None = None,
 ) -> StepFailure | None:
     """Run one pipeline step in its own process group under a deadline."""
     remaining = deadline - time.monotonic()
@@ -688,17 +733,42 @@ def run_step(
                 return StepFailure(
                     category, f"cannot launch {shlex.join(command)}: {exc}"
                 )
-            try:
-                process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
+            completed = False
+            while True:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
+                    waited_pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+                except InterruptedError:
+                    continue
+                if waited_pid == process.pid:
+                    process.returncode = os.waitstatus_to_exitcode(status)
+                    if resource_usage is not None:
+                        resource_usage.account(usage)
+                    completed = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.01, remaining))
+            if not completed:
+                _terminate_process_group(process.pid)
+                while True:
+                    try:
+                        _, status, usage = os.wait4(process.pid, 0)
+                        break
+                    except InterruptedError:
+                        continue
+                process.returncode = os.waitstatus_to_exitcode(status)
+                if resource_usage is not None:
+                    resource_usage.account(usage)
                 return StepFailure(
                     CATEGORY_TIMEOUT,
                     f"deadline exceeded; killed process group {process.pid}: "
+                    f"{shlex.join(command)}",
+                )
+            if _terminate_process_group(process.pid):
+                return StepFailure(
+                    CATEGORY_INTERNAL,
+                    "process tree outlived its process-group leader: "
                     f"{shlex.join(command)}",
                 )
     except OSError as exc:
@@ -743,6 +813,7 @@ def prepare_linked_workload(
     external_root: Path,
     case_dir: Path,
     deadline: float,
+    resource_usage: CaseResourceUsage,
 ) -> LinkedWorkloadModules | StepFailure:
     if not case.sources:
         return StepFailure(
@@ -768,6 +839,7 @@ def prepare_linked_workload(
             case_dir / f"source-{ordinal:03d}.compile.log",
             deadline,
             CATEGORY_COMPILE,
+            resource_usage=resource_usage,
         )
         if failure is not None:
             return StepFailure(failure.category, f"{repo_relative}: {failure.detail}")
@@ -787,6 +859,7 @@ def prepare_linked_workload(
         case_dir / "final-link.log",
         deadline,
         CATEGORY_FINAL_LINK,
+        resource_usage=resource_usage,
     )
     if failure is not None:
         return failure
@@ -806,6 +879,7 @@ def prepare_linked_workload(
         case_dir / "payload-import.log",
         deadline,
         CATEGORY_PAYLOAD_IMPORT,
+        resource_usage=resource_usage,
     )
     if failure is not None:
         return failure
@@ -820,6 +894,7 @@ def prepare_linked_workload(
         case_dir / "llvm-dis.log",
         deadline,
         CATEGORY_LINKED_LLVM_ARTIFACT,
+        resource_usage=resource_usage,
     )
     if failure is not None:
         return failure
@@ -843,6 +918,7 @@ def import_produced_workload(
     toolchain: Toolchain,
     case_dir: Path,
     deadline: float,
+    resource_usage: CaseResourceUsage,
 ) -> LinkedWorkloadModules | StepFailure:
     try:
         relative_executable = produced.target_executable.relative_to(
@@ -874,6 +950,7 @@ def import_produced_workload(
         deadline,
         CATEGORY_PAYLOAD_IMPORT,
         cwd=produced.target_build_dir,
+        resource_usage=resource_usage,
     )
     if failure is not None:
         return failure
@@ -888,6 +965,7 @@ def import_produced_workload(
         case_dir / "llvm-dis.log",
         deadline,
         CATEGORY_LINKED_LLVM_ARTIFACT,
+        resource_usage=resource_usage,
     )
     if failure is not None:
         return failure
@@ -1138,6 +1216,7 @@ def run_case(
     actors = 0
     dfg_totals = DfgSimulationMetrics.zero()
     selected_sources: tuple[str, ...] | None = None
+    resource_usage = CaseResourceUsage()
 
     def finish(
         category: str | None,
@@ -1153,6 +1232,8 @@ def run_case(
             category=category,
             detail=detail,
             duration_seconds=time.monotonic() - started,
+            cpu_seconds=resource_usage.cpu_seconds,
+            peak_resident_bytes=resource_usage.peak_resident_bytes,
             graphs=graphs if passed and stage in {"d0", "dfg-sim"} else None,
             actors=actors if passed and stage in {"d0", "dfg-sim"} else None,
             dfg_simulation=(dfg_totals if passed and stage == "dfg-sim" else None),
@@ -1185,6 +1266,7 @@ def run_case(
                     case_dir / f"source-{ordinal:03d}.compile.log",
                     deadline,
                     CATEGORY_COMPILE,
+                    resource_usage=resource_usage,
                 )
                 if failure is not None:
                     return finish(
@@ -1225,6 +1307,7 @@ def run_case(
                 external_root,
                 case_dir,
                 deadline,
+                resource_usage,
             )
         else:
             produced = provider_results.get(case.identity)
@@ -1243,6 +1326,7 @@ def run_case(
                 toolchain,
                 case_dir,
                 deadline,
+                resource_usage,
             )
         if isinstance(prepared, StepFailure):
             return finish(prepared.category, prepared.detail)
@@ -1268,6 +1352,7 @@ def run_case(
                 case_dir / "dfg-sim.log",
                 deadline,
                 CATEGORY_DFG_SIM,
+                resource_usage=resource_usage,
             )
             if failure is not None:
                 return finish(failure.category, failure.detail)
@@ -1310,6 +1395,7 @@ def run_case(
                 case_dir / "pre-mapping.log",
                 deadline,
                 CATEGORY_PRE_MAPPING,
+                resource_usage=resource_usage,
             )
             if failure is not None:
                 return finish(failure.category, failure.detail)
@@ -1336,6 +1422,7 @@ def run_case(
             case_dir / "raise.log",
             deadline,
             CATEGORY_RAISE,
+            resource_usage=resource_usage,
         )
         if failure is not None:
             return finish(failure.category, failure.detail)
@@ -1347,6 +1434,7 @@ def run_case(
             case_dir / "verify.log",
             deadline,
             CATEGORY_VERIFY,
+            resource_usage=resource_usage,
         )
         if failure is not None:
             return finish(failure.category, failure.detail)

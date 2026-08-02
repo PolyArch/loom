@@ -34,7 +34,9 @@ def render_human(
         case = result.case
         line = (
             f"{result.outcome.value.upper()}  {case.identity}  "
-            f"({len(case.sources)} source(s), {result.duration_seconds:.2f}s)"
+            f"({len(case.sources)} source(s), {result.duration_seconds:.2f}s wall, "
+            f"{result.cpu_seconds:.2f}s CPU, "
+            f"{result.peak_resident_bytes / (1024 * 1024):.1f} MiB peak RSS)"
         )
         if result.passed and result.graphs is not None:
             line += f"  graphs={result.graphs} actors={result.actors}"
@@ -95,11 +97,15 @@ def render_json(results: Sequence[CaseResult], context: CorpusGateReportContext)
         "dfg_execution_limits": dict(context.dfg_execution_limits),
         "dfg_simulation_timeout_seconds": context.dfg_simulation_timeout_seconds,
         "cases": [result.as_dict() for result in results],
+        "cpu_seconds": round(sum(result.cpu_seconds for result in results), 6),
         "duration_seconds": round(context.duration_seconds, 3),
         "failed": failed,
         "failure_categories": _category_counts(results, failed=True),
         "jobs": context.jobs,
         "passed": passed,
+        "peak_resident_bytes": max(
+            (result.peak_resident_bytes for result in results), default=0
+        ),
         "stage": context.stage,
         "suite_counts": suite_counts,
         "target": dict(context.target),

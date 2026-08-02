@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import sys
 import tempfile
@@ -189,6 +190,11 @@ VALID_DFG_REPORT = (
     json.dumps(
         {
             "actors": 3,
+            "artifacts": {
+                "canonical_dataflow": "03" * 32,
+                "simulation_runtime_input": "05" * 32,
+                "simulation_workload": "04" * 32,
+            },
             "compiler_target": {
                 "data_layout": corpus_gate.LLVM_DATALAYOUT_LINE.split('"')[1],
                 "host_binding": "01" * 32,
@@ -198,6 +204,7 @@ VALID_DFG_REPORT = (
             },
             "dynamic_calls": 1,
             "event_count": 11,
+            "execution_terminal": "retired",
             "floating_variance_bytes": 0,
             "floating_variance_kind": "none",
             "graphs": 1,
@@ -220,6 +227,32 @@ VALID_DFG_REPORT = (
 
 
 class CorpusGateExecutionPolicyTest(unittest.TestCase):
+    def test_step_rejects_a_process_tree_that_outlives_its_leader(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="loom-orphan-step-") as root:
+            root_path = Path(root)
+            pgid_path = root_path / "pgid"
+            script = (
+                "import os,subprocess; "
+                f"open({str(pgid_path)!r},'w').write(str(os.getpid())); "
+                "subprocess.Popen(['sleep','60'])"
+            )
+            failure = corpus_gate.run_step(
+                [sys.executable, "-c", script],
+                root_path / "step.log",
+                time.monotonic() + 5.0,
+                corpus_gate.CATEGORY_COMPILE,
+            )
+            pgid = int(pgid_path.read_text())
+            try:
+                self.assertIsNotNone(failure)
+                self.assertEqual(failure.category, corpus_gate.CATEGORY_INTERNAL)
+                self.assertIn("outlived its process-group leader", failure.detail)
+            finally:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_dfg_report_rejects_noncanonical_compiler_target_projection(self) -> None:
         payload = json.loads(VALID_DFG_REPORT)
         payload["compiler_target"]["instruction_bindings"] *= 2
@@ -231,11 +264,24 @@ class CorpusGateExecutionPolicyTest(unittest.TestCase):
         self.assertIsNone(report)
         self.assertIn("invalid compiler target", defect)
 
+    def test_dfg_report_rejects_noncanonical_artifact_identity_projection(
+        self,
+    ) -> None:
+        payload = json.loads(VALID_DFG_REPORT)
+        payload["artifacts"]["canonical_dataflow"] = "03" * 31
+        with tempfile.TemporaryDirectory(prefix="loom-artifact-report-") as root:
+            report_path = Path(root) / "report.json"
+            report_path.write_text(json.dumps(payload))
+            report, defect = corpus_gate.parse_dfg_simulation_report(report_path)
+
+        self.assertIsNone(report)
+        self.assertIn("invalid artifact identities", defect)
+
     def test_defaults_reserve_development_cpus_and_bound_dfg_sim_time(self) -> None:
         with mock.patch.object(corpus_gate.os, "cpu_count", return_value=32):
             self.assertEqual(corpus_gate.default_jobs(), 28)
         with mock.patch.object(corpus_gate.os, "cpu_count", return_value=256):
-            self.assertEqual(corpus_gate.default_jobs(), 128)
+            self.assertEqual(corpus_gate.default_jobs(), 120)
         with mock.patch.object(corpus_gate.os, "cpu_count", return_value=4):
             self.assertEqual(corpus_gate.default_jobs(), 1)
 
@@ -1214,6 +1260,7 @@ class InventoryAggregationTest(CorpusGateTestBase):
             toolchain,
             case_dir,
             time.monotonic() + 5.0,
+            corpus_gate.CaseResourceUsage(),
         )
 
         self.assertIsInstance(prepared, corpus_gate.LinkedWorkloadModules)
@@ -1417,6 +1464,10 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(summary["case_count"], 1)
         result = summary["cases"][0]
         self.assertEqual(result["status"], "pass")
+        self.assertGreaterEqual(result["cpu_seconds"], 0.0)
+        self.assertGreater(result["peak_resident_bytes"], 0)
+        self.assertGreaterEqual(summary["cpu_seconds"], result["cpu_seconds"])
+        self.assertEqual(summary["peak_resident_bytes"], result["peak_resident_bytes"])
         self.assertEqual(result["graphs"], 1)
         self.assertEqual(result["actors"], 3)
 
@@ -1476,6 +1527,15 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(result["actors"], 3)
         self.assertEqual(result["dfg_simulation"]["dynamic_calls"], 1)
         self.assertEqual(result["dfg_simulation"]["memory_bytes_compared"], 64)
+        self.assertEqual(
+            result["dfg_simulation"]["artifacts"],
+            {
+                "canonical_dataflow": "03" * 32,
+                "simulation_runtime_input": "05" * 32,
+                "simulation_workload": "04" * 32,
+            },
+        )
+        self.assertEqual(result["dfg_simulation"]["execution_terminal"], "retired")
         self.assertEqual(
             result["dfg_simulation"]["selected_source_files"],
             [str(ROOT / "test" / "app" / "axpy" / "main_func.cpp")],

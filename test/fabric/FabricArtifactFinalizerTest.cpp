@@ -632,13 +632,32 @@ void visualizationCoordinatesHaveNoFabricSemantics() {
       } { }
     }
   )mlir");
+  auto strippedSource = parse(test, R"mlir(
+    module {
+      fabric.module @stripped() { }
+    }
+  )mlir");
 
   FinalizedFabricRoot first = take(
       test, loom::fabric::finalizeFabricRoot(root(test, *firstSource), store));
   FinalizedFabricRoot second = take(
       test, loom::fabric::finalizeFabricRoot(root(test, *secondSource), store));
-  require(test, first.reference().artifact == second.reference().artifact,
+  FinalizedFabricRoot stripped =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *strippedSource),
+                                                  store));
+  require(test,
+          first.reference().artifact == second.reference().artifact &&
+              first.reference().artifact == stripped.reference().artifact,
           "visualization coordinates changed Fabric identity");
+  require(test,
+          first.canonicalBytes().bytes().equals(
+              stripped.canonicalBytes().bytes()) &&
+              first.view().rootKind() == stripped.view().rootKind() &&
+              first.view().pointConnections() ==
+                  stripped.view().pointConnections() &&
+              first.view().admittedTraversals() ==
+                  stripped.view().admittedTraversals(),
+          "removing visualization metadata changed the sealed Fabric view");
 
   auto semanticSource = parse(test, R"mlir(
     module {

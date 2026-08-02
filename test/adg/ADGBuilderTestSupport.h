@@ -77,6 +77,13 @@ systemMemoryCapabilities(llvm::StringRef test,
 void runBuilderTests();
 void runBuiltinTests();
 void runTopologyTests();
+void runConformanceAnchorTests();
+
+void regularAndIrregularSpatialCoresFinalize();
+void temporalResourceGrantFinalizes();
+void publicMemoryLibraryBuildsHybridLocalMemories();
+void builtinPresetsExpandThroughPublicBuilder();
+void heterogeneousSystemFinalizes();
 
 } // namespace loom::adg::test
 

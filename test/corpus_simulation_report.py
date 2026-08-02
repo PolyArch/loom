@@ -22,6 +22,10 @@ class DfgSimulationMetrics:
     simulation_seconds: float
     operation_firings: dict[str, int]
     selected_source_files: tuple[str, ...]
+    canonical_dataflow_identity: str | None = None
+    simulation_workload_identity: str | None = None
+    simulation_runtime_input_identity: str | None = None
+    execution_terminal: str | None = None
 
     @staticmethod
     def zero() -> "DfgSimulationMetrics":
@@ -56,21 +60,18 @@ class DfgSimulationMetrics:
             operation_firings=firings,
             selected_source_files=tuple(
                 sorted(
-                    set(self.selected_source_files)
-                    | set(other.selected_source_files)
+                    set(self.selected_source_files) | set(other.selected_source_files)
                 )
             ),
         )
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "dynamic_calls": self.dynamic_calls,
             "event_count": self.event_count,
             "floating_variance_bytes": self.floating_variance_bytes,
             "floating_variance_kind": (
-                "selected_decision_replay"
-                if self.floating_variance_bytes
-                else "none"
+                "selected_decision_replay" if self.floating_variance_bytes else "none"
             ),
             "value_lanes_compared": self.value_lanes_compared,
             "memory_bytes_compared": self.memory_bytes_compared,
@@ -80,6 +81,20 @@ class DfgSimulationMetrics:
             "wavefront_steps": self.wavefront_steps,
             "wavefront_steps_per_second": self.wavefront_steps_per_second,
         }
+        identities = (
+            self.canonical_dataflow_identity,
+            self.simulation_workload_identity,
+            self.simulation_runtime_input_identity,
+        )
+        if all(identity is not None for identity in identities):
+            payload["artifacts"] = {
+                "canonical_dataflow": self.canonical_dataflow_identity,
+                "simulation_runtime_input": self.simulation_runtime_input_identity,
+                "simulation_workload": self.simulation_workload_identity,
+            }
+        if self.execution_terminal is not None:
+            payload["execution_terminal"] = self.execution_terminal
+        return payload
 
 
 def parse_dfg_simulation_report(
@@ -96,9 +111,11 @@ def parse_dfg_simulation_report(
         return None, f"DFG simulation report is not a JSON object: {path}"
     expected_fields = {
         "actors",
+        "artifacts",
         "compiler_target",
         "dynamic_calls",
         "event_count",
+        "execution_terminal",
         "floating_variance_bytes",
         "floating_variance_kind",
         "graphs",
@@ -137,6 +154,21 @@ def parse_dfg_simulation_report(
             and len(value) == 64
             and all(character in "0123456789abcdef" for character in value)
         )
+
+    artifacts = payload["artifacts"]
+    artifact_fields = {
+        "canonical_dataflow",
+        "simulation_runtime_input",
+        "simulation_workload",
+    }
+    if (
+        not isinstance(artifacts, dict)
+        or set(artifacts) != artifact_fields
+        or any(not is_artifact_identity(artifacts[field]) for field in artifact_fields)
+    ):
+        return None, f"DFG simulation report has invalid artifact identities: {path}"
+    if payload["execution_terminal"] != "retired":
+        return None, f"DFG simulation report has invalid execution terminal: {path}"
 
     instruction_bindings = target["instruction_bindings"]
     instruction_core_count = target["instruction_core_count"]
@@ -180,10 +212,7 @@ def parse_dfg_simulation_report(
                 f"{field}: {path}"
             )
         integers[field] = value
-    if (
-        integers["value_lanes_compared"] == 0
-        and integers["memory_bytes_compared"] == 0
-    ):
+    if integers["value_lanes_compared"] == 0 and integers["memory_bytes_compared"] == 0:
         return None, (
             "DFG simulation report is not a substantive execution: no value "
             f"or memory observation was compared: {path}"
@@ -217,8 +246,7 @@ def parse_dfg_simulation_report(
         or rate <= 0.0
     ):
         return None, (
-            "DFG simulation report has invalid wavefront_steps_per_second: "
-            f"{path}"
+            f"DFG simulation report has invalid wavefront_steps_per_second: {path}"
         )
     derived_rate = integers["wavefront_steps"] / float(seconds)
     if not math.isclose(float(rate), derived_rate, rel_tol=1e-12, abs_tol=1e-9):
@@ -246,8 +274,7 @@ def parse_dfg_simulation_report(
         or raw_source_files != sorted(set(raw_source_files))
     ):
         return None, (
-            "DFG simulation report has noncanonical selected source files: "
-            f"{path}"
+            f"DFG simulation report has noncanonical selected source files: {path}"
         )
 
     return (
@@ -263,6 +290,10 @@ def parse_dfg_simulation_report(
             simulation_seconds=float(seconds),
             operation_firings=firings,
             selected_source_files=tuple(raw_source_files),
+            canonical_dataflow_identity=artifacts["canonical_dataflow"],
+            simulation_workload_identity=artifacts["simulation_workload"],
+            simulation_runtime_input_identity=artifacts["simulation_runtime_input"],
+            execution_terminal=payload["execution_terminal"],
         ),
         None,
     )

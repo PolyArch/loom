@@ -165,6 +165,12 @@ struct NullaryProgramInputs final {
   loom::sim::CanonicalSimulationRuntimeInput runtimeInput;
 };
 
+struct SourceBackedCompilation final {
+  loom::dse::SelectedPreMappingCompilation selected;
+  loom::ArtifactIdentity workloadIdentity;
+  loom::ArtifactIdentity runtimeInputIdentity;
+};
+
 llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
     const loom::frontend::StructuredProgramCandidate &candidate,
     llvm::StringRef symbol) {
@@ -216,7 +222,7 @@ resolveOperatorProtocolRoots(
   return loom::frontend::resolveDefinedLlvmCallables(candidate, symbols);
 }
 
-llvm::Expected<loom::dse::SelectedPreMappingCompilation>
+llvm::Expected<SourceBackedCompilation>
 compileTarget(std::unique_ptr<llvm::Module> module,
               const loom::fabric::FinalizedFabricRoot &fabric,
               const loom::ResolvedConfig &config,
@@ -229,6 +235,9 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   auto inputs = makeNullaryProgramInputs(source->structuredProgram, "main");
   if (!inputs)
     return inputs.takeError();
+  const loom::ArtifactIdentity workloadIdentity = inputs->workload.identity();
+  const loom::ArtifactIdentity runtimeInputIdentity =
+      inputs->runtimeInput.identity();
   auto protocolRoots = resolveOperatorProtocolRoots(source->structuredProgram);
   if (!protocolRoots)
     return protocolRoots.takeError();
@@ -269,7 +278,8 @@ compileTarget(std::unique_ptr<llvm::Module> module,
       std::get<loom::dse::CompletedPreMappingSelection>(std::move(*outcome));
   if (completed.selected.size() != 1)
     return invalid("TopK(1) did not select exactly one candidate");
-  return std::move(completed.selected.front());
+  return SourceBackedCompilation{std::move(completed.selected.front()),
+                                 workloadIdentity, runtimeInputIdentity};
 }
 
 llvm::Expected<std::vector<std::string>>
@@ -300,6 +310,9 @@ llvm::Error
 writeReport(llvm::StringRef path, std::uint64_t graphCount,
             std::uint64_t actorCount,
             llvm::ArrayRef<std::string> selectedSourceFiles,
+            const loom::ArtifactIdentity &canonicalDataflowIdentity,
+            const loom::ArtifactIdentity &workloadIdentity,
+            const loom::ArtifactIdentity &runtimeInputIdentity,
             const loom::SystemCompilerTargetBindings &compilerTargets,
             const loom::sim::SourceBackedDfgValidationResult &replay) {
   llvm::SmallString<256> parent(path);
@@ -314,6 +327,15 @@ writeReport(llvm::StringRef path, std::uint64_t graphCount,
   llvm::json::Object root;
   root["kind"] = "source_backed_dfg_comparison";
   root["status"] = "pass";
+  root["execution_terminal"] = "retired";
+  llvm::json::Object artifacts;
+  artifacts["canonical_dataflow"] =
+      loom::formatArtifactIdentityHex(canonicalDataflowIdentity);
+  artifacts["simulation_workload"] =
+      loom::formatArtifactIdentityHex(workloadIdentity);
+  artifacts["simulation_runtime_input"] =
+      loom::formatArtifactIdentityHex(runtimeInputIdentity);
+  root["artifacts"] = std::move(artifacts);
   root["graphs"] = graphCount;
   root["actors"] = actorCount;
   root["dynamic_calls"] = replay.dynamicActivations;
@@ -435,32 +457,36 @@ int main(int argc, char **argv) {
                                 *config, store);
   if (!selected)
     return reportError(selected.takeError());
-  auto view = selected->compilation.canonicalDataflow.view();
+  auto view = selected->selected.compilation.canonicalDataflow.view();
   if (!view)
     return reportError(view.takeError());
   if (llvm::Error error = writeCanonicalDataflow(
-          canonicalOutputPath, selected->compilation.canonicalDataflow))
+          canonicalOutputPath,
+          selected->selected.compilation.canonicalDataflow))
     return reportError(std::move(error));
   if (view->graphs().empty())
     return reportError(unsupported("selected program is graph-free"));
-  if (!selected->functionalReplay ||
-      selected->functionalReplay->status !=
+  if (!selected->selected.functionalReplay ||
+      selected->selected.functionalReplay->status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent)
     return reportError(
         invalid("selected graph has no equivalent functional replay"));
-  const auto &replay = *selected->functionalReplay;
+  const auto &replay = *selected->selected.functionalReplay;
   if (llvm::Error error = requireExpectedEntryResult(replay))
     return reportError(std::move(error));
   if (replay.dynamicActivations == 0 ||
       (replay.valueLanesCompared == 0 && replay.memoryBytesCompared == 0) ||
       replay.eventCount == 0 || replay.operationFireCounts.empty())
     return reportError(invalid("execution produced no substantive workload"));
-  auto sourceFiles = selectedSourceFiles(*selected);
+  auto sourceFiles = selectedSourceFiles(selected->selected);
   if (!sourceFiles)
     return reportError(sourceFiles.takeError());
-  if (llvm::Error error =
-          writeReport(outputPath, view->graphs().size(), view->actors().size(),
-                      *sourceFiles, *compilerTargets, replay))
+  if (llvm::Error error = writeReport(
+          outputPath, view->graphs().size(), view->actors().size(),
+          *sourceFiles,
+          selected->selected.compilation.canonicalDataflow.identity(),
+          selected->workloadIdentity, selected->runtimeInputIdentity,
+          *compilerTargets, replay))
     return reportError(std::move(error));
   return 0;
 }

@@ -100,7 +100,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             simulation_conformance.outer_worker_limit(
                 cpu_count=256, memory_derived_limit=256
             ),
-            128,
+            120,
         )
         self.assertEqual(
             simulation_conformance.outer_worker_limit(

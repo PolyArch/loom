@@ -1,4 +1,5 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_subdirectory(common)
 add_subdirectory(adg)
@@ -110,3 +111,25 @@ add_lit_testsuites(LOOM ${CMAKE_CURRENT_SOURCE_DIR}
   DEPENDS ${LOOM_TEST_DEPENDS}
   SKIP "cmsis-dsp.*" "cmsis-nn.*"
 )
+
+add_test(
+  NAME loom-semantic-baseline
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/semantic_baseline.py
+    --source-root ${PROJECT_SOURCE_DIR}
+    --build-root ${PROJECT_BINARY_DIR}
+)
+set_tests_properties(loom-semantic-baseline PROPERTIES
+  LABELS semantic-baseline
+  RUN_SERIAL TRUE
+  TIMEOUT 1800
+)
+
+add_custom_target(check-semantic-baseline
+  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L semantic-baseline
+  DEPENDS ${LOOM_TEST_DEPENDS}
+  WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+  USES_TERMINAL
+)
+set_target_properties(check-semantic-baseline PROPERTIES FOLDER "Tests")
