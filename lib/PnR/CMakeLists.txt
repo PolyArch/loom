@@ -1,21 +1,16 @@
 add_mlir_library(LoomPnR
-  EndpointMatching.cpp
-  FrozenComputeDomains.cpp
-  FrozenMemoryDomains.cpp
-  FrozenModel.cpp
-  FrozenRealizationGraph.cpp
-  FrozenRoutingGraph.cpp
+  FrozenConstraintIndex.cpp
   PnrIndex.cpp
   PnrConfig.cpp
-  PnrProblemInputs.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
+  SpatialPnrProblem.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR
 
   LINK_LIBS PUBLIC
-  LoomMapping
+  LoomMappingArtifact
   LLVMSupport
 )
 

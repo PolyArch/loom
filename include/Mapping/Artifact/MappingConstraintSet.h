@@ -28,15 +28,30 @@ writeCanonicalSpatialConstraintAssembly(::mapping::ConstraintsSpatialOp root);
 
 struct TechComputeRealizationRef final {
   std::uint64_t entity = 0;
+
+  friend bool operator==(TechComputeRealizationRef lhs,
+                         TechComputeRealizationRef rhs) {
+    return lhs.entity == rhs.entity;
+  }
 };
 
 struct TechMemoryRealizationRef final {
   std::uint64_t entity = 0;
+
+  friend bool operator==(TechMemoryRealizationRef lhs,
+                         TechMemoryRealizationRef rhs) {
+    return lhs.entity == rhs.entity;
+  }
 };
 
 struct SpatialConstraintTransferTerminal final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   std::optional<::dataflow::CanonicalGraphConsumerEndpointRef> consumer;
+
+  friend bool operator==(const SpatialConstraintTransferTerminal &lhs,
+                         const SpatialConstraintTransferTerminal &rhs) {
+    return lhs.producer == rhs.producer && lhs.consumer == rhs.consumer;
+  }
 };
 
 using SpatialConstraintSubject =
@@ -48,16 +63,31 @@ using SpatialConstraintSubject =
 struct SpatialConstraintFuContext final {
   ::loom::fabric::FabricFuOccurrenceRef fu;
   ::loom::fabric::InstructionContextRef instructionContext;
+
+  friend bool operator==(const SpatialConstraintFuContext &lhs,
+                         const SpatialConstraintFuContext &rhs) {
+    return lhs.fu == rhs.fu && lhs.instructionContext == rhs.instructionContext;
+  }
 };
 
 struct SpatialConstraintUnsignedInterval final {
   llvm::APInt lower;
   llvm::APInt upper;
+
+  friend bool operator==(const SpatialConstraintUnsignedInterval &lhs,
+                         const SpatialConstraintUnsignedInterval &rhs) {
+    return lhs.lower == rhs.lower && lhs.upper == rhs.upper;
+  }
 };
 
 struct SpatialConstraintAddressRegion final {
   ::loom::fabric::FabricMemoryServiceRef service;
   std::vector<SpatialConstraintUnsignedInterval> intervals;
+
+  friend bool operator==(const SpatialConstraintAddressRegion &lhs,
+                         const SpatialConstraintAddressRegion &rhs) {
+    return lhs.service == rhs.service && lhs.intervals == rhs.intervals;
+  }
 };
 
 using SpatialConstraintDomainValue = std::variant<

@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_ROUTETREESTATE_H
 #define LOOM_PNR_ROUTETREESTATE_H
 
-#include "PnR/FrozenRoutingGraph.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Compiler.h"
@@ -56,7 +56,8 @@ struct RouteTreeNode {
 
 class RouteTreeState;
 class RouteTreeTransaction;
-using FrozenRoutingGraphHandle = std::shared_ptr<const FrozenRoutingGraph>;
+using FrozenSpatialRoutingGraphHandle =
+    std::shared_ptr<const FrozenSpatialRoutingGraph>;
 using RouteTreeStateHandle = std::shared_ptr<RouteTreeState>;
 
 // A scratch object must normally outlive its active transaction. Early
@@ -114,19 +115,20 @@ private:
   friend class RouteTreeTransaction;
 };
 
-// FrozenRoutingGraph ownership is shared across states. Each transaction keeps
-// its mutable state alive until commit or rollback.
+// FrozenSpatialRoutingGraph ownership is shared across states. Each transaction
+// keeps its mutable state alive until commit or rollback.
 class RouteTreeState : public std::enable_shared_from_this<RouteTreeState> {
 public:
   static llvm::Expected<RouteTreeStateHandle>
-  create(FrozenRoutingGraphHandle graph, PnrIndex sinkObligationCount);
+  create(FrozenSpatialRoutingGraphHandle graph, PnrIndex sinkObligationCount);
   static llvm::Expected<RouteTreeStateHandle>
-  create(const FrozenRoutingGraph &graph,
+  create(const FrozenSpatialRoutingGraph &graph,
          PnrIndex sinkObligationCount) = delete;
   static llvm::Expected<RouteTreeStateHandle>
-  create(FrozenRoutingGraph &&graph, PnrIndex sinkObligationCount) = delete;
+  create(FrozenSpatialRoutingGraph &&graph,
+         PnrIndex sinkObligationCount) = delete;
   static llvm::Expected<RouteTreeStateHandle>
-  create(const FrozenRoutingGraph &&graph,
+  create(const FrozenSpatialRoutingGraph &&graph,
          PnrIndex sinkObligationCount) = delete;
 
   RouteTreeState(const RouteTreeState &) = delete;
@@ -164,7 +166,7 @@ private:
 
   using LookupEntry = detail::RouteTreeLookupEntry;
 
-  RouteTreeState(FrozenRoutingGraphHandle graph,
+  RouteTreeState(FrozenSpatialRoutingGraphHandle graph,
                  std::vector<SinkBinding> sinkBindings);
 
   static std::size_t hashEndpoint(PnrIndex endpoint);
@@ -173,7 +175,7 @@ private:
   PnrIndex arcSourceEndpoint(PnrIndex arc) const;
   llvm::Error verifyState() const;
 
-  FrozenRoutingGraphHandle graph_;
+  FrozenSpatialRoutingGraphHandle graph_;
   PnrIndex sourceEndpoint_ = getInvalidPnrIndex();
   std::vector<SinkBinding> sinkBindings_;
   std::vector<RouteTreeNode> nodes_;

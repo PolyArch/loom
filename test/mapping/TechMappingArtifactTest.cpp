@@ -1,6 +1,7 @@
 #include "ADG/Builtin.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -11,6 +12,9 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
+#include "PnR/PnrConfig.h"
+#include "PnR/RouteTreeState.h"
+#include "PnR/SpatialPnrProblem.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -28,6 +32,7 @@
 
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -46,11 +51,30 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
+}
+
 template <typename T> bool rejected(llvm::Expected<T> value) {
   if (value)
     return false;
   llvm::consumeError(value.takeError());
   return true;
+}
+
+bool rejectedAs(llvm::Expected<loom::pnr::FrozenSpatialPnrProblemHandle> value,
+                loom::pnr::SpatialPnrFreezeFailureKind expected) {
+  if (value)
+    return false;
+  bool matched = false;
+  llvm::handleAllErrors(
+      value.takeError(),
+      [&](const loom::pnr::SpatialPnrFreezeFailure &failure) {
+        matched = failure.kind() == expected;
+      },
+      [&](const llvm::ErrorInfoBase &) {});
+  return matched;
 }
 
 class TemporaryDirectory final {
@@ -598,6 +622,111 @@ void artifactRoundTripAndReferenceValidation() {
           finalizedConstraints.canonicalBytes().bytes()))
     fail("strict Spatial MappingConstraintSet import changed the artifact");
 
+  const loom::pnr::ResolvedPnrConfigView spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(
+          loom::defaultResolvedConfig()));
+  loom::pnr::FrozenSpatialPnrProblemHandle frozen =
+      take(loom::pnr::freezeSpatialPnrProblem(dataflowView, finalized.view(),
+                                              fabricRoot.view(), spatialConfig,
+                                              importedConstraints.view()));
+  if (frozen->dataflowIdentity() != dataflowView.identity() ||
+      frozen->techMappingIdentity() != finalized.view().identity() ||
+      frozen->fabricIdentity() != fabricRoot.view().identity() ||
+      frozen->constraintSetIdentity() != importedConstraints.view().identity())
+    fail("aggregate Spatial freeze lost an exact input identity");
+  if (frozen->realizations().memoryRealizations().size() != 1 ||
+      frozen->routing().routingEndpoints().empty() ||
+      frozen->routing().routingArcs().empty())
+    fail("aggregate Spatial freeze omitted realizations or routing topology");
+  if (!frozen->constraints().empty())
+    fail("empty MappingConstraintSet produced a nonempty constraint index");
+  if (frozen->workBudget().empty())
+    fail("aggregate Spatial freeze omitted the derived work budget");
+
+  loom::pnr::FrozenSpatialPnrProblemHandle repeated =
+      take(loom::pnr::freezeSpatialPnrProblem(dataflowView, finalized.view(),
+                                              fabricRoot.view(), spatialConfig,
+                                              importedConstraints.view()));
+  if (frozen->cacheKey() != repeated->cacheKey())
+    fail("identical Spatial freeze inputs changed the cache key");
+  requireSuccess(loom::pnr::revalidateFrozenSpatialPnrCacheHit(
+      *frozen, dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
+      importedConstraints.view()));
+
+  loom::ResolvedConfig changedResolved = loom::defaultResolvedConfig();
+  ++changedResolved.dse.spatialPnr.search.routing.endpointExpansionLimit;
+  const loom::pnr::ResolvedPnrConfigView changedConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(changedResolved));
+  loom::pnr::FrozenSpatialPnrProblemHandle changed =
+      take(loom::pnr::freezeSpatialPnrProblem(dataflowView, finalized.view(),
+                                              fabricRoot.view(), changedConfig,
+                                              importedConstraints.view()));
+  if (frozen->cacheKey() == changed->cacheKey())
+    fail("changed selected PnR view reused the freeze cache key");
+  if (llvm::Error error = loom::pnr::revalidateFrozenSpatialPnrCacheHit(
+          *frozen, dataflowView, finalized.view(), fabricRoot.view(),
+          changedConfig, importedConstraints.view()))
+    llvm::consumeError(std::move(error));
+  else
+    fail("cache-hit validation accepted a changed selected PnR view");
+
+  const auto offsets = frozen->routing().adjacencyOffsets();
+  std::optional<loom::pnr::PnrIndex> source;
+  for (std::size_t endpoint = 0; endpoint + 1 < offsets.size(); ++endpoint) {
+    if (offsets[endpoint] != offsets[endpoint + 1]) {
+      source = static_cast<loom::pnr::PnrIndex>(endpoint);
+      break;
+    }
+  }
+  if (!source)
+    fail("aggregate Spatial routing graph has no routable source");
+  const loom::pnr::PnrIndex arc = offsets[*source];
+  if (frozen->routing().arcSources().size() !=
+          frozen->routing().routingArcs().size() ||
+      frozen->routing().arcSources()[arc] != *source)
+    fail("aggregate Spatial routing graph lost its arc-source projection");
+  const loom::pnr::PnrIndex target =
+      frozen->routing().routingArcs()[arc].target;
+  auto routingOwner =
+      std::shared_ptr<const loom::pnr::FrozenSpatialRoutingGraph>(
+          frozen, &frozen->routing());
+  loom::pnr::RouteTreeStateHandle routeTree =
+      take(loom::pnr::RouteTreeState::create(std::move(routingOwner), 1));
+  loom::pnr::RouteTreeTransactionScratch scratch;
+  auto transaction = take(routeTree->beginTransaction(scratch));
+  requireSuccess(transaction.bindSource(*source));
+  requireSuccess(transaction.bindSink(0, target));
+  requireSuccess(transaction.attachPath(*source, {arc}, 0));
+  requireSuccess(transaction.commit());
+  requireSuccess(routeTree->verify());
+  {
+    loom::pnr::RouteTreeTransactionScratch rollbackScratch;
+    auto rollback = take(routeTree->beginTransaction(rollbackScratch));
+    requireSuccess(rollback.ripUpWholeNet());
+    rollback.rollback();
+  }
+  if (!routeTree->isRouted())
+    fail("route-tree rollback discarded committed state");
+  requireSuccess(routeTree->verify());
+  {
+    loom::pnr::RouteTreeTransactionScratch ripUpScratch;
+    auto ripUp = take(routeTree->beginTransaction(ripUpScratch));
+    requireSuccess(ripUp.ripUpWholeNet());
+    requireSuccess(ripUp.commit());
+  }
+  if (!routeTree->isUnrouted())
+    fail("route-tree whole-net rip-up retained committed state");
+  requireSuccess(routeTree->verify());
+
+  const loom::pnr::ResolvedPnrConfigView systemConfig =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(
+          loom::defaultResolvedConfig()));
+  if (!rejectedAs(loom::pnr::freezeSpatialPnrProblem(
+                      dataflowView, finalized.view(), fabricRoot.view(),
+                      systemConfig, importedConstraints.view()),
+                  loom::pnr::SpatialPnrFreezeFailureKind::Invalid))
+    fail("aggregate Spatial freeze accepted a System PnR config view");
+
   const std::string emptyMemoryDomainClause =
       "    mapping.constraint.domain_restriction "
       "projection(memory_placement) subject("
@@ -620,6 +749,54 @@ void artifactRoundTripAndReferenceValidation() {
       !std::holds_alternative<loom::mapping::SpatialDomainRestrictionView>(
           finalizedConstrained.view().clauses().front()))
     fail("sealed Spatial MappingConstraintSet lost its typed clause");
+  if (!rejectedAs(loom::pnr::freezeSpatialPnrProblem(
+                      dataflowView, finalized.view(), fabricRoot.view(),
+                      spatialConfig, finalizedConstrained.view()),
+                  loom::pnr::SpatialPnrFreezeFailureKind::ProvenInfeasible))
+    fail("empty singleton placement domain was not proven infeasible");
+
+  const auto selectedMemory =
+      frozen->realizations().memoryPlacements().front().memory;
+  const std::string selectedMemoryDomainClause =
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_placement) subject("
+      "#mapping.memory_realization_ref<" +
+      std::to_string(finalized.view().memoryRealizations().front().entityId) +
+      ">) admissible_domain([" +
+      fabricAttr("fabric_memory_occurrence_ref", selectedMemory) + "])\n";
+  auto selectedMemoryConstraints = parseMapping(
+      context,
+      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
+                            selectedMemoryDomainClause));
+  if (!selectedMemoryConstraints)
+    fail("nonempty Spatial MappingConstraintSet fixture did not parse");
+  auto selectedMemoryConstraintRoots =
+      selectedMemoryConstraints->getOps<::mapping::ConstraintsSpatialOp>();
+  auto finalizedSelectedMemoryConstraints =
+      take(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *selectedMemoryConstraintRoots.begin(), dataflowView,
+          finalized.view(), fabricRoot.view(), store));
+  loom::pnr::FrozenSpatialPnrProblemHandle constrainedFreeze =
+      take(loom::pnr::freezeSpatialPnrProblem(
+          dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
+          finalizedSelectedMemoryConstraints.view()));
+  if (constrainedFreeze->cacheKey() == frozen->cacheKey())
+    fail("changed Spatial MappingConstraintSet reused the freeze cache key");
+  const auto constrainedDomain =
+      constrainedFreeze->constraints()
+          .shard(::mapping::SpatialConstraintProjection::MemoryPlacement)
+          .restrictedDomain(loom::mapping::SpatialConstraintSubject{
+              loom::mapping::TechMemoryRealizationRef{
+                  finalized.view().memoryRealizations().front().entityId}});
+  if (!constrainedDomain || constrainedDomain->size() != 1 ||
+      !std::holds_alternative<loom::fabric::FabricMemoryOccurrenceRef>(
+          constrainedDomain->front()) ||
+      std::get<loom::fabric::FabricMemoryOccurrenceRef>(
+          constrainedDomain->front()) != selectedMemory ||
+      constrainedFreeze->realizations().memoryPlacements().size() != 1 ||
+      constrainedFreeze->realizations().memoryPlacements().front().memory !=
+          selectedMemory)
+    fail("nonempty memory-placement constraint did not restrict the freeze");
 
   const std::string staleClause =
       "    mapping.constraint.domain_restriction "

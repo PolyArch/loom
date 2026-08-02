@@ -1,15 +1,3 @@
-add_executable(loom-mapping-core-test
-  FrozenModelTest.cpp
-  MappingCapabilityTemplateTest.cpp
-  MappingComputeFreezeTest.cpp
-  MappingCoreTest.cpp
-  MappingCoreTestSupport.cpp
-  MappingMemoryTest.cpp
-  MappingRoutingFreezeTest.cpp
-  MappingVerifierTest.cpp
-  PnrProblemInputsTest.cpp
-)
-
 add_executable(loom-mapping-artifact-test
   MappingArtifactTest.cpp
 )
@@ -44,6 +32,7 @@ target_link_libraries(loom-mapping-artifact-test PRIVATE
 target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
+  LoomPnR
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect
@@ -99,12 +88,4 @@ target_link_libraries(loom-tech-mapping-joint-legality-test PRIVATE
   MLIRMemRefDialect
   MLIRParser
   LLVMSupport
-)
-
-target_link_libraries(loom-mapping-core-test PRIVATE
-  LoomMapping
-  LoomPnR
-  LLVMSupport
-  MLIRIR
-  MLIRLLVMDialect
 )

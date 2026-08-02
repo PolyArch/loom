@@ -67,10 +67,10 @@ llvm::Error loom::pnr::detail::preflightRouteTreeStateCapacity(
 }
 
 llvm::Expected<RouteTreeStateHandle>
-RouteTreeState::create(FrozenRoutingGraphHandle graph,
+RouteTreeState::create(FrozenSpatialRoutingGraphHandle graph,
                        PnrIndex sinkObligationCount) {
   if (!graph)
-    return routeTreeError("FrozenRoutingGraph owner is null");
+    return routeTreeError("FrozenSpatialRoutingGraph owner is null");
   if (llvm::Error error = detail::preflightRouteTreeStateCapacity(
           sizeValue(graph->routingEndpoints().size()), sinkObligationCount))
     return std::move(error);
@@ -79,7 +79,7 @@ RouteTreeState::create(FrozenRoutingGraphHandle graph,
       std::vector<SinkBinding>(static_cast<std::size_t>(sinkObligationCount))));
 }
 
-RouteTreeState::RouteTreeState(FrozenRoutingGraphHandle graph,
+RouteTreeState::RouteTreeState(FrozenSpatialRoutingGraphHandle graph,
                                std::vector<SinkBinding> sinkBindings)
     : graph_(std::move(graph)), sinkBindings_(std::move(sinkBindings)) {}
 
@@ -255,10 +255,8 @@ RouteTreeState::sinkEndpoint(PnrIndex obligation) const {
 }
 
 PnrIndex RouteTreeState::arcSourceEndpoint(PnrIndex arc) const {
-  const llvm::ArrayRef<PnrIndex> offsets = graph_->adjacencyOffsets();
-  const auto sourceEnd = std::upper_bound(offsets.begin(), offsets.end(), arc);
-  assert(sourceEnd != offsets.begin() && sourceEnd != offsets.end());
-  return static_cast<PnrIndex>(std::distance(offsets.begin(), sourceEnd) - 1);
+  assert(arc < graph_->arcSources().size());
+  return graph_->arcSources()[arc];
 }
 
 std::optional<PnrIndex> RouteTreeState::findNode(PnrIndex endpoint) const {
@@ -328,7 +326,8 @@ llvm::Error RouteTreeState::verifyState() const {
       return routeTreeError("active node appears in free slots");
     ++activeCount;
     if (node.endpoint >= graph_->routingEndpoints().size())
-      return routeTreeError("node endpoint is outside FrozenRoutingGraph");
+      return routeTreeError(
+          "node endpoint is outside FrozenSpatialRoutingGraph");
     if (lookupSlot(node.endpoint) != slot)
       return routeTreeError("endpoint-to-slot lookup diverges from nodes");
   }
@@ -376,7 +375,8 @@ llvm::Error RouteTreeState::verifyState() const {
     }
     ++boundCount;
     if (binding.endpoint >= graph_->routingEndpoints().size())
-      return routeTreeError("sink binding is outside FrozenRoutingGraph");
+      return routeTreeError(
+          "sink binding is outside FrozenSpatialRoutingGraph");
     if (binding.nodeSlot == getInvalidPnrIndex()) {
       if (binding.previousAtNode != getInvalidPnrIndex() ||
           binding.nextAtNode != getInvalidPnrIndex())
@@ -705,7 +705,8 @@ llvm::Error RouteTreeTransaction::bindSource(PnrIndex endpoint) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
   if (endpoint >= state_->graph_->routingEndpoints().size())
-    return routeTreeError("source endpoint is outside FrozenRoutingGraph");
+    return routeTreeError(
+        "source endpoint is outside FrozenSpatialRoutingGraph");
   if (state_->activeNodeCount_ != 0 && state_->sourceEndpoint_ != endpoint)
     return routeTreeError("routed source requires whole-net rip-up");
   if (state_->sourceEndpoint_ != endpoint) {
@@ -722,7 +723,7 @@ llvm::Error RouteTreeTransaction::bindSink(PnrIndex obligation,
   if (obligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
   if (endpoint >= state_->graph_->routingEndpoints().size())
-    return routeTreeError("sink endpoint is outside FrozenRoutingGraph");
+    return routeTreeError("sink endpoint is outside FrozenSpatialRoutingGraph");
   const RouteTreeState::SinkBinding &binding =
       state_->sinkBindings_[obligation];
   if (binding.nodeSlot != getInvalidPnrIndex())
@@ -777,7 +778,7 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
   PnrIndex current = attachmentEndpoint;
   for (PnrIndex forwardArc : forwardArcs) {
     if (forwardArc >= state_->graph_->routingArcs().size())
-      return routeTreeError("path arc is outside FrozenRoutingGraph");
+      return routeTreeError("path arc is outside FrozenSpatialRoutingGraph");
     if (state_->arcSourceEndpoint(forwardArc) != current)
       return routeTreeError("path arc does not continue from endpoint");
     const PnrIndex target = state_->graph_->routingArcs()[forwardArc].target;

@@ -82,7 +82,6 @@ set(LOOM_TEST_DEPENDS
   loom-pre-mapping-compilation-test
   loom-pointer-service-boundary-test
   loom-frontend-payload-framing-test
-  loom-mapping-core-test
   loom-mapping-artifact-test
   loom-tech-mapping-artifact-test
   loom-tech-mapping-config-test
@@ -90,7 +89,6 @@ set(LOOM_TEST_DEPENDS
   loom-tech-mapping-joint-legality-test
   loom-tech-mapping-search-test
   loom-pnr-index-test
-  loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
