@@ -1,4 +1,5 @@
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
 
@@ -58,6 +59,10 @@ std::string actorRef(std::uint64_t value) {
   return "#mapping.actor_ref<" + rawU64Ref(value) + ">";
 }
 
+std::string logicalMemoryRootRef(std::uint64_t value) {
+  return "#mapping.logical_memory_root_ref<" + rawU64Ref(value) + ">";
+}
+
 std::string fuCapabilityRef(std::uint64_t fu, std::uint64_t ordinal) {
   std::string result = "[0, 0, 0, 2";
   for (unsigned byte = 0; byte < 16; ++byte) {
@@ -109,6 +114,56 @@ std::string fabricEntityRef(std::uint32_t kind, std::uint64_t entity) {
                          static_cast<std::uint8_t>(entity >> (8 * (7 - byte))));
   result += "]";
   return result;
+}
+
+std::string computeRealizationRef(std::uint64_t entity) {
+  return "#mapping.compute_realization_ref<" + std::to_string(entity) + ">";
+}
+
+std::string fuOccurrenceRef(std::uint64_t entity) {
+  return "#mapping.fabric_fu_occurrence_ref<" + fabricEntityRef(3, entity) +
+         ">";
+}
+
+std::string spatialConstraintModule(bool reverseAuthoring, bool semanticDelta) {
+  const std::string projection = "compute_placement";
+  const std::string equal =
+      "      mapping.constraint.equal projection(" + projection +
+      ") subjects([" + computeRealizationRef(reverseAuthoring ? 2 : 1) + ", " +
+      computeRealizationRef(reverseAuthoring ? 1 : 2) + "])\n";
+  const std::string restriction =
+      "      mapping.constraint.domain_restriction projection(" + projection +
+      ") subject(" + computeRealizationRef(1) + ") admissible_domain([" +
+      fuOccurrenceRef(semanticDelta ? 9 : 7) + ", " + fuOccurrenceRef(7) +
+      (reverseAuthoring ? ", " + fuOccurrenceRef(7) : "") + "])\n";
+  const std::string clauses =
+      reverseAuthoring ? restriction + equal : equal + restriction;
+  return "module {\n  mapping.constraints.spatial dataflow(" +
+         identityAttr(17) + ") tech_mapping(" + identityAttr(25) + ") fabric(" +
+         identityAttr(34) + ") {\n" + clauses + "  }\n}";
+}
+
+std::string actorResultProducerRef(std::uint64_t actor, std::uint64_t ordinal);
+
+std::string spatialTagConstraintModule(bool splitIntervals) {
+  const std::string interval = [](unsigned lower, unsigned upper) {
+    return "#mapping.constraint_unsigned_interval<lower = " +
+           std::to_string(lower) + " : ui8, upper = " + std::to_string(upper) +
+           " : ui8>";
+  }(0, 8);
+  const std::string domain =
+      splitIntervals ? interval.substr(0, interval.find("lower = 0")) +
+                           "lower = 4 : ui8, upper = 8 : ui8>" + ", " +
+                           interval.substr(0, interval.find("lower = 0")) +
+                           "lower = 0 : ui8, upper = 4 : ui8>"
+                     : interval;
+  return "module {\n  mapping.constraints.spatial dataflow(" +
+         identityAttr(17) + ") tech_mapping(" + identityAttr(25) + ") fabric(" +
+         identityAttr(34) + ") {\n" +
+         "      mapping.constraint.domain_restriction "
+         "projection(net_assigned_tag_values) subject(" +
+         actorResultProducerRef(7, 0) + ") admissible_domain([" + domain +
+         "])\n  }\n}";
 }
 
 std::string appendRawU64(std::string prefix, std::uint64_t value) {
@@ -412,6 +467,110 @@ void testMemoryPayloadCardinalityOrder() {
     fail("memory payload cardinality did not determine canonical row order");
 }
 
+void testCanonicalSpatialConstraintSet() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry);
+
+  auto ordered = parse(context, spatialConstraintModule(false, false));
+  auto reversed = parse(context, spatialConstraintModule(true, false));
+  if (!ordered || !reversed || mlir::failed(mlir::verify(*ordered)) ||
+      mlir::failed(mlir::verify(*reversed)))
+    fail("valid Spatial MappingConstraintSet did not verify");
+
+  auto canonical = [](mlir::ModuleOp module) {
+    auto roots = module.getOps<::mapping::ConstraintsSpatialOp>();
+    if (std::distance(roots.begin(), roots.end()) != 1)
+      fail("expected one Spatial MappingConstraintSet root");
+    auto bytes =
+        loom::mapping::writeCanonicalSpatialConstraintAssembly(*roots.begin());
+    if (!bytes)
+      fail(llvm::toString(bytes.takeError()));
+    return std::move(*bytes);
+  };
+
+  if (!canonical(*ordered).bytes().equals(canonical(*reversed).bytes()))
+    fail("constraint authoring order or duplicates changed canonical bytes");
+
+  auto delta = parse(context, spatialConstraintModule(false, true));
+  if (!delta || mlir::failed(mlir::verify(*delta)))
+    fail("semantic-delta Spatial MappingConstraintSet did not verify");
+  if (canonical(*ordered).bytes().equals(canonical(*delta).bytes()))
+    fail("changed admissible domain did not change canonical bytes");
+
+  auto splitIntervals =
+      parse(context, spatialTagConstraintModule(/*splitIntervals=*/true));
+  auto mergedInterval =
+      parse(context, spatialTagConstraintModule(/*splitIntervals=*/false));
+  if (!splitIntervals || !mergedInterval ||
+      mlir::failed(mlir::verify(*splitIntervals)) ||
+      mlir::failed(mlir::verify(*mergedInterval)))
+    fail("valid Physical Tag interval domains did not verify");
+  if (!canonical(*splitIntervals)
+           .bytes()
+           .equals(canonical(*mergedInterval).bytes()))
+    fail("equivalent Physical Tag intervals changed canonical bytes");
+
+  const std::string projectionOrder =
+      "module {\n  mapping.constraints.spatial dataflow(" + identityAttr(17) +
+      ") tech_mapping(" + identityAttr(25) + ") fabric(" + identityAttr(34) +
+      ") {\n"
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_bound_services) subject(" +
+      logicalMemoryRootRef(1) +
+      ") admissible_domain([])\n"
+      "    mapping.constraint.domain_restriction "
+      "projection(compute_instruction_context) subject(" +
+      computeRealizationRef(1) + ") admissible_domain([])\n  }\n}";
+  auto unorderedProjections = parse(context, projectionOrder);
+  if (!unorderedProjections ||
+      mlir::failed(mlir::verify(*unorderedProjections)))
+    fail("projection-order Spatial MappingConstraintSet did not verify");
+  const auto orderedProjectionBytes = canonical(*unorderedProjections);
+  const std::string orderedProjectionText(
+      orderedProjectionBytes.bytes().begin(),
+      orderedProjectionBytes.bytes().end());
+  const auto contextPosition =
+      orderedProjectionText.find("compute_instruction_context");
+  const auto servicePosition =
+      orderedProjectionText.find("memory_bound_services");
+  if (contextPosition == std::string::npos ||
+      servicePosition == std::string::npos || contextPosition > servicePosition)
+    fail("constraint clauses were not ordered by numeric projection wire");
+
+  const std::string representativeOrder =
+      "module {\n  mapping.constraints.spatial dataflow(" + identityAttr(17) +
+      ") tech_mapping(" + identityAttr(25) + ") fabric(" + identityAttr(34) +
+      ") {\n"
+      "    mapping.constraint.equal projection(compute_placement) subjects([" +
+      computeRealizationRef(10) + ", " + computeRealizationRef(2) +
+      "])\n"
+      "    mapping.constraint.domain_restriction "
+      "projection(compute_placement) subject(" +
+      computeRealizationRef(10) + ") admissible_domain([])\n  }\n}";
+  auto unorderedRepresentatives = parse(context, representativeOrder);
+  if (!unorderedRepresentatives ||
+      mlir::failed(mlir::verify(*unorderedRepresentatives)))
+    fail("representative-order Spatial MappingConstraintSet did not verify");
+  const auto representativeBytes = canonical(*unorderedRepresentatives);
+  const std::string representativeText(representativeBytes.bytes().begin(),
+                                       representativeBytes.bytes().end());
+  if (representativeText.find("subject(#mapping.compute_realization_ref<2>)") ==
+      std::string::npos)
+    fail("equality representative did not use the numeric typed key");
+
+  auto malformedRoot = parse(context, spatialConstraintModule(false, false));
+  if (!malformedRoot)
+    fail("Spatial MappingConstraintSet block-argument fixture did not parse");
+  auto malformedRoots =
+      malformedRoot->getOps<::mapping::ConstraintsSpatialOp>();
+  auto malformed = *malformedRoots.begin();
+  malformed.getBody().front().addArgument(mlir::IndexType::get(&context),
+                                          malformed.getLoc());
+  if (mlir::succeeded(mlir::verify(malformed)))
+    fail("Spatial MappingConstraintSet accepted a block argument");
+}
+
 } // namespace
 
 int main() {
@@ -421,6 +580,7 @@ int main() {
   testCanonicalMemoryRealization();
   testMemoryTemplateOwnerMismatch();
   testMemoryPayloadCardinalityOrder();
+  testCanonicalSpatialConstraintSet();
   llvm::outs() << "mapping artifact tests passed\n";
   return 0;
 }

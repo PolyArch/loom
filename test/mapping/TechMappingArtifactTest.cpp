@@ -8,6 +8,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
 
@@ -26,6 +27,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -508,6 +510,17 @@ mlir::OwningOpRef<mlir::ModuleOp> parseMapping(mlir::MLIRContext &context,
   return mlir::parseSourceString<mlir::ModuleOp>(text, &context);
 }
 
+std::string
+spatialConstraintText(const dataflow::CanonicalDataflowProgramView &dataflow,
+                      const loom::mapping::TechMappingView &techMapping,
+                      const loom::fabric::FabricArtifactView &fabric,
+                      llvm::StringRef clauses) {
+  return "module {\n  mapping.constraints.spatial dataflow(" +
+         identityAttr(dataflow.identity()) + ") tech_mapping(" +
+         identityAttr(techMapping.identity()) + ") fabric(" +
+         identityAttr(fabric.identity()) + ") {\n" + clauses.str() + "  }\n}\n";
+}
+
 void artifactRoundTripAndReferenceValidation() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -555,6 +568,97 @@ void artifactRoundTripAndReferenceValidation() {
           finalized.canonicalBytes().bytes()) ||
       imported.view().memoryRealizations().front().actors.size() != 1)
     fail("strict TechMapping import changed the canonical artifact");
+
+  auto emptyConstraints = parseMapping(
+      context,
+      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
+                            /*clauses=*/""));
+  if (!emptyConstraints)
+    fail("empty Spatial MappingConstraintSet fixture did not parse");
+  auto constraintRoots =
+      emptyConstraints->getOps<::mapping::ConstraintsSpatialOp>();
+  auto finalizedConstraints =
+      take(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *constraintRoots.begin(), dataflowView, finalized.view(),
+          fabricRoot.view(), store));
+  if (finalizedConstraints.view().dataflowIdentity() !=
+          dataflowReference.artifact ||
+      finalizedConstraints.view().techMappingIdentity() !=
+          finalized.reference().artifact ||
+      finalizedConstraints.view().fabricIdentity() !=
+          fabricRoot.reference().artifact ||
+      !finalizedConstraints.view().clauses().empty())
+    fail("sealed Spatial MappingConstraintSet lost its exact empty binding");
+
+  auto importedConstraints =
+      take(loom::mapping::importSpatialMappingConstraintSet(
+          finalizedConstraints.reference(), store));
+  if (importedConstraints.reference() != finalizedConstraints.reference() ||
+      !importedConstraints.canonicalBytes().bytes().equals(
+          finalizedConstraints.canonicalBytes().bytes()))
+    fail("strict Spatial MappingConstraintSet import changed the artifact");
+
+  const std::string emptyMemoryDomainClause =
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_placement) subject("
+      "#mapping.memory_realization_ref<" +
+      std::to_string(finalized.view().memoryRealizations().front().entityId) +
+      ">) admissible_domain([])\n";
+  auto constrained = parseMapping(
+      context,
+      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
+                            emptyMemoryDomainClause));
+  if (!constrained)
+    fail("typed Spatial MappingConstraintSet fixture did not parse");
+  auto constrainedRoots =
+      constrained->getOps<::mapping::ConstraintsSpatialOp>();
+  auto finalizedConstrained =
+      take(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *constrainedRoots.begin(), dataflowView, finalized.view(),
+          fabricRoot.view(), store));
+  if (finalizedConstrained.view().clauses().size() != 1 ||
+      !std::holds_alternative<loom::mapping::SpatialDomainRestrictionView>(
+          finalizedConstrained.view().clauses().front()))
+    fail("sealed Spatial MappingConstraintSet lost its typed clause");
+
+  const std::string staleClause =
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_placement) subject("
+      "#mapping.memory_realization_ref<999>) admissible_domain([])\n";
+  auto staleConstraints = parseMapping(
+      context, spatialConstraintText(dataflowView, finalized.view(),
+                                     fabricRoot.view(), staleClause));
+  if (!staleConstraints)
+    fail("stale Spatial MappingConstraintSet fixture did not parse");
+  auto staleConstraintRoots =
+      staleConstraints->getOps<::mapping::ConstraintsSpatialOp>();
+  if (!rejected(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *staleConstraintRoots.begin(), dataflowView, finalized.view(),
+          fabricRoot.view(), store)))
+    fail("stale TechMapping realization constraint was published");
+
+  const std::string staleFabricDomainClause =
+      "    mapping.constraint.domain_restriction "
+      "projection(memory_placement) subject("
+      "#mapping.memory_realization_ref<" +
+      std::to_string(finalized.view().memoryRealizations().front().entityId) +
+      ">) admissible_domain([" +
+      fabricAttr("fabric_memory_occurrence_ref",
+                 loom::fabric::FabricMemoryOccurrenceRef(
+                     std::numeric_limits<std::uint64_t>::max())) +
+      "])\n";
+  auto staleFabricConstraints = parseMapping(
+      context,
+      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
+                            staleFabricDomainClause));
+  if (!staleFabricConstraints)
+    fail("stale Fabric constraint fixture did not parse");
+  auto staleFabricRoots =
+      staleFabricConstraints->getOps<::mapping::ConstraintsSpatialOp>();
+  if (!rejected(loom::mapping::finalizeSpatialMappingConstraintSet(
+          *staleFabricRoots.begin(), dataflowView, finalized.view(),
+          fabricRoot.view(), store)))
+    fail("stale Fabric domain reference was published");
 
   auto stale = parseMapping(
       context, mappingText(dataflowView, fabricRoot.view(), selected, true));

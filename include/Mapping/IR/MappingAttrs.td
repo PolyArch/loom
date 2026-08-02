@@ -30,6 +30,24 @@ def Mapping_ActorRefAttr
     : Mapping_CanonicalBytesAttr<"ActorRef", "actor_ref",
         "Dataflow-owned ActorRef scoped by the root dataflow binding">;
 
+def Mapping_LogicalMemoryRootRefAttr
+    : Mapping_CanonicalBytesAttr<"LogicalMemoryRootRef", "logical_memory_root_ref",
+        "Dataflow-owned LogicalMemoryRootRef scoped by the root binding">;
+
+def Mapping_ComputeRealizationRefAttr
+    : Mapping_Attr<"ComputeRealizationRef", "compute_realization_ref"> {
+  let summary = "TechMapping-owned ComputeRealizationRef";
+  let parameters = (ins "uint64_t":$entity);
+  let assemblyFormat = "`<` $entity `>`";
+}
+
+def Mapping_MemoryRealizationRefAttr
+    : Mapping_Attr<"MemoryRealizationRef", "memory_realization_ref"> {
+  let summary = "TechMapping-owned MemoryRealizationRef";
+  let parameters = (ins "uint64_t":$entity);
+  let assemblyFormat = "`<` $entity `>`";
+}
+
 def Mapping_GraphProducerEndpointRefAttr
     : Mapping_CanonicalBytesAttr<"GraphProducerEndpointRef",
         "graph_producer_endpoint_ref",
@@ -57,6 +75,80 @@ def Mapping_FabricFuTemplateNodeRefAttr
 def Mapping_FabricFuTemplatePortRefAttr
     : Mapping_CanonicalBytesAttr<"FabricFuTemplatePortRef",
         "fabric_fu_template_port_ref", "Fabric-owned FU template port reference">;
+
+def Mapping_FabricFuOccurrenceRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricFuOccurrenceRef",
+        "fabric_fu_occurrence_ref", "Fabric-owned FU occurrence reference">;
+
+def Mapping_FabricPeOccurrenceRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricPeOccurrenceRef",
+        "fabric_pe_occurrence_ref", "Fabric-owned PE occurrence reference">;
+
+def Mapping_InstructionContextRefAttr
+    : Mapping_CanonicalBytesAttr<"InstructionContextRef",
+        "instruction_context_ref", "Fabric-owned instruction context reference">;
+
+def Mapping_FabricMemoryOccurrenceRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryOccurrenceRef",
+        "fabric_memory_occurrence_ref", "Fabric-owned memory occurrence reference">;
+
+def Mapping_FabricPhysicalTraversalRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricPhysicalTraversalRef",
+        "fabric_physical_traversal_ref", "Fabric-owned physical traversal reference">;
+
+def Mapping_FabricResourceStateRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricResourceStateRef",
+        "fabric_resource_state_ref", "Fabric-owned resource state reference">;
+
+def Mapping_FabricTransportEndpointRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricTransportEndpointRef",
+        "fabric_transport_endpoint_ref", "Fabric-owned transport endpoint reference">;
+
+def Mapping_FabricMemoryOperationPortRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryOperationPortRef",
+        "fabric_memory_operation_port_ref", "Fabric-owned memory operation port reference">;
+
+def Mapping_FabricMemoryServiceRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryServiceRef",
+        "fabric_memory_service_ref", "Fabric-owned memory service reference">;
+
+def Mapping_SpatialTransferTerminalAttr
+    : Mapping_Attr<"SpatialTransferTerminal", "spatial_transfer_terminal"> {
+  let summary = "source or exact sink terminal of one Spatial logical net";
+  let parameters = (ins
+      "::mapping::GraphProducerEndpointRefAttr":$producer,
+      OptionalParameter<"::mapping::GraphConsumerEndpointRefAttr">:$consumer);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_ConstraintFuContextAttr
+    : Mapping_Attr<"ConstraintFuContext", "constraint_fu_context"> {
+  let summary = "correlated FU occurrence and instruction context carrier";
+  let parameters = (ins
+      "::mapping::FabricFuOccurrenceRefAttr":$fu,
+      "::mapping::InstructionContextRefAttr":$instruction_context);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_ConstraintUnsignedIntervalAttr
+    : Mapping_Attr<"ConstraintUnsignedInterval",
+                   "constraint_unsigned_interval"> {
+  let summary = "one non-empty unsigned half-open interval";
+  let parameters = (ins "::mlir::IntegerAttr":$lower,
+                        "::mlir::IntegerAttr":$upper);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_ConstraintAddressRegionAttr
+    : Mapping_Attr<"ConstraintAddressRegion", "constraint_address_region"> {
+  let summary = "one memory service and its canonical address intervals";
+  let parameters = (ins "::mapping::FabricMemoryServiceRefAttr":$service,
+                        "::mlir::ArrayAttr":$intervals);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
 
 def Mapping_FabricMemoryEngineTemplateRefAttr
     : Mapping_CanonicalBytesAttr<"FabricMemoryEngineTemplateRef",

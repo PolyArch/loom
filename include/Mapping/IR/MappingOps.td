@@ -112,4 +112,47 @@ def Mapping_MemoryInternalEdgeOp
   let hasVerifier = 1;
 }
 
+def Mapping_ConstraintsSpatialOp
+    : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
+                                          NoTerminator]> {
+  let summary = "complete loom.mapping_constraints 1.0 Spatial root";
+  let arguments = (ins
+      Mapping_ArtifactIdentityAttr:$dataflow,
+      Mapping_ArtifactIdentityAttr:$tech_mapping,
+      Mapping_ArtifactIdentityAttr:$fabric);
+  let regions = (region SizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ConstraintDomainRestrictionOp
+    : Mapping_Op<"constraint.domain_restriction",
+                 [HasParent<"ConstraintsSpatialOp">]> {
+  let summary = "one typed projected-domain restriction";
+  let arguments = (ins
+      Mapping_SpatialConstraintProjectionAttr:$projection,
+      AnyAttr:$subject,
+      ArrayAttr:$admissible_domain);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ConstraintEqualOp
+    : Mapping_Op<"constraint.equal", [HasParent<"ConstraintsSpatialOp">]> {
+  let summary = "one canonical variadic projected equality";
+  let arguments = (ins Mapping_SpatialConstraintProjectionAttr:$projection,
+                       ArrayAttr:$subjects);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ConstraintDisjointOp
+    : Mapping_Op<"constraint.disjoint", [HasParent<"ConstraintsSpatialOp">]> {
+  let summary = "one canonical variadic projected disjointness relation";
+  let arguments = (ins Mapping_SpatialConstraintProjectionAttr:$projection,
+                       ArrayAttr:$subjects);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 #endif // LOOM_MAPPING_IR_MAPPINGOPS_TD

@@ -5,8 +5,11 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "mlir/IR/BuiltinTypes.h"
+
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <cstdint>
 
 using namespace mlir;
@@ -93,6 +96,11 @@ mapping::ActorRefAttr::verify(function_ref<InFlightDiagnostic()> emitError,
   return verifyDataflowRef<::dataflow::ActorRef>(emitError, record);
 }
 
+LogicalResult mapping::LogicalMemoryRootRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::LogicalMemoryRootRef>(emitError, record);
+}
+
 LogicalResult mapping::GraphProducerEndpointRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyDataflowRef<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -121,6 +129,80 @@ LogicalResult mapping::FabricFuTemplatePortRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyFabricRef<::loom::fabric::FabricFuTemplatePortRef>(emitError,
                                                                   record);
+}
+
+#define LOOM_VERIFY_FABRIC_CONSTRAINT_REF(Name, Ref)                           \
+  LogicalResult mapping::Name##Attr::verify(                                   \
+      function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) { \
+    return verifyFabricRef<::loom::fabric::Ref>(emitError, record);            \
+  }
+
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricFuOccurrenceRef, FabricFuOccurrenceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPeOccurrenceRef, FabricPeOccurrenceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionContextRef, InstructionContextRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryOccurrenceRef,
+                                  FabricMemoryOccurrenceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPhysicalTraversalRef,
+                                  FabricPhysicalTraversalRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricResourceStateRef,
+                                  FabricResourceStateRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricTransportEndpointRef,
+                                  FabricTransportEndpointRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryOperationPortRef,
+                                  FabricMemoryOperationPortRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryServiceRef,
+                                  FabricMemoryServiceRef)
+
+#undef LOOM_VERIFY_FABRIC_CONSTRAINT_REF
+
+LogicalResult mapping::SpatialTransferTerminalAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    GraphProducerEndpointRefAttr producer,
+    GraphConsumerEndpointRefAttr consumer) {
+  if (!producer) {
+    emitError() << "spatial transfer terminal requires a producer";
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::ConstraintUnsignedIntervalAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, IntegerAttr lower,
+    IntegerAttr upper) {
+  auto lowerType = dyn_cast<IntegerType>(lower.getType());
+  auto upperType = dyn_cast<IntegerType>(upper.getType());
+  if (!lowerType || !upperType || !lowerType.isUnsigned() ||
+      !upperType.isUnsigned()) {
+    emitError() << "constraint interval bounds must use unsigned integer types";
+    return failure();
+  }
+  const unsigned width = std::max(lowerType.getWidth(), upperType.getWidth());
+  if (!lower.getValue().zext(width).ult(upper.getValue().zext(width))) {
+    emitError() << "constraint interval must be non-empty";
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::ConstraintAddressRegionAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    FabricMemoryServiceRefAttr service, ArrayAttr intervals) {
+  if (!service) {
+    emitError() << "constraint address region requires a memory service";
+    return failure();
+  }
+  if (intervals.empty()) {
+    emitError()
+        << "constraint address region requires a non-empty interval set";
+    return failure();
+  }
+  for (Attribute interval : intervals) {
+    if (!isa<ConstraintUnsignedIntervalAttr>(interval)) {
+      emitError() << "constraint address region contains a non-interval value";
+      return failure();
+    }
+  }
+  return success();
 }
 
 LogicalResult mapping::FabricMemoryEngineTemplateRefAttr::verify(

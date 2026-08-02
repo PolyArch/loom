@@ -15,4 +15,32 @@ def Mapping_PortDirection : I32EnumAttr<"PortDirection",
 def Mapping_PortDirectionAttr
     : EnumAttr<Mapping_Dialect, Mapping_PortDirection, "port_direction">;
 
+def Mapping_SpatialConstraintProjection : I32EnumAttr<
+    "SpatialConstraintProjection",
+    "closed Spatial MappingConstraintSet projection catalog", [
+  I32EnumAttrCase<"ComputePlacement", 0, "compute_placement">,
+  I32EnumAttrCase<"ComputeParentPe", 1, "compute_parent_pe">,
+  I32EnumAttrCase<"ComputeInstructionContext", 2,
+                  "compute_instruction_context">,
+  I32EnumAttrCase<"ComputeFuContext", 3, "compute_fu_context">,
+  I32EnumAttrCase<"MemoryPlacement", 4, "memory_placement">,
+  I32EnumAttrCase<"NetAssignedTagValues", 5,
+                  "net_assigned_tag_values">,
+  I32EnumAttrCase<"NetSelectedPhysicalTraversals", 6,
+                  "net_selected_physical_traversals">,
+  I32EnumAttrCase<"NetTraversalResourceStates", 7,
+                  "net_traversal_resource_states">,
+  I32EnumAttrCase<"SpatialTransferAttachment", 8,
+                  "spatial_transfer_attachment">,
+  I32EnumAttrCase<"MemoryOperationPort", 9, "memory_operation_port">,
+  I32EnumAttrCase<"MemoryBoundServices", 10, "memory_bound_services">,
+  I32EnumAttrCase<"MemoryAddressRegion", 11, "memory_address_region">
+]> {
+  let cppNamespace = "::mapping";
+}
+
+def Mapping_SpatialConstraintProjectionAttr
+    : EnumAttr<Mapping_Dialect, Mapping_SpatialConstraintProjection,
+               "spatial_projection">;
+
 #endif // LOOM_MAPPING_IR_MAPPINGENUMS_TD

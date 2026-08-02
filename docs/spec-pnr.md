@@ -389,6 +389,15 @@ are forbidden. `SparseIds`, `DenseWords`, and other bitset forms are derived
 There is no predicate DSL, `Exists` or `NonEmpty` atom, runtime extension
 registry, or last-wins interpretation.
 
+Canonical comparison never uses printed attribute text. A Mapping-local
+realization reference compares by its unsigned `u64be` EntityId. Dataflow and
+Fabric references reuse the canonical owner-local comparison bytes defined by
+their reference codecs. Closed variants prepend their `u32be` discriminator,
+and tuples compare their length-framed component keys in field order. Unsigned
+interval endpoints are emitted using the smallest nonzero unsigned MLIR
+integer width that represents the value; an authored integer width carries no
+independent semantics.
+
 ### Common Canonicalization And Hot Compilation
 
 Both roots perform one deterministic finite normalization over their own closed

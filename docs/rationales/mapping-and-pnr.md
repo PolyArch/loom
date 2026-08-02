@@ -127,6 +127,13 @@ restrict the legal mapping space; ResolvedConfig controls how that space is
 searched; the Mapping result records the selected solution. A generic `config`
 object for all three would duplicate ownership and cache dependencies.
 
+Constraint canonicalization reuses each reference owner's local comparison
+wire rather than printed MLIR text. Printer spelling is presentation, can order
+numeric values incorrectly, and would create another identity authority.
+Likewise, an authored integer type width on an interval endpoint does not
+describe Fabric width or capacity; preserving it would make equal value sets
+produce different constraint identities without expressing a real distinction.
+
 ## Why PnR Receives A Selected Objective Closure
 
 PnR needs objective records during hot mutable search, but the complete DSE

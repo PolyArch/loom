@@ -385,5 +385,243 @@ LogicalResult mapping::MemoryInternalEdgeOp::verify() {
   return success();
 }
 
+ParseResult mapping::ConstraintsSpatialOp::parse(OpAsmParser &parser,
+                                                 OperationState &result) {
+  mapping::ArtifactIdentityAttr dataflow;
+  mapping::ArtifactIdentityAttr techMapping;
+  mapping::ArtifactIdentityAttr fabric;
+  if (parser.parseKeyword("dataflow") || parser.parseLParen() ||
+      parser.parseAttribute(dataflow, "dataflow", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("tech_mapping") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(techMapping, "tech_mapping", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("fabric") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(fabric, "fabric", result.attributes) ||
+      parser.parseRParen())
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, {}, /*enableNameShadowing=*/false))
+    return failure();
+  if (body->empty())
+    body->emplaceBlock();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::ConstraintsSpatialOp::print(OpAsmPrinter &printer) {
+  printer << " dataflow(" << getDataflow() << ") tech_mapping("
+          << getTechMapping() << ") fabric(" << getFabric() << ") ";
+  printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                      /*printBlockTerminators=*/false);
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"dataflow", "tech_mapping", "fabric"});
+}
+
+LogicalResult mapping::ConstraintsSpatialOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"dataflow", "tech_mapping", "fabric"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  for (Operation &child : getBody().front()) {
+    if (!isa<mapping::ConstraintDomainRestrictionOp, mapping::ConstraintEqualOp,
+             mapping::ConstraintDisjointOp>(child))
+      return child.emitOpError(
+          "is not a closed Spatial MappingConstraintSet clause kind");
+  }
+  return success();
+}
+
+namespace {
+
+ParseResult parseSpatialProjection(OpAsmParser &parser,
+                                   OperationState &result) {
+  StringRef keyword;
+  if (parser.parseKeyword("projection") || parser.parseLParen() ||
+      parser.parseKeyword(&keyword) || parser.parseRParen())
+    return failure();
+  std::optional<mapping::SpatialConstraintProjection> projection =
+      mapping::symbolizeSpatialConstraintProjection(keyword);
+  if (!projection)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "unknown Spatial constraint projection");
+  result.addAttribute("projection",
+                      mapping::SpatialConstraintProjectionAttr::get(
+                          parser.getContext(), *projection));
+  return success();
+}
+
+void printSpatialProjection(OpAsmPrinter &printer,
+                            mapping::SpatialConstraintProjection projection) {
+  printer << " projection("
+          << mapping::stringifySpatialConstraintProjection(projection) << ')';
+}
+
+bool isSpatialConstraintSubject(mapping::SpatialConstraintProjection projection,
+                                Attribute subject) {
+  using Projection = mapping::SpatialConstraintProjection;
+  switch (projection) {
+  case Projection::ComputePlacement:
+  case Projection::ComputeParentPe:
+  case Projection::ComputeInstructionContext:
+  case Projection::ComputeFuContext:
+    return isa<mapping::ComputeRealizationRefAttr>(subject);
+  case Projection::MemoryPlacement:
+    return isa<mapping::MemoryRealizationRefAttr>(subject);
+  case Projection::NetAssignedTagValues:
+  case Projection::NetSelectedPhysicalTraversals:
+  case Projection::NetTraversalResourceStates:
+    return isa<mapping::GraphProducerEndpointRefAttr>(subject);
+  case Projection::SpatialTransferAttachment:
+    return isa<mapping::SpatialTransferTerminalAttr>(subject);
+  case Projection::MemoryOperationPort:
+    return isa<mapping::ActorRefAttr>(subject);
+  case Projection::MemoryBoundServices:
+  case Projection::MemoryAddressRegion:
+    return isa<mapping::LogicalMemoryRootRefAttr>(subject);
+  }
+  llvm_unreachable("unknown Spatial constraint projection");
+}
+
+bool isSpatialConstraintDomainValue(
+    mapping::SpatialConstraintProjection projection, Attribute value) {
+  using Projection = mapping::SpatialConstraintProjection;
+  switch (projection) {
+  case Projection::ComputePlacement:
+    return isa<mapping::FabricFuOccurrenceRefAttr>(value);
+  case Projection::ComputeParentPe:
+    return isa<mapping::FabricPeOccurrenceRefAttr>(value);
+  case Projection::ComputeInstructionContext:
+    return isa<mapping::InstructionContextRefAttr>(value);
+  case Projection::ComputeFuContext:
+    return isa<mapping::ConstraintFuContextAttr>(value);
+  case Projection::MemoryPlacement:
+    return isa<mapping::FabricMemoryOccurrenceRefAttr>(value);
+  case Projection::NetAssignedTagValues:
+    return isa<mapping::ConstraintUnsignedIntervalAttr>(value);
+  case Projection::NetSelectedPhysicalTraversals:
+    return isa<mapping::FabricPhysicalTraversalRefAttr>(value);
+  case Projection::NetTraversalResourceStates:
+    return isa<mapping::FabricResourceStateRefAttr>(value);
+  case Projection::SpatialTransferAttachment:
+    return isa<mapping::FabricTransportEndpointRefAttr>(value);
+  case Projection::MemoryOperationPort:
+    return isa<mapping::FabricMemoryOperationPortRefAttr>(value);
+  case Projection::MemoryBoundServices:
+    return isa<mapping::FabricMemoryServiceRefAttr>(value);
+  case Projection::MemoryAddressRegion:
+    return isa<mapping::ConstraintAddressRegionAttr>(value);
+  }
+  llvm_unreachable("unknown Spatial constraint projection");
+}
+
+LogicalResult
+verifyConstraintSubjects(Operation *operation,
+                         mapping::SpatialConstraintProjection projection,
+                         ArrayAttr subjects) {
+  if (subjects.size() < 2)
+    return operation->emitOpError("requires at least two subjects");
+  for (Attribute subject : subjects)
+    if (!isSpatialConstraintSubject(projection, subject))
+      return operation->emitOpError(
+          "contains a subject of the wrong typed projection domain");
+  return success();
+}
+
+} // namespace
+
+ParseResult
+mapping::ConstraintDomainRestrictionOp::parse(OpAsmParser &parser,
+                                              OperationState &result) {
+  Attribute subject;
+  ArrayAttr domain;
+  if (failed(parseSpatialProjection(parser, result)) ||
+      parser.parseKeyword("subject") || parser.parseLParen() ||
+      parser.parseAttribute(subject, "subject", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("admissible_domain") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(domain, "admissible_domain", result.attributes) ||
+      parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::ConstraintDomainRestrictionOp::print(OpAsmPrinter &printer) {
+  printSpatialProjection(printer, getProjection());
+  printer << " subject(" << getSubject() << ") admissible_domain("
+          << getAdmissibleDomain() << ')';
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"projection", "subject", "admissible_domain"});
+}
+
+ParseResult mapping::ConstraintEqualOp::parse(OpAsmParser &parser,
+                                              OperationState &result) {
+  ArrayAttr subjects;
+  if (failed(parseSpatialProjection(parser, result)) ||
+      parser.parseKeyword("subjects") || parser.parseLParen() ||
+      parser.parseAttribute(subjects, "subjects", result.attributes) ||
+      parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::ConstraintEqualOp::print(OpAsmPrinter &printer) {
+  printSpatialProjection(printer, getProjection());
+  printer << " subjects(" << getSubjects() << ')';
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"projection", "subjects"});
+}
+
+ParseResult mapping::ConstraintDisjointOp::parse(OpAsmParser &parser,
+                                                 OperationState &result) {
+  ArrayAttr subjects;
+  if (failed(parseSpatialProjection(parser, result)) ||
+      parser.parseKeyword("subjects") || parser.parseLParen() ||
+      parser.parseAttribute(subjects, "subjects", result.attributes) ||
+      parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::ConstraintDisjointOp::print(OpAsmPrinter &printer) {
+  printSpatialProjection(printer, getProjection());
+  printer << " subjects(" << getSubjects() << ')';
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"projection", "subjects"});
+}
+
+LogicalResult mapping::ConstraintDomainRestrictionOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"projection", "subject", "admissible_domain"})))
+    return failure();
+  if (!isSpatialConstraintSubject(getProjection(), getSubject()))
+    return emitOpError("subject has the wrong typed projection domain");
+  for (Attribute value : getAdmissibleDomain())
+    if (!isSpatialConstraintDomainValue(getProjection(), value))
+      return emitOpError(
+                 "admissible_domain contains a value of the wrong carrier "
+                 "type for projection ")
+             << mapping::stringifySpatialConstraintProjection(getProjection())
+             << ": " << value;
+  return success();
+}
+
+LogicalResult mapping::ConstraintEqualOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"projection", "subjects"})))
+    return failure();
+  return verifyConstraintSubjects(*this, getProjection(), getSubjects());
+}
+
+LogicalResult mapping::ConstraintDisjointOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"projection", "subjects"})))
+    return failure();
+  return verifyConstraintSubjects(*this, getProjection(), getSubjects());
+}
+
 #define GET_OP_CLASSES
 #include "Mapping/IR/MappingOps.cpp.inc"
