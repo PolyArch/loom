@@ -163,6 +163,14 @@ public:
   llvm::Error validate(const CanonicalGraphProducerEndpointRef &endpoint) const;
   llvm::Error validate(const CanonicalGraphConsumerEndpointRef &endpoint) const;
 
+  /// Resolve the exact semantic token type owned by a graph endpoint. The
+  /// returned MLIR type borrows the imported canonical program and is a
+  /// read-only projection, not a second type catalog.
+  llvm::Expected<mlir::Type>
+  tokenType(const CanonicalGraphProducerEndpointRef &endpoint) const;
+  llvm::Expected<mlir::Type>
+  tokenType(const CanonicalGraphConsumerEndpointRef &endpoint) const;
+
   /// The exact intra-graph software edge relation, generated once at import.
   /// A consumer endpoint has one producer (a near-constant def lookup); a
   /// producer endpoint has its complete canonically sorted consumer set (a

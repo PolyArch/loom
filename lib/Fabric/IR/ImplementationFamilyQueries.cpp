@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace {
@@ -55,6 +56,59 @@ familyTable() {
 
 llvm::Error reject(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+}
+
+mlir::FailureOr<unsigned>
+semanticPayloadWidth(mlir::Type type, std::optional<unsigned> indexBitWidth,
+                     const ::loom::PointerLayout *pointerLayout,
+                     std::string &error) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth();
+  if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
+    return floating.getWidth();
+  if (mlir::isa<mlir::IndexType>(type)) {
+    if (indexBitWidth) {
+      if (!fabric::symbolizeResolvedIndexWidth(*indexBitWidth)) {
+        error = "resolved index width must be 32 or 64";
+        return mlir::failure();
+      }
+      return *indexBitWidth;
+    }
+    return ::loom::getIndexWidth();
+  }
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(type)) {
+    if (!pointerLayout ||
+        pointerLayout->addressSpace != pointer.getAddressSpace()) {
+      error = "LLVM pointer payload requires its exact DataLayout projection";
+      return mlir::failure();
+    }
+    return pointerLayout->representationBits;
+  }
+  if (mlir::isa<mlir::NoneType>(type))
+    return 0u;
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    auto elementWidth = semanticPayloadWidth(
+        vector.getElementType(), indexBitWidth, pointerLayout, error);
+    if (mlir::failed(elementWidth))
+      return mlir::failure();
+    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
+    if (!width) {
+      error = llvm::toString(width.takeError());
+      return mlir::failure();
+    }
+    if (static_cast<unsigned>(*width) != *width) {
+      error = "semantic payload width " + std::to_string(*width) +
+              " exceeds the physical payload width";
+      return mlir::failure();
+    }
+    return static_cast<unsigned>(*width);
+  }
+
+  std::string spelling;
+  llvm::raw_string_ostream stream(spelling);
+  type.print(stream);
+  error = "unsupported semantic payload type " + stream.str();
+  return mlir::failure();
 }
 
 } // namespace
@@ -299,50 +353,19 @@ llvm::Expected<bool> fabric::requiresSemanticConfigurationField(
 
 mlir::FailureOr<unsigned> fabric::getSemanticPayloadWidth(mlir::Type type,
                                                           std::string &error) {
-  return getSemanticPayloadWidth(type, nullptr, error);
+  return semanticPayloadWidth(type, std::nullopt, nullptr, error);
 }
 
 mlir::FailureOr<unsigned>
 fabric::getSemanticPayloadWidth(mlir::Type type,
                                 const ::loom::PointerLayout *pointerLayout,
                                 std::string &error) {
-  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
-    return integer.getWidth();
-  if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
-    return floating.getWidth();
-  if (mlir::isa<mlir::IndexType>(type))
-    return ::loom::getIndexWidth();
-  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(type)) {
-    if (!pointerLayout ||
-        pointerLayout->addressSpace != pointer.getAddressSpace()) {
-      error = "LLVM pointer payload requires its exact DataLayout projection";
-      return mlir::failure();
-    }
-    return pointerLayout->representationBits;
-  }
-  if (mlir::isa<mlir::NoneType>(type))
-    return 0u;
-  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
-    auto elementWidth =
-        getSemanticPayloadWidth(vector.getElementType(), pointerLayout, error);
-    if (mlir::failed(elementWidth))
-      return mlir::failure();
-    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
-    if (!width) {
-      error = llvm::toString(width.takeError());
-      return mlir::failure();
-    }
-    if (static_cast<unsigned>(*width) != *width) {
-      error = "semantic payload width " + std::to_string(*width) +
-              " exceeds the physical payload width";
-      return mlir::failure();
-    }
-    return static_cast<unsigned>(*width);
-  }
+  return semanticPayloadWidth(type, std::nullopt, pointerLayout, error);
+}
 
-  std::string spelling;
-  llvm::raw_string_ostream stream(spelling);
-  type.print(stream);
-  error = "unsupported semantic payload type " + stream.str();
-  return mlir::failure();
+mlir::FailureOr<unsigned>
+fabric::getSemanticPayloadWidth(mlir::Type type, unsigned indexBitWidth,
+                                const ::loom::PointerLayout *pointerLayout,
+                                std::string &error) {
+  return semanticPayloadWidth(type, indexBitWidth, pointerLayout, error);
 }

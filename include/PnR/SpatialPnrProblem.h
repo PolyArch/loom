@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::pnr {
@@ -94,6 +95,119 @@ private:
   std::vector<FrozenSpatialMemoryPlacement> memoryPlacements_;
 
   friend class FrozenSpatialPnrProblemBuilder;
+  friend class FrozenSpatialPortIndexBuilder;
+};
+
+enum class FrozenSpatialPortDemandKind : std::uint32_t {
+  Compute,
+  Memory,
+};
+
+using FrozenSpatialActorTerminalRef =
+    std::variant<::dataflow::ActorTokenResultRef,
+                 ::dataflow::ActorTokenOperandRef>;
+using FrozenSpatialTemplateTerminalRef =
+    std::variant<::loom::fabric::FabricFuTemplatePortRef,
+                 ::loom::fabric::FabricMemoryEngineTemplateEndpointRef>;
+using FrozenSpatialGraphBoundaryTerminalRef =
+    std::variant<::dataflow::GraphIngressTokenRef,
+                 ::dataflow::GraphEgressTokenRef>;
+
+struct FrozenSpatialPortDemand final {
+  FrozenSpatialPortDemandKind kind = FrozenSpatialPortDemandKind::Compute;
+  PnrIndex realization = 0;
+  FrozenSpatialActorTerminalRef terminal;
+  FrozenSpatialTemplateTerminalRef templateTerminal;
+  std::uint32_t payloadWidthBits = 0;
+  PnrIndex logicalNet = 0;
+  PnrIndex placementDomainOffset = 0;
+  PnrIndex placementDomainCount = 0;
+};
+
+struct FrozenSpatialPortPlacementDomain final {
+  PnrIndex placement = 0;
+  PnrIndex attachmentOptionOffset = 0;
+  PnrIndex attachmentOptionCount = 0;
+};
+
+enum class FrozenSpatialAttachmentOwnerKind : std::uint32_t {
+  PlacementDomain,
+  GraphBoundary,
+};
+
+struct FrozenSpatialAttachmentOption final {
+  PnrIndex endpoint = 0;
+  std::optional<PnrIndex> localTraversal;
+  FrozenSpatialAttachmentOwnerKind ownerKind =
+      FrozenSpatialAttachmentOwnerKind::PlacementDomain;
+  PnrIndex owner = 0;
+};
+
+struct FrozenSpatialGraphBoundary final {
+  FrozenSpatialGraphBoundaryTerminalRef terminal;
+  std::uint32_t payloadWidthBits = 0;
+  PnrIndex logicalNet = 0;
+  PnrIndex attachmentOptionOffset = 0;
+  PnrIndex attachmentOptionCount = 0;
+};
+
+class FrozenSpatialPortIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialPortDemand> portDemands() const {
+    return portDemands_;
+  }
+  llvm::ArrayRef<FrozenSpatialPortPlacementDomain> placementDomains() const {
+    return placementDomains_;
+  }
+  llvm::ArrayRef<FrozenSpatialAttachmentOption> attachmentOptions() const {
+    return attachmentOptions_;
+  }
+  llvm::ArrayRef<FrozenSpatialGraphBoundary> graphBoundaries() const {
+    return graphBoundaries_;
+  }
+  llvm::ArrayRef<PnrIndex> computeRealizationDemandOffsets() const {
+    return computeRealizationDemandOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> computeRealizationDemands() const {
+    return computeRealizationDemands_;
+  }
+  llvm::ArrayRef<PnrIndex> memoryRealizationDemandOffsets() const {
+    return memoryRealizationDemandOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> memoryRealizationDemands() const {
+    return memoryRealizationDemands_;
+  }
+  llvm::ArrayRef<PnrIndex> endpointAttachmentOffsets() const {
+    return endpointAttachmentOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> endpointAttachmentOptions() const {
+    return endpointAttachmentOptions_;
+  }
+
+private:
+  std::vector<FrozenSpatialPortDemand> portDemands_;
+  std::vector<FrozenSpatialPortPlacementDomain> placementDomains_;
+  std::vector<FrozenSpatialAttachmentOption> attachmentOptions_;
+  std::vector<FrozenSpatialGraphBoundary> graphBoundaries_;
+  std::vector<PnrIndex> computeRealizationDemandOffsets_;
+  std::vector<PnrIndex> computeRealizationDemands_;
+  std::vector<PnrIndex> memoryRealizationDemandOffsets_;
+  std::vector<PnrIndex> memoryRealizationDemands_;
+  std::vector<PnrIndex> endpointAttachmentOffsets_;
+  std::vector<PnrIndex> endpointAttachmentOptions_;
+
+  friend class FrozenSpatialPortIndexBuilder;
+};
+
+enum class FrozenSpatialTerminalBindingKind : std::uint32_t {
+  PortDemand,
+  GraphBoundary,
+};
+
+struct FrozenSpatialTerminalBinding final {
+  FrozenSpatialTerminalBindingKind kind =
+      FrozenSpatialTerminalBindingKind::PortDemand;
+  PnrIndex index = 0;
 };
 
 struct FrozenSpatialLogicalNet final {
@@ -111,12 +225,22 @@ public:
   logicalNetSinks() const {
     return logicalNetSinks_;
   }
+  llvm::ArrayRef<FrozenSpatialTerminalBinding>
+  logicalNetSourceBindings() const {
+    return logicalNetSourceBindings_;
+  }
+  llvm::ArrayRef<FrozenSpatialTerminalBinding> logicalNetSinkBindings() const {
+    return logicalNetSinkBindings_;
+  }
 
 private:
   std::vector<FrozenSpatialLogicalNet> logicalNets_;
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> logicalNetSinks_;
+  std::vector<FrozenSpatialTerminalBinding> logicalNetSourceBindings_;
+  std::vector<FrozenSpatialTerminalBinding> logicalNetSinkBindings_;
 
   friend class FrozenSpatialTransferIndexBuilder;
+  friend class FrozenSpatialPortIndexBuilder;
 };
 
 enum class FrozenSpatialGrantPolicyKind : std::uint32_t {
@@ -336,23 +460,22 @@ public:
     return realizations_;
   }
   const FrozenSpatialTransferIndex &transfers() const { return transfers_; }
+  const FrozenSpatialPortIndex &ports() const { return ports_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
-  FrozenSpatialPnrProblem(ArtifactIdentity dataflowIdentity,
-                          ArtifactIdentity techMappingIdentity,
-                          ArtifactIdentity fabricIdentity,
-                          ArtifactIdentity constraintSetIdentity,
-                          ResolvedPnrConfigView config,
-                          std::vector<DeterministicWorkBudgetEntry> workBudget,
-                          FrozenConstraintIndex constraints,
-                          FrozenSpatialRealizationIndex realizations,
-                          FrozenSpatialTransferIndex transfers,
-                          FrozenSpatialResourceIndex resources,
-                          FrozenSpatialRoutingGraph routing,
-                          FrozenSpatialPnrCacheKey cacheKey)
+  FrozenSpatialPnrProblem(
+      ArtifactIdentity dataflowIdentity, ArtifactIdentity techMappingIdentity,
+      ArtifactIdentity fabricIdentity, ArtifactIdentity constraintSetIdentity,
+      ResolvedPnrConfigView config,
+      std::vector<DeterministicWorkBudgetEntry> workBudget,
+      FrozenConstraintIndex constraints,
+      FrozenSpatialRealizationIndex realizations,
+      FrozenSpatialTransferIndex transfers, FrozenSpatialPortIndex ports,
+      FrozenSpatialResourceIndex resources, FrozenSpatialRoutingGraph routing,
+      FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
@@ -360,8 +483,9 @@ private:
         config_(std::move(config)), workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
         realizations_(std::move(realizations)),
-        transfers_(std::move(transfers)), resources_(std::move(resources)),
-        routing_(std::move(routing)), cacheKey_(cacheKey) {}
+        transfers_(std::move(transfers)), ports_(std::move(ports)),
+        resources_(std::move(resources)), routing_(std::move(routing)),
+        cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -372,6 +496,7 @@ private:
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;
   FrozenSpatialTransferIndex transfers_;
+  FrozenSpatialPortIndex ports_;
   FrozenSpatialResourceIndex resources_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialPnrCacheKey cacheKey_;

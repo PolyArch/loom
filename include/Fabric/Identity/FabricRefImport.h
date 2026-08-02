@@ -248,6 +248,12 @@ public:
   std::optional<FabricPeOccurrenceRef>
   parentPeOf(FabricFuOccurrenceRef occurrence) const;
 
+  /// Project one direction-local FU occurrence port to the owner's canonical
+  /// transport inventory, whose ordinals place all inputs before all outputs.
+  /// Invalid or out-of-range ports return no endpoint.
+  std::optional<FabricTransportEndpointRef>
+  fuOccurrenceTransportEndpoint(FabricFuOccurrencePortRef port) const;
+
   /// The FU template this occurrence was elaborated from.
   std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const;

@@ -649,6 +649,44 @@ void artifactRoundTripAndReferenceValidation() {
           finalized.view().residualLogicalNets().size() ||
       frozen->transfers().logicalNetSinks().size() != 4)
     fail("aggregate Spatial freeze omitted residual transfer obligations");
+  if (frozen->ports().portDemands().size() != 4 ||
+      frozen->ports().graphBoundaries().size() != 4)
+    fail("aggregate Spatial freeze omitted memory or graph-boundary demands");
+  if (frozen->transfers().logicalNetSourceBindings().size() !=
+          frozen->transfers().logicalNets().size() ||
+      frozen->transfers().logicalNetSinkBindings().size() !=
+          frozen->transfers().logicalNetSinks().size())
+    fail("aggregate Spatial freeze omitted transfer attachment bindings");
+  for (const auto &demand : frozen->ports().portDemands()) {
+    if (demand.kind != loom::pnr::FrozenSpatialPortDemandKind::Memory ||
+        demand.placementDomainCount == 0)
+      fail("memory PortDemand lost its factorized placement domain");
+    for (const auto &domain : frozen->ports().placementDomains().slice(
+             demand.placementDomainOffset, demand.placementDomainCount)) {
+      if (domain.attachmentOptionCount == 0)
+        fail("memory PortDemand retained an empty attachment domain");
+      const auto &placement =
+          frozen->realizations().memoryPlacements()[domain.placement];
+      for (const auto &option : frozen->ports().attachmentOptions().slice(
+               domain.attachmentOptionOffset, domain.attachmentOptionCount)) {
+        const auto &endpoint =
+            frozen->routing().routingEndpoints()[option.endpoint].reference;
+        if (endpoint.owner.kind() !=
+                loom::fabric::FabricTransportEndpointOwnerKind::
+                    FabricMemoryOccurrence ||
+            std::get<loom::fabric::FabricMemoryOccurrenceRef>(
+                endpoint.owner.payload) != placement.memory ||
+            option.localTraversal)
+          fail("memory PortDemand did not project its exact occurrence "
+               "endpoint");
+      }
+    }
+  }
+  if (frozen->ports().endpointAttachmentOffsets().size() !=
+          frozen->routing().routingEndpoints().size() + 1 ||
+      frozen->ports().endpointAttachmentOptions().size() !=
+          frozen->ports().attachmentOptions().size())
+    fail("aggregate Spatial freeze omitted attachment reverse incidence");
   std::size_t expectedResourceStates = 0;
   std::size_t expectedUsePatterns = 0;
   std::size_t expectedCommits = 0;
@@ -922,7 +960,51 @@ void computeBoundaryClosure() {
   if (!complete)
     fail("complete compute TechMapping fixture did not parse");
   auto completeRoots = complete->getOps<::mapping::TechOp>();
-  take(loom::mapping::finalizeTechMapping(*completeRoots.begin(), store));
+  auto finalized = take(loom::mapping::finalizeTechMapping(
+      *completeRoots.begin(), dataflowView, fabricRoot.view(), store));
+
+  auto emptyConstraints = parseMapping(
+      context,
+      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
+                            /*clauses=*/""));
+  if (!emptyConstraints)
+    fail("compute Spatial MappingConstraintSet fixture did not parse");
+  auto constraintRoots =
+      emptyConstraints->getOps<::mapping::ConstraintsSpatialOp>();
+  auto constraints = take(loom::mapping::finalizeSpatialMappingConstraintSet(
+      *constraintRoots.begin(), dataflowView, finalized.view(),
+      fabricRoot.view(), store));
+  const loom::pnr::ResolvedPnrConfigView spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(
+          loom::defaultResolvedConfig()));
+  auto frozen = take(loom::pnr::freezeSpatialPnrProblem(
+      dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
+      constraints.view()));
+  if (frozen->ports().portDemands().size() != 4 ||
+      frozen->ports().graphBoundaries().size() != 4)
+    fail("compute freeze omitted actor or graph-boundary demands");
+  for (const auto &demand : frozen->ports().portDemands()) {
+    if (demand.kind != loom::pnr::FrozenSpatialPortDemandKind::Compute ||
+        demand.placementDomainCount == 0)
+      fail("compute PortDemand lost its factorized placement domain");
+    for (const auto &domain : frozen->ports().placementDomains().slice(
+             demand.placementDomainOffset, demand.placementDomainCount)) {
+      const auto &placement =
+          frozen->realizations().computePlacements()[domain.placement];
+      for (const auto &option : frozen->ports().attachmentOptions().slice(
+               domain.attachmentOptionOffset, domain.attachmentOptionCount)) {
+        if (!option.localTraversal)
+          fail("compute PortDemand omitted its exact PE selector traversal");
+        const auto &traversal =
+            frozen->routing().traversals()[*option.localTraversal].reference;
+        const auto *selector =
+            std::get_if<loom::fabric::FabricPeSelectorPayload>(
+                &traversal.payload);
+        if (!selector || selector->owner != placement.parentPe)
+          fail("compute PortDemand selected a foreign local traversal");
+      }
+    }
+  }
 
   auto missing =
       parseMapping(context, computeMappingText(dataflowView, fabricRoot.view(),

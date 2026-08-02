@@ -712,6 +712,78 @@ llvm::Error CanonicalDataflowProgramView::validate(
       endpoint);
 }
 
+llvm::Expected<mlir::Type> CanonicalDataflowProgramView::tokenType(
+    const CanonicalGraphProducerEndpointRef &endpoint) const {
+  if (llvm::Error error = validate(endpoint))
+    return std::move(error);
+  return std::visit(
+      Overloaded{
+          [&](const GraphIngressTokenRef &ingress)
+              -> llvm::Expected<mlir::Type> {
+            const GraphRef &graphRef = std::visit(
+                [](const auto &token) -> const GraphRef & {
+                  return token.graph;
+                },
+                ingress);
+            auto graphView = resolve(graphRef);
+            if (!graphView)
+              return graphView.takeError();
+            GraphOp graph = cast<GraphOp>(graphView->op);
+            auto argument = ingressArgumentIndex(graph, ingress);
+            if (!argument)
+              return argument.takeError();
+            return graph.getBody().front().getArgument(*argument).getType();
+          },
+          [&](const ActorTokenResultRef &result) -> llvm::Expected<mlir::Type> {
+            auto actor = resolve(result.actor);
+            if (!actor)
+              return actor.takeError();
+            return actor->op->getResult(result.ordinal).getType();
+          }},
+      endpoint);
+}
+
+llvm::Expected<mlir::Type> CanonicalDataflowProgramView::tokenType(
+    const CanonicalGraphConsumerEndpointRef &endpoint) const {
+  if (llvm::Error error = validate(endpoint))
+    return std::move(error);
+  return std::visit(
+      Overloaded{
+          [&](const ActorTokenOperandRef &operand)
+              -> llvm::Expected<mlir::Type> {
+            auto actor = resolve(operand.actor);
+            if (!actor)
+              return actor.takeError();
+            return actor->op->getOperand(operand.ordinal).getType();
+          },
+          [&](const GraphEgressTokenRef &egress) -> llvm::Expected<mlir::Type> {
+            const GraphRef &graphRef = std::visit(
+                [](const auto &token) -> const GraphRef & {
+                  return token.graph;
+                },
+                egress);
+            auto graphView = resolve(graphRef);
+            if (!graphView)
+              return graphView.takeError();
+            GraphOp graph = cast<GraphOp>(graphView->op);
+            auto ret =
+                cast<GraphReturnOp>(graph.getBody().front().getTerminator());
+            return std::visit(
+                Overloaded{
+                    [&](const GraphValueOutputTokenRef &value) {
+                      return ret.getValues()[value.ordinal].getType();
+                    },
+                    [&](const GraphStreamOutputTokenRef &stream) {
+                      return ret.getStreams()[stream.ordinal].getType();
+                    },
+                    [&](const GraphCompletionFrontierTokenRef &completion) {
+                      return ret.getComplete()[completion.ordinal].getType();
+                    }},
+                egress);
+          }},
+      endpoint);
+}
+
 llvm::Expected<llvm::ArrayRef<CanonicalGraphConsumerEndpointRef>>
 CanonicalDataflowProgramView::graphConsumers(
     const CanonicalGraphProducerEndpointRef &producer) const {

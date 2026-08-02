@@ -585,6 +585,24 @@ FabricArtifactView::transportEndpointDirection(
                 : std::nullopt;
 }
 
+std::optional<FabricTransportEndpointRef>
+FabricArtifactView::fuOccurrenceTransportEndpoint(
+    FabricFuOccurrencePortRef port) const {
+  const FabricTransportEndpointOwnerRef owner =
+      FabricTransportEndpointOwnerRef::of(port.fu);
+  std::uint64_t directionOrdinal = 0;
+  for (std::uint64_t ordinal = 0; ordinal < transportEndpointCount(owner);
+       ++ordinal) {
+    const FabricTransportEndpointRef endpoint{owner, ordinal};
+    const auto direction = transportEndpointDirection(endpoint);
+    if (!direction || *direction != port.direction)
+      continue;
+    if (directionOrdinal++ == port.ordinal)
+      return endpoint;
+  }
+  return std::nullopt;
+}
+
 llvm::ArrayRef<std::uint8_t> FabricArtifactView::transportEndpointType(
     const FabricTransportEndpointRef &endpoint) const {
   const detail::FabricTransportEndpointViewData *record =

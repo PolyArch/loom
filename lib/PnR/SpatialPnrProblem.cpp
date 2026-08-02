@@ -1,5 +1,6 @@
 #include "PnR/SpatialPnrProblem.h"
 
+#include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
 
@@ -76,16 +77,16 @@ constexpr PnrCapacityContext arcOffsetContext{
 constexpr PnrCapacityContext arcCountContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Count};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.1\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 0;
+constexpr std::uint32_t cacheSchemaMinor = 1;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.0";
+    "loom.spatial_pnr.freeze.2.1";
 constexpr llvm::StringLiteral importerSemanticIdentity =
-    "loom.spatial_pnr.importers.2.0";
+    "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.0";
+    "loom.spatial_pnr.native_layout.2.1";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -240,8 +241,12 @@ public:
     auto routing = buildRouting(fabric, *resources);
     if (!routing)
       return routing.takeError();
-    if (llvm::Error error =
-            verifyAggregate(*realizations, *transfers, *resources, *routing))
+    auto ports = detail::buildFrozenSpatialPortIndex(
+        dataflow, techMapping, fabric, *realizations, *transfers, *routing);
+    if (!ports)
+      return ports.takeError();
+    if (llvm::Error error = verifyAggregate(*realizations, *transfers, *ports,
+                                            *resources, *routing))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -253,8 +258,8 @@ public:
         dataflow.identity(), techMapping.identity(), fabric.identity(),
         constraintSet.identity(), config, std::move(workBudget),
         std::move(*constraints), std::move(*realizations),
-        std::move(*transfers), std::move(*resources), std::move(*routing),
-        cacheKey));
+        std::move(*transfers), std::move(*ports), std::move(*resources),
+        std::move(*routing), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -293,6 +298,7 @@ public:
   static llvm::Error
   verifyAggregate(const FrozenSpatialRealizationIndex &realizations,
                   const FrozenSpatialTransferIndex &transfers,
+                  const FrozenSpatialPortIndex &ports,
                   const FrozenSpatialResourceIndex &resources,
                   const FrozenSpatialRoutingGraph &routing) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
@@ -344,6 +350,9 @@ public:
                                            transfers.logicalNetSinks().size()))
         return invalid("residual logical-net slices are inconsistent");
     }
+    if (llvm::Error error = detail::verifyFrozenSpatialPortIndex(
+            realizations, transfers, ports, routing))
+      return error;
 
     for (const FrozenSpatialResourceOwner &owner : resources.resourceOwners()) {
       if (!rangeFits(owner.stateOffset, owner.stateCount,

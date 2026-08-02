@@ -641,6 +641,10 @@ llvm::Expected<bool> requiresSemanticConfigurationField(
 getSemanticPayloadWidth(::mlir::Type type,
                         const ::loom::PointerLayout *pointerLayout,
                         std::string &error);
+::mlir::FailureOr<unsigned>
+getSemanticPayloadWidth(::mlir::Type type, unsigned indexBitWidth,
+                        const ::loom::PointerLayout *pointerLayout,
+                        std::string &error);
 
 } // namespace fabric
 
