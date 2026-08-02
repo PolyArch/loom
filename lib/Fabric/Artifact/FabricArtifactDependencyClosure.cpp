@@ -130,7 +130,7 @@ llvm::Error validateDecodedFabricArtifact(
       return dependencyError(
           FabricArtifactDependencyFailureReason::ForeignDependency,
           "ImportedModule and RefinedSystem dependencies must be exact "
-          "loom.fabric 1.0 roots");
+          "loom.fabric 1.1 roots");
 
     auto decodedDependency =
         decodeFabricArtifactEnvelope(canonicalDependency->bytes());

@@ -54,6 +54,15 @@ void expectError(llvm::StringRef test, llvm::Error error,
   require(test, llvm::StringRef(message).contains(diagnostic), message);
 }
 
+void expectFabricRefError(llvm::StringRef test, llvm::Error error,
+                          loom::fabric::FabricRefErrorKind expected) {
+  if (!error)
+    fail(test, "accepted invalid Fabric reference");
+  require(test,
+          loom::fabric::takeFabricRefErrorKind(std::move(error)) == expected,
+          "Fabric reference failure kind changed");
+}
+
 TemporaryDirectory::TemporaryDirectory(llvm::StringRef test)
     : test_(test.str()) {
   llvm::SmallString<128> path;
@@ -384,6 +393,15 @@ operationConnectivity(llvm::StringRef test,
                       ::fabric::MemoryDispatchTarget target) {
   ::fabric::MemoryConnectivityDeclaration declaration;
   declaration.operationPorts = {{{{std::move(target)}}}};
+  return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
+}
+
+MemoryConnectivitySpec
+operationConnectivityWithInternalEdge(llvm::StringRef test,
+                                      ::fabric::MemoryDispatchTarget target) {
+  ::fabric::MemoryConnectivityDeclaration declaration;
+  declaration.operationPorts = {{{{std::move(target)}}}};
+  declaration.internalConnections = {{2, 0}};
   return take(test, MemoryConnectivitySpec::create(std::move(declaration)));
 }
 
@@ -818,41 +836,140 @@ void typedMemoryFormsFinalize() {
   if (llvm::Error error = storage.close(storageOutputs))
     fail(test, llvm::toString(std::move(error)));
 
+  auto duplicates = take(
+      test,
+      design.createSpatialCore("duplicate-memory-engines",
+                               {memory32, bits32, bits0, memory32, bits32,
+                                bits0, memory32, bits32, bits0},
+                               {bits32, bits0, bits32, bits0, bits32, bits0}));
+  std::vector<SpatialValue> duplicateOutputs;
+  for (unsigned base : {0U, 3U, 6U}) {
+    auto memoryOutputs = take(
+        test,
+        duplicates.addMemory(
+            {take(test, duplicates.input(base)),
+             take(test, duplicates.input(base + 1)),
+             take(test, duplicates.input(base + 2))},
+            take(test, MemorySpec::create(
+                           {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+                           MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                           std::nullopt,
+                           base == 6 ? operationConnectivityWithInternalEdge(
+                                           test, managerMemoryTarget(0))
+                                     : operationConnectivity(
+                                           test, managerMemoryTarget(0))))));
+    duplicateOutputs.insert(duplicateOutputs.end(), memoryOutputs.begin(),
+                            memoryOutputs.end());
+  }
+  if (llvm::Error error = duplicates.close(duplicateOutputs))
+    fail(test, llvm::toString(std::move(error)));
+
   loom::adg::FinalizedFabricDesign finalized =
       take(test, std::move(design).finalize());
-  require(test, finalized.roots().size() == 3,
-          "memory forms did not publish three SpatialCore roots");
+  require(test, finalized.roots().size() == 4,
+          "memory forms did not publish four SpatialCore roots");
   std::size_t localServices = 0;
   std::size_t operationEngines = 0;
   std::size_t storageOnly = 0;
   for (const auto &root : finalized.roots()) {
     const auto &view = root.view();
-    const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
-        test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
-    auto ports = view.memoryOperationPorts(memory);
-    if (view.declaresLocalMemoryService(memory))
-      ++localServices;
-    if (!ports.empty()) {
-      ++operationEngines;
-      require(test,
-              ports.size() == 1 && view.memoryOperationPort(ports.front()) &&
-                  view.memoryCapabilityAlternative({ports.front(), 0}),
-              "typed memory capability was not preserved by finalization");
-      if (view.memorySchedule(memory) == ::fabric::Schedule::Temporal) {
-        require(test, view.memoryResidentContextCount(memory) == 4,
-                "temporal resident-context inventory was not preserved");
-        require(
-            test,
-            view.inventorySize(
-                loom::fabric::FabricInventoryOwnerRef::of(ports.front()),
-                loom::fabric::FabricInventoryKind::MemoryOperationContext) == 4,
-            "temporal operation-context references were not projected");
-      }
-    } else {
-      ++storageOnly;
+    std::vector<loom::fabric::FabricMemoryOccurrenceRef> memories;
+    for (std::uint64_t id = 0;; ++id) {
+      auto kind = view.entityKind(id);
+      if (!kind)
+        break;
+      if (*kind == loom::fabric::FabricEntityKind::FabricMemoryOccurrence)
+        memories.emplace_back(id);
     }
+    std::vector<loom::fabric::FabricMemoryEngineTemplateRef> engineTemplates;
+    for (const loom::fabric::FabricMemoryOccurrenceRef memory : memories) {
+      auto ports = view.memoryOperationPorts(memory);
+      if (view.declaresLocalMemoryService(memory))
+        ++localServices;
+      if (!ports.empty()) {
+        ++operationEngines;
+        const auto engine = view.memoryEngineTemplateOf(memory);
+        require(test, engine && view.memoryEngineTemplate(*engine),
+                "Operation Engine has no canonical template projection");
+        engineTemplates.push_back(*engine);
+        require(test,
+                ports.size() == 1 && view.memoryOperationPort(ports.front()) &&
+                    view.memoryCapabilityAlternative({ports.front(), 0}),
+                "typed memory capability was not preserved by finalization");
+        if (view.memorySchedule(memory) == ::fabric::Schedule::Temporal) {
+          require(test, view.memoryResidentContextCount(memory) == 4,
+                  "temporal resident-context inventory was not preserved");
+          require(
+              test,
+              view.inventorySize(
+                  loom::fabric::FabricInventoryOwnerRef::of(ports.front()),
+                  loom::fabric::FabricInventoryKind::MemoryOperationContext) ==
+                  4,
+              "temporal operation-context references were not projected");
+        }
+      } else {
+        ++storageOnly;
+        require(test, !view.memoryEngineTemplateOf(memory),
+                "storage-only memory acquired an Operation Engine template");
+      }
+    }
+    std::vector<std::uint64_t> uniqueTemplateIds;
+    for (loom::fabric::FabricMemoryEngineTemplateRef engine : engineTemplates)
+      if (!llvm::is_contained(uniqueTemplateIds, engine.id()))
+        uniqueTemplateIds.push_back(engine.id());
+    if (memories.size() == 3) {
+      require(test,
+              engineTemplates.size() == 3 && uniqueTemplateIds.size() == 2,
+              "memory template dedup ignored an exact semantic delta");
+      std::optional<loom::fabric::FabricMemoryEngineTemplateRef> edgeTemplate;
+      std::optional<loom::fabric::FabricMemoryEngineTemplateRef> plainTemplate;
+      for (std::uint64_t id : uniqueTemplateIds) {
+        const loom::fabric::FabricMemoryEngineTemplateRef engine(id);
+        const auto *record = view.memoryEngineTemplate(engine);
+        if (record && record->internalConnections.size() == 1)
+          edgeTemplate = engine;
+        else if (record && record->internalConnections.empty())
+          plainTemplate = engine;
+      }
+      require(test, edgeTemplate && plainTemplate,
+              "memory template semantic delta was not preserved");
+      const auto *edgeEngine = view.memoryEngineTemplate(*edgeTemplate);
+      require(test, edgeEngine && edgeEngine->internalConnections.size() == 1,
+              "memory template lost its internal connection relation");
+      const loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef edge{
+          *edgeTemplate, {*edgeTemplate, 2}, {*edgeTemplate, 0}};
+      if (llvm::Error error = loom::fabric::validateFabricRef(view, edge))
+        fail(test, llvm::toString(std::move(error)));
+      expectFabricRefError(
+          test,
+          loom::fabric::validateFabricRef(
+              view,
+              loom::fabric::FabricMemoryEngineTemplateOperationPortRef{
+                  *edgeTemplate, 1}),
+          loom::fabric::FabricRefErrorKind::OrdinalOutOfRange);
+      expectFabricRefError(
+          test,
+          loom::fabric::validateFabricRef(
+              view,
+              loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef{
+                  *edgeTemplate, {*edgeTemplate, 3}, {*edgeTemplate, 0}}),
+          loom::fabric::FabricRefErrorKind::TraversalNotAdmitted);
+      expectFabricRefError(
+          test,
+          loom::fabric::validateFabricRef(
+              view,
+              loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef{
+                  *edgeTemplate, {*plainTemplate, 2}, {*edgeTemplate, 0}}),
+          loom::fabric::FabricRefErrorKind::WrongOwner);
+    }
+    require(
+        test,
+        entityCount(
+            view, loom::fabric::FabricEntityKind::FabricMemoryEngineTemplate) ==
+            uniqueTemplateIds.size(),
+        "Memory Operation Engine template inventory is not canonical");
   }
-  require(test, localServices == 2 && operationEngines == 2 && storageOnly == 1,
+  require(test, localServices == 2 && operationEngines == 5 && storageOnly == 1,
           "Fabric lost the orthogonal memory engine and local service forms");
 }
 

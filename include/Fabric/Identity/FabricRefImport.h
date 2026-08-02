@@ -26,6 +26,18 @@ using MemoryOperationPortView = ::fabric::MemoryOperationPortRecord;
 using MemoryCapabilityAlternativeView =
     ::fabric::MemoryCapabilityAlternativeRecord;
 
+/// The exact Fabric-owned definition shared by equal concrete Memory
+/// Operation Engines. Dispatch, services, topology, and dynamic state remain
+/// occurrence-owned and are deliberately absent.
+struct FabricMemoryEngineTemplateRecord {
+  ::fabric::Schedule schedule;
+  std::optional<std::uint64_t> residentContextCount;
+  std::vector<::fabric::MemoryTransportEndpointDescriptor> tokenEndpoints;
+  std::vector<::fabric::MemoryOperationPortRecord> operationPorts;
+  std::vector<::fabric::MemoryInternalConnectionDeclaration>
+      internalConnections;
+};
+
 /// One exact physical port of a concrete operation resource. The canonical
 /// transport type is the Fabric-owned encoding used by every consumer; it is
 /// not reconstructed from a software type or an implementation family.
@@ -176,6 +188,23 @@ public:
   llvm::ArrayRef<ResolvedFabricOpCapabilityView>
   resolvedFabricOpCapabilities(FabricFuTemplateRef definition) const;
 
+  /// The canonical Memory Operation Engine template selected by one concrete
+  /// memory occurrence. Storage-only memory has no template.
+  std::optional<FabricMemoryEngineTemplateRef>
+  memoryEngineTemplateOf(FabricMemoryOccurrenceRef occurrence) const;
+  const FabricMemoryEngineTemplateRecord *
+  memoryEngineTemplate(FabricMemoryEngineTemplateRef definition) const;
+  const MemoryOperationPortView *memoryEngineTemplateOperationPort(
+      FabricMemoryEngineTemplateOperationPortRef port) const;
+  const MemoryCapabilityAlternativeView *
+  memoryEngineTemplateCapabilityAlternative(
+      FabricMemoryEngineTemplateCapabilityAlternativeRef alternative) const;
+  const ::fabric::MemoryTransportEndpointDescriptor *
+  memoryEngineTemplateEndpoint(
+      FabricMemoryEngineTemplateEndpointRef endpoint) const;
+  bool hasMemoryEngineTemplateInternalConnection(
+      const FabricMemoryEngineTemplateInternalConnectionRef &connection) const;
+
   /// The complete canonical physical operation-port inventory of one memory
   /// occurrence, and the exact immutable records selected by those refs.
   llvm::ArrayRef<FabricMemoryOperationPortRef>
@@ -289,6 +318,17 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricTransferPatternRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const FabricFuCapabilityTemplateRef &ref);
+llvm::Error
+validateFabricRef(const FabricArtifactView &view,
+                  const FabricMemoryEngineTemplateOperationPortRef &ref);
+llvm::Error validateFabricRef(
+    const FabricArtifactView &view,
+    const FabricMemoryEngineTemplateCapabilityAlternativeRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const FabricMemoryEngineTemplateEndpointRef &ref);
+llvm::Error
+validateFabricRef(const FabricArtifactView &view,
+                  const FabricMemoryEngineTemplateInternalConnectionRef &ref);
 #define LOOM_FABRIC_OWNER_ROLE(Alias, Inventory, Family, Keyword)              \
   llvm::Error validateFabricRef(const FabricArtifactView &view,                \
                                 const Family &ref);

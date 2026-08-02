@@ -5,6 +5,7 @@
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricOps.h"
 #include "FabricFuCapabilityDerivation.h"
+#include "FabricMemoryEngineTemplate.h"
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -43,6 +44,7 @@ enum class EdgeKind : std::uint8_t {
   Successor,
   SymbolUse,
   FuDefinition,
+  MemoryEngineDefinition,
 };
 
 struct Edge {
@@ -180,8 +182,9 @@ operationIntrinsic(Operation *op,
     for (NamedAttribute field : dictionary) {
       llvm::StringRef name = field.getName().getValue();
       if (name == ::fabric::kEntityIdAttrName ||
-          name == ::fabric::kFuTemplateIdAttrName || name == "sym_name" ||
-          name == "capability_templates" ||
+          name == ::fabric::kFuTemplateIdAttrName ||
+          name == ::fabric::kMemoryEngineTemplateIdAttrName ||
+          name == "sym_name" || name == "capability_templates" ||
           (registeredOnly && !registered.contains(name)))
         continue;
       stream << '\x1f' << name << '=';
@@ -325,6 +328,39 @@ public:
       addEdge(entry.second, position->second.vertex, EdgeKind::FuDefinition, 0);
     }
 
+    struct MemoryTemplateDraft {
+      std::uint32_t vertex = 0;
+      Operation *representative = nullptr;
+    };
+    std::map<std::vector<std::uint8_t>, MemoryTemplateDraft> memoryTemplates;
+    llvm::DenseMap<Operation *, std::uint32_t> memoryTemplateVertexByOccurrence;
+    for (const auto &entry : operationVertices_) {
+      auto memory = dyn_cast<::fabric::MemOp>(entry.first);
+      if (!memory)
+        continue;
+      auto derived = deriveFabricMemoryEngineTemplate(memory);
+      if (!derived)
+        return derived.takeError();
+      if (!*derived)
+        continue;
+      const std::vector<std::uint8_t> &key = (**derived).canonicalBytes;
+      auto [position, inserted] =
+          memoryTemplates.emplace(key, MemoryTemplateDraft{});
+      if (inserted) {
+        std::string intrinsic = "MEMORY_ENGINE_TEMPLATE\x1f";
+        intrinsic.append(reinterpret_cast<const char *>(key.data()),
+                         key.size());
+        position->second.vertex = addVertex(std::move(intrinsic));
+        position->second.representative = memory.getOperation();
+        carriers_[position->second.vertex] = {
+            FabricEntityKind::FabricMemoryEngineTemplate, 0, nullptr};
+      }
+      memoryTemplateVertexByOccurrence[memory.getOperation()] =
+          position->second.vertex;
+      addEdge(entry.second, position->second.vertex,
+              EdgeKind::MemoryEngineDefinition, 0);
+    }
+
     llvm::Expected<::loom::CanonicalRelationResult> canonical = canonicalize();
     if (!canonical)
       return canonical.takeError();
@@ -359,6 +395,10 @@ public:
     for (const auto &entry : templateVertexByOccurrence)
       fuTemplateIds[entry.first] = ids[entry.second];
 
+    llvm::DenseMap<Operation *, std::uint64_t> memoryTemplateIds;
+    for (const auto &entry : memoryTemplateVertexByOccurrence)
+      memoryTemplateIds[entry.first] = ids[entry.second];
+
     std::vector<FabricFuTemplateCarrier> fuTemplates;
     fuTemplates.reserve(templates.size());
     for (auto &entry : templates) {
@@ -371,10 +411,22 @@ public:
       return lhs.id < rhs.id;
     });
 
+    std::vector<FabricMemoryEngineTemplateCarrier> memoryEngineTemplates;
+    memoryEngineTemplates.reserve(memoryTemplates.size());
+    for (const auto &entry : memoryTemplates)
+      memoryEngineTemplates.push_back(
+          {ids[entry.second.vertex], entry.second.representative});
+    llvm::sort(memoryEngineTemplates,
+               [](const FabricMemoryEngineTemplateCarrier &lhs,
+                  const FabricMemoryEngineTemplateCarrier &rhs) {
+                 return lhs.id < rhs.id;
+               });
+
     return FabricCanonicalLabeling{
-        std::move(canonical->bytes), std::move(carriers),
-        std::move(fuTemplates),      std::move(operationOrder),
-        std::move(fuTemplateIds),    std::move(capabilityDomainByOccurrence)};
+        std::move(canonical->bytes),  std::move(carriers),
+        std::move(fuTemplates),       std::move(memoryEngineTemplates),
+        std::move(operationOrder),    std::move(fuTemplateIds),
+        std::move(memoryTemplateIds), std::move(capabilityDomainByOccurrence)};
   }
 
 private:
@@ -518,7 +570,8 @@ llvm::Error
 materializeFabricCanonicalIds(const FabricCanonicalLabeling &labeling) {
   for (const FabricEntityCarrier &carrier : labeling.carriers) {
     if (!carrier.op) {
-      if (carrier.kind != FabricEntityKind::FabricFuTemplate)
+      if (carrier.kind != FabricEntityKind::FabricFuTemplate &&
+          carrier.kind != FabricEntityKind::FabricMemoryEngineTemplate)
         return invalid("a non-template entity has no operation carrier");
       continue;
     }
@@ -526,14 +579,20 @@ materializeFabricCanonicalIds(const FabricCanonicalLabeling &labeling) {
     MLIRContext *context = carrier.op->getContext();
     carrier.op->setAttr(::fabric::kEntityIdAttrName,
                         ::fabric::EntityIdAttr::get(context, carrier.id));
-    if (carrier.kind != FabricEntityKind::FabricFuOccurrence)
-      continue;
-
-    auto found = labeling.fuTemplateIdByOccurrence.find(carrier.op);
-    if (found == labeling.fuTemplateIdByOccurrence.end())
-      return invalid("an FU occurrence has no canonical template relation");
-    carrier.op->setAttr(::fabric::kFuTemplateIdAttrName,
-                        ::fabric::EntityIdAttr::get(context, found->second));
+    if (carrier.kind == FabricEntityKind::FabricFuOccurrence) {
+      auto found = labeling.fuTemplateIdByOccurrence.find(carrier.op);
+      if (found == labeling.fuTemplateIdByOccurrence.end())
+        return invalid("an FU occurrence has no canonical template relation");
+      carrier.op->setAttr(::fabric::kFuTemplateIdAttrName,
+                          ::fabric::EntityIdAttr::get(context, found->second));
+    }
+    if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
+      auto found = labeling.memoryEngineTemplateIdByOccurrence.find(carrier.op);
+      if (found != labeling.memoryEngineTemplateIdByOccurrence.end())
+        carrier.op->setAttr(
+            ::fabric::kMemoryEngineTemplateIdAttrName,
+            ::fabric::EntityIdAttr::get(context, found->second));
+    }
   }
   return llvm::Error::success();
 }

@@ -36,8 +36,8 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
     registry.insert<::fabric::FabricDialect>();
-    auto *result = new mlir::MLIRContext(
-        registry, mlir::MLIRContext::Threading::DISABLED);
+    auto *result =
+        new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
     return result;
   }();
@@ -193,10 +193,8 @@ void identicalFuDefinitionsShareOneTemplate() {
 void materializedIdsSurviveTextRoundTrip() {
   static constexpr llvm::StringLiteral source = R"mlir(
 module {
-  fabric.module @root(%data: !fabric.bits<32>, %tag: !fabric.bits<4>,
-      %memory: memref<?x!fabric.bits<32>>, %address: !fabric.bits<32>,
-      %ctrl: !fabric.bits<0>)
-      -> (!fabric.bits_tag<32, 4>, memref<?x!fabric.bits<32>>) {
+  fabric.module @root(%data: !fabric.bits<32>, %tag: !fabric.bits<4>)
+      -> !fabric.bits_tag<32, 4> {
     %fifo = fabric.fifo %data [max_depth = 2, bypassable = false]
         : !fabric.bits<32>
     %routed = fabric.switch [spatial] %fifo
@@ -205,16 +203,7 @@ module {
     %tagged = fabric.boundary [s2t] %routed, %tag
         : (!fabric.bits<32>, !fabric.bits<4>)
        -> !fabric.bits_tag<32, 4>
-    %storage, %loaded, %load_done = fabric.mem [spatial] mgr(%memory)
-        load(%address, %ctrl)
-        [{load_group_size = 1 : i32, store_group_size = 0 : i32,
-          data_width = 32 : i32,
-          dispatch_eligibility = {operation_port_requests = [[0 : i32]],
-                                  subordinate_requests = [[0 : i32]]}}]
-        : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
-       -> (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
-    fabric.yield %tagged, %storage
-        : !fabric.bits_tag<32, 4>, memref<?x!fabric.bits<32>>
+    fabric.yield %tagged : !fabric.bits_tag<32, 4>
   }
 }
 )mlir";

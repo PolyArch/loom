@@ -33,12 +33,20 @@ struct FabricFuTemplateCarrier {
   std::vector<mlir::Operation *> canonicalNodeOrder;
 };
 
+struct FabricMemoryEngineTemplateCarrier {
+  std::uint64_t id = 0;
+  mlir::Operation *representative = nullptr;
+};
+
 struct FabricCanonicalLabeling {
   CanonicalSemanticBytes relationBytes;
   std::vector<FabricEntityCarrier> carriers;
   std::vector<FabricFuTemplateCarrier> fuTemplates;
+  std::vector<FabricMemoryEngineTemplateCarrier> memoryEngineTemplates;
   std::vector<mlir::Operation *> canonicalOperationOrder;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> fuTemplateIdByOccurrence;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t>
+      memoryEngineTemplateIdByOccurrence;
   llvm::DenseMap<mlir::Operation *, std::vector<std::uint8_t>>
       canonicalFuCapabilityDomainByOccurrence;
 };

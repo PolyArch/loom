@@ -85,6 +85,7 @@ EntityCost entityCost(fabric::FabricEntityKind kind) {
   switch (kind) {
   case Kind::FabricModuleTemplate:
   case Kind::FabricFuTemplate:
+  case Kind::FabricMemoryEngineTemplate:
     return {0, 0, 1};
   case Kind::FabricPeOccurrence:
     return {120, 6, 180};

@@ -74,6 +74,9 @@ struct FabricEntityViewData {
       instructionCoreMicroarchitecture;
   std::optional<FabricNestedOwnerViewData> localMemoryService;
   std::optional<FabricFuTemplateRef> fuTemplate;
+  std::optional<FabricMemoryEngineTemplateRef> memoryEngineTemplate;
+  std::optional<FabricMemoryEngineTemplateRecord> memoryEngineTemplateRecord;
+  std::optional<std::vector<std::uint8_t>> memoryEngineTemplateProjection;
   std::optional<FabricHardwareDomainKind> hardwareDomainKind;
   std::optional<HardwareDomainContractRecord> hardwareDomainContract;
   std::optional<ClockCrossingContractRecord> clockCrossing;

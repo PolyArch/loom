@@ -503,6 +503,46 @@ struct FabricMemoryOperationContextRef {
   LOOM_FABRIC_REF_FIELDS(visitor.ref(self.port); visitor.ordinal(self.ordinal);)
 };
 
+struct FabricMemoryEngineTemplateOperationPortRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.memory_engine_template_operation_port");
+  FabricMemoryEngineTemplateRef engine;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.engine);
+                         visitor.ordinal(self.ordinal);)
+};
+
+struct FabricMemoryEngineTemplateCapabilityAlternativeRef {
+  static constexpr llvm::StringLiteral familyKeyword = llvm::StringLiteral(
+      "fabric.memory_engine_template_capability_alternative");
+  FabricMemoryEngineTemplateOperationPortRef port;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.port); visitor.ordinal(self.ordinal);)
+};
+
+struct FabricMemoryEngineTemplateEndpointRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.memory_engine_template_endpoint");
+  FabricMemoryEngineTemplateRef engine;
+  FabricOrdinal ordinal = 0;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.engine);
+                         visitor.ordinal(self.ordinal);)
+};
+
+struct FabricMemoryEngineTemplateInternalConnectionRef {
+  static constexpr llvm::StringLiteral familyKeyword =
+      llvm::StringLiteral("fabric.memory_engine_template_internal_connection");
+  FabricMemoryEngineTemplateRef engine;
+  FabricMemoryEngineTemplateEndpointRef source;
+  FabricMemoryEngineTemplateEndpointRef sink;
+
+  LOOM_FABRIC_REF_FIELDS(visitor.ref(self.engine); visitor.ref(self.source);
+                         visitor.ref(self.sink);)
+};
+
 /// A memory service is either the optional Local Memory Service of one memory
 /// occurrence or one system memory service entity. The selected alternative is
 /// the discriminant; there is no separate tag field to keep in step.
@@ -601,6 +641,15 @@ LOOM_FABRIC_REF_EQUALITY(FabricMemoryCapabilityAlternativeRef,
                          lhs.port == rhs.port && lhs.ordinal == rhs.ordinal)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryOperationContextRef,
                          lhs.port == rhs.port && lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricMemoryEngineTemplateOperationPortRef,
+                         lhs.engine == rhs.engine && lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricMemoryEngineTemplateCapabilityAlternativeRef,
+                         lhs.port == rhs.port && lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricMemoryEngineTemplateEndpointRef,
+                         lhs.engine == rhs.engine && lhs.ordinal == rhs.ordinal)
+LOOM_FABRIC_REF_EQUALITY(FabricMemoryEngineTemplateInternalConnectionRef,
+                         lhs.engine == rhs.engine && lhs.source == rhs.source &&
+                             lhs.sink == rhs.sink)
 LOOM_FABRIC_REF_EQUALITY(FabricMemoryServiceRegionRef,
                          lhs.service == rhs.service &&
                              lhs.ordinal == rhs.ordinal)

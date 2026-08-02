@@ -22,6 +22,11 @@ static_assert(
         FabricArtifactLocalReferenceKind::FabricFuCapabilityTemplateRef) == 24);
 static_assert(fabricArtifactLocalReferenceKindOrdinal(
                   FabricArtifactLocalReferenceKind::ResetDomainRef) == 44);
+static_assert(fabricArtifactLocalReferenceKindOrdinal(
+                  FabricArtifactLocalReferenceKind::
+                      FabricMemoryEngineTemplateInternalConnectionRef) == 49);
+static_assert(fabricArtifactSchema.version.major == 1);
+static_assert(fabricArtifactSchema.version.minor == 1);
 
 namespace {
 
@@ -63,7 +68,7 @@ void requireTypedRoundTrip(const ArtifactIdentity &artifact,
 
 void testGeneratedCatalog() {
   const auto catalog = fabricArtifactLocalReferenceKindCatalog();
-  require(catalog.size() == 45, "loom.fabric 1.0 must register 45 local kinds");
+  require(catalog.size() == 50, "loom.fabric 1.1 must register 50 local kinds");
 
   std::set<std::string> targets;
   for (std::size_t index = 0; index < catalog.size(); ++index) {
@@ -85,6 +90,13 @@ void testRepresentativeRoundTrips() {
 
   const ClockDomainRef clock(HardwareDomainRef(17));
   requireTypedRoundTrip(artifact, clock);
+
+  const FabricMemoryEngineTemplateRef engine(19);
+  const FabricMemoryEngineTemplateEndpointRef source{engine, 1};
+  const FabricMemoryEngineTemplateEndpointRef sink{engine, 2};
+  requireTypedRoundTrip(
+      artifact,
+      FabricMemoryEngineTemplateInternalConnectionRef{engine, source, sink});
 
   const auto base = encodeFabricArtifactLocalReference(
       ArtifactReference<HardwareDomainRef>{artifact, clock.underlying()});

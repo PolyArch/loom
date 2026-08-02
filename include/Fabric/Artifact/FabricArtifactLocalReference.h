@@ -91,7 +91,7 @@ llvm::Expected<ArtifactReference<Ref>> decodeFabricArtifactLocalReference(
       reference.artifact.schemaVersion != fabricArtifactSchema.version)
     return makeFabricRefError(
         FabricRefErrorKind::ForeignArtifact,
-        "the local reference is not owned by loom.fabric 1.0");
+        "the local reference is not owned by loom.fabric 1.1");
 
   const std::uint32_t expected = fabricArtifactLocalReferenceKindOrdinal(
       FabricArtifactLocalReferenceKindTraits<Ref>::kind);

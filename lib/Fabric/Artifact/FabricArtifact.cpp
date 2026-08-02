@@ -25,6 +25,7 @@
 #include "FabricCanonicalLabeling.h"
 #include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
+#include "FabricMemoryEngineTemplate.h"
 #include "FabricSystemCanonicalLabeling.h"
 #include "FabricSystemValidation.h"
 
@@ -274,6 +275,7 @@ llvm::Error stripAuthoringState(::fabric::ModuleOp root) {
       return WalkResult::interrupt();
     operation->removeAttr(::fabric::kEntityIdAttrName);
     operation->removeAttr(::fabric::kFuTemplateIdAttrName);
+    operation->removeAttr(::fabric::kMemoryEngineTemplateIdAttrName);
     if (!isa<::fabric::OpOp>(operation))
       operation->removeAttr(::fabric::kResourceContractRecordAttrName);
     for (llvm::StringLiteral name : softwareConfigurationAttrs)
@@ -419,14 +421,12 @@ llvm::Error setTransportEndpoints(detail::FabricNestedOwnerViewData &owner,
   return llvm::Error::success();
 }
 
-llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory);
-
 llvm::Error
 setOperationTransportEndpoints(Operation *operation,
                                detail::FabricNestedOwnerViewData &owner) {
   llvm::SmallVector<Type> inputs;
   if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
-    auto type = memoryFunctionType(memory);
+    auto type = detail::resolveFabricMemoryFunctionType(memory);
     if (!type)
       return type.takeError();
     for (Type input : type->getInputs())
@@ -458,31 +458,12 @@ setOperationTransportEndpoints(Operation *operation,
   return setTransportEndpoints(owner, inputs, outputs);
 }
 
-llvm::Expected<FunctionType> memoryFunctionType(::fabric::MemOp memory) {
-  if (auto typeAttribute = memory.getFunctionTypeAttr()) {
-    auto type = dyn_cast<FunctionType>(typeAttribute.getValue());
-    if (!type)
-      return invalid("fabric.mem function_type is not a FunctionType");
-    return type;
-  }
-
-  llvm::SmallVector<Type> inputs;
-  ArrayRef<Type> innerTypes = memory.getInnerInputTypes();
-  if (!innerTypes.empty())
-    inputs.append(innerTypes.begin(), innerTypes.end());
-  else
-    for (Value input : memory.getInputs())
-      inputs.push_back(input.getType());
-  return FunctionType::get(memory.getContext(), inputs,
-                           memory.getResultTypes());
-}
-
 llvm::Expected<std::optional<std::uint64_t>>
 tokenInputOrdinal(Operation *operation, std::uint64_t signatureOrdinal) {
   auto memory = dyn_cast<::fabric::MemOp>(operation);
   if (!memory)
     return std::optional<std::uint64_t>(signatureOrdinal);
-  auto type = memoryFunctionType(memory);
+  auto type = detail::resolveFabricMemoryFunctionType(memory);
   if (!type)
     return type.takeError();
   if (signatureOrdinal >= type->getNumInputs())
@@ -501,7 +482,7 @@ tokenOutputOrdinal(Operation *operation, std::uint64_t signatureOrdinal) {
   if (!memory)
     return std::optional<std::uint64_t>(operation->getNumOperands() +
                                         signatureOrdinal);
-  auto type = memoryFunctionType(memory);
+  auto type = detail::resolveFabricMemoryFunctionType(memory);
   if (!type)
     return type.takeError();
   if (signatureOrdinal >= type->getNumResults())
@@ -518,12 +499,9 @@ tokenOutputOrdinal(Operation *operation, std::uint64_t signatureOrdinal) {
 
 llvm::Error populateMemoryView(::fabric::MemOp memory,
                                detail::FabricEntityViewData &entity) {
-  auto type = memoryFunctionType(memory);
+  auto type = detail::resolveFabricMemoryFunctionType(memory);
   if (!type)
     return type.takeError();
-  auto endpoints = ::fabric::deriveMemoryTransportEndpointInventory(*type);
-  if (!endpoints)
-    return endpoints.takeError();
 
   llvm::SmallVector<Type> tokenInputTypes;
   llvm::SmallVector<Type> tokenOutputTypes;
@@ -578,23 +556,19 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
     entity.localMemoryService = std::move(owner);
   }
 
-  ::fabric::MemoryEngineAttr engine = contract.getEngine();
-  if (!engine)
+  auto derived = detail::deriveFabricMemoryEngineTemplate(memory);
+  if (!derived)
+    return derived.takeError();
+  if (!*derived)
     return llvm::Error::success();
-  entity.memorySchedule = engine.getSchedule();
-  if (::fabric::MemoryResidentContextsAttr contexts =
-          engine.getResidentContexts())
-    entity.memoryResidentContextCount = contexts.getCount();
-
-  auto records = ::fabric::decodeMemoryOperationPortInventory(
-      memory.getMemoryOperationPortsAttr(), memory.getContext(),
-      engine.getSchedule(), *endpoints);
-  if (!records)
-    return records.takeError();
+  entity.memoryEngineTemplateProjection = (**derived).canonicalBytes;
+  FabricMemoryEngineTemplateRecord &engine = (**derived).record;
+  entity.memorySchedule = engine.schedule;
+  entity.memoryResidentContextCount = engine.residentContextCount;
   entity.owner.inventoryCounts[static_cast<std::size_t>(
-      FabricInventoryKind::MemoryOperationPort)] = records->size();
-  entity.memoryOperationPorts.reserve(records->size());
-  for (::fabric::MemoryOperationPortRecord &record : *records) {
+      FabricInventoryKind::MemoryOperationPort)] = engine.operationPorts.size();
+  entity.memoryOperationPorts.reserve(engine.operationPorts.size());
+  for (::fabric::MemoryOperationPortRecord &record : engine.operationPorts) {
     detail::FabricNestedOwnerViewData owner;
     owner.inventoryCounts = emptyInventories();
     owner.inventoryCounts[static_cast<std::size_t>(
@@ -650,6 +624,12 @@ buildModuleView(::fabric::ModuleOp root,
       if (found == labeling.fuTemplateIdByOccurrence.end())
         return invalid("an FU occurrence has no template relation");
       entity.fuTemplate = FabricFuTemplateRef(found->second);
+    }
+    if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
+      auto found = labeling.memoryEngineTemplateIdByOccurrence.find(carrier.op);
+      if (found != labeling.memoryEngineTemplateIdByOccurrence.end())
+        entity.memoryEngineTemplate =
+            FabricMemoryEngineTemplateRef(found->second);
     }
 
     auto contract = validateResourceContractRecord(carrier.op, labeling);
@@ -708,6 +688,24 @@ buildModuleView(::fabric::ModuleOp root,
     if (!templates)
       return templates.takeError();
     entity.fuCapabilityTemplates = std::move(*templates);
+  }
+
+  for (const detail::FabricMemoryEngineTemplateCarrier &carrier :
+       labeling.memoryEngineTemplates) {
+    if (carrier.id >= data.entities.size())
+      return invalid(
+          "a memory engine template ID is outside the entity inventory");
+    auto memory = dyn_cast_or_null<::fabric::MemOp>(carrier.representative);
+    if (!memory)
+      return invalid("a memory engine template has no representative engine");
+    auto derived = detail::deriveFabricMemoryEngineTemplate(memory);
+    if (!derived)
+      return derived.takeError();
+    if (!*derived)
+      return invalid("a memory engine template represents storage-only memory");
+    detail::FabricEntityViewData &entity = data.entities[carrier.id];
+    entity.memoryEngineTemplateProjection = (**derived).canonicalBytes;
+    entity.memoryEngineTemplateRecord = std::move((**derived).record);
   }
 
   for (const auto &entry : carrierByOp) {
@@ -848,6 +846,20 @@ strictImportModule(const ArtifactRootReference &reference,
       if (expected == labeling->fuTemplateIdByOccurrence.end() || !templateId ||
           templateId.getId() != expected->second)
         return invalid("canonical payload has a stale FU template ID");
+    }
+    if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
+      auto expected =
+          labeling->memoryEngineTemplateIdByOccurrence.find(carrier.op);
+      auto templateId = carrier.op->getAttrOfType<::fabric::EntityIdAttr>(
+          ::fabric::kMemoryEngineTemplateIdAttrName);
+      if (expected == labeling->memoryEngineTemplateIdByOccurrence.end()) {
+        if (templateId)
+          return invalid(
+              "canonical storage-only memory has an engine template ID");
+      } else if (!templateId || templateId.getId() != expected->second) {
+        return invalid("canonical payload has a stale memory engine template "
+                       "ID");
+      }
     }
   }
 

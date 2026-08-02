@@ -31,7 +31,7 @@ llvm::Error implementationInputOwnerUnavailable() {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
       "fabric_artifact_owner_contract_unavailable: ImplementationInput has "
-      "no closed artifact owner contract in loom.fabric 1.0");
+      "no closed artifact owner contract in loom.fabric 1.1");
 }
 
 bool dependencyRowsFit(std::uint64_t count, std::size_t remaining) {

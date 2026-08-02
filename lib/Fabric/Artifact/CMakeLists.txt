@@ -15,6 +15,7 @@ add_mlir_library(LoomFabricArtifact
   FabricClockResetValidation.cpp
   FabricCapabilityProjection.cpp
   FabricFuCapabilityDerivation.cpp
+  FabricMemoryEngineTemplate.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Artifact

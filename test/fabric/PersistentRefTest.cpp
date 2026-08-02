@@ -93,6 +93,10 @@ void typedFamiliesRemainDistinct() {
                                        FabricMemoryEndpointRef>);
   static_assert(
       !std::is_same_v<FabricPhysicalTraversalRef, FabricResourceStateRef>);
+  static_assert(!std::is_same_v<FabricMemoryEngineTemplateRef,
+                                FabricMemoryOccurrenceRef>);
+  static_assert(!std::is_convertible_v<FabricMemoryEngineTemplateRef,
+                                       FabricMemoryOccurrenceRef>);
 
   require(test,
           canonicalFabricBytes(FabricFuTemplateRef(11)) !=
@@ -125,6 +129,40 @@ void typedFamiliesRemainDistinct() {
               projectFabricInventoryOwner(
                   FabricMemoryEndpointOwnerRef::of(spatial)) == expected,
           "endpoint owner projection changed the spatial-core owner");
+}
+
+void memoryEngineTemplateReferencesRoundTrip() {
+  const llvm::StringRef test = __func__;
+  const FabricMemoryEngineTemplateRef engine(61);
+  const FabricMemoryEngineTemplateOperationPortRef port{engine, 2};
+  const FabricMemoryEngineTemplateCapabilityAlternativeRef alternative{port, 3};
+  const FabricMemoryEngineTemplateEndpointRef source{engine, 4};
+  const FabricMemoryEngineTemplateEndpointRef sink{engine, 5};
+  const FabricMemoryEngineTemplateInternalConnectionRef connection{
+      engine, source, sink};
+
+  const auto roundTrip = [&](const auto &reference) {
+    using Ref = std::decay_t<decltype(reference)>;
+    const std::vector<std::uint8_t> bytes = canonicalFabricBytes(reference);
+    require(test, take(test, decodeFabricRef<Ref>(bytes)) == reference,
+            "memory engine template reference byte roundtrip changed value");
+    const std::string text = printFabricRef(reference);
+    require(test, take(test, parseFabricRef<Ref>(text)) == reference,
+            "memory engine template reference text roundtrip changed value");
+  };
+
+  roundTrip(engine);
+  roundTrip(port);
+  roundTrip(alternative);
+  roundTrip(source);
+  roundTrip(sink);
+  roundTrip(connection);
+  require(
+      test,
+      canonicalFabricBytes(connection) !=
+          canonicalFabricBytes(FabricMemoryEngineTemplateInternalConnectionRef{
+              engine, sink, source}),
+      "memory engine template connection lost direction");
 }
 
 void systemServiceEndpointOwnsOperationServicePlanes() {
@@ -256,6 +294,7 @@ void canonicalByteRoundTrip() {
 
 int main() {
   typedFamiliesRemainDistinct();
+  memoryEngineTemplateReferencesRoundTrip();
   systemServiceEndpointOwnsOperationServicePlanes();
   refinementsAddNoIdentity();
   strictTextLanguage();

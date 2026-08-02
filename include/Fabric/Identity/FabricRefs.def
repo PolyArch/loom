@@ -136,6 +136,8 @@ LOOM_FABRIC_ENTITY(SystemServiceTransform, "fabric.system_service_transform")
 LOOM_FABRIC_ENTITY(SystemTransportResource, "fabric.system_transport_resource")
 LOOM_FABRIC_ENTITY(HardwareDomain, "fabric.hardware_domain")
 LOOM_FABRIC_ENTITY(ExternalBoundary, "fabric.external_boundary")
+LOOM_FABRIC_ENTITY(FabricMemoryEngineTemplate,
+                   "fabric.memory_engine_template")
 
 LOOM_FABRIC_ROOT_KIND(Module, "module")
 LOOM_FABRIC_ROOT_KIND(System, "system")
@@ -318,6 +320,14 @@ LOOM_FABRIC_LOCAL_REFERENCE_KIND(41, SubordinateEndpointRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(42, MemoryConsistencyDomainRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(43, ClockDomainRef)
 LOOM_FABRIC_LOCAL_REFERENCE_KIND(44, ResetDomainRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(45, FabricMemoryEngineTemplateRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(
+    46, FabricMemoryEngineTemplateOperationPortRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(
+    47, FabricMemoryEngineTemplateCapabilityAlternativeRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(48, FabricMemoryEngineTemplateEndpointRef)
+LOOM_FABRIC_LOCAL_REFERENCE_KIND(
+    49, FabricMemoryEngineTemplateInternalConnectionRef)
 
 LOOM_FABRIC_REF_ERROR(MalformedSyntax, "malformed_syntax")
 LOOM_FABRIC_REF_ERROR(DeprecatedAlias, "deprecated_alias")

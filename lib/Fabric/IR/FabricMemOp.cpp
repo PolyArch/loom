@@ -702,7 +702,9 @@ static LogicalResult verifyDispatchEligibility(MemOp op,
 
 static LogicalResult verifyCanonicalAttributeSet(MemOp op) {
   for (NamedAttribute attribute : op->getDiscardableAttrs()) {
-    if (attribute.getName().getValue() == ::fabric::kEntityIdAttrName &&
+    const StringRef name = attribute.getName().getValue();
+    if ((name == ::fabric::kEntityIdAttrName ||
+         name == ::fabric::kMemoryEngineTemplateIdAttrName) &&
         isa<::fabric::EntityIdAttr>(attribute.getValue()))
       continue;
     return op.emitOpError("has non-canonical discardable attribute '")

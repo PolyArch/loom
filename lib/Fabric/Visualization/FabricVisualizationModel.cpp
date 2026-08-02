@@ -86,6 +86,9 @@ std::string entityLabel(FabricEntityKind kind, FabricEntityId id) {
   case FabricEntityKind::ExternalBoundary:
     prefix = "External boundary";
     break;
+  case FabricEntityKind::FabricMemoryEngineTemplate:
+    prefix = "Memory engine template";
+    break;
   }
   return prefix + " " + std::to_string(id);
 }
