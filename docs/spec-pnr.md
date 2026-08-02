@@ -698,6 +698,7 @@ attachment, and configuration choices. It owns these relations:
 Unit -> compatible occurrence domain
 (Unit, Occurrence) -> compatible InstructionContext domain
 (Unit, Occurrence, PortDemand) -> local attachment endpoint domain
+GraphBoundaryTerminal -> compatible Module-boundary attachment domain
 ConfigurationOwner -> semantic-preserving physical refinement domain
 selected facts -> ProgrammedConfigurationKey
 ```
@@ -706,6 +707,25 @@ Every selected capability-template port is classified exactly once as
 `Internal`, `ExternalDemand`, or `InactiveQuiescent`. The last case is legal
 only when the operation schema and capability relation prove no consume, no
 produce, and no backpressure. A missing `PortDemand` is not an inactive marker.
+
+A `PortDemand` belongs only to a Compute or Memory Realization whose concrete
+occurrence is selected by SpatialMapping. It names the exact external
+template-relative terminal and therefore acquires an occurrence-relative
+attachment domain only after choosing that occurrence. A graph ingress or
+egress has no occurrence and must not be represented by a synthetic boundary
+unit or a placement-independent `PortDemand`. Instead, freeze derives its
+domain from the exact Module root's canonical token-plane boundary attachment
+relation, direction, semantic payload width, and tag capacity. The
+`FabricModuleBoundaryEndpointRef` itself never enters the routing graph; its
+occurrence-local endpoint is the RouteTree terminal. An empty well-formed graph
+boundary domain is `ProvenInfeasible`.
+
+For a Compute occurrence, the fixed FU occurrence port and each compatible PE
+or explicitly declared local terminal are connected only by exact
+Fabric-owned selector or local traversals. For a Memory occurrence, the exact
+Memory Operation Engine endpoint projects to that occurrence's transport
+endpoint. Freeze may cache these factorized domains and local matching
+feasibility, but neither chooses an endpoint nor invents a connection.
 
 For a Spatial unit `u`:
 

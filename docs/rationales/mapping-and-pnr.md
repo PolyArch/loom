@@ -191,6 +191,19 @@ PE-port assignment. Each software endpoint retains a factorized domain of
 compatible physical endpoints; route search jointly selects endpoint and path.
 This avoids a Cartesian explosion and lets congestion inform attachment.
 
+Graph boundaries need a related but distinct domain. They have no Compute or
+Memory occurrence, so treating them as `PortDemand` values would require a
+fake placement unit and would make boundary identity a second topology owner.
+The finalized Module already owns the exact correspondence from each
+resource-attached signature boundary to its occurrence-local endpoint. An
+unused boundary or direct boundary passthrough supplies no placeable routing
+terminal and therefore no row. Freeze filters the relation by the graph
+terminal's direction and payload requirements, while RouteTree uses only the
+resulting physical endpoint. SystemMapping later composes the same Module
+boundary correspondence with the selected AccCore SpatialCore attachment.
+This keeps one boundary identity owner and one physical routing graph without
+making Module boundary references routable resources.
+
 A residual logical net represents exactly one canonical producer and all
 unabsorbed sinks. Multi-sink routing builds one route tree with explicit
 replication resources. A broadcast branch that reconverges without logical

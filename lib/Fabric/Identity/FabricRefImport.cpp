@@ -716,6 +716,11 @@ llvm::ArrayRef<std::uint8_t> FabricArtifactView::moduleBoundaryEndpointType(
                 : llvm::ArrayRef<std::uint8_t>();
 }
 
+llvm::ArrayRef<FabricModuleBoundaryTransportAttachmentView>
+FabricArtifactView::moduleBoundaryTransportAttachments() const {
+  return storage_->data.moduleBoundaryTransportAttachments;
+}
+
 std::optional<FabricHardwareDomainKind>
 FabricArtifactView::hardwareDomainKind(HardwareDomainRef domain) const {
   const detail::FabricEntityViewData *record = storage_->entity(domain);
@@ -1418,6 +1423,27 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
     (void)index;
   }
 
+  if (data.rootKind != FabricRootKind::Module &&
+      !data.moduleBoundaryTransportAttachments.empty())
+    return invalidView(
+        "only a Module root may expose boundary transport attachments");
+  std::sort(data.moduleBoundaryTransportAttachments.begin(),
+            data.moduleBoundaryTransportAttachments.end(),
+            [](const auto &lhs, const auto &rhs) {
+              const auto lhsBoundary = canonicalFabricBytes(lhs.boundary);
+              const auto rhsBoundary = canonicalFabricBytes(rhs.boundary);
+              if (lhsBoundary != rhsBoundary)
+                return lhsBoundary < rhsBoundary;
+              return canonicalFabricBytes(lhs.endpoint) <
+                     canonicalFabricBytes(rhs.endpoint);
+            });
+  for (std::size_t index = 1;
+       index < data.moduleBoundaryTransportAttachments.size(); ++index)
+    if (data.moduleBoundaryTransportAttachments[index - 1].boundary ==
+        data.moduleBoundaryTransportAttachments[index].boundary)
+      return invalidView(
+          "a Module boundary has more than one transport attachment");
+
   using PointConnectionRow =
       std::pair<std::vector<std::uint8_t>, FabricPointConnectionPayload>;
   std::vector<PointConnectionRow> pointConnectionRows;
@@ -1599,6 +1625,29 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
             view.transportEndpointType(connection.source),
             view.transportEndpointType(connection.destination)))
       return invalidView("point connection changes transport port kind");
+  }
+  std::set<std::vector<std::uint8_t>> attachedTransportEndpoints;
+  for (const FabricModuleBoundaryTransportAttachmentView &attachment :
+       view.moduleBoundaryTransportAttachments()) {
+    if (llvm::Error error = validateFabricRef(view, attachment.boundary))
+      return std::move(error);
+    if (llvm::Error error = validateFabricRef(view, attachment.endpoint))
+      return std::move(error);
+    if (view.moduleBoundaryEndpointPlane(attachment.boundary) !=
+        FabricSpatialAttachmentEndpointRef::Plane::Transport)
+      return invalidView("a memory Module boundary has a transport attachment");
+    if (view.transportEndpointDirection(attachment.endpoint) !=
+        attachment.boundary.direction)
+      return invalidView("a Module boundary attachment changes direction");
+    if (!haveSameTransportKind(
+            view.moduleBoundaryEndpointType(attachment.boundary),
+            view.transportEndpointType(attachment.endpoint)))
+      return invalidView("a Module boundary attachment changes transport kind");
+    if (!attachedTransportEndpoints
+             .insert(canonicalFabricBytes(attachment.endpoint))
+             .second)
+      return invalidView(
+          "an occurrence endpoint is attached to multiple Module boundaries");
   }
   for (const FabricPhysicalTraversalRef &traversal :
        view.admittedTraversals()) {

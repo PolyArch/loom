@@ -403,12 +403,128 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
   return llvm::Error::success();
 }
 
+llvm::Error appendModuleBoundaryTransportAttachments(
+    ::fabric::ModuleOp root, FabricModuleTemplateRef module,
+    const llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *>
+        &carrierByOp,
+    detail::FabricArtifactViewData &data) {
+  Block &body = root.getBody().front();
+  auto appendDestination = [&](FabricOrdinal signatureOrdinal,
+                               Value value) -> llvm::Error {
+    if (isa<MemRefType>(value.getType()))
+      return llvm::Error::success();
+    OpOperand *directUse = nullptr;
+    for (OpOperand &use : value.getUses()) {
+      if (use.getOwner()->getBlock() != &body)
+        continue;
+      if (directUse)
+        return invalid("a Module token input has multiple direct consumers");
+      directUse = &use;
+    }
+    if (!directUse || isa<::fabric::YieldOp>(directUse->getOwner()))
+      return llvm::Error::success();
+    auto carrier = carrierByOp.find(directUse->getOwner());
+    if (carrier == carrierByOp.end())
+      return invalid("a connected Module token input has no occurrence owner");
+    auto owner = transportOwner(carrier->second->kind, carrier->second->id);
+    if (!owner)
+      return invalid(
+          "a connected Module token input has no transport endpoint owner");
+    auto ordinal =
+        tokenInputOrdinal(directUse->getOwner(), directUse->getOperandNumber());
+    if (!ordinal)
+      return ordinal.takeError();
+    if (!*ordinal)
+      return invalid("a token Module input resolved to a memory endpoint");
+    data.moduleBoundaryTransportAttachments.push_back(
+        {{module, FabricPortDirection::Input, signatureOrdinal},
+         {*owner, **ordinal}});
+    return llvm::Error::success();
+  };
+
+  for (auto [ordinal, argument] : llvm::enumerate(body.getArguments()))
+    if (llvm::Error error = appendDestination(ordinal, argument))
+      return error;
+
+  auto yield = dyn_cast<::fabric::YieldOp>(body.getTerminator());
+  if (!yield)
+    return invalid("a finalized Module has no fabric.yield terminator");
+  for (auto [signatureOrdinal, value] : llvm::enumerate(yield.getValues())) {
+    if (isa<MemRefType>(value.getType()))
+      continue;
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      continue;
+    Operation *source = result.getOwner();
+    auto carrier = carrierByOp.find(source);
+    if (carrier == carrierByOp.end())
+      return invalid("a connected Module token output has no occurrence owner");
+    auto owner = transportOwner(carrier->second->kind, carrier->second->id);
+    if (!owner)
+      return invalid(
+          "a connected Module token output has no transport endpoint owner");
+    auto ordinal = tokenOutputOrdinal(source, result.getResultNumber());
+    if (!ordinal)
+      return ordinal.takeError();
+    if (!*ordinal)
+      return invalid("a token Module output resolved to a memory endpoint");
+    data.moduleBoundaryTransportAttachments.push_back(
+        {{module, FabricPortDirection::Output,
+          static_cast<FabricOrdinal>(signatureOrdinal)},
+         {*owner, **ordinal}});
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error appendPeSelectorTraversals(detail::FabricArtifactViewData &data) {
+  for (FabricEntityId id = 0; id < data.entities.size(); ++id) {
+    detail::FabricEntityViewData &fu = data.entities[id];
+    if (fu.kind != FabricEntityKind::FabricFuOccurrence)
+      continue;
+    if (!fu.parentPe || fu.parentPe->id() >= data.entities.size())
+      return invalid("an FU occurrence has no valid parent PE");
+    const detail::FabricEntityViewData &pe = data.entities[fu.parentPe->id()];
+    if (pe.kind != FabricEntityKind::FabricPeOccurrence)
+      return invalid("an FU occurrence parent is not a PE");
+
+    const auto peOwner = FabricTransportEndpointOwnerRef::of(*fu.parentPe);
+    const auto fuOwner =
+        FabricTransportEndpointOwnerRef::of(FabricFuOccurrenceRef(id));
+    for (auto [peOrdinal, peEndpoint] :
+         llvm::enumerate(pe.owner.transportEndpoints)) {
+      if (peEndpoint.direction != FabricPortDirection::Input)
+        continue;
+      for (auto [fuOrdinal, fuEndpoint] :
+           llvm::enumerate(fu.owner.transportEndpoints)) {
+        if (fuEndpoint.direction != FabricPortDirection::Input)
+          continue;
+        data.admittedTraversals.push_back(
+            FabricPhysicalTraversalRef::peSelector(
+                *fu.parentPe, {peOwner, peOrdinal}, {fuOwner, fuOrdinal}));
+      }
+    }
+    for (auto [fuOrdinal, fuEndpoint] :
+         llvm::enumerate(fu.owner.transportEndpoints)) {
+      if (fuEndpoint.direction != FabricPortDirection::Output)
+        continue;
+      for (auto [peOrdinal, peEndpoint] :
+           llvm::enumerate(pe.owner.transportEndpoints)) {
+        if (peEndpoint.direction != FabricPortDirection::Output)
+          continue;
+        data.admittedTraversals.push_back(
+            FabricPhysicalTraversalRef::peSelector(
+                *fu.parentPe, {fuOwner, fuOrdinal}, {peOwner, peOrdinal}));
+      }
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<FabricArtifactView>
 buildModuleView(::fabric::ModuleOp root,
                 const detail::FabricCanonicalLabeling &labeling,
                 const ArtifactIdentity &identity) {
-  detail::FabricArtifactViewData data{
-      identity, FabricRootKind::Module, {}, {}, {}, {}, {}, {}, {}};
+  detail::FabricArtifactViewData data(identity, FabricRootKind::Module);
   data.entities.resize(labeling.carriers.size());
 
   llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *> carrierByOp;
@@ -589,6 +705,16 @@ buildModuleView(::fabric::ModuleOp root,
     data.admittedTraversals.push_back(
         FabricPhysicalTraversalRef::pointConnection(connection.source,
                                                     connection.destination));
+  auto moduleCarrier = carrierByOp.find(root.getOperation());
+  if (moduleCarrier == carrierByOp.end() ||
+      moduleCarrier->second->kind != FabricEntityKind::FabricModuleTemplate)
+    return invalid("a finalized Module has no canonical template owner");
+  if (llvm::Error error = appendModuleBoundaryTransportAttachments(
+          root, FabricModuleTemplateRef(moduleCarrier->second->id), carrierByOp,
+          data))
+    return std::move(error);
+  if (llvm::Error error = appendPeSelectorTraversals(data))
+    return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {
     if (carrier.kind == FabricEntityKind::FabricFifoOccurrence) {
       auto fifo = cast<::fabric::FifoOp>(carrier.op);
@@ -1088,8 +1214,7 @@ buildSystemView(::fabric::SystemOp root,
                 const detail::FabricSystemCanonicalLabeling &labeling,
                 const ArtifactIdentity &identity,
                 llvm::ArrayRef<StrictImportResult> importedModules) {
-  detail::FabricArtifactViewData data{
-      identity, FabricRootKind::System, {}, {}, {}, {}, {}, {}, {}};
+  detail::FabricArtifactViewData data(identity, FabricRootKind::System);
   data.entities.resize(labeling.carriers.size());
   data.importedModules.reserve(importedModules.size());
   for (const StrictImportResult &module : importedModules)

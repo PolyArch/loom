@@ -94,6 +94,26 @@ struct FabricPhysicalTraversalView final {
   std::vector<FabricResourceStateRef> resourceStates;
 };
 
+/// One connected token-plane Module signature endpoint and the exact
+/// occurrence-local endpoint reached by canonical Module SSA. The boundary
+/// reference remains attachment correspondence rather than a routable
+/// endpoint. This view is rebuilt on strict import and is never serialized.
+struct FabricModuleBoundaryTransportAttachmentView final {
+  FabricModuleBoundaryEndpointRef boundary;
+  FabricTransportEndpointRef endpoint;
+
+  friend bool
+  operator==(const FabricModuleBoundaryTransportAttachmentView &lhs,
+             const FabricModuleBoundaryTransportAttachmentView &rhs) {
+    return lhs.boundary == rhs.boundary && lhs.endpoint == rhs.endpoint;
+  }
+  friend bool
+  operator!=(const FabricModuleBoundaryTransportAttachmentView &lhs,
+             const FabricModuleBoundaryTransportAttachmentView &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 class FabricArtifactView;
 class FabricSystemRootView;
 
@@ -209,6 +229,13 @@ public:
       const FabricModuleBoundaryEndpointRef &endpoint) const;
   llvm::ArrayRef<std::uint8_t> moduleBoundaryEndpointType(
       const FabricModuleBoundaryEndpointRef &endpoint) const;
+
+  /// Complete canonical relation for connected token-plane Module boundary
+  /// endpoints. Unused token endpoints and memory-plane endpoints have no
+  /// row. Module boundary references themselves never enter the transport
+  /// endpoint or traversal inventories.
+  llvm::ArrayRef<FabricModuleBoundaryTransportAttachmentView>
+  moduleBoundaryTransportAttachments() const;
 
   /// The declared kind of one hardware domain entity.
   std::optional<FabricHardwareDomainKind>

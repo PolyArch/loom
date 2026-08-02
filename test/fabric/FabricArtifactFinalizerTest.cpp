@@ -939,6 +939,79 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           "sealed view lost the PE schedule or resident context domain");
   require(test, single.view().parentPeOf(singleFuOccurrence) == singlePe,
           "sealed view lost the FU occurrence parent PE relation");
+
+  const loom::fabric::FabricModuleTemplateRef singleModule =
+      uniqueModuleTemplate(test, single.view());
+  const auto boundaryAttachments =
+      single.view().moduleBoundaryTransportAttachments();
+  require(test, boundaryAttachments.size() == 3,
+          "sealed view did not derive every connected token boundary");
+  for (const auto &attachment : boundaryAttachments) {
+    require(test, attachment.boundary.module == singleModule,
+            "boundary attachment changed its Module owner");
+    require(
+        test,
+        attachment.endpoint.owner.kind() ==
+            loom::fabric::FabricTransportEndpointOwnerKind::FabricPeOccurrence,
+        "Module boundary became a transport endpoint or skipped the PE edge");
+    require(test,
+            single.view().transportEndpointDirection(attachment.endpoint) ==
+                attachment.boundary.direction,
+            "boundary attachment changed transport direction");
+  }
+
+  unsigned selectorCount = 0;
+  unsigned inputSelectorCount = 0;
+  unsigned outputSelectorCount = 0;
+  for (const auto &traversal : single.view().physicalTraversals()) {
+    if (traversal.reference.kind() !=
+        loom::fabric::FabricPhysicalTraversalKind::PeSelectorTraversal)
+      continue;
+    ++selectorCount;
+    const auto &selector = std::get<loom::fabric::FabricPeSelectorPayload>(
+        traversal.reference.payload);
+    require(test, selector.owner == singlePe,
+            "PE selector traversal changed its owner");
+    const auto sourceDirection =
+        single.view().transportEndpointDirection(selector.source);
+    const auto destinationDirection =
+        single.view().transportEndpointDirection(selector.destination);
+    require(test, sourceDirection && sourceDirection == destinationDirection,
+            "PE selector traversal changed transport direction");
+    if (*sourceDirection == loom::fabric::FabricPortDirection::Input) {
+      ++inputSelectorCount;
+      require(test,
+              selector.source.owner.kind() ==
+                      loom::fabric::FabricTransportEndpointOwnerKind::
+                          FabricPeOccurrence &&
+                  selector.destination.owner.kind() ==
+                      loom::fabric::FabricTransportEndpointOwnerKind::
+                          FabricFuOccurrence,
+              "PE input selector has the wrong endpoint orientation");
+    } else {
+      ++outputSelectorCount;
+      require(test,
+              selector.source.owner.kind() ==
+                      loom::fabric::FabricTransportEndpointOwnerKind::
+                          FabricFuOccurrence &&
+                  selector.destination.owner.kind() ==
+                      loom::fabric::FabricTransportEndpointOwnerKind::
+                          FabricPeOccurrence,
+              "PE output selector has the wrong endpoint orientation");
+    }
+  }
+  require(test,
+          selectorCount == 5 && inputSelectorCount == 4 &&
+              outputSelectorCount == 1,
+          "PE selector traversal domain is incomplete");
+
+  FinalizedFabricRoot reimportedSingle = take(
+      test, loom::fabric::importEntireFabricRoot(single.reference(), store));
+  require(test,
+          reimportedSingle.view().moduleBoundaryTransportAttachments() ==
+              boundaryAttachments,
+          "strict import changed Module boundary transport attachments");
+
   if (llvm::Error error = loom::fabric::validateFabricRef(
           single.view(), loom::fabric::InstructionContextRef{singlePe, 0}))
     fail(test, llvm::toString(std::move(error)));

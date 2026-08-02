@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::fabric::detail {
@@ -87,11 +88,16 @@ struct FabricEntityViewData {
 };
 
 struct FabricArtifactViewData {
+  FabricArtifactViewData(ArtifactIdentity identity, FabricRootKind rootKind)
+      : identity(std::move(identity)), rootKind(rootKind) {}
+
   ArtifactIdentity identity;
   FabricRootKind rootKind = FabricRootKind::Module;
   std::vector<FabricEntityViewData> entities;
   std::vector<FabricPointConnectionPayload> pointConnections;
   std::vector<FabricPhysicalTraversalRef> admittedTraversals;
+  std::vector<FabricModuleBoundaryTransportAttachmentView>
+      moduleBoundaryTransportAttachments;
   std::vector<FabricArtifactView> importedModules;
   std::vector<FabricSpatialAttachmentRecordView> spatialAttachments;
   std::vector<HardwareDomainRef> hardwareDomains;

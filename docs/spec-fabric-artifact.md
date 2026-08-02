@@ -352,7 +352,19 @@ capability-template inventory, the Memory Operation Engine definition
 inventory, and the exact memory-occurrence-to-engine-definition relation.
 Convenience queries such as `fuTemplate(occurrence)`,
 `fuCapabilityTemplates(template)`, and `memoryEngineTemplate(occurrence)` are
-indexes over those complete ranges, not additional authorities. A `System` root
+indexes over those complete ranges, not additional authorities. For a Module
+root, the view also exposes the complete canonical token-plane
+resource-attachment relation. Each `FabricModuleBoundaryEndpointRef` directly
+connected to a resource maps to the one occurrence-local
+`FabricTransportEndpointRef` reached by that signature input or producing that
+signature result in the finalized Module body. Unused boundaries and direct
+boundary-to-boundary passthroughs have no row; the view never invents a
+resource endpoint for them. This relation is derived from the canonical Module
+SSA graph and is not another serialized catalog. A Module boundary reference
+remains an attachment correspondence rather than a transport endpoint,
+traversal, or capacity owner.
+Memory-plane Module boundaries remain in the typed memory endpoint model and
+never appear in this token-plane relation. A `System` root
 additionally exposes complete canonical
 ranges for spatial attachments, hardware-domain declarations and membership,
 system transport resources, transfer patterns, and each transport resource's
