@@ -1,0 +1,15 @@
+# RUN: rm -rf %t
+# RUN: mkdir -p %t/store
+# RUN: loom-adg --builtin=large --artifact-store=%t/store \
+# RUN:   --output=%t/large > %t.fabric
+# RUN: loom-tech-map --artifact-store=%t/store \
+# RUN:   --fabric-reference-file=%t.fabric --report=%t/report.json \
+# RUN:   %S/Inputs/tech-map-addi.mlir.in
+# RUN: FileCheck %s --input-file=%t/report.json
+
+# CHECK-DAG: "kind": "tech_mapping_coverage"
+# CHECK-DAG: "actor_count": 2
+# CHECK-DAG: "classification": "pending-spatial-capacity"
+# CHECK-DAG: "status": "generated"
+# CHECK-DAG: "candidate_count":
+# CHECK-DAG: "covered_actor_count": 2

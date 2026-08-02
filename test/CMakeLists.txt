@@ -44,6 +44,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-service-schema-test
   loom-dfg-sim
   loom-dfg-run
+  loom-tech-map
   loom-evaluation-case-test
   loom-evaluation-evidence-test
   loom-evaluation-metric-test

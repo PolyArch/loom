@@ -60,6 +60,7 @@ tools = [
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
     "loom-dfg-run",
+    "loom-tech-map",
     "loom-fabric-artifact-gate-test",
     "loom-fabric-artifact-codec-test",
     "loom-fabric-artifact-finalizer-test",

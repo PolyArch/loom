@@ -1,0 +1,16 @@
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
+  dataflow.graph private @add(
+      %start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {
+        input_segments = array<i32: 2, 0, 0>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %sum = arith.addi %lhs, %rhs : i32
+    %result:2 = dataflow.sync %start, %sum
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%result#1 : i32) streams() memories()
+        complete(%result#0 : none)
+  }
+}
