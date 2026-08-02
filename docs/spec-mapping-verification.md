@@ -78,11 +78,14 @@ at least:
 * complete ordered actor operand/result and FU-boundary correspondences;
 * derived FU implementation, actor set, configured-function topology,
   active-port behavior, and semantic configuration;
-* selected memory semantic-encoding ownership, exact operation-port and
-  capability-alternative correspondence, logical-root coherence, and
-  graph-boundary correspondence;
-* exact equality between selected Fabric internal connections and canonical
-  software-edge witnesses;
+* exact resolution of each selected `FabricMemoryEngineTemplateRef`, its
+  complete engine contract, token endpoints, operation ports, capability
+  alternatives, ResourceContracts, and internal-connection relation;
+* exact template-relative operation-port and capability-alternative
+  correspondence, logical-root coherence, and token/value/control graph-
+  boundary correspondence;
+* exact equality between selected template-relative Fabric internal
+  connections and canonical software-edge witnesses;
 * exact derived `CanonicalMemoryAccessView` compatibility with the selected
   Fabric operation port, capability alternative, and declared use-pattern
   domain, including actor contract, access form, memory-element width,
@@ -141,8 +144,13 @@ The verifier checks in dependency order:
   the owner of the Compute Realization's selected capability-template
   reference, with template nodes and ports mapped mechanically to that
   occurrence;
+* equality between each selected memory occurrence's
+  `memoryEngineTemplate(occurrence)` relation and the Memory Realization's
+  selected engine template, with template ports, capability alternatives,
+  endpoints, and internal connections projected mechanically to that
+  occurrence;
 * one MemoryOperationEntry per covered memory actor, its exact addressed or
-  fence variant, exact memory placement, internal source selection, required
+  fence variant, exact memory placement, derived internal source, required
   MemoryBinding, typed dispatch or consistency target, and exposure closure;
 * complete vector address, data, and optional mask endpoint correspondence,
   selected use-pattern compatibility, and absence of any Mapping-invented

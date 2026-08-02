@@ -41,7 +41,7 @@ and freeze-local PnR indices are never persistent target identity.
 
 ## Owner-Local Reference Kind Catalog
 
-`loom.fabric 1.0` owns this complete existential local-reference catalog. The
+`loom.fabric 1.1` owns this complete existential local-reference catalog. The
 ordinal is the Common `owner_local_kind`; the payload is the exact canonical
 bytes of the named Fabric reference defined in this specification.
 
@@ -92,6 +92,11 @@ bytes of the named Fabric reference defined in this specification.
 | 42 | `MemoryConsistencyDomainRef` |
 | 43 | `ClockDomainRef` |
 | 44 | `ResetDomainRef` |
+| 45 | `FabricMemoryEngineTemplateRef` |
+| 46 | `FabricMemoryEngineTemplateOperationPortRef` |
+| 47 | `FabricMemoryEngineTemplateCapabilityAlternativeRef` |
+| 48 | `FabricMemoryEngineTemplateEndpointRef` |
+| 49 | `FabricMemoryEngineTemplateInternalConnectionRef` |
 
 One generated Fabric declaration owns this table, the C++ enum, each typed
 codec registration, strict decoder, and validator dispatch. A kind ordinal is
@@ -130,6 +135,7 @@ SystemServiceTransform
 SystemTransportResource
 HardwareDomain
 ExternalBoundary
+FabricMemoryEngineTemplate
 ```
 
 Their typed references are respectively:
@@ -152,12 +158,13 @@ SystemServiceTransformRef
 SystemTransportResourceRef
 HardwareDomainRef
 ExternalBoundaryRef
+FabricMemoryEngineTemplateRef
 ```
 
 Named templates are not physical occurrences. A template reference is legal
 only in a field whose schema asks for that template kind. TechMapping may
-reference an FU template; SpatialMapping placement always references a
-concrete FU occurrence.
+reference an FU template or Memory Operation Engine template; SpatialMapping
+placement always references a concrete FU or memory occurrence.
 
 Canonical elaboration creates a distinct entity for every concrete physical
 occurrence. Two AccCores that instantiate the same module template therefore
@@ -296,6 +303,81 @@ port corresponding to every template node and port. An occurrence is eligible
 only when `fuTemplate(occurrence)` equals the owner of the selected capability
 template.
 
+## Memory Operation Engine Template References
+
+Every finalized `fabric.mem` occurrence with an Operation Engine has exactly
+one Fabric-owned canonical engine definition:
+
+```text
+memoryEngineTemplate(FabricMemoryOccurrenceRef)
+  -> FabricMemoryEngineTemplateRef
+```
+
+A storage-only occurrence has no engine definition and therefore no relation.
+The finalizer derives and deduplicates definitions mechanically. Authoring
+symbols, operation position, occurrence identity, coordinates, and builder
+handles are nonsemantic. Two Operation Engines with the same exact canonical
+projection share one template reference while retaining distinct physical
+memory occurrences.
+
+The exact template record is:
+
+```text
+FabricMemoryEngineTemplateRecord {
+  engine_contract
+  token_endpoint_types[]
+  operation_ports[]
+  internal_connections[]
+}
+```
+
+`engine_contract` is the exact `Spatial` or
+`Temporal { resident_context_count }` contract. `token_endpoint_types` is the
+canonical ordered Operation Engine token interface. `operation_ports` is the
+canonical ordered sequence of complete `MemoryOperationPortRecord` values,
+including capability alternatives, ResourceContracts, and operation-pattern
+semantics. `internal_connections` is the canonical sorted unique relation of
+directed source and sink token endpoint ordinals admitted wholly inside the
+Operation Engine.
+
+The template deliberately excludes Local Memory Service records and regions,
+manager and subordinate endpoint instances, dispatch-target domains, module
+topology, point connections, selected rows or contexts, tags, address regions,
+physical configuration bits, visualization data, and QoR. Those facts remain
+owned by the concrete occurrence, Spatial or System Mapping, ConfigurationABI,
+or Evaluation.
+
+The template owns these TechMapping-visible structural references:
+
+```text
+FabricMemoryEngineTemplateOperationPortRef =
+  (FabricMemoryEngineTemplateRef, operation-port ordinal)
+
+FabricMemoryEngineTemplateCapabilityAlternativeRef =
+  (FabricMemoryEngineTemplateOperationPortRef,
+   capability-alternative ordinal)
+
+FabricMemoryEngineTemplateEndpointRef =
+  (FabricMemoryEngineTemplateRef, token-endpoint ordinal)
+
+FabricMemoryEngineTemplateInternalConnectionRef =
+  (FabricMemoryEngineTemplateRef,
+   source FabricMemoryEngineTemplateEndpointRef,
+   sink FabricMemoryEngineTemplateEndpointRef)
+```
+
+An internal-connection reference is valid only when the exact directed pair is
+present in the owning template relation. It has no `EntityId` or independent
+dense connection ordinal. Port, capability-alternative, and endpoint ordinals
+index their owner's canonical inventories and use unsigned 64-bit big-endian
+wire values.
+
+After SpatialMapping selects a concrete memory occurrence, the exact
+occurrence-to-template relation mechanically projects every selected template
+port, capability alternative, endpoint, and internal connection to its
+occurrence-relative counterpart. An occurrence is eligible only when
+`memoryEngineTemplate(occurrence)` equals the selected template exactly.
+
 ## Transport And Memory Endpoints
 
 Token transport and memory-service capability are separate planes.
@@ -352,9 +434,10 @@ An endpoint ordinal is valid only in the inventory selected by the typed
 owner and reference plane. A token endpoint cannot be reinterpreted as a
 memory endpoint even when the integer ordinals happen to match.
 
-## Memory Structural References
+## Concrete Memory Structural References
 
-`fabric.mem` owns these Mapping-visible structural targets:
+One concrete `fabric.mem` occurrence owns these Spatial and System
+Mapping-visible structural targets:
 
 ```text
 FabricMemoryOperationPortRef =

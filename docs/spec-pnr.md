@@ -557,8 +557,9 @@ no dedicated atom or predicate language.
 
 ## Semantic Ownership
 
-TechMapping alone owns selected Compute and Memory Realizations, semantic
-encodings, configured-function match relations, configured-memory internal
+TechMapping alone owns selected Compute and Memory Realizations, selected
+Fabric-owned FU capability and Memory Operation Engine templates,
+configured-function match relations, template-relative memory internal-
 connectivity witnesses, and software boundary correspondence. Spatial PnR
 must not regroup actors, reconstruct a deleted `dataflow.subgraph`, rematch raw
 Dataflow and Fabric, or select another semantic realization.
@@ -717,7 +718,9 @@ are not pre-enumerated into unary candidate products. An empty well-formed
 intersection is `ProvenInfeasible`, not `Invalid`.
 
 Compute occurrence and context domains remain correlated. Memory domains use
-concrete `fabric.mem` occurrences and exact operation placement capabilities.
+only concrete `fabric.mem` occurrences whose exact
+`memoryEngineTemplate(occurrence)` relation equals the Memory Realization's
+selected engine template, followed by exact operation placement capabilities.
 For each memory actor, `UnaryEligible` derives its
 `CanonicalMemoryAccessView` and proves one selected physical operation port can
 carry the complete address, data, and optional mask tokens and supports the
@@ -847,8 +850,8 @@ recognizes every explicit realization-internal owner confirmed by `D/T/F` and
 the selected physical facts:
 
 * the configured FU relation of a Compute Realization;
-* the configured `fabric.mem` internal-connectivity witness of a Memory
-  Realization;
+* the Memory Realization's template-relative internal-connectivity witness,
+  projected through the exact selected memory occurrence;
 * an explicitly supported temporal PE register-file absorption; or
 * another explicit Fabric internal realization with the same typed proof.
 
@@ -1290,12 +1293,14 @@ every segment's allowed match domains and builds local interference from
 co-residency and incompatible interpretation. Switch rows, operand matches,
 memory rows, and encoded tag fields are derived from the one origin value.
 
-Each external Temporal memory operand or result role is an independent
+Each residual external Temporal memory operand or result role is an independent
 continuity endpoint. PnR derives that role's input match or output write from
 the corresponding real writer or ingress assignment. It does not introduce a
 row-wide tag variable, require all roles in one memory operation to share a
-value, or use the operation kind as a match key. Selected memory-internal
-sources remove the corresponding external continuity obligation.
+value, or use the operation kind as a match key. TechMapping-selected memory-
+internal sources, projected through the exact occurrence relation, remove the
+corresponding external continuity obligation; SpatialMapping does not select
+them again.
 
 An empty allowed-set intersection, an unrepresentable fixed value, or an
 uncolorable local interference graph is a typed tag closure violation. Search

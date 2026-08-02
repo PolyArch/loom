@@ -12,8 +12,8 @@ Normative contracts are owned by
 
 Software-to-hardware realization contains three cumulative questions:
 
-* TechMapping selects a Fabric-owned FU or memory capability template and
-  proves that a canonical software subgraph is supported;
+* TechMapping selects a Fabric-owned FU capability template or Memory Operation
+  Engine template and proves that a canonical software subgraph is supported;
 * SpatialMapping selects concrete resources, contexts, endpoints, routes,
   buffers, tags, and physical refinements inside a SpatialCore; and
 * SystemMapping binds thread/graph execution, channels, services, and transport
@@ -46,6 +46,14 @@ semantics remain in Dataflow, capability remains in Fabric, and configured
 software projections are reconstructed from both. SpatialMapping then chooses
 an occurrence of the same Fabric FU definition; it cannot re-group actors or
 copy a configured graph.
+
+The same definition-to-occurrence split applies to memory. TechMapping selects
+one canonical Memory Operation Engine template and template-relative ports,
+capability alternatives, boundaries, and internal connections. SpatialMapping
+then chooses one concrete `fabric.mem` occurrence whose Fabric-owned template
+relation matches exactly. This preserves the distinction between semantic
+realization and physical placement without inventing a Mapping-owned memory
+encoding or asking TechMapping to name an occurrence prematurely.
 
 ## Why TechMapping Uses Lazy Exact Cover
 

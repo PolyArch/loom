@@ -79,6 +79,34 @@ service's architecture contract.
 
 ## Operation Engine
 
+### Canonical Engine Definition
+
+Fabric finalization projects every present Operation Engine into the canonical
+`FabricMemoryEngineTemplateRecord` owned by
+`docs/spec-fabric-identity.md`. The definition is the sole template-level
+authority for TechMapping. A concrete `fabric.mem` occurrence is the physical
+instance selected by SpatialMapping and owns the independently selectable
+Local Memory Service, manager and subordinate endpoints, dispatch domains,
+topological attachments, and dynamic resource instances.
+
+The template projection contains the exact engine schedule and resident
+capacity, canonical token endpoint types, complete ordered operation-port
+records, and the sorted unique engine-internal token-connection relation. It
+does not contain service or dispatch state. Equal projections deduplicate even
+when the occurrences have different names, locations, Local Memory Services,
+manager endpoints, or surrounding topology. A difference in operation-port
+capability, resource contract, operation-pattern semantics, token endpoint
+type, schedule, resident capacity, or internal connection produces a distinct
+template.
+
+Fabric does not enumerate configured `{load}`, `{store}`, or
+`{load, store}` semantic modes. TechMapping selects template-relative ports,
+capability alternatives, and exact internal connections in one Memory
+Realization. ResourceContract and independent verification determine whether
+the selected relation is jointly legal. Persisting all active subsets as
+`MemorySemanticEncoding` records would duplicate those Mapping selections and
+is forbidden.
+
 Every operation row declares whether its address input consumes the Dataflow-
 owned `RootRelative` or `PointerAddressed` projection. A RootRelative row owns
 element-index scaling. A PointerAddressed row consumes the complete pointer
@@ -1381,11 +1409,17 @@ The ownership boundary is:
   capability, service and queue contracts, internal-connectivity eligibility,
   `H_dispatch`, matching capacity, and semantic configuration fields and
   domains.
-* TechMapping selects a Memory Realization and exact internal-edge witnesses.
+* Fabric also owns the canonical Memory Operation Engine template inventory
+  and the exact occurrence-to-template relation.
+* TechMapping selects one engine template, template-relative operation ports
+  and capability alternatives, and exact template-relative internal-edge
+  witnesses in each Memory Realization.
 * SpatialMapping owns Memory Engine Bindings, Memory Bindings,
   MemoryOperationEntries, Exposure Entries, their exact dispatch-target
-  fields, selected internal connections, and event-relative `ResourceUse`
-  including Physical Tags.
+  fields, occurrence/context selection, and event-relative `ResourceUse`
+  including Physical Tags. The concrete internal connection is derived from
+  the TechMapping witness and occurrence-to-template relation rather than
+  selected again.
 * SystemMapping extends a Spatial boundary proxy to the selected system
   provider through `ServiceRealization` and system `ResourceUse`.
 * `ConfigurationABI` alone owns physical bit/address encoding and the

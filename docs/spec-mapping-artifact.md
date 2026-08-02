@@ -144,9 +144,9 @@ The former Mapping-owned compute `EncodingId`, `EncodingRef`,
 no persistent replacement or compatibility shadow. Matching and
 materialization may use removable hot caches keyed by the exact `D`, exact
 `F`, selected capability-template reference, and correspondence, but those
-caches are not artifact fields. The separately specified Fabric memory
-semantic encoding remains valid because it owns a different `fabric.mem`
-contract.
+caches are not artifact fields. Memory Realizations use the corresponding
+Fabric-owned Memory Operation Engine template relation defined below; they do
+not restore a generic or Mapping-owned encoding.
 
 All Fabric operations use the same parameterized capability and match model.
 For `dataflow.sync`, ordered all-of lane correspondence is expressed by the
@@ -165,18 +165,21 @@ A Memory Realization owns a selected implementation of a canonical software
 memory subgraph. Its persistent basis is:
 
 * one artifact-global Mapping `EntityId`;
-* one selected Fabric memory semantic encoding; and
+* one selected `FabricMemoryEngineTemplateRef`; and
 * complete `mapping.memory_actor`, `mapping.memory_graph_boundary`, and
   `mapping.memory_internal_edge` child relations.
 
 `mapping.memory_actor` records the exact Dataflow-owned `ActorRef` for a read,
-write, RMW, compare-exchange, or fence actor, the selected memory-operation
-port and capability alternative, and complete ordered operand/result port
-maps.
-`mapping.memory_graph_boundary` records the required graph memory capability
-to owner-memory-implementation boundary correspondence.
+write, RMW, compare-exchange, or fence actor, the selected
+template-relative memory-operation port and capability alternative, and
+complete ordered operand/result port maps.
+`mapping.memory_graph_boundary` records each required Dataflow token, value,
+or control graph terminal to template-relative Operation Engine endpoint
+correspondence. It never names a `MemoryExposureRef`, memref capability, Local
+Memory Service, manager endpoint, or subordinate endpoint; those belong to
+Spatial or System memory binding.
 `mapping.memory_internal_edge` records the exact canonical software edge and
-the selected Fabric internal connection that implements it.
+the selected template-relative Fabric internal connection that implements it.
 
 An addressed actor reference mechanically supplies the nonpersistent
 `CanonicalMemoryAccessView`; fence has no addressed-access view. The selected
@@ -187,8 +190,9 @@ data capacities, dynamic-mask capability, alignment, synchronization scope,
 and the declared operation use-pattern domain. Total payload width alone is
 not a semantic match.
 
-The memory implementation is derived from the encoding owner. Actor and
-logical-root sets are derived from the relation domain and the referenced
+The Operation Engine definition is the selected template owner. No concrete
+memory occurrence, service, or dispatch target exists in TechMapping. Actor
+and logical-root sets are derived from the relation domain and the referenced
 Dataflow actors; a fence-only realization has no logical root. The root does
 not repeat implementation, actor, or root lists. Actors sharing a Memory
 Realization do not make their edges internal; only an exact selected
@@ -196,10 +200,11 @@ internal-edge witness does so.
 
 Selected capability alternatives and internal connections must satisfy the
 Fabric-owned parameterized actor-contract, access, alignment, narrow-access,
-mask, fanout, port-role, use-pattern, service-domain, and
-MemoryConsistencyDomain contracts. TechMapping stores the non-derived
-correspondence, not duplicate operation semantics, access views, concrete
-contract values, transaction decomposition, or a memory-service model.
+mask, fanout, port-role, use-pattern, and required MemoryConsistencyDomain
+contracts. TechMapping stores the non-derived correspondence, not duplicate
+operation semantics, access views, concrete contract values, transaction
+decomposition, service selection, or a memory-service model. It does not
+enumerate active port or connection subsets as semantic encodings.
 
 ### TechMapping Record Rules
 
@@ -242,8 +247,8 @@ ResourceUse
 
 The profile preserves all TechMapping realization decisions. It cannot
 regroup actors, rematch a capability, select another semantic realization,
-replace a memory encoding or internal-edge witness, or modify software-to-
-hardware correspondence.
+replace a memory engine template or internal-edge witness, or modify
+software-to-hardware correspondence.
 
 The resolved PnR config view `C` affects search. `K` is an independent
 canonical MappingConstraintSet Artifact used for invocation admission. Neither
@@ -270,6 +275,11 @@ Each TechMapping Memory Realization has exactly one `MemoryEngineBinding`,
 keyed by its exact `MemoryRealizationRef`. It stores the selected
 `FabricMemoryOccurrenceRef` and one `MemoryOperationEntry` child for every
 canonical memory actor covered by the realization. It has no Mapping-local ID.
+The selected occurrence must have an Operation Engine and its exact
+`memoryEngineTemplate(occurrence)` relation must equal the template selected by
+the Memory Realization. Template-relative ports, capability alternatives,
+endpoints, and internal connections then project mechanically to concrete
+occurrence-relative references.
 
 `MemoryOperationEntry` is one closed child union:
 
@@ -280,13 +290,11 @@ MemoryOperationEntry =
       operation_placement
       MemoryBindingRef
       dispatch_target : LocalMemoryServiceRef | ManagerEndpointRef
-      selected internal sink <- source choices
     }
   | FenceOperation {
       actor_ref
       operation_placement
       consistency_target : MemoryConsistencyDomainRef | ManagerEndpointRef
-      selected internal sink <- source choices
     }
 ```
 
@@ -306,6 +314,11 @@ Fabric-declared resident-context ordinal. The
 collection of operation-entry targets and corresponding ExposureEntry targets
 is the persistent owner of Mapping's selected `C_dispatch`. The verifier
 checks each selection against Fabric-owned `H_dispatch`.
+
+An Operation Entry does not select an internal connection again. The exact
+concrete connection is derived from the TechMapping internal-edge witness and
+the selected occurrence-to-template relation. Any additional row-local source
+selection would duplicate the TechMapping witness and is invalid.
 
 The exact MemoryConsistencyDomain is derived from the selected target and
 Fabric use pattern. No operation entry stores a duplicate domain reference.

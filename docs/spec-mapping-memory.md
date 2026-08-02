@@ -119,15 +119,17 @@ TechMapping owns each selected Memory Realization:
 
 * exact read, write, RMW, compare-exchange, or fence actor coverage and
   logical-root association when the actor is addressed;
-* selected Fabric memory operation port and exact capability alternative;
+* one selected `FabricMemoryEngineTemplateRef`, plus exact template-relative
+  operation-port and capability-alternative references;
 * actor-to-operation correspondence;
 * exact graph and implementation-boundary correspondence;
 * exact parameterized actor-contract, access, alignment, mask, narrow-access,
   synchronization-scope, and declared use-pattern compatibility; and
-* exact selected internal-edge witnesses.
+* exact template-relative internal-edge witnesses.
 
 Addressed compatibility is not total payload-width equality. It proves that
-the selected alternative belongs to the selected physical port, then proves
+the selected alternative belongs to the selected template operation port,
+then proves
 the exact operation kind and actor contract, `element | contiguous | indexed`
 access form, memory-element width, access-lane-shape projection, flattened
 lane count, complete address/data/mask capacities, dynamic-mask support,
@@ -146,9 +148,10 @@ single-domain operation capability without fabricating an address or memory
 root.
 
 An internal-edge witness identifies one canonical software source and sink and
-one Fabric-allowed internal connection. Actors sharing a Memory Realization do
-not make all edges between them internal. Only witnessed edges are absorbed;
-all remaining edges become ordinary external routing obligations.
+one Fabric-allowed template-relative internal connection. Actors sharing a
+Memory Realization do not make all edges between them internal. Only witnessed
+edges are absorbed; all remaining edges become ordinary external routing
+obligations.
 
 A selected memory actor still has one retirement publication across all
 internal and external obligations. Mapping may select destinations but cannot
@@ -203,8 +206,11 @@ independent ID.
 ### MemoryEngineBinding And MemoryOperationEntry
 
 Each `MemoryEngineBinding` is keyed by one TechMapping Memory Realization and
-selects one concrete `fabric.mem` Operation Engine. It owns exactly one
-`MemoryOperationEntry` for every covered canonical memory actor.
+selects one concrete `fabric.mem` Operation Engine. The selected occurrence
+must have an Operation Engine and
+`memoryEngineTemplate(occurrence)` must equal the exact template selected by
+the Memory Realization. It owns exactly one `MemoryOperationEntry` for every
+covered canonical memory actor.
 
 Operation placement uses a closed typed reference:
 
@@ -219,14 +225,16 @@ MemoryOperationPlacementRef =
 
 * `AddressedOperation` covers read, write, RMW, and compare-exchange and stores
   the actor, placement, one `MemoryBinding`, one typed
-  `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target, and only
-  selected non-derived typed `sink <- source` choices;
+  `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target;
 * `FenceOperation` stores the actor, placement, one typed
   `MemoryConsistencyDomainRef | ManagerEndpointRef` consistency-service
-  target, and selected internal choices, but no `MemoryBinding`.
+  target, but no `MemoryBinding`.
 
-This is where a selected `load.data -> store.data`, `done -> ctrl`, or other
-Fabric-allowed memory-internal dependency is recorded.
+The TechMapping Memory Realization is the sole owner of a selected
+`load.data -> store.data`, `done -> ctrl`, or other Fabric-allowed
+memory-internal dependency. SpatialMapping derives the corresponding concrete
+connection through the exact occurrence-to-template relation. A
+`MemoryOperationEntry` cannot select, omit, or replace that connection.
 
 The operation entry does not copy access form, memory-element type, lane shape,
 lane count, mask mode, actor-contract fields, endpoint widths, consistency
@@ -235,7 +243,8 @@ configured row, or transaction decomposition. Those values are derived from
 the exact Dataflow actor, TechMapping realization, selected Fabric target,
 operation port, and use pattern. A dynamic mask is an ordinary actor operand
 whose external endpoint correspondence or selected internal source is verified
-like any other required operand.
+like any other required operand. The selected internal source is read from the
+TechMapping witness, not duplicated in the operation entry.
 
 The MemoryOperationEntry and ExposureEntry target fields collectively are the
 only persistent owner of selected `C_dispatch`; there is no parallel dispatch
@@ -283,7 +292,8 @@ provider-visible effects.
 
 Token edges not absorbed by the Memory Realization use the ordinary flat
 `RouteTree` model. A memory-local traversal is not free unless it is an exact
-selected internal-edge witness. The same route-tree rules apply to address,
+TechMapping template-relative internal-edge witness projected onto the selected
+occurrence. The same route-tree rules apply to address,
 data, mask, control, and completion transport. Each residual vector address,
 data, or mask value is one complete logical token and must fit every selected
 endpoint and traversal. Mapping cannot split it across unrelated endpoints or

@@ -85,6 +85,32 @@ then invent those facts independently. Reusing the operation-port actor and
 access domains keeps software compatibility single-owned, while the service's
 one ResourceContract keeps physical capacity and arbitration single-owned.
 
+## Why Memory Engines Have Canonical Templates
+
+TechMapping must prove a memory subgraph against a hardware definition before
+SpatialMapping chooses a concrete physical occurrence. Occurrence-relative
+ports alone cannot express that proof without prematurely performing placement.
+The earlier Mapping-owned `MemorySemanticEncoding` instead copied Fabric
+operation rows and internal connections into an enumerated configured subset.
+That made the same capability relation independently editable in two owners and
+grew with every legal active subset.
+
+Fabric finalization therefore derives one canonical Memory Operation Engine
+template from each occurrence's exact engine contract, token endpoint types,
+complete operation-port records, and internal connection relation. Equal
+definitions deduplicate. TechMapping selects template-relative structures;
+SpatialMapping selects an occurrence with the same template and obtains the
+concrete structures by mechanical projection.
+
+Local Memory Service, manager and subordinate endpoints, dispatch domains, and
+topology are deliberately absent from the template. They are occurrence-level
+placement and service facts. Conversely, operation-port capability,
+ResourceContract, schedule, resident capacity, and engine-internal connectivity
+must be present because they determine whether the software realization is
+semantically implementable before placement. This is the same definition-
+versus-occurrence distinction already used by FU capability templates, applied
+to the independently meaningful memory engine boundary.
+
 ## Why One Memory Consistency Kernel Spans Fidelity
 
 Dataflow owns ordering, scope, issue, linearization, retirement, and progress

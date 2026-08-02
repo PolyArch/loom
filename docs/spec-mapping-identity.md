@@ -219,6 +219,15 @@ Fabric and Mapping-owned examples include:
 ```text
 FU template port   = FabricFuTemplateRef + direction + port ordinal
 FU occurrence port = FabricFuOccurrenceRef + direction + port ordinal
+memory engine template port = FabricMemoryEngineTemplateRef
+                            + operation-port ordinal
+memory engine template alternative = memory engine template port
+                                   + capability-alternative ordinal
+memory engine template endpoint = FabricMemoryEngineTemplateRef
+                                + token-endpoint ordinal
+memory engine template internal connection = FabricMemoryEngineTemplateRef
+                                           + source endpoint
+                                           + sink endpoint
 point connection   = source hardware endpoint + destination hardware endpoint
 switch traversal   = switch occurrence EntityId + input ordinal + output ordinal
 InstructionContextRef = Fabric PE occurrence ref + context ordinal
@@ -233,6 +242,14 @@ unique directed connection between those endpoints. A switch-traversal key
 denotes the traversal mechanically derived from the switch connectivity table;
 it is not a point connection, route configuration, capacity resource, or
 dynamic token occurrence.
+
+A Memory Operation Engine template internal connection is valid only when its
+exact directed endpoint pair occurs in the owning template relation. It is not
+a concrete point connection and has no independent connection ordinal. After
+SpatialMapping selects a memory occurrence whose Fabric-owned template relation
+matches exactly, the template-relative port, alternative, endpoint, and
+internal-connection references project mechanically to occurrence-relative
+Fabric references.
 
 If parallel objects have independent capacity, configuration, state, or
 physical role and owner plus typed ordinals cannot distinguish them, the

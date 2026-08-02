@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The first persistent family is:
 
 ```text
-loom.fabric 1.0
+loom.fabric 1.1
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 1.0
+  version = 1.1
 }
 
 FabricRoot =
@@ -50,7 +50,7 @@ a known root variant, that variant fails closed as
 `Unsupported(FabricRootProviderUnavailable)`. It cannot fall back to another
 root operation. This is distinct from
 `fabric_artifact_owner_contract_unavailable`, which means the schema itself has
-no enabled owner contract, as for `ImplementationInput` in version 1.0.
+no enabled owner contract, as for `ImplementationInput` in schema 1.x.
 
 There is no persistent finalized-design wrapper, separate family per variant,
 or generic hardware manifest.
@@ -64,22 +64,22 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog for `loom.fabric 1.0` is:
+The dependency-role catalog remains unchanged in `loom.fabric 1.1`:
 
 ```text
 ImportedModule       = 0
 RefinedSystem        = 1
-ImplementationInput  = 2  // reserved-unavailable in schema 1.0
+ImplementationInput  = 2  // reserved-unavailable in schema 1.x
 ```
 
 A `Module` root admits no direct dependency: every authoring template use is
 fully elaborated into the canonical Module and no `fabric.instantiate`
 survives. A `System` root admits only `ImportedModule`. An
 `InterconnectImplementation` root admits exactly one `RefinedSystem` and no
-other direct dependency in schema 1.0. `ImplementationInput = 2` retains its
+other direct dependency in schema 1.x. `ImplementationInput = 2` retains its
 wire ordinal so schema 1.x never renumbers a published discriminant, but it has
 no accepted artifact family, schema version, root kind, owner-local target
-kind, or dependency-use contract in schema 1.0. It is therefore not an enabled
+kind, or dependency-use contract in schema 1.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
 An authoring draft, encoder input, or imported envelope containing an
@@ -95,7 +95,7 @@ ordinal alone never owns those facts.
 
 Dependency use is determined by the static field that contains the compact
 reference. There is no generic dependency-use tag, path, or property bag. The
-closed version 1.0 field catalog is:
+closed schema 1.x field catalog is:
 
 ```text
 System AccCore spatial_core
@@ -176,9 +176,11 @@ authoring order or raw source text. Canonicalization:
    complete candidate;
 6. selects the lexicographically least canonical serialization among semantic
    graph isomorphisms;
-7. assigns root-local entity identifiers and structural ordinals from that
+7. derives and deduplicates canonical FU definitions and Memory Operation
+   Engine definitions, then establishes each concrete occurrence relation;
+8. assigns root-local entity identifiers and structural ordinals from that
    canonical form; and
-8. writes one deterministic MLIR bytecode payload in canonical entity order.
+9. writes one deterministic MLIR bytecode payload in canonical entity order.
 
 The exact Fabric canonical semantic bytes passed to the Common Artifact
 SHA-256 v1 finalizer are:
@@ -241,7 +243,8 @@ authoring draft
   -> reject every residual fabric.instantiate
   -> build a private identifier-free root-complete candidate
   -> verify semantic contracts on that candidate
-  -> canonicalize and assign local identities
+  -> derive canonical FU and Memory Operation Engine definitions
+  -> canonicalize and assign local identities and occurrence relations
   -> write canonical bytes
   -> compute the unpublished candidate ArtifactIdentity
   -> import canonical bytes and independently reverify
@@ -344,10 +347,12 @@ For every root kind, the view exposes canonical complete ranges for all
 relations owned by that root, including its entities, owner inventories, token
 and memory endpoints, directed point connections, and dependency-derived
 occurrence facts. It also exposes the FU definition inventory, the exact FU
-occurrence-to-definition relation, and each FU definition's canonical
-capability-template inventory. Convenience queries such as
-`fuTemplate(occurrence)` and `fuCapabilityTemplates(template)` are indexes over
-those complete ranges, not additional authorities. A `System` root
+occurrence-to-definition relation, each FU definition's canonical
+capability-template inventory, the Memory Operation Engine definition
+inventory, and the exact memory-occurrence-to-engine-definition relation.
+Convenience queries such as `fuTemplate(occurrence)`,
+`fuCapabilityTemplates(template)`, and `memoryEngineTemplate(occurrence)` are
+indexes over those complete ranges, not additional authorities. A `System` root
 additionally exposes complete canonical
 ranges for spatial attachments, hardware-domain declarations and membership,
 system transport resources, transfer patterns, and each transport resource's

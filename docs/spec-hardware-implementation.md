@@ -140,7 +140,7 @@ references. Paths and free-form property maps are forbidden.
 
 These bindings are downstream `HardwareImplementation` facts. They are not
 Fabric `ImplementationInput` dependencies and cannot be used to make that
-reserved-unavailable `loom.fabric 1.0` role legal. An Interconnect
+reserved-unavailable `loom.fabric 1.x` role legal. An Interconnect
 Implementation remains self-contained apart from its exact RefinedSystem root;
 provider-owned external implementation state is selected and validated here.
 

@@ -158,7 +158,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 1.0` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 1.x` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -1089,7 +1089,7 @@ module-payload finalization. This provider-availability failure does not alter
 the stable root-kind ordinal or permit the reserved-unavailable
 `ImplementationInput` dependency role.
 
-In `loom.fabric 1.0`, the protocol-schema identity is a closed root-local schema
+In `loom.fabric 1.x`, the protocol-schema identity is a closed root-local schema
 tag interpreted by the typed interconnect implementation body. It is not an
 external Artifact reference and does not authorize a generic implementation
 dependency. The root has exactly one direct `RefinedSystem` dependency and no

@@ -74,10 +74,11 @@ TechMatchRow = ComputeMatchRow | MemoryMatchRow
 Row construction is driven by a closed `MatchRowSeed` union. A compute seed is
 the prospective graph-local actor-to-template-node injection plus every
 ordered operation-port and FU-boundary correspondence. A memory seed is the
-prospective graph-local actor-to-encoding relation plus every ordered
-operation-port, graph-boundary, capability-alternative, and internal-edge
-witness. All seed fields are typed references or owner-defined finite-domain
-values from exact `D/F`; a seed has no identity or serialized form.
+prospective graph-local actor-to-Memory-Operation-Engine-template relation plus
+every ordered template-relative operation-port, graph-boundary,
+capability-alternative, and internal-edge witness. All seed fields are typed
+references or owner-defined finite-domain values from exact `D/F`; a seed has
+no identity or serialized form.
 
 Seed keys are the corresponding prospective persistent payload keys before
 validation and Mapping-local identity assignment. The generator enumerates the
@@ -94,9 +95,12 @@ persistent record.
 
 A `MemoryMatchRow` is one complete candidate Memory Realization over canonical
 memory actors from one graph in `covers`. It contains exactly the selected
-Fabric memory semantic encoding, actor-to-operation-port and capability
-relations, graph-boundary correspondences, and selected internal-edge
-witnesses required to materialize the persistent record.
+`FabricMemoryEngineTemplateRef`, actor-to-template-operation-port and
+capability-alternative relations, token/value/control graph-boundary endpoint
+correspondences, and selected template-relative internal-edge witnesses
+required to materialize the persistent record. It contains no concrete memory
+occurrence, service, dispatch target, context, route, or configured-mode
+encoding.
 
 The persistent record owners define the field meanings. A row is an ephemeral
 typed value with no `EntityId`, artifact identity, generic property map, raw
