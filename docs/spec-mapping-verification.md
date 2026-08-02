@@ -78,6 +78,10 @@ at least:
 * complete ordered actor operand/result and FU-boundary correspondences;
 * derived FU implementation, actor set, configured-function topology,
   active-port behavior, and semantic configuration;
+* exact classification of a selected-template edge from a mapped dead actor
+  result to an FU output boundary as a derived discard requirement, with no
+  `mapping.compute_boundary` or residual logical net, and rejection of every
+  other unmatched selected-template edge;
 * exact resolution of each selected `FabricMemoryEngineTemplateRef`, its
   complete engine contract, token endpoints, operation ports, capability
   alternatives, ResourceContracts, and internal-connection relation;
@@ -136,6 +140,9 @@ The verifier checks in dependency order:
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
+* for every TechMapping-derived dead-result discard requirement, an exact
+  selected FU occurrence whose enclosing PE output selector is `Discard`, not
+  `Disconnected`, with no RouteTree or transport attachment for that result;
 * unique canonical MemoryBinding semantic keys and all record, child,
   logical-net, and ResourceUse structural keys;
 * FU and memory occurrence membership, instruction and operation context

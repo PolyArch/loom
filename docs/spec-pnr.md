@@ -863,6 +863,14 @@ and its resources. The same rule applies to local selectors, switches, FIFOs,
 boundaries, and module connections. No connection is inferred from ownership,
 coordinates, names, or co-location.
 
+A canonical actor result with no consumers is not a software edge and never
+creates a residual logical net. If its selected FU template exposes the mapped
+physical result at an FU output boundary, freeze derives one mandatory
+occurrence-local PE output `Discard` from exact `D/T/F`. Candidate construction
+must exclude an occurrence that cannot realize that discard. `Disconnected`
+does not consume a produced token, and routing the dead result to an ordinary
+transport endpoint would invent an obligation absent from `D`.
+
 For every residual producer endpoint, freeze groups all residual sink
 obligations into one deterministic multi-sink logical net:
 

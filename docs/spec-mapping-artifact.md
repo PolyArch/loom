@@ -127,6 +127,16 @@ owner-FU-boundary-port correspondence. Owner-relative ports are expanded from
 the selected template and do not repeat the FU implementation identity in
 each child.
 
+A mapped actor result with no canonical consumers is not an exposed software
+endpoint and therefore has no `mapping.compute_boundary` child. When the
+selected capability does not suppress that physical production, the actor's
+ordered result-port map and the selected template's exact edge to an FU output
+boundary mechanically derive a required PE output `Discard`. That disposition
+is finalized by SpatialMapping after it selects a concrete FU occurrence. It
+is not a logical edge, residual net, route, entity, or additional persistent
+TechMapping record. An unmatched selected-template edge is valid only for this
+exact dead-result disposition; every other extra edge remains invalid.
+
 The exact FU implementation is derived from the selected template owner. The
 actor set is derived from the actor-relation domain. Exact software types,
 constants, predicates, arity, and other semantic parameters remain owned by

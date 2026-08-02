@@ -55,6 +55,30 @@ relation matches exactly. This preserves the distinction between semantic
 realization and physical placement without inventing a Mapping-owned memory
 encoding or asking TechMapping to name an occurrence prematurely.
 
+## Why Dead Results Derive A Physical Discard
+
+Dataflow owns whether an actor result has consumers. A dead result therefore
+cannot acquire a synthetic software edge merely because the selected physical
+operation produces a token. Conversely, a disconnected ready/valid output can
+backpressure the operation forever and cannot be treated as if the token had
+vanished.
+
+For example, a two-lane `dataflow.demux` may route a token to a result that the
+selected program does not consume. TechMapping still maps both semantic result
+ordinals to the exact operation ports. If the selected FU template exposes the
+dead result at an FU boundary, SpatialMapping configures that concrete PE
+output as `Discard`, which keeps ready asserted and consumes any selected
+token. The live result alone receives an ordinary boundary correspondence and
+route.
+
+Persisting a `dataflow.drop`, a fake `mapping.compute_boundary`, or another
+discard record would duplicate facts already owned by exact Dataflow, the FU
+template, and the PE selector contract. Deriving the disposition from those
+three owners preserves one authority for deadness, one authority for physical
+topology, and one authority for occurrence configuration. It also keeps the
+TechMapping independent of a concrete occurrence while requiring Spatial
+closure to prove the real sink.
+
 ## Why TechMapping Uses Lazy Exact Cover
 
 TechMapping rows are finite and exact, but the set of complete covers is not
@@ -69,6 +93,18 @@ choices, factors independent incidence components, and returns a deterministic
 finite prefix. This is still exact: every published candidate has complete
 coverage and passes the independent verifier. The finite prefix limits the
 invocation domain without relabeling unexplored alternatives as infeasible.
+
+The seed domain starts at semantic membership rather than the Cartesian
+product of every actor, every Fabric operation, and every port permutation.
+OperationSchema and HSG already own whether an operation member and an ordered
+port correspondence exist. Fabric memory operation ports likewise own the
+canonical actor-contract, access, role, width, and operation-pattern relation.
+Counting combinations those owners declare impossible would make a fixed work
+budget depend on unrelated operations or memory ports added elsewhere in a
+general-purpose Fabric. Reusing the owner projections keeps the candidate set
+unchanged while reserving match-row attempts for complete prospective
+persistent payloads whose remaining joint topology and capacity checks can
+meaningfully pass or fail.
 
 Global CP-SAT was rejected as the primary TechMapping search. The row problem
 already has a small direct exact-cover model, while placing it in the same

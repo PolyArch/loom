@@ -80,6 +80,30 @@ capability-alternative, and internal-edge witness. All seed fields are typed
 references or owner-defined finite-domain values from exact `D/F`; a seed has
 no identity or serialized form.
 
+The prospective compute-seed domain begins with two owner-defined membership
+relations. The exact concrete `fabric.op` must enable the actor's registered
+`OperationSchemaId`, and the generated HSG family must admit the exact ordered
+software-to-physical port correspondence. A schema-nonmember or a port tuple
+outside that family relation is not a `MatchRowSeed` and consumes no
+match-row attempt. Type, format, width, parameterized capability, pointer
+layout, resource, complete FU topology, and boundary compatibility are row
+admission checks after that membership projection; each failure there remains
+one charged seed rejection. Implementations must obtain both membership
+relations from the sealed OperationSchema/HSG/Fabric projections and cannot
+reproduce them with operation names or private port rules.
+
+The prospective memory-seed domain begins with the exact relation returned by
+the selected Fabric memory operation port's canonical capability matcher. A
+port or capability alternative whose actor-contract domain, access domain,
+payload and endpoint widths, role map, or operation-pattern relation does not
+admit the exact Dataflow memory actor is not a `MatchRowSeed` and consumes no
+match-row attempt. Once an exact alternative is selected, joint spatial-port
+or temporal-residency capacity, graph-boundary correspondence, and selected
+internal-edge closure remain row-admission checks; each failure there is one
+charged seed rejection. The generator and independent verifier must consume
+the same sealed memory-operation-port relation rather than reconstructing any
+part of it in Mapping.
+
 Seed keys are the corresponding prospective persistent payload keys before
 validation and Mapping-local identity assignment. The generator enumerates the
 finite compute and memory seed domains lazily in lexicographic seed-key order.
@@ -92,6 +116,16 @@ from one graph in `covers`. It contains exactly the selected Fabric-owned FU
 capability-template reference and every non-derived actor, operation-port,
 boundary-port, and absorbed-edge correspondence required to materialize the
 persistent record.
+
+The selected FU topology must equal the canonical software-edge relation plus
+the exact physical dispositions required by dead actor results. A result with
+no canonical consumers creates no `mapping.compute_boundary` and no transport
+obligation. If its selected operation capability does not prove that physical
+production is suppressed, the selected template must carry that mapped result
+to one FU output boundary. Exact `D`, the actor result-port map, and that
+template edge then derive a mandatory PE output `Discard` for SpatialMapping.
+A disconnected output is not a discard. No other unmatched template edge,
+implicit sink, or invented software edge is legal.
 
 A `MemoryMatchRow` is one complete candidate Memory Realization over canonical
 memory actors from one graph in `covers`. It contains exactly the selected
@@ -211,6 +245,11 @@ Anchor-level tests cover:
 - exhaustive no-cover versus limit-before-proof outcome separation;
 - connected-component lazy product without Cartesian materialization;
 - exact ordered terminal and boundary correspondence;
+- one dead control result that derives an explicit PE output discard without
+  creating a software boundary or route;
+- Fabric-finalizer rejection when an active operation output has no complete
+  physical path, and TechMapping rejection when a dead result instead enters
+  another mapped operation or any non-discard topology;
 - rejection of a wrong-kind, foreign, incomplete, or duplicate row; and
 - independent verifier agreement for every published candidate.
 
