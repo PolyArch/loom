@@ -30,6 +30,21 @@ def Mapping_ActorRefAttr
     : Mapping_CanonicalBytesAttr<"ActorRef", "actor_ref",
         "Dataflow-owned ActorRef scoped by the root dataflow binding">;
 
+def Mapping_GraphProducerEndpointRefAttr
+    : Mapping_CanonicalBytesAttr<"GraphProducerEndpointRef",
+        "graph_producer_endpoint_ref",
+        "Dataflow-owned canonical graph producer endpoint reference">;
+
+def Mapping_GraphConsumerEndpointRefAttr
+    : Mapping_CanonicalBytesAttr<"GraphConsumerEndpointRef",
+        "graph_consumer_endpoint_ref",
+        "Dataflow-owned canonical graph consumer endpoint reference">;
+
+def Mapping_GraphEndpointRef : AnyAttrOf<[
+    Mapping_GraphProducerEndpointRefAttr,
+    Mapping_GraphConsumerEndpointRefAttr],
+    "Dataflow-owned canonical graph producer or consumer endpoint reference">;
+
 def Mapping_FabricFuCapabilityTemplateRefAttr
     : Mapping_CanonicalBytesAttr<"FabricFuCapabilityTemplateRef",
         "fabric_fu_capability_template_ref",
@@ -42,5 +57,32 @@ def Mapping_FabricFuTemplateNodeRefAttr
 def Mapping_FabricFuTemplatePortRefAttr
     : Mapping_CanonicalBytesAttr<"FabricFuTemplatePortRef",
         "fabric_fu_template_port_ref", "Fabric-owned FU template port reference">;
+
+def Mapping_FabricMemoryEngineTemplateRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryEngineTemplateRef",
+        "fabric_memory_engine_template_ref",
+        "Fabric-owned memory engine template reference">;
+
+def Mapping_FabricMemoryEngineTemplateOperationPortRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryEngineTemplateOperationPortRef",
+        "fabric_memory_engine_template_operation_port_ref",
+        "Fabric-owned memory engine template operation-port reference">;
+
+def Mapping_FabricMemoryEngineTemplateCapabilityAlternativeRefAttr
+    : Mapping_CanonicalBytesAttr<
+        "FabricMemoryEngineTemplateCapabilityAlternativeRef",
+        "fabric_memory_engine_template_capability_alternative_ref",
+        "Fabric-owned memory engine template capability-alternative reference">;
+
+def Mapping_FabricMemoryEngineTemplateEndpointRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricMemoryEngineTemplateEndpointRef",
+        "fabric_memory_engine_template_endpoint_ref",
+        "Fabric-owned memory engine template token-endpoint reference">;
+
+def Mapping_FabricMemoryEngineTemplateInternalConnectionRefAttr
+    : Mapping_CanonicalBytesAttr<
+        "FabricMemoryEngineTemplateInternalConnectionRef",
+        "fabric_memory_engine_template_internal_connection_ref",
+        "Fabric-owned memory engine template internal-connection reference">;
 
 #endif // LOOM_MAPPING_IR_MAPPINGATTRS_TD

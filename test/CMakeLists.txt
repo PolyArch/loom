@@ -83,6 +83,7 @@ set(LOOM_TEST_DEPENDS
   loom-frontend-payload-framing-test
   loom-mapping-core-test
   loom-mapping-artifact-test
+  loom-tech-mapping-artifact-test
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test

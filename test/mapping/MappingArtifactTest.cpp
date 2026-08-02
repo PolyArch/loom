@@ -96,6 +96,91 @@ std::string fuPortRef(std::uint64_t fu, bool output, std::uint64_t ordinal) {
   return "#mapping.fabric_fu_template_port_ref<" + result + ">";
 }
 
+std::string fabricEntityRef(std::uint32_t kind, std::uint64_t entity) {
+  std::string result = "[";
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    if (byte != 0)
+      result += ", ";
+    result +=
+        std::to_string(static_cast<std::uint8_t>(kind >> (8 * (3 - byte))));
+  }
+  for (unsigned byte = 0; byte < 8; ++byte)
+    result += ", " + std::to_string(
+                         static_cast<std::uint8_t>(entity >> (8 * (7 - byte))));
+  result += "]";
+  return result;
+}
+
+std::string appendRawU64(std::string prefix, std::uint64_t value) {
+  prefix.pop_back();
+  for (unsigned byte = 0; byte < 8; ++byte)
+    prefix += ", " + std::to_string(
+                         static_cast<std::uint8_t>(value >> (8 * (7 - byte))));
+  prefix += "]";
+  return prefix;
+}
+
+std::string memoryEngineTemplateRef(std::uint64_t engine) {
+  return "#mapping.fabric_memory_engine_template_ref<" +
+         fabricEntityRef(16, engine) + ">";
+}
+
+std::string memoryEngineOperationPortRef(std::uint64_t engine,
+                                         std::uint64_t ordinal) {
+  return "#mapping.fabric_memory_engine_template_operation_port_ref<" +
+         appendRawU64(fabricEntityRef(16, engine), ordinal) + ">";
+}
+
+std::string memoryEngineCapabilityAlternativeRef(std::uint64_t engine,
+                                                 std::uint64_t port,
+                                                 std::uint64_t ordinal) {
+  return "#mapping.fabric_memory_engine_template_capability_alternative_ref<" +
+         appendRawU64(appendRawU64(fabricEntityRef(16, engine), port),
+                      ordinal) +
+         ">";
+}
+
+std::string memoryEngineEndpointRef(std::uint64_t engine,
+                                    std::uint64_t ordinal) {
+  return "#mapping.fabric_memory_engine_template_endpoint_ref<" +
+         appendRawU64(fabricEntityRef(16, engine), ordinal) + ">";
+}
+
+std::string memoryEngineConnectionRef(std::uint64_t engine,
+                                      std::uint64_t source,
+                                      std::uint64_t sink) {
+  std::string bytes = fabricEntityRef(16, engine);
+  bytes.pop_back();
+  const auto append = [&](std::uint64_t endpoint, std::string &result) {
+    const std::string encoded =
+        appendRawU64(fabricEntityRef(16, engine), endpoint);
+    result += ", " + encoded.substr(1, encoded.size() - 2);
+  };
+  append(source, bytes);
+  append(sink, bytes);
+  bytes += "]";
+  return "#mapping.fabric_memory_engine_template_internal_connection_ref<" +
+         bytes + ">";
+}
+
+std::string graphIngressProducerRef(std::uint64_t graph) {
+  return "#mapping.graph_producer_endpoint_ref<[0, 0, 0, 0, 0, 0, 0, 0, " +
+         rawU64Ref(graph).substr(1) + ">";
+}
+
+std::string actorResultProducerRef(std::uint64_t actor, std::uint64_t ordinal) {
+  return "#mapping.graph_producer_endpoint_ref<[0, 0, 0, 1, " +
+         rawU64Ref(actor).substr(1, rawU64Ref(actor).size() - 2) + ", " +
+         rawU64Ref(ordinal).substr(1) + ">";
+}
+
+std::string actorOperandConsumerRef(std::uint64_t actor,
+                                    std::uint64_t ordinal) {
+  return "#mapping.graph_consumer_endpoint_ref<[0, 0, 0, 0, " +
+         rawU64Ref(actor).substr(1, rawU64Ref(actor).size() - 2) + ", " +
+         rawU64Ref(ordinal).substr(1) + ">";
+}
+
 std::string techModule(bool reverseRealizations, bool semanticDelta) {
   const std::string dataflow = identityAttr(17);
   const std::string fabric = identityAttr(34);
@@ -120,6 +205,40 @@ std::string techModule(bool reverseRealizations, bool semanticDelta) {
       reverseRealizations ? second + first : first + second;
   return "module {\n  mapping.tech version<2, 0> dataflow(" + dataflow +
          ") fabric(" + fabric + ") covers([" + graph + "]) {" + body + "  }\n}";
+}
+
+std::string memoryTechModule(bool reverseChildren, bool semanticDelta,
+                             bool wrongOwner) {
+  const std::string dataflow = identityAttr(17);
+  const std::string fabric = identityAttr(34);
+  const std::uint64_t engine = 41;
+  const std::uint64_t childEngine = wrongOwner ? 42 : engine;
+  const std::uint64_t resultEndpoint = semanticDelta ? 4 : 3;
+
+  const std::string actor =
+      "        mapping.memory_actor actor(" + actorRef(7) +
+      ") operation_port(" + memoryEngineOperationPortRef(childEngine, 0) +
+      ") capability(" +
+      memoryEngineCapabilityAlternativeRef(childEngine, 0, 1) +
+      ") operand_ports([" + memoryEngineEndpointRef(childEngine, 0) + ", " +
+      memoryEngineEndpointRef(childEngine, 1) + "]) result_ports([" +
+      memoryEngineEndpointRef(childEngine, resultEndpoint) + "])\n";
+  const std::string boundary =
+      "        mapping.memory_graph_boundary terminal(" +
+      graphIngressProducerRef(0) + ") endpoint(" +
+      memoryEngineEndpointRef(childEngine, 0) + ")\n";
+  const std::string edge = "        mapping.memory_internal_edge producer(" +
+                           actorResultProducerRef(7, 0) + ") consumer(" +
+                           actorOperandConsumerRef(8, 1) + ") connection(" +
+                           memoryEngineConnectionRef(childEngine, 3, 2) + ")\n";
+  const std::string children =
+      reverseChildren ? edge + boundary + actor : actor + boundary + edge;
+
+  return "module {\n  mapping.tech version<2, 0> dataflow(" + dataflow +
+         ") fabric(" + fabric + ") covers([" + graphRef(0) + "]) {\n" +
+         "      mapping.memory_realization 9 engine(" +
+         memoryEngineTemplateRef(engine) + ") {\n" + children +
+         "      }\n  }\n}";
 }
 
 mlir::OwningOpRef<mlir::ModuleOp> parse(mlir::MLIRContext &context,
@@ -189,11 +308,71 @@ void testMalformedScopedReference() {
     fail("malformed GraphRef payload passed verification");
 }
 
+void testComputePortOrdinalRange() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry);
+
+  std::string text = techModule(false, false);
+  const std::string valid = "operand_ports([0])";
+  const std::size_t position = text.find(valid);
+  if (position == std::string::npos)
+    fail("compute port fixture has no operand map");
+  text.replace(position, valid.size(), "operand_ports([-4294967296])");
+  auto module = parse(context, text);
+  if (!module)
+    return;
+  if (mlir::succeeded(mlir::verify(*module)))
+    fail("negative 64-bit compute port ordinal passed verification");
+}
+
+void testCanonicalMemoryRealization() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry);
+
+  auto ordered = parse(context, memoryTechModule(false, false, false));
+  auto reversed = parse(context, memoryTechModule(true, false, false));
+  if (!ordered || !reversed) {
+    llvm::errs() << memoryTechModule(false, false, false) << '\n';
+    fail("valid memory realization syntax did not parse");
+  }
+  if (mlir::failed(mlir::verify(*ordered)) ||
+      mlir::failed(mlir::verify(*reversed)))
+    fail("valid memory realization did not verify");
+
+  const auto orderedBytes = canonicalBytes(*ordered);
+  const auto reversedBytes = canonicalBytes(*reversed);
+  if (!orderedBytes.bytes().equals(reversedBytes.bytes()))
+    fail("memory realization authoring order changed canonical bytes");
+
+  auto delta = parse(context, memoryTechModule(false, true, false));
+  if (!delta || mlir::failed(mlir::verify(*delta)))
+    fail("memory realization semantic delta did not verify");
+  if (orderedBytes.bytes().equals(canonicalBytes(*delta).bytes()))
+    fail("memory endpoint correspondence did not change canonical bytes");
+}
+
+void testMemoryTemplateOwnerMismatch() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry);
+
+  auto module = parse(context, memoryTechModule(false, false, true));
+  if (!module)
+    return;
+  if (mlir::succeeded(mlir::verify(*module)))
+    fail("wrong-owner memory template reference passed verification");
+}
+
 } // namespace
 
 int main() {
   testCanonicalAuthoringOrder();
   testMalformedScopedReference();
+  testComputePortOrdinalRange();
+  testCanonicalMemoryRealization();
+  testMemoryTemplateOwnerMismatch();
   llvm::outs() << "mapping artifact tests passed\n";
   return 0;
 }

@@ -128,6 +128,104 @@ std::optional<AddressedActor> getAddressedActor(Operation *op) {
       .Default([](Operation *) { return std::nullopt; });
 }
 
+template <typename MemoryOp> OpOperand *optionalMaskOperand(MemoryOp actor) {
+  MutableOperandRange mask = actor.getMaskMutable();
+  return mask.empty() ? nullptr : &*mask.begin();
+}
+
+llvm::Expected<OpOperand *> actorOperandForRole(Operation *op,
+                                                ServiceValueRole role) {
+  if (auto actor = dyn_cast<LoadOp>(op)) {
+    if (role == ServiceValueRole::Address)
+      return &actor.getAddrMutable();
+    if (role == ServiceValueRole::Control)
+      return &actor.getCtrlMutable();
+    if (role == ServiceValueRole::Mask)
+      if (OpOperand *mask = optionalMaskOperand(actor))
+        return mask;
+  } else if (auto actor = dyn_cast<StoreOp>(op)) {
+    if (role == ServiceValueRole::Address)
+      return &actor.getAddrMutable();
+    if (role == ServiceValueRole::Data)
+      return &actor.getDataMutable();
+    if (role == ServiceValueRole::Control)
+      return &actor.getCtrlMutable();
+    if (role == ServiceValueRole::Mask)
+      if (OpOperand *mask = optionalMaskOperand(actor))
+        return mask;
+  } else if (auto actor = dyn_cast<AtomicRmwOp>(op)) {
+    if (role == ServiceValueRole::Address)
+      return &actor.getAddrMutable();
+    if (role == ServiceValueRole::Update)
+      return &actor.getValueMutable();
+    if (role == ServiceValueRole::Control)
+      return &actor.getCtrlMutable();
+    if (role == ServiceValueRole::Mask)
+      if (OpOperand *mask = optionalMaskOperand(actor))
+        return mask;
+  } else if (auto actor = dyn_cast<CmpXchgOp>(op)) {
+    if (role == ServiceValueRole::Address)
+      return &actor.getAddrMutable();
+    if (role == ServiceValueRole::Expected)
+      return &actor.getExpectedMutable();
+    if (role == ServiceValueRole::Desired)
+      return &actor.getDesiredMutable();
+    if (role == ServiceValueRole::Control)
+      return &actor.getCtrlMutable();
+    if (role == ServiceValueRole::Mask)
+      if (OpOperand *mask = optionalMaskOperand(actor))
+        return mask;
+  } else if (auto actor = dyn_cast<FenceOp>(op)) {
+    if (role == ServiceValueRole::Control)
+      return &actor.getCtrlMutable();
+  }
+  return schemaError("service role has no actor operand");
+}
+
+llvm::Expected<OpResult> actorResultForRole(Operation *op,
+                                            ServiceValueRole role) {
+  if (auto actor = dyn_cast<LoadOp>(op)) {
+    if (role == ServiceValueRole::Data)
+      return cast<OpResult>(actor.getData());
+    if (role == ServiceValueRole::Completion)
+      return cast<OpResult>(actor.getDone());
+  } else if (auto actor = dyn_cast<StoreOp>(op)) {
+    if (role == ServiceValueRole::Completion)
+      return cast<OpResult>(actor.getDone());
+  } else if (auto actor = dyn_cast<AtomicRmwOp>(op)) {
+    if (role == ServiceValueRole::Old)
+      return cast<OpResult>(actor.getOld());
+    if (role == ServiceValueRole::Completion)
+      return cast<OpResult>(actor.getDone());
+  } else if (auto actor = dyn_cast<CmpXchgOp>(op)) {
+    if (role == ServiceValueRole::Old)
+      return cast<OpResult>(actor.getOld());
+    if (role == ServiceValueRole::Success)
+      return cast<OpResult>(actor.getSuccess());
+    if (role == ServiceValueRole::Completion)
+      return cast<OpResult>(actor.getDone());
+  } else if (auto actor = dyn_cast<FenceOp>(op)) {
+    if (role == ServiceValueRole::Completion)
+      return cast<OpResult>(actor.getDone());
+  }
+  return schemaError("service role has no actor result");
+}
+
+llvm::Error validateServiceActor(const CanonicalService &service,
+                                 Operation *actor) {
+  auto projection = projectRegisteredActorSchemaProjection(actor);
+  if (!projection)
+    return projection.takeError();
+  if (service.kind() == ServiceKind::MemoryFence)
+    return validateCanonicalMemoryActorCorrespondence(*projection, service,
+                                                      nullptr);
+  auto access = getCanonicalMemoryAccessView(actor);
+  if (!access)
+    return access.takeError();
+  return validateCanonicalMemoryActorCorrespondence(*projection, service,
+                                                    &*access);
+}
+
 //===----------------------------------------------------------------------===//
 // The schema table
 //
@@ -563,6 +661,40 @@ ServiceValues CanonicalService::results() const {
   for (Role role : getServiceRoleSchema(kind()).results)
     values.push_back({role, typeOf(role)});
   return values;
+}
+
+llvm::Expected<OpOperand *>
+CanonicalService::argumentValue(Operation *actor, unsigned ordinal) const {
+  if (!actor)
+    return schemaError("there is no actor to resolve");
+  if (llvm::Error error = validateServiceActor(*this, actor))
+    return std::move(error);
+  ServiceValues values = arguments();
+  if (ordinal >= values.size())
+    return schemaError("service argument ordinal is out of range");
+  auto operand = actorOperandForRole(actor, values[ordinal].role);
+  if (!operand)
+    return operand.takeError();
+  if ((*operand)->get().getType() != values[ordinal].type)
+    return schemaError("service argument type differs from its actor value");
+  return *operand;
+}
+
+llvm::Expected<OpResult> CanonicalService::resultValue(Operation *actor,
+                                                       unsigned ordinal) const {
+  if (!actor)
+    return schemaError("there is no actor to resolve");
+  if (llvm::Error error = validateServiceActor(*this, actor))
+    return std::move(error);
+  ServiceValues values = results();
+  if (ordinal >= values.size())
+    return schemaError("service result ordinal is out of range");
+  auto result = actorResultForRole(actor, values[ordinal].role);
+  if (!result)
+    return result.takeError();
+  if (result->getType() != values[ordinal].type)
+    return schemaError("service result type differs from its actor value");
+  return *result;
 }
 
 Type CanonicalService::payload() const {

@@ -661,6 +661,43 @@ bool checkMemoryServiceRoleProjection() {
   return ok;
 }
 
+bool checkActorSlotProjection(mlir::ModuleOp module) {
+  mlir::func::FuncOp function = findFunction(module, "read_element");
+  mlir::Operation *actor = function ? findActor(function) : nullptr;
+  if (!actor)
+    return fail("actor_slot_projection", "load actor is absent");
+  llvm::Expected<CanonicalService> service = CanonicalService::forActor(actor);
+  if (!service) {
+    llvm::consumeError(service.takeError());
+    return fail("actor_slot_projection", "load service is unavailable");
+  }
+  auto address = service->argumentValue(actor, 0);
+  auto control = service->argumentValue(actor, 1);
+  auto data = service->resultValue(actor, 0);
+  auto completion = service->resultValue(actor, 1);
+  if (!address || !control || !data || !completion) {
+    if (!address)
+      llvm::consumeError(address.takeError());
+    if (!control)
+      llvm::consumeError(control.takeError());
+    if (!data)
+      llvm::consumeError(data.takeError());
+    if (!completion)
+      llvm::consumeError(completion.takeError());
+    return fail("actor_slot_projection", "a canonical slot did not resolve");
+  }
+  if ((*address)->get() != actor->getOperand(1) ||
+      (*control)->get() != actor->getOperand(2) ||
+      *data != actor->getResult(0) || *completion != actor->getResult(1))
+    return fail("actor_slot_projection",
+                "service slots do not name the actor-owned SSA values");
+  auto outside = service->argumentValue(actor, 2);
+  if (outside)
+    return fail("actor_slot_projection", "out-of-range slot was accepted");
+  llvm::consumeError(outside.takeError());
+  return true;
+}
+
 /// A message transfer is the one kind no memory actor projects: it carries one
 /// exact supported payload type over a single leg whose acceptance is its
 /// completion. The kind has no addressed geometry, so it derives no width.
@@ -1214,5 +1251,6 @@ int main() {
   ok &= checkCorrespondenceIncludesIndexScope(*module);
   ok &= checkSourceTracking(*module);
   ok &= checkMemoryServiceRoleProjection();
+  ok &= checkActorSlotProjection(*module);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

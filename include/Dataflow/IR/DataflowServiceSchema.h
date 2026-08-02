@@ -289,6 +289,15 @@ public:
   ServiceValues arguments() const;
   ServiceValues results() const;
 
+  /// Resolves one schema-ordered service slot to the exact SSA value owned by
+  /// `actor`. The memory capability is deliberately absent from this token
+  /// projection. The service must be the exact projection of `actor`; a
+  /// foreign service, wrong slot domain, or out-of-range ordinal is rejected.
+  llvm::Expected<mlir::OpOperand *> argumentValue(mlir::Operation *actor,
+                                                  unsigned ordinal) const;
+  llvm::Expected<mlir::OpResult> resultValue(mlir::Operation *actor,
+                                             unsigned ordinal) const;
+
   /// One leg for a message transfer; a request and a response for every memory
   /// kind.
   unsigned legCount() const;

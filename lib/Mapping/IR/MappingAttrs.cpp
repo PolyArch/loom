@@ -93,6 +93,18 @@ mapping::ActorRefAttr::verify(function_ref<InFlightDiagnostic()> emitError,
   return verifyDataflowRef<::dataflow::ActorRef>(emitError, record);
 }
 
+LogicalResult mapping::GraphProducerEndpointRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::CanonicalGraphProducerEndpointRef>(
+      emitError, record);
+}
+
+LogicalResult mapping::GraphConsumerEndpointRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::CanonicalGraphConsumerEndpointRef>(
+      emitError, record);
+}
+
 LogicalResult mapping::FabricFuCapabilityTemplateRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyFabricRef<::loom::fabric::FabricFuCapabilityTemplateRef>(
@@ -109,4 +121,39 @@ LogicalResult mapping::FabricFuTemplatePortRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyFabricRef<::loom::fabric::FabricFuTemplatePortRef>(emitError,
                                                                   record);
+}
+
+LogicalResult mapping::FabricMemoryEngineTemplateRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyFabricRef<::loom::fabric::FabricMemoryEngineTemplateRef>(
+      emitError, record);
+}
+
+LogicalResult mapping::FabricMemoryEngineTemplateOperationPortRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyFabricRef<
+      ::loom::fabric::FabricMemoryEngineTemplateOperationPortRef>(emitError,
+                                                                  record);
+}
+
+LogicalResult
+mapping::FabricMemoryEngineTemplateCapabilityAlternativeRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyFabricRef<
+      ::loom::fabric::FabricMemoryEngineTemplateCapabilityAlternativeRef>(
+      emitError, record);
+}
+
+LogicalResult mapping::FabricMemoryEngineTemplateEndpointRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyFabricRef<::loom::fabric::FabricMemoryEngineTemplateEndpointRef>(
+      emitError, record);
+}
+
+LogicalResult
+mapping::FabricMemoryEngineTemplateInternalConnectionRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyFabricRef<
+      ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef>(
+      emitError, record);
 }

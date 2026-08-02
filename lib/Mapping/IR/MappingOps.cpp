@@ -11,6 +11,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
+#include <tuple>
 #include <vector>
 
 using namespace mlir;
@@ -53,6 +55,38 @@ LogicalResult rejectUnknownAttributes(Operation *operation,
              << "unknown persistent field '" << attribute.getName() << "'";
   }
   return success();
+}
+
+using MemoryEngineRef = ::loom::fabric::FabricMemoryEngineTemplateRef;
+
+LogicalResult verifyMemoryEndpointArray(Operation *operation,
+                                        ArrayAttr attributes,
+                                        MemoryEngineRef engine,
+                                        llvm::StringRef field) {
+  for (Attribute attribute : attributes) {
+    auto endpoint =
+        dyn_cast<mapping::FabricMemoryEngineTemplateEndpointRefAttr>(attribute);
+    if (!endpoint)
+      return operation->emitOpError()
+             << field << " must contain only memory engine endpoint refs";
+    auto decoded =
+        decodeFabric<::loom::fabric::FabricMemoryEngineTemplateEndpointRef>(
+            endpoint);
+    if (!decoded)
+      return operation->emitOpError() << llvm::toString(decoded.takeError());
+    if (decoded->engine != engine)
+      return operation->emitOpError()
+             << field << " contains an endpoint owned by another engine";
+  }
+  return success();
+}
+
+std::pair<unsigned, std::vector<std::uint8_t>>
+graphEndpointKey(Attribute endpoint) {
+  if (auto producer = dyn_cast<mapping::GraphProducerEndpointRefAttr>(endpoint))
+    return {0, unsignedBytes(producer.getRecord())};
+  auto consumer = cast<mapping::GraphConsumerEndpointRefAttr>(endpoint);
+  return {1, unsignedBytes(consumer.getRecord())};
 }
 
 } // namespace
@@ -127,13 +161,16 @@ LogicalResult mapping::TechOp::verify() {
   bool hasRealization = false;
   llvm::SmallDenseSet<std::uint64_t, 8> entityIds;
   for (Operation &child : getBody().front()) {
-    auto realization = dyn_cast<mapping::ComputeRealizationOp>(child);
-    if (!realization)
+    std::optional<std::uint64_t> entityId;
+    if (auto realization = dyn_cast<mapping::ComputeRealizationOp>(child))
+      entityId = realization.getEntityId();
+    else if (auto realization = dyn_cast<mapping::MemoryRealizationOp>(child))
+      entityId = realization.getEntityId();
+    else
       return child.emitOpError("is not a closed TechMapping record kind");
     hasRealization = true;
-    const std::uint64_t id = realization.getEntityId();
-    if (!entityIds.insert(id).second)
-      return realization.emitOpError("duplicates a Mapping EntityId");
+    if (!entityIds.insert(*entityId).second)
+      return child.emitOpError("duplicates a Mapping EntityId");
   }
   if (!hasRealization)
     return emitOpError("must contain at least one realization");
@@ -171,10 +208,10 @@ LogicalResult mapping::ComputeActorOp::verify() {
     return emitOpError() << llvm::toString(node.takeError());
   if (node->node != ::loom::fabric::FabricFuNodeKind::Op)
     return emitOpError("fabric_op must select an operation node");
-  for (std::int32_t port : getOperandPorts())
+  for (std::int64_t port : getOperandPorts())
     if (port < 0)
       return emitOpError("operand port ordinals must be nonnegative");
-  for (std::int32_t port : getResultPorts())
+  for (std::int64_t port : getResultPorts())
     if (port < 0)
       return emitOpError("result port ordinals must be nonnegative");
   return success();
@@ -230,6 +267,121 @@ LogicalResult mapping::ComputeBoundaryOp::verify() {
                             : ::loom::fabric::FabricPortDirection::Output;
   if (port->direction != expected)
     return emitOpError("software and FU boundary directions disagree");
+  return success();
+}
+
+LogicalResult mapping::MemoryRealizationOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"entity_id", "engine"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+
+  auto engine = decodeFabric<MemoryEngineRef>(getEngine());
+  if (!engine)
+    return emitOpError() << llvm::toString(engine.takeError());
+
+  bool hasActor = false;
+  std::set<std::vector<std::uint8_t>> actorKeys;
+  std::set<std::pair<unsigned, std::vector<std::uint8_t>>> boundaryKeys;
+  std::set<std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>>
+      edgeKeys;
+
+  for (Operation &child : getBody().front()) {
+    if (auto actor = dyn_cast<mapping::MemoryActorOp>(child)) {
+      hasActor = true;
+      if (!actorKeys.insert(unsignedBytes(actor.getActor().getRecord())).second)
+        return actor.emitOpError("duplicates a memory actor correspondence");
+      auto port = decodeFabric<
+          ::loom::fabric::FabricMemoryEngineTemplateOperationPortRef>(
+          actor.getOperationPort());
+      if (!port)
+        return actor.emitOpError() << llvm::toString(port.takeError());
+      if (port->engine != *engine)
+        return actor.emitOpError(
+            "operation port is owned by another memory engine template");
+      continue;
+    }
+    if (auto boundary = dyn_cast<mapping::MemoryGraphBoundaryOp>(child)) {
+      if (!boundaryKeys.insert(graphEndpointKey(boundary.getTerminal())).second)
+        return boundary.emitOpError(
+            "duplicates a graph-boundary terminal correspondence");
+      auto endpoint =
+          decodeFabric<::loom::fabric::FabricMemoryEngineTemplateEndpointRef>(
+              boundary.getEndpoint());
+      if (!endpoint)
+        return boundary.emitOpError() << llvm::toString(endpoint.takeError());
+      if (endpoint->engine != *engine)
+        return boundary.emitOpError(
+            "endpoint is owned by another memory engine template");
+      continue;
+    }
+    if (auto edge = dyn_cast<mapping::MemoryInternalEdgeOp>(child)) {
+      auto key = std::make_pair(unsignedBytes(edge.getProducer().getRecord()),
+                                unsignedBytes(edge.getConsumer().getRecord()));
+      if (!edgeKeys.insert(std::move(key)).second)
+        return edge.emitOpError("duplicates a canonical software edge");
+      auto connection = decodeFabric<
+          ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef>(
+          edge.getConnection());
+      if (!connection)
+        return edge.emitOpError() << llvm::toString(connection.takeError());
+      if (connection->engine != *engine ||
+          connection->source.engine != *engine ||
+          connection->sink.engine != *engine)
+        return edge.emitOpError(
+            "connection is owned by another memory engine template");
+      continue;
+    }
+    return child.emitOpError("is not a closed Memory Realization child kind");
+  }
+  if (!hasActor)
+    return emitOpError("must contain at least one memory_actor");
+  return success();
+}
+
+LogicalResult mapping::MemoryActorOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"actor", "operation_port", "capability",
+                                      "operand_ports", "result_ports"})))
+    return failure();
+  auto port =
+      decodeFabric<::loom::fabric::FabricMemoryEngineTemplateOperationPortRef>(
+          getOperationPort());
+  if (!port)
+    return emitOpError() << llvm::toString(port.takeError());
+  auto capability = decodeFabric<
+      ::loom::fabric::FabricMemoryEngineTemplateCapabilityAlternativeRef>(
+      getCapability());
+  if (!capability)
+    return emitOpError() << llvm::toString(capability.takeError());
+  if (capability->port != *port)
+    return emitOpError(
+        "capability alternative is not owned by the selected operation port");
+  if (failed(verifyMemoryEndpointArray(*this, getOperandPorts(), port->engine,
+                                       "operand_ports")) ||
+      failed(verifyMemoryEndpointArray(*this, getResultPorts(), port->engine,
+                                       "result_ports")))
+    return failure();
+  return success();
+}
+
+LogicalResult mapping::MemoryGraphBoundaryOp::verify() {
+  return rejectUnknownAttributes(*this, {"terminal", "endpoint"});
+}
+
+LogicalResult mapping::MemoryInternalEdgeOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"producer", "consumer", "connection"})))
+    return failure();
+  auto connection = decodeFabric<
+      ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef>(
+      getConnection());
+  if (!connection)
+    return emitOpError() << llvm::toString(connection.takeError());
+  if (connection->source.engine != connection->engine ||
+      connection->sink.engine != connection->engine)
+    return emitOpError(
+        "internal connection endpoints must share the connection owner");
   return success();
 }
 

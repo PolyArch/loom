@@ -1,5 +1,7 @@
 add_library(LoomMappingArtifact
   MappingAssembly.cpp
+  TechMappingComputeVerification.cpp
+  TechMappingArtifact.cpp
 )
 
 target_include_directories(LoomMappingArtifact PUBLIC
@@ -8,6 +10,8 @@ target_include_directories(LoomMappingArtifact PUBLIC
 
 target_link_libraries(LoomMappingArtifact PUBLIC
   LoomCommon
+  LoomFabricArtifact
+  MLIRDataflow
   MLIRMapping
 )
 

@@ -37,8 +37,8 @@ def Mapping_ComputeActorOp
   let arguments = (ins
       Mapping_ActorRefAttr:$actor,
       Mapping_FabricFuTemplateNodeRefAttr:$fabric_op,
-      DenseI32ArrayAttr:$operand_ports,
-      DenseI32ArrayAttr:$result_ports);
+      DenseI64ArrayAttr:$operand_ports,
+      DenseI64ArrayAttr:$result_ports);
   let assemblyFormat = [{`actor` `(` $actor `)` `op` `(` $fabric_op `)`
                          `operand_ports` `(` $operand_ports `)`
                          `result_ports` `(` $result_ports `)` attr-dict}];
@@ -54,6 +54,61 @@ def Mapping_ComputeBoundaryOp
       I64Attr:$port_ordinal,
       Mapping_FabricFuTemplatePortRefAttr:$fu_port);
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_MemoryRealizationOp
+    : Mapping_Op<"memory_realization", [HasParent<"TechOp">, SingleBlock,
+                                         NoTerminator]> {
+  let summary = "one complete memory operation-engine realization";
+  let arguments = (ins
+      I64Attr:$entity_id,
+      Mapping_FabricMemoryEngineTemplateRefAttr:$engine);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{$entity_id `engine` `(` $engine `)` $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_MemoryActorOp
+    : Mapping_Op<"memory_actor", [HasParent<"MemoryRealizationOp">]> {
+  let summary = "memory actor to template operation-port correspondence";
+  let arguments = (ins
+      Mapping_ActorRefAttr:$actor,
+      Mapping_FabricMemoryEngineTemplateOperationPortRefAttr:$operation_port,
+      Mapping_FabricMemoryEngineTemplateCapabilityAlternativeRefAttr:$capability,
+      ArrayAttr:$operand_ports,
+      ArrayAttr:$result_ports);
+  let assemblyFormat = [{`actor` `(` $actor `)`
+                         `operation_port` `(` $operation_port `)`
+                         `capability` `(` $capability `)`
+                         `operand_ports` `(` $operand_ports `)`
+                         `result_ports` `(` $result_ports `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_MemoryGraphBoundaryOp
+    : Mapping_Op<"memory_graph_boundary",
+                 [HasParent<"MemoryRealizationOp">]> {
+  let summary = "graph token endpoint to memory engine endpoint correspondence";
+  let arguments = (ins
+      Mapping_GraphEndpointRef:$terminal,
+      Mapping_FabricMemoryEngineTemplateEndpointRefAttr:$endpoint);
+  let assemblyFormat = [{`terminal` `(` $terminal `)`
+                         `endpoint` `(` $endpoint `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_MemoryInternalEdgeOp
+    : Mapping_Op<"memory_internal_edge",
+                 [HasParent<"MemoryRealizationOp">]> {
+  let summary = "canonical software edge to memory engine internal connection";
+  let arguments = (ins
+      Mapping_GraphProducerEndpointRefAttr:$producer,
+      Mapping_GraphConsumerEndpointRefAttr:$consumer,
+      Mapping_FabricMemoryEngineTemplateInternalConnectionRefAttr:$connection);
+  let assemblyFormat = [{`producer` `(` $producer `)`
+                         `consumer` `(` $consumer `)`
+                         `connection` `(` $connection `)` attr-dict}];
   let hasVerifier = 1;
 }
 
