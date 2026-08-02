@@ -26,6 +26,10 @@ all live here:
     identities. LLVM owns its source pin, compiler identities, and semantic
     CMake arguments; CIRCT layers its source pin and semantic arguments on
     the exact LLVM identity.
+  * OR-Tools is a required, independently versioned product. It has its own
+    fair lock, build/install directories, and deterministic stamp because it
+    has no LLVM ABI dependency. Loom consumes only its installed CMake package
+    after the package and source-commit projection have been validated.
   * If a per-worktree loom build was configured against a shared LLVM
     that has since been wiped (e.g. main ran `distclean`), the stale
     loom build directory is removed before reconfiguring.
@@ -41,7 +45,6 @@ import fcntl
 import json
 import math
 import os
-import re
 import shlex
 import shutil
 import signal
@@ -52,20 +55,57 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-REQUIRED_GIT = (2, 7)
-LLVM_C_COMPILER = "gcc"
-LLVM_CXX_COMPILER = "g++"
-LLVM_GCC_MIN = (7, 4)
-LOOM_C_COMPILER = "clang"
-LOOM_CXX_COMPILER = "clang++"
-LOOM_CLANG_MIN = (21, 1, 8)
+try:
+    from loom_build_environment import (
+        LLVM_C_COMPILER,
+        LLVM_CXX_COMPILER,
+        LLVM_GCC_MIN,
+        LOOM_C_COMPILER,
+        LOOM_CXX_COMPILER,
+        LOOM_CLANG_MIN,
+        check_git_version,
+        check_llvm_compilers,
+        check_loom_compilers,
+        compiler_status,
+        die,
+        info,
+        is_nfs,
+        real,
+        resolve_compiler_executable as _resolve_compiler_executable,
+        resolve_main_worktree,
+        warn,
+    )
+except ModuleNotFoundError:
+    from scripts.loom_build_environment import (
+        LLVM_C_COMPILER,
+        LLVM_CXX_COMPILER,
+        LLVM_GCC_MIN,
+        LOOM_C_COMPILER,
+        LOOM_CXX_COMPILER,
+        LOOM_CLANG_MIN,
+        check_git_version,
+        check_llvm_compilers,
+        check_loom_compilers,
+        compiler_status,
+        die,
+        info,
+        is_nfs,
+        real,
+        resolve_compiler_executable as _resolve_compiler_executable,
+        resolve_main_worktree,
+        warn,
+    )
+
+try:
+    from loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
+except ModuleNotFoundError:
+    from scripts.loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
+
+resolve_compiler_executable = _resolve_compiler_executable
+
 MAX_LOCK_TIMEOUT = 3600.0
 CHILD_TERMINATION_GRACE = 1.0
-_LIBC = (
-    ctypes.CDLL(None, use_errno=True)
-    if sys.platform.startswith("linux")
-    else None
-)
+_LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
 _PR_SET_PDEATHSIG = 1
 _SUPERVISE_COMMAND = "--internal-supervise-command"
 _TURNSTILE_RECORD_SIZE = 17
@@ -96,29 +136,10 @@ CIRCT_SEMANTIC_CMAKE_ARGS = (
 )
 
 
-def info(msg: str) -> None:
-    print(f"info: {msg}", file=sys.stderr)
-
-
-def warn(msg: str) -> None:
-    print(f"warning: {msg}", file=sys.stderr)
-
-
-def die(msg: str, code: int = 1) -> None:
-    print(f"error: {msg}", file=sys.stderr)
-    sys.exit(code)
-
-
 def validate_lock_timeout(value: str | float) -> float:
     timeout = float(value)
-    if (
-        not math.isfinite(timeout)
-        or timeout < 0
-        or timeout > MAX_LOCK_TIMEOUT
-    ):
-        raise ValueError(
-            f"lock timeout must be between 0 and {MAX_LOCK_TIMEOUT:g} seconds"
-        )
+    if not math.isfinite(timeout) or timeout < 0 or timeout > MAX_LOCK_TIMEOUT:
+        raise ValueError(f"lock timeout must be between 0 and {MAX_LOCK_TIMEOUT:g} seconds")
     return timeout
 
 
@@ -140,9 +161,7 @@ def _supervise_command(argv: list[str]) -> None:
         os._exit(127)
     try:
         expected_parent = int(argv[0])
-        lease_fds = tuple(
-            int(fd) for fd in argv[1].split(",") if fd
-        )
+        lease_fds = tuple(int(fd) for fd in argv[1].split(",") if fd)
         if any(fd < 0 for fd in lease_fds):
             raise ValueError
         for fd in lease_fds:
@@ -236,162 +255,6 @@ def run(cmd, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(cmd, returncode)
 
 
-def format_version(version: tuple[int, ...]) -> str:
-    return ".".join(str(part) for part in version)
-
-
-def normalize_version(version: tuple[int, ...], width: int) -> tuple[int, ...]:
-    return version + (0,) * max(0, width - len(version))
-
-
-def version_less(lhs: tuple[int, ...], rhs: tuple[int, ...]) -> bool:
-    width = max(len(lhs), len(rhs))
-    return normalize_version(lhs, width) < normalize_version(rhs, width)
-
-
-def parse_version(output: str) -> tuple[int, ...] | None:
-    match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", output)
-    if not match:
-        return None
-    return tuple(int(part) for part in match.groups(default="0"))
-
-
-def compiler_version(tool: str) -> tuple[tuple[int, ...], str]:
-    try:
-        out = subprocess.check_output(
-            [tool, "--version"], stderr=subprocess.STDOUT
-        ).decode(errors="replace")
-    except FileNotFoundError:
-        die(f"{tool} not found on PATH")
-    except subprocess.CalledProcessError as e:
-        detail = e.output.decode(errors="replace").strip()
-        die(f"could not run {tool} --version: {detail or e}")
-    version = parse_version(out)
-    if version is None:
-        die(f"could not parse {tool} version from {out.splitlines()[0]!r}")
-    return version, out.splitlines()[0].strip()
-
-
-def check_compiler(tool: str, nice_name: str,
-                   minimum: tuple[int, ...]) -> tuple[str, str]:
-    version, first_line = compiler_version(tool)
-    if version_less(version, minimum):
-        die(
-            f"{nice_name} must be at least {format_version(minimum)}, "
-            f"got {format_version(version)} from {first_line}"
-        )
-    info(f"{nice_name} {format_version(version)} ok ({tool})")
-    return resolve_compiler_executable(tool), first_line
-
-
-def resolve_compiler_executable(tool: str) -> str:
-    """Resolve the compiler itself, not a PATH-level launcher symlink."""
-    if os.path.dirname(tool):
-        candidates = [Path(tool)]
-    else:
-        candidates = [Path(directory) / tool for directory in os.get_exec_path()]
-
-    for candidate in candidates:
-        if not candidate.is_file() or not os.access(candidate, os.X_OK):
-            continue
-        resolved = real(candidate)
-        if resolved.name == "ccache":
-            continue
-        return str(resolved)
-
-    die(f"could not resolve compiler {tool} on PATH without a ccache wrapper")
-
-
-def check_llvm_compilers() -> tuple[tuple[str, str], tuple[str, str]]:
-    return (
-        check_compiler(LLVM_C_COMPILER, "GCC C compiler", LLVM_GCC_MIN),
-        check_compiler(LLVM_CXX_COMPILER, "GCC C++ compiler", LLVM_GCC_MIN),
-    )
-
-
-def check_loom_compilers() -> None:
-    check_compiler(LOOM_C_COMPILER, "Clang C compiler", LOOM_CLANG_MIN)
-    check_compiler(LOOM_CXX_COMPILER, "Clang C++ compiler", LOOM_CLANG_MIN)
-
-
-def compiler_status(tool: str, minimum: tuple[int, ...]) -> str:
-    try:
-        version, first_line = compiler_version(tool)
-    except SystemExit:
-        return f"{tool} unavailable"
-    verdict = "ok"
-    if version_less(version, minimum):
-        verdict = f"too old, need >= {format_version(minimum)}"
-    return f"{tool} {format_version(version)} ({verdict}; {first_line})"
-
-
-def real(p: Path) -> Path:
-    return Path(os.path.realpath(str(p)))
-
-
-def check_git_version() -> None:
-    try:
-        out = subprocess.check_output(
-            ["git", "--version"], stderr=subprocess.DEVNULL
-        ).decode().strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        die("git not found on PATH")
-    parts = out.split()[-1].split(".")
-    try:
-        version = (int(parts[0]), int(parts[1]))
-    except (IndexError, ValueError):
-        warn(f"could not parse git version from {out!r}; assuming new enough")
-        return
-    if version < REQUIRED_GIT:
-        die(f"git >= {REQUIRED_GIT[0]}.{REQUIRED_GIT[1]} required, got {out}")
-
-
-def resolve_main_worktree(root: Path) -> Path:
-    """Return the absolute, realpath-canonicalised main worktree.
-
-    The first `worktree <path>` entry emitted by `git worktree list
-    --porcelain` is always the main worktree (the one that owns
-    `.git/`), regardless of which worktree we run from.
-    """
-    try:
-        out = subprocess.check_output(
-            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
-            stderr=subprocess.STDOUT,
-        ).decode(errors="replace")
-    except FileNotFoundError:
-        die("git not found on PATH")
-    except subprocess.CalledProcessError as e:
-        detail = e.output.decode(errors="replace").strip()
-        die(
-            f"could not resolve primary worktree for {root}: "
-            f"{detail or e}"
-        )
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            return real(Path(line.split(" ", 1)[1]))
-    die(f"could not resolve primary worktree for {root}: empty worktree list")
-
-
-def is_nfs(path: Path) -> bool:
-    try:
-        with open("/proc/mounts") as f:
-            mounts = f.read().splitlines()
-    except OSError:
-        return False
-    rp = str(real(path))
-    nfs_mnts = []
-    for line in mounts:
-        fields = line.split()
-        if len(fields) >= 3 and fields[2].startswith("nfs"):
-            nfs_mnts.append(fields[1])
-    nfs_mnts.sort(key=len, reverse=True)
-    for mnt in nfs_mnts:
-        prefix = mnt.rstrip("/") + "/"
-        if rp == mnt or rp.startswith(prefix):
-            return True
-    return False
-
-
 class Paths:
     def __init__(self, root: Path):
         self.root = real(root)
@@ -401,14 +264,19 @@ class Paths:
         self.circt_build = self.circt_root / "build"
         self.circt_stamp = self.externals_root / ".loom-build.circt.stamp"
         self.circt_cmake_dir = self.circt_build / "lib" / "cmake" / "circt"
+        self.or_tools_root = self.externals_root / "or-tools"
+        self.or_tools_build = self.or_tools_root / "build"
+        self.or_tools_install = self.or_tools_root / "install"
+        self.or_tools_lock = self.externals_root / ".loom-build.or-tools.lock"
+        self.or_tools_lock_turnstile = self.externals_root / ".loom-build.or-tools.turnstile.lock"
+        self.or_tools_stamp = self.externals_root / ".loom-build.or-tools.stamp"
+        self.or_tools_cmake_dir = self.or_tools_install / "lib" / "cmake" / "ortools"
         llvm_external = self.externals_root / "llvm"
         self.llvm_root = llvm_external
         self.llvm_src = llvm_external / "llvm"
         self.llvm_build = llvm_external / "build"
         self.llvm_lock = self.externals_root / ".loom-build.llvm.lock"
-        self.llvm_lock_turnstile = (
-            self.externals_root / ".loom-build.llvm.turnstile.lock"
-        )
+        self.llvm_lock_turnstile = self.externals_root / ".loom-build.llvm.turnstile.lock"
         self.llvm_stamp = self.externals_root / ".loom-build.llvm.stamp"
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
@@ -425,6 +293,7 @@ class Paths:
 class DependencyState:
     circt_commit: str
     llvm_commit: str
+    or_tools_commit: str
 
 
 def gitlinks_at_head(root: Path) -> tuple[str, ...]:
@@ -466,10 +335,14 @@ def initialized_checkout(path: Path) -> bool:
 
 def linked_modules_dir(root: Path) -> Path:
     try:
-        output = subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "--git-path", "modules"],
-            stderr=subprocess.STDOUT,
-        ).decode(errors="replace").strip()
+        output = (
+            subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "--git-path", "modules"],
+                stderr=subprocess.STDOUT,
+            )
+            .decode(errors="replace")
+            .strip()
+        )
     except FileNotFoundError:
         die("git not found on PATH")
     except subprocess.CalledProcessError as e:
@@ -517,65 +390,111 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
     def git_output(repo: Path, *args: str) -> str:
         cmd = ["git", "-C", str(repo), *args]
         try:
-            return subprocess.check_output(
-                cmd, stderr=subprocess.STDOUT
-            ).decode(errors="replace").rstrip()
+            return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode(errors="replace").rstrip()
         except FileNotFoundError:
             die("git not found on PATH")
         except subprocess.CalledProcessError as e:
             detail = e.output.decode(errors="replace").strip()
-            die(
-                f"could not inspect CIRCT/LLVM dependency state with "
-                f"{shlex.join(cmd)}: {detail or e}"
-            )
+            die(f"could not inspect shared dependency state with {shlex.join(cmd)}: {detail or e}")
 
-    dependency_paths = ("externals/circt", "externals/llvm")
-    unmerged = git_output(
-        paths.root, "ls-files", "-u", "--", *dependency_paths
+    dependency_paths = (
+        "externals/circt",
+        "externals/llvm",
+        "externals/or-tools",
     )
+    unmerged = git_output(paths.root, "ls-files", "-u", "--", *dependency_paths)
     if unmerged:
-        inspect_command = shlex.join([
-            "git", "-C", str(paths.root),
-            "ls-files", "-u", "--", *dependency_paths,
-        ])
-        stage_command = shlex.join([
-            "git", "-C", str(paths.root), "add", "--", *dependency_paths,
-        ])
-        rerun_command = shlex.join([
-            "make", "-C", str(paths.root), "doctor",
-        ])
+        inspect_command = shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.root),
+                "ls-files",
+                "-u",
+                "--",
+                *dependency_paths,
+            ]
+        )
+        stage_command = shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.root),
+                "add",
+                "--",
+                *dependency_paths,
+            ]
+        )
+        rerun_command = shlex.join(
+            [
+                "make",
+                "-C",
+                str(paths.root),
+                "doctor",
+            ]
+        )
         die(
             f"invoking worktree {paths.root} has unmerged gitlink entries; "
             f"resolve them manually:\n"
             f"  1. inspect index stages: {inspect_command}\n"
-            f"  2. select the intended CIRCT and LLVM gitlinks without "
+            f"  2. select the intended dependency gitlinks without "
             f"automatically choosing ours or theirs\n"
             f"  3. stage the resolved gitlinks: {stage_command}\n"
             f"  4. rerun the dependency gate: {rerun_command}"
         )
 
-    circt_commit = git_output(
-        paths.root, "rev-parse", "HEAD:externals/circt"
-    ).strip()
-    llvm_commit = git_output(
-        paths.root, "rev-parse", "HEAD:externals/llvm"
-    ).strip()
+    circt_commit = git_output(paths.root, "rev-parse", "HEAD:externals/circt").strip()
+    llvm_commit = git_output(paths.root, "rev-parse", "HEAD:externals/llvm").strip()
+    or_tools_commit = git_output(paths.root, "rev-parse", "HEAD:externals/or-tools").strip()
     repair_commands = (
-        shlex.join([
-            "git", "-C", str(paths.main), "submodule", "update",
-            "--init", "--checkout", "--",
-            "externals/circt", "externals/llvm",
-        ]),
+        shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.main),
+                "submodule",
+                "update",
+                "--init",
+                "--checkout",
+                "--",
+                "externals/circt",
+                "externals/llvm",
+                "externals/or-tools",
+            ]
+        ),
         shlex.join(["git", "-C", str(paths.circt_root), "fetch", "origin"]),
         shlex.join(["git", "-C", str(paths.llvm_root), "fetch", "origin"]),
-        shlex.join([
-            "git", "-C", str(paths.circt_root),
-            "checkout", "--detach", circt_commit,
-        ]),
-        shlex.join([
-            "git", "-C", str(paths.llvm_root),
-            "checkout", "--detach", llvm_commit,
-        ]),
+        shlex.join(["git", "-C", str(paths.or_tools_root), "fetch", "origin"]),
+        shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.circt_root),
+                "checkout",
+                "--detach",
+                circt_commit,
+            ]
+        ),
+        shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.llvm_root),
+                "checkout",
+                "--detach",
+                llvm_commit,
+            ]
+        ),
+        shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.or_tools_root),
+                "checkout",
+                "--detach",
+                or_tools_commit,
+            ]
+        ),
     )
     repair = "\n  ".join(repair_commands)
 
@@ -587,25 +506,22 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
             )
         top = real(Path(git_output(path, "rev-parse", "--show-toplevel")))
         if top != real(path):
-            die(
-                f"shared {relative_path} is not an initialized repository "
-                f"under {paths.main}; repair with:\n  {repair}"
-            )
+            die(f"shared {relative_path} is not an initialized repository under {paths.main}; repair with:\n  {repair}")
         return git_output(path, "rev-parse", "HEAD").strip()
 
     circt_head = checkout_head(paths.circt_root, "externals/circt")
     llvm_head = checkout_head(paths.llvm_root, "externals/llvm")
-    if circt_head != circt_commit or llvm_head != llvm_commit:
+    or_tools_head = checkout_head(paths.or_tools_root, "externals/or-tools")
+    if circt_head != circt_commit or llvm_head != llvm_commit or or_tools_head != or_tools_commit:
         die(
             f"shared dependency checkout drift: invoking superproject "
             f"{paths.root} pins CIRCT {circt_commit} and LLVM {llvm_commit}, "
-            f"but shared checkouts under {paths.main} are CIRCT "
-            f"{circt_head} and LLVM {llvm_head}; repair with:\n  {repair}"
+            f"and OR-Tools {or_tools_commit}, but shared checkouts under "
+            f"{paths.main} are CIRCT {circt_head}, LLVM {llvm_head}, and "
+            f"OR-Tools {or_tools_head}; repair with:\n  {repair}"
         )
 
-    circt_llvm_commit = git_output(
-        paths.circt_root, "rev-parse", f"{circt_commit}:llvm"
-    ).strip()
+    circt_llvm_commit = git_output(paths.circt_root, "rev-parse", f"{circt_commit}:llvm").strip()
     if circt_llvm_commit != llvm_commit:
         die(
             f"invoking superproject parent gitlinks are internally "
@@ -627,22 +543,26 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
         if nested.returncode == 0:
             nested_top = nested.stdout.strip()
     if nested_top and real(Path(nested_top)) == real(nested_llvm):
-        deinit_command = shlex.join([
-            "git", "-C", str(paths.circt_root), "submodule", "deinit",
-            "-f", "--", "llvm",
-        ])
-        die(
-            "externals/circt/llvm must remain uninitialized; repair with: "
-            f"{deinit_command}"
+        deinit_command = shlex.join(
+            [
+                "git",
+                "-C",
+                str(paths.circt_root),
+                "submodule",
+                "deinit",
+                "-f",
+                "--",
+                "llvm",
+            ]
         )
+        die(f"externals/circt/llvm must remain uninitialized; repair with: {deinit_command}")
 
     for repo, label in (
         (paths.circt_root, "externals/circt"),
         (paths.llvm_root, "externals/llvm"),
+        (paths.or_tools_root, "externals/or-tools"),
     ):
-        dirty = git_output(
-            repo, "status", "--porcelain", "--untracked-files=no"
-        )
+        dirty = git_output(repo, "status", "--porcelain", "--untracked-files=no")
         if dirty:
             die(
                 f"shared {label} has tracked modifications:\n{dirty}\n"
@@ -655,6 +575,7 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
     return DependencyState(
         circt_commit=circt_commit,
         llvm_commit=llvm_commit,
+        or_tools_commit=or_tools_commit,
     )
 
 
@@ -758,9 +679,7 @@ class SharedProductLock:
             if previous_timer[0] > 0:
                 elapsed = time.monotonic() - started
                 restored = max(1e-6, previous_timer[0] - elapsed)
-                signal.setitimer(
-                    signal.ITIMER_REAL, restored, previous_timer[1]
-                )
+                signal.setitimer(signal.ITIMER_REAL, restored, previous_timer[1])
 
     def _release_turnstile(self) -> None:
         if self.turnstile_fd is None:
@@ -787,29 +706,20 @@ class SharedProductLock:
     def _read_records(self) -> list[int]:
         size = os.fstat(self.turnstile_fd).st_size
         if size % _TURNSTILE_RECORD_SIZE:
-            die(
-                f"invalid shared product turnstile state at "
-                f"{self.turnstile_path}"
-            )
+            die(f"invalid shared product turnstile state at {self.turnstile_path}")
         contents = os.pread(self.turnstile_fd, size, 0)
         if len(contents) != size:
-            die(
-                f"could not read shared product turnstile state at "
-                f"{self.turnstile_path}"
-            )
+            die(f"could not read shared product turnstile state at {self.turnstile_path}")
         records = []
         for offset in range(0, size, _TURNSTILE_RECORD_SIZE):
-            record = contents[offset:offset + _TURNSTILE_RECORD_SIZE]
+            record = contents[offset : offset + _TURNSTILE_RECORD_SIZE]
             try:
                 ticket = int(record[:-1], 16) if record.endswith(b"\n") else 0
             except ValueError:
                 ticket = 0
             # Tickets start at 1 because offset 0 is the residency mutex.
             if ticket < 1:
-                die(
-                    f"invalid shared product turnstile record at "
-                    f"{self.turnstile_path}"
-                )
+                die(f"invalid shared product turnstile record at {self.turnstile_path}")
             records.append(ticket)
         return records
 
@@ -817,10 +727,7 @@ class SharedProductLock:
         record = f"{ticket:016x}\n".encode()
         offset = index * _TURNSTILE_RECORD_SIZE
         if os.pwrite(self.turnstile_fd, record, offset) != len(record):
-            die(
-                f"could not update shared product turnstile at "
-                f"{self.turnstile_path}"
-            )
+            die(f"could not update shared product turnstile at {self.turnstile_path}")
 
     def _live_tickets(self, records: list[int]) -> list[int]:
         """Tickets whose owner is still acquiring. Holds the mutex."""
@@ -925,9 +832,7 @@ class SharedProductLock:
                 os.O_RDWR | os.O_CREAT,
                 0o644,
             )
-            self.product_fd = os.open(
-                str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644
-            )
+            self.product_fd = os.open(str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644)
             self._register(deadline)
             self._await_predecessors(deadline)
             self._acquire(
@@ -985,6 +890,29 @@ def circt_build_identity(llvm_identity: str, circt_commit: str) -> str:
     )
 
 
+def or_tools_build_identity(
+    or_tools_commit: str,
+    compilers: tuple[tuple[str, str], tuple[str, str]],
+) -> str:
+    return json.dumps(
+        {
+            "compilers": {
+                "c": {
+                    "path": compilers[0][0],
+                    "version": compilers[0][1],
+                },
+                "cxx": {
+                    "path": compilers[1][0],
+                    "version": compilers[1][1],
+                },
+            },
+            "dependencies": {"or_tools": or_tools_commit},
+            "semantic_cmake_args": list(OR_TOOLS_SEMANTIC_CMAKE_ARGS),
+        },
+        sort_keys=True,
+    )
+
+
 def read_stamp(path: Path) -> str:
     try:
         return path.read_text().strip()
@@ -1033,56 +961,98 @@ def compiler_basename(path: str) -> str:
     return Path(path).name if path else ""
 
 
-def cmake_cache_uses_compilers(build_dir: Path, c_compiler: str,
-                               cxx_compiler: str) -> bool:
+def cmake_cache_uses_compilers(build_dir: Path, c_compiler: str, cxx_compiler: str) -> bool:
     cached_c = read_cmake_cache_entry(build_dir, "CMAKE_C_COMPILER")
     cached_cxx = read_cmake_cache_entry(build_dir, "CMAKE_CXX_COMPILER")
-    return (
-        compiler_basename(cached_c) == compiler_basename(c_compiler) and
-        compiler_basename(cached_cxx) == compiler_basename(cxx_compiler)
-    )
+    return compiler_basename(cached_c) == compiler_basename(c_compiler) and compiler_basename(
+        cached_cxx
+    ) == compiler_basename(cxx_compiler)
 
 
 def configure_llvm(
     paths: Paths,
     compilers: tuple[tuple[str, str], tuple[str, str]],
 ) -> None:
-    run([
-        "cmake", "-G", "Ninja",
-        "-S", str(paths.llvm_src),
-        "-B", str(paths.llvm_build),
-        f"-DCMAKE_C_COMPILER={compilers[0][0]}",
-        f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
-        *LLVM_SEMANTIC_CMAKE_ARGS,
-        "-DLLVM_CCACHE_BUILD=ON",
-        "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
-        "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-    ])
+    run(
+        [
+            "cmake",
+            "-G",
+            "Ninja",
+            "-S",
+            str(paths.llvm_src),
+            "-B",
+            str(paths.llvm_build),
+            f"-DCMAKE_C_COMPILER={compilers[0][0]}",
+            f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
+            *LLVM_SEMANTIC_CMAKE_ARGS,
+            "-DLLVM_CCACHE_BUILD=ON",
+            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        ]
+    )
 
 
 def configure_circt(
     paths: Paths,
     compilers: tuple[tuple[str, str], tuple[str, str]],
 ) -> None:
-    run([
-        "cmake", "-G", "Ninja",
-        "-S", str(paths.circt_root),
-        "-B", str(paths.circt_build),
-        f"-DCMAKE_C_COMPILER={compilers[0][0]}",
-        f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
-        *CIRCT_SEMANTIC_CMAKE_ARGS,
-        f"-DMLIR_DIR={paths.mlir_dir}",
-        f"-DLLVM_DIR={paths.cmake_llvm_dir}",
-        "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
-        "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-    ])
+    run(
+        [
+            "cmake",
+            "-G",
+            "Ninja",
+            "-S",
+            str(paths.circt_root),
+            "-B",
+            str(paths.circt_build),
+            f"-DCMAKE_C_COMPILER={compilers[0][0]}",
+            f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
+            *CIRCT_SEMANTIC_CMAKE_ARGS,
+            f"-DMLIR_DIR={paths.mlir_dir}",
+            f"-DLLVM_DIR={paths.cmake_llvm_dir}",
+            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        ]
+    )
 
 
-def configure_loom(paths: Paths, circt_dir: str | None) -> None:
+def configure_or_tools(
+    paths: Paths,
+    compilers: tuple[tuple[str, str], tuple[str, str]],
+) -> None:
+    run(
+        [
+            "cmake",
+            "-G",
+            "Ninja",
+            "-S",
+            str(paths.or_tools_root),
+            "-B",
+            str(paths.or_tools_build),
+            f"-DCMAKE_INSTALL_PREFIX={paths.or_tools_install}",
+            f"-DCMAKE_C_COMPILER={compilers[0][0]}",
+            f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
+            *OR_TOOLS_SEMANTIC_CMAKE_ARGS,
+            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        ]
+    )
+
+
+def configure_loom(
+    paths: Paths,
+    circt_dir: str | None,
+    or_tools_dir: str,
+    or_tools_commit: str,
+) -> None:
     cmd = [
-        "cmake", "-G", "Ninja",
-        "-S", str(paths.root),
-        "-B", str(paths.loom_build),
+        "cmake",
+        "-G",
+        "Ninja",
+        "-S",
+        str(paths.root),
+        "-B",
+        str(paths.loom_build),
         "-DCMAKE_BUILD_TYPE=Release",
         f"-DCMAKE_C_COMPILER={LOOM_C_COMPILER}",
         f"-DCMAKE_CXX_COMPILER={LOOM_CXX_COMPILER}",
@@ -1090,6 +1060,8 @@ def configure_loom(paths: Paths, circt_dir: str | None) -> None:
         f"-DLLVM_DIR={paths.cmake_llvm_dir}",
         f"-DClang_DIR={paths.cmake_clang_dir}",
         f"-DLLVM_EXTERNAL_LIT={paths.llvm_lit}",
+        f"-Dortools_DIR={or_tools_dir}",
+        f"-DLOOM_ORTOOLS_SOURCE_COMMIT={or_tools_commit}",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
     ]
@@ -1129,18 +1101,12 @@ def _sync_llvm_locked(
     phase, but may still use the snapshot to retain an incremental build.
     """
     current = llvm_build_identity(state.llvm_commit, compilers)
-    rebuild = (
-        not llvm_stamp_matches(prev_stamp, current)
-        or not llvm_artifacts_present(paths)
-    )
+    rebuild = not llvm_stamp_matches(prev_stamp, current) or not llvm_artifacts_present(paths)
     if rebuild:
         if not always_build:
             invalidate_llvm_readiness(paths)
         if paths.llvm_build.exists():
-            info(
-                f"LLVM build is incomplete or its identity changed; removing "
-                f"{paths.llvm_build}"
-            )
+            info(f"LLVM build is incomplete or its identity changed; removing {paths.llvm_build}")
             shutil.rmtree(paths.llvm_build)
         configure_llvm(paths, compilers)
     if always_build or rebuild:
@@ -1163,10 +1129,7 @@ def sync_shared_llvm(
     if not paths.is_main:
         info(f"checking shared LLVM under main worktree {paths.main}")
     if is_nfs(paths.llvm_root):
-        warn(
-            f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
-            "flock semantics across hosts are unreliable"
-        )
+        warn(f"shared LLVM tree {paths.llvm_root} appears to live on NFS; flock semantics across hosts are unreliable")
     with SharedProductLock(
         paths.llvm_lock,
         paths.llvm_lock_turnstile,
@@ -1179,9 +1142,7 @@ def sync_shared_llvm(
             check_git_version()
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
-        return _sync_llvm_locked(
-            paths, args, state, compilers, always_build, prev_stamp
-        )
+        return _sync_llvm_locked(paths, args, state, compilers, always_build, prev_stamp)
 
 
 def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
@@ -1190,10 +1151,7 @@ def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
 
 def circt_artifacts_present(paths: Paths) -> bool:
     """Artifacts required to offer the configured CIRCT package to Loom."""
-    return (
-        (paths.circt_build / "build.ninja").exists()
-        and (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
-    )
+    return (paths.circt_build / "build.ninja").exists() and (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
 
 
 def _sync_circt_locked(
@@ -1222,17 +1180,18 @@ def _sync_circt_locked(
     rebuild = prev_stamp != current or not circt_artifacts_present(paths)
     if rebuild:
         if paths.circt_build.exists():
-            info(
-                f"CIRCT build is incomplete or its identity changed; "
-                f"removing {paths.circt_build}"
-            )
+            info(f"CIRCT build is incomplete or its identity changed; removing {paths.circt_build}")
             shutil.rmtree(paths.circt_build)
         configure_circt(paths, compilers)
     if always_build or rebuild:
-        run([
-            "cmake", "--build", str(paths.circt_build),
-            f"-j{args.jobs}",
-        ])
+        run(
+            [
+                "cmake",
+                "--build",
+                str(paths.circt_build),
+                f"-j{args.jobs}",
+            ]
+        )
         if not circt_artifacts_present(paths):
             die(
                 f"CIRCT build at {paths.circt_build} did not produce "
@@ -1265,8 +1224,7 @@ def sync_shared_circt(
         info(f"checking shared CIRCT under main worktree {paths.main}")
     if is_nfs(paths.circt_root):
         warn(
-            f"shared CIRCT tree {paths.circt_root} appears to live on NFS; "
-            "flock semantics across hosts are unreliable"
+            f"shared CIRCT tree {paths.circt_root} appears to live on NFS; flock semantics across hosts are unreliable"
         )
     with SharedProductLock(
         paths.llvm_lock,
@@ -1281,9 +1239,7 @@ def sync_shared_circt(
         llvm_prev_stamp = read_stamp(paths.llvm_stamp)
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
-        llvm_identity = _sync_llvm_locked(
-            paths, args, state, compilers, False, llvm_prev_stamp
-        )
+        llvm_identity = _sync_llvm_locked(paths, args, state, compilers, False, llvm_prev_stamp)
         _sync_circt_locked(
             paths,
             args,
@@ -1313,11 +1269,118 @@ def available_circt_dir(
     """
     if not circt_artifacts_present(paths):
         return None
-    if read_stamp(paths.circt_stamp) != circt_build_identity(
-        llvm_identity, circt_commit
-    ):
+    if read_stamp(paths.circt_stamp) != circt_build_identity(llvm_identity, circt_commit):
         return None
     return str(paths.circt_cmake_dir)
+
+
+def or_tools_commit_projection(paths: Paths) -> Path:
+    return paths.or_tools_cmake_dir / "loom-source-commit.txt"
+
+
+def or_tools_package_present(paths: Paths) -> bool:
+    return (
+        (paths.or_tools_build / "build.ninja").exists()
+        and (paths.or_tools_cmake_dir / "ortoolsConfig.cmake").is_file()
+        and (paths.or_tools_cmake_dir / "ortoolsTargets.cmake").is_file()
+    )
+
+
+def or_tools_artifacts_present(paths: Paths, or_tools_commit: str) -> bool:
+    return or_tools_package_present(paths) and read_stamp(or_tools_commit_projection(paths)) == or_tools_commit
+
+
+def _sync_or_tools_locked(
+    paths: Paths,
+    args: argparse.Namespace,
+    compilers: tuple[tuple[str, str], tuple[str, str]],
+    or_tools_commit: str,
+    always_build: bool,
+    prev_stamp: str,
+) -> str:
+    current = or_tools_build_identity(or_tools_commit, compilers)
+    rebuild = prev_stamp != current or not or_tools_artifacts_present(paths, or_tools_commit)
+    if rebuild:
+        paths.or_tools_stamp.unlink(missing_ok=True)
+        if paths.or_tools_build.exists():
+            info(f"OR-Tools build is incomplete or its identity changed; removing {paths.or_tools_build}")
+            shutil.rmtree(paths.or_tools_build)
+        if paths.or_tools_install.exists():
+            info(f"OR-Tools install is incomplete or its identity changed; removing {paths.or_tools_install}")
+            shutil.rmtree(paths.or_tools_install)
+        configure_or_tools(paths, compilers)
+    if always_build or rebuild:
+        run(
+            [
+                "cmake",
+                "--build",
+                str(paths.or_tools_build),
+                "--target",
+                "install",
+                f"-j{args.jobs}",
+            ]
+        )
+        if not or_tools_package_present(paths):
+            die(
+                f"OR-Tools build at {paths.or_tools_build} did not install "
+                f"the required package under {paths.or_tools_cmake_dir}; "
+                "refusing to stamp an incomplete package"
+            )
+        write_stamp(or_tools_commit_projection(paths), or_tools_commit)
+        if not or_tools_artifacts_present(paths, or_tools_commit):
+            die("OR-Tools source identity projection does not match the invoking superproject gitlink")
+        write_stamp(paths.or_tools_stamp, current)
+    return current
+
+
+def sync_shared_or_tools(
+    paths: Paths,
+    args: argparse.Namespace,
+    always_build: bool,
+) -> str:
+    if not paths.is_main:
+        info(f"checking shared OR-Tools under main worktree {paths.main}")
+    if is_nfs(paths.or_tools_root):
+        warn(
+            f"shared OR-Tools tree {paths.or_tools_root} appears to live on "
+            "NFS; flock semantics across hosts are unreliable"
+        )
+    with SharedProductLock(
+        paths.or_tools_lock,
+        paths.or_tools_lock_turnstile,
+        args.lock_timeout,
+        shared=False,
+    ):
+        prev_stamp = read_stamp(paths.or_tools_stamp)
+        if always_build:
+            paths.or_tools_stamp.unlink(missing_ok=True)
+            check_git_version()
+        state = check_dependency_pins(paths)
+        compilers = check_loom_compilers()
+        return _sync_or_tools_locked(
+            paths,
+            args,
+            compilers,
+            state.or_tools_commit,
+            always_build,
+            prev_stamp,
+        )
+
+
+def build_or_tools(paths: Paths, args: argparse.Namespace) -> None:
+    sync_shared_or_tools(paths, args, always_build=True)
+
+
+def available_or_tools_dir(
+    paths: Paths,
+    or_tools_identity: str,
+    or_tools_commit: str,
+) -> str | None:
+    if not or_tools_artifacts_present(paths, or_tools_commit):
+        return None
+    if read_stamp(paths.or_tools_stamp) != or_tools_identity:
+        return None
+    return str(paths.or_tools_cmake_dir)
 
 
 def loom_build_is_stale(paths: Paths) -> bool:
@@ -1350,10 +1413,7 @@ def inspect_llvm_readiness(
     state = check_dependency_pins(paths)
     compilers = check_llvm_compilers()
     identity = llvm_build_identity(state.llvm_commit, compilers)
-    ready = (
-        llvm_stamp_matches(read_stamp(paths.llvm_stamp), identity)
-        and llvm_artifacts_present(paths)
-    )
+    ready = llvm_stamp_matches(read_stamp(paths.llvm_stamp), identity) and llvm_artifacts_present(paths)
     return state, compilers, identity, ready
 
 
@@ -1368,10 +1428,7 @@ def shared_llvm_lease(paths: Paths, args: argparse.Namespace):
     if not paths.is_main:
         info(f"checking shared LLVM under main worktree {paths.main}")
     if is_nfs(paths.llvm_root):
-        warn(
-            f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
-            "flock semantics across hosts are unreliable"
-        )
+        warn(f"shared LLVM tree {paths.llvm_root} appears to live on NFS; flock semantics across hosts are unreliable")
     with SharedProductLock(
         paths.llvm_lock,
         paths.llvm_lock_turnstile,
@@ -1392,9 +1449,7 @@ def shared_llvm_lease(paths: Paths, args: argparse.Namespace):
         prev_stamp = read_stamp(paths.llvm_stamp)
         state, compilers, identity, ready = inspect_llvm_readiness(paths)
         if not ready:
-            identity = _sync_llvm_locked(
-                paths, args, state, compilers, False, prev_stamp
-            )
+            identity = _sync_llvm_locked(paths, args, state, compilers, False, prev_stamp)
 
     with SharedProductLock(
         paths.llvm_lock,
@@ -1404,10 +1459,72 @@ def shared_llvm_lease(paths: Paths, args: argparse.Namespace):
     ):
         state, _, current_identity, ready = inspect_llvm_readiness(paths)
         if not ready or current_identity != identity:
-            die(
-                "shared LLVM readiness changed after repair; refusing to "
-                "consume stale products"
+            die("shared LLVM readiness changed after repair; refusing to consume stale products")
+        yield state, current_identity
+
+
+def inspect_or_tools_readiness(
+    paths: Paths,
+) -> tuple[
+    DependencyState,
+    tuple[tuple[str, str], tuple[str, str]],
+    str,
+    bool,
+]:
+    state = check_dependency_pins(paths)
+    compilers = check_loom_compilers()
+    identity = or_tools_build_identity(state.or_tools_commit, compilers)
+    ready = read_stamp(paths.or_tools_stamp) == identity and or_tools_artifacts_present(paths, state.or_tools_commit)
+    return state, compilers, identity, ready
+
+
+@contextmanager
+def shared_or_tools_lease(paths: Paths, args: argparse.Namespace):
+    if not paths.is_main:
+        info(f"checking shared OR-Tools under main worktree {paths.main}")
+    if is_nfs(paths.or_tools_root):
+        warn(
+            f"shared OR-Tools tree {paths.or_tools_root} appears to live on "
+            "NFS; flock semantics across hosts are unreliable"
+        )
+    with SharedProductLock(
+        paths.or_tools_lock,
+        paths.or_tools_lock_turnstile,
+        args.lock_timeout,
+        shared=True,
+    ):
+        state, _, identity, ready = inspect_or_tools_readiness(paths)
+        if ready:
+            yield state, identity
+            return
+
+    with SharedProductLock(
+        paths.or_tools_lock,
+        paths.or_tools_lock_turnstile,
+        args.lock_timeout,
+        shared=False,
+    ):
+        prev_stamp = read_stamp(paths.or_tools_stamp)
+        state, compilers, identity, ready = inspect_or_tools_readiness(paths)
+        if not ready:
+            identity = _sync_or_tools_locked(
+                paths,
+                args,
+                compilers,
+                state.or_tools_commit,
+                False,
+                prev_stamp,
             )
+
+    with SharedProductLock(
+        paths.or_tools_lock,
+        paths.or_tools_lock_turnstile,
+        args.lock_timeout,
+        shared=True,
+    ):
+        state, _, current_identity, ready = inspect_or_tools_readiness(paths)
+        if not ready or current_identity != identity:
+            die("shared OR-Tools readiness changed after repair; refusing to consume stale products")
         yield state, current_identity
 
 
@@ -1416,6 +1533,7 @@ def _build_loom_with_lease(
     args: argparse.Namespace,
     state: DependencyState,
     llvm_identity: str,
+    or_tools_identity: str,
 ) -> None:
     if loom_build_is_stale(paths):
         info(
@@ -1424,36 +1542,49 @@ def _build_loom_with_lease(
         )
         shutil.rmtree(paths.loom_build, ignore_errors=True)
     bn = paths.loom_build / "build.ninja"
-    if bn.exists() and not cmake_cache_uses_compilers(
-        paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
-    ):
-        info(
-            f"loom build compiler changed to {LOOM_C_COMPILER}/"
-            f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
-        )
+    if bn.exists() and not cmake_cache_uses_compilers(paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER):
+        info(f"loom build compiler changed to {LOOM_C_COMPILER}/{LOOM_CXX_COMPILER}; removing {paths.loom_build}")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
 
     # `make loom` never builds CIRCT. It only offers an already-built,
     # stamped CIRCT matching the identities held by this reader lease.
-    circt_dir = available_circt_dir(
-        paths, llvm_identity, state.circt_commit
+    circt_dir = available_circt_dir(paths, llvm_identity, state.circt_commit)
+    or_tools_dir = available_or_tools_dir(paths, or_tools_identity, state.or_tools_commit)
+    if or_tools_dir is None:
+        die("validated OR-Tools reader lease has no matching installed package")
+    package_changed = (
+        read_cmake_cache_entry(paths.loom_build, "CIRCT_DIR") != (circt_dir or "")
+        or read_cmake_cache_entry(paths.loom_build, "ortools_DIR") != or_tools_dir
+        or read_cmake_cache_entry(paths.loom_build, "LOOM_ORTOOLS_SOURCE_COMMIT") != state.or_tools_commit
     )
-    if bn.exists() and read_cmake_cache_entry(
-        paths.loom_build, "CIRCT_DIR"
-    ) != (circt_dir or ""):
-        info(
-            "loom build CIRCT_DIR changed; "
-            f"removing {paths.loom_build} and reconfiguring"
-        )
+    if bn.exists() and package_changed:
+        info(f"loom build dependency package changed; removing {paths.loom_build} and reconfiguring")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
     if not bn.exists():
-        configure_loom(paths, circt_dir)
+        configure_loom(
+            paths,
+            circt_dir,
+            or_tools_dir,
+            state.or_tools_commit,
+        )
     run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
 
 
 def build_loom(paths: Paths, args: argparse.Namespace) -> None:
     with shared_llvm_lease(paths, args) as (state, llvm_identity):
-        _build_loom_with_lease(paths, args, state, llvm_identity)
+        with shared_or_tools_lease(paths, args) as (
+            or_tools_state,
+            or_tools_identity,
+        ):
+            if or_tools_state != state:
+                die("dependency gitlinks changed while acquiring build leases; retry from a stable worktree HEAD")
+            _build_loom_with_lease(
+                paths,
+                args,
+                state,
+                llvm_identity,
+                or_tools_identity,
+            )
 
 
 def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
@@ -1463,25 +1594,19 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
         if not shutil.which(tool):
             warn(f"{tool} not found on PATH")
     if is_nfs(paths.llvm_root):
-        warn(
-            f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
-            "flock across hosts may be unreliable"
-        )
+        warn(f"shared LLVM tree {paths.llvm_root} appears to live on NFS; flock across hosts may be unreliable")
+    if is_nfs(paths.or_tools_root):
+        warn(f"shared OR-Tools tree {paths.or_tools_root} appears to live on NFS; flock across hosts may be unreliable")
     if is_nfs(paths.circt_root):
-        warn(
-            f"shared CIRCT tree {paths.circt_root} appears to live on NFS; "
-            "flock across hosts may be unreliable"
-        )
+        warn(f"shared CIRCT tree {paths.circt_root} appears to live on NFS; flock across hosts may be unreliable")
     print(f"main_worktree   {paths.main}")
     print(f"this_worktree   {paths.root}")
     print(f"is_main         {paths.is_main}")
     print(f"externals_root  {paths.externals_root}")
-    print(
-        "submodule_mode  "
-        + ("primary owner" if paths.is_main else "shared from primary")
-    )
+    print("submodule_mode  " + ("primary owner" if paths.is_main else "shared from primary"))
     print(f"circt_commit    {state.circt_commit}")
     print(f"llvm_commit     {state.llvm_commit}")
+    print(f"or_tools_commit {state.or_tools_commit}")
     print(f"circt_llvm_pin  {state.llvm_commit}")
     print("nested_llvm     uninitialized")
     print(f"llvm_src        {paths.llvm_src}")
@@ -1497,16 +1622,17 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"loom_stale      {loom_build_is_stale(paths)}")
     print(f"circt_build     {paths.circt_build}")
     print(f"circt_stamp     {paths.circt_stamp}")
-    print(
-        f"circt_stamp_val {read_stamp(paths.circt_stamp) or '(unset)'}"
-    )
+    print(f"circt_stamp_val {read_stamp(paths.circt_stamp) or '(unset)'}")
     # Report the concrete artifacts rather than a single readiness verdict:
     # an old or unstamped build can leave the config on disk without being
     # actually usable, so availability is decided elsewhere from the stamp.
-    print(
-        "circt_config    "
-        + str((paths.circt_cmake_dir / "CIRCTConfig.cmake").exists())
-    )
+    print("circt_config    " + str((paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()))
+    print(f"or_tools_build  {paths.or_tools_build}")
+    print(f"or_tools_install {paths.or_tools_install}")
+    print(f"or_tools_lock   {paths.or_tools_lock}")
+    print(f"or_tools_stamp  {paths.or_tools_stamp}")
+    print(f"or_tools_stamp_val {read_stamp(paths.or_tools_stamp) or '(unset)'}")
+    print("or_tools_config " + str((paths.or_tools_cmake_dir / "ortoolsConfig.cmake").exists()))
 
 
 def cmd_externals_root(paths: Paths, args: argparse.Namespace) -> None:
@@ -1534,31 +1660,51 @@ def cmd_build_circt(paths: Paths, args: argparse.Namespace) -> None:
     build_circt(paths, args)
 
 
+def cmd_build_or_tools(paths: Paths, args: argparse.Namespace) -> None:
+    build_or_tools(paths, args)
+
+
 def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
     if paths.loom_build.exists():
         info(f"removing {paths.loom_build}")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
     if paths.is_main:
-        # Both shared builds are removed under the same exclusive product
-        # transaction used by build writers.
-        with SharedProductLock(
-            paths.llvm_lock,
-            paths.llvm_lock_turnstile,
-            args.lock_timeout,
-            shared=False,
+        # Acquire independent products in the same order as ordinary Loom
+        # builds, then revoke every readiness projection before deletion.
+        with (
+            SharedProductLock(
+                paths.llvm_lock,
+                paths.llvm_lock_turnstile,
+                args.lock_timeout,
+                shared=False,
+            ),
+            SharedProductLock(
+                paths.or_tools_lock,
+                paths.or_tools_lock_turnstile,
+                args.lock_timeout,
+                shared=False,
+            ),
         ):
             invalidate_llvm_readiness(paths)
+            paths.or_tools_stamp.unlink(missing_ok=True)
             if paths.llvm_build.exists():
                 info(f"removing shared {paths.llvm_build}")
                 shutil.rmtree(paths.llvm_build, ignore_errors=True)
             if paths.circt_build.exists():
                 info(f"removing shared {paths.circt_build}")
                 shutil.rmtree(paths.circt_build, ignore_errors=True)
+            if paths.or_tools_build.exists():
+                info(f"removing shared {paths.or_tools_build}")
+                shutil.rmtree(paths.or_tools_build, ignore_errors=True)
+            if paths.or_tools_install.exists():
+                info(f"removing shared {paths.or_tools_install}")
+                shutil.rmtree(paths.or_tools_install, ignore_errors=True)
     else:
         info(
             f"distclean from linked worktree only removes {paths.loom_build}; "
             f"shared LLVM at {paths.llvm_build} and CIRCT at "
-            f"{paths.circt_build} preserved"
+            f"{paths.circt_build}, and OR-Tools at "
+            f"{paths.or_tools_install} preserved"
         )
 
 
@@ -1566,21 +1712,33 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
     check_loom_compilers()
     with shared_llvm_lease(paths, args) as (state, llvm_identity):
-        _build_loom_with_lease(paths, args, state, llvm_identity)
-        child_env = os.environ.copy()
-        extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
-        child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
-        run(
-            [
-                str(paths.llvm_lit),
-                "-sv",
-                "--time-tests",
-                f"-j{args.jobs}",
-                *extra_args,
-                str(paths.loom_build / "test"),
-            ],
-            env=child_env,
-        )
+        with shared_or_tools_lease(paths, args) as (
+            or_tools_state,
+            or_tools_identity,
+        ):
+            if or_tools_state != state:
+                die("dependency gitlinks changed while acquiring test leases; retry from a stable worktree HEAD")
+            _build_loom_with_lease(
+                paths,
+                args,
+                state,
+                llvm_identity,
+                or_tools_identity,
+            )
+            child_env = os.environ.copy()
+            extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
+            child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
+            run(
+                [
+                    str(paths.llvm_lit),
+                    "-sv",
+                    "--time-tests",
+                    f"-j{args.jobs}",
+                    *extra_args,
+                    str(paths.loom_build / "test"),
+                ],
+                env=child_env,
+            )
 
 
 def main() -> None:
@@ -1588,14 +1746,26 @@ def main() -> None:
         _supervise_command(sys.argv[2:])
 
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--root", default=os.getcwd(),
-                   help="worktree root (defaults to CWD)")
+    p.add_argument("--root", default=os.getcwd(), help="worktree root (defaults to CWD)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
-    p.add_argument("--lock-timeout", type=validate_lock_timeout, default=1800.0,
-                   help="seconds to wait for the shared LLVM lock")
+    p.add_argument(
+        "--lock-timeout",
+        type=validate_lock_timeout,
+        default=1800.0,
+        help="seconds to wait for the shared LLVM lock",
+    )
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "externals-root", "build-llvm", "build-circt",
-                 "build-loom", "clean", "distclean", "test"):
+    for name in (
+        "doctor",
+        "externals-root",
+        "build-llvm",
+        "build-circt",
+        "build-or-tools",
+        "build-loom",
+        "clean",
+        "distclean",
+        "test",
+    ):
         sub.add_parser(name)
     args = p.parse_args()
 
@@ -1605,6 +1775,7 @@ def main() -> None:
         "externals-root": cmd_externals_root,
         "build-llvm": cmd_build_llvm,
         "build-circt": cmd_build_circt,
+        "build-or-tools": cmd_build_or_tools,
         "build-loom": cmd_build_loom,
         "clean": cmd_clean,
         "distclean": cmd_distclean,

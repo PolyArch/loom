@@ -35,6 +35,46 @@ endif()
 find_package(Clang REQUIRED CONFIG)
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
+if(NOT DEFINED ortools_DIR OR ortools_DIR STREQUAL "")
+  message(FATAL_ERROR
+    "OR-Tools is required; build it with `make or-tools` and configure "
+    "through the repository build dispatcher")
+endif()
+if(NOT DEFINED LOOM_ORTOOLS_SOURCE_COMMIT OR
+   LOOM_ORTOOLS_SOURCE_COMMIT STREQUAL "")
+  message(FATAL_ERROR
+    "LOOM_ORTOOLS_SOURCE_COMMIT is required to validate the exact pinned "
+    "OR-Tools package")
+endif()
+set(_loom_ortools_commit_file
+  "${ortools_DIR}/loom-source-commit.txt")
+if(NOT EXISTS "${_loom_ortools_commit_file}")
+  message(FATAL_ERROR
+    "OR-Tools package lacks ${_loom_ortools_commit_file}; refusing an "
+    "unvalidated package")
+endif()
+file(READ "${_loom_ortools_commit_file}" _loom_ortools_source_commit)
+string(STRIP "${_loom_ortools_source_commit}"
+  _loom_ortools_source_commit)
+if(NOT _loom_ortools_source_commit STREQUAL
+   LOOM_ORTOOLS_SOURCE_COMMIT)
+  message(FATAL_ERROR
+    "OR-Tools package source commit ${_loom_ortools_source_commit} does not "
+    "match required commit ${LOOM_ORTOOLS_SOURCE_COMMIT}")
+endif()
+get_filename_component(_loom_ortools_prefix
+  "${ortools_DIR}/../../.." ABSOLUTE)
+set(_loom_saved_prefix_path "${CMAKE_PREFIX_PATH}")
+list(PREPEND CMAKE_PREFIX_PATH "${_loom_ortools_prefix}")
+find_package(ortools REQUIRED CONFIG NO_DEFAULT_PATH)
+set(CMAKE_PREFIX_PATH "${_loom_saved_prefix_path}")
+unset(_loom_saved_prefix_path)
+if(NOT TARGET ortools::ortools)
+  message(FATAL_ERROR
+    "OR-Tools package does not export required target ortools::ortools")
+endif()
+message(STATUS "Using ortoolsConfig.cmake in: ${ortools_DIR}")
+
 # Optional CIRCT integration. CIRCT is supplied by the shared build under
 # externals/circt (see scripts/make-worktree.py, `make circt`). It is
 # strictly optional: omit -DCIRCT_DIR to build Loom without CIRCT. A

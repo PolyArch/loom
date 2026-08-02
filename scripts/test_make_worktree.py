@@ -72,11 +72,7 @@ class GitTopology:
 
         self.circt_repo = root / "circt-repo"
         init_repo(self.circt_repo)
-        (self.circt_repo / ".gitmodules").write_text(
-            "[submodule \"llvm\"]\n"
-            "\tpath = llvm\n"
-            f"\turl = {self.llvm_repo}\n"
-        )
+        (self.circt_repo / ".gitmodules").write_text(f'[submodule "llvm"]\n\tpath = llvm\n\turl = {self.llvm_repo}\n')
         (self.circt_repo / "circt.txt").write_text("circt\n")
         git(self.circt_repo, "add", ".gitmodules", "circt.txt")
         git(
@@ -91,11 +87,16 @@ class GitTopology:
         git(self.circt_repo, "commit", "-qm", "Pin LLVM")
         self.circt_pin = git(self.circt_repo, "rev-parse", "HEAD")
 
+        self.or_tools_repo = root / "or-tools-repo"
+        init_repo(self.or_tools_repo)
+        self.or_tools_pin = commit_file(self.or_tools_repo, "or-tools.txt", "or-tools\n")
+
         self.main = root / "main"
         init_repo(self.main)
         for source, path in (
             (self.circt_repo, "externals/circt"),
             (self.llvm_repo, "externals/llvm"),
+            (self.or_tools_repo, "externals/or-tools"),
         ):
             git(
                 self.main,
@@ -114,6 +115,7 @@ class GitTopology:
             ".gitmodules",
             "externals/circt",
             "externals/llvm",
+            "externals/or-tools",
         )
         git(self.main, "commit", "-qm", "Pin dependencies")
 
@@ -135,6 +137,9 @@ def build_paths(root: Path):
     llvm_build = llvm_root / "build"
     circt_root = externals / "circt"
     circt_build = circt_root / "build"
+    or_tools_root = externals / "or-tools"
+    or_tools_build = or_tools_root / "build"
+    or_tools_install = or_tools_root / "install"
     return SimpleNamespace(
         root=root,
         main=root,
@@ -154,6 +159,13 @@ def build_paths(root: Path):
         circt_build=circt_build,
         circt_stamp=externals / ".loom-build.circt.stamp",
         circt_cmake_dir=circt_build / "lib" / "cmake" / "circt",
+        or_tools_root=or_tools_root,
+        or_tools_build=or_tools_build,
+        or_tools_install=or_tools_install,
+        or_tools_lock=externals / ".loom-build.or-tools.lock",
+        or_tools_lock_turnstile=(externals / ".loom-build.or-tools.turnstile.lock"),
+        or_tools_stamp=externals / ".loom-build.or-tools.stamp",
+        or_tools_cmake_dir=(or_tools_install / "lib" / "cmake" / "ortools"),
         loom_build=root / "build",
     )
 
@@ -161,15 +173,16 @@ def build_paths(root: Path):
 class MakeWorktreeTest(unittest.TestCase):
     def setUp(self):
         self.module = load_dispatcher()
-        self.state = self.module.DependencyState("circt-pin", "llvm-pin")
+        self.state = self.module.DependencyState("circt-pin", "llvm-pin", "or-tools-pin")
         self.compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        self.loom_compilers = (
+            ("/clang", "clang 21.1.8"),
+            ("/clang++", "clang 21.1.8"),
+        )
         self.args = Namespace(jobs=1, lock_timeout=1.0)
-        self.llvm_identity = self.module.llvm_build_identity(
-            self.state.llvm_commit, self.compilers
-        )
-        self.circt_identity = self.module.circt_build_identity(
-            self.llvm_identity, self.state.circt_commit
-        )
+        self.llvm_identity = self.module.llvm_build_identity(self.state.llvm_commit, self.compilers)
+        self.circt_identity = self.module.circt_build_identity(self.llvm_identity, self.state.circt_commit)
+        self.or_tools_identity = self.module.or_tools_build_identity(self.state.or_tools_commit, self.loom_compilers)
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
     def test_shared_llvm_build_includes_corpus_targets(self) -> None:
@@ -186,7 +199,13 @@ class MakeWorktreeTest(unittest.TestCase):
     def build_environment(self, module, run=UNSET):
         stack = ExitStack()
         stack.enter_context(patch.object(module, "check_git_version"))
-        stack.enter_context(patch.object(module, "check_loom_compilers"))
+        stack.enter_context(
+            patch.object(
+                module,
+                "check_loom_compilers",
+                return_value=self.loom_compilers,
+            )
+        )
         stack.enter_context(patch.object(module, "is_nfs", return_value=False))
         stack.enter_context(
             patch.object(
@@ -223,12 +242,24 @@ class MakeWorktreeTest(unittest.TestCase):
         self.write_llvm_artifacts(paths)
         paths.llvm_stamp.parent.mkdir(parents=True, exist_ok=True)
         paths.llvm_stamp.write_text((stamp or self.llvm_identity) + "\n")
+        self.ready_or_tools(paths)
 
     def ready_circt(self, paths, stamp: str | None = None) -> None:
         paths.circt_cmake_dir.mkdir(parents=True, exist_ok=True)
         (paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("ready\n")
         (paths.circt_build / "build.ninja").write_text("ninja\n")
         paths.circt_stamp.write_text((stamp or self.circt_identity) + "\n")
+
+    def ready_or_tools(self, paths, stamp: str | None = None) -> None:
+        paths.or_tools_build.mkdir(parents=True, exist_ok=True)
+        paths.or_tools_cmake_dir.mkdir(parents=True, exist_ok=True)
+        (paths.or_tools_cmake_dir / "ortoolsConfig.cmake").write_text("set(ortools_VERSION 9.15)\n")
+        (paths.or_tools_cmake_dir / "ortoolsTargets.cmake").write_text(
+            "add_library(ortools::ortools INTERFACE IMPORTED)\n"
+        )
+        (paths.or_tools_cmake_dir / "loom-source-commit.txt").write_text(self.state.or_tools_commit + "\n")
+        (paths.or_tools_build / "build.ninja").write_text("ninja\n")
+        paths.or_tools_stamp.write_text((stamp or self.or_tools_identity) + "\n")
 
     def loom_consumer(self, shared, root: Path, configured: bool = True):
         paths = SimpleNamespace(**vars(shared))
@@ -241,6 +272,9 @@ class MakeWorktreeTest(unittest.TestCase):
             (paths.loom_build / "CMakeCache.txt").write_text(
                 "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
                 "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
+                f"ortools_DIR:PATH={shared.or_tools_cmake_dir}\n"
+                "LOOM_ORTOOLS_SOURCE_COMMIT:STRING="
+                f"{self.state.or_tools_commit}\n"
             )
         return paths
 
@@ -263,10 +297,7 @@ class MakeWorktreeTest(unittest.TestCase):
         deadline = time.monotonic() + timeout
         while path.stat().st_size != expected_size:
             if time.monotonic() >= deadline:
-                self.fail(
-                    f"turnstile holds {path.stat().st_size} bytes, expected "
-                    f"{expected_size}"
-                )
+                self.fail(f"turnstile holds {path.stat().st_size} bytes, expected {expected_size}")
             select.select((), (), (), 0.005)
 
     def wait_for_lock_holders(
@@ -290,10 +321,7 @@ class MakeWorktreeTest(unittest.TestCase):
         timeout: float = 1.0,
     ) -> None:
         stat = path.stat()
-        key = (
-            f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:"
-            f"{stat.st_ino}"
-        )
+        key = f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:{stat.st_ino}"
         expected_holders = expected_holders or set()
         expected_waiters = expected_waiters or set()
         expected_processes = expected_processes or set()
@@ -303,24 +331,11 @@ class MakeWorktreeTest(unittest.TestCase):
             waiters = set()
             for line in Path("/proc/locks").read_text().splitlines():
                 fields = line.split()
-                if (
-                    len(fields) >= 6
-                    and fields[1] in ("FLOCK", "POSIX")
-                    and fields[5] == key
-                ):
+                if len(fields) >= 6 and fields[1] in ("FLOCK", "POSIX") and fields[5] == key:
                     holders.add(int(fields[4]))
-                elif (
-                    len(fields) >= 7
-                    and fields[1] == "->"
-                    and fields[2] in ("FLOCK", "POSIX")
-                    and fields[6] == key
-                ):
+                elif len(fields) >= 7 and fields[1] == "->" and fields[2] in ("FLOCK", "POSIX") and fields[6] == key:
                     waiters.add(int(fields[5]))
-            if (
-                expected_holders <= holders
-                and expected_waiters <= waiters
-                and expected_processes <= holders | waiters
-            ):
+            if expected_holders <= holders and expected_waiters <= waiters and expected_processes <= holders | waiters:
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -346,12 +361,14 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertEqual(paths.externals_root, topology.main / "externals")
             self.assertEqual(
                 self.module.gitlinks_at_head(topology.linked),
-                ("externals/circt", "externals/llvm"),
+                (
+                    "externals/circt",
+                    "externals/llvm",
+                    "externals/or-tools",
+                ),
             )
             linked_status = git(topology.linked, "submodule", "status")
-            self.assertTrue(
-                all(line.startswith("-") for line in linked_status.splitlines())
-            )
+            self.assertTrue(all(line.startswith("-") for line in linked_status.splitlines()))
             nested_status = git(
                 topology.main / "externals/circt",
                 "submodule",
@@ -363,18 +380,20 @@ class MakeWorktreeTest(unittest.TestCase):
             state = self.module.check_dependency_pins(paths)
             self.assertEqual(state.circt_commit, topology.circt_pin)
             self.assertEqual(state.llvm_commit, topology.llvm_pin)
+            self.assertEqual(state.or_tools_commit, topology.or_tools_pin)
 
     def test_primary_owner_runtime_state_uses_canonical_ignore_policy(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             topology = GitTopology(Path(td))
-            (topology.main / ".gitignore").write_text(
-                (REPO_ROOT / ".gitignore").read_text()
-            )
+            (topology.main / ".gitignore").write_text((REPO_ROOT / ".gitignore").read_text())
             runtime_state = (
                 "externals/.loom-build.llvm.lock",
                 "externals/.loom-build.llvm.turnstile.lock",
                 "externals/.loom-build.llvm.stamp",
                 "externals/.loom-build.circt.stamp",
+                "externals/.loom-build.or-tools.lock",
+                "externals/.loom-build.or-tools.turnstile.lock",
+                "externals/.loom-build.or-tools.stamp",
             )
             result = subprocess.run(
                 [
@@ -395,38 +414,36 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertEqual(set(result.stdout.split()), set(runtime_state))
 
     def test_dependency_identities_have_one_owner_each(self):
-        same_llvm = self.module.llvm_build_identity(
-            self.state.llvm_commit, self.compilers
-        )
+        same_llvm = self.module.llvm_build_identity(self.state.llvm_commit, self.compilers)
         changed_circt = self.module.DependencyState(
-            "other-circt", self.state.llvm_commit
+            "other-circt",
+            self.state.llvm_commit,
+            self.state.or_tools_commit,
         )
         self.assertEqual(
             same_llvm,
-            self.module.llvm_build_identity(
-                changed_circt.llvm_commit, self.compilers
-            ),
+            self.module.llvm_build_identity(changed_circt.llvm_commit, self.compilers),
         )
         self.assertNotEqual(
-            self.module.circt_build_identity(
-                same_llvm, self.state.circt_commit
-            ),
-            self.module.circt_build_identity(
-                same_llvm, changed_circt.circt_commit
-            ),
+            self.module.circt_build_identity(same_llvm, self.state.circt_commit),
+            self.module.circt_build_identity(same_llvm, changed_circt.circt_commit),
         )
 
         payload = json.loads(same_llvm)
         self.assertEqual(payload["dependencies"], {"llvm": "llvm-pin"})
         circt_payload = json.loads(self.circt_identity)
         self.assertNotIn("circt_build_targets", circt_payload)
+        or_tools_payload = json.loads(self.or_tools_identity)
+        self.assertEqual(
+            or_tools_payload["dependencies"],
+            {"or_tools": self.state.or_tools_commit},
+        )
+        self.assertEqual(or_tools_payload["compilers"]["cxx"]["path"], "/clang++")
 
         legacy_payload = json.loads(same_llvm)
         legacy_payload["dependencies"]["circt"] = "old-circt"
         legacy_stamp = json.dumps(legacy_payload, sort_keys=True)
-        self.assertTrue(
-            self.module.llvm_stamp_matches(legacy_stamp, same_llvm)
-        )
+        self.assertTrue(self.module.llvm_stamp_matches(legacy_stamp, same_llvm))
         self.assertFalse(
             self.module.llvm_stamp_matches(
                 legacy_stamp,
@@ -452,31 +469,26 @@ class MakeWorktreeTest(unittest.TestCase):
 
             self.assertEqual(
                 calls,
-                [[
-                    "cmake",
-                    "--build",
-                    str(consumer.loom_build),
-                    "-j1",
-                ]],
+                [
+                    [
+                        "cmake",
+                        "--build",
+                        str(consumer.loom_build),
+                        "-j1",
+                    ]
+                ],
             )
-            self.assertEqual(
-                self.module.read_stamp(shared.llvm_stamp), legacy_stamp
-            )
+            self.assertEqual(self.module.read_stamp(shared.llvm_stamp), legacy_stamp)
 
     def test_ready_public_loom_readers_overlap(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             shared = build_paths(Path(td) / "shared")
             self.ready_llvm(shared)
-            readers = {
-                name: self.loom_consumer(shared, Path(td) / name)
-                for name in ("reader-a", "reader-b")
-            }
+            readers = {name: self.loom_consumer(shared, Path(td) / name) for name in ("reader-a", "reader-b")}
             context = multiprocessing.get_context("fork")
             active = {name: context.Event() for name in readers}
             release = {name: context.Event() for name in readers}
-            by_build = {
-                str(paths.loom_build): name for name, paths in readers.items()
-            }
+            by_build = {str(paths.loom_build): name for name, paths in readers.items()}
 
             def controlled_run(cmd, **kwargs):
                 name = by_build.get(cmd[2]) if cmd[:2] == ["cmake", "--build"] else None
@@ -489,10 +501,7 @@ class MakeWorktreeTest(unittest.TestCase):
             def consume(name):
                 self.module.cmd_build_loom(readers[name], self.args)
 
-            processes = {
-                name: context.Process(target=consume, args=(name,), name=name)
-                for name in readers
-            }
+            processes = {name: context.Process(target=consume, args=(name,), name=name) for name in readers}
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     processes["reader-a"].start()
@@ -517,13 +526,10 @@ class MakeWorktreeTest(unittest.TestCase):
             shared = build_paths(Path(td) / "shared")
             self.ready_llvm(shared)
             readers = {
-                name: self.loom_consumer(shared, Path(td) / name)
-                for name in ("holding-reader", "queued-reader")
+                name: self.loom_consumer(shared, Path(td) / name) for name in ("holding-reader", "queued-reader")
             }
             context = multiprocessing.get_context("fork")
-            later_writers = tuple(
-                f"later-writer-{index}" for index in range(8)
-            )
+            later_writers = tuple(f"later-writer-{index}" for index in range(8))
             names = (
                 "holding-reader",
                 "first-writer",
@@ -532,15 +538,9 @@ class MakeWorktreeTest(unittest.TestCase):
             )
             active = {name: context.Event() for name in names}
             release = {name: context.Event() for name in names}
-            started = {
-                name: context.Event()
-                for name in names
-                if name != "holding-reader"
-            }
+            started = {name: context.Event() for name in names if name != "holding-reader"}
             order = context.Queue()
-            by_build = {
-                str(paths.loom_build): name for name, paths in readers.items()
-            }
+            by_build = {str(paths.loom_build): name for name, paths in readers.items()}
             args = Namespace(jobs=1, lock_timeout=3.0)
 
             def controlled_run(cmd, **kwargs):
@@ -582,10 +582,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     name="first-writer",
                 ),
             }
-            processes.update({
-                name: context.Process(target=write, args=(name,), name=name)
-                for name in later_writers
-            })
+            processes.update({name: context.Process(target=write, args=(name,), name=name) for name in later_writers})
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     processes["holding-reader"].start()
@@ -615,13 +612,9 @@ class MakeWorktreeTest(unittest.TestCase):
                         )
 
                     release["holding-reader"].set()
-                    self.assertEqual(
-                        order.get(timeout=1.0), "first-writer"
-                    )
+                    self.assertEqual(order.get(timeout=1.0), "first-writer")
                     release["first-writer"].set()
-                    self.assertEqual(
-                        order.get(timeout=1.0), "queued-reader"
-                    )
+                    self.assertEqual(order.get(timeout=1.0), "queued-reader")
                     release["queued-reader"].set()
             finally:
                 for event in release.values():
@@ -730,9 +723,7 @@ class MakeWorktreeTest(unittest.TestCase):
             release_writer = context.Event()
 
             def run_dispatcher():
-                os.environ["PATH"] = (
-                    f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
-                )
+                os.environ["PATH"] = f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
                 os.environ["LOOM_TEST_PORT"] = str(server_port)
                 os.environ["LOOM_TEST_HEARTBEAT"] = str(heartbeat)
                 self.module.cmd_build_loom(consumer, self.args)
@@ -747,9 +738,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     writer_active.set()
                     release_writer.wait(2.0)
 
-            dispatcher = context.Process(
-                target=run_dispatcher, name="loom-dispatcher"
-            )
+            dispatcher = context.Process(target=run_dispatcher, name="loom-dispatcher")
             writer = context.Process(target=compete, name="llvm-writer")
             command_pid = None
             supervisor_pid = None
@@ -767,21 +756,12 @@ class MakeWorktreeTest(unittest.TestCase):
                     dispatcher.start()
                     connection, _ = server.accept()
                     with connection:
-                        command_pid, supervisor_pid = tuple(
-                            int(pid)
-                            for pid in connection.recv(128).decode().split()
-                        )
-                    child_pidfds = [
-                        os.pidfd_open(pid)
-                        for pid in (command_pid, supervisor_pid)
-                    ]
-                    self.assertEqual(
-                        os.getpgid(command_pid), os.getpgid(supervisor_pid)
-                    )
+                        command_pid, supervisor_pid = tuple(int(pid) for pid in connection.recv(128).decode().split())
+                    child_pidfds = [os.pidfd_open(pid) for pid in (command_pid, supervisor_pid)]
+                    self.assertEqual(os.getpgid(command_pid), os.getpgid(supervisor_pid))
                     lock_stat = shared.llvm_lock.stat()
                     command_files = {
-                        (fd.stat().st_dev, fd.stat().st_ino)
-                        for fd in Path(f"/proc/{command_pid}/fd").iterdir()
+                        (fd.stat().st_dev, fd.stat().st_ino) for fd in Path(f"/proc/{command_pid}/fd").iterdir()
                     }
                     self.assertIn(
                         (lock_stat.st_dev, lock_stat.st_ino),
@@ -802,9 +782,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     os.kill(supervisor_pid, signal.SIGSTOP)
                     deadline = time.monotonic() + 1.0
                     while True:
-                        status = Path(
-                            f"/proc/{supervisor_pid}/status"
-                        ).read_text()
+                        status = Path(f"/proc/{supervisor_pid}/status").read_text()
                         if "\nState:\tT" in status:
                             break
                         if time.monotonic() >= deadline:
@@ -823,9 +801,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
                     os.kill(supervisor_pid, signal.SIGCONT)
                     self.assertTrue(writer_active.wait(1.0))
-                    command_ready, _, _ = select.select(
-                        [child_pidfds[0]], (), (), 0
-                    )
+                    command_ready, _, _ = select.select([child_pidfds[0]], (), (), 0)
                     self.assertEqual(
                         command_ready,
                         [child_pidfds[0]],
@@ -840,9 +816,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
                     release_writer.set()
 
-                    ready, _, _ = select.select(
-                        child_pidfds, (), (), 1.0
-                    )
+                    ready, _, _ = select.select(child_pidfds, (), (), 1.0)
                     self.assertEqual(
                         set(ready),
                         set(child_pidfds),
@@ -850,9 +824,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     )
             finally:
                 release_writer.set()
-                if supervisor_pid is not None and process_exists(
-                    supervisor_pid
-                ):
+                if supervisor_pid is not None and process_exists(supervisor_pid):
                     os.kill(supervisor_pid, signal.SIGCONT)
                 if dispatcher.is_alive():
                     dispatcher.kill()
@@ -902,9 +874,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     "configure_llvm",
                     side_effect=fail_configure,
                 ),
-                self.assertRaisesRegex(
-                    RuntimeError, "injected configure failure"
-                ),
+                self.assertRaisesRegex(RuntimeError, "injected configure failure"),
             ):
                 self.module.cmd_build_loom(consumer, self.args)
 
@@ -943,9 +913,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     "check_git_version",
                     side_effect=fail_llvm_preflight,
                 ),
-                self.assertRaisesRegex(
-                    RuntimeError, "LLVM preflight failed"
-                ),
+                self.assertRaisesRegex(RuntimeError, "LLVM preflight failed"),
             ):
                 self.module.cmd_build_llvm(llvm_paths, self.args)
 
@@ -968,9 +936,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     "check_git_version",
                     side_effect=fail_circt_preflight,
                 ),
-                self.assertRaisesRegex(
-                    RuntimeError, "CIRCT preflight failed"
-                ),
+                self.assertRaisesRegex(RuntimeError, "CIRCT preflight failed"),
             ):
                 self.module.cmd_build_circt(circt_paths, self.args)
 
@@ -992,9 +958,7 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertFalse(paths.circt_stamp.exists())
 
             with (
-                self.build_environment(
-                    self.module, run=lambda *args, **kwargs: None
-                ),
+                self.build_environment(self.module, run=lambda *args, **kwargs: None),
                 patch.object(
                     self.module,
                     "configure_llvm",
@@ -1017,6 +981,7 @@ class MakeWorktreeTest(unittest.TestCase):
             def fail_removal(*args, **kwargs):
                 self.assertFalse(main.llvm_stamp.exists())
                 self.assertFalse(main.circt_stamp.exists())
+                self.assertFalse(main.or_tools_stamp.exists())
                 raise RuntimeError("deletion interrupted")
 
             with (
@@ -1025,13 +990,12 @@ class MakeWorktreeTest(unittest.TestCase):
                     "rmtree",
                     side_effect=fail_removal,
                 ),
-                self.assertRaisesRegex(
-                    RuntimeError, "deletion interrupted"
-                ),
+                self.assertRaisesRegex(RuntimeError, "deletion interrupted"),
             ):
                 self.module.cmd_distclean(main, self.args)
             self.assertFalse(main.llvm_stamp.exists())
             self.assertFalse(main.circt_stamp.exists())
+            self.assertFalse(main.or_tools_stamp.exists())
 
             linked = build_paths(Path(td) / "linked")
             linked.is_main = False
@@ -1041,8 +1005,11 @@ class MakeWorktreeTest(unittest.TestCase):
             self.module.cmd_distclean(linked, self.args)
             self.assertTrue(linked.llvm_build.exists())
             self.assertTrue(linked.circt_build.exists())
+            self.assertTrue(linked.or_tools_build.exists())
+            self.assertTrue(linked.or_tools_install.exists())
             self.assertTrue(linked.llvm_stamp.exists())
             self.assertTrue(linked.circt_stamp.exists())
+            self.assertTrue(linked.or_tools_stamp.exists())
 
     def test_explicit_circt_build_uses_package_readiness_only(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
@@ -1059,12 +1026,14 @@ class MakeWorktreeTest(unittest.TestCase):
 
             self.assertEqual(
                 calls,
-                [[
-                    "cmake",
-                    "--build",
-                    str(paths.circt_build),
-                    "-j1",
-                ]],
+                [
+                    [
+                        "cmake",
+                        "--build",
+                        str(paths.circt_build),
+                        "-j1",
+                    ]
+                ],
             )
             self.assertEqual(
                 self.module.available_circt_dir(
@@ -1092,19 +1061,117 @@ class MakeWorktreeTest(unittest.TestCase):
                 )
             )
 
+    def test_explicit_or_tools_build_publishes_exact_package(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            self.ready_or_tools(paths)
+            calls = []
+
+            def capture_run(cmd, **kwargs):
+                calls.append(cmd)
+
+            with self.build_environment(self.module, run=capture_run):
+                self.module.cmd_build_or_tools(paths, self.args)
+
+            self.assertEqual(
+                calls,
+                [
+                    [
+                        "cmake",
+                        "--build",
+                        str(paths.or_tools_build),
+                        "--target",
+                        "install",
+                        "-j1",
+                    ]
+                ],
+            )
+            self.assertEqual(
+                self.module.available_or_tools_dir(
+                    paths,
+                    self.or_tools_identity,
+                    self.state.or_tools_commit,
+                ),
+                str(paths.or_tools_cmake_dir),
+            )
+
+            (paths.or_tools_cmake_dir / "loom-source-commit.txt").write_text("foreign-commit\n")
+            self.assertIsNone(
+                self.module.available_or_tools_dir(
+                    paths,
+                    self.or_tools_identity,
+                    self.state.or_tools_commit,
+                )
+            )
+
+    def test_ordinary_build_repairs_and_routes_required_or_tools(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            shared.or_tools_stamp.unlink()
+            shutil.rmtree(shared.or_tools_build)
+            shutil.rmtree(shared.or_tools_install)
+            consumer = self.loom_consumer(shared, Path(td) / "consumer", configured=False)
+            offered = []
+            commands = []
+
+            def capture_configure(paths, circt_dir, or_tools_dir, or_tools_commit):
+                offered.append((circt_dir, or_tools_dir))
+                self.assertEqual(or_tools_commit, self.state.or_tools_commit)
+                paths.loom_build.mkdir(parents=True)
+                (paths.loom_build / "build.ninja").write_text("ninja\n")
+
+            def materialize(cmd, **kwargs):
+                commands.append(cmd)
+                if cmd[:2] == ["cmake", "--build"] and (str(shared.or_tools_build) in cmd):
+                    self.ready_or_tools(shared)
+
+            with (
+                self.build_environment(self.module, run=materialize),
+                patch.object(
+                    self.module,
+                    "configure_or_tools",
+                    side_effect=lambda *args: (
+                        shared.or_tools_build.mkdir(parents=True),
+                        (shared.or_tools_build / "build.ninja").write_text("ninja\n"),
+                    ),
+                ),
+                patch.object(
+                    self.module,
+                    "configure_loom",
+                    side_effect=capture_configure,
+                ),
+            ):
+                self.module.cmd_build_loom(consumer, self.args)
+
+            self.assertEqual(
+                offered,
+                [(None, str(shared.or_tools_cmake_dir))],
+            )
+            self.assertIn(
+                [
+                    "cmake",
+                    "--build",
+                    str(shared.or_tools_build),
+                    "--target",
+                    "install",
+                    "-j1",
+                ],
+                commands,
+            )
+
     def test_ordinary_build_routes_ready_circt_without_building_it(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             shared = build_paths(Path(td) / "shared")
             self.ready_llvm(shared)
             self.ready_circt(shared)
-            consumer = self.loom_consumer(
-                shared, Path(td) / "consumer", configured=False
-            )
+            consumer = self.loom_consumer(shared, Path(td) / "consumer", configured=False)
             offered = []
             commands = []
 
-            def capture_configure(paths, circt_dir):
-                offered.append(circt_dir)
+            def capture_configure(paths, circt_dir, or_tools_dir, or_tools_commit):
+                offered.append((circt_dir, or_tools_dir))
+                self.assertEqual(or_tools_commit, self.state.or_tools_commit)
                 paths.loom_build.mkdir(parents=True)
                 (paths.loom_build / "build.ninja").write_text("ninja\n")
 
@@ -1121,15 +1188,25 @@ class MakeWorktreeTest(unittest.TestCase):
             ):
                 self.module.cmd_build_loom(consumer, self.args)
 
-            self.assertEqual(offered, [str(shared.circt_cmake_dir)])
+            self.assertEqual(
+                offered,
+                [
+                    (
+                        str(shared.circt_cmake_dir),
+                        str(shared.or_tools_cmake_dir),
+                    )
+                ],
+            )
             self.assertEqual(
                 commands,
-                [[
-                    "cmake",
-                    "--build",
-                    str(consumer.loom_build),
-                    "-j1",
-                ]],
+                [
+                    [
+                        "cmake",
+                        "--build",
+                        str(consumer.loom_build),
+                        "-j1",
+                    ]
+                ],
             )
 
     def test_blocking_lock_timeout_is_bounded_and_cold(self):
@@ -1189,9 +1266,7 @@ class MakeWorktreeTest(unittest.TestCase):
 
         self.assertEqual(self.module.validate_lock_timeout(0), 0)
         self.assertEqual(
-            self.module.validate_lock_timeout(
-                self.module.MAX_LOCK_TIMEOUT
-            ),
+            self.module.validate_lock_timeout(self.module.MAX_LOCK_TIMEOUT),
             self.module.MAX_LOCK_TIMEOUT,
         )
         with self.assertRaises(ValueError):
@@ -1199,9 +1274,7 @@ class MakeWorktreeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.validate_lock_timeout(float("inf"))
         with self.assertRaises(ValueError):
-            self.module.validate_lock_timeout(
-                self.module.MAX_LOCK_TIMEOUT + 0.1
-            )
+            self.module.validate_lock_timeout(self.module.MAX_LOCK_TIMEOUT + 0.1)
 
         cli = subprocess.run(
             [
@@ -1240,12 +1313,8 @@ class MakeWorktreeTest(unittest.TestCase):
             # accumulates for a later acquisition to scan.
             self.assertEqual(sizes, {2 * record_size})
 
-            self.module.cmd_distclean(
-                paths, Namespace(jobs=1, lock_timeout=1.0)
-            )
-            self.assertEqual(
-                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
-            )
+            self.module.cmd_distclean(paths, Namespace(jobs=1, lock_timeout=1.0))
+            self.assertEqual(paths.llvm_lock_turnstile.stat().st_size, 2 * record_size)
 
             # The slot is genuinely reused rather than the protocol having
             # stopped tracking arrival order.
@@ -1281,18 +1350,13 @@ class MakeWorktreeTest(unittest.TestCase):
                     pass
 
             holder = context.Process(target=hold_writer, name="holder")
-            queued = [
-                context.Process(target=queue_writer, name=f"queued-{index}")
-                for index in range(cohort)
-            ]
+            queued = [context.Process(target=queue_writer, name=f"queued-{index}") for index in range(cohort)]
             try:
                 holder.start()
                 self.assertTrue(held.wait(2.0))
                 for index, process in enumerate(queued):
                     process.start()
-                    self.wait_for_turnstile_records(
-                        paths.llvm_lock_turnstile, index + 2
-                    )
+                    self.wait_for_turnstile_records(paths.llvm_lock_turnstile, index + 2)
                 peak = paths.llvm_lock_turnstile.stat().st_size
                 release.set()
                 self.join_processes(queued)
@@ -1308,9 +1372,7 @@ class MakeWorktreeTest(unittest.TestCase):
             # single record of the participant that left last, never the peak
             # the turnstile once carried: residency outlives no participant,
             # so the next acquisition scans a constant table.
-            self.assertEqual(
-                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
-            )
+            self.assertEqual(paths.llvm_lock_turnstile.stat().st_size, 2 * record_size)
 
     def test_crashed_participants_are_reclaimed_without_replay(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
@@ -1349,9 +1411,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 )
                 for index in range(64)
             ]
-            newcomer = context.Process(
-                target=queue_writer, args=("newcomer",), name="newcomer"
-            )
+            newcomer = context.Process(target=queue_writer, args=("newcomer",), name="newcomer")
             retained = queued[-1]
             try:
                 holder.start()
@@ -1360,9 +1420,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     process.start()
                     # Queued participants are the only residency the
                     # turnstile carries: one record each, plus the header.
-                    self.wait_for_turnstile_records(
-                        paths.llvm_lock_turnstile, index + 2
-                    )
+                    self.wait_for_turnstile_records(paths.llvm_lock_turnstile, index + 2)
 
                 # Leave only the participant holding the last record, so
                 # every reclaimable record sits below a live one.
@@ -1375,9 +1433,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 # so a sparse live set cannot preserve peak-concurrency
                 # state for a later acquisition to scan.
                 self.wait_for_turnstile_records(paths.llvm_lock_turnstile, 3)
-                self.assertTrue(
-                    retained.is_alive(), "compaction dropped a live ticket"
-                )
+                self.assertTrue(retained.is_alive(), "compaction dropped a live ticket")
 
                 release.set()
                 # Compaction moves records but never reorders tickets.
@@ -1402,9 +1458,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 shared=False,
             ):
                 pass
-            self.assertEqual(
-                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
-            )
+            self.assertEqual(paths.llvm_lock_turnstile.stat().st_size, 2 * record_size)
 
     def test_dirty_or_drifted_dependency_pins_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
@@ -1417,6 +1471,12 @@ class MakeWorktreeTest(unittest.TestCase):
             dirty = self.capture_die(self.module.check_dependency_pins, paths)
             self.assertIn("tracked modifications", dirty)
             git(paths.circt_root, "checkout", "--", "circt.txt")
+
+            (paths.or_tools_root / "or-tools.txt").write_text("dirty\n")
+            dirty = self.capture_die(self.module.check_dependency_pins, paths)
+            self.assertIn("externals/or-tools", dirty)
+            self.assertIn("tracked modifications", dirty)
+            git(paths.or_tools_root, "checkout", "--", "or-tools.txt")
 
             # A clean shared checkout moved off the parent gitlink is drift.
             llvm_other = git(topology.llvm_repo, "rev-parse", "HEAD")
@@ -1443,9 +1503,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 "--",
                 "externals/llvm",
             )
-            hygiene = self.capture_die(
-                self.module.check_linked_submodule_hygiene, linked_paths
-            )
+            hygiene = self.capture_die(self.module.check_linked_submodule_hygiene, linked_paths)
             self.assertIn("externals/llvm", hygiene)
             self.assertIn("must not initialize submodules", hygiene)
 
@@ -1461,9 +1519,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 "--",
                 "llvm",
             )
-            nested = self.capture_die(
-                self.module.check_dependency_pins, main_paths
-            )
+            nested = self.capture_die(self.module.check_dependency_pins, main_paths)
             self.assertIn("must remain uninitialized", nested)
 
     def test_incompatible_parent_gitlinks_are_rejected(self):
@@ -1505,9 +1561,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 ("clang++", "21.1.7"),
             ):
                 compiler = old / tool
-                compiler.write_text(
-                    f"#!/bin/sh\necho '{tool} (fake) {version}'\n"
-                )
+                compiler.write_text(f"#!/bin/sh\necho '{tool} (fake) {version}'\n")
                 compiler.chmod(0o755)
             old_path = f"{old}{os.pathsep}{os.environ['PATH']}"
             llvm_floor = io.StringIO()
@@ -1540,9 +1594,7 @@ class MakeWorktreeTest(unittest.TestCase):
             real_gcc = real_bin / "gcc"
             real_gcc.write_text("#!/bin/sh\nexit 0\n")
             real_gcc.chmod(0o755)
-            with patch.dict(
-                os.environ, {"PATH": f"{ccache_bin}{os.pathsep}{real_bin}"}
-            ):
+            with patch.dict(os.environ, {"PATH": f"{ccache_bin}{os.pathsep}{real_bin}"}):
                 resolved = self.module.resolve_compiler_executable("gcc")
             self.assertEqual(Path(resolved).resolve(), real_gcc.resolve())
 
@@ -1574,16 +1626,14 @@ class MakeWorktreeTest(unittest.TestCase):
                 "project(circt_consumer LANGUAGES C CXX)\n"
                 "find_package(CIRCT REQUIRED CONFIG NO_DEFAULT_PATH)\n"
                 "if(NOT TARGET CIRCTSupport)\n"
-                "  message(FATAL_ERROR \"CIRCTSupport target missing\")\n"
+                '  message(FATAL_ERROR "CIRCTSupport target missing")\n'
                 "endif()\n"
-                "message(STATUS \"Using CIRCTConfig.cmake in: "
-                "${CIRCT_DIR}\")\n"
+                'message(STATUS "Using CIRCTConfig.cmake in: '
+                '${CIRCT_DIR}")\n'
                 "add_executable(circt-consumer main.cpp)\n"
                 "target_link_libraries(circt-consumer PRIVATE CIRCTSupport)\n"
             )
-            (source / "main.cpp").write_text(
-                "int main() { return 0; }\n"
-            )
+            (source / "main.cpp").write_text("int main() { return 0; }\n")
 
             def configure(circt_dir, label):
                 return subprocess.run(
@@ -1634,6 +1684,87 @@ class MakeWorktreeTest(unittest.TestCase):
             )
             self.assertEqual(build.returncode, 0, build.stdout)
             self.assertTrue((root / "exact" / "circt-consumer").is_file())
+
+    def test_installed_or_tools_package_solves_cp_sat_model(self):
+        cmake = shutil.which("cmake")
+        self.assertIsNotNone(cmake)
+        ninja = shutil.which("ninja")
+        self.assertIsNotNone(ninja)
+        paths = self.module.Paths(REPO_ROOT)
+        config = paths.or_tools_cmake_dir / "ortoolsConfig.cmake"
+        if not config.is_file():
+            self.skipTest(f"shared OR-Tools package absent: {config}")
+
+        expected_commit = git(REPO_ROOT, "rev-parse", "HEAD:externals/or-tools")
+        self.assertEqual(
+            self.module.read_stamp(self.module.or_tools_commit_projection(paths)),
+            expected_commit,
+        )
+
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            root = Path(td)
+            source = root / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.24)\n"
+                "project(ortools_consumer LANGUAGES CXX)\n"
+                "find_package(ortools REQUIRED CONFIG NO_DEFAULT_PATH)\n"
+                "if(NOT TARGET ortools::ortools)\n"
+                '  message(FATAL_ERROR "ortools target missing")\n'
+                "endif()\n"
+                "add_executable(cp-sat-probe main.cpp)\n"
+                "target_link_libraries(cp-sat-probe PRIVATE "
+                "ortools::ortools)\n"
+            )
+            (source / "main.cpp").write_text(
+                '#include "ortools/sat/cp_model.h"\n'
+                "int main() {\n"
+                "  using namespace operations_research::sat;\n"
+                "  CpModelBuilder model;\n"
+                "  const IntVar x = model.NewIntVar(Domain(0, 10));\n"
+                "  model.AddEquality(x, 7);\n"
+                "  const CpSolverResponse response = Solve(model.Build());\n"
+                "  return SolutionIntegerValue(response, x) == 7 ? 0 : 1;\n"
+                "}\n"
+            )
+
+            def configure(or_tools_dir, label):
+                return subprocess.run(
+                    [
+                        cmake,
+                        "-S",
+                        str(source),
+                        "-B",
+                        str(root / label),
+                        "-G",
+                        "Ninja",
+                        f"-Dortools_DIR={or_tools_dir}",
+                        f"-DCMAKE_PREFIX_PATH={paths.or_tools_install}",
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+
+            parent = configure(paths.or_tools_install, "parent")
+            self.assertNotEqual(parent.returncode, 0, parent.stdout)
+
+            exact = configure(paths.or_tools_cmake_dir, "exact")
+            self.assertEqual(exact.returncode, 0, exact.stdout)
+            build = subprocess.run(
+                [cmake, "--build", str(root / "exact"), "--parallel", "1"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            self.assertEqual(build.returncode, 0, build.stdout)
+            probe = subprocess.run(
+                [str(root / "exact" / "cp-sat-probe")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            self.assertEqual(probe.returncode, 0, probe.stdout)
 
 
 if __name__ == "__main__":

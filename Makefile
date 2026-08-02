@@ -16,14 +16,16 @@
 #                    left enabled. The shared CIRCT build is owned by the
 #                    main worktree's externals; main and linked invocations
 #                    alike route to those shared outputs.
+#   make or-tools  - build and install the exact shared OR-Tools package.
 #   make loom      - build this worktree's loom build (auto-builds LLVM
-#                    when missing or when its build identity drifted;
+#                    and OR-Tools when missing or when their build identities
+#                    drifted;
 #                    never builds CIRCT, but offers an already-built
 #                    shared CIRCT via -DCIRCT_DIR when one matches)
 #   make test      - run lit FileCheck tests (target: check-fabric)
 #   make clean     - remove this worktree's loom build only
-#   make distclean - main worktree: remove the loom build and both shared
-#                    LLVM and CIRCT builds. Linked worktree: remove only
+#   make distclean - main worktree: remove the loom build and shared LLVM,
+#                    CIRCT, and OR-Tools builds. Linked worktree: remove only
 #                    this loom build (shared builds are left alone).
 
 ROOT          := $(abspath $(CURDIR))
@@ -42,7 +44,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 export LIT_OPTS
 export JOBS
 
-.PHONY: all doctor llvm circt loom test clean distclean
+.PHONY: all doctor llvm circt or-tools loom test clean distclean
 
 all: loom
 
@@ -54,6 +56,9 @@ llvm:
 
 circt:
 	@$(WT) build-circt
+
+or-tools:
+	@$(WT) build-or-tools
 
 loom:
 	@$(WT) build-loom

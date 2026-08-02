@@ -1,6 +1,8 @@
 # Build artifacts
 /build/
 /externals/llvm/build/
+/externals/or-tools/build/
+/externals/or-tools/install/
 *.o
 *.a
 *.so
@@ -37,3 +39,6 @@ core.*
 /externals/.loom-build.llvm.turnstile.lock
 /externals/.loom-build.llvm.stamp
 /externals/.loom-build.circt.stamp
+/externals/.loom-build.or-tools.lock
+/externals/.loom-build.or-tools.turnstile.lock
+/externals/.loom-build.or-tools.stamp

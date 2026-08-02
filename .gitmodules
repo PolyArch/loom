@@ -19,3 +19,6 @@
 [submodule "externals/unity"]
 	path = externals/unity
 	url = https://github.com/ThrowTheSwitch/Unity.git
+[submodule "externals/or-tools"]
+	path = externals/or-tools
+	url = https://github.com/google/or-tools.git
