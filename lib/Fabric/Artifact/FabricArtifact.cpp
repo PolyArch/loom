@@ -594,15 +594,16 @@ buildModuleView(::fabric::ModuleOp root,
   data.entities.resize(labeling.carriers.size());
 
   llvm::DenseMap<Operation *, const detail::FabricEntityCarrier *> carrierByOp;
+  for (const detail::FabricEntityCarrier &carrier : labeling.carriers)
+    if (carrier.op)
+      carrierByOp[carrier.op] = &carrier;
+
   for (const detail::FabricEntityCarrier &carrier : labeling.carriers) {
     if (carrier.id >= data.entities.size())
       return invalid("canonical Fabric entity IDs are not dense");
     detail::FabricEntityViewData &entity = data.entities[carrier.id];
     entity.kind = carrier.kind;
     entity.owner.inventoryCounts = emptyInventories();
-    if (carrier.op)
-      carrierByOp[carrier.op] = &carrier;
-
     if (!carrier.op)
       continue;
     const std::uint64_t inputs = carrier.op->getNumOperands();
@@ -620,10 +621,32 @@ buildModuleView(::fabric::ModuleOp root,
         return std::move(error);
     }
     if (carrier.kind == FabricEntityKind::FabricFuOccurrence) {
+      auto parent = carrierByOp.find(carrier.op->getParentOp());
+      if (parent == carrierByOp.end() ||
+          parent->second->kind != FabricEntityKind::FabricPeOccurrence)
+        return invalid("an FU occurrence has no owning PE occurrence");
+      entity.parentPe = FabricPeOccurrenceRef(parent->second->id);
       auto found = labeling.fuTemplateIdByOccurrence.find(carrier.op);
       if (found == labeling.fuTemplateIdByOccurrence.end())
         return invalid("an FU occurrence has no template relation");
       entity.fuTemplate = FabricFuTemplateRef(found->second);
+    }
+    if (auto pe = dyn_cast<::fabric::PeOp>(carrier.op)) {
+      entity.peSchedule = pe.getSchedule();
+      std::uint64_t contextCount = 1;
+      if (pe.getSchedule() == ::fabric::Schedule::Temporal) {
+        auto count = pe.getNumInstruction();
+        if (!count || *count <= 0)
+          return invalid("a temporal PE occurrence has no resident contexts");
+        contextCount = static_cast<std::uint64_t>(*count);
+      } else if (pe.getSchedule() != ::fabric::Schedule::Spatial)
+        return invalid("a PE occurrence has an unknown schedule");
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::InstructionContext)] = contextCount;
+      entity.instructionContexts.resize(contextCount);
+      for (detail::FabricNestedOwnerViewData &context :
+           entity.instructionContexts)
+        context.inventoryCounts = emptyInventories();
     }
     if (carrier.kind == FabricEntityKind::FabricMemoryOccurrence) {
       auto found = labeling.memoryEngineTemplateIdByOccurrence.find(carrier.op);

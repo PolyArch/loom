@@ -499,6 +499,27 @@ uniqueFuTemplate(llvm::StringRef test,
   return *result;
 }
 
+template <typename Ref>
+Ref uniqueEntity(llvm::StringRef test,
+                 const loom::fabric::FabricArtifactView &view,
+                 loom::fabric::FabricEntityKind expectedKind,
+                 llvm::StringRef description) {
+  std::optional<Ref> result;
+  for (std::uint64_t id = 0;; ++id) {
+    std::optional<loom::fabric::FabricEntityKind> kind = view.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != expectedKind)
+      continue;
+    if (result)
+      fail(test, ("fixture has more than one " + description).str());
+    result = Ref(id);
+  }
+  if (!result)
+    fail(test, ("fixture has no " + description).str());
+  return *result;
+}
+
 std::string moduleSource(llvm::StringRef name, bool reverse) {
   const llvm::StringLiteral first = R"mlir(
     %x = fabric.fifo %a [max_depth = 2, bypassable = true]
@@ -776,6 +797,30 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
       ::fabric::oneCycleElasticOperationResourceContract());
   FinalizedFabricRoot single = take(
       test, loom::fabric::finalizeFabricRoot(root(test, *singleSource), store));
+  const loom::fabric::FabricPeOccurrenceRef singlePe =
+      uniqueEntity<loom::fabric::FabricPeOccurrenceRef>(
+          test, single.view(),
+          loom::fabric::FabricEntityKind::FabricPeOccurrence,
+          "canonical PE occurrence");
+  const loom::fabric::FabricFuOccurrenceRef singleFuOccurrence =
+      uniqueEntity<loom::fabric::FabricFuOccurrenceRef>(
+          test, single.view(),
+          loom::fabric::FabricEntityKind::FabricFuOccurrence,
+          "canonical FU occurrence");
+  require(test,
+          single.view().peSchedule(singlePe) == ::fabric::Schedule::Spatial &&
+              single.view().peResidentContextCount(singlePe) == 1,
+          "sealed view lost the PE schedule or resident context domain");
+  require(test, single.view().parentPeOf(singleFuOccurrence) == singlePe,
+          "sealed view lost the FU occurrence parent PE relation");
+  if (llvm::Error error = loom::fabric::validateFabricRef(
+          single.view(), loom::fabric::InstructionContextRef{singlePe, 0}))
+    fail(test, llvm::toString(std::move(error)));
+  requireFabricError(
+      test,
+      loom::fabric::validateFabricRef(
+          single.view(), loom::fabric::InstructionContextRef{singlePe, 1}),
+      loom::fabric::FabricRefErrorKind::OrdinalOutOfRange);
   const loom::fabric::FabricFuTemplateRef singleFu =
       uniqueFuTemplate(test, single.view());
   require(test,

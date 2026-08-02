@@ -180,6 +180,13 @@ public:
   std::optional<FabricHardwareDomainKind>
   hardwareDomainKind(HardwareDomainRef domain) const;
 
+  /// The exact PE scheduling domain and FU-to-PE occurrence relation.
+  std::optional<::fabric::Schedule>
+  peSchedule(FabricPeOccurrenceRef occurrence) const;
+  std::uint64_t peResidentContextCount(FabricPeOccurrenceRef occurrence) const;
+  std::optional<FabricPeOccurrenceRef>
+  parentPeOf(FabricFuOccurrenceRef occurrence) const;
+
   /// The FU template this occurrence was elaborated from.
   std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const;

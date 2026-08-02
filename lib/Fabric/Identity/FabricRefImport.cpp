@@ -635,6 +635,24 @@ FabricArtifactView::hardwareDomainKind(HardwareDomainRef domain) const {
   return record ? record->hardwareDomainKind : std::nullopt;
 }
 
+std::optional<FabricPeOccurrenceRef>
+FabricArtifactView::parentPeOf(FabricFuOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->parentPe : std::nullopt;
+}
+
+std::optional<::fabric::Schedule>
+FabricArtifactView::peSchedule(FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->peSchedule : std::nullopt;
+}
+
+std::uint64_t FabricArtifactView::peResidentContextCount(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->instructionContexts.size() : 0;
+}
+
 std::optional<FabricFuTemplateRef>
 FabricArtifactView::fuTemplateOf(FabricFuOccurrenceRef occurrence) const {
   const detail::FabricEntityViewData *record = storage_->entity(occurrence);
@@ -1257,6 +1275,35 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         entity.transferPatterns.size() != entity.transferPatternRefs.size())
       return invalidView(
           "transfer-pattern inventory does not match its semantic records");
+
+    const bool isPe = entity.kind == FabricEntityKind::FabricPeOccurrence;
+    if (entity.peSchedule.has_value() != isPe)
+      return invalidView(
+          "PE occurrence and scheduling projection do not correspond");
+    if (isPe) {
+      if (*entity.peSchedule == ::fabric::Schedule::Spatial) {
+        if (entity.instructionContexts.size() != 1)
+          return invalidView(
+              "spatial PE occurrence does not own its sole context");
+      } else if (*entity.peSchedule == ::fabric::Schedule::Temporal) {
+        if (entity.instructionContexts.empty())
+          return invalidView("temporal PE occurrence has no resident contexts");
+      } else {
+        return invalidView("PE occurrence has an unknown schedule");
+      }
+    }
+
+    const bool isFuOccurrence =
+        entity.kind == FabricEntityKind::FabricFuOccurrence;
+    if (entity.parentPe.has_value() != isFuOccurrence)
+      return invalidView(
+          "FU occurrence and owning PE relation do not correspond");
+    if (entity.parentPe) {
+      const FabricEntityId parentId = entity.parentPe->id();
+      if (parentId >= data.entities.size() ||
+          data.entities[parentId].kind != FabricEntityKind::FabricPeOccurrence)
+        return invalidView("FU occurrence selects an invalid owning PE");
+    }
 
     if (entity.fuTemplate) {
       if (entity.kind != FabricEntityKind::FabricFuOccurrence)
