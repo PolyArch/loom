@@ -1,7 +1,9 @@
 #ifndef LOOM_COMMON_RESOLVEDCONFIG_H
 #define LOOM_COMMON_RESOLVEDCONFIG_H
 
+#include "ADG/BuiltinDescriptor.h"
 #include "Common/Artifact.h"
+#include "Common/ResolvedPnrPolicy.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -12,15 +14,10 @@
 
 namespace loom {
 
-struct ResolvedDseObjective {
-  std::string objectiveId;
-  double weight = 0.0;
-};
-
-struct ResolvedGlobalConfig {
-  unsigned addrBits = 48;
-  unsigned indexWidth = 32;
-  unsigned memBusWidth = 32768;
+struct ResolvedHardwareTargetConfig final {
+  std::string templateIdentity;
+  SchemaVersion schemaVersion;
+  adg::BuiltinTargetScale parameters;
 };
 
 struct ResolvedStructuredOwnershipConfig {
@@ -34,18 +31,18 @@ struct ResolvedTechMappingConfig {
 };
 
 struct ResolvedDseConfig {
-  std::string rankingPolicy = "weighted_sum";
   ResolvedStructuredOwnershipConfig structuredOwnership;
   ResolvedTechMappingConfig techMapping;
-  std::vector<ResolvedDseObjective> objectives;
+  ResolvedObjectiveCatalogs objectiveCatalogs;
+  ResolvedPnrPolicyConfig spatialPnr;
+  ResolvedPnrPolicyConfig systemPnr;
 };
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{1, 2}};
+      "loom.config.resolved", SchemaVersion{2, 0}};
 
-  std::string configId = "loom.default";
-  ResolvedGlobalConfig global;
+  ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;
 };
 

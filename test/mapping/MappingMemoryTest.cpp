@@ -386,7 +386,7 @@ void rejectsInconsistentFrozenMemoryService() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   testCase.fabric.memorySemanticEncodings[1].implementation =
       MemoryImplementationId(33);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   expectAnyError(__func__, freezeRealizationGraph(makePnrProblemInputs(
                                testCase, mapping, config)));
 }
@@ -501,7 +501,7 @@ void rejectsNoncanonicalMemoryInternalEdgeReference() {
 void freezesPhysicalMemoryOccurrenceDomains() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
   FrozenRealizationGraph realizations =
       takeExpected(__func__, freezeRealizationGraph(inputs));
@@ -554,7 +554,7 @@ void freezesPhysicalMemoryOccurrenceDomains() {
 void derivesDirectedMemoryReachability() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
   FrozenRealizationGraph realizations =
       takeExpected(__func__, freezeRealizationGraph(inputs));
@@ -639,7 +639,7 @@ void derivesDirectedMemoryReachability() {
 void derivesMemoryRouteResourceConflicts() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   FrozenRoutingGraph routing = takeExpected(
       __func__,
       freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
@@ -665,7 +665,7 @@ void derivesMemoryRouteResourceConflicts() {
 void retainsDeterministicMemoryProjection() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
   FrozenRealizationGraph realizations =
       takeExpected(__func__, freezeRealizationGraph(inputs));
@@ -697,7 +697,7 @@ void retainsDeterministicMemoryProjection() {
   std::reverse(permutedCase.fabric.transportTraversals.begin(),
                permutedCase.fabric.transportTraversals.end());
   ValidatedTechMapping permutedMapping = validateCase(__func__, permutedCase);
-  ResolvedPnrConfigView permutedConfig;
+  ResolvedPnrConfigView permutedConfig = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs permutedInputs =
       makePnrProblemInputs(permutedCase, permutedMapping, permutedConfig);
   if (realizations !=
@@ -720,7 +720,7 @@ void reportsMemoryDomainInfeasibility() {
     selectInternalMemoryGraph(testCase);
     testCase.fabric.memoryOccurrences.clear();
     ValidatedTechMapping mapping = validateCase(__func__, testCase);
-    ResolvedPnrConfigView config;
+    ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     expectMemoryInfeasibility(
         __func__,
         freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
@@ -735,7 +735,7 @@ void reportsMemoryDomainInfeasibility() {
       for (MemoryEndpointDescriptor &endpoint : occurrence.endpoints)
         endpoint.payloadCapacityBits = 8;
     ValidatedTechMapping mapping = validateCase(__func__, testCase);
-    ResolvedPnrConfigView config;
+    ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     expectMemoryInfeasibility(
         __func__,
         freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),

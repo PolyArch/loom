@@ -2,37 +2,15 @@
 #define LOOM_ADG_BUILTIN_H
 
 #include "ADG/Builder.h"
+#include "ADG/BuiltinDescriptor.h"
 #include "Common/ArtifactStore.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
-#include <cstdint>
 #include <vector>
 
 namespace loom::adg {
-
-enum class BuiltinTargetPreset : std::uint8_t { Small, Default, Large };
-
-struct BuiltinTargetScale final {
-  std::uint32_t accCoreCount;
-  std::uint32_t spatialPeCount;
-  std::uint32_t temporalPeCount;
-  std::uint32_t spatialMemoryCount;
-  std::uint32_t temporalMemoryCount;
-  std::uint32_t temporalResidentContexts;
-  std::uint32_t gatewayCount;
-  std::uint64_t memoryCapacityBytes;
-};
-
-struct BuiltinTargetDescriptor final {
-  BuiltinTargetPreset preset;
-  llvm::StringRef name;
-  llvm::StringRef templateIdentity;
-  std::uint32_t schemaMajor;
-  std::uint32_t schemaMinor;
-  BuiltinTargetScale scale;
-};
 
 /// One builtin SpatialCore recipe expanded into an open public Builder root.
 /// The caller may route additional typed resources before closing the root
@@ -41,9 +19,6 @@ struct BuiltinSpatialCoreExpansion final {
   SpatialCoreBuilder spatialCore;
   std::vector<SpatialValue> outputs;
 };
-
-const BuiltinTargetDescriptor &
-getBuiltinTargetDescriptor(BuiltinTargetPreset preset);
 
 /// Exact InstructionCore architecture shared by all builtin target presets.
 llvm::Expected<loom::fabric::InstructionCoreArchitecturalContract>

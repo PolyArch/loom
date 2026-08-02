@@ -1,5 +1,7 @@
 #include "MappingCoreTestSupport.h"
 
+#include "Common/ResolvedConfig.h"
+
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -81,21 +83,21 @@ ValidatedTechMapping validateCase(const char *test, const TestCase &testCase) {
       test, validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
                                 testCase.dataflow, testCase.fabric));
 }
+ResolvedPnrConfigView makeSpatialPnrConfigView(const char *test) {
+  return takeExpected(
+      test, projectResolvedSpatialPnrConfigView(defaultResolvedConfig()));
+}
 PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
                                       ValidatedTechMapping &mapping,
                                       ResolvedPnrConfigView &config) {
   return PnrProblemInputs{
-      testCase.dataflow,
-      mapping,
-      testCase.fabric,
-      config,
-      artifact(241),
+      testCase.dataflow, mapping, testCase.fabric, config,
       MappingConstraintSetInput{artifact(242), testCase.dataflow.identity,
                                 mapping.identity(), testCase.fabric.identity}};
 }
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(test);
   return takeExpected(test, freezeRealizationGraph(makePnrProblemInputs(
                                 testCase, mapping, config)));
 }

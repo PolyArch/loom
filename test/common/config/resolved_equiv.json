@@ -1,24 +1,12 @@
 {
-  "config_id": "unit.config",
-  "global": {
-    "addr_bits": 40,
-    "index_width": 64,
-    "mem_bus_width": 1024
-  },
   "dse": {
-    "ranking_policy": "weighted_sum",
     "structured_ownership": {
       "scope_expansion_limit": 17
     },
-    "objectives": [
-      {
-        "objective_id": "minimize_runtime",
-        "weight": 0.7
-      },
-      {
-        "objective_id": "minimize_area",
-        "weight": 0.3
-      }
-    ]
+    "tech_mapping": {
+      "match_row_attempt_limit": 2048,
+      "partial_cover_expansion_limit": 4096,
+      "candidate_publication_limit": 8
+    }
   }
 }

@@ -12,6 +12,7 @@ add_mlir_library(LoomCommon
   IndexWidth.cpp
   PointerLayout.cpp
   ResolvedConfig.cpp
+  ResolvedPnrPolicy.cpp
   VectorWidth.cpp
 
   ADDITIONAL_HEADER_DIRS

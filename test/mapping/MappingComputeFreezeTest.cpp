@@ -76,7 +76,7 @@ void rejectsMissingSelectedFuOccurrence() {
   TestCase testCase = makeValidCase();
   testCase.fabric.computeOccurrences.clear();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   expectFreezeInfeasibility(
       __func__,
       freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),

@@ -1,0 +1,167 @@
+#include "PnR/PnrConfig.h"
+
+#include "Common/ComponentViewDigest.h"
+#include "Common/ResolvedConfig.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace {
+
+[[noreturn]] void fail(llvm::StringRef message) {
+  llvm::errs() << "PnR config test: " << message << '\n';
+  std::exit(1);
+}
+
+void require(bool condition, llvm::StringRef message) {
+  if (!condition)
+    fail(message);
+}
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+template <typename T>
+void requireRejected(llvm::Expected<T> value, llvm::StringRef fragment) {
+  if (value)
+    fail("expected rejection");
+  const std::string message = llvm::toString(value.takeError());
+  require(llvm::StringRef(message).contains(fragment), message);
+}
+
+void projectionAndAdoptionAreDomainTyped() {
+  const loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  const loom::pnr::ResolvedPnrConfigView spatial =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
+  const loom::pnr::ResolvedPnrConfigView system =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(config));
+
+  require(spatial.domain() == loom::pnr::PnrConfigDomain::Spatial,
+          "Spatial projector returned the wrong domain");
+  require(system.domain() == loom::pnr::PnrConfigDomain::System,
+          "System projector returned the wrong domain");
+  require(spatial.schemaDescriptorBytes() != system.schemaDescriptorBytes(),
+          "Spatial and System descriptors are not distinct");
+  require(spatial.digest() != system.digest(),
+          "domain-distinct views have the same digest");
+
+  const loom::pnr::ResolvedPnrConfigView adopted =
+      take(loom::pnr::adoptResolvedSpatialPnrConfigView(
+          spatial.schemaDescriptorBytes(), spatial.canonicalViewBytes(),
+          spatial.digest()));
+  require(adopted.canonicalViewBytes() == spatial.canonicalViewBytes(),
+          "adoption changed canonical bytes");
+  require(adopted.digest() == spatial.digest(),
+          "adoption changed the component digest");
+
+  requireRejected(loom::pnr::adoptResolvedSystemPnrConfigView(
+                      spatial.schemaDescriptorBytes(),
+                      spatial.canonicalViewBytes(), spatial.digest()),
+                  "pnr_config_descriptor_mismatch");
+}
+
+void selectedAndUnselectedRecordsHaveExactDependencies() {
+  const loom::ResolvedConfig base = loom::defaultResolvedConfig();
+  const loom::pnr::ResolvedPnrConfigView baseView =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(base));
+
+  loom::ResolvedConfig selectedChange = base;
+  ++selectedChange.dse.spatialPnr.search.routing.endpointExpansionLimit;
+  const loom::pnr::ResolvedPnrConfigView selectedView =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(selectedChange));
+  require(selectedView.digest() != baseView.digest(),
+          "selected policy change did not affect the view digest");
+
+  loom::ResolvedConfig unselectedChange = base;
+  auto &catalogs = unselectedChange.dse.objectiveCatalogs;
+  catalogs.dimensions.push_back(
+      {loom::ResolvedObjectiveSourceKind::MappingMeasure, 0,
+       loom::ResolvedObjectiveDirection::Maximize, 0, 1, 0, UINT64_MAX});
+  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 1,
+                                 {{{9, 1}}});
+  catalogs.totalOrderings.front().weightedLevels = {2, 0};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 3;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 3;
+
+  const loom::pnr::ResolvedPnrConfigView unselectedView =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
+  require(unselectedView.digest() == baseView.digest(),
+          "unselected catalog record changed the view digest");
+
+  loom::ResolvedConfig stale = base;
+  stale.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 99;
+  requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(stale),
+                  "resolved_pnr_policy_invalid");
+}
+
+void workBudgetIsDerivedFromTheSelectedPolicy() {
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.dse.spatialPnr.search.initializer.seedAttemptCount = 7;
+  config.dse.spatialPnr.search.routing.endpointExpansionLimit = 123;
+  config.dse.spatialPnr.search.exactRepair.maxSolverCalls = 456;
+  const loom::pnr::ResolvedPnrConfigView view =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
+  const std::vector<loom::pnr::DeterministicWorkBudgetEntry> budgets =
+      loom::pnr::deriveDeterministicWorkBudgetView(view);
+
+  const auto find = [&](loom::pnr::PnrWorkUnit unit) {
+    for (const auto &entry : budgets)
+      if (entry.unit == unit)
+        return entry.limit;
+    fail("derived work budget omitted a policy owner");
+  };
+  require(find(loom::pnr::PnrWorkUnit::SeedAttempt) == 7,
+          "seed-attempt budget was not derived");
+  require(find(loom::pnr::PnrWorkUnit::EndpointExpansion) == 123,
+          "endpoint-expansion budget was not derived");
+  require(find(loom::pnr::PnrWorkUnit::ExactRepairSolverCall) == 456,
+          "exact-repair budget was not derived");
+}
+
+void malformedWireFailsClosed() {
+  const loom::pnr::ResolvedPnrConfigView view =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(
+          loom::defaultResolvedConfig()));
+  std::vector<std::uint8_t> trailing(view.canonicalViewBytes().begin(),
+                                     view.canonicalViewBytes().end());
+  trailing.push_back(0);
+  const loom::ComponentViewDigest trailingDigest =
+      take(loom::computeComponentViewDigest(view.schemaDescriptorBytes(),
+                                            trailing));
+  requireRejected(loom::pnr::adoptResolvedSpatialPnrConfigView(
+                      view.schemaDescriptorBytes(), trailing, trailingDigest),
+                  "pnr_config_bytes_invalid");
+
+  std::vector<std::uint8_t> staleDigestBytes(view.digest().bytes().begin(),
+                                             view.digest().bytes().end());
+  staleDigestBytes.back() ^= 1;
+  const loom::ComponentViewDigest staleDigest =
+      take(loom::ComponentViewDigest::fromBytes(staleDigestBytes));
+  requireRejected(loom::pnr::adoptResolvedSpatialPnrConfigView(
+                      view.schemaDescriptorBytes(),
+                      view.canonicalViewBytes(), staleDigest),
+                  "component_view_digest_mismatch");
+}
+
+} // namespace
+
+int main() {
+  projectionAndAdoptionAreDomainTyped();
+  selectedAndUnselectedRecordsHaveExactDependencies();
+  workBudgetIsDerivedFromTheSelectedPolicy();
+  malformedWireFailsClosed();
+  static_assert(
+      !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);
+  llvm::outs() << "PnR config tests passed\n";
+  return 0;
+}

@@ -75,7 +75,7 @@ ComputeOccurrenceDescriptor singlePortOccurrence(
 FrozenRoutingGraph validateAndFreezeRouting(const char *test,
                                             TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   return takeExpected(test, freezeRoutingGraph(makePnrProblemInputs(
                                 testCase, mapping, config)));
 }
@@ -643,7 +643,7 @@ void preservesIrregularReachabilityWithoutTopologyAssumptions() {
 void linksFactorizedComputeDomainsToRoutingVertices() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
   FrozenRealizationGraph realizations =
       takeExpected(__func__, freezeRealizationGraph(inputs));
@@ -664,7 +664,7 @@ void linksFactorizedComputeDomainsToRoutingVertices() {
 void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   FrozenRoutingGraph graph = takeExpected(
       __func__,
       freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
@@ -679,7 +679,7 @@ void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   TestCase emptyCase = makeValidCase();
   emptyCase.fabric.computeOccurrences.clear();
   ValidatedTechMapping emptyMapping = validateCase(__func__, emptyCase);
-  ResolvedPnrConfigView emptyConfig;
+  ResolvedPnrConfigView emptyConfig = makeSpatialPnrConfigView(__func__);
   FrozenRoutingGraph emptyGraph =
       takeExpected(__func__, freezeRoutingGraph(makePnrProblemInputs(
                                  emptyCase, emptyMapping, emptyConfig)));

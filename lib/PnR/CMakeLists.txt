@@ -5,6 +5,7 @@ add_mlir_library(LoomPnR
   FrozenRealizationGraph.cpp
   FrozenRoutingGraph.cpp
   PnrIndex.cpp
+  PnrConfig.cpp
   PnrProblemInputs.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp

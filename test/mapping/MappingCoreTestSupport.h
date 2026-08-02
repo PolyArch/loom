@@ -63,6 +63,7 @@ void expectAnyError(const char *test, llvm::Expected<T> result) {
 }
 
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase);
+ResolvedPnrConfigView makeSpatialPnrConfigView(const char *test);
 PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
                                       ValidatedTechMapping &mapping,
                                       ResolvedPnrConfigView &config);

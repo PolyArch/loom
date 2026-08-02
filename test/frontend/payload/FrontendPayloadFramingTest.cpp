@@ -122,12 +122,8 @@ void unrelatedResolvedConfigFieldsLeaveTheViewUnchanged() {
       projectResolvedFrontendConfigView(base);
 
   ResolvedConfig changed = base;
-  changed.configId = "loom.other";
-  changed.global.addrBits = base.global.addrBits + 1;
-  changed.global.indexWidth = 64;
-  changed.global.memBusWidth = base.global.memBusWidth * 2;
-  changed.dse.rankingPolicy = "lexicographic";
-  changed.dse.objectives.push_back(ResolvedDseObjective{"area", 0.25});
+  ++changed.dse.structuredOwnership.scopeExpansionLimit;
+  ++changed.dse.spatialPnr.search.routing.endpointExpansionLimit;
   require(__func__,
           resolvedConfigIdentity(base) != resolvedConfigIdentity(changed),
           "the mutated ResolvedConfig was not a semantic change");

@@ -1,4 +1,6 @@
-config_id: unit.config
+dse:
+  structured_ownership:
+    scope_expansion_limit: 17
 ---
-global:
+dse:
   mystery: 1

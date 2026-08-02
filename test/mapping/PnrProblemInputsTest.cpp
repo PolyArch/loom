@@ -1,5 +1,6 @@
 #include "MappingCoreTestSupport.h"
 
+#include "Common/ResolvedConfig.h"
 #include "PnR/FrozenRoutingGraph.h"
 #include "PnR/PnrProblemInputs.h"
 
@@ -24,6 +25,14 @@ struct HasDetachedTechMappingIdentityMember<
     T, std::void_t<decltype(std::declval<T>().techMappingIdentity)>>
     : std::true_type {};
 
+template <typename T, typename = void>
+struct HasResolvedConfigIdentityMember : std::false_type {};
+
+template <typename T>
+struct HasResolvedConfigIdentityMember<
+    T, std::void_t<decltype(std::declval<T>().resolvedConfigIdentity)>>
+    : std::true_type {};
+
 template <typename T> struct OwningInputProxy {
   T value;
 
@@ -34,12 +43,12 @@ template <typename Dataflow, typename TechMapping, typename Fabric,
           typename Config>
 inline constexpr bool canConstructPnrProblemInputs =
     std::is_constructible_v<PnrProblemInputs, Dataflow, TechMapping, Fabric,
-                            Config, ArtifactIdentity,
-                            MappingConstraintSetInput>;
+                            Config, MappingConstraintSetInput>;
 
 static_assert(!HasArtifactIdentityMember<PnrProblemInputs>::value);
 static_assert(!HasArtifactIdentityMember<ResolvedPnrConfigView>::value);
 static_assert(!HasDetachedTechMappingIdentityMember<PnrProblemInputs>::value);
+static_assert(!HasResolvedConfigIdentityMember<PnrProblemInputs>::value);
 static_assert(!std::is_default_constructible_v<MappingConstraintSetInput>);
 static_assert(std::is_copy_constructible_v<ValidatedTechMapping>);
 static_assert(std::is_move_constructible_v<ValidatedTechMapping>);
@@ -93,13 +102,8 @@ static_assert(!canConstructPnrProblemInputs<
 PnrProblemInputs
 makeProblemInputs(TestCase &testCase, ValidatedTechMapping &mapping,
                   ResolvedPnrConfigView &config,
-                  ArtifactIdentity resolvedConfigIdentity = artifact(4),
                   ArtifactIdentity constraintSetIdentity = artifact(5)) {
-  return PnrProblemInputs{testCase.dataflow,
-                          mapping,
-                          testCase.fabric,
-                          config,
-                          resolvedConfigIdentity,
+  return PnrProblemInputs{testCase.dataflow, mapping, testCase.fabric, config,
                           MappingConstraintSetInput{
                               constraintSetIdentity, testCase.dataflow.identity,
                               mapping.identity(), testCase.fabric.identity}};
@@ -136,7 +140,7 @@ void expectFreezeInputError(const char *test, llvm::Expected<T> result,
 void exactFiveInputBindingReachesExistingFreezeBehavior() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
 
   FrozenRealizationGraph realizations =
@@ -157,7 +161,7 @@ void rejectsEachExactCouplingMismatch() {
   {
     TestCase testCase = makeValidCase();
     ValidatedTechMapping mapping = validateCase(__func__, testCase);
-    ResolvedPnrConfigView config;
+    ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     const ArtifactIdentity mappingDataflowIdentity =
         mapping.header().dataflowIdentity;
     testCase.dataflow.identity = foreignIdentity;
@@ -175,7 +179,7 @@ void rejectsEachExactCouplingMismatch() {
   {
     TestCase testCase = makeValidCase();
     ValidatedTechMapping mapping = validateCase(__func__, testCase);
-    ResolvedPnrConfigView config;
+    ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     const ArtifactIdentity mappingFabricIdentity =
         mapping.header().fabricIdentity;
     testCase.fabric.identity = foreignIdentity;
@@ -192,7 +196,7 @@ void rejectsEachExactCouplingMismatch() {
 
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
 
   PnrProblemInputs mismatchedDataflow = inputs;
@@ -229,23 +233,50 @@ void rejectsEachExactCouplingMismatch() {
       testCase.fabric.identity, foreignIdentity);
 }
 
-void keepsConfigAndConstraintArtifactIdentitiesIndependent() {
+void bindsOnlyTheConsumedPnrConfigView() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView firstConfig;
-  ResolvedPnrConfigView secondConfig;
-  PnrProblemInputs first = makeProblemInputs(testCase, mapping, firstConfig,
-                                             artifact(4), artifact(5));
-  PnrProblemInputs second = makeProblemInputs(testCase, mapping, secondConfig,
-                                              artifact(40), artifact(50));
+  ResolvedConfig firstResolved = defaultResolvedConfig();
+  ResolvedConfig secondResolved = firstResolved;
+  ++secondResolved.dse.techMapping.matchRowAttemptLimit;
+  if (resolvedConfigIdentity(firstResolved) ==
+      resolvedConfigIdentity(secondResolved))
+    fail(__func__, "distinct complete configs have the same identity");
 
-  if (first.resolvedConfigIdentity == second.resolvedConfigIdentity ||
-      first.constraints.identity == second.constraints.identity)
-    fail(__func__, "config or constraint identity was not independently bound");
+  ResolvedPnrConfigView firstConfig = takeExpected(
+      __func__, projectResolvedSpatialPnrConfigView(firstResolved));
+  ResolvedPnrConfigView secondConfig = takeExpected(
+      __func__, projectResolvedSpatialPnrConfigView(secondResolved));
+  if (firstConfig.digest() != secondConfig.digest())
+    fail(__func__, "unconsumed config changed the PnR view digest");
+
+  PnrProblemInputs first =
+      makeProblemInputs(testCase, mapping, firstConfig, artifact(5));
+  PnrProblemInputs second =
+      makeProblemInputs(testCase, mapping, secondConfig, artifact(50));
+  if (first.constraints.identity == second.constraints.identity)
+    fail(__func__, "constraint identity was not independently bound");
   if (llvm::Error error = validatePnrProblemInputs(first))
     fail(__func__, llvm::toString(std::move(error)).c_str());
   if (llvm::Error error = validatePnrProblemInputs(second))
     fail(__func__, llvm::toString(std::move(error)).c_str());
+}
+
+void rejectsSystemConfigAtSpatialBoundary() {
+  TestCase testCase = makeValidCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config = takeExpected(
+      __func__, projectResolvedSystemPnrConfigView(defaultResolvedConfig()));
+  PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
+
+  llvm::Error error = validatePnrProblemInputs(inputs);
+  if (!error)
+    fail(__func__, "accepted a System PnR view at the Spatial boundary");
+  const std::string message = llvm::toString(std::move(error));
+  if (message.find(
+          "Spatial PnR requires the exact Spatial PnR component view") ==
+      std::string::npos)
+    fail(__func__, "received a different config-domain failure");
 }
 
 void bindsTechMappingIdentityAtValidationBoundary() {
@@ -255,7 +286,7 @@ void bindsTechMappingIdentityAtValidationBoundary() {
   ValidatedTechMapping first = takeExpected(
       __func__, validateTechMapping(firstIdentity, testCase.mapping,
                                     testCase.dataflow, testCase.fabric));
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs firstInputs = makeProblemInputs(testCase, first, config);
 
   PnrProblemInputs relabeledConstraints = firstInputs;
@@ -280,7 +311,7 @@ void bindsTechMappingIdentityAtValidationBoundary() {
 void keepsBorrowedMappingUsableAfterRvalueConstruction() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
 
   ValidatedTechMapping copiedFromRvalue(std::move(mapping));
@@ -303,7 +334,8 @@ void keepsBorrowedMappingUsableAfterRvalueConstruction() {
 void runPnrProblemInputsTests() {
   exactFiveInputBindingReachesExistingFreezeBehavior();
   rejectsEachExactCouplingMismatch();
-  keepsConfigAndConstraintArtifactIdentitiesIndependent();
+  bindsOnlyTheConsumedPnrConfigView();
+  rejectsSystemConfigAtSpatialBoundary();
   bindsTechMappingIdentityAtValidationBoundary();
   keepsBorrowedMappingUsableAfterRvalueConstruction();
 }

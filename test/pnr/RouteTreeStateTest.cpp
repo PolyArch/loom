@@ -151,7 +151,7 @@ FrozenRoutingGraphHandle makeRoutingGraph(const char *test) {
        endpointRef(fabric, 4002)}};
 
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   return std::make_shared<const FrozenRoutingGraph>(takeValue(
       test,
       freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config))));
@@ -188,7 +188,7 @@ FrozenRoutingGraphHandle makeCollisionRoutingGraph(const char *test) {
        endpointRef(fabric, 1133)}};
 
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  ResolvedPnrConfigView config;
+  ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   return std::make_shared<const FrozenRoutingGraph>(takeValue(
       test,
       freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config))));

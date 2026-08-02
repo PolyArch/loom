@@ -2,6 +2,7 @@
 #define LOOM_PNR_PNRPROBLEMINPUTS_H
 
 #include "Mapping/Artifact.h"
+#include "PnR/PnrConfig.h"
 
 #include "llvm/Support/Error.h"
 
@@ -15,8 +16,6 @@ class ValidatedTechMapping;
 } // namespace loom::mapping
 
 namespace loom::pnr {
-
-struct ResolvedPnrConfigView {};
 
 struct MappingConstraintSetInput {
   mapping::ArtifactIdentity identity;
@@ -46,18 +45,14 @@ struct PnrProblemInputs {
           int> = 0>
   PnrProblemInputs(Dataflow &&dataflow, TechMapping &&techMapping,
                    Fabric &&fabric, Config &&config,
-                   mapping::ArtifactIdentity resolvedConfigIdentity,
                    MappingConstraintSetInput constraints)
       : dataflow(dataflow), techMapping(techMapping), fabric(fabric),
-        config(config),
-        resolvedConfigIdentity(std::move(resolvedConfigIdentity)),
-        constraints(std::move(constraints)) {}
+        config(config), constraints(std::move(constraints)) {}
 
   const mapping::DataflowProgramView &dataflow;
   const mapping::ValidatedTechMapping &techMapping;
   const mapping::FabricHardwareView &fabric;
   const ResolvedPnrConfigView &config;
-  mapping::ArtifactIdentity resolvedConfigIdentity;
   MappingConstraintSetInput constraints;
 };
 

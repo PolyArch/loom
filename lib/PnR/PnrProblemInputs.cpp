@@ -35,6 +35,11 @@ llvm::Error identityMismatch(PnrProblemInputErrorCode code,
 
 llvm::Error
 loom::pnr::validatePnrProblemInputs(const PnrProblemInputs &inputs) {
+  if (inputs.config.domain() != PnrConfigDomain::Spatial)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "pnr_problem_input_invalid: Spatial PnR requires the exact Spatial "
+        "PnR component view");
   if (inputs.techMapping.header().dataflowIdentity != inputs.dataflow.identity)
     return identityMismatch(
         PnrProblemInputErrorCode::TechMappingDataflowIdentityMismatch,

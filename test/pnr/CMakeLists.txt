@@ -32,3 +32,12 @@ target_link_libraries(loom-pnr-routing-negotiation-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-config-test
+  PnrConfigTest.cpp
+)
+
+target_link_libraries(loom-pnr-config-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)

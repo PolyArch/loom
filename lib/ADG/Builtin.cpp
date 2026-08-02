@@ -21,22 +21,6 @@
 namespace loom::adg {
 namespace {
 
-constexpr BuiltinTargetDescriptor kSmall{
-    BuiltinTargetPreset::Small,       "small", "loom.adg.builtin.small", 1, 0,
-    {4, 12, 4, 1, 1, 2, 2, 64 * 1024}};
-constexpr BuiltinTargetDescriptor kDefault{BuiltinTargetPreset::Default,
-                                           "default",
-                                           "loom.adg.builtin.default",
-                                           1,
-                                           0,
-                                           {8, 27, 9, 2, 2, 4, 4, 256 * 1024}};
-constexpr BuiltinTargetDescriptor kLarge{BuiltinTargetPreset::Large,
-                                         "large",
-                                         "loom.adg.builtin.large",
-                                         1,
-                                         0,
-                                         {16, 48, 16, 4, 4, 8, 8, 1024 * 1024}};
-
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "adg_builtin_invalid: " + message);
@@ -743,23 +727,10 @@ getBuiltinInstructionCoreArchitecture() {
   return makeBuiltinInstructionCoreArchitecture();
 }
 
-const BuiltinTargetDescriptor &
-getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {
-  switch (preset) {
-  case BuiltinTargetPreset::Small:
-    return kSmall;
-  case BuiltinTargetPreset::Default:
-    return kDefault;
-  case BuiltinTargetPreset::Large:
-    return kLarge;
-  }
-  llvm_unreachable("all builtin target presets are handled");
-}
-
 llvm::Expected<BuiltinTargetPreset>
 parseBuiltinTargetPreset(llvm::StringRef spelling) {
   for (const BuiltinTargetDescriptor *descriptor :
-       {&kSmall, &kDefault, &kLarge})
+       {&builtinSmallTarget, &builtinDefaultTarget, &builtinLargeTarget})
     if (spelling == descriptor->name)
       return descriptor->preset;
   return invalid("unknown builtin target preset '" + spelling + "'");

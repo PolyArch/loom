@@ -1,3 +1,4 @@
-global:
-  addr_bits: 40
-  addr_bits: 48
+dse:
+  structured_ownership:
+    scope_expansion_limit: 40
+    scope_expansion_limit: 48
