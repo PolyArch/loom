@@ -6,6 +6,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "FabricArtifactViewInternal.h"
+#include "FabricTraversalProjection.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -23,7 +24,18 @@ using namespace loom;
 using namespace loom::fabric;
 
 struct FabricArtifactView::Storage {
+  explicit Storage(detail::FabricArtifactViewData data)
+      : data(std::move(data)) {}
+
   detail::FabricArtifactViewData data;
+  std::vector<FabricPeOccurrenceRef> peOccurrences;
+  std::vector<FabricFuOccurrenceRef> fuOccurrences;
+  std::vector<FabricMemoryOccurrenceRef> memoryOccurrences;
+  std::vector<FabricSwitchOccurrenceRef> switchOccurrences;
+  std::vector<FabricFifoOccurrenceRef> fifoOccurrences;
+  std::vector<FabricBoundaryOccurrenceRef> boundaryOccurrences;
+  std::vector<FabricTransportEndpointRef> transportEndpoints;
+  std::vector<FabricPhysicalTraversalView> physicalTraversalViews;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
@@ -355,6 +367,31 @@ encodedUntaggedPayloadWidth(llvm::ArrayRef<std::uint8_t> bytes) {
   return readU32(bytes.drop_front(sizeof(std::uint32_t)));
 }
 
+std::optional<::fabric::DataPathType>
+decodeTransportDataPath(llvm::ArrayRef<std::uint8_t> bytes) {
+  constexpr std::size_t wordBytes = sizeof(std::uint32_t);
+  const auto readU32 = [](llvm::ArrayRef<std::uint8_t> value) {
+    return (static_cast<std::uint32_t>(value[0]) << 24) |
+           (static_cast<std::uint32_t>(value[1]) << 16) |
+           (static_cast<std::uint32_t>(value[2]) << 8) |
+           static_cast<std::uint32_t>(value[3]);
+  };
+  if (bytes.size() != 2 * wordBytes && bytes.size() != 3 * wordBytes)
+    return std::nullopt;
+  const std::uint32_t kind = readU32(bytes.take_front(wordBytes));
+  const std::uint32_t payload = readU32(bytes.slice(wordBytes, wordBytes));
+  if (kind == 0 && bytes.size() == 2 * wordBytes)
+    return ::fabric::DataPathType{::fabric::DataPathKind::Bits, payload, 0};
+  if (kind == 1 && bytes.size() == 3 * wordBytes) {
+    const std::uint32_t tag = readU32(bytes.drop_front(2 * wordBytes));
+    ::fabric::DataPathType result{::fabric::DataPathKind::BitsTag, payload,
+                                  tag};
+    if (result.isWellFormed())
+      return result;
+  }
+  return std::nullopt;
+}
+
 template <typename Row>
 bool containsCanonicalRow(const std::vector<Row> &rows, const Row &needle) {
   return std::binary_search(rows.begin(), rows.end(), needle);
@@ -414,9 +451,10 @@ llvm::Error validateNestedOwner(const detail::FabricNestedOwnerViewData &owner,
                        " duplicates ResourceContract-owned inventories");
   for (const detail::FabricTransportEndpointViewData &endpoint :
        owner.transportEndpoints) {
-    if (endpoint.canonicalType.empty())
+    if (!decodeTransportDataPath(endpoint.canonicalType))
       return invalidView(llvm::Twine(ownerDescription) +
-                         " has a token endpoint without a physical type");
+                         " has a token endpoint without a canonical physical "
+                         "data path");
     if (endpoint.direction != FabricPortDirection::Input &&
         endpoint.direction != FabricPortDirection::Output)
       return invalidView(llvm::Twine(ownerDescription) +
@@ -450,6 +488,49 @@ FabricArtifactView::entityKind(FabricEntityId id) const {
   if (id >= storage_->data.entities.size())
     return std::nullopt;
   return storage_->data.entities[id].kind;
+}
+
+llvm::ArrayRef<FabricPeOccurrenceRef>
+FabricArtifactView::peOccurrences() const {
+  return storage_->peOccurrences;
+}
+
+llvm::ArrayRef<FabricFuOccurrenceRef>
+FabricArtifactView::fuOccurrences() const {
+  return storage_->fuOccurrences;
+}
+
+llvm::ArrayRef<FabricMemoryOccurrenceRef>
+FabricArtifactView::memoryOccurrences() const {
+  return storage_->memoryOccurrences;
+}
+
+llvm::ArrayRef<FabricSwitchOccurrenceRef>
+FabricArtifactView::switchOccurrences() const {
+  return storage_->switchOccurrences;
+}
+
+llvm::ArrayRef<FabricFifoOccurrenceRef>
+FabricArtifactView::fifoOccurrences() const {
+  return storage_->fifoOccurrences;
+}
+
+llvm::ArrayRef<FabricBoundaryOccurrenceRef>
+FabricArtifactView::boundaryOccurrences() const {
+  return storage_->boundaryOccurrences;
+}
+
+llvm::ArrayRef<FabricTransportEndpointRef>
+FabricArtifactView::transportEndpoints() const {
+  return storage_->transportEndpoints;
+}
+
+std::optional<::fabric::DataPathType>
+FabricArtifactView::transportEndpointDataPath(
+    const FabricTransportEndpointRef &endpoint) const {
+  const detail::FabricTransportEndpointViewData *record =
+      storage_->transportEndpoint(endpoint);
+  return record ? decodeTransportDataPath(record->canonicalType) : std::nullopt;
 }
 
 std::uint64_t FabricArtifactView::transportEndpointCount(
@@ -829,6 +910,11 @@ bool FabricArtifactView::admitsTraversal(
 llvm::ArrayRef<FabricPhysicalTraversalRef>
 FabricArtifactView::admittedTraversals() const {
   return storage_->data.admittedTraversals;
+}
+
+llvm::ArrayRef<FabricPhysicalTraversalView>
+FabricArtifactView::physicalTraversals() const {
+  return storage_->physicalTraversalViews;
 }
 
 llvm::ArrayRef<FabricSpatialAttachmentRecordView>
@@ -1388,9 +1474,71 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
 
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs(
       data.entities.size());
+  std::vector<FabricPeOccurrenceRef> peOccurrences;
+  std::vector<FabricFuOccurrenceRef> fuOccurrences;
+  std::vector<FabricMemoryOccurrenceRef> memoryOccurrences;
+  std::vector<FabricSwitchOccurrenceRef> switchOccurrences;
+  std::vector<FabricFifoOccurrenceRef> fifoOccurrences;
+  std::vector<FabricBoundaryOccurrenceRef> boundaryOccurrences;
+  std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   for (auto [entityId, entity] : llvm::enumerate(data.entities)) {
+    std::optional<FabricTransportEndpointOwnerRef> transportOwner;
+    switch (entity.kind) {
+    case FabricEntityKind::FabricPeOccurrence:
+      peOccurrences.emplace_back(entityId);
+      transportOwner =
+          FabricTransportEndpointOwnerRef::of(FabricPeOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::FabricFuOccurrence:
+      fuOccurrences.emplace_back(entityId);
+      transportOwner =
+          FabricTransportEndpointOwnerRef::of(FabricFuOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::FabricMemoryOccurrence:
+      memoryOccurrences.emplace_back(entityId);
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          FabricMemoryOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::FabricSwitchOccurrence:
+      switchOccurrences.emplace_back(entityId);
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          FabricSwitchOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::FabricFifoOccurrence:
+      fifoOccurrences.emplace_back(entityId);
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          FabricFifoOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::FabricBoundaryOccurrence:
+      boundaryOccurrences.emplace_back(entityId);
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          FabricBoundaryOccurrenceRef(entityId));
+      break;
+    case FabricEntityKind::SystemServiceEndpoint:
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          SystemServiceEndpointRef(entityId));
+      break;
+    case FabricEntityKind::SystemTransportResource:
+      transportOwner = FabricTransportEndpointOwnerRef::of(
+          SystemTransportResourceRef(entityId));
+      break;
+    default:
+      break;
+    }
+    if (transportOwner)
+      for (FabricOrdinal ordinal = 0;
+           ordinal < entity.owner.transportEndpoints.size(); ++ordinal)
+        transportEndpoints.push_back({*transportOwner, ordinal});
+    if (entity.spatialCore) {
+      const auto owner = FabricTransportEndpointOwnerRef::of(
+          SpatialCoreOccurrenceRef{AccCoreOccurrenceRef(entityId)});
+      for (FabricOrdinal ordinal = 0;
+           ordinal < entity.spatialCore->transportEndpoints.size(); ++ordinal)
+        transportEndpoints.push_back({owner, ordinal});
+    }
+
     if (entity.kind == FabricEntityKind::FabricFuTemplate)
       fuTemplates.emplace_back(entityId);
     if (entity.kind == FabricEntityKind::FabricMemoryEngineTemplate)
@@ -1404,13 +1552,26 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       refs.push_back(FabricMemoryOperationPortRef{
           FabricMemoryOccurrenceRef(entityId), ordinal});
   }
+  std::sort(transportEndpoints.begin(), transportEndpoints.end(),
+            [](const FabricTransportEndpointRef &lhs,
+               const FabricTransportEndpointRef &rhs) {
+              return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+            });
 
-  auto storage =
-      std::make_shared<FabricArtifactView::Storage>(FabricArtifactView::Storage{
-          std::move(data), std::move(fuTemplates),
-          std::move(memoryEngineTemplates), std::move(memoryPortRefs),
-          std::move(pointConnectionKeys), std::move(traversalKeys)});
-  FabricArtifactView view(std::move(storage));
+  auto storage = std::make_shared<FabricArtifactView::Storage>(std::move(data));
+  storage->peOccurrences = std::move(peOccurrences);
+  storage->fuOccurrences = std::move(fuOccurrences);
+  storage->memoryOccurrences = std::move(memoryOccurrences);
+  storage->switchOccurrences = std::move(switchOccurrences);
+  storage->fifoOccurrences = std::move(fifoOccurrences);
+  storage->boundaryOccurrences = std::move(boundaryOccurrences);
+  storage->transportEndpoints = std::move(transportEndpoints);
+  storage->fuTemplates = std::move(fuTemplates);
+  storage->memoryEngineTemplates = std::move(memoryEngineTemplates);
+  storage->memoryPortRefs = std::move(memoryPortRefs);
+  storage->pointConnectionKeys = std::move(pointConnectionKeys);
+  storage->traversalKeys = std::move(traversalKeys);
+  FabricArtifactView view(storage);
   for (const FabricPointConnectionPayload &connection :
        view.pointConnections()) {
     if (llvm::Error error = validateFabricRef(view, connection.source))
@@ -1429,9 +1590,21 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
             view.transportEndpointType(connection.destination)))
       return invalidView("point connection changes transport port kind");
   }
-  for (const FabricPhysicalTraversalRef &traversal : view.admittedTraversals())
+  for (const FabricPhysicalTraversalRef &traversal :
+       view.admittedTraversals()) {
     if (llvm::Error error = validateFabricRef(view, traversal))
       return std::move(error);
+    auto projected = detail::projectFabricTraversal(view, traversal);
+    if (!projected)
+      return projected.takeError();
+    for (const FabricTransportEndpointRef &endpoint : projected->sources)
+      if (llvm::Error error = validateFabricRef(view, endpoint))
+        return std::move(error);
+    for (const FabricTransportEndpointRef &endpoint : projected->destinations)
+      if (llvm::Error error = validateFabricRef(view, endpoint))
+        return std::move(error);
+    storage->physicalTraversalViews.push_back(std::move(*projected));
+  }
   for (std::size_t id = 0; id < view.storage_->data.entities.size(); ++id) {
     if (view.entityKind(id) == FabricEntityKind::FabricFuTemplate) {
       const FabricFuTemplateRef owner(id);

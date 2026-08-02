@@ -5,20 +5,15 @@
 #include "Fabric/Artifact/FabricClockResetValidation.h"
 #include "Fabric/Artifact/FabricHardwareDomainContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
-#include "Fabric/IR/BoundaryTransfer.h"
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricCanonicalEntity.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
-#include "Fabric/IR/FifoResourceContract.h"
-#include "Fabric/IR/MemoryCapabilityFinalization.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/SystemServiceContract.h"
-#include "Fabric/IR/TemporalOperandBuffer.h"
-#include "Fabric/IR/TemporalSwitchResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "FabricArtifactBytecodeInternal.h"
 #include "FabricArtifactDependencyClosureInternal.h"
@@ -26,6 +21,7 @@
 #include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricMemoryEngineTemplate.h"
+#include "FabricResourceContractFinalization.h"
 #include "FabricSystemCanonicalLabeling.h"
 #include "FabricSystemValidation.h"
 
@@ -78,189 +74,11 @@ llvm::Error ownerUnavailable(const llvm::Twine &message) {
       "fabric_artifact_owner_contract_unavailable: " + message);
 }
 
-llvm::Expected<std::optional<::fabric::ResourceContract>>
-deriveResourceContract(
-    Operation *operation,
-    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
-  if (auto fifo = dyn_cast<::fabric::FifoOp>(operation)) {
-    auto contract = ::fabric::createFifoResourceContract(
-        static_cast<std::uint32_t>(fifo.getMaxDepth()), fifo.getBypassable());
-    if (!contract)
-      return contract.takeError();
-    return std::optional<::fabric::ResourceContract>(std::move(*contract));
-  }
-  if (isa<::fabric::BoundaryOp>(operation)) {
-    auto contract = ::fabric::ResourceContract::create(
-        ::fabric::declareBoundaryTransferContract());
-    if (!contract)
-      return contract.takeError();
-    return std::optional<::fabric::ResourceContract>(std::move(*contract));
-  }
-  if (isa<::fabric::OpOp>(operation)) {
-    auto record = operation->getAttrOfType<DenseI8ArrayAttr>(
-        ::fabric::kResourceContractRecordAttrName);
-    if (!record)
-      return invalid("fabric.op is missing its complete resource contract");
-    std::vector<std::uint8_t> bytes;
-    bytes.reserve(record.size());
-    for (std::int8_t byte : record.asArrayRef())
-      bytes.push_back(static_cast<std::uint8_t>(byte));
-    auto contract = ::fabric::decodeResourceContractRecord(bytes);
-    if (!contract)
-      return contract.takeError();
-    if (contract->usePatternCount() == 0)
-      return invalid("fabric.op resource contract has no use pattern");
-    return std::optional<::fabric::ResourceContract>(std::move(*contract));
-  }
-  if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
-    if (llvm::Error error = ::fabric::validateMemoryCapabilityFinalization(
-            memory.getMemoryContract(), memory.getMemoryOperationPortsAttr()))
-      return std::move(error);
-    return std::optional<::fabric::ResourceContract>();
-  }
-  if (auto pe = dyn_cast<::fabric::PeOp>(operation);
-      pe && pe.getSchedule() == ::fabric::Schedule::Temporal) {
-    std::optional<std::uint64_t> peId;
-    for (const detail::FabricEntityCarrier &carrier : labeling.carriers)
-      if (carrier.op == operation) {
-        if (carrier.kind != FabricEntityKind::FabricPeOccurrence)
-          return invalid(
-              "temporal fabric.pe has the wrong canonical entity kind");
-        peId = carrier.id;
-        break;
-      }
-    if (!peId)
-      return invalid("temporal fabric.pe has no canonical occurrence");
-
-    llvm::SmallVector<std::uint32_t, 8> fuInputCounts;
-    for (Operation *candidate : labeling.canonicalOperationOrder) {
-      auto fu = dyn_cast_or_null<::fabric::FuOp>(candidate);
-      if (!fu || fu->getParentOp() != operation)
-        continue;
-      if (fu.getInputs().size() > std::numeric_limits<std::uint32_t>::max())
-        return invalid("temporal fabric.pe FU input domain exceeds u32");
-      fuInputCounts.push_back(
-          static_cast<std::uint32_t>(fu.getInputs().size()));
-    }
-
-    auto contextCount = pe.getNumInstruction();
-    auto mode = pe.getOperandBufferMode();
-    auto entries = pe.getOperandBufferSize();
-    if (!contextCount || !mode || !entries)
-      return invalid("temporal fabric.pe lacks its verified buffer parameters");
-    auto derived = ::fabric::TemporalOperandBufferContract::create(
-        ::fabric::TemporalOperandBufferDeclaration{FabricPeOccurrenceRef(*peId),
-                                                   *contextCount, fuInputCounts,
-                                                   *mode, *entries});
-    if (!derived)
-      return derived.takeError();
-    return std::optional<::fabric::ResourceContract>(
-        derived->resourceContract());
-  }
-  if (auto sw = dyn_cast<::fabric::SwitchOp>(operation);
-      sw && sw.getSchedule() == ::fabric::Schedule::Temporal) {
-    auto derived = ::fabric::deriveTemporalSwitchResourceContract(sw);
-    if (!derived)
-      return derived.takeError();
-    return std::optional<::fabric::ResourceContract>(
-        derived->resourceContract());
-  }
-  return std::optional<::fabric::ResourceContract>();
-}
-
-std::vector<std::int8_t> signedBytes(llvm::ArrayRef<std::uint8_t> bytes) {
-  std::vector<std::int8_t> result;
-  result.reserve(bytes.size());
-  for (std::uint8_t byte : bytes)
-    result.push_back(static_cast<std::int8_t>(byte));
-  return result;
-}
-
 std::vector<std::uint8_t> unsignedBytes(llvm::ArrayRef<std::int8_t> bytes) {
   std::vector<std::uint8_t> result;
   result.reserve(bytes.size());
   for (std::int8_t byte : bytes)
     result.push_back(static_cast<std::uint8_t>(byte));
-  return result;
-}
-
-llvm::Expected<std::optional<::fabric::ResourceContract>>
-validateResourceContractRecord(
-    Operation *operation,
-    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
-  auto expected = deriveResourceContract(operation, labeling);
-  if (!expected)
-    return expected.takeError();
-
-  auto record = operation->getAttrOfType<DenseI8ArrayAttr>(
-      ::fabric::kResourceContractRecordAttrName);
-  if (!*expected) {
-    if (record)
-      return invalid("an owner without a resource contract carries a record");
-    return std::optional<::fabric::ResourceContract>();
-  }
-  if (!record)
-    return invalid("a resource owner is missing its complete contract record");
-
-  std::vector<std::uint8_t> bytes = unsignedBytes(record.asArrayRef());
-  auto decoded = ::fabric::decodeResourceContractRecord(bytes);
-  if (!decoded)
-    return decoded.takeError();
-  auto canonical = ::fabric::encodeResourceContractRecord(*decoded);
-  if (!canonical)
-    return canonical.takeError();
-  if (*canonical != bytes)
-    return invalid("a resource contract record is not canonical");
-  auto expectedBytes = ::fabric::encodeResourceContractRecord(**expected);
-  if (!expectedBytes)
-    return expectedBytes.takeError();
-  if (*expectedBytes != bytes)
-    return invalid("a resource contract record disagrees with its owner");
-  return std::optional<::fabric::ResourceContract>(std::move(*decoded));
-}
-
-llvm::Error materializeResourceContractRecords(
-    ::fabric::ModuleOp root,
-    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
-  llvm::Error result = llvm::Error::success();
-  root->walk([&](Operation *operation) {
-    if (result)
-      return WalkResult::interrupt();
-    auto contract = deriveResourceContract(operation, labeling);
-    if (!contract) {
-      result = contract.takeError();
-      return WalkResult::interrupt();
-    }
-    operation->removeAttr(::fabric::kResourceContractRecordAttrName);
-    if (!*contract)
-      return WalkResult::advance();
-    auto bytes = ::fabric::encodeResourceContractRecord(**contract);
-    if (!bytes) {
-      result = bytes.takeError();
-      return WalkResult::interrupt();
-    }
-    std::vector<std::int8_t> values = signedBytes(*bytes);
-    operation->setAttr(::fabric::kResourceContractRecordAttrName,
-                       DenseI8ArrayAttr::get(root.getContext(), values));
-    return WalkResult::advance();
-  });
-  return result;
-}
-
-llvm::Error validateResourceContractRecords(
-    ::fabric::ModuleOp root,
-    const loom::fabric::detail::FabricCanonicalLabeling &labeling) {
-  llvm::Error result = llvm::Error::success();
-  root->walk([&](Operation *operation) {
-    if (result)
-      return WalkResult::interrupt();
-    auto contract = validateResourceContractRecord(operation, labeling);
-    if (!contract) {
-      result = contract.takeError();
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
   return result;
 }
 
@@ -655,7 +473,8 @@ buildModuleView(::fabric::ModuleOp root,
             FabricMemoryEngineTemplateRef(found->second);
     }
 
-    auto contract = validateResourceContractRecord(carrier.op, labeling);
+    auto contract =
+        detail::validateFabricResourceContract(carrier.op, labeling);
     if (!contract)
       return contract.takeError();
     entity.owner.resourceContract = std::move(*contract);
@@ -690,7 +509,8 @@ buildModuleView(::fabric::ModuleOp root,
       if (llvm::Error error =
               setOperationTransportEndpoints(operation, node.owner))
         return std::move(error);
-      auto contract = validateResourceContractRecord(operation, labeling);
+      auto contract =
+          detail::validateFabricResourceContract(operation, labeling);
       if (!contract)
         return contract.takeError();
       node.owner.resourceContract = std::move(*contract);
@@ -853,7 +673,8 @@ strictImportModule(const ArtifactRootReference &reference,
   auto labeling = detail::computeFabricModuleCanonicalLabeling(root);
   if (!labeling)
     return labeling.takeError();
-  if (llvm::Error error = validateResourceContractRecords(root, *labeling))
+  if (llvm::Error error =
+          detail::validateFabricResourceContracts(root, *labeling))
     return std::move(error);
   for (const detail::FabricEntityCarrier &carrier : labeling->carriers) {
     if (!carrier.op)
@@ -1696,7 +1517,7 @@ buildCanonicalCandidate(::fabric::ModuleOp source) {
   if (!preliminary)
     return preliminary.takeError();
   if (llvm::Error error =
-          materializeResourceContractRecords(clonedRoot, *preliminary))
+          detail::materializeFabricResourceContracts(clonedRoot, *preliminary))
     return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("the complete Fabric resource contracts do not verify");

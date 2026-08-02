@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
+#include "Fabric/IR/BoundaryDataPath.h"
 #include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
@@ -83,6 +84,15 @@ struct ResolvedFabricOpCapabilityView {
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 };
 
+/// The exact endpoint relation of one admitted physical traversal. The
+/// traversal reference remains the persistent identity; endpoint ranges are a
+/// sealed, rebuildable projection of the same Fabric owner.
+struct FabricPhysicalTraversalView final {
+  FabricPhysicalTraversalRef reference;
+  std::vector<FabricTransportEndpointRef> sources;
+  std::vector<FabricTransportEndpointRef> destinations;
+};
+
 class FabricArtifactView;
 class FabricSystemRootView;
 
@@ -118,6 +128,23 @@ public:
   /// Kind of the entity holding `id`, or absent when the artifact declares no
   /// such entity.
   std::optional<FabricEntityKind> entityKind(FabricEntityId id) const;
+
+  /// Canonical occurrence inventories. These ranges are the only supported
+  /// way for Mapping to enumerate physical candidates; scanning EntityIds is
+  /// not a persistent or native API.
+  llvm::ArrayRef<FabricPeOccurrenceRef> peOccurrences() const;
+  llvm::ArrayRef<FabricFuOccurrenceRef> fuOccurrences() const;
+  llvm::ArrayRef<FabricMemoryOccurrenceRef> memoryOccurrences() const;
+  llvm::ArrayRef<FabricSwitchOccurrenceRef> switchOccurrences() const;
+  llvm::ArrayRef<FabricFifoOccurrenceRef> fifoOccurrences() const;
+  llvm::ArrayRef<FabricBoundaryOccurrenceRef> boundaryOccurrences() const;
+
+  /// Complete canonical token-endpoint inventory and its typed physical data
+  /// path. The latter is decoded from the endpoint's canonical type bytes and
+  /// therefore has no independent encoding authority.
+  llvm::ArrayRef<FabricTransportEndpointRef> transportEndpoints() const;
+  std::optional<::fabric::DataPathType>
+  transportEndpointDataPath(const FabricTransportEndpointRef &endpoint) const;
 
   /// Size of the owner's canonical token transport inventory.
   std::uint64_t
@@ -254,6 +281,7 @@ public:
 
   /// Whether the owning resource contract admits this traversal.
   llvm::ArrayRef<FabricPhysicalTraversalRef> admittedTraversals() const;
+  llvm::ArrayRef<FabricPhysicalTraversalView> physicalTraversals() const;
   bool admitsTraversal(const FabricPhysicalTraversalRef &traversal) const;
 
 private:

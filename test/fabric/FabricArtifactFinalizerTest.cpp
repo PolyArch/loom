@@ -571,6 +571,65 @@ void canonicalPublicationAndStrictImport() {
           "Module root retained a direct dependency");
   require(test, firstResult.view().pointConnections().size() == 2,
           "fixed FIFO-to-boundary connections were not imported");
+  require(test, firstResult.view().fifoOccurrences().size() == 2,
+          "canonical FIFO occurrence inventory was not imported");
+  require(test, firstResult.view().boundaryOccurrences().size() == 2,
+          "canonical boundary occurrence inventory was not imported");
+  require(test, firstResult.view().transportEndpoints().size() == 10,
+          "canonical transport endpoint inventory was not imported");
+
+  const auto traversalViews = firstResult.view().physicalTraversals();
+  require(test,
+          traversalViews.size() ==
+              firstResult.view().admittedTraversals().size(),
+          "physical traversal relation is incomplete");
+  for (auto [ordinal, traversal] : llvm::enumerate(traversalViews)) {
+    require(test,
+            traversal.reference ==
+                firstResult.view().admittedTraversals()[ordinal],
+            "physical traversal relation changed canonical order");
+    require(test, !traversal.sources.empty() && !traversal.destinations.empty(),
+            "physical traversal omitted an endpoint relation");
+    for (const auto &endpoint : traversal.sources) {
+      require(test,
+              firstResult.view().transportEndpointDirection(endpoint) ==
+                      loom::fabric::FabricPortDirection::Input ||
+                  firstResult.view().transportEndpointDirection(endpoint) ==
+                      loom::fabric::FabricPortDirection::Output,
+              "physical traversal source is not a canonical endpoint");
+      require(
+          test,
+          firstResult.view().transportEndpointDataPath(endpoint).has_value(),
+          "physical traversal source has no typed data path");
+    }
+    for (const auto &endpoint : traversal.destinations)
+      require(
+          test,
+          firstResult.view().transportEndpointDataPath(endpoint).has_value(),
+          "physical traversal destination has no typed data path");
+  }
+
+  const auto pointTraversal =
+      llvm::find_if(traversalViews, [](const auto &traversal) {
+        return traversal.reference.kind() ==
+               loom::fabric::FabricPhysicalTraversalKind::PointConnection;
+      });
+  require(test,
+          pointTraversal != traversalViews.end() &&
+              pointTraversal->sources.size() == 1 &&
+              pointTraversal->destinations.size() == 1,
+          "point connection did not project one source and destination");
+
+  const auto boundaryTraversal =
+      llvm::find_if(traversalViews, [](const auto &traversal) {
+        return traversal.reference.kind() ==
+               loom::fabric::FabricPhysicalTraversalKind::BoundaryTraversal;
+      });
+  require(test,
+          boundaryTraversal != traversalViews.end() &&
+              boundaryTraversal->sources.size() == 2 &&
+              boundaryTraversal->destinations.size() == 1,
+          "s2t boundary traversal lost its atomic endpoint relation");
 
   std::optional<loom::fabric::FabricFifoOccurrenceRef> nonBypassableFifo;
   for (const loom::fabric::FabricPhysicalTraversalRef &traversal :
@@ -807,6 +866,14 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           test, single.view(),
           loom::fabric::FabricEntityKind::FabricFuOccurrence,
           "canonical FU occurrence");
+  require(
+      test,
+      single.view().peOccurrences() ==
+              llvm::ArrayRef<loom::fabric::FabricPeOccurrenceRef>(singlePe) &&
+          single.view().fuOccurrences() ==
+              llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef>(
+                  singleFuOccurrence),
+      "sealed view occurrence ranges disagree with typed resolution");
   require(test,
           single.view().peSchedule(singlePe) == ::fabric::Schedule::Spatial &&
               single.view().peResidentContextCount(singlePe) == 1,
