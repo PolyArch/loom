@@ -1204,6 +1204,12 @@ ObjectiveScalarSourceRef =
 `EvidenceObligationTemplateRef` is the canonical local ordinal in the exact
 ResolvedDseConfigView obligation-template table. It is meaningful only with
 that component view and never becomes a persistent cross-config reference.
+An owning component view may mechanically materialize a selected transitive
+closure of DSE records and assign new references local to that exact view, as
+specified for PnR by
+[Search Policy And Determinism](spec-pnr.md#search-policy-and-determinism).
+Such a projection copies the typed owner record and rewrites its references; it
+does not carry this ordinal across views or redefine the record schema.
 
 An objective source cannot reference an obligation tagged `HeldOut`. A held-out
 obligation is reserved for a terminal `ModelRelease` gate and cannot affect
@@ -1378,19 +1384,22 @@ EvidenceObligationTemplate {
   exact model binding, case, conditions, and metric/finding requests
   candidate_subject_role: exactly-one CaseSubjectRoleRef
   input_subject_bindings:
-    canonical table<CaseSubjectRoleRef, PromoteInputSlotRef>
+    canonical table<CaseSubjectRoleRef, EvidenceAcquisitionInputSlotRef>
   calibration_partition_role: optional<CalibrationPartitionRole>
 }
 ```
 
-`PromoteInputSlotRef` is a stable typed input ordinal owned by the exact
-acquisition policy. A template may leave the distinguished candidate role and
-the explicitly listed input-bound roles unresolved; every other case role is
-fixed exactly in the template. Instantiation fills the candidate role from the
-candidate set, fills each listed role from the consuming Promote node's
-ordinary typed input binding, then runs the ordinary Request verifier. Role
-cardinality and schema must match the input slot, a role cannot be both fixed
-and input-bound, and the candidate role cannot appear in the table. Promotion
+`EvidenceAcquisitionInputSlotRef` is a stable typed input ordinal owned by the
+exact acquisition policy. A central Promote node and a PnR interaction binding
+are two acquisition policies with distinct closed slot catalogs; the template
+never carries an interchangeable global slot. A template may leave the
+distinguished candidate role and the explicitly listed input-bound roles
+unresolved; every other case role is fixed exactly in the template.
+Instantiation fills the candidate role from the candidate set or ephemeral
+candidate view, fills each listed role from the consuming policy's ordinary
+typed input binding, then runs the ordinary Request verifier. Role cardinality
+and schema must match the input slot, a role cannot be both fixed and
+input-bound, and the candidate role cannot appear in the table. Promotion
 recovers candidate association only through the distinguished role. It cannot
 bind a model input, construct a partial `ResolvedModelBinding`, merge a
 candidate into a collection, or persist a parallel candidate-to-Evidence map.
@@ -1420,6 +1429,15 @@ ordinals, work-budget view, objective projections, cache indexes, scheduler
 state, and mutable domain search state are derived or rebuildable and are not
 Artifacts. Profiles and inheritance must elaborate before execution; the
 controller cannot add defaults or hidden promotion while running.
+
+A selected PnR closure is a second component projection from the same complete
+ResolvedConfig, not a reference into this complete DSE view. Its projector
+starts from the records selected by the Spatial or System PnR policy, computes
+the full template/dimension/level/ordering dependency closure, canonicalizes
+owner records by the semantic keys defined here, and rewrites all references to
+that PnR view's local tables. Unselected DSE records and this view's digest are
+not dependencies of the PnR view. Changing a selected owner record changes the
+PnR bytes; adding, reordering, or changing only an unselected record does not.
 
 ## Invocation and Recovery Records
 

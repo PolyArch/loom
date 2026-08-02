@@ -32,6 +32,38 @@ between incompatible changes and compatible schema growth. Unknown fields are
 not an extension mechanism; an owner must introduce and validate a new schema
 version.
 
+## Why ResolvedConfig 2.0 Removes The Provisional Flat Knobs
+
+The first implementation carried a display `config_id`, three global hardware
+widths, a string ranking policy, and floating-point objective weights. None was
+a sound semantic owner. Display identity belongs to invocation provenance;
+address and bus widths belong to the exact finalized Fabric; and DSE already
+owns typed objective sources, exact quantization, levels, and orderings.
+Keeping the provisional fields would make later consumers choose between two
+authorities.
+
+They were therefore removed in one incompatible schema transition instead of
+being retained as deprecated aliases. A 2.0 component either consumes a typed
+field from its declared view or recovers hardware facts from its exact Artifact
+input. It never translates an old string or floating value into the new typed
+model, because that translation would itself become an undocumented policy.
+
+## Why Selected Component Closures Are Materialized
+
+An ordinal into the complete DSE view is compact, but it is not self-contained:
+the same ordinal can denote another record after unrelated catalog insertion,
+and a consumer must retain a hidden dependency on the whole DSE view. Hashing
+the complete DSE view repairs correctness but invalidates a PnR freeze when an
+unselected model or objective changes.
+
+The PnR projector instead materializes the selected typed transitive closure,
+canonicalizes it by DSE-owned semantic keys, and assigns view-local references.
+This is not a second objective authority. It is the same kind of removable,
+validated component projection as any other ResolvedConfig view. The approach
+has the minimum dependency surface: every consumed fact is present, every
+unconsumed fact is absent, and the exact view digest is sufficient for cache
+lineage.
+
 ## Why Artifacts Are Narrow Semantic Owners
 
 An Artifact is an immutable, finalized semantic object in Loom's derivation

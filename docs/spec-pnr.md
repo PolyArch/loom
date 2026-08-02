@@ -129,7 +129,7 @@ The separate immutable System MappingConstraintSet `K` is governed solely by
 the System contract below. System PnR does not invent a system-wide TechMapping
 input. `C` has the same resolved-view contract as Spatial PnR and
 includes the exact Evaluation binding table used by its
-`PnrObjectiveProjection`.
+`SelectedObjectiveClosure`.
 
 `H` is the immutable, canonical-framed finite search-domain view mechanically
 elaborated from `D`, `F`, `R`, resolved Compilation and DSE policy, and `K`.
@@ -569,7 +569,7 @@ and capacity schemas, use patterns, service contracts, and physical refinement
 domains. Mapping selects only declared alternatives and owns physical legality
 and the domain-independent PnR measures `V` and `G`. Evaluation owns all
 accelerator- and workload-aware observations `Q`. The central resolved
-`PnrObjectiveProjection` is the only PnR composition of `V`, `G`, and `Q`.
+`SelectedObjectiveClosure` is the only PnR composition of `V`, `G`, and `Q`.
 
 MappingConstraintSet adds hard restrictions to the profile's base legality.
 `C` exposes resolved search policy, derived deterministic
@@ -968,10 +968,13 @@ arc_cost(a) = mapping_lower_bound_cost(a)
             + optional_evaluation_route_guidance(a)
 ```
 
-All terms are nonnegative. Evaluation guidance is zero when unavailable and
-may order proposals only when one exact resolved model safely supplies an
-arc-local value. It cannot filter legal arcs, prove legality, alter the
-Mapping-owned admissible heuristic, or replace full `Q` evaluation.
+All terms are nonnegative. Evaluation guidance is absent unless routing names
+one exact `ResolvedPnrEvaluationBindingRef` whose model safely supplies an
+arc-local value. Once selected, unavailable guidance or a failed guidance
+query fails the owning Action; it never becomes zero or silently selects
+another model. Guidance can order proposals only. It cannot filter legal
+arcs, prove legality, alter the Mapping-owned admissible heuristic, or replace
+full `Q` evaluation.
 
 `RouteCost` is `uint64_t`; `UINT64_MAX` is infinity. All arithmetic is checked,
 with typed overflow distinct from unreachable topology and work-budget
@@ -1176,7 +1179,7 @@ eligible only after every participating net and claim aggregation completes.
 A zero negotiated violation vector returns immediately. A non-closed iterate
 may be retained only when all remaining violations are admitted by
 `TemporaryViolationPolicy`; it is ranked through the existing
-`PnrObjectiveProjection` using route-related Mapping `V/G`, not A* cost or
+`SelectedObjectiveClosure` using route-related Mapping `V/G`, not A* cost or
 private prices. Equal rank retains the earlier canonical iterate. Work
 exhaustion is not infeasibility. Zero violation is the only normal early-
 convergence test; there is no epsilon, stagnation window, route-signature cycle
@@ -1342,49 +1345,173 @@ encoded through the exact ConfigurationABI.
 
 ### Resolved View
 
-The resolved view contains these orthogonal component projections:
+Spatial and System PnR have distinct component-view descriptors:
+
+```text
+loom.spatial_pnr.config.1.0
+loom.system_pnr.config.1.0
+```
+
+They use the same field types and codecs but project the independently selected
+Spatial or System policy domain. Their exact descriptor bytes are the ASCII
+bytes shown above without a trailing zero. A digest from one view kind cannot
+be adopted as the other.
+
+Each resolved view is self-contained:
 
 ```text
 ResolvedPnrConfigView {
-  SearchPolicy
-  DeterminismPolicy
-  DeterministicWorkBudgetView
-  TemporaryViolationPolicy
-  PnrObjectiveProjection
-  ResolvedEvaluationBinding[]
+  search_policy: SearchPolicy
+  determinism_policy: DeterminismPolicy
+  temporary_violation_policy: TemporaryViolationPolicy
+  selected_objective_closure: SelectedObjectiveClosure
 }
-```
 
-The projection has exactly this shape:
-
-```text
-PnrObjectiveProjection {
-  total_ordering: TotalOrderingRef
-  search_energy: SearchEnergyRef
+SelectedObjectiveClosure {
+  evidence_obligation_templates:
+    canonical sequence<EvidenceObligationTemplate>
+  objective_dimensions:
+    canonical sequence<ObjectiveDimension>
+  weighted_levels:
+    canonical sequence<WeightedLevel>
+  total_orderings:
+    canonical sequence<TotalOrdering>
+  selected_total_ordering: TotalOrderingRef
+  selected_search_energy: SearchEnergyRef
   focused_closure_dimensions:
     canonical set<ObjectiveDimensionRef>
+  evaluation_bindings:
+    canonical sequence<ResolvedPnrEvaluationBinding>
+}
+
+ResolvedPnrEvaluationBinding {
+  obligation_template: EvidenceObligationTemplateRef
+  interaction_domain: EvaluationInteractionDomainRef
 }
 ```
 
-`TotalOrderingRef`, `SearchEnergyRef`, and `ObjectiveDimensionRef` are the
-config-local references owned by `docs/spec-dse-feedback.md`. The complete
-objective-dimension closure is derived transitively from the selected total
-ordering, search energy, and focused-closure set; it is not copied into this
-record. Every focused-closure dimension must use an
-`EvaluationMetricSource`. An empty focused-closure set disables metric-
-triggered focused closure without changing annealing or final rank.
+`EvidenceObligationTemplateRef`, `ObjectiveDimensionRef`, `WeightedLevelRef`,
+`TotalOrderingRef`, and `ResolvedPnrEvaluationBindingRef` are zero-based
+`uint32` ordinals into the corresponding table in this exact view.
+`SearchEnergyRef` is the DSE-owned role-specific alias of one local
+`WeightedLevelRef`. The canonical bytes use the Common component-view digest
+contract; neither descriptor nor digest is embedded again inside the view.
 
-The canonical binding table is referenced by every selected Evaluation metric
-dimension and by optional route guidance through
-`ResolvedEvaluationBindingRef`. Its entries are exact resolved inputs, not
-another policy or model-selection mechanism.
+The record schemas and semantic keys for obligation templates, dimensions,
+levels, orderings, and interaction domains remain owned by
+[DSE Feedback](spec-dse-feedback.md#objectives-and-quality-gates). The
+references above are local to the exact PnR view. The central projector starts
+from the selected total ordering, search energy, focused-closure dimensions,
+and routing guidance binding, computes their complete transitive closure,
+sorts every owner-typed catalog by its complete semantic key, assigns dense
+view-local ordinals, and rewrites every internal reference. It does not retain
+an ordinal into `ResolvedDseConfigView`, copy an unselected record, or include
+the complete DSE-view digest.
 
-`SearchPolicy` owns exploration, including initialization, Action proposal,
-annealing, negotiated routing, focused closure, and exact repair. Its
-`ActionProposalPolicy` contains the nonnegative integer weights
-`realization_binding_weight`, `transport_routing_weight`, and
-`resource_allocation_weight`. They cannot all be zero and are reduced by GCD;
-empty Action kinds are removed before the remaining weights are normalized.
+Every Evaluation metric dimension in the selected rank, energy, or focused
+closure has exactly one binding to its obligation template. Objective use
+requires that the exact model descriptor admit the binding's interaction
+domain in `Incremental` mode. A routing `route_guidance_binding`, when present,
+requires `Guidance` mode. A binding may satisfy both uses only when the exact
+descriptor advertises both modes for that same domain. Required modes are
+derived from uses and are not serialized in the binding. Missing, duplicate,
+foreign, stale, or mode-incompatible bindings are invalid at projection or
+adoption.
+
+The PnR acquisition input catalogs are fixed by the component-view descriptor:
+
+```text
+SpatialPnrEvidenceInputSlot =
+    0 CanonicalDataflowProgram(D)
+  | 1 TechMapping(T)
+  | 2 Fabric(F)
+  | 3 MappingConstraintSet(K)
+
+SystemPnrEvidenceInputSlot =
+    0 CanonicalDataflowProgram(D)
+  | 1 Fabric(F)
+  | 2 MappingConstraintSet(K)
+```
+
+An `EvidenceAcquisitionInputSlotRef` in a selected template is a `u32be`
+ordinal in the corresponding catalog. The exact invocation supplies those
+Artifacts; schema and case-role validation must succeed before candidate state
+is allocated. System `R` and `H` are typed invocation views rather than
+Artifacts and cannot be smuggled through an Evaluation subject slot. A model
+that needs another noncandidate Artifact must fix it exactly in the template.
+There is no dynamic subject map or slot-name lookup.
+
+The template remains the ordinary reusable Evaluation owner record. During
+search, the exact invocation binds its noncandidate subject roles and the
+ephemeral `PnrCandidateView` supplies the distinguished candidate role. After
+a Mapping is published, the same template instantiates an ordinary
+`EvaluationRequest` for the full oracle. PnR does not own a second request,
+model-binding, metric, or finding schema.
+
+Every focused-closure dimension must use an `EvaluationMetricSource`. An empty
+focused-closure set disables metric-triggered focused closure without changing
+annealing or final rank. An empty Evaluation binding table is valid only when
+the selected closure contains no Evaluation metric and routing selects no
+guidance.
+
+`SearchPolicy` has exactly this closed shape:
+
+```text
+SearchPolicy {
+  initializer {
+    seed_attempt_count: positive uint32
+    assignment_attempt_limit_per_seed: positive uint64
+  }
+  action_proposal {
+    realization_binding_weight: uint64
+    transport_routing_weight: uint64
+    resource_allocation_weight: uint64
+  }
+  routing {
+    endpoint_expansion_limit: positive uint64
+    negotiation_iteration_limit: positive uint64
+    negotiation_policy: RoutingNegotiationPolicy
+    route_guidance_binding: optional<ResolvedPnrEvaluationBindingRef>
+  }
+  annealing {
+    calibration_proposal_count: positive uint64
+    positive_delta_quantile: ExactRatio
+    target_initial_acceptance: ExactRatio
+    fallback_temperature: positive uint64
+    minimum_temperature: positive uint64
+    cooling_ratio: ExactRatio
+    proposals_per_level_base: uint64
+    proposals_per_movable_decision: uint64
+  }
+  focused_closure {
+    proposal_limit: positive uint64
+  }
+  exact_repair:
+      Disabled
+    | CpSat {
+        max_region_decisions: positive uint64
+        max_solver_calls: positive uint64
+      }
+}
+```
+
+`ExactRatio` is the reduced `uint64 numerator/denominator` pair with a positive
+denominator. The quantile admits zero and one, target acceptance is strictly
+between zero and one, and cooling is strictly between zero and one. The Action
+weights are nonnegative, cannot all be zero, and are reduced by GCD. Empty
+Action kinds are removed before the remaining weights are normalized. The two
+proposal-count terms cannot both be zero. Inactive union fields are invalid.
+
+The canonical view encoder writes fields in the schema order above. Closed
+union and enum discriminants and local references use `u32be`; counts and
+numeric limits use `u64be`; ratios encode numerator then denominator; optionals
+use a `u32be` absent/present discriminant followed by the payload when present.
+Canonical sequences use `u64be(count)` followed by records in semantic-key
+order, except TotalOrdering level order, which remains semantic. Adoption
+validates the component-view digest, decodes the complete value, validates and
+canonicalizes all owner records, re-encodes, and requires exact byte equality.
+There is no JSON, property-map, raw-byte callback, or compatibility codec for
+this view.
 
 `TemporaryViolationPolicy` selects from the closed Mapping `V` descriptor
 registry defined below. Only selected descriptors may remain nonzero in a
@@ -1408,6 +1535,55 @@ owner-local ordinal. The view has no independently authored numeric fields and
 cannot override or reinterpret a work unit. Worker count, wall time, memory
 reservation, licenses, process retries, and external cancellation are
 execution controls and cannot change the formal candidate sequence.
+
+### Initial Builtin Policies
+
+ResolvedConfig 2.0 emits every field; the values below are schema data, not
+PnR-kernel defaults. All initial builtin profiles use Action weights
+`1:3:2` for realization, routing, and resource Actions; PathFinder
+`Multiplicative` with initial pressure `1`, reduced growth ratio `3/2`, and
+history increment `1`; quantile `3/4`; target acceptance `4/5`; fallback
+temperature `1024`; minimum temperature `1`; cooling ratio `19/20`; no route
+guidance; and deterministic master seed `0` with the protocols named above.
+
+```text
+profile                seeds  assignments  endpoint_expansions  negotiations
+report_only                1         4096                16384             8
+quick_explore              2        16384                65536            16
+balanced_explore           4        65536               262144            64
+performance_explore        8       262144              1048576           128
+implementation            16       524288              2097152           256
+strict_implementation     32      1048576              4194304           512
+
+profile                calibration  level_base  per_movable  focused
+report_only                     16          16            1       64
+quick_explore                   64          64            2      512
+balanced_explore               256         128            8     4096
+performance_explore            512         256           16     8192
+implementation                1024         512           24    16384
+strict_implementation         2048        1024           32    32768
+
+profile                exact_repair
+report_only            Disabled
+quick_explore          CpSat(64, 128)
+balanced_explore       CpSat(256, 1024)
+performance_explore    CpSat(512, 4096)
+implementation         CpSat(1024, 8192)
+strict_implementation  CpSat(2048, 16384)
+```
+
+The two `CpSat` values are `max_region_decisions` and `max_solver_calls`.
+Every initial profile admits all eight Mapping violation descriptors as
+temporary and requires all eight to be zero at finalization. Its selected
+closure contains one Minimize dimension per violation and one for
+`TotalSelectedTraversalClaim`, each with origin `0`, quantum `1`, and bounds
+`[0, UINT64_MAX]`. Final total ordering first compares one equal-weight level
+over all violations, then the traversal-claim level. Search energy is a third
+level containing every violation with weight `4294967296` and traversal claim
+with weight `1`; the checked `uint128` accumulator covers the complete declared
+domain. Focused-closure dimensions and Evaluation bindings are initially empty.
+The resolver emits all three levels explicitly and canonicalizes their weights;
+PnR does not synthesize them.
 
 ### Deterministic Initialization And Action Proposal
 
@@ -1513,12 +1689,13 @@ already resolved; an unavailable required source produces typed
 `ObjectiveUnavailable` and cannot select another provider, become zero,
 infinity, NaN, or invoke a private fallback. A temporary violation kind that
 SearchPolicy admits into committed candidates must have a positive objective
-term in the WeightedLevel selected by `PnrObjectiveProjection.search_energy`
+term in the WeightedLevel selected by
+`SelectedObjectiveClosure.selected_search_energy`
 so search cannot erase its closure obligation. Specifically, that `V`
 descriptor must be referenced by a Minimize dimension with `origin = 0`,
 `quantum = 1`, and a positive reduced weight.
 
-Evaluation metric dimensions reached from `PnrObjectiveProjection` provide
+Evaluation metric dimensions reached from `SelectedObjectiveClosure` provide
 ephemeral `Q` guidance. Those dimensions create no formal Request, Evidence,
 or pre-publication gate obligation. Formal quality-gate truth and candidate
 selection remain post-publication `Promote` behavior. A quality gate is never
@@ -1526,7 +1703,8 @@ converted to a numeric deviation.
 
 ```text
 energy(candidate) =
-  value(PnrObjectiveProjection.search_energy, ObjectiveVector(candidate))
+  value(SelectedObjectiveClosure.selected_search_energy,
+        ObjectiveVector(candidate))
 
 rank(candidate) =
   (TotalOrdering.weighted_level_values lexicographically ascending,
@@ -1551,12 +1729,14 @@ The annealing policy is the single fixed-point protocol:
 
 ```text
 SearchPolicy.annealing {
+  calibration_proposal_count
   positive_delta_quantile
   target_initial_acceptance
   fallback_temperature
   minimum_temperature
-  cooling_numerator
-  cooling_denominator
+  cooling_ratio
+  proposals_per_level_base
+  proposals_per_movable_decision
 }
 ```
 
@@ -1578,11 +1758,18 @@ an invalid estimate uses `fallback_temperature`. Cooling is:
 
 ```text
 T_next = max(minimum_temperature,
-             floor(T * cooling_numerator / cooling_denominator))
+             floor(T * cooling_ratio.numerator
+                     / cooling_ratio.denominator))
 ```
 
-There is no reheating, online acceptance-ratio adaptation, wall-time or
-stagnation termination, or accepted-Action budget.
+The annealer executes exactly one complete proposal level at
+`minimum_temperature`, then terminates. If calibration chooses a temperature
+at or below the minimum, that first level is the required minimum-temperature
+level. Otherwise, after each complete level above the minimum, it computes
+`T_next`; the first level whose temperature equals the minimum is executed in
+full and is the last level. There is no separate temperature-level limit,
+reheating, online acceptance-ratio adaptation, wall-time or stagnation
+termination, or accepted-Action budget.
 
 `DeterminismPolicy` contains exactly:
 
@@ -1679,7 +1866,8 @@ Every viable restart candidate receives the same deterministic focused timing
 and buffer closure. The already resolved ephemeral Evaluation binding first
 runs the full oracle for its selected model; this creates no formal Request,
 Evidence, or Artifact. Closure is triggered only when a metric dimension in
-`PnrObjectiveProjection.focused_closure_dimensions` has nonzero directed code.
+`SelectedObjectiveClosure.focused_closure_dimensions` has nonzero directed
+code.
 The dimension uses the central source, bound, and quantization contract;
 Mapping owns no private frequency, timing, buffer target, or quality-gate
 deviation.
@@ -1741,7 +1929,8 @@ The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
 variants. One `MoveTransaction` applies the batch atomically. Mapping hard
 constraints and the exactly representable WeightedLevel selected by
-`PnrObjectiveProjection.search_energy` may enter the solver. TotalOrdering and
+`SelectedObjectiveClosure.selected_search_energy` may enter the solver.
+TotalOrdering and
 Pareto are not flattened into a solver-private scalar.
 Approximate Evaluation information may order exploration but cannot prove
 feasibility. When required `Q` is not exactly encodable, Mapping-feasible
@@ -1803,7 +1992,7 @@ VG' = exact Mapping incremental evaluation of S'
 Q'  = exact resolved EvaluationModel evaluation of S'
 vector' = ObjectiveVector(VG', Q')
 rank' = TotalOrdering(vector')
-energy' = value(PnrObjectiveProjection.search_energy, vector')
+energy' = value(SelectedObjectiveClosure.selected_search_energy, vector')
 accept or reject
 commit or roll back Mapping and Evaluation state atomically
 ```
@@ -1815,7 +2004,8 @@ optimization for that same model identity. A lower-fidelity predictor is a
 different model identity, not an approximate adapter for a higher-fidelity
 model.
 
-Each exact `ResolvedEvaluationBindingRef` may create one ephemeral adapter with
+Each exact `ResolvedPnrEvaluationBindingRef` may create one ephemeral adapter
+with
 `rebuild`, `probe`, `commit`, `discard`, and optional frozen route guidance.
 `PnrCandidateDelta` and a borrowed read-only shadow candidate view are its only
 change source. The adapter may not own, copy, replace, or independently mutate

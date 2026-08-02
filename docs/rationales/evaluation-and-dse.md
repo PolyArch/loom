@@ -239,6 +239,25 @@ Loom therefore owns each source, direction, and exact affine quantization once,
 then derives ObjectiveVector, WeightedLevel, TotalOrdering, and SearchEnergy
 for their distinct uses.
 
+A domain search may materialize only the selected transitive closure of these
+records in its own component view. Copying the owner-typed record and remapping
+references is preferable to either a dangling ordinal into the complete DSE
+view or a dependency on its entire digest. The projection remains removable
+and mechanically validated; Evaluation and DSE remain the sole semantic
+owners.
+
+The same distinction explains the PnR interaction binding. An obligation
+template identifies the exact full oracle and reusable request shape, while an
+interaction-domain reference identifies the typed ephemeral candidate
+protocol. Their relation is sufficient. Incremental or guidance requirements
+follow from how the binding is selected, so persisting another mode selector
+would duplicate a fact that validation can derive.
+
+Input slots belong to the exact evidence-acquisition policy rather than to
+Promote as a universal mechanism. Central Promote and PnR therefore use the
+same template primitive with different closed typed slot catalogs. This avoids
+both a Promote-only template fork and an untyped subject map inside PnR.
+
 Only Point metrics enter an objective because they denote one scalar. Choosing
 an interval midpoint or a censored bound would create an estimator not owned by
 the model descriptor. A policy that needs such an estimate must request a

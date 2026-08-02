@@ -127,6 +127,37 @@ restrict the legal mapping space; ResolvedConfig controls how that space is
 searched; the Mapping result records the selected solution. A generic `config`
 object for all three would duplicate ownership and cache dependencies.
 
+## Why PnR Receives A Selected Objective Closure
+
+PnR needs objective records during hot mutable search, but the complete DSE
+catalog contains models, obligations, and policies unrelated to one Mapping
+invocation. Keeping global catalog ordinals in the PnR view would make those
+unrelated records hidden semantic dependencies. Keeping the complete DSE digest
+would avoid stale references but would destroy cache reuse whenever an
+unselected record changed.
+
+The resolved PnR view therefore contains the selected transitive closure with
+view-local references. DSE still owns every obligation template, dimension,
+quantization, weighted level, and ordering. PnR owns only which closed records
+this search consumes and the exact interaction-domain relation needed to use
+them. Spatial and System search use the same record algebra but distinct view
+descriptors, so they may choose different policies without sharing or copying
+mutable search state.
+
+Evaluation interaction modes are derived from use. A metric that participates
+in mutable candidate ranking needs the exact incremental protocol; route
+guidance needs the guidance protocol. Storing a second mode flag beside the
+binding could disagree with the use and was rejected. Likewise, selected
+guidance cannot silently become zero when its provider fails: absence is an
+explicit policy choice, while failure of a selected authority is a failed
+Action or invocation.
+
+The PnR freeze cache consequently depends on exact program, realization,
+hardware, and constraint identities plus the exact PnR view descriptor and
+digest. It does not depend on the complete ResolvedConfig identity. The
+InvocationManifest still records that full identity, preserving provenance
+without poisoning component-local cache reuse.
+
 ## Why Persistent MLIR And Native Search Data Coexist
 
 Mapping MLIR is the typed persistent wire and independent verification
@@ -231,6 +262,12 @@ central dimensions and exact normalized codes, but derive a lexicographic
 ordering, a componentwise vector relation, or one selected weighted energy.
 Changing an unrelated dimension bound must not rescale the acceptance
 probability of a local search move.
+
+The minimum-temperature level is explicit for the same replay reason. Stopping
+as soon as cooling reaches the minimum can either skip that level or execute it
+twice depending on loop shape. Executing exactly one complete level at the
+minimum gives one finite rule without a second temperature-level budget or a
+host-time termination heuristic.
 
 ## Why Tags Are Local Allocation
 

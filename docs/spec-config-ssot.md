@@ -96,8 +96,38 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 1.2`. Its Structured ownership
-generator policy owns:
+The current schema is `loom.config.resolved 2.0`. Version 2.0 is an
+incompatible replacement for the earlier provisional schema: it removes the
+authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
+`mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
+`ResolvedDseObjective` list. A 2.0 parser rejects those fields rather than
+adopting or translating them. Hardware widths remain inputs to the exact
+hardware target and are recovered from the finalized Fabric; objective facts
+use the typed records owned by [DSE Feedback](spec-dse-feedback.md#objectives-and-quality-gates).
+
+The 2.0 schema composes these active policy domains:
+
+```text
+ResolvedConfig {
+  hardware_target
+  dse {
+    structured_ownership
+    tech_mapping
+    spatial_pnr
+    system_pnr
+    evaluation_and_objective_catalogs
+  }
+}
+```
+
+`hardware_target` resolves the authoring selection described above. It is not
+part of either PnR component view: Spatial and System PnR consume the exact
+finalized Fabric identity as a separate input. The two PnR policy domains use
+the same closed field types and codecs but remain separate values, so they may
+select different search policies and objective closures without introducing a
+second schema.
+
+The Structured ownership generator policy owns:
 
 ```text
 dse.structured_ownership.scope_expansion_limit: positive uint32 = 64
@@ -114,6 +144,40 @@ dse.tech_mapping.candidate_publication_limit: positive uint64 = 16
 These values define the deterministic finite search domain described by
 [TechMapping Generation](spec-tech-mapping.md). They are not wall-time,
 memory, worker-count, or solver limits.
+
+The two PnR policy domains each own one complete authoring record whose field
+semantics and validation are defined by
+[Search Policy And Determinism](spec-pnr.md#search-policy-and-determinism):
+
+```text
+PnrPolicyAuthoringRecord {
+  search_policy
+  determinism_policy
+  temporary_violation_policy
+  selected_total_ordering
+  selected_search_energy
+  focused_closure_dimensions
+  evaluation_interaction_bindings
+}
+```
+
+References in this authoring record address the DSE catalogs in the same exact
+ResolvedConfig. They never leave the central resolver. Projection computes the
+selected transitive closure, canonicalizes it independently of unrelated
+catalog entries, assigns view-local references, and emits the self-contained
+PnR component view. A component cannot observe the original catalog ordinals
+or the digest of the complete DSE view.
+
+The designated default profile is `balanced_explore`. Its initial PnR policy
+uses `PathFinder` with the `Multiplicative` price kernel, admits every closed
+Mapping violation kind only as a temporary search state, gives every admitted
+violation a positive SearchEnergy term, orders the complete violation vector
+before `TotalSelectedTraversalClaim`, selects no focused-closure metric or
+route-guidance binding, and enables bounded `CpSat` repair. All numeric values,
+including seeds, proposal weights, semantic work limits, cooling parameters,
+PathFinder pressure parameters, and repair bounds, are emitted explicitly by
+the 2.0 resolver. No PnR kernel supplies a missing value or chooses a profile
+default.
 
 The limit counts complete ownership-scope expansions. Expanding one scope
 enumerates its entire finite typed decision domain; it does not truncate that
@@ -191,6 +255,15 @@ dependency closure false. Changing an unconsumed config field leaves the view
 bytes and digest unchanged; changing a consumed field or view schema changes
 them.
 
+When a component consumes selected records from another configuration domain,
+its projector materializes only the selected transitive closure. It copies the
+owner-typed records, canonicalizes them by their complete semantic keys,
+assigns references local to the component view, and mechanically rewrites all
+internal references. The copied records remain mechanical projections of
+their original owner schemas; the component may not reinterpret or extend
+them. This rule lets a cache ignore unrelated catalog entries while preventing
+an ordinal into a larger view from becoming a dangling or shadow authority.
+
 When the consumer is selected by an exact static descriptor, such as an
 `EvaluationModelDescriptor`, that descriptor owns the component-view schema
 and registered typed projector/adopter. A persistent binding may omit the
@@ -224,10 +297,13 @@ The entire typed closure is framed and hashed once. Common provides framing and
 SHA-256 utilities but does not define a generic cache object or understand
 family fields.
 
-For example, a PnR freeze key contains exact Dataflow, TechMapping, and Fabric
-identities, the PnR view descriptor and digest, and importer/cache schema
-identity. Two different full ResolvedConfig artifacts may reuse that cache only
-when their PnR views and every other cache dependency are identical.
+For example, a Spatial PnR freeze key contains exact Dataflow, TechMapping,
+Fabric, and MappingConstraintSet identities, the Spatial PnR view descriptor
+and digest, and importer/cache schema identity. A System PnR freeze key uses
+its exact system inputs and the distinct System PnR view descriptor and
+digest. Neither key contains the complete ResolvedConfig identity. Two
+different full ResolvedConfig artifacts may reuse a cache only when their PnR
+views and every other cache dependency are identical.
 
 A cache key is removable execution metadata. It does not enter the Artifact
 DAG, result ArtifactIdentity, or semantic configuration. A cache hit and miss
@@ -280,6 +356,11 @@ Stable tests cover:
   unchanged;
 * changing a consumed field, input Artifact, view schema, or cache schema
   changes the corresponding derived key;
+* reordering an unselected DSE catalog or changing an unselected record leaves
+  a selected PnR closure unchanged, while changing any selected transitive
+  record changes its bytes and digest;
+* a selected PnR closure round-trips without consulting the complete DSE view,
+  and foreign, stale, or noncanonical local references are rejected;
 * path and execution-limit changes do not alter semantic identity or formal
   selection; and
 * identical dependency closures produce identical view digests and cache keys.
