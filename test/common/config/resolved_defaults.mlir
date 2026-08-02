@@ -11,6 +11,10 @@
 // JSON-DAG: "ranking_policy": "weighted_sum"
 // JSON-DAG: "structured_ownership"
 // JSON-DAG: "scope_expansion_limit": 64
+// JSON-DAG: "tech_mapping"
+// JSON-DAG: "match_row_attempt_limit": 65536
+// JSON-DAG: "partial_cover_expansion_limit": 262144
+// JSON-DAG: "candidate_publication_limit": 16
 // JSON-DAG: "objective_id": "minimize_runtime"
 // NO-TECHMAP-NOT: "fabric_techmap"
 // IDENTITY: {{^[0-9a-f]{64}$}}

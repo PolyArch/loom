@@ -27,15 +27,22 @@ struct ResolvedStructuredOwnershipConfig {
   std::uint32_t scopeExpansionLimit = 64;
 };
 
+struct ResolvedTechMappingConfig {
+  std::uint64_t matchRowAttemptLimit = 65536;
+  std::uint64_t partialCoverExpansionLimit = 262144;
+  std::uint64_t candidatePublicationLimit = 16;
+};
+
 struct ResolvedDseConfig {
   std::string rankingPolicy = "weighted_sum";
   ResolvedStructuredOwnershipConfig structuredOwnership;
+  ResolvedTechMappingConfig techMapping;
   std::vector<ResolvedDseObjective> objectives;
 };
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{1, 1}};
+      "loom.config.resolved", SchemaVersion{1, 2}};
 
   std::string configId = "loom.default";
   ResolvedGlobalConfig global;

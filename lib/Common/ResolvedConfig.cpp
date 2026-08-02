@@ -99,6 +99,21 @@ llvm::Expected<unsigned> requireUnsigned(llvm::yaml::Node *node,
   return static_cast<unsigned>(value);
 }
 
+llvm::Expected<std::uint64_t> requirePositiveU64(llvm::yaml::Node *node,
+                                                 llvm::StringRef key) {
+  if (isQuotedScalar(node))
+    return diagnostic("config_type_mismatch", key,
+                      "expected unsigned integer, got string");
+  auto valueOrErr = requireScalarString(node, key);
+  if (!valueOrErr)
+    return valueOrErr.takeError();
+  std::uint64_t value = 0;
+  if (StringRef(*valueOrErr).getAsInteger(10, value) || value == 0)
+    return diagnostic("config_type_mismatch", key,
+                      "expected positive unsigned integer");
+  return value;
+}
+
 llvm::Expected<double> requireDouble(llvm::yaml::Node *node,
                                      llvm::StringRef key) {
   if (isQuotedScalar(node))
@@ -135,6 +150,9 @@ struct ConfigPatch {
   std::optional<unsigned> memBusWidth;
   std::optional<std::string> rankingPolicy;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
+  std::optional<std::uint64_t> techMappingMatchRowAttemptLimit;
+  std::optional<std::uint64_t> techMappingPartialCoverExpansionLimit;
+  std::optional<std::uint64_t> techMappingCandidatePublicationLimit;
   std::optional<std::vector<loom::ResolvedDseObjective>> objectives;
   std::set<std::string> touchedKeys;
 };
@@ -174,6 +192,14 @@ llvm::Error mergeSiblingPatch(ConfigPatch &dst, const ConfigPatch &src) {
     dst.rankingPolicy = src.rankingPolicy;
   if (src.ownershipScopeExpansionLimit)
     dst.ownershipScopeExpansionLimit = src.ownershipScopeExpansionLimit;
+  if (src.techMappingMatchRowAttemptLimit)
+    dst.techMappingMatchRowAttemptLimit = src.techMappingMatchRowAttemptLimit;
+  if (src.techMappingPartialCoverExpansionLimit)
+    dst.techMappingPartialCoverExpansionLimit =
+        src.techMappingPartialCoverExpansionLimit;
+  if (src.techMappingCandidatePublicationLimit)
+    dst.techMappingCandidatePublicationLimit =
+        src.techMappingCandidatePublicationLimit;
   if (src.objectives)
     dst.objectives = src.objectives;
   dst.touchedKeys.insert(src.touchedKeys.begin(), src.touchedKeys.end());
@@ -194,6 +220,15 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.ownershipScopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit =
         *patch.ownershipScopeExpansionLimit;
+  if (patch.techMappingMatchRowAttemptLimit)
+    config.dse.techMapping.matchRowAttemptLimit =
+        *patch.techMappingMatchRowAttemptLimit;
+  if (patch.techMappingPartialCoverExpansionLimit)
+    config.dse.techMapping.partialCoverExpansionLimit =
+        *patch.techMappingPartialCoverExpansionLimit;
+  if (patch.techMappingCandidatePublicationLimit)
+    config.dse.techMapping.candidatePublicationLimit =
+        *patch.techMappingCandidatePublicationLimit;
   if (patch.objectives)
     config.dse.objectives = *patch.objectives;
 }
@@ -306,6 +341,33 @@ llvm::Error parseStructuredOwnership(ConfigPatch &patch,
   return llvm::Error::success();
 }
 
+llvm::Error parseTechMapping(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
+  llvm::StringSet<> seen;
+  for (auto &kv : map) {
+    llvm::SmallString<64> keyStorage;
+    StringRef key = scalarValue(kv.getKey(), keyStorage);
+    if (llvm::Error err = checkDuplicateKey(seen, "dse.tech_mapping", key))
+      return err;
+    const std::string canonicalKey = ("dse.tech_mapping." + key).str();
+    if (key != "match_row_attempt_limit" &&
+        key != "partial_cover_expansion_limit" &&
+        key != "candidate_publication_limit")
+      return diagnostic("config_unknown_key", canonicalKey);
+    auto valueOrErr = requirePositiveU64(kv.getValue(), canonicalKey);
+    if (!valueOrErr)
+      return valueOrErr.takeError();
+    if (key == "match_row_attempt_limit")
+      patch.techMappingMatchRowAttemptLimit = *valueOrErr;
+    else if (key == "partial_cover_expansion_limit")
+      patch.techMappingPartialCoverExpansionLimit = *valueOrErr;
+    else if (key == "candidate_publication_limit")
+      patch.techMappingCandidatePublicationLimit = *valueOrErr;
+    if (llvm::Error err = touch(patch, canonicalKey))
+      return err;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error parseDse(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
   llvm::StringSet<> seen;
   for (auto &kv : map) {
@@ -334,6 +396,14 @@ llvm::Error parseDse(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
                           "expected mapping");
       if (llvm::Error err =
               parseStructuredOwnership(patch, *structuredOwnership))
+        return err;
+    } else if (key == "tech_mapping") {
+      auto *techMapping =
+          llvm::dyn_cast_or_null<llvm::yaml::MappingNode>(kv.getValue());
+      if (!techMapping)
+        return diagnostic("config_type_mismatch", canonicalKey,
+                          "expected mapping");
+      if (llvm::Error err = parseTechMapping(patch, *techMapping))
         return err;
     } else {
       return diagnostic("config_unknown_key", canonicalKey);
@@ -485,6 +555,15 @@ parseConfigPatchFromMapping(llvm::yaml::MappingNode &topMap,
     merged.rankingPolicy = local.rankingPolicy;
   if (local.ownershipScopeExpansionLimit)
     merged.ownershipScopeExpansionLimit = local.ownershipScopeExpansionLimit;
+  if (local.techMappingMatchRowAttemptLimit)
+    merged.techMappingMatchRowAttemptLimit =
+        local.techMappingMatchRowAttemptLimit;
+  if (local.techMappingPartialCoverExpansionLimit)
+    merged.techMappingPartialCoverExpansionLimit =
+        local.techMappingPartialCoverExpansionLimit;
+  if (local.techMappingCandidatePublicationLimit)
+    merged.techMappingCandidatePublicationLimit =
+        local.techMappingCandidatePublicationLimit;
   if (local.objectives)
     merged.objectives = local.objectives;
   (void)sourceName;
@@ -520,6 +599,15 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"scope_expansion_limit",
                  static_cast<int64_t>(
                      config.dse.structuredOwnership.scopeExpansionLimit)},
+            }},
+           {"tech_mapping",
+            llvm::json::Object{
+                {"match_row_attempt_limit",
+                 config.dse.techMapping.matchRowAttemptLimit},
+                {"partial_cover_expansion_limit",
+                 config.dse.techMapping.partialCoverExpansionLimit},
+                {"candidate_publication_limit",
+                 config.dse.techMapping.candidatePublicationLimit},
             }},
            {"objectives", objectivesJson(config)},
        }},

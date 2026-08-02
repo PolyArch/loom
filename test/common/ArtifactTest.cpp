@@ -638,7 +638,7 @@ void resolvedConfigUsesArtifactFinalization() {
               llvm::StringRef("loom.config.resolved"),
           "ResolvedConfig schema identity changed");
   require(__func__,
-          ResolvedConfig::artifactSchema.version == SchemaVersion{1, 1},
+          ResolvedConfig::artifactSchema.version == SchemaVersion{1, 2},
           "ResolvedConfig schema version changed");
 
   const ResolvedConfig config = defaultResolvedConfig();
@@ -774,10 +774,11 @@ void componentViewDigestHexSpellingIsCanonical() {
   require(__func__, spelling.size() == ComponentViewDigest::byteSize * 2,
           "component view digest hex must be exactly 64 characters");
   require(__func__,
-          std::all_of(spelling.begin(), spelling.end(), [](char character) {
-            return (character >= '0' && character <= '9') ||
-                   (character >= 'a' && character <= 'f');
-          }),
+          std::all_of(spelling.begin(), spelling.end(),
+                      [](char character) {
+                        return (character >= '0' && character <= '9') ||
+                               (character >= 'a' && character <= 'f');
+                      }),
           "component view digest hex must be lowercase hexadecimal");
   require(__func__,
           spelling == "91c126fb004ed922e7683c8573ad7d2de910178dfd26811edc8fbb"

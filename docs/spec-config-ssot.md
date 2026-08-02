@@ -96,12 +96,24 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 1.1`. Its Structured ownership
+The current schema is `loom.config.resolved 1.2`. Its Structured ownership
 generator policy owns:
 
 ```text
 dse.structured_ownership.scope_expansion_limit: positive uint32 = 64
 ```
+
+Its TechMapping generator policy owns:
+
+```text
+dse.tech_mapping.match_row_attempt_limit: positive uint64 = 65536
+dse.tech_mapping.partial_cover_expansion_limit: positive uint64 = 262144
+dse.tech_mapping.candidate_publication_limit: positive uint64 = 16
+```
+
+These values define the deterministic finite search domain described by
+[TechMapping Generation](spec-tech-mapping.md). They are not wall-time,
+memory, worker-count, or solver limits.
 
 The limit counts complete ownership-scope expansions. Expanding one scope
 enumerates its entire finite typed decision domain; it does not truncate that

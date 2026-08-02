@@ -17,6 +17,10 @@ add_executable(loom-tech-mapping-artifact-test
   TechMappingArtifactTest.cpp
 )
 
+add_executable(loom-tech-mapping-config-test
+  TechMappingConfigTest.cpp
+)
+
 target_link_libraries(loom-mapping-artifact-test PRIVATE
   LoomMappingArtifact
   MLIRIR
@@ -35,6 +39,12 @@ target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
   MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-tech-mapping-config-test PRIVATE
+  LoomCommon
+  LoomTechMapping
   LLVMSupport
 )
 
