@@ -17,13 +17,46 @@
 namespace loom::mapping::detail {
 namespace {
 
+using ActorMask = std::vector<std::uint64_t>;
+
+std::size_t actorMaskWordCount(std::size_t actorCount) {
+  return (actorCount + 63) / 64;
+}
+
+void setActor(ActorMask &mask, std::size_t actor) {
+  mask[actor / 64] |= std::uint64_t{1} << (actor % 64);
+}
+
+bool containsActor(const ActorMask &mask, std::size_t actor) {
+  return (mask[actor / 64] & (std::uint64_t{1} << (actor % 64))) != 0;
+}
+
+bool masksIntersect(const ActorMask &lhs, const ActorMask &rhs) {
+  for (std::size_t word = 0; word < lhs.size(); ++word)
+    if ((lhs[word] & rhs[word]) != 0)
+      return true;
+  return false;
+}
+
+void mergeMask(ActorMask &destination, const ActorMask &source) {
+  for (std::size_t word = 0; word < destination.size(); ++word)
+    destination[word] |= source[word];
+}
+
+bool coversMask(const ActorMask &covered, const ActorMask &required) {
+  for (std::size_t word = 0; word < covered.size(); ++word)
+    if ((covered[word] & required[word]) != required[word])
+      return false;
+  return true;
+}
+
 struct IncidenceComponent final {
   std::vector<std::size_t> actors;
   std::vector<std::size_t> rows;
 };
 
 struct ComponentSearchState final {
-  std::vector<bool> covered;
+  ActorMask covered;
   std::vector<std::size_t> selectedRows;
   std::vector<std::size_t> lowerBound;
 };
@@ -88,10 +121,17 @@ public:
   ComponentCoverCursor(const TechMatchDomain &domain,
                        const IncidenceComponent &component,
                        llvm::ArrayRef<std::vector<std::size_t>> rowsByActor,
+                       llvm::ArrayRef<ActorMask> rowMasks,
+                       llvm::ArrayRef<std::size_t> actorLocalSlots,
                        const ResolvedTechMappingConfigView &config,
                        TechMappingGenerationAccounting &accounting)
       : domain_(domain), component_(component), rowsByActor_(rowsByActor),
-        config_(config), accounting_(accounting) {}
+        rowMasks_(rowMasks), actorLocalSlots_(actorLocalSlots),
+        componentMask_(actorMaskWordCount(component.actors.size()), 0),
+        config_(config), accounting_(accounting) {
+    for (std::size_t actor = 0; actor < component_.actors.size(); ++actor)
+      setActor(componentMask_, actor);
+  }
 
   ComponentAdvance next() {
     if (exhausted_)
@@ -105,10 +145,7 @@ public:
 
     while (!pending_.empty()) {
       ComponentSearchState state = pending_.top();
-      const bool complete =
-          llvm::all_of(component_.actors, [&](std::size_t actor) {
-            return covered(state, actor);
-          });
+      const bool complete = coversMask(state.covered, componentMask_);
       if (complete) {
         pending_.pop();
         std::vector<const TechMatchRow *> cover;
@@ -124,7 +161,8 @@ public:
       for (std::size_t actor : component_.actors) {
         if (covered(state, actor))
           continue;
-        std::vector<std::size_t> compatible = compatibleRows(state, actor);
+        std::vector<std::size_t> compatible =
+            compatibleRows(state, actor, smallestDomain);
         if (compatible.size() < smallestDomain) {
           smallestDomain = compatible.size();
           selectedOptions = std::move(compatible);
@@ -161,29 +199,26 @@ private:
   };
 
   std::vector<std::size_t> compatibleRows(const ComponentSearchState &state,
-                                          std::size_t actor) const {
+                                          std::size_t actor,
+                                          std::size_t resultLimit) const {
     std::vector<std::size_t> compatible;
-    for (std::size_t row : rowsByActor_[actor])
-      if (llvm::none_of(domain_.rows[row].actorSlots,
-                        [&](std::size_t slot) { return covered(state, slot); }))
+    for (std::size_t row : rowsByActor_[actor]) {
+      if (!masksIntersect(state.covered, rowMasks_[row])) {
         compatible.push_back(row);
+        if (compatible.size() == resultLimit)
+          break;
+      }
+    }
     return compatible;
   }
 
   bool covered(const ComponentSearchState &state, std::size_t actor) const {
-    const auto found = llvm::lower_bound(component_.actors, actor);
-    return found != component_.actors.end() && *found == actor &&
-           state.covered[static_cast<std::size_t>(found -
-                                                  component_.actors.begin())];
+    return containsActor(state.covered, actorLocalSlots_[actor]);
   }
 
   void addRow(ComponentSearchState &state, std::size_t row) const {
     state.selectedRows.insert(llvm::lower_bound(state.selectedRows, row), row);
-    for (std::size_t actor : domain_.rows[row].actorSlots) {
-      const auto found = llvm::lower_bound(component_.actors, actor);
-      state.covered[static_cast<std::size_t>(found -
-                                             component_.actors.begin())] = true;
-    }
+    mergeMask(state.covered, rowMasks_[row]);
   }
 
   bool consumeExpansion() {
@@ -203,7 +238,7 @@ private:
         if (covered(state, actor))
           continue;
         const std::vector<std::size_t> compatible =
-            compatibleRows(state, actor);
+            compatibleRows(state, actor, 2);
         if (compatible.empty())
           return PropagationResult::Infeasible;
         if (compatible.size() == 1) {
@@ -224,7 +259,8 @@ private:
     for (std::size_t actor : component_.actors) {
       if (covered(state, actor))
         continue;
-      const std::vector<std::size_t> compatible = compatibleRows(state, actor);
+      const std::vector<std::size_t> compatible =
+          compatibleRows(state, actor, 1);
       if (compatible.empty())
         return false;
       state.lowerBound.push_back(compatible.front());
@@ -239,7 +275,7 @@ private:
   void initialize() {
     initialized_ = true;
     ComponentSearchState initial{
-        std::vector<bool>(component_.actors.size(), false), {}, {}};
+        ActorMask(actorMaskWordCount(component_.actors.size()), 0), {}, {}};
     const PropagationResult propagation = propagate(initial);
     if (propagation == PropagationResult::LimitReached) {
       seal();
@@ -261,9 +297,7 @@ private:
     while (!pending_.empty()) {
       ComponentSearchState state = pending_.top();
       pending_.pop();
-      if (llvm::all_of(component_.actors, [&](std::size_t actor) {
-            return covered(state, actor);
-          }))
+      if (coversMask(state.covered, componentMask_))
         sealedCovers_.push_back(std::move(state.selectedRows));
     }
     llvm::sort(sealedCovers_);
@@ -285,6 +319,9 @@ private:
   const TechMatchDomain &domain_;
   const IncidenceComponent &component_;
   llvm::ArrayRef<std::vector<std::size_t>> rowsByActor_;
+  llvm::ArrayRef<ActorMask> rowMasks_;
+  llvm::ArrayRef<std::size_t> actorLocalSlots_;
+  ActorMask componentMask_;
   const ResolvedTechMappingConfigView &config_;
   TechMappingGenerationAccounting &accounting_;
   std::priority_queue<ComponentSearchState, std::vector<ComponentSearchState>,
@@ -420,16 +457,30 @@ searchTechMatchCovers(const TechMatchDomain &domain,
   TechCoverSearchResult result;
   const std::vector<IncidenceComponent> incidence = componentsOf(domain);
   std::vector<std::vector<std::size_t>> rowsByActor(domain.actors.size());
+  std::vector<ActorMask> rowMasks(domain.rows.size());
+  std::vector<std::size_t> actorLocalSlots(domain.actors.size());
   for (auto [rowIndex, row] : llvm::enumerate(domain.rows))
     for (std::size_t actor : row.actorSlots)
       rowsByActor[actor].push_back(rowIndex);
+
+  for (const IncidenceComponent &component : incidence) {
+    const std::size_t words = actorMaskWordCount(component.actors.size());
+    for (auto [local, actor] : llvm::enumerate(component.actors))
+      actorLocalSlots[actor] = local;
+    for (std::size_t row : component.rows) {
+      rowMasks[row].assign(words, 0);
+      for (std::size_t actor : domain.rows[row].actorSlots)
+        setActor(rowMasks[row], actorLocalSlots[actor]);
+    }
+  }
 
   std::vector<LazyComponentCovers> components;
   components.reserve(incidence.size());
   for (const IncidenceComponent &component : incidence) {
     LazyComponentCovers lazy;
     lazy.cursor = std::make_unique<ComponentCoverCursor>(
-        domain, component, rowsByActor, config, accounting);
+        domain, component, rowsByActor, rowMasks, actorLocalSlots, config,
+        accounting);
     ComponentAdvance first = lazy.cursor->next();
     if (lazy.cursor->truncated())
       result.exhausted = false;

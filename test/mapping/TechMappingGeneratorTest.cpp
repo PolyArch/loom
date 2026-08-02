@@ -141,6 +141,26 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
+buildSyncWithDeadResultDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @sync_dead_result(%start: none, %value: i32) -> ()
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %result:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values() streams() memories()
+        complete(%result#0 : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse dead-result sync Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
 buildIntegerAddChainDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -747,6 +767,42 @@ void serialTopologyPrunesIndependentActorScale() {
     fail("independent actors caused factorial serial-topology enumeration");
 }
 
+void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildIndependentIntegerAddsDataflow(context, 64);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildSmallFabric(store);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.matchRowAttemptLimit = 4096;
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const auto outcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store});
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated || generated->candidates.size() != 1 ||
+      generated->accounting.matchRowAttempts >= 4096) {
+    const auto accounting = std::visit(
+        [](const auto &result) { return result.accounting; }, outcome);
+    fail("schema-incompatible builtin operations consumed the seed budget: " +
+         std::to_string(accounting.matchRowAttempts) + " attempts");
+  }
+  const auto candidate = take(
+      loom::mapping::importTechMapping(generated->candidates.front(), store));
+  std::size_t coveredActors = 0;
+  for (const auto &realization : candidate.view().computeRealizations())
+    coveredActors += realization.actors.size();
+  if (coveredActors != dataflow.actors().size())
+    fail("schema-indexed match rows did not cover every selected actor");
+}
+
 void forcedComputeAndMemoryRowsPublishDeterministically() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -994,6 +1050,42 @@ void completedCoverSurvivesExpansionLimit() {
     fail("completed canonical cover was discarded at the expansion limit");
 }
 
+void deadResultDerivesPhysicalDiscardWithoutSoftwareBoundary() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildSyncWithDeadResultDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildTokenSyncFabric(store);
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const auto outcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store});
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated || generated->candidates.size() != 1)
+    fail("dead sync result did not derive a valid discard realization");
+
+  const auto candidate = take(
+      loom::mapping::importTechMapping(generated->candidates.front(), store));
+  const auto realizations = candidate.view().computeRealizations();
+  if (realizations.size() != 1 || realizations.front().actors.size() != 1 ||
+      realizations.front().boundaries.size() != 3)
+    fail("dead result created a persistent software boundary");
+  if (llvm::any_of(realizations.front().boundaries, [](const auto &boundary) {
+        return boundary.direction ==
+                   loom::fabric::FabricPortDirection::Output &&
+               boundary.portOrdinal == 1;
+      }))
+    fail("dead result was persisted as an exposed software boundary");
+}
+
 void exhaustiveUnsupportedActorProvesInfeasible() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -1027,7 +1119,7 @@ void exhaustiveUnsupportedActorProvesInfeasible() {
     fail("a rejected prospective seed bypassed match-row accounting");
 }
 
-void rejectedMemorySeedConsumesAttempt() {
+void nonmatchingMemoryCapabilityDoesNotEnterSeedDomain() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -1044,10 +1136,10 @@ void rejectedMemorySeedConsumesAttempt() {
       dataflow.graphs().front().ref};
   const auto outcome = loom::mapping::generateTechMappings(
       {dataflow, covers, fabric.view(), config, store});
-  const auto *incomplete =
-      std::get_if<loom::mapping::IncompleteTechMappingGeneration>(&outcome);
-  if (!incomplete || incomplete->accounting.matchRowAttempts != 1)
-    fail("a rejected prospective memory seed bypassed match-row accounting");
+  const auto *infeasible =
+      std::get_if<loom::mapping::ProvenInfeasibleTechMapping>(&outcome);
+  if (!infeasible || infeasible->accounting.matchRowAttempts != 0)
+    fail("a nonmatching memory capability entered the match-row seed domain");
 }
 
 void publicationLimitDoesNotTruncateComponentProofs() {
@@ -1125,13 +1217,15 @@ int main() {
   serialComputeTemplateAcceptsExactActorChain();
   matchRowLimitPreservesGlobalActorOrder();
   serialTopologyPrunesIndependentActorScale();
+  unrelatedBuiltinOperationsDoNotConsumeSeedBudget();
   forcedComputeAndMemoryRowsPublishDeterministically();
   multiActorMemoryRowsCompeteWithSingletonCover();
   internalMemoryEdgeIsAnExplicitCandidateChoice();
   semanticLimitsDoNotBecomeInfeasibilityProofs();
   completedCoverSurvivesExpansionLimit();
+  deadResultDerivesPhysicalDiscardWithoutSoftwareBoundary();
   exhaustiveUnsupportedActorProvesInfeasible();
-  rejectedMemorySeedConsumesAttempt();
+  nonmatchingMemoryCapabilityDoesNotEnterSeedDomain();
   publicationLimitDoesNotTruncateComponentProofs();
   malformedGraphCoversReturnTypedInvalidOutcomes();
   llvm::outs() << "tech mapping generator tests passed\n";

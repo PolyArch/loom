@@ -299,6 +299,46 @@ llvm::Expected<std::set<TemplateConnection>> expectedConnections(
   return expected;
 }
 
+llvm::Error addDeadResultDispositions(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const std::map<std::uint64_t, const TechComputeActorView *> &actors,
+    const std::set<TemplateConnection> &actual,
+    std::set<TemplateConnection> &expected) {
+  for (const auto &[id, actor] : actors) {
+    (void)id;
+    for (std::uint64_t ordinal = 0; ordinal < actor->resultPorts.size();
+         ++ordinal) {
+      const ::dataflow::CanonicalGraphProducerEndpointRef producer =
+          ::dataflow::ActorTokenResultRef{actor->actor, ordinal};
+      auto consumers = dataflow.graphConsumers(producer);
+      if (!consumers)
+        return consumers.takeError();
+      if (!consumers->empty())
+        continue;
+
+      const TemplateEndpointKey source = actorEndpoint(
+          *actor, ::loom::fabric::FabricPortDirection::Output, ordinal);
+      auto disposition = actual.end();
+      for (auto connection = actual.begin(); connection != actual.end();
+           ++connection) {
+        if (!(connection->first == source))
+          continue;
+        if (disposition != actual.end())
+          return invalid("dead actor result has multiple physical "
+                         "dispositions");
+        disposition = connection;
+      }
+      if (disposition == actual.end() || !disposition->second.boundary ||
+          disposition->second.direction !=
+              ::loom::fabric::FabricPortDirection::Output)
+        return invalid("dead actor result lacks one exact FU output discard "
+                       "path");
+      expected.insert(*disposition);
+    }
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error verifyTechComputeRealizationClosure(
@@ -343,6 +383,9 @@ llvm::Error verifyTechComputeRealizationClosure(
   auto expected = expectedConnections(dataflow, actors, *boundaries);
   if (!expected)
     return expected.takeError();
+  if (llvm::Error error =
+          addDeadResultDispositions(dataflow, actors, *actual, *expected))
+    return error;
   if (*actual != *expected)
     return invalid("selected FU template topology does not exactly realize "
                    "software edges");

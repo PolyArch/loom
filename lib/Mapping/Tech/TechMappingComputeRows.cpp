@@ -149,13 +149,34 @@ llvm::Expected<std::vector<CanonicalActorOption>> canonicalActorOptions(
     const TechMappingGenerationInputs &inputs,
     const ::dataflow::CanonicalActorView &actor,
     llvm::ArrayRef<::loom::fabric::FabricFuTemplateNodeRef> operations) {
+  auto projection =
+      ::dataflow::projectRegisteredActorSchemaProjection(actor.op);
+  if (!projection)
+    return projection.takeError();
   std::vector<CanonicalActorOption> options;
   for (auto indexedOperation : llvm::enumerate(operations)) {
     const std::size_t operationOrdinal = indexedOperation.index();
     const auto &operation = indexedOperation.value();
+    const auto *capability =
+        inputs.fabric.resolvedFabricOpCapability(operation);
+    if (!capability)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "tech_mapping_generation_invalid: active FU template operation has "
+          "no resolved capability");
+    if (!llvm::is_contained(capability->enabledOperationSchemas,
+                            projection->schema))
+      continue;
     if (llvm::Error error = enumerateActorOptions(
             inputs, actor, operation,
             [&](TechComputeActorView option) -> llvm::Expected<bool> {
+              if (llvm::Error error =
+                      ::fabric::verifyImplementationFamilyPortCorrespondence(
+                          capability->implementationFamily, *projection,
+                          option.operandPorts, option.resultPorts)) {
+                llvm::consumeError(std::move(error));
+                return true;
+              }
               auto key = canonicalTechMatchActorKey(option,
                                                     inputs.dataflow.identity());
               if (!key)
@@ -424,8 +445,7 @@ selectionCanComplete(const TechMappingGenerationInputs &inputs,
 llvm::Expected<std::vector<BoundaryRequirement>>
 deriveBoundaryRequirements(const TechMappingGenerationInputs &inputs,
                            llvm::ArrayRef<TechComputeActorView> actors,
-                           llvm::ArrayRef<TemplateEdge> topology,
-                           std::vector<TemplateEdge> &fixedEdges) {
+                           llvm::ArrayRef<TemplateEdge> topology) {
   std::vector<BoundaryRequirement> requirements;
   for (const TechComputeActorView &actor : actors) {
     for (std::uint64_t ordinal = 0; ordinal < actor.operandPorts.size();
@@ -444,9 +464,6 @@ deriveBoundaryRequirements(const TechMappingGenerationInputs &inputs,
               llvm::inconvertibleErrorCode(),
               "tech_mapping_generation_invalid: internal compute edge uses "
               "an unmapped result");
-        fixedEdges.push_back(TemplateEdge{
-            nodeEndpoint(*source, Direction::Output, result->ordinal),
-            nodeEndpoint(actor, Direction::Input, ordinal)});
         continue;
       }
       auto candidates = boundaryCandidates(
@@ -499,39 +516,24 @@ llvm::Error emitComputeSeeds(
   });
   const std::vector<TemplateEdge> topology =
       selectedTopology(completeTopology, actorSelection);
-  std::vector<TemplateEdge> fixedEdges;
   auto requirements =
-      deriveBoundaryRequirements(inputs, actorSelection, topology, fixedEdges);
+      deriveBoundaryRequirements(inputs, actorSelection, topology);
   if (!requirements)
     return requirements.takeError();
-  if (requirements->empty() && fixedEdges.size() != topology.size())
-    return llvm::Error::success();
 
   std::vector<TechComputeBoundaryView> boundaries;
-  std::vector<TemplateEdge> selectedEdges = fixedEdges;
   std::function<llvm::Error(std::size_t)> visit =
       [&](std::size_t ordinal) -> llvm::Error {
     if (collector.truncated())
       return llvm::Error::success();
     if (ordinal != requirements->size()) {
       const BoundaryRequirement &requirement = (*requirements)[ordinal];
-      const TechComputeActorView *actor =
-          findActor(actorSelection, requirement.software.actor);
-      const TemplateEndpoint operation = nodeEndpoint(
-          *actor, requirement.software.direction, requirement.software.ordinal);
       for (const auto &boundary : requirement.candidates) {
         boundaries.push_back(TechComputeBoundaryView{
             requirement.software.actor, requirement.software.direction,
             requirement.software.ordinal, boundary});
-        const TemplateEndpoint boundaryEndpoint =
-            TemplateEndpoint::boundaryPort(boundary);
-        selectedEdges.push_back(
-            requirement.software.direction == Direction::Input
-                ? TemplateEdge{boundaryEndpoint, operation}
-                : TemplateEdge{operation, boundaryEndpoint});
         if (llvm::Error error = visit(ordinal + 1))
           return error;
-        selectedEdges.pop_back();
         boundaries.pop_back();
         if (collector.truncated())
           break;
@@ -556,9 +558,6 @@ llvm::Error emitComputeSeeds(
     if (!*capabilityAdmitted)
       return collector.reject(
           TechMatchSeedRejectionReason::CapabilityInadmissible);
-    if (!sameEdgeSet(topology, selectedEdges))
-      return collector.reject(
-          TechMatchSeedRejectionReason::CorrespondenceInadmissible);
     if (llvm::Error error = verifyTechComputeRealizationClosure(
             realization, inputs.dataflow, inputs.fabric)) {
       llvm::consumeError(std::move(error));

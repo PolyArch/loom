@@ -6,6 +6,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -17,6 +18,32 @@ namespace loom::mapping {
 namespace {
 
 using Bytes = std::vector<std::uint8_t>;
+
+std::size_t framedSize(llvm::ArrayRef<std::uint8_t> value) {
+  return sizeof(std::uint64_t) + value.size();
+}
+
+std::size_t orderedRecordsSize(llvm::ArrayRef<Bytes> records) {
+  std::size_t size = sizeof(std::uint64_t);
+  for (const Bytes &record : records)
+    size += record.size();
+  return size;
+}
+
+std::size_t framedRecordsSize(llvm::ArrayRef<Bytes> records) {
+  std::size_t size = sizeof(std::uint64_t);
+  for (const Bytes &record : records)
+    size += framedSize(record);
+  return size;
+}
+
+std::size_t
+orderedRecordRefsSize(llvm::ArrayRef<llvm::ArrayRef<std::uint8_t>> records) {
+  std::size_t size = sizeof(std::uint64_t);
+  for (llvm::ArrayRef<std::uint8_t> record : records)
+    size += record.size();
+  return size;
+}
 
 void appendU32(Bytes &result, std::uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte)
@@ -65,6 +92,9 @@ Bytes computeActorKey(llvm::ArrayRef<std::uint8_t> actor,
                       llvm::ArrayRef<std::uint64_t> operands,
                       llvm::ArrayRef<std::uint64_t> results) {
   Bytes key;
+  key.reserve(framedSize(actor) + framedSize(operation) +
+              2 * sizeof(std::uint64_t) +
+              sizeof(std::uint64_t) * (operands.size() + results.size()));
   appendBytes(key, actor);
   appendBytes(key, operation);
   appendU64(key, operands.size());
@@ -80,6 +110,8 @@ Bytes computeBoundaryKey(llvm::ArrayRef<std::uint8_t> actor,
                          std::uint32_t direction, std::uint64_t ordinal,
                          llvm::ArrayRef<std::uint8_t> port) {
   Bytes key;
+  key.reserve(framedSize(actor) + sizeof(std::uint32_t) +
+              sizeof(std::uint64_t) + framedSize(port));
   appendBytes(key, actor);
   appendU32(key, direction);
   appendU64(key, ordinal);
@@ -93,6 +125,9 @@ Bytes memoryActorKey(llvm::ArrayRef<std::uint8_t> actor,
                      llvm::ArrayRef<Bytes> operands,
                      llvm::ArrayRef<Bytes> results) {
   Bytes key;
+  key.reserve(framedSize(actor) + framedSize(operationPort) +
+              framedSize(capability) + framedRecordsSize(operands) +
+              framedRecordsSize(results));
   appendBytes(key, actor);
   appendBytes(key, operationPort);
   appendBytes(key, capability);
@@ -109,20 +144,25 @@ Bytes memoryTerminalKey(mlir::Attribute terminal) {
   Bytes key;
   if (auto producer =
           mlir::dyn_cast<::mapping::GraphProducerEndpointRefAttr>(terminal)) {
+    Bytes record = attrBytes(producer);
+    key.reserve(sizeof(std::uint32_t) + framedSize(record));
     appendU32(key, 0);
-    appendBytes(key, attrBytes(producer));
+    appendBytes(key, record);
   } else {
+    Bytes record = attrBytes(
+        mlir::cast<::mapping::GraphConsumerEndpointRefAttr>(terminal));
+    key.reserve(sizeof(std::uint32_t) + framedSize(record));
     appendU32(key, 1);
-    appendBytes(key,
-                attrBytes(mlir::cast<::mapping::GraphConsumerEndpointRefAttr>(
-                    terminal)));
+    appendBytes(key, record);
   }
   return key;
 }
 
 Bytes memoryBoundaryKey(llvm::ArrayRef<std::uint8_t> terminal,
                         llvm::ArrayRef<std::uint8_t> endpoint) {
-  Bytes key(terminal.begin(), terminal.end());
+  Bytes key;
+  key.reserve(terminal.size() + framedSize(endpoint));
+  key.insert(key.end(), terminal.begin(), terminal.end());
   appendBytes(key, endpoint);
   return key;
 }
@@ -131,6 +171,8 @@ Bytes memoryInternalEdgeKey(llvm::ArrayRef<std::uint8_t> producer,
                             llvm::ArrayRef<std::uint8_t> consumer,
                             llvm::ArrayRef<std::uint8_t> connection) {
   Bytes key;
+  key.reserve(framedSize(producer) + framedSize(consumer) +
+              framedSize(connection));
   appendBytes(key, producer);
   appendBytes(key, consumer);
   appendBytes(key, connection);
@@ -139,8 +181,23 @@ Bytes memoryInternalEdgeKey(llvm::ArrayRef<std::uint8_t> producer,
 
 void appendOrderedRecords(Bytes &key, std::vector<Bytes> records) {
   llvm::sort(records);
+  key.reserve(key.size() + orderedRecordsSize(records));
   appendU64(key, records.size());
   for (const Bytes &record : records)
+    key.insert(key.end(), record.begin(), record.end());
+}
+
+void appendOrderedRecordRefs(
+    Bytes &key, llvm::ArrayRef<llvm::ArrayRef<std::uint8_t>> records) {
+  llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> ordered(records);
+  llvm::sort(ordered, [](llvm::ArrayRef<std::uint8_t> lhs,
+                         llvm::ArrayRef<std::uint8_t> rhs) {
+    return std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(),
+                                        rhs.end());
+  });
+  key.reserve(key.size() + orderedRecordRefsSize(records));
+  appendU64(key, ordered.size());
+  for (llvm::ArrayRef<std::uint8_t> record : ordered)
     key.insert(key.end(), record.begin(), record.end());
 }
 
@@ -158,6 +215,8 @@ struct MemoryKeyParts final {
 Bytes computePayloadKey(llvm::ArrayRef<std::uint8_t> owner,
                         ComputeKeyParts parts) {
   Bytes key;
+  key.reserve(framedSize(owner) + orderedRecordsSize(parts.actors) +
+              orderedRecordsSize(parts.boundaries));
   appendBytes(key, owner);
   appendOrderedRecords(key, std::move(parts.actors));
   appendOrderedRecords(key, std::move(parts.boundaries));
@@ -167,6 +226,9 @@ Bytes computePayloadKey(llvm::ArrayRef<std::uint8_t> owner,
 Bytes memoryPayloadKey(llvm::ArrayRef<std::uint8_t> owner,
                        MemoryKeyParts parts) {
   Bytes key;
+  key.reserve(framedSize(owner) + orderedRecordsSize(parts.actors) +
+              orderedRecordsSize(parts.boundaries) +
+              orderedRecordsSize(parts.internalEdges));
   appendBytes(key, owner);
   appendOrderedRecords(key, std::move(parts.actors));
   appendOrderedRecords(key, std::move(parts.boundaries));
@@ -232,26 +294,23 @@ canonicalTechMatchRowKey(const TechComputeRealizationView &realization,
         ::loom::fabric::canonicalFabricBytes(boundary.fabricPort)));
   }
   Bytes key;
-  appendU32(key, 0);
   Bytes payload = computePayloadKey(
       ::loom::fabric::canonicalFabricBytes(realization.capabilityTemplate),
       std::move(parts));
+  key.reserve(sizeof(std::uint32_t) + payload.size());
+  appendU32(key, 0);
   key.insert(key.end(), payload.begin(), payload.end());
   return key;
 }
 
-llvm::Expected<Bytes>
-canonicalTechMatchRowKey(const TechMemoryRealizationView &realization,
-                         const ArtifactIdentity &dataflowOwner) {
+llvm::Expected<Bytes> detail::canonicalTechMemoryRowKeyFromActorKeys(
+    ::loom::fabric::FabricMemoryEngineTemplateRef engine,
+    llvm::ArrayRef<llvm::ArrayRef<std::uint8_t>> canonicalActorKeys,
+    llvm::ArrayRef<TechMemoryGraphBoundaryView> graphBoundaries,
+    llvm::ArrayRef<TechMemoryInternalEdgeView> internalEdges,
+    const ArtifactIdentity &dataflowOwner) {
   MemoryKeyParts parts;
-  for (const TechMemoryActorView &actor : realization.actors) {
-    auto key = canonicalTechMatchActorKey(actor, dataflowOwner);
-    if (!key)
-      return key.takeError();
-    parts.actors.push_back(std::move(*key));
-  }
-  for (const TechMemoryGraphBoundaryView &boundary :
-       realization.graphBoundaries) {
+  for (const TechMemoryGraphBoundaryView &boundary : graphBoundaries) {
     Bytes terminal;
     if (const auto *producer =
             std::get_if<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -271,7 +330,7 @@ canonicalTechMatchRowKey(const TechMemoryRealizationView &realization,
     parts.boundaries.push_back(memoryBoundaryKey(
         terminal, ::loom::fabric::canonicalFabricBytes(boundary.endpoint)));
   }
-  for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
+  for (const TechMemoryInternalEdgeView &edge : internalEdges) {
     auto producer =
         ::dataflow::encodeDataflowReference(dataflowOwner, edge.producer);
     if (!producer)
@@ -284,13 +343,39 @@ canonicalTechMatchRowKey(const TechMemoryRealizationView &realization,
         *producer, *consumer,
         ::loom::fabric::canonicalFabricBytes(edge.connection)));
   }
+
   Bytes key;
+  key.reserve(sizeof(std::uint32_t) +
+              framedSize(::loom::fabric::canonicalFabricBytes(engine)) +
+              orderedRecordRefsSize(canonicalActorKeys) +
+              orderedRecordsSize(parts.boundaries) +
+              orderedRecordsSize(parts.internalEdges));
   appendU32(key, 1);
-  Bytes payload =
-      memoryPayloadKey(::loom::fabric::canonicalFabricBytes(realization.engine),
-                       std::move(parts));
-  key.insert(key.end(), payload.begin(), payload.end());
+  appendBytes(key, ::loom::fabric::canonicalFabricBytes(engine));
+  appendOrderedRecordRefs(key, canonicalActorKeys);
+  appendOrderedRecords(key, std::move(parts.boundaries));
+  appendOrderedRecords(key, std::move(parts.internalEdges));
   return key;
+}
+
+llvm::Expected<Bytes>
+canonicalTechMatchRowKey(const TechMemoryRealizationView &realization,
+                         const ArtifactIdentity &dataflowOwner) {
+  std::vector<Bytes> actorKeys;
+  actorKeys.reserve(realization.actors.size());
+  for (const TechMemoryActorView &actor : realization.actors) {
+    auto key = canonicalTechMatchActorKey(actor, dataflowOwner);
+    if (!key)
+      return key.takeError();
+    actorKeys.push_back(std::move(*key));
+  }
+  llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> actorKeyRefs;
+  actorKeyRefs.reserve(actorKeys.size());
+  for (const Bytes &key : actorKeys)
+    actorKeyRefs.push_back(key);
+  return detail::canonicalTechMemoryRowKeyFromActorKeys(
+      realization.engine, actorKeyRefs, realization.graphBoundaries,
+      realization.internalEdges, dataflowOwner);
 }
 
 namespace detail {
@@ -298,7 +383,6 @@ namespace detail {
 std::vector<std::uint8_t> canonicalTechChildKey(mlir::Operation &operation) {
   Bytes key;
   if (auto actor = mlir::dyn_cast<::mapping::ComputeActorOp>(operation)) {
-    appendU32(key, 0);
     Bytes child = computeActorKey(
         attrBytes(actor.getActor()), attrBytes(actor.getFabricOp()),
         llvm::to_vector(llvm::map_range(
@@ -307,20 +391,22 @@ std::vector<std::uint8_t> canonicalTechChildKey(mlir::Operation &operation) {
         llvm::to_vector(llvm::map_range(actor.getResultPorts(), [](auto port) {
           return static_cast<std::uint64_t>(port);
         })));
+    key.reserve(sizeof(std::uint32_t) + child.size());
+    appendU32(key, 0);
     key.insert(key.end(), child.begin(), child.end());
     return key;
   }
   if (auto boundary = mlir::dyn_cast<::mapping::ComputeBoundaryOp>(operation)) {
-    appendU32(key, 1);
     Bytes child = computeBoundaryKey(
         attrBytes(boundary.getActor()),
         static_cast<std::uint32_t>(boundary.getDirection()),
         boundary.getPortOrdinal(), attrBytes(boundary.getFuPort()));
+    key.reserve(sizeof(std::uint32_t) + child.size());
+    appendU32(key, 1);
     key.insert(key.end(), child.begin(), child.end());
     return key;
   }
   if (auto actor = mlir::dyn_cast<::mapping::MemoryActorOp>(operation)) {
-    appendU32(key, 2);
     std::vector<Bytes> operands;
     std::vector<Bytes> results;
     llvm::transform(
@@ -340,22 +426,26 @@ std::vector<std::uint8_t> canonicalTechChildKey(mlir::Operation &operation) {
     Bytes child = memoryActorKey(
         attrBytes(actor.getActor()), attrBytes(actor.getOperationPort()),
         attrBytes(actor.getCapability()), operands, results);
+    key.reserve(sizeof(std::uint32_t) + child.size());
+    appendU32(key, 2);
     key.insert(key.end(), child.begin(), child.end());
     return key;
   }
   if (auto boundary =
           mlir::dyn_cast<::mapping::MemoryGraphBoundaryOp>(operation)) {
-    appendU32(key, 3);
     Bytes child = memoryBoundaryKey(memoryTerminalKey(boundary.getTerminal()),
                                     attrBytes(boundary.getEndpoint()));
+    key.reserve(sizeof(std::uint32_t) + child.size());
+    appendU32(key, 3);
     key.insert(key.end(), child.begin(), child.end());
     return key;
   }
   auto edge = mlir::cast<::mapping::MemoryInternalEdgeOp>(operation);
-  appendU32(key, 4);
   Bytes child = memoryInternalEdgeKey(attrBytes(edge.getProducer()),
                                       attrBytes(edge.getConsumer()),
                                       attrBytes(edge.getConnection()));
+  key.reserve(sizeof(std::uint32_t) + child.size());
+  appendU32(key, 4);
   key.insert(key.end(), child.begin(), child.end());
   return key;
 }

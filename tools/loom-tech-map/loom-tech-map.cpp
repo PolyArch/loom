@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <optional>
 #include <string>
@@ -295,20 +296,30 @@ int main(int argc, char **argv) {
       return reportError(
           invalid("TechMapping requires an exact Fabric Module root"));
 
-    const auto started = std::chrono::steady_clock::now();
+    const auto wallStarted = std::chrono::steady_clock::now();
+    const std::clock_t cpuStarted = std::clock();
+    if (cpuStarted == static_cast<std::clock_t>(-1))
+      return reportError(invalid("process CPU clock is unavailable"));
     const loom::mapping::TechMappingGenerationOutcome outcome =
         loom::mapping::generateTechMappings(
             {*dataflowView, covers, fabricView, *techConfig, store});
-    const double elapsed = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - started)
-                               .count();
+    const std::clock_t cpuFinished = std::clock();
+    if (cpuFinished == static_cast<std::clock_t>(-1))
+      return reportError(invalid("process CPU clock is unavailable"));
+    const double cpuElapsed =
+        static_cast<double>(cpuFinished - cpuStarted) / CLOCKS_PER_SEC;
+    const double wallElapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      wallStarted)
+            .count();
     llvm::json::Object fabricReport =
         outcomeReport(outcome, store, dataflowView->actors().size());
     fabricReport["fabric"] =
         loom::formatArtifactIdentityHex(fabricView.identity());
     fabricReport["input_fabric_root"] =
         loom::formatArtifactIdentityHex(*identity);
-    fabricReport["generation_seconds"] = elapsed;
+    fabricReport["generation_cpu_seconds"] = cpuElapsed;
+    fabricReport["generation_wall_seconds"] = wallElapsed;
     const llvm::json::Value *classification =
         fabricReport.get("classification");
     if (!classification ||

@@ -1,5 +1,6 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 
+#include "MappingAssemblyInternal.h"
 #include "TechMappingCanonicalKeyInternal.h"
 
 #include "Mapping/IR/MappingOps.h"
@@ -102,8 +103,8 @@ void canonicalizeTech(::mapping::TechOp root) {
 
 } // namespace
 
-llvm::Expected<CanonicalSemanticBytes>
-writeCanonicalMappingAssembly(::mapping::TechOp root) {
+llvm::Expected<detail::CanonicalTechMappingAssembly>
+detail::prepareCanonicalTechMappingAssembly(::mapping::TechOp root) {
   OwningOpRef<Operation *> clone(root->clone());
   auto canonical = cast<::mapping::TechOp>(clone.get());
   canonicalizeTech(canonical);
@@ -116,8 +117,17 @@ writeCanonicalMappingAssembly(::mapping::TechOp root) {
   canonical.print(stream, OpPrintingFlags().enableDebugInfo(false));
   stream << '\n';
   stream.flush();
-  return CanonicalSemanticBytes(
-      std::vector<std::uint8_t>(text.begin(), text.end()));
+  return detail::CanonicalTechMappingAssembly{
+      std::move(clone), CanonicalSemanticBytes(std::vector<std::uint8_t>(
+                            text.begin(), text.end()))};
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+writeCanonicalMappingAssembly(::mapping::TechOp root) {
+  auto prepared = detail::prepareCanonicalTechMappingAssembly(root);
+  if (!prepared)
+    return prepared.takeError();
+  return std::move(prepared->bytes);
 }
 
 } // namespace loom::mapping

@@ -11,6 +11,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "MappingAssemblyInternal.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -903,17 +904,19 @@ struct ImportedTechMappingView final {
 struct PreparedTechMapping final {
   ArtifactRootReference reference;
   CanonicalSemanticBytes canonicalBytes;
+  OwningOpRef<Operation *> canonicalRoot;
 };
 
 llvm::Expected<PreparedTechMapping>
 prepareTechMapping(::mapping::TechOp source) {
-  auto canonicalBytes = writeCanonicalMappingAssembly(source);
-  if (!canonicalBytes)
-    return canonicalBytes.takeError();
+  auto assembly = detail::prepareCanonicalTechMappingAssembly(source);
+  if (!assembly)
+    return assembly.takeError();
   ArtifactRootReference reference{
       mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
-      finalizeArtifactIdentity(mappingArtifactSchema, *canonicalBytes)};
-  return PreparedTechMapping{std::move(reference), std::move(*canonicalBytes)};
+      finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes)};
+  return PreparedTechMapping{std::move(reference), std::move(assembly->bytes),
+                             std::move(assembly->root)};
 }
 
 llvm::Error publishPreparedTechMapping(const PreparedTechMapping &prepared,
@@ -1046,29 +1049,6 @@ strictImport(const ArtifactIdentity &mappingIdentity,
   return view;
 }
 
-llvm::Expected<TechMappingView>
-strictImport(const ArtifactIdentity &mappingIdentity,
-             const CanonicalSemanticBytes &canonicalBytes,
-             const ::dataflow::CanonicalDataflowProgramView &dataflow,
-             const ::loom::fabric::FabricArtifactView &fabric) {
-  if (finalizeArtifactIdentity(mappingArtifactSchema, canonicalBytes) !=
-      mappingIdentity)
-    return invalid("mapping identity does not match canonical bytes");
-  auto parsed = parseTechRoot(canonicalBytes);
-  if (!parsed)
-    return parsed.takeError();
-  auto view =
-      TechMappingView::import(mappingIdentity, parsed->root, dataflow, fabric);
-  if (!view)
-    return view.takeError();
-  auto rewritten = writeCanonicalMappingAssembly(parsed->root);
-  if (!rewritten)
-    return rewritten.takeError();
-  if (!rewritten->bytes().equals(canonicalBytes.bytes()))
-    return invalid("stored mapping payload is not canonical");
-  return view;
-}
-
 llvm::Error requirePublishedUpstream(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricArtifactView &fabric,
@@ -1136,8 +1116,9 @@ finalizeTechMapping(::mapping::TechOp source,
   auto prepared = prepareTechMapping(source);
   if (!prepared)
     return prepared.takeError();
-  auto view = strictImport(prepared->reference.artifact,
-                           prepared->canonicalBytes, dataflow, fabric);
+  auto view = TechMappingView::import(
+      prepared->reference.artifact,
+      cast<::mapping::TechOp>(prepared->canonicalRoot.get()), dataflow, fabric);
   if (!view)
     return view.takeError();
   if (llvm::Error error = publishPreparedTechMapping(*prepared, store))

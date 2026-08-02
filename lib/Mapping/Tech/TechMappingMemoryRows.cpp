@@ -1,9 +1,12 @@
 #include "TechMappingCandidateDomain.h"
 
+#include "TechMappingCanonicalKeyInternal.h"
+
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <array>
@@ -21,8 +24,9 @@ namespace {
 struct MemoryActorOption final {
   TechMemoryActorView actor;
   std::vector<TechMemoryGraphBoundaryView> boundaries;
+  std::vector<unsigned> operandOperationOrdinals;
+  std::vector<unsigned> resultOperationOrdinals;
   std::vector<std::uint8_t> key;
-  bool capabilityAdmitted = false;
 };
 
 struct MemoryActorDomain final {
@@ -99,30 +103,23 @@ llvm::Expected<MemoryActorOption> buildActorOption(
     ::loom::fabric::FabricMemoryEngineTemplateCapabilityAlternativeRef
         alternative,
     const ::loom::fabric::MemoryCapabilityAlternativeView &capability,
-    const ::dataflow::semantics::CanonicalService &service,
-    bool capabilityAdmitted) {
+    const ::dataflow::semantics::CanonicalService &service) {
   MemoryActorOption option{
       TechMemoryActorView{actor.ref, port, alternative, {}, {}},
       {},
       {},
-      capabilityAdmitted};
+      {},
+      {}};
   for (const auto &value : service.arguments()) {
     auto endpoint = endpointForRole(engine, capability, value.role);
     if (!endpoint)
       return endpoint.takeError();
     option.actor.operandPorts.push_back(*endpoint);
-  }
-  for (const auto &value : service.results()) {
-    auto endpoint = endpointForRole(engine, capability, value.role);
-    if (!endpoint)
-      return endpoint.takeError();
-    option.actor.resultPorts.push_back(*endpoint);
-  }
-
-  for (auto [ordinal, endpoint] : llvm::enumerate(option.actor.operandPorts)) {
-    auto operand = service.argumentValue(actor.op, ordinal);
+    auto operand =
+        service.argumentValue(actor.op, option.actor.operandPorts.size() - 1);
     if (!operand)
       return operand.takeError();
+    option.operandOperationOrdinals.push_back((*operand)->getOperandNumber());
     const ::dataflow::CanonicalGraphConsumerEndpointRef consumer =
         ::dataflow::ActorTokenOperandRef{actor.ref,
                                          (*operand)->getOperandNumber()};
@@ -131,12 +128,18 @@ llvm::Expected<MemoryActorOption> buildActorOption(
       return producer.takeError();
     if (std::holds_alternative<::dataflow::GraphIngressTokenRef>(*producer))
       option.boundaries.push_back(
-          TechMemoryGraphBoundaryView{*producer, endpoint});
+          TechMemoryGraphBoundaryView{*producer, *endpoint});
   }
-  for (auto [ordinal, endpoint] : llvm::enumerate(option.actor.resultPorts)) {
-    auto result = service.resultValue(actor.op, ordinal);
+  for (const auto &value : service.results()) {
+    auto endpoint = endpointForRole(engine, capability, value.role);
+    if (!endpoint)
+      return endpoint.takeError();
+    option.actor.resultPorts.push_back(*endpoint);
+    auto result =
+        service.resultValue(actor.op, option.actor.resultPorts.size() - 1);
     if (!result)
       return result.takeError();
+    option.resultOperationOrdinals.push_back(result->getResultNumber());
     const ::dataflow::CanonicalGraphProducerEndpointRef producer =
         ::dataflow::ActorTokenResultRef{actor.ref, result->getResultNumber()};
     auto consumers = inputs.dataflow.graphConsumers(producer);
@@ -145,7 +148,7 @@ llvm::Expected<MemoryActorOption> buildActorOption(
     for (const auto &consumer : *consumers)
       if (std::holds_alternative<::dataflow::GraphEgressTokenRef>(consumer))
         option.boundaries.push_back(
-            TechMemoryGraphBoundaryView{consumer, endpoint});
+            TechMemoryGraphBoundaryView{consumer, *endpoint});
   }
 
   const std::array<const MemoryActorOption *, 1> singleton{&option};
@@ -199,38 +202,16 @@ llvm::Expected<std::vector<MemoryActorOption>> actorOptions(
     llvm::sort(*matches, [](const auto &lhs, const auto &rhs) {
       return lhs.alternativeOrdinal < rhs.alternativeOrdinal;
     });
-    for (std::uint64_t alternativeOrdinal = 0;
-         alternativeOrdinal < portView->capabilityAlternatives().size();
-         ++alternativeOrdinal) {
+    for (const ::fabric::MemoryCapabilityMatch &match : *matches) {
+      const std::uint64_t alternativeOrdinal = match.alternativeOrdinal;
       const ::loom::fabric::FabricMemoryEngineTemplateCapabilityAlternativeRef
           alternative{port, alternativeOrdinal};
       const auto *capability =
           inputs.fabric.memoryEngineTemplateCapabilityAlternative(alternative);
       if (!capability)
         return invalid("memory capability alternative does not resolve");
-      const bool admitted = llvm::any_of(
-          *matches, [&](const ::fabric::MemoryCapabilityMatch &match) {
-            return match.alternativeOrdinal == alternativeOrdinal;
-          });
-      const bool hasCompleteRoleMap =
-          llvm::all_of(service->arguments(),
-                       [&](const auto &value) {
-                         return llvm::any_of(capability->roleToEndpoint,
-                                             [&](const auto &binding) {
-                                               return binding.role ==
-                                                      value.role;
-                                             });
-                       }) &&
-          llvm::all_of(service->results(), [&](const auto &value) {
-            return llvm::any_of(capability->roleToEndpoint,
-                                [&](const auto &binding) {
-                                  return binding.role == value.role;
-                                });
-          });
-      if (!hasCompleteRoleMap)
-        continue;
       auto option = buildActorOption(inputs, actor, engine, port, alternative,
-                                     *capability, *service, admitted);
+                                     *capability, *service);
       if (!option)
         return option.takeError();
       options.push_back(std::move(*option));
@@ -315,20 +296,10 @@ deriveInternalEdges(const TechMappingGenerationInputs &inputs,
       std::pair<std::vector<std::uint8_t>, TechMemoryInternalEdgeView>;
   std::vector<KeyedEdge> keyed;
   for (const MemoryActorOption *source : selection) {
-    auto sourceActor = inputs.dataflow.resolve(source->actor.actor);
-    if (!sourceActor)
-      return sourceActor.takeError();
-    auto sourceService =
-        ::dataflow::semantics::CanonicalService::forActor(sourceActor->op);
-    if (!sourceService)
-      return sourceService.takeError();
     for (auto [resultOrdinal, sourceEndpoint] :
          llvm::enumerate(source->actor.resultPorts)) {
-      auto result = sourceService->resultValue(sourceActor->op, resultOrdinal);
-      if (!result)
-        return result.takeError();
-      const ::dataflow::ActorTokenResultRef producer{source->actor.actor,
-                                                     result->getResultNumber()};
+      const ::dataflow::ActorTokenResultRef producer{
+          source->actor.actor, source->resultOperationOrdinals[resultOrdinal]};
       auto consumers = inputs.dataflow.graphConsumers(
           ::dataflow::CanonicalGraphProducerEndpointRef{producer});
       if (!consumers)
@@ -341,20 +312,10 @@ deriveInternalEdges(const TechMappingGenerationInputs &inputs,
         const MemoryActorOption *sink = findActor(selection, consumer->actor);
         if (!sink)
           continue;
-        auto sinkActor = inputs.dataflow.resolve(sink->actor.actor);
-        if (!sinkActor)
-          return sinkActor.takeError();
-        auto sinkService =
-            ::dataflow::semantics::CanonicalService::forActor(sinkActor->op);
-        if (!sinkService)
-          return sinkService.takeError();
         for (auto [argumentOrdinal, sinkEndpoint] :
              llvm::enumerate(sink->actor.operandPorts)) {
-          auto operand =
-              sinkService->argumentValue(sinkActor->op, argumentOrdinal);
-          if (!operand)
-            return operand.takeError();
-          if ((*operand)->getOperandNumber() != consumer->ordinal)
+          if (sink->operandOperationOrdinals[argumentOrdinal] !=
+              consumer->ordinal)
             continue;
           const ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef
               connection{engine, sourceEndpoint, sinkEndpoint};
@@ -389,14 +350,14 @@ deriveInternalEdges(const TechMappingGenerationInputs &inputs,
 llvm::Error emitInternalEdgeSubsets(
     const TechMappingGenerationInputs &inputs, TechMemoryRealizationView base,
     llvm::ArrayRef<TechMemoryInternalEdgeView> eligibleEdges,
-    llvm::ArrayRef<const MemoryActorOption *> selection,
+    llvm::ArrayRef<const MemoryActorOption *> selection, bool capacityAdmitted,
+    const std::optional<std::vector<TechMemoryGraphBoundaryView>> &boundaries,
     TechMatchRowCollector &collector) {
   std::vector<TechMemoryInternalEdgeView> selectedEdges;
   std::vector<::dataflow::ActorRef> covered;
   covered.reserve(base.actors.size());
   for (const TechMemoryActorView &actor : base.actors)
     covered.push_back(actor.actor);
-
   for (std::size_t count = 0; count <= eligibleEdges.size(); ++count) {
     std::function<llvm::Error(std::size_t, std::size_t)> choose =
         [&](std::size_t start, std::size_t remaining) -> llvm::Error {
@@ -417,7 +378,13 @@ llvm::Error emitInternalEdgeSubsets(
 
       TechMemoryRealizationView row = base;
       row.internalEdges = selectedEdges;
-      auto key = canonicalTechMatchRowKey(row, inputs.dataflow.identity());
+      llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> actorKeys;
+      actorKeys.reserve(selection.size());
+      for (const MemoryActorOption *option : selection)
+        actorKeys.push_back(option->key);
+      auto key = detail::canonicalTechMemoryRowKeyFromActorKeys(
+          row.engine, actorKeys, row.graphBoundaries, row.internalEdges,
+          inputs.dataflow.identity());
       if (!key)
         return key.takeError();
       auto entered = collector.beginSeed(std::move(*key));
@@ -425,24 +392,13 @@ llvm::Error emitInternalEdgeSubsets(
         return entered.takeError();
       if (!*entered)
         return llvm::Error::success();
-      if (llvm::any_of(selection, [](const MemoryActorOption *option) {
-            return !option->capabilityAdmitted;
-          }))
-        return collector.reject(
-            TechMatchSeedRejectionReason::CapabilityInadmissible);
-      auto boundaries = mergeBoundaries(selection, inputs.dataflow.identity());
-      if (!boundaries)
-        return boundaries.takeError();
-      if (!*boundaries)
-        return collector.reject(
-            TechMatchSeedRejectionReason::CorrespondenceInadmissible);
-      row.graphBoundaries = std::move(**boundaries);
-      if (llvm::Error error = verifyTechMemoryRealizationClosure(
-              row, inputs.dataflow, inputs.fabric)) {
-        llvm::consumeError(std::move(error));
+      if (!capacityAdmitted)
         return collector.reject(
             TechMatchSeedRejectionReason::RealizationInadmissible);
-      }
+      if (!boundaries)
+        return collector.reject(
+            TechMatchSeedRejectionReason::CorrespondenceInadmissible);
+      row.graphBoundaries = *boundaries;
       return collector.admit(std::move(row), covered);
     };
     if (llvm::Error error = choose(0, count))
@@ -456,6 +412,7 @@ llvm::Error emitInternalEdgeSubsets(
 llvm::Error emitCanonicalMemorySelections(
     const TechMappingGenerationInputs &inputs,
     ::loom::fabric::FabricMemoryEngineTemplateRef engine,
+    const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord,
     llvm::ArrayRef<MemoryActorDomain> domains, std::size_t actorCount,
     TechMatchRowCollector &collector) {
   std::vector<const MemoryActorOption *> selection;
@@ -490,9 +447,28 @@ llvm::Error emitCanonicalMemorySelections(
     auto boundaries = collectBoundaries(selection, inputs.dataflow.identity());
     if (!boundaries)
       return boundaries.takeError();
+    auto mergedBoundaries =
+        mergeBoundaries(selection, inputs.dataflow.identity());
+    if (!mergedBoundaries)
+      return mergedBoundaries.takeError();
     auto internalEdges = deriveInternalEdges(inputs, engine, selection);
     if (!internalEdges)
       return internalEdges.takeError();
+
+    bool capacityAdmitted = true;
+    if (engineRecord.schedule == ::fabric::Schedule::Temporal) {
+      capacityAdmitted = engineRecord.residentContextCount &&
+                         selection.size() <= *engineRecord.residentContextCount;
+    } else {
+      std::vector<std::uint64_t> selectedPorts;
+      selectedPorts.reserve(selection.size());
+      for (const MemoryActorOption *option : selection)
+        selectedPorts.push_back(option->actor.operationPort.ordinal);
+      llvm::sort(selectedPorts);
+      capacityAdmitted =
+          std::adjacent_find(selectedPorts.begin(), selectedPorts.end()) ==
+          selectedPorts.end();
+    }
 
     std::vector<TechMemoryActorView> actors;
     actors.reserve(selection.size());
@@ -501,7 +477,8 @@ llvm::Error emitCanonicalMemorySelections(
     TechMemoryRealizationView base{
         0, engine, std::move(actors), std::move(*boundaries), {}};
     return emitInternalEdgeSubsets(inputs, std::move(base), *internalEdges,
-                                   selection, collector);
+                                   selection, capacityAdmitted,
+                                   *mergedBoundaries, collector);
   };
   return choose(0, actorCount, std::nullopt);
 }
@@ -549,7 +526,7 @@ deriveMemoryRows(const TechMappingGenerationInputs &inputs,
     for (std::size_t actorCount = 1; actorCount <= maxActorCount;
          ++actorCount) {
       if (llvm::Error error = emitCanonicalMemorySelections(
-              inputs, engine, domains, actorCount, collector))
+              inputs, engine, *engineRecord, domains, actorCount, collector))
         return error;
       if (collector.truncated())
         return llvm::Error::success();

@@ -12,6 +12,10 @@ target_include_directories(LoomTechMapping PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
 )
 
+target_include_directories(LoomTechMapping PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+)
+
 target_link_libraries(LoomTechMapping PUBLIC
   LoomCommon
   LoomMappingArtifact
