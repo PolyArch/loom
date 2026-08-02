@@ -1,7 +1,5 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 
-#include "TechMappingVerification.h"
-
 #include "Common/ArtifactFinalizer.h"
 #include "Common/IndexWidth.h"
 #include "Common/PointerLayout.h"
@@ -20,7 +18,6 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -491,7 +488,28 @@ edgeKey(const ArtifactIdentity &owner,
 
 llvm::Error verifyMemoryCorrespondenceClosure(
     const TechMemoryRealizationView &realization,
-    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  const auto *engine = fabric.memoryEngineTemplate(realization.engine);
+  if (!engine)
+    return invalid("Memory Realization engine does not resolve");
+  for (const TechMemoryActorView &actor : realization.actors)
+    if (actor.operationPort.engine != realization.engine ||
+        actor.capability.port != actor.operationPort)
+      return invalid("memory actor crosses its Memory Realization engine");
+  if (engine->schedule == ::fabric::Schedule::Temporal) {
+    if (!engine->residentContextCount ||
+        realization.actors.size() > *engine->residentContextCount)
+      return invalid(
+          "Memory Realization exceeds Temporal resident context capacity");
+  } else {
+    std::set<std::uint64_t> selectedPorts;
+    for (const TechMemoryActorView &actor : realization.actors)
+      if (!selectedPorts.insert(actor.operationPort.ordinal).second)
+        return invalid("Spatial memory operation port hosts multiple software "
+                       "operations");
+  }
+
   std::map<std::uint64_t, const TechMemoryActorView *> actors;
   std::optional<::dataflow::GraphRef> graph;
   for (const TechMemoryActorView &actor : realization.actors) {
@@ -704,21 +722,10 @@ llvm::Expected<TechMemoryRealizationView> importMemoryRealization(
       return imported.takeError();
     result.internalEdges.push_back(std::move(*imported));
   }
-  if (llvm::Error error = verifyMemoryCorrespondenceClosure(result, dataflow))
+  if (llvm::Error error =
+          verifyTechMemoryRealizationClosure(result, dataflow, fabric))
     return std::move(error);
   return result;
-}
-
-const ::loom::fabric::ResolvedFabricOpPhysicalPortView *findPhysicalPort(
-    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability,
-    ::loom::fabric::FabricPortDirection direction, std::uint64_t ordinal) {
-  const auto found = llvm::find_if(
-      capability.physicalPorts,
-      [&](const ::loom::fabric::ResolvedFabricOpPhysicalPortView &port) {
-        return port.reference.direction == direction &&
-               port.reference.ordinal == ordinal;
-      });
-  return found == capability.physicalPorts.end() ? nullptr : &*found;
 }
 
 llvm::Expected<std::vector<std::uint64_t>>
@@ -731,40 +738,6 @@ decodeComputePorts(llvm::ArrayRef<std::int64_t> ports) {
     result.push_back(static_cast<std::uint64_t>(port));
   }
   return result;
-}
-
-llvm::Error verifyComputePortMap(
-    const ::dataflow::CanonicalActorSchemaProjection &actor,
-    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability,
-    llvm::ArrayRef<std::uint64_t> selected,
-    ::loom::fabric::FabricPortDirection direction, unsigned indexBitWidth,
-    const PointerLayout *pointerLayout) {
-  auto represented = ::fabric::projectResolvedIndexTypes(actor, indexBitWidth);
-  if (!represented)
-    return represented.takeError();
-  TypeRange types = direction == ::loom::fabric::FabricPortDirection::Input
-                        ? represented->type.getInputs()
-                        : represented->type.getResults();
-  if (types.size() != selected.size())
-    return invalid("compute actor port map has the wrong arity");
-  llvm::SmallDenseSet<std::uint64_t, 8> used;
-  for (auto [ordinal, type] : llvm::enumerate(types)) {
-    if (!used.insert(selected[ordinal]).second)
-      return invalid("compute actor port map reuses a physical port");
-    const auto *physical =
-        findPhysicalPort(capability, direction, selected[ordinal]);
-    if (!physical)
-      return invalid("compute actor port map selects a missing physical port");
-    std::string message;
-    FailureOr<unsigned> width =
-        ::fabric::getSemanticPayloadWidth(type, pointerLayout, message);
-    if (failed(width))
-      return invalid(message);
-    if (physical->payloadWidthBits < *width)
-      return invalid(
-          "compute actor port map selects an undersized physical port");
-  }
-  return llvm::Error::success();
 }
 
 llvm::Expected<TechComputeActorView> importComputeActor(
@@ -812,27 +785,17 @@ llvm::Expected<TechComputeActorView> importComputeActor(
   auto pointerLayout = pointerLayoutFor(*projection, actor->op);
   if (!pointerLayout)
     return pointerLayout.takeError();
-  if (llvm::Error error =
-          capability->admit(*projection, *indexBitWidth,
-                            *pointerLayout ? &**pointerLayout : nullptr))
-    return std::move(error);
-
   auto operands = decodeComputePorts(record.getOperandPorts());
   if (!operands)
     return operands.takeError();
   auto results = decodeComputePorts(record.getResultPorts());
   if (!results)
     return results.takeError();
-  if (llvm::Error error = verifyComputePortMap(
-          *projection, *capability, *operands,
-          ::loom::fabric::FabricPortDirection::Input, *indexBitWidth,
+  if (llvm::Error error = capability->admitCorrespondence(
+          *projection, *indexBitWidth, *operands, *results,
           *pointerLayout ? &**pointerLayout : nullptr))
-    return std::move(error);
-  if (llvm::Error error = verifyComputePortMap(
-          *projection, *capability, *results,
-          ::loom::fabric::FabricPortDirection::Output, *indexBitWidth,
-          *pointerLayout ? &**pointerLayout : nullptr))
-    return std::move(error);
+    return contextual(std::move(error),
+                      "compute actor port correspondence is incompatible");
   return TechComputeActorView{*actorRef, *operation, std::move(*operands),
                               std::move(*results)};
 }
@@ -899,7 +862,7 @@ llvm::Expected<TechComputeRealizationView> importComputeRealization(
         *actorRef, direction, boundary.getPortOrdinal(), *port});
   }
   if (llvm::Error error =
-          detail::verifyTechComputeRealizationClosure(result, dataflow, fabric))
+          verifyTechComputeRealizationClosure(result, dataflow, fabric))
     return std::move(error);
   return result;
 }
@@ -1058,6 +1021,13 @@ strictImport(const ArtifactIdentity &mappingIdentity,
 }
 
 } // namespace
+
+llvm::Error verifyTechMemoryRealizationClosure(
+    const TechMemoryRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  return verifyMemoryCorrespondenceClosure(realization, dataflow, fabric);
+}
 
 llvm::Expected<TechMappingView> TechMappingView::import(
     const ArtifactIdentity &mappingIdentity, ::mapping::TechOp root,

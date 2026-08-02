@@ -298,6 +298,7 @@ target_link_libraries(loom-fabric-system-canonical-labeling-test PRIVATE
 target_link_libraries(loom-fabric-artifact-finalizer-test PRIVATE
   LoomCommon
   LoomFabricArtifact
+  MLIRDataflow
   MLIRFabric
   MLIRIR
   MLIRParser

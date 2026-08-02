@@ -70,6 +70,17 @@ struct ResolvedFabricOpCapabilityView {
   llvm::Error admit(const ::dataflow::CanonicalActorSchemaProjection &actor,
                     unsigned indexBitWidth,
                     const ::loom::PointerLayout *pointerLayout = nullptr) const;
+
+  /// Checks one exact ordered software-to-physical port correspondence in
+  /// addition to the concrete operation-resource capability. The selected
+  /// ordinals are direction-local physical-port ordinals, ordered by the
+  /// actor's operand or result ordinal. Mapping persists this relation but
+  /// does not reinterpret it.
+  llvm::Error admitCorrespondence(
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      unsigned indexBitWidth, llvm::ArrayRef<std::uint64_t> operandPorts,
+      llvm::ArrayRef<std::uint64_t> resultPorts,
+      const ::loom::PointerLayout *pointerLayout = nullptr) const;
 };
 
 class FabricArtifactView;
@@ -172,6 +183,13 @@ public:
   /// The FU template this occurrence was elaborated from.
   std::optional<FabricFuTemplateRef>
   fuTemplateOf(FabricFuOccurrenceRef occurrence) const;
+
+  /// Canonical owner-local definition inventories consumed by semantic
+  /// matching. These are typed references in Fabric entity order; callers do
+  /// not probe the global entity namespace or infer definitions from physical
+  /// occurrences.
+  llvm::ArrayRef<FabricFuTemplateRef> fuTemplates() const;
+  llvm::ArrayRef<FabricMemoryEngineTemplateRef> memoryEngineTemplates() const;
 
   /// The complete canonical capability-template inventory owned by one FU
   /// definition. An invalid owner has an empty range.

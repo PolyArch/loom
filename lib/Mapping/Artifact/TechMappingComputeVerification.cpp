@@ -1,4 +1,4 @@
-#include "TechMappingVerification.h"
+#include "Mapping/Artifact/MappingArtifact.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
@@ -14,7 +14,7 @@
 #include <variant>
 #include <vector>
 
-namespace loom::mapping::detail {
+namespace loom::mapping {
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -183,76 +183,62 @@ verifyBoundaryDomain(
   return boundaries;
 }
 
+llvm::Error verifyBoundaryProducerIdentity(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const std::map<std::uint64_t, const TechComputeActorView *> &actors,
+    const std::map<ActorPortKey, ::loom::fabric::FabricFuTemplatePortRef>
+        &boundaries) {
+  std::map<TemplateEndpointKey, std::vector<std::uint8_t>> producerByInput;
+  for (const auto &[software, physical] : boundaries) {
+    if (software.direction != ::loom::fabric::FabricPortDirection::Input)
+      continue;
+    const TechComputeActorView *actor = actors.at(software.actor);
+    const ::dataflow::CanonicalGraphConsumerEndpointRef consumer =
+        ::dataflow::ActorTokenOperandRef{actor->actor, software.ordinal};
+    auto producer = dataflow.graphProducer(consumer);
+    if (!producer)
+      return producer.takeError();
+    auto identity =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
+    if (!identity)
+      return identity.takeError();
+    auto [found, inserted] =
+        producerByInput.emplace(endpointKey(physical), *identity);
+    if (!inserted && found->second != *identity)
+      return invalid("one FU boundary input represents distinct Dataflow "
+                     "producers");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::set<TemplateConnection>> projectTemplateConnections(
     const ::loom::fabric::FabricFuCapabilityTemplateRecord &record,
     const std::map<std::uint64_t, const TechComputeActorView *> &actors) {
-  std::map<TemplateEndpointKey, std::set<TemplateEndpointKey>> adjacency;
-  std::map<std::tuple<::loom::fabric::FabricFuNodeKind, std::uint64_t,
-                      std::uint64_t>,
-           std::set<TemplateEndpointKey>>
-      structuralInputs;
-  std::map<std::tuple<::loom::fabric::FabricFuNodeKind, std::uint64_t,
-                      std::uint64_t>,
-           std::set<TemplateEndpointKey>>
-      structuralOutputs;
-  std::set<TemplateEndpointKey> sources;
-  std::set<TemplateEndpointKey> sinks;
-
-  for (const auto &edge : record.activeEdges) {
-    const TemplateEndpointKey source = endpointKey(edge.source);
-    const TemplateEndpointKey sink = endpointKey(edge.destination);
-    adjacency[source].insert(sink);
-    if (source.boundary &&
-        source.direction == ::loom::fabric::FabricPortDirection::Input)
-      sources.insert(source);
-    if (sink.boundary &&
-        sink.direction == ::loom::fabric::FabricPortDirection::Output)
-      sinks.insert(sink);
-    if (!source.boundary &&
-        source.nodeKind != ::loom::fabric::FabricFuNodeKind::Op)
-      structuralOutputs[{source.nodeKind, source.fu, source.nodeOrdinal}]
-          .insert(source);
-    if (!sink.boundary && sink.nodeKind != ::loom::fabric::FabricFuNodeKind::Op)
-      structuralInputs[{sink.nodeKind, sink.fu, sink.nodeOrdinal}].insert(sink);
-  }
-  for (const auto &[node, inputs] : structuralInputs) {
-    auto outputs = structuralOutputs.find(node);
-    if (outputs == structuralOutputs.end())
-      return invalid("active selector has no selected output");
-    for (const TemplateEndpointKey &input : inputs)
-      adjacency[input].insert(outputs->second.begin(), outputs->second.end());
-  }
+  auto projected =
+      ::loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(record);
+  if (!projected)
+    return projected.takeError();
+  std::set<TemplateEndpointKey> selectedSources;
+  std::set<TemplateEndpointKey> selectedSinks;
   for (const auto &[id, actor] : actors) {
     (void)id;
     for (std::uint64_t ordinal = 0; ordinal < actor->operandPorts.size();
          ++ordinal)
-      sinks.insert(actorEndpoint(
+      selectedSinks.insert(actorEndpoint(
           *actor, ::loom::fabric::FabricPortDirection::Input, ordinal));
     for (std::uint64_t ordinal = 0; ordinal < actor->resultPorts.size();
          ++ordinal)
-      sources.insert(actorEndpoint(
+      selectedSources.insert(actorEndpoint(
           *actor, ::loom::fabric::FabricPortDirection::Output, ordinal));
   }
-
   std::set<TemplateConnection> connections;
-  for (const TemplateEndpointKey &source : sources) {
-    std::set<TemplateEndpointKey> visited{source};
-    std::vector<TemplateEndpointKey> worklist{source};
-    while (!worklist.empty()) {
-      TemplateEndpointKey current = worklist.back();
-      worklist.pop_back();
-      auto next = adjacency.find(current);
-      if (next == adjacency.end())
-        continue;
-      for (const TemplateEndpointKey &endpoint : next->second) {
-        if (sinks.count(endpoint)) {
-          connections.emplace(source, endpoint);
-          continue;
-        }
-        if (visited.insert(endpoint).second)
-          worklist.push_back(endpoint);
-      }
-    }
+  for (const auto &edge : *projected) {
+    const TemplateEndpointKey source = endpointKey(edge.source);
+    const TemplateEndpointKey sink = endpointKey(edge.destination);
+    if ((!source.boundary && !selectedSources.count(source)) ||
+        (!sink.boundary && !selectedSinks.count(sink)))
+      continue;
+    connections.emplace(source, sink);
   }
   return connections;
 }
@@ -348,6 +334,9 @@ llvm::Error verifyTechComputeRealizationClosure(
   auto boundaries = verifyBoundaryDomain(realization, dataflow, actors);
   if (!boundaries)
     return boundaries.takeError();
+  if (llvm::Error error =
+          verifyBoundaryProducerIdentity(dataflow, actors, *boundaries))
+    return error;
   auto actual = projectTemplateConnections(record, actors);
   if (!actual)
     return actual.takeError();
@@ -360,4 +349,4 @@ llvm::Error verifyTechComputeRealizationClosure(
   return llvm::Error::success();
 }
 
-} // namespace loom::mapping::detail
+} // namespace loom::mapping

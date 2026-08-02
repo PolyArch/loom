@@ -241,6 +241,27 @@ std::string memoryTechModule(bool reverseChildren, bool semanticDelta,
          "      }\n  }\n}";
 }
 
+std::string memoryRealizationCardinalityModule() {
+  const std::string dataflow = identityAttr(17);
+  const std::string fabric = identityAttr(34);
+  const std::uint64_t engine = 41;
+  const auto actor = [&](std::uint64_t ordinal) {
+    return "        mapping.memory_actor actor(" + actorRef(ordinal) +
+           ") operation_port(" + memoryEngineOperationPortRef(engine, 0) +
+           ") capability(" +
+           memoryEngineCapabilityAlternativeRef(engine, 0, 1) +
+           ") operand_ports([" + memoryEngineEndpointRef(engine, 0) +
+           "]) result_ports([" + memoryEngineEndpointRef(engine, 1) + "])\n";
+  };
+  return "module {\n  mapping.tech version<2, 0> dataflow(" + dataflow +
+         ") fabric(" + fabric + ") covers([" + graphRef(0) + "]) {\n" +
+         "      mapping.memory_realization 9 engine(" +
+         memoryEngineTemplateRef(engine) + ") {\n" + actor(1) + actor(3) +
+         "      }\n" + "      mapping.memory_realization 4 engine(" +
+         memoryEngineTemplateRef(engine) + ") {\n" + actor(2) +
+         "      }\n  }\n}";
+}
+
 mlir::OwningOpRef<mlir::ModuleOp> parse(mlir::MLIRContext &context,
                                         llvm::StringRef text) {
   llvm::SourceMgr sourceManager;
@@ -365,6 +386,32 @@ void testMemoryTemplateOwnerMismatch() {
     fail("wrong-owner memory template reference passed verification");
 }
 
+void testMemoryPayloadCardinalityOrder() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry);
+
+  auto authored = parse(context, memoryRealizationCardinalityModule());
+  if (!authored || mlir::failed(mlir::verify(*authored)))
+    fail("memory cardinality fixture did not verify");
+  const auto bytes = canonicalBytes(*authored);
+  const std::string text(bytes.bytes().begin(), bytes.bytes().end());
+  auto canonical = parse(context, text);
+  if (!canonical || mlir::failed(mlir::verify(*canonical)))
+    fail("canonical memory cardinality fixture did not parse");
+  auto roots = canonical->getOps<::mapping::TechOp>();
+  auto root = *roots.begin();
+  auto realizations =
+      root.getBody().front().getOps<::mapping::MemoryRealizationOp>();
+  if (std::distance(realizations.begin(), realizations.end()) != 2)
+    fail("canonical memory cardinality fixture changed realization count");
+  auto first = *realizations.begin();
+  auto actors = first.getBody().front().getOps<::mapping::MemoryActorOp>();
+  if (first.getEntityId() != 0 ||
+      std::distance(actors.begin(), actors.end()) != 1)
+    fail("memory payload cardinality did not determine canonical row order");
+}
+
 } // namespace
 
 int main() {
@@ -373,6 +420,7 @@ int main() {
   testComputePortOrdinalRange();
   testCanonicalMemoryRealization();
   testMemoryTemplateOwnerMismatch();
+  testMemoryPayloadCardinalityOrder();
   llvm::outs() << "mapping artifact tests passed\n";
   return 0;
 }

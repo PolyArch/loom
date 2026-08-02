@@ -609,6 +609,15 @@ llvm::Error verifyImplementationFamilyAdmission(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     unsigned indexBitWidth, const ::loom::PointerLayout &pointerLayout);
 
+/// Verifies the semantic role ordering of one software-to-physical port
+/// correspondence. Concrete Fabric capability queries separately own port
+/// existence, injection, type capacity, and topology.
+llvm::Error verifyImplementationFamilyPortCorrespondence(
+    ImplementationFamilyId family,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts);
+
 llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
 projectResolvedIndexTypes(
     const ::dataflow::CanonicalActorSchemaProjection &actor,

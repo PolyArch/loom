@@ -3,6 +3,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -267,6 +268,96 @@ normalizeFabricFuCapabilityTemplateInventory(
           FabricRefErrorKind::WrongOwner,
           "one capability-template inventory has multiple FU owners");
     result.push_back(std::move(normalized[index].second));
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<FabricFuCapabilityTemplateEdge>>
+projectFabricFuCapabilityTemplateTerminalEdges(
+    const FabricFuCapabilityTemplateRecord &record) {
+  auto normalized = normalizeFabricFuCapabilityTemplateRecord(record);
+  if (!normalized)
+    return normalized.takeError();
+  if (*normalized != record)
+    return malformed(
+        "FU capability-template terminal projection requires canonical input");
+
+  using Endpoint = FabricFuCapabilityTemplateEndpointRef;
+  using Edge = FabricFuCapabilityTemplateEdge;
+  std::vector<Edge> adjacency = record.activeEdges;
+
+  for (const FabricFuTemplateNodeRef &node : record.activeNodes) {
+    if (node.node == FabricFuNodeKind::Op)
+      continue;
+    std::vector<Endpoint> inputs;
+    std::vector<Endpoint> outputs;
+    for (const Edge &edge : record.activeEdges) {
+      if (const auto *destination =
+              std::get_if<FabricFuNodePortRef>(&edge.destination.payload);
+          destination && destination->node == node)
+        inputs.push_back(edge.destination);
+      if (const auto *source =
+              std::get_if<FabricFuNodePortRef>(&edge.source.payload);
+          source && source->node == node)
+        outputs.push_back(edge.source);
+    }
+    if (inputs.empty() || outputs.empty())
+      return malformed("active structural FU node has an incomplete route");
+    for (const Endpoint &input : inputs)
+      for (const Endpoint &output : outputs)
+        adjacency.push_back(Edge{input, output});
+  }
+
+  const auto isSourceTerminal = [](const Endpoint &endpoint) {
+    if (const auto *boundary =
+            std::get_if<FabricFuTemplatePortRef>(&endpoint.payload))
+      return boundary->direction == FabricPortDirection::Input;
+    const auto &port = std::get<FabricFuNodePortRef>(endpoint.payload);
+    return port.node.node == FabricFuNodeKind::Op &&
+           port.direction == FabricPortDirection::Output;
+  };
+  const auto isSinkTerminal = [](const Endpoint &endpoint) {
+    if (const auto *boundary =
+            std::get_if<FabricFuTemplatePortRef>(&endpoint.payload))
+      return boundary->direction == FabricPortDirection::Output;
+    const auto &port = std::get<FabricFuNodePortRef>(endpoint.payload);
+    return port.node.node == FabricFuNodeKind::Op &&
+           port.direction == FabricPortDirection::Input;
+  };
+
+  std::vector<Endpoint> sources;
+  for (const Edge &edge : adjacency)
+    if (isSourceTerminal(edge.source) &&
+        !llvm::is_contained(sources, edge.source))
+      sources.push_back(edge.source);
+
+  std::vector<std::pair<std::vector<std::uint8_t>, Edge>> projected;
+  for (const Endpoint &source : sources) {
+    std::vector<Endpoint> visited{source};
+    for (std::size_t cursor = 0; cursor < visited.size(); ++cursor) {
+      const Endpoint current = visited[cursor];
+      for (const Edge &edge : adjacency) {
+        if (edge.source != current)
+          continue;
+        if (isSinkTerminal(edge.destination)) {
+          Edge terminal{source, edge.destination};
+          projected.emplace_back(edgeBytes(terminal), std::move(terminal));
+          continue;
+        }
+        if (!llvm::is_contained(visited, edge.destination))
+          visited.push_back(edge.destination);
+      }
+    }
+  }
+
+  std::sort(projected.begin(), projected.end(),
+            canonicalLess<Edge, std::vector<std::uint8_t>>);
+  std::vector<Edge> result;
+  result.reserve(projected.size());
+  for (std::size_t index = 0; index < projected.size(); ++index) {
+    if (index != 0 && projected[index - 1].first == projected[index].first)
+      continue;
+    result.push_back(std::move(projected[index].second));
   }
   return result;
 }

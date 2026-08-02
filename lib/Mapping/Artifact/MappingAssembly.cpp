@@ -1,5 +1,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 
+#include "TechMappingCanonicalKeyInternal.h"
+
 #include "Mapping/IR/MappingOps.h"
 
 #include "mlir/IR/Builders.h"
@@ -30,93 +32,14 @@ std::vector<std::uint8_t> bytes(DenseI8ArrayAttr attribute) {
   return result;
 }
 
-template <typename Attr>
-void appendAttrBytes(std::vector<std::uint8_t> &result, Attr attribute) {
-  std::vector<std::uint8_t> value = bytes(attribute.getRecord());
-  result.insert(result.end(), value.begin(), value.end());
-}
-
-void appendAttributeKey(std::vector<std::uint8_t> &result,
-                        Attribute attribute) {
-  if (auto producer =
-          dyn_cast<::mapping::GraphProducerEndpointRefAttr>(attribute)) {
-    result.push_back(0);
-    appendAttrBytes(result, producer);
-    return;
-  }
-  if (auto consumer =
-          dyn_cast<::mapping::GraphConsumerEndpointRefAttr>(attribute)) {
-    result.push_back(1);
-    appendAttrBytes(result, consumer);
-    return;
-  }
-  appendAttrBytes(
-      result,
-      cast<::mapping::FabricMemoryEngineTemplateEndpointRefAttr>(attribute));
-}
-
-void appendU64(std::vector<std::uint8_t> &result, std::uint64_t value) {
-  for (unsigned byte = 0; byte < 8; ++byte)
-    result.push_back(static_cast<std::uint8_t>(value >> (8 * (7 - byte))));
-}
-
-std::vector<std::uint8_t> childKey(Operation &operation) {
-  std::vector<std::uint8_t> key;
-  if (auto actor = dyn_cast<::mapping::ComputeActorOp>(operation)) {
-    key.push_back(0);
-    appendAttrBytes(key, actor.getActor());
-    appendAttrBytes(key, actor.getFabricOp());
-    appendU64(key, actor.getOperandPorts().size());
-    for (std::int64_t port : actor.getOperandPorts())
-      appendU64(key, static_cast<std::uint64_t>(port));
-    appendU64(key, actor.getResultPorts().size());
-    for (std::int64_t port : actor.getResultPorts())
-      appendU64(key, static_cast<std::uint64_t>(port));
-    return key;
-  }
-
-  if (auto boundary = dyn_cast<::mapping::ComputeBoundaryOp>(operation)) {
-    key.push_back(1);
-    appendAttrBytes(key, boundary.getActor());
-    key.push_back(static_cast<std::uint8_t>(boundary.getDirection()));
-    appendU64(key, boundary.getPortOrdinal());
-    appendAttrBytes(key, boundary.getFuPort());
-    return key;
-  }
-  if (auto actor = dyn_cast<::mapping::MemoryActorOp>(operation)) {
-    key.push_back(2);
-    appendAttrBytes(key, actor.getActor());
-    appendAttrBytes(key, actor.getOperationPort());
-    appendAttrBytes(key, actor.getCapability());
-    appendU64(key, actor.getOperandPorts().size());
-    for (Attribute endpoint : actor.getOperandPorts())
-      appendAttributeKey(key, endpoint);
-    appendU64(key, actor.getResultPorts().size());
-    for (Attribute endpoint : actor.getResultPorts())
-      appendAttributeKey(key, endpoint);
-    return key;
-  }
-  if (auto boundary = dyn_cast<::mapping::MemoryGraphBoundaryOp>(operation)) {
-    key.push_back(3);
-    appendAttributeKey(key, boundary.getTerminal());
-    appendAttrBytes(key, boundary.getEndpoint());
-    return key;
-  }
-  auto edge = cast<::mapping::MemoryInternalEdgeOp>(operation);
-  key.push_back(4);
-  appendAttrBytes(key, edge.getProducer());
-  appendAttrBytes(key, edge.getConsumer());
-  appendAttrBytes(key, edge.getConnection());
-  return key;
-}
-
 void canonicalizeChildren(::mapping::ComputeRealizationOp realization) {
   Block &block = realization.getBody().front();
   std::vector<Operation *> children;
   for (Operation &operation : block)
     children.push_back(&operation);
   llvm::sort(children, [](Operation *left, Operation *right) {
-    return childKey(*left) < childKey(*right);
+    return detail::canonicalTechChildKey(*left) <
+           detail::canonicalTechChildKey(*right);
   });
   for (Operation *operation : children)
     operation->moveBefore(&block, block.end());
@@ -128,34 +51,11 @@ void canonicalizeChildren(::mapping::MemoryRealizationOp realization) {
   for (Operation &operation : block)
     children.push_back(&operation);
   llvm::sort(children, [](Operation *left, Operation *right) {
-    return childKey(*left) < childKey(*right);
+    return detail::canonicalTechChildKey(*left) <
+           detail::canonicalTechChildKey(*right);
   });
   for (Operation *operation : children)
     operation->moveBefore(&block, block.end());
-}
-
-std::vector<std::uint8_t>
-realizationKey(::mapping::ComputeRealizationOp realization) {
-  std::vector<std::uint8_t> key;
-  appendAttrBytes(key, realization.getCapabilityTemplate());
-  for (Operation &child : realization.getBody().front()) {
-    std::vector<std::uint8_t> childBytes = childKey(child);
-    appendU64(key, childBytes.size());
-    key.insert(key.end(), childBytes.begin(), childBytes.end());
-  }
-  return key;
-}
-
-std::vector<std::uint8_t>
-realizationKey(::mapping::MemoryRealizationOp realization) {
-  std::vector<std::uint8_t> key;
-  appendAttrBytes(key, realization.getEngine());
-  for (Operation &child : realization.getBody().front()) {
-    std::vector<std::uint8_t> childBytes = childKey(child);
-    appendU64(key, childBytes.size());
-    key.insert(key.end(), childBytes.begin(), childBytes.end());
-  }
-  return key;
 }
 
 void canonicalizeTech(::mapping::TechOp root) {
@@ -174,7 +74,8 @@ void canonicalizeTech(::mapping::TechOp root) {
     computeRealizations.push_back(realization);
   }
   llvm::sort(computeRealizations, [](auto left, auto right) {
-    return realizationKey(left) < realizationKey(right);
+    return detail::canonicalTechRealizationPayloadKey(left) <
+           detail::canonicalTechRealizationPayloadKey(right);
   });
 
   std::vector<::mapping::MemoryRealizationOp> memoryRealizations;
@@ -183,7 +84,8 @@ void canonicalizeTech(::mapping::TechOp root) {
     memoryRealizations.push_back(realization);
   }
   llvm::sort(memoryRealizations, [](auto left, auto right) {
-    return realizationKey(left) < realizationKey(right);
+    return detail::canonicalTechRealizationPayloadKey(left) <
+           detail::canonicalTechRealizationPayloadKey(right);
   });
 
   Builder builder(root.getContext());

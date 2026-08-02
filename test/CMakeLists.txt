@@ -85,6 +85,9 @@ set(LOOM_TEST_DEPENDS
   loom-mapping-artifact-test
   loom-tech-mapping-artifact-test
   loom-tech-mapping-config-test
+  loom-tech-mapping-generator-test
+  loom-tech-mapping-joint-legality-test
+  loom-tech-mapping-search-test
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test

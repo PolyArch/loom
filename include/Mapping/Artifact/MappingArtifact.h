@@ -81,6 +81,35 @@ struct TechMemoryRealizationView final {
   std::vector<TechMemoryInternalEdgeView> internalEdges;
 };
 
+/// Verifies the exact realization-wide topology and correspondence relation
+/// after each actor's typed operation capability has been resolved. Generator
+/// and strict importer share these owners so candidate pruning cannot diverge
+/// from persistent-artifact admission.
+llvm::Error verifyTechComputeRealizationClosure(
+    const TechComputeRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric);
+llvm::Error verifyTechMemoryRealizationClosure(
+    const TechMemoryRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric);
+
+/// Canonical prospective persistent-payload keys used by Mapping-local
+/// identity assignment and TechMapping seed enumeration. These encoders are
+/// the sole owner of row ordering; callers must not duplicate their formula.
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalTechMatchActorKey(const TechComputeActorView &actor,
+                           const ArtifactIdentity &dataflowOwner);
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalTechMatchActorKey(const TechMemoryActorView &actor,
+                           const ArtifactIdentity &dataflowOwner);
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalTechMatchRowKey(const TechComputeRealizationView &realization,
+                         const ArtifactIdentity &dataflowOwner);
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalTechMatchRowKey(const TechMemoryRealizationView &realization,
+                         const ArtifactIdentity &dataflowOwner);
+
 /// Immutable read-only projection of one independently verified mapping.tech
 /// object. Every member is a typed reference into the exact bound Dataflow or
 /// Fabric artifact; copied semantic descriptions and authoring handles are

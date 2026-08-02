@@ -7,11 +7,16 @@
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchema.h"
+
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FuCapabilityDomain.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -97,7 +102,8 @@ private:
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
-    registry.insert<::fabric::FabricDialect>();
+    registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                    mlir::arith::ArithDialect, mlir::func::FuncDialect>();
     auto *result =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
@@ -772,6 +778,10 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
       test, loom::fabric::finalizeFabricRoot(root(test, *singleSource), store));
   const loom::fabric::FabricFuTemplateRef singleFu =
       uniqueFuTemplate(test, single.view());
+  require(test,
+          single.view().fuTemplates() ==
+              llvm::ArrayRef<loom::fabric::FabricFuTemplateRef>(singleFu),
+          "sealed view did not enumerate the canonical FU definition");
   auto singleTemplates = single.view().fuCapabilityTemplates(singleFu);
   require(test, singleTemplates.size() == 1,
           "single operation FU did not produce one capability template");
@@ -802,6 +812,59 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           "concrete operation capability lost its resource contract");
   require(test, singleCapability->configurationFieldSchema.size() == 1,
           "multi-member operation capability lost its semantic field");
+
+  auto actorSource = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @sub(%lhs: i32, %rhs: i32) -> i32 {
+        %result = arith.subi %lhs, %rhs : i32
+        return %result : i32
+      }
+    }
+  )mlir",
+                                                             &context());
+  require(test, static_cast<bool>(actorSource),
+          "cannot parse subtraction actor fixture");
+  mlir::arith::SubIOp subtraction;
+  actorSource->walk([&](mlir::arith::SubIOp op) { subtraction = op; });
+  require(test, static_cast<bool>(subtraction),
+          "subtraction actor fixture has no arith.subi");
+  auto subtractionProjection = take(
+      test, ::dataflow::projectRegisteredActorSchemaProjection(subtraction));
+  if (llvm::Error error = singleCapability->admitCorrespondence(
+          subtractionProjection, 64, {0, 1}, {0}))
+    fail(test, llvm::toString(std::move(error)));
+  llvm::Error reversed = singleCapability->admitCorrespondence(
+      subtractionProjection, 64, {1, 0}, {0});
+  require(test, static_cast<bool>(reversed),
+          "noncommutative subtraction accepted reversed physical roles");
+  llvm::consumeError(std::move(reversed));
+
+  auto syncSource = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @sync(%lhs: i32, %rhs: i32) -> (i32, i32) {
+        %result:2 = dataflow.sync %lhs, %rhs : (i32, i32) -> (i32, i32)
+        return %result#0, %result#1 : i32, i32
+      }
+    }
+  )mlir",
+                                                            &context());
+  require(test, static_cast<bool>(syncSource),
+          "cannot parse token-sync actor fixture");
+  ::dataflow::SyncOp sync;
+  syncSource->walk([&](::dataflow::SyncOp op) { sync = op; });
+  auto syncProjection =
+      take(test, ::dataflow::projectRegisteredActorSchemaProjection(sync));
+  if (llvm::Error error =
+          ::fabric::verifyImplementationFamilyPortCorrespondence(
+              ::fabric::ImplementationFamilyId::TokenSync, syncProjection,
+              {0, 2}, {0, 2}))
+    fail(test, llvm::toString(std::move(error)));
+  llvm::Error crossed = ::fabric::verifyImplementationFamilyPortCorrespondence(
+      ::fabric::ImplementationFamilyId::TokenSync, syncProjection, {0, 2},
+      {2, 0});
+  require(test, static_cast<bool>(crossed),
+          "token sync accepted crossed input and output lane images");
+  llvm::consumeError(std::move(crossed));
 
   mlir::OwningOpRef<mlir::ModuleOp> branchSource = parse(test, R"mlir(
     module {

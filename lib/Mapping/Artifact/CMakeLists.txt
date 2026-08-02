@@ -1,5 +1,6 @@
 add_library(LoomMappingArtifact
   MappingAssembly.cpp
+  TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp
 )

@@ -102,6 +102,15 @@ llvm::Expected<std::vector<FabricFuCapabilityTemplateRecord>>
 normalizeFabricFuCapabilityTemplateInventory(
     llvm::ArrayRef<FabricFuCapabilityTemplateRecord> records);
 
+/// Projects the exact directed relation between active operation terminals
+/// and FU boundary terminals after mechanically traversing active structural
+/// selector nodes. The result is canonical, duplicate-free, and contains no
+/// selector terminal; it is the shared topology relation consumed by Mapping
+/// generation and independent Mapping verification.
+llvm::Expected<std::vector<FabricFuCapabilityTemplateEdge>>
+projectFabricFuCapabilityTemplateTerminalEdges(
+    const FabricFuCapabilityTemplateRecord &record);
+
 /// Resolves one exact dense reference in O(1) against an already normalized
 /// and owner-validated inventory.
 llvm::Error validateFabricFuCapabilityTemplateRef(

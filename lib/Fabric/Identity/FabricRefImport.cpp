@@ -24,6 +24,8 @@ using namespace loom::fabric;
 
 struct FabricArtifactView::Storage {
   detail::FabricArtifactViewData data;
+  std::vector<FabricFuTemplateRef> fuTemplates;
+  std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
   std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
   std::vector<std::vector<std::uint8_t>> traversalKeys;
@@ -637,6 +639,15 @@ std::optional<FabricFuTemplateRef>
 FabricArtifactView::fuTemplateOf(FabricFuOccurrenceRef occurrence) const {
   const detail::FabricEntityViewData *record = storage_->entity(occurrence);
   return record ? record->fuTemplate : std::nullopt;
+}
+
+llvm::ArrayRef<FabricFuTemplateRef> FabricArtifactView::fuTemplates() const {
+  return storage_->fuTemplates;
+}
+
+llvm::ArrayRef<FabricMemoryEngineTemplateRef>
+FabricArtifactView::memoryEngineTemplates() const {
+  return storage_->memoryEngineTemplates;
 }
 
 llvm::ArrayRef<FabricFuCapabilityTemplateRecord>
@@ -1330,7 +1341,13 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
 
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs(
       data.entities.size());
+  std::vector<FabricFuTemplateRef> fuTemplates;
+  std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   for (auto [entityId, entity] : llvm::enumerate(data.entities)) {
+    if (entity.kind == FabricEntityKind::FabricFuTemplate)
+      fuTemplates.emplace_back(entityId);
+    if (entity.kind == FabricEntityKind::FabricMemoryEngineTemplate)
+      memoryEngineTemplates.emplace_back(entityId);
     if (entity.kind != FabricEntityKind::FabricMemoryOccurrence)
       continue;
     auto &refs = memoryPortRefs[entityId];
@@ -1343,7 +1360,8 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
 
   auto storage =
       std::make_shared<FabricArtifactView::Storage>(FabricArtifactView::Storage{
-          std::move(data), std::move(memoryPortRefs),
+          std::move(data), std::move(fuTemplates),
+          std::move(memoryEngineTemplates), std::move(memoryPortRefs),
           std::move(pointConnectionKeys), std::move(traversalKeys)});
   FabricArtifactView view(std::move(storage));
   for (const FabricPointConnectionPayload &connection :

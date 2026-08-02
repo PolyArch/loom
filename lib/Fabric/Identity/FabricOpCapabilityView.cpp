@@ -1,6 +1,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstddef>
@@ -87,4 +88,63 @@ llvm::Error ResolvedFabricOpCapabilityView::admit(
   if (!hasWidthCapacity(*semanticResults, physicalResults))
     return rejected("no physical result correspondence has enough width");
   return llvm::Error::success();
+}
+
+llvm::Error ResolvedFabricOpCapabilityView::admitCorrespondence(
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    unsigned indexBitWidth, llvm::ArrayRef<std::uint64_t> operandPorts,
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    const ::loom::PointerLayout *pointerLayout) const {
+  if (llvm::Error error = admit(actor, indexBitWidth, pointerLayout))
+    return error;
+  if (llvm::Error error =
+          ::fabric::verifyImplementationFamilyPortCorrespondence(
+              implementationFamily, actor, operandPorts, resultPorts))
+    return error;
+
+  const auto rejected = [](const llvm::Twine &message) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "fabric_operation_capability_rejected: " +
+                                       message);
+  };
+  auto represented = ::fabric::projectResolvedIndexTypes(actor, indexBitWidth);
+  if (!represented)
+    return represented.takeError();
+
+  const auto verify = [&](mlir::TypeRange types,
+                          llvm::ArrayRef<std::uint64_t> selected,
+                          FabricPortDirection direction) -> llvm::Error {
+    if (types.size() != selected.size())
+      return rejected("ordered physical-port correspondence has wrong arity");
+    llvm::SmallDenseSet<std::uint64_t, 8> used;
+    for (auto [softwareOrdinal, type] : llvm::enumerate(types)) {
+      const std::uint64_t physicalOrdinal = selected[softwareOrdinal];
+      if (!used.insert(physicalOrdinal).second)
+        return rejected("ordered physical-port correspondence reuses a port");
+      const auto found = llvm::find_if(
+          physicalPorts, [&](const ResolvedFabricOpPhysicalPortView &port) {
+            return port.reference.direction == direction &&
+                   port.reference.ordinal == physicalOrdinal;
+          });
+      if (found == physicalPorts.end())
+        return rejected(
+            "ordered physical-port correspondence selects a missing port");
+      std::string message;
+      mlir::FailureOr<unsigned> width =
+          ::fabric::getSemanticPayloadWidth(type, pointerLayout, message);
+      if (mlir::failed(width))
+        return rejected(message);
+      if (found->payloadWidthBits < *width)
+        return rejected(
+            "ordered physical-port correspondence selects an undersized "
+            "port");
+    }
+    return llvm::Error::success();
+  };
+
+  if (llvm::Error error = verify(represented->type.getInputs(), operandPorts,
+                                 FabricPortDirection::Input))
+    return error;
+  return verify(represented->type.getResults(), resultPorts,
+                FabricPortDirection::Output);
 }
