@@ -12,6 +12,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
+#include "PnR/HandshakeCandidateState.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialPnrProblem.h"
@@ -656,6 +657,34 @@ void artifactRoundTripAndReferenceValidation() {
   if (handshake.memoryOperationDomains().empty() ||
       handshake.memoryOperationPlans().empty())
     fail("aggregate Spatial freeze omitted memory handshake plan domains");
+
+  if (handshake.allTraversalGroups().empty())
+    fail("aggregate Spatial freeze omitted atomic traversal activation");
+  {
+    auto handshakeOwner =
+        std::shared_ptr<const loom::pnr::FrozenSpatialHandshakeIndex>(
+            frozen, &frozen->handshake());
+    auto candidate =
+        take(loom::pnr::HandshakeCandidateState::create(handshakeOwner));
+    loom::pnr::HandshakeCandidateScratch scratch;
+    requireSuccess(scratch.prepare(*handshakeOwner));
+    const auto group = handshake.allTraversalGroups().front();
+    const auto witnesses = handshake.allTraversalGroupWitnesses().slice(
+        group.witnessOffset, group.witnessCount);
+    auto transaction = take(candidate->beginTransaction(scratch));
+    for (auto [ordinal, traversal] : llvm::enumerate(witnesses)) {
+      requireSuccess(transaction.selectTraversal(traversal));
+      const bool shouldBeActive = ordinal + 1 == witnesses.size();
+      if ((candidate->fragmentRefcount(group.fragment) != 0) != shouldBeActive)
+        fail("all-traversal fragment ignored its complete witness set");
+    }
+    transaction.rollback();
+    for (loom::pnr::PnrIndex traversal : witnesses)
+      if (candidate->isTraversalSelected(traversal))
+        fail("all-traversal rollback retained a selected witness");
+    requireSuccess(candidate->verify());
+  }
+
   if (frozen->transfers().logicalNets().size() !=
           finalized.view().residualLogicalNets().size() ||
       frozen->transfers().logicalNetSinks().size() != 4)
@@ -946,6 +975,72 @@ void artifactRoundTripAndReferenceValidation() {
     fail("stale Fabric memory endpoint was published");
 }
 
+void exerciseHandshakeCandidateRefcounts(
+    const loom::pnr::FrozenSpatialPnrProblemHandle &frozen) {
+  const auto &handshake = frozen->handshake();
+  auto handshakeOwner =
+      std::shared_ptr<const loom::pnr::FrozenSpatialHandshakeIndex>(
+          frozen, &frozen->handshake());
+  auto candidate =
+      take(loom::pnr::HandshakeCandidateState::create(handshakeOwner));
+  requireSuccess(candidate->verify());
+  loom::pnr::HandshakeCandidateScratch scratch;
+  requireSuccess(scratch.prepare(*handshakeOwner));
+  const std::size_t retainedScratchBytes = scratch.retainedStorageBytes();
+  const auto offsets = handshake.computePlacementFragmentOffsets();
+  const auto fragments = handshake.computePlacementFragments().slice(
+      offsets.front(), offsets[1] - offsets.front());
+  std::optional<loom::pnr::PnrIndex> observedFragment;
+  std::optional<loom::pnr::PnrIndex> observedArc;
+  for (loom::pnr::PnrIndex fragment : fragments) {
+    const auto record = handshake.fragments()[fragment];
+    if (record.contributionCount == 0)
+      continue;
+    observedFragment = fragment;
+    observedArc = handshake.fragmentArcOrdinals()[record.contributionOffset];
+    break;
+  }
+  if (!observedFragment || !observedArc)
+    fail("compute placement has no observable handshake contribution");
+  const loom::pnr::PnrIndex baseArcRefcount =
+      candidate->arcRefcount(*observedArc);
+  for (unsigned selection = 0; selection < 2; ++selection) {
+    auto transaction = take(candidate->beginTransaction(scratch));
+    requireSuccess(transaction.addFragments(fragments));
+    if (!take(transaction.close()))
+      fail("exact compute placement closed a handshake cycle");
+    requireSuccess(transaction.commit());
+  }
+  if (candidate->fragmentRefcount(*observedFragment) != 2)
+    fail("shared handshake fragment lost its decision refcount");
+  const loom::pnr::PnrIndex selectedArcRefcount =
+      candidate->arcRefcount(*observedArc);
+  if (selectedArcRefcount <= baseArcRefcount)
+    fail("selected handshake fragment did not activate its arc");
+  {
+    auto transaction = take(candidate->beginTransaction(scratch));
+    requireSuccess(transaction.removeFragments(fragments));
+    if (!take(transaction.close()))
+      fail("handshake deletion reported a cycle");
+    transaction.rollback();
+  }
+  if (candidate->fragmentRefcount(*observedFragment) != 2 ||
+      candidate->arcRefcount(*observedArc) != selectedArcRefcount)
+    fail("handshake rollback changed the committed refcounts");
+  for (unsigned selection = 0; selection < 2; ++selection) {
+    auto transaction = take(candidate->beginTransaction(scratch));
+    requireSuccess(transaction.removeFragments(fragments));
+    if (!take(transaction.close()))
+      fail("handshake deletion reported a cycle");
+    requireSuccess(transaction.commit());
+  }
+  if (candidate->fragmentRefcount(*observedFragment) != 0 ||
+      candidate->arcRefcount(*observedArc) != baseArcRefcount ||
+      scratch.retainedStorageBytes() != retainedScratchBytes)
+    fail("handshake selection removal retained state or expanded scratch");
+  requireSuccess(candidate->verify());
+}
+
 void computeBoundaryClosure() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -996,6 +1091,7 @@ void computeBoundaryClosure() {
           frozen->realizations().computePlacements().size() + 1 ||
       handshake.computePlacementFragments().empty())
     fail("compute freeze omitted exact placement handshake fragments");
+  exerciseHandshakeCandidateRefcounts(frozen);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");
