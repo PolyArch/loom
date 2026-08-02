@@ -9,6 +9,17 @@ add_executable(loom-mapping-core-test
   PnrProblemInputsTest.cpp
 )
 
+add_executable(loom-mapping-artifact-test
+  MappingArtifactTest.cpp
+)
+
+target_link_libraries(loom-mapping-artifact-test PRIVATE
+  LoomMappingArtifact
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 target_link_libraries(loom-mapping-core-test PRIVATE
   LoomMapping
   LoomPnR

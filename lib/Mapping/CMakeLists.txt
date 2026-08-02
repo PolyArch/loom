@@ -1,3 +1,6 @@
+add_subdirectory(IR)
+add_subdirectory(Artifact)
+
 add_library(LoomMapping
   ComputeCapabilityVerification.cpp
   FabricOccurrenceIndex.cpp

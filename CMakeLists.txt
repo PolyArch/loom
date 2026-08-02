@@ -89,6 +89,7 @@ add_subdirectory(tools/loom-tblgen)
 add_subdirectory(include/Dataflow)
 add_subdirectory(include/Fabric)
 add_subdirectory(include/Frontend)
+add_subdirectory(include/Mapping)
 add_subdirectory(lib)
 add_subdirectory(tools)
 
