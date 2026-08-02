@@ -2,6 +2,7 @@ add_mlir_library(LoomPnR
   EndpointMatching.cpp
   FrozenComputeDomains.cpp
   FrozenMemoryDomains.cpp
+  FrozenModel.cpp
   FrozenRealizationGraph.cpp
   FrozenRoutingGraph.cpp
   PnrIndex.cpp

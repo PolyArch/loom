@@ -7,7 +7,7 @@ namespace loom::mapping::test {
 namespace {
 
 void expectFreezeInfeasibility(const char *test,
-                               llvm::Expected<FrozenRealizationGraph> result,
+                               llvm::Expected<FrozenModelHandle> result,
                                FrozenMappingInfeasibilityCode expected) {
   if (result)
     fail(test, "expected frozen mapping infeasibility");
@@ -58,7 +58,8 @@ void freezesOnlyOccurrencesOfTheSelectedFuDefinition() {
   testCase.fabric.computeOccurrences = {std::move(mixedOccurrence),
                                         std::move(selectedOccurrence)};
 
-  FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
+  FrozenModelHandle model = validateAndFreeze(__func__, testCase);
+  const FrozenRealizationGraph &graph = model->realizations();
   const FrozenComputeRealization &realization =
       graph.computeRealizations().front();
   if (realization.capabilityTemplate !=
@@ -79,13 +80,14 @@ void rejectsMissingSelectedFuOccurrence() {
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   expectFreezeInfeasibility(
       __func__,
-      freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+      freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)),
       FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain);
 }
 
 void freezesExactBoundaryPortDemand() {
   TestCase testCase = makeValidCase();
-  FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
+  FrozenModelHandle model = validateAndFreeze(__func__, testCase);
+  const FrozenRealizationGraph &graph = model->realizations();
   const FrozenComputeRealization &realization =
       graph.computeRealizations().front();
   const FrozenImplementationOccurrence &implementation =

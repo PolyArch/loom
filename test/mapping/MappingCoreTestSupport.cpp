@@ -95,10 +95,10 @@ PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
       MappingConstraintSetInput{artifact(242), testCase.dataflow.identity,
                                 mapping.identity(), testCase.fabric.identity}};
 }
-FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
+FrozenModelHandle validateAndFreeze(const char *test, TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(test);
-  return takeExpected(test, freezeRealizationGraph(makePnrProblemInputs(
+  return takeExpected(test, freezeSpatialPnrModel(makePnrProblemInputs(
                                 testCase, mapping, config)));
 }
 void expectMapError(const char *test, const TestCase &testCase,

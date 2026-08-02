@@ -41,42 +41,37 @@ TransportEndpointDescriptor transportEndpoint(
       payloadCapacityBits,     tagCapacityBits, transportKind};
 }
 
-ComputeOccurrenceDescriptor singlePortOccurrence(
+ComputeOccurrenceDescriptor routableOccurrence(
     const ArtifactIdentity &fabric, const FuDescriptor &fu,
     std::uint64_t occurrenceId, std::uint64_t endpointId,
     PortDirection direction, std::uint32_t payloadCapacityBits = unbounded,
     std::uint32_t tagCapacityBits = 0,
     ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits,
     PortKind portKind = PortKind::Value) {
-  const std::uint32_t portIndex = 0;
-  const ComputeEndpointId endpoint(endpointId);
-  return ComputeOccurrenceDescriptor{
-      ComputeOccurrenceId(occurrenceId),
-      ComputeScheduleKind::Spatial,
-      {fu.id},
-      {{endpoint,
-        direction,
-        portKind,
-        payloadCapacityBits,
-        tagCapacityBits,
-        {type(1)},
-        role(0),
-        transportKind}},
-      {{::loom::fabric::FabricFuTemplatePortRef{
-            fu.id,
-            direction == PortDirection::Input
-                ? ::loom::fabric::FabricPortDirection::Input
-                : ::loom::fabric::FabricPortDirection::Output,
-            portIndex},
-        ComputeEndpointRef{fabric, endpoint}, unbounded, unbounded}},
-      1};
+  const std::uint64_t endpointBase =
+      direction == PortDirection::Input
+          ? endpointId
+          : endpointId - static_cast<std::uint64_t>(fu.inputPorts.size());
+  ComputeOccurrenceDescriptor occurrence = makeSpatialComputeOccurrence(
+      fabric, ComputeOccurrenceId(occurrenceId), fu, endpointBase);
+  auto selected = llvm::find_if(
+      occurrence.endpoints, [&](const ComputeEndpointDescriptor &endpoint) {
+        return endpoint.id == ComputeEndpointId(endpointId);
+      });
+  if (selected == occurrence.endpoints.end())
+    fail(__func__, "routable occurrence endpoint is missing");
+  selected->kind = portKind;
+  selected->payloadCapacityBits = payloadCapacityBits;
+  selected->tagCapacityBits = tagCapacityBits;
+  selected->transportKind = transportKind;
+  return occurrence;
 }
 
-FrozenRoutingGraph validateAndFreezeRouting(const char *test,
-                                            TestCase &testCase) {
+FrozenModelHandle validateAndFreezeRouting(const char *test,
+                                           TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  return takeExpected(test, freezeRoutingGraph(makePnrProblemInputs(
+  return takeExpected(test, freezeSpatialPnrModel(makePnrProblemInputs(
                                 testCase, mapping, config)));
 }
 
@@ -185,10 +180,10 @@ TestCase makeTraversalCase() {
   const ArtifactIdentity &fabric = testCase.fabric.identity;
   const FuDescriptor &fu = testCase.fabric.functionalUnits.front();
   testCase.fabric.computeOccurrences = {
-      singlePortOccurrence(fabric, fu, 100, 1000, PortDirection::Output, 64, 7,
-                           ::fabric::DataPathKind::BitsTag),
-      singlePortOccurrence(fabric, fu, 200, 2000, PortDirection::Input, 64, 9,
-                           ::fabric::DataPathKind::BitsTag)};
+      routableOccurrence(fabric, fu, 100, 1000, PortDirection::Output, 64, 7,
+                         ::fabric::DataPathKind::BitsTag),
+      routableOccurrence(fabric, fu, 200, 2000, PortDirection::Input, 64, 9,
+                         ::fabric::DataPathKind::BitsTag)};
   testCase.fabric.transportResources = {
       {TransportResourceId(300),
        TransportResourceKind::Switch,
@@ -254,10 +249,10 @@ TestCase makeIrregularReachabilityCase() {
   const ArtifactIdentity &fabric = testCase.fabric.identity;
   const FuDescriptor &fu = testCase.fabric.functionalUnits.front();
   testCase.fabric.computeOccurrences = {
-      singlePortOccurrence(fabric, fu, 100, 1000, PortDirection::Output),
-      singlePortOccurrence(fabric, fu, 200, 2000, PortDirection::Output),
-      singlePortOccurrence(fabric, fu, 300, 3000, PortDirection::Input),
-      singlePortOccurrence(fabric, fu, 400, 4000, PortDirection::Input)};
+      routableOccurrence(fabric, fu, 100, 1000, PortDirection::Output),
+      routableOccurrence(fabric, fu, 200, 2000, PortDirection::Output),
+      routableOccurrence(fabric, fu, 300, 3000, PortDirection::Input),
+      routableOccurrence(fabric, fu, 400, 4000, PortDirection::Input)};
   testCase.fabric.transportResources = {
       {TransportResourceId(500),
        TransportResourceKind::Switch,
@@ -317,7 +312,8 @@ TestCase makeIrregularReachabilityCase() {
 
 void freezesExactDirectedAdjacencyAndIndependentCapacity() {
   TestCase testCase = makeTraversalCase();
-  FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+  FrozenModelHandle model = validateAndFreezeRouting(__func__, testCase);
+  const FrozenRoutingGraph &graph = model->routing();
   const FrozenRoutingArc *connection =
       findArc(graph, TransportEndpointId(1000), TransportEndpointId(3000));
   if (!connection || connection->kind != FrozenRoutingArcKind::PointToPoint ||
@@ -344,7 +340,8 @@ void freezesExactDirectedAdjacencyAndIndependentCapacity() {
 
 void mirrorsEveryForwardArcInIncomingCsr() {
   TestCase testCase = makeTraversalCase();
-  FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+  FrozenModelHandle model = validateAndFreezeRouting(__func__, testCase);
+  const FrozenRoutingGraph &graph = model->routing();
   if (graph.incomingAdjacencyOffsets().size() !=
           graph.routingEndpoints().size() + 1 ||
       graph.incomingAdjacencyOffsets().back() != graph.routingArcs().size() ||
@@ -410,8 +407,14 @@ void validatesResourceTraversalStructure() {
 void rejectsUnmediatedNativeTransportCrossing() {
   {
     TestCase testCase = makeTraversalCase();
-    ComputeEndpointDescriptor &output =
-        testCase.fabric.computeOccurrences.front().endpoints.front();
+    auto outputIt =
+        llvm::find_if(testCase.fabric.computeOccurrences.front().endpoints,
+                      [](const ComputeEndpointDescriptor &endpoint) {
+                        return endpoint.id == ComputeEndpointId(1000);
+                      });
+    if (outputIt == testCase.fabric.computeOccurrences.front().endpoints.end())
+      fail(__func__, "routable output endpoint is missing");
+    ComputeEndpointDescriptor &output = *outputIt;
     output.transportKind = ::fabric::DataPathKind::Bits;
     output.tagCapacityBits = 0;
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
@@ -461,10 +464,11 @@ void excludesDisconnectedMemoryComputeEndpoint() {
        {port(PortKind::Memory, type(9), 32)},
        {}});
   const FuDescriptor &memoryFu = testCase.fabric.functionalUnits.back();
-  testCase.fabric.computeOccurrences.push_back(singlePortOccurrence(
-      fabric, memoryFu, 901, 9000, PortDirection::Output, 32, 0,
-      ::fabric::DataPathKind::Bits, PortKind::Memory));
-  FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+  testCase.fabric.computeOccurrences.push_back(
+      routableOccurrence(fabric, memoryFu, 901, 9000, PortDirection::Output, 32,
+                         0, ::fabric::DataPathKind::Bits, PortKind::Memory));
+  FrozenModelHandle model = validateAndFreezeRouting(__func__, testCase);
+  const FrozenRoutingGraph &graph = model->routing();
   for (const FrozenRoutingEndpoint &endpoint : graph.routingEndpoints())
     if (endpoint.id == TransportEndpointId(9000))
       fail(__func__, "memory compute endpoint entered token routing CSR");
@@ -490,7 +494,8 @@ void freezesExactBoundaryConversions() {
     TestCase testCase = makeBoundaryCase(
         boundary.direction, boundary.inputKind, 32, boundary.inputTagBits,
         boundary.outputKind, 32, boundary.outputTagBits);
-    FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+    FrozenModelHandle model = validateAndFreezeRouting(__func__, testCase);
+    const FrozenRoutingGraph &graph = model->routing();
     if (graph.transportResources().size() != 1 ||
         graph.transportResources().front().boundaryDirection !=
             boundary.direction)
@@ -579,8 +584,9 @@ void rejectsDuplicateForeignWrongKindAndWrongDirectionReferences() {
 
 void freezesStructurallyAcrossDescriptorPermutation() {
   TestCase baselineCase = makeIrregularReachabilityCase();
-  FrozenRoutingGraph baseline =
+  FrozenModelHandle baselineModel =
       validateAndFreezeRouting(__func__, baselineCase);
+  const FrozenRoutingGraph &baseline = baselineModel->routing();
   expectCanonicalTableOrdering(__func__, baseline);
   const std::size_t target =
       endpointIndex(__func__, baseline, TransportEndpointId(5002));
@@ -623,8 +629,9 @@ void freezesStructurallyAcrossDescriptorPermutation() {
                permutedCase.fabric.transportArcs.end());
   std::reverse(permutedCase.fabric.transportTraversals.begin(),
                permutedCase.fabric.transportTraversals.end());
-  FrozenRoutingGraph permuted =
+  FrozenModelHandle permutedModel =
       validateAndFreezeRouting(__func__, permutedCase);
+  const FrozenRoutingGraph &permuted = permutedModel->routing();
   expectCanonicalTableOrdering(__func__, permuted);
   if (baseline != permuted)
     fail(__func__, "descriptor permutation changed frozen routing structure");
@@ -632,7 +639,8 @@ void freezesStructurallyAcrossDescriptorPermutation() {
 
 void preservesIrregularReachabilityWithoutTopologyAssumptions() {
   TestCase testCase = makeIrregularReachabilityCase();
-  FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+  FrozenModelHandle model = validateAndFreezeRouting(__func__, testCase);
+  const FrozenRoutingGraph &graph = model->routing();
   if (!reachable(graph, TransportEndpointId(1000), TransportEndpointId(3000)) ||
       !reachable(graph, TransportEndpointId(1000), TransportEndpointId(4000)) ||
       !reachable(graph, TransportEndpointId(2000), TransportEndpointId(3000)) ||
@@ -645,10 +653,10 @@ void linksFactorizedComputeDomainsToRoutingVertices() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
   if (realizations.physicalEndpoints().size() !=
       routing.computeEndpointVertices().size())
     fail(__func__, "compute endpoint projection sizes disagree");
@@ -665,9 +673,10 @@ void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  FrozenRoutingGraph graph = takeExpected(
+  FrozenModelHandle model = takeExpected(
       __func__,
-      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
+      freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)));
+  const FrozenRoutingGraph &graph = model->routing();
   if (!graph.routingArcs().empty() ||
       graph.incomingAdjacencyOffsets().size() !=
           graph.routingEndpoints().size() + 1 ||
@@ -677,12 +686,20 @@ void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
     fail(__func__, "disconnected topology gained implicit adjacency");
 
   TestCase emptyCase = makeValidCase();
+  emptyCase.dataflow.graphs.front().inputPorts.clear();
+  emptyCase.dataflow.graphs.front().outputPorts.clear();
+  emptyCase.dataflow.actors.clear();
+  emptyCase.dataflow.edges.clear();
+  emptyCase.dataflow.logicalMemoryRoots.clear();
   emptyCase.fabric.computeOccurrences.clear();
+  emptyCase.mapping.realizations.clear();
+  emptyCase.mapping.memoryRealizations.clear();
   ValidatedTechMapping emptyMapping = validateCase(__func__, emptyCase);
   ResolvedPnrConfigView emptyConfig = makeSpatialPnrConfigView(__func__);
-  FrozenRoutingGraph emptyGraph =
-      takeExpected(__func__, freezeRoutingGraph(makePnrProblemInputs(
+  FrozenModelHandle emptyModel =
+      takeExpected(__func__, freezeSpatialPnrModel(makePnrProblemInputs(
                                  emptyCase, emptyMapping, emptyConfig)));
+  const FrozenRoutingGraph &emptyGraph = emptyModel->routing();
   if (!emptyGraph.routingEndpoints().empty() ||
       emptyGraph.adjacencyOffsets().size() != 1 ||
       emptyGraph.adjacencyOffsets().front() != 0 ||

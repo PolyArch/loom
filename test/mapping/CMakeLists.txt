@@ -1,4 +1,5 @@
 add_executable(loom-mapping-core-test
+  FrozenModelTest.cpp
   MappingCapabilityTemplateTest.cpp
   MappingComputeFreezeTest.cpp
   MappingCoreTest.cpp

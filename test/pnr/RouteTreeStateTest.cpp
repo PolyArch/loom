@@ -152,9 +152,10 @@ FrozenRoutingGraphHandle makeRoutingGraph(const char *test) {
 
   ValidatedTechMapping mapping = validateCase(test, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  return std::make_shared<const FrozenRoutingGraph>(takeValue(
+  FrozenModelHandle model = takeValue(
       test,
-      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config))));
+      freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)));
+  return FrozenRoutingGraphHandle(model, &model->routing());
 }
 
 FrozenRoutingGraphHandle makeCollisionRoutingGraph(const char *test) {
@@ -189,9 +190,10 @@ FrozenRoutingGraphHandle makeCollisionRoutingGraph(const char *test) {
 
   ValidatedTechMapping mapping = validateCase(test, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  return std::make_shared<const FrozenRoutingGraph>(takeValue(
+  FrozenModelHandle model = takeValue(
       test,
-      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config))));
+      freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)));
+  return FrozenRoutingGraphHandle(model, &model->routing());
 }
 
 PnrIndex endpoint(const char *test, const FrozenRoutingGraphHandle &graph,

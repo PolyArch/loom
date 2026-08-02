@@ -1,6 +1,8 @@
 #include "PnR/FrozenRealizationGraph.h"
+
 #include "FrozenComputeDomains.h"
 #include "FrozenMemoryDomains.h"
+#include "FrozenModelInternal.h"
 
 #include "Mapping/Verifier.h"
 #include "PnR/PnrProblemInputs.h"
@@ -395,10 +397,8 @@ llvm::Error loom::pnr::detail::preflightFrozenRealizationGraphCapacity(
 }
 
 llvm::Expected<FrozenRealizationGraph>
-loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
-  if (llvm::Error error = validatePnrProblemInputs(inputs))
-    return std::move(error);
-
+loom::pnr::detail::FrozenModelBuilder::buildRealizations(
+    const PnrProblemInputs &inputs) {
   const DataflowProgramView &dataflow = inputs.dataflow;
   const FabricHardwareView &fabric = inputs.fabric;
   const ValidatedTechMapping &mapping = inputs.techMapping;

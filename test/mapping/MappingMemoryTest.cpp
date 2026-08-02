@@ -198,7 +198,7 @@ computeCandidate(const char *test, const FrozenRealizationGraph &graph,
   return *found;
 }
 void expectMemoryInfeasibility(const char *test,
-                               llvm::Expected<FrozenRealizationGraph> result,
+                               llvm::Expected<FrozenModelHandle> result,
                                FrozenMappingInfeasibilityCode expectedCode,
                                MemoryRealizationId expectedRealization) {
   if (result)
@@ -286,7 +286,8 @@ const FrozenRoutingArc &routingArc(const char *test,
 void freezesInternalMemoryAnchor() {
   TestCase testCase = makeMemoryAnchorCase();
   selectInternalMemoryGraph(testCase);
-  FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
+  FrozenModelHandle model = validateAndFreeze(__func__, testCase);
+  const FrozenRealizationGraph &graph = model->realizations();
   if (graph.actorOwnerships().size() != 7)
     fail(__func__, "frozen graph has the wrong actor count");
   if (graph.computeRealizations().size() != 4)
@@ -387,7 +388,7 @@ void rejectsInconsistentFrozenMemoryService() {
   testCase.fabric.memorySemanticEncodings[1].implementation =
       MemoryImplementationId(33);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  expectAnyError(__func__, freezeRealizationGraph(makePnrProblemInputs(
+  expectAnyError(__func__, freezeSpatialPnrModel(makePnrProblemInputs(
                                testCase, mapping, config)));
 }
 void acceptsExternalAndInternalMemoryAnchor() {
@@ -503,10 +504,10 @@ void freezesPhysicalMemoryOccurrenceDomains() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
 
   const auto memoryOccurrences = realizations.fabricMemoryOccurrences();
   if (memoryOccurrences.size() != 2 ||
@@ -556,10 +557,10 @@ void derivesDirectedMemoryReachability() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
 
   const FrozenMemoryRealization &memory =
       memoryRealization(__func__, realizations, MemoryRealizationId(60));
@@ -640,9 +641,10 @@ void derivesMemoryRouteResourceConflicts() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
-  FrozenRoutingGraph routing = takeExpected(
+  FrozenModelHandle model = takeExpected(
       __func__,
-      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
+      freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)));
+  const FrozenRoutingGraph &routing = model->routing();
 
   const FrozenRoutingArc &familyALoad =
       routingArc(__func__, routing, TransportEndpointId(50000),
@@ -667,14 +669,16 @@ void retainsDeterministicMemoryProjection() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
 
   testCase.fabric.memoryOccurrences.clear();
-  if (realizations != takeExpected(__func__, freezeRealizationGraph(inputs)) ||
-      routing != takeExpected(__func__, freezeRoutingGraph(inputs)))
+  FrozenModelHandle repeated =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  if (realizations != repeated->realizations() ||
+      routing != repeated->routing())
     fail(__func__, "validated memory occurrence projection was not retained");
 
   TestCase permutedCase = makeMemoryRouteDomainCase();
@@ -700,9 +704,10 @@ void retainsDeterministicMemoryProjection() {
   ResolvedPnrConfigView permutedConfig = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs permutedInputs =
       makePnrProblemInputs(permutedCase, permutedMapping, permutedConfig);
-  if (realizations !=
-          takeExpected(__func__, freezeRealizationGraph(permutedInputs)) ||
-      routing != takeExpected(__func__, freezeRoutingGraph(permutedInputs)))
+  FrozenModelHandle permuted =
+      takeExpected(__func__, freezeSpatialPnrModel(permutedInputs));
+  if (realizations != permuted->realizations() ||
+      routing != permuted->routing())
     fail(__func__, "descriptor permutation changed memory route domains");
 }
 
@@ -723,7 +728,7 @@ void reportsMemoryDomainInfeasibility() {
     ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     expectMemoryInfeasibility(
         __func__,
-        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)),
         FrozenMappingInfeasibilityCode::EmptyConcreteMemoryDomain,
         MemoryRealizationId(60));
   }
@@ -738,7 +743,7 @@ void reportsMemoryDomainInfeasibility() {
     ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
     expectMemoryInfeasibility(
         __func__,
-        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        freezeSpatialPnrModel(makePnrProblemInputs(testCase, mapping, config)),
         FrozenMappingInfeasibilityCode::EmptyMemoryUnaryEligibleDomain,
         MemoryRealizationId(60));
   }

@@ -19,6 +19,10 @@ namespace loom::pnr {
 
 struct PnrProblemInputs;
 
+namespace detail {
+class FrozenModelBuilder;
+} // namespace detail
+
 enum class FrozenMappingInfeasibilityCode {
   EmptyConcreteFuDomain,
   EmptyUnaryEligibleDomain,
@@ -498,6 +502,11 @@ struct FrozenMemoryServiceObligation {
 
 class FrozenRealizationGraph {
 public:
+  FrozenRealizationGraph(const FrozenRealizationGraph &) = delete;
+  FrozenRealizationGraph(FrozenRealizationGraph &&) = default;
+  FrozenRealizationGraph &operator=(const FrozenRealizationGraph &) = delete;
+  FrozenRealizationGraph &operator=(FrozenRealizationGraph &&) = delete;
+
   llvm::ArrayRef<FrozenActorOwnership> actorOwnerships() const {
     return actorOwnerships_;
   }
@@ -682,12 +691,8 @@ private:
   std::vector<FrozenLogicalNetSink> logicalNetSinks_;
   std::vector<FrozenMemoryServiceObligation> memoryServiceObligations_;
 
-  friend llvm::Expected<FrozenRealizationGraph>
-  freezeRealizationGraph(const PnrProblemInputs &inputs);
+  friend class detail::FrozenModelBuilder;
 };
-
-llvm::Expected<FrozenRealizationGraph>
-freezeRealizationGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 

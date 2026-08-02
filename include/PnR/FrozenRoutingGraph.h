@@ -16,6 +16,10 @@ namespace loom::pnr {
 
 struct PnrProblemInputs;
 
+namespace detail {
+class FrozenModelBuilder;
+} // namespace detail
+
 enum class FrozenRoutingEndpointOwnerKind {
   ComputeOccurrence,
   MemoryOccurrence,
@@ -97,6 +101,11 @@ private:
 
 class FrozenRoutingGraph {
 public:
+  FrozenRoutingGraph(const FrozenRoutingGraph &) = delete;
+  FrozenRoutingGraph(FrozenRoutingGraph &&) = default;
+  FrozenRoutingGraph &operator=(const FrozenRoutingGraph &) = delete;
+  FrozenRoutingGraph &operator=(FrozenRoutingGraph &&) = delete;
+
   llvm::ArrayRef<FrozenTransportResource> transportResources() const {
     return transportResources_;
   }
@@ -181,12 +190,8 @@ private:
   std::vector<PnrIndex> incomingSourceVertices_;
   std::vector<PnrIndex> incomingForwardArcIndices_;
 
-  friend llvm::Expected<FrozenRoutingGraph>
-  freezeRoutingGraph(const PnrProblemInputs &inputs);
+  friend class detail::FrozenModelBuilder;
 };
-
-llvm::Expected<FrozenRoutingGraph>
-freezeRoutingGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 

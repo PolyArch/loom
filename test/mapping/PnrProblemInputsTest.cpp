@@ -143,10 +143,10 @@ void exactFiveInputBindingReachesExistingFreezeBehavior() {
   ResolvedPnrConfigView config = makeSpatialPnrConfigView(__func__);
   PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
 
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
 
   if (realizations.computeRealizations().size() !=
           mapping.realizations().size() ||
@@ -171,7 +171,7 @@ void rejectsEachExactCouplingMismatch() {
         PnrProblemInputErrorCode::TechMappingDataflowIdentityMismatch,
         foreignIdentity, mappingDataflowIdentity);
     expectFreezeInputError(
-        __func__, freezeRealizationGraph(inputs),
+        __func__, freezeSpatialPnrModel(inputs),
         PnrProblemInputErrorCode::TechMappingDataflowIdentityMismatch,
         foreignIdentity, mappingDataflowIdentity);
   }
@@ -189,7 +189,7 @@ void rejectsEachExactCouplingMismatch() {
         PnrProblemInputErrorCode::TechMappingFabricIdentityMismatch,
         foreignIdentity, mappingFabricIdentity);
     expectFreezeInputError(
-        __func__, freezeRoutingGraph(inputs),
+        __func__, freezeSpatialPnrModel(inputs),
         PnrProblemInputErrorCode::TechMappingFabricIdentityMismatch,
         foreignIdentity, mappingFabricIdentity);
   }
@@ -206,7 +206,7 @@ void rejectsEachExactCouplingMismatch() {
       PnrProblemInputErrorCode::ConstraintSetDataflowIdentityMismatch,
       testCase.dataflow.identity, foreignIdentity);
   expectFreezeInputError(
-      __func__, freezeRealizationGraph(mismatchedDataflow),
+      __func__, freezeSpatialPnrModel(mismatchedDataflow),
       PnrProblemInputErrorCode::ConstraintSetDataflowIdentityMismatch,
       testCase.dataflow.identity, foreignIdentity);
 
@@ -217,7 +217,7 @@ void rejectsEachExactCouplingMismatch() {
       PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
       inputs.techMapping.identity(), foreignIdentity);
   expectFreezeInputError(
-      __func__, freezeRoutingGraph(mismatchedMapping),
+      __func__, freezeSpatialPnrModel(mismatchedMapping),
       PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
       inputs.techMapping.identity(), foreignIdentity);
 
@@ -228,7 +228,7 @@ void rejectsEachExactCouplingMismatch() {
       PnrProblemInputErrorCode::ConstraintSetFabricIdentityMismatch,
       testCase.fabric.identity, foreignIdentity);
   expectFreezeInputError(
-      __func__, freezeRealizationGraph(mismatchedFabric),
+      __func__, freezeSpatialPnrModel(mismatchedFabric),
       PnrProblemInputErrorCode::ConstraintSetFabricIdentityMismatch,
       testCase.fabric.identity, foreignIdentity);
 }
@@ -320,10 +320,10 @@ void keepsBorrowedMappingUsableAfterRvalueConstruction() {
   if (llvm::Error error = validatePnrProblemInputs(inputs))
     fail(__func__, llvm::toString(std::move(error)).c_str());
 
-  FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(inputs));
-  FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(inputs));
+  FrozenModelHandle model =
+      takeExpected(__func__, freezeSpatialPnrModel(inputs));
+  const FrozenRealizationGraph &realizations = model->realizations();
+  const FrozenRoutingGraph &routing = model->routing();
   if (realizations.computeRealizations().empty() ||
       routing.computeEndpointVertices().empty())
     fail(__func__, "rvalue construction invalidated a borrowed mapping");

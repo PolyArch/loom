@@ -3,7 +3,7 @@
 
 #include "Mapping/Artifact.h"
 #include "Mapping/Verifier.h"
-#include "PnR/FrozenRealizationGraph.h"
+#include "PnR/FrozenModel.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/PnrProblemInputs.h"
 
@@ -67,7 +67,7 @@ ResolvedPnrConfigView makeSpatialPnrConfigView(const char *test);
 PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
                                       ValidatedTechMapping &mapping,
                                       ResolvedPnrConfigView &config);
-FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase);
+FrozenModelHandle validateAndFreeze(const char *test, TestCase &testCase);
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);
 
@@ -76,6 +76,7 @@ TestCase makeMemoryAnchorCase();
 void selectInternalMemoryGraph(TestCase &testCase);
 
 void runComputeFreezeTests();
+void runFrozenModelTests();
 void runCapabilityTemplateTests();
 void runMemoryMappingTests();
 void runMappingVerifierTests();
