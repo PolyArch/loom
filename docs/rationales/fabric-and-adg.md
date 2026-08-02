@@ -171,6 +171,28 @@ Fabric dependencies are independently published artifacts. Root publication
 does not create a transaction over them. Every dependency is resolved and
 strictly imported before the root's one-object commit.
 
+## Why Handshake Owners Use Private Junctions
+
+Ready/valid behavior belongs to the concrete Fabric resource. A consumer-owned
+arc table would duplicate that behavior, while forcing every internal Boolean
+term to become a transport endpoint would give implementation detail persistent
+identity and make it accidentally routable.
+
+The sealed owner model keeps one semantic compiler beside the normative
+resource equations. Exact Mapping selections activate typed fragments of that
+model; unconditional Fabric validation universally quantifies the same local
+fragments. Both gates therefore consume one owner rather than independently
+reconstructing behavior.
+
+Atomic broadcast exposes why a compact internal graph is necessary. With `N`
+selected sinks, expanding every peer-ready dependency at the boundary is
+quadratic. Canonical prefix and suffix conjunction nodes represent the same
+dependency reachability with linear storage and constant-size change for one
+selected sink. Those nodes are removable derived structure, so they receive no
+Fabric entity, persistent reference, route capacity, or configuration field.
+The semantic contract remains atomic replication; the compact graph is only
+its efficient projection.
+
 ## Why One Dependency Role Is Reserved But Unavailable
 
 An ordinal alone does not define the owner, schema, root kind, local target,

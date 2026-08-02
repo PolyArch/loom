@@ -663,6 +663,37 @@ The aggregate Spatial model contains at least these complete groups:
 * derived compiled `K` indexes, fully resolved `C`, and reachability,
   lower-bound, dependency, and reverse-incidence indices.
 
+The handshake part of the Spatial model is one compact flattening of the
+Fabric-owned sealed owner models:
+
+```text
+FrozenHandshakeNode = EndpointValid
+                    | EndpointReady
+                    | OwnerLocalJunction
+
+FrozenHandshakeArc {
+  source
+  destination
+}
+
+FrozenHandshakeFragment {
+  contribution_offset
+  contribution_count
+}
+```
+
+Endpoint nodes retain a reverse table to exact `HandshakeSignalRef` values.
+Junction nodes are view-local and have no persistent reference or routing
+meaning. Freeze stores unique potential arcs in source-major CSR, the exact
+reverse CSR, fragment-to-arc incidence, Mapping-decision-to-fragment reverse
+incidence, and canonical owner/refinement/occurrence ranges. FU physical
+internal structure is expanded once per occurrence; capability rows share arc
+and incidence storage. Switch broadcast projection is linear in physical
+connectivity through owner-local conjunction junctions rather than a
+materialized boundary transitive closure. Memory projection remains factored
+by operation port, semantic role, capability alternative, and refinement. No
+actor by occurrence by route by tag product is legal.
+
 It never contains selected decisions, occupancy, claims, costs, Evaluation
 results, statistics, history, or a transaction journal.
 
@@ -817,6 +848,21 @@ Any discrepancy between selected decisions and a rebuildable cache is an
 internal invariant failure. Full owners report the drift and terminate the
 attempt; they never overwrite the cache and continue.
 
+For selected handshake legality, each restart owns dense arrays indexed by the
+shared Frozen model:
+
+```text
+arc_refcount[potential arc]
+active_arc_bitset[potential arc]
+topological_order[node]
+topological_rank[node]
+```
+
+An arc is active exactly when its reference count is nonzero. Reference counts
+are required because several selected fragments may contribute the same owner
+arc. Candidate adjacency is the immutable Frozen CSR filtered by the active
+bitset; it is not rebuilt as a map or heap graph.
+
 ### SearchScratch
 
 `SearchScratch` owns reusable A* distance, queue, predecessor, epoch, and
@@ -824,6 +870,11 @@ touched arrays; route overlays and arenas; matching and repair worklists; and
 the active Action's PathFinder or DualSubgradient state. It has no semantic
 identity and is discarded after its owner operation. Negotiation history is
 never carried across Actions.
+
+Handshake search scratch additionally owns epoch-marked forward and backward
+visit arrays, parent arcs, bounded worklists, and a touched-rank journal. These
+arrays are allocated before the search loop and reused. A local move performs
+no heap allocation after warm-up.
 
 ### Actions And MoveTransaction
 
@@ -857,6 +908,17 @@ handshake gate before commit. A newly closed directed cycle rolls back the
 transaction as intrinsic invalidity. A resource change that invalidates
 placement or routing follows the same closure.
 
+Handshake mutation uses the decision-to-fragment and fragment-to-arc incidence
+tables. It removes old contributions first; arc deletion cannot create a
+cycle. It then inserts newly active arcs in canonical arc order. If the current
+rank of an inserted arc's source is lower than its destination rank, the check
+is constant time. Otherwise an array-based Pearce-Kelly bounded dynamic
+topological update searches only the affected forward and backward regions. A
+meeting produces a deterministic cycle witness and rolls back the complete
+transaction; otherwise only the affected rank interval is reordered and
+journaled. The implementation must not copy the complete `CandidateState` for
+a move.
+
 Exact references, domain membership, type and width compatibility, directed
 connectivity, and a route being either explicitly unrouted or a valid rooted
 arborescence are never relaxable. Implicit broadcast or merge, same-net
@@ -869,6 +931,61 @@ the missing arcs are absent. Only closed kinds admitted by
 must be zero before finalization. Independent final verification discards all
 incremental cycle caches and recomputes the complete selected graph from the
 published facts.
+
+### Native Performance Contract
+
+Performance does not change Mapping semantics, but it is an implementation
+admission requirement because the selected search kernels run inside every
+Tech, Spatial, and System exploration. Canonical reference resolution,
+sorting, and owner compilation occur once during freeze. Candidate mutation
+uses dense `PnrIndex` values, contiguous SoA/CSR storage, bitsets, reverse
+incidence, and preallocated scratch. Hot loops contain no persistent-reference
+comparison, string lookup, virtual dispatch, global lock, or per-move heap
+allocation.
+
+The exact shared and worker-local byte counts are computed with checked
+arithmetic before workers launch. The implementation selects the worker count
+as:
+
+```text
+min(nproc - 4, 120, memory-derived worker limit)
+```
+
+The immutable `FrozenModel` is shared across workers. `CandidateState` and
+`SearchScratch` are worker-local and aligned so workers do not mutate shared
+cache lines. A 32-bit build should normally require approximately
+`12 * potential_arc_count + 4 * fragment_incidence_count + O(node_count)` bytes
+for the principal shared handshake arrays and
+`4.125 * potential_arc_count + 8 * node_count + touched scratch` bytes per
+worker. These are planning estimates, not wire-format constants; the checked
+actual byte count governs admission and 64-bit builds use their actual layout.
+
+Freeze is linear in the complete Fabric projection plus potential nodes, arcs,
+and incidence after canonical owner-local ordering. Activating or removing a
+selection is linear in changed incidence. A rank-respecting arc insertion is
+constant time; a violating insertion is linear in the affected vertices and
+active arcs, with unavoidable worst case linear in the selected graph. Initial
+construction, global actions, and independent final verification use a full
+linear Kahn or SCC pass rather than the incremental cache.
+
+Focused performance anchors must prove:
+
+* 64-way and 256-way atomic broadcast owner models grow linearly in fanout;
+* duplicating a physical occurrence grows owner-model storage linearly and
+  does not copy capability-row graphs;
+* a local selection move performs no full graph rebuild or post-warm-up heap
+  allocation;
+* on the pinned 10,000-node, 50,000-potential-arc benchmark, median incremental
+  update time is at least five times faster than full recomputation; and
+* on representative regular and irregular 1,000-actor PnR workloads, selected
+  handshake maintenance consumes at most ten percent of PnR CPU time. More
+  than twenty percent blocks integration and requires profiling.
+
+The complete Spatial PnR target remains a verifier-clean result within twenty
+minutes for a supported approximately 1,000-actor graph, with peak RSS below
+8 GiB. A performance failure cannot be repaired by reducing semantic work,
+skipping the independent verifier, changing candidate order, or publishing a
+best-so-far invalid Mapping.
 
 ## Edge Disposition And Routing
 

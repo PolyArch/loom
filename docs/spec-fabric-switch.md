@@ -211,6 +211,24 @@ retire until every selected sink accepts. A Fabric-declared temporal grant,
 holding, or registered refinement owns its replacement arc set and any
 stateful break; it cannot silently retain or remove the zero-state arcs.
 
+For one selected input with valid signal `v`, selected output set `S`, and
+output-ready signals `r[i]`, the stateless atomic broadcast equations are:
+
+```text
+input_ready       = AND(r[j] for j in S)
+output_valid[i]   = v AND AND(r[j] for j in S where j != i)
+fire              = v AND AND(r[j] for j in S)
+```
+
+The peer-ready term prevents one output from accepting before all other
+selected outputs are ready. A direct dependency projection contains a
+quadratic boundary relation for a large broadcast. The sealed Fabric owner
+model may instead use canonical prefix and suffix conjunction junctions, or a
+smaller direct form for low fanout, provided each exact selection preserves the
+same boundary dependency reachability and atomic firing behavior. Junctions
+are private derived nodes; they are not switch ports, configuration entries,
+or Mapping-visible resources. Fabric does not enumerate destination subsets.
+
 Disabled outputs, Unused temporal entries, and connectivity alternatives not
 selected by the configured route table contribute no arc. All resident Active
 temporal entries contribute their possible arcs even though runtime tags choose
@@ -290,8 +308,10 @@ A selected single-input/multi-output transfer is one atomic message
 replication. The source retires only when every selected sink accepts, or when
 the implementation first commits the complete replication into explicit
 holding state. Partial delivery, duplicate delivery, hidden draining, and
-reordering are invalid. The exact ready/valid circuit is an implementation
-choice and must not become an additional architecture or Mapping authority.
+reordering are invalid. The equations in `Handshake Dependency Projection` are
+the stateless architecture contract. A compact equivalent dependency graph is
+an implementation projection of those equations and must not become an
+additional architecture or Mapping authority.
 
 ## Assembly format
 

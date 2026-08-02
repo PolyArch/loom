@@ -315,7 +315,7 @@ those ports may use different widths under this module-level rule.
 
 Fabric owns the ready/valid behavior of every transport endpoint, direct point
 connection, resource-local traversal, configured mode, and physical
-refinement. The one derived signal vocabulary is:
+refinement. The persistent boundary signal vocabulary is:
 
 ```text
 HandshakeSignalRef = (FabricTransportEndpointRef, Valid | Ready)
@@ -323,11 +323,44 @@ HandshakeDependencyArc = (source HandshakeSignalRef,
                           destination HandshakeSignalRef)
 ```
 
+A resource owner may require internal conjunction or distribution nodes to
+represent its equations without materializing their boundary transitive
+closure. Such an `OwnerLocalHandshakeJunction` is a sealed-view node. It has no
+`EntityId`, persistent reference, route capacity, endpoint meaning, or backend
+identity and cannot escape the owning `HandshakeOwnerModel`.
+
+Every owner compiles its normative equations once into one sealed semantic
+model:
+
+```text
+HandshakeOwnerModel {
+  ordered boundary signal bindings
+  ordered owner-local junctions
+  unique potential dependency arcs
+  typed activation fragments
+}
+```
+
+An activation fragment is an owner-local set of potential arcs selected by one
+exact typed Fabric choice, such as one physical traversal, one FU-occurrence
+capability row, one memory operation plan, or one transfer pattern together
+with its declared physical refinement. A definition-level template alone is
+not an activation because it does not identify a physical occurrence. A use
+pattern alone is not an activation because it does not identify the selected
+actor, role, mask, or configuration context.
+
+The compiled owner graph must preserve the exact directed dependency relation
+between boundary signals for every legal selection. It need not preserve an
+internal circuit shape, and it must not materialize a boundary transitive
+closure when a linear-size owner-local dependency graph represents the same
+relation. Canonical owner-local node and arc order is a derived view contract,
+not persistent Fabric identity.
+
 A directed point connection contributes producer-valid to consumer-valid and
-consumer-ready to producer-ready arcs. Each resource owner derives its exact
-internal arcs from an exact configured view. These arcs are projections of the
-resource's normative handshake equations; they are not separately persisted
-fields, caller-supplied summaries, or backend netlist guesses.
+consumer-ready to producer-ready arcs. Each resource owner resolves the exact
+activation fragments from an exact configured view. These arcs are projections
+of the resource's normative handshake equations; they are not separately
+persisted fields, caller-supplied summaries, or backend netlist guesses.
 
 The hardware-only Fabric root has no workload-selected route table, FIFO mode,
 tag row, or refinement assignment. Fabric structural verification therefore
@@ -337,21 +370,27 @@ only a root-complete cycle composed entirely of arcs that are unconditional in
 every legal configured view. Configuration-dependent global closure belongs
 to Mapping.
 
-An arc is unconditional exactly when the owning Fabric behavior projects that
-same arc for every value in its already-declared legal configuration and
-refinement domains. This is a derived universal property of existing typed
-domains, not a new predicate language or persisted guard. If an arc is absent
-from even one legal alternative, it is configuration-dependent and is checked
-only after Mapping selects a concrete view.
+An owner-model boundary dependency is unconditional exactly when the owning
+Fabric behavior projects that dependency for every value in its
+already-declared legal configuration and refinement domains. This is a derived
+universal property of existing typed domains, not a new predicate language or
+persisted guard. The Fabric finalizer derives the root-complete unconditional
+boundary relation once from the same owner models. It may stream or bit-pack
+that one-time relation, but it cannot enumerate a global Cartesian product of
+independent owner configurations. If a dependency is absent from even one
+legal local alternative, it is configuration-dependent and is checked only
+after Mapping selects a concrete view.
 
 The SpatialMapping and SystemMapping verifiers derive the complete selected
 combinational handshake graph from the exact root-complete Fabric and the
 exact Mapping-selected routes, configured functions, service plans, and
-physical refinements. They reject every directed cycle in that selected graph.
+physical refinements. They resolve each affected owner model, activate exactly
+the selected fragments, and reject every directed cycle in that graph.
 Unselected alternatives contribute no arc. Runtime tags, token values, traffic
 assumptions, simulator delta iteration, HDL loop-breaking, or
-implementation-specific signal defaults cannot excuse a selected cycle. The
-exact gate and failure ownership are specified by
+implementation-specific signal defaults cannot excuse a selected cycle. A
+compact owner-local graph and its fully expanded boundary relation must produce
+the same cycle verdict. The exact gate and failure ownership are specified by
 `docs/spec-mapping-verification.md`.
 
 A cycle in the Fabric-owned unconditional graph fails Fabric finalization as

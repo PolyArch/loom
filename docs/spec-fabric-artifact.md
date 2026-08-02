@@ -389,12 +389,16 @@ requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
 
 FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
+FabricArtifactView::handshakeOwners()
+  -> canonical range<FabricHandshakeOwnerRef>
+compileHandshakeOwnerModel(FabricArtifactView,
+                           FabricHandshakeOwnerRef)
+  -> sealed HandshakeOwnerModel
+resolveSelectedHandshake(
+    HandshakeOwnerModel,
+    exact typed owner selection)
+  -> canonical range<HandshakeActivationFragmentOrdinal>
 deriveUnconditionalHandshakeDependencyArcs(FabricArtifactView)
-  -> canonical range<HandshakeDependencyArc>
-deriveHandshakeDependencyArcs(
-    FabricArtifactView,
-    FabricHandshakeFragmentRef,
-    canonical PhysicalRefinementAssignments)
   -> canonical range<HandshakeDependencyArc>
 FabricArtifactView::memoryOperationPorts(FabricMemoryOccurrenceRef)
   -> canonical range<FabricMemoryOperationPortRef>
@@ -420,21 +424,37 @@ FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
   -> optional<ClockCrossingContractView>
 ```
 
-`FabricHandshakeFragmentRef` is a sealed view-only union of
-`FabricPhysicalTraversalRef`, `FabricFuCapabilityTemplateRef`, and
-`FabricUsePatternRef`. It receives no persistent kind or identity because all
-three members already have exact Fabric-owned references. The passed
-refinement assignments must belong to the selected fragment's existing
-Fabric-owned refinement domains. The derivation is the only API by which
-Mapping, simulation, or RTL obtain resource-local ready/valid arcs; consumers
-cannot reconstruct them from operation names, latency, or a generic
-"stateful" flag.
+`FabricHandshakeOwnerRef` and `HandshakeActivationFragmentOrdinal` are sealed
+view-local indexes over existing occurrence-level Fabric owners and their
+compiled behavior. They receive no persistent reference kind or identity.
+`HandshakeOwnerModel` exposes ordered boundary signal bindings, owner-local
+dependency junctions, unique potential arcs, and typed activation fragments.
+Its internal junctions are not transport endpoints and cannot be routed,
+serialized, or referenced by Mapping records.
 
-Before persistent IDs exist, the finalizer invokes the same owner
-implementation over its private root-complete semantic view and obtains
-identifier-free signal and arc keys. The post-ID API above is its canonical
-reference projection, not a second algorithm. The private keys cannot escape
-finalization or be compared with persistent references.
+The selection resolver accepts only the complete typed choice owned by the
+resource: an occurrence-local traversal group, an FU occurrence plus one exact
+capability row, a memory occurrence plus one exact operation plan, or a system
+transfer pattern, including every selected physical refinement declared by
+that owner. Missing, foreign, stale, definition-only, or contradictory choices
+are rejected. A registered traversal break may validly resolve to no
+combinational fragment; it is not an endpoint-projection error.
+
+This owner model is the only API by which Mapping, simulation, or RTL obtain
+resource-local ready/valid dependencies. Consumers cannot reconstruct them
+from operation names, latency, a generic "stateful" flag, independent
+`UsePattern` interpretation, or caller-provided arc lists. The compact
+owner-local graph may introduce private dependency junctions, but for every
+selection it must preserve the exact boundary dependency reachability implied
+by the normative resource equations.
+
+Before persistent IDs exist, the finalizer invokes the same owner compiler over
+its private root-complete semantic view and obtains identifier-free owner
+models. It derives the unconditional boundary relation from those models and
+the declared local configuration domains. The post-ID API above is the
+canonical reference projection of the same equations, not a second algorithm.
+Private keys and junctions cannot escape finalization or be compared with
+persistent references.
 
 `FabricSystemRootView` is a zero-copy typed refinement of the same immutable
 storage. It has no independent constructor or relation lists. Refinement of a

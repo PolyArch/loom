@@ -257,6 +257,35 @@ different persistent Mapping. A local infeasible repair region proves only
 infeasibility under its fixed boundary; it is not global proof unless the
 region is the complete exact problem.
 
+## Why Selected Handshake Legality Is Incremental
+
+Every placement, route, refinement, or sharing move may change a small subset
+of the selected combinational handshake graph. Rebuilding and sorting the whole
+graph after each move multiplies a linear validation cost by the annealer's
+large move count. Materializing boundary transitive closure is worse: atomic
+broadcast can make one physical owner quadratic before search begins.
+
+The Frozen model therefore stores one compact owner-local potential graph and
+typed reverse incidence. A candidate stores only arc reference counts, an
+active bitset, and topological order. Reference counts preserve the fact that
+several selected decisions may activate one physical dependency without
+duplicating arc identity. Dense arrays and preallocated epoch scratch keep the
+hot path local and allocation-free.
+
+Array-based Pearce-Kelly updates were chosen because most moves touch a small
+rank interval, rank-respecting insertions are constant time, and the algorithm
+uses the same compact adjacency already required by PnR. More elaborate
+worst-case dynamic algorithms add substantial state and update machinery
+without changing Mapping semantics. Full Kahn or SCC recomputation remains the
+simple independent authority at initialization, global repair boundaries, and
+final verification.
+
+This is an SSOT split rather than a second graph: Fabric owns the equations and
+owner-model fragments; Frozen state mechanically flattens them; Candidate
+state selects fragments; the final verifier discards every incremental cache
+and derives the graph again. Performance gates reject an inefficient
+projection, but never change candidate legality or search semantics.
+
 ## Why Legality And QoR Are Separate
 
 Mapping's local solver cost can measure domain-independent facts such as
