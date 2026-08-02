@@ -172,6 +172,15 @@ public:
   llvm::Expected<llvm::ArrayRef<CanonicalGraphConsumerEndpointRef>>
   graphConsumers(const CanonicalGraphProducerEndpointRef &producer) const;
 
+  /// Visits the complete imported intra-graph edge relation in deterministic
+  /// producer-key and canonical consumer order. The relation is the same
+  /// prebuilt owner used by graphProducer/graphConsumers; callers do not walk
+  /// SSA or reconstruct endpoint inventories.
+  llvm::Error forEachGraphEdge(
+      llvm::function_ref<llvm::Error(const CanonicalGraphProducerEndpointRef &,
+                                     const CanonicalGraphConsumerEndpointRef &)>
+          callback) const;
+
   /// Validate a one-message boundary transfer's ordinal against its launch.
   llvm::Error validate(const RootThreadBoundaryTransferRef &transfer) const;
   llvm::Error validate(const GraphLaunchBoundaryTransferRef &transfer) const;

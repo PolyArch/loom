@@ -1,6 +1,7 @@
 #include "PnR/SpatialPnrProblem.h"
 
 #include "SpatialPnrResourceIndex.h"
+#include "SpatialPnrTransferIndex.h"
 
 #include "Common/ComponentViewDigest.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -230,6 +231,9 @@ public:
         buildRealizations(dataflow, techMapping, fabric, *constraints);
     if (!realizations)
       return realizations.takeError();
+    auto transfers = detail::buildFrozenSpatialTransferIndex(techMapping);
+    if (!transfers)
+      return transfers.takeError();
     auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
     if (!resources)
       return resources.takeError();
@@ -237,7 +241,7 @@ public:
     if (!routing)
       return routing.takeError();
     if (llvm::Error error =
-            verifyAggregate(*realizations, *resources, *routing))
+            verifyAggregate(*realizations, *transfers, *resources, *routing))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -249,7 +253,8 @@ public:
         dataflow.identity(), techMapping.identity(), fabric.identity(),
         constraintSet.identity(), config, std::move(workBudget),
         std::move(*constraints), std::move(*realizations),
-        std::move(*resources), std::move(*routing), cacheKey));
+        std::move(*transfers), std::move(*resources), std::move(*routing),
+        cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -287,6 +292,7 @@ public:
 
   static llvm::Error
   verifyAggregate(const FrozenSpatialRealizationIndex &realizations,
+                  const FrozenSpatialTransferIndex &transfers,
                   const FrozenSpatialResourceIndex &resources,
                   const FrozenSpatialRoutingGraph &routing) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
@@ -331,6 +337,12 @@ public:
                                                  realization.placementCount))
         if (placement.realization != ordinal)
           return invalid("memory placement slices are inconsistent");
+    }
+
+    for (const FrozenSpatialLogicalNet &net : transfers.logicalNets()) {
+      if (net.sinkCount == 0 || !rangeFits(net.sinkOffset, net.sinkCount,
+                                           transfers.logicalNetSinks().size()))
+        return invalid("residual logical-net slices are inconsistent");
     }
 
     for (const FrozenSpatialResourceOwner &owner : resources.resourceOwners()) {

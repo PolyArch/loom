@@ -96,6 +96,29 @@ private:
   friend class FrozenSpatialPnrProblemBuilder;
 };
 
+struct FrozenSpatialLogicalNet final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  PnrIndex sinkOffset = 0;
+  PnrIndex sinkCount = 0;
+};
+
+class FrozenSpatialTransferIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialLogicalNet> logicalNets() const {
+    return logicalNets_;
+  }
+  llvm::ArrayRef<::dataflow::CanonicalGraphConsumerEndpointRef>
+  logicalNetSinks() const {
+    return logicalNetSinks_;
+  }
+
+private:
+  std::vector<FrozenSpatialLogicalNet> logicalNets_;
+  std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> logicalNetSinks_;
+
+  friend class FrozenSpatialTransferIndexBuilder;
+};
+
 enum class FrozenSpatialGrantPolicyKind : std::uint32_t {
   None,
   FixedPriority,
@@ -312,6 +335,7 @@ public:
   const FrozenSpatialRealizationIndex &realizations() const {
     return realizations_;
   }
+  const FrozenSpatialTransferIndex &transfers() const { return transfers_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
@@ -325,6 +349,7 @@ private:
                           std::vector<DeterministicWorkBudgetEntry> workBudget,
                           FrozenConstraintIndex constraints,
                           FrozenSpatialRealizationIndex realizations,
+                          FrozenSpatialTransferIndex transfers,
                           FrozenSpatialResourceIndex resources,
                           FrozenSpatialRoutingGraph routing,
                           FrozenSpatialPnrCacheKey cacheKey)
@@ -335,8 +360,8 @@ private:
         config_(std::move(config)), workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
         realizations_(std::move(realizations)),
-        resources_(std::move(resources)), routing_(std::move(routing)),
-        cacheKey_(cacheKey) {}
+        transfers_(std::move(transfers)), resources_(std::move(resources)),
+        routing_(std::move(routing)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -346,6 +371,7 @@ private:
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;
+  FrozenSpatialTransferIndex transfers_;
   FrozenSpatialResourceIndex resources_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialPnrCacheKey cacheKey_;

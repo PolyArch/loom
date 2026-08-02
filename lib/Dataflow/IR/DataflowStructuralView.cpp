@@ -759,6 +759,54 @@ CanonicalDataflowProgramView::graphConsumers(
       graphEdgeConsumers_.data() + range->second.first, range->second.second);
 }
 
+llvm::Error CanonicalDataflowProgramView::forEachGraphEdge(
+    llvm::function_ref<llvm::Error(const CanonicalGraphProducerEndpointRef &,
+                                   const CanonicalGraphConsumerEndpointRef &)>
+        callback) const {
+  for (const auto &[key, range] : graphEdgeRange_) {
+    const auto [kind, slot, ordinal] = key;
+    std::optional<CanonicalGraphProducerEndpointRef> producer;
+    switch (kind) {
+    case kActorResult:
+      if (slot >= actors_.size())
+        return invalid("canonical dataflow: graph-edge actor slot is invalid");
+      producer = ActorTokenResultRef{actors_[slot].ref, ordinal};
+      break;
+    case kGraphStart:
+      if (slot >= graphs_.size() || ordinal != 0)
+        return invalid("canonical dataflow: graph-edge start slot is invalid");
+      producer = GraphIngressTokenRef{GraphStartTokenRef{graphs_[slot].ref}};
+      break;
+    case kGraphValueInput:
+      if (slot >= graphs_.size())
+        return invalid(
+            "canonical dataflow: graph-edge value-input slot is invalid");
+      producer = GraphIngressTokenRef{
+          GraphValueInputTokenRef{graphs_[slot].ref, ordinal}};
+      break;
+    case kGraphStreamInput:
+      if (slot >= graphs_.size())
+        return invalid(
+            "canonical dataflow: graph-edge stream-input slot is invalid");
+      producer = GraphIngressTokenRef{
+          GraphStreamInputTokenRef{graphs_[slot].ref, ordinal}};
+      break;
+    default:
+      return invalid("canonical dataflow: graph-edge producer kind is invalid");
+    }
+    const std::size_t begin = range.first;
+    const std::size_t count = range.second;
+    if (begin > graphEdgeConsumers_.size() ||
+        count > graphEdgeConsumers_.size() - begin)
+      return invalid("canonical dataflow: graph-edge range is invalid");
+    for (const CanonicalGraphConsumerEndpointRef &consumer :
+         llvm::ArrayRef(graphEdgeConsumers_).slice(begin, count))
+      if (llvm::Error error = callback(*producer, consumer))
+        return error;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<CanonicalGraphProducerEndpointRef>
 CanonicalDataflowProgramView::graphProducer(
     const CanonicalGraphConsumerEndpointRef &consumer) const {

@@ -578,6 +578,13 @@ void artifactRoundTripAndReferenceValidation() {
       finalized.view().fabricIdentity() != fabricRoot.reference().artifact ||
       finalized.view().memoryRealizations().size() != 1)
     fail("sealed TechMapping view lost its exact upstream binding");
+  if (finalized.view().residualLogicalNets().size() != 4)
+    fail("sealed TechMapping view omitted a residual logical net");
+  for (const auto &net : finalized.view().residualLogicalNets()) {
+    auto consumers = take(dataflowView.graphConsumers(net.producer));
+    if (net.sinks.empty() || !llvm::equal(net.sinks, consumers))
+      fail("sealed TechMapping view changed a residual sink relation");
+  }
 
   TemporaryDirectory emptyDirectory;
   loom::ArtifactStore emptyStore(emptyDirectory.path());
@@ -638,6 +645,10 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingEndpoints().empty() ||
       frozen->routing().routingArcs().empty())
     fail("aggregate Spatial freeze omitted realizations or routing topology");
+  if (frozen->transfers().logicalNets().size() !=
+          finalized.view().residualLogicalNets().size() ||
+      frozen->transfers().logicalNetSinks().size() != 4)
+    fail("aggregate Spatial freeze omitted residual transfer obligations");
   std::size_t expectedResourceStates = 0;
   std::size_t expectedUsePatterns = 0;
   std::size_t expectedCommits = 0;

@@ -6,6 +6,7 @@ add_mlir_library(LoomPnR
   RoutingNegotiation.cpp
   SpatialPnrProblem.cpp
   SpatialPnrResourceIndex.cpp
+  SpatialPnrTransferIndex.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

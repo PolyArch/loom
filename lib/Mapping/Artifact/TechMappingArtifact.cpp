@@ -487,6 +487,99 @@ edgeKey(const ArtifactIdentity &owner,
   return MemoryEdgeKey{std::move(*producerBytes), std::move(*consumerBytes)};
 }
 
+std::optional<::dataflow::ActorRef>
+producerActor(const ::dataflow::CanonicalGraphProducerEndpointRef &producer) {
+  if (const auto *result =
+          std::get_if<::dataflow::ActorTokenResultRef>(&producer))
+    return result->actor;
+  return std::nullopt;
+}
+
+std::optional<::dataflow::ActorRef>
+consumerActor(const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer) {
+  if (const auto *operand =
+          std::get_if<::dataflow::ActorTokenOperandRef>(&consumer))
+    return operand->actor;
+  return std::nullopt;
+}
+
+llvm::Expected<std::vector<TechResidualLogicalNetView>>
+deriveResidualLogicalNets(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::GraphRef> covers,
+    llvm::ArrayRef<TechComputeRealizationView> compute,
+    llvm::ArrayRef<TechMemoryRealizationView> memory) {
+  std::set<std::uint64_t> coveredGraphs;
+  for (const ::dataflow::GraphRef &graph : covers)
+    coveredGraphs.insert(graph.entity.value());
+  std::map<std::uint64_t, std::uint64_t> computeRealizationByActor;
+  for (const TechComputeRealizationView &realization : compute)
+    for (const TechComputeActorView &actor : realization.actors)
+      computeRealizationByActor.emplace(actor.actor.entity.value(),
+                                        realization.entityId);
+
+  std::set<MemoryEdgeKey> memoryInternalEdges;
+  for (const TechMemoryRealizationView &realization : memory)
+    for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
+      auto key = edgeKey(dataflow.identity(), edge.producer, edge.consumer);
+      if (!key)
+        return key.takeError();
+      if (!memoryInternalEdges.insert(std::move(*key)).second)
+        return invalid("memory internal-edge relation contains a duplicate");
+    }
+
+  std::map<std::vector<std::uint8_t>, TechResidualLogicalNetView> byProducer;
+  if (llvm::Error error = dataflow.forEachGraphEdge(
+          [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
+              const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
+              -> llvm::Error {
+            auto graph = graphOf(producer, dataflow);
+            if (!graph)
+              return graph.takeError();
+            if (!coveredGraphs.count(graph->entity.value()))
+              return llvm::Error::success();
+            const std::optional<::dataflow::ActorRef> source =
+                producerActor(producer);
+            const std::optional<::dataflow::ActorRef> sink =
+                consumerActor(consumer);
+            if (source && sink) {
+              const auto sourceRealization =
+                  computeRealizationByActor.find(source->entity.value());
+              const auto sinkRealization =
+                  computeRealizationByActor.find(sink->entity.value());
+              if (sourceRealization != computeRealizationByActor.end() &&
+                  sinkRealization != computeRealizationByActor.end() &&
+                  sourceRealization->second == sinkRealization->second)
+                return llvm::Error::success();
+            }
+            auto edge = edgeKey(dataflow.identity(), producer, consumer);
+            if (!edge)
+              return edge.takeError();
+            if (memoryInternalEdges.count(*edge))
+              return llvm::Error::success();
+            auto producerKey = dataflowKey(dataflow.identity(), producer);
+            if (!producerKey)
+              return producerKey.takeError();
+            auto [position, inserted] = byProducer.try_emplace(
+                std::move(*producerKey),
+                TechResidualLogicalNetView{producer, {}});
+            (void)inserted;
+            position->second.sinks.push_back(consumer);
+            return llvm::Error::success();
+          }))
+    return std::move(error);
+
+  std::vector<TechResidualLogicalNetView> result;
+  result.reserve(byProducer.size());
+  for (auto &[key, net] : byProducer) {
+    (void)key;
+    if (net.sinks.empty())
+      return invalid("residual logical net has no sink obligation");
+    result.push_back(std::move(net));
+  }
+  return result;
+}
+
 llvm::Error verifyMemoryCorrespondenceClosure(
     const TechMemoryRealizationView &realization,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -899,6 +992,7 @@ struct ImportedTechMappingView final {
   std::vector<::dataflow::GraphRef> covers;
   std::vector<TechComputeRealizationView> compute;
   std::vector<TechMemoryRealizationView> memory;
+  std::vector<TechResidualLogicalNetView> residualLogicalNets;
 };
 
 struct PreparedTechMapping final {
@@ -997,10 +1091,14 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::TechOp root,
     if (mappedActorIds.find(actor.ref.entity.value()) == mappedActorIds.end())
       return invalid("TechMapping does not cover every actor in covers");
   }
+  auto residualLogicalNets =
+      deriveResidualLogicalNets(dataflow, cover->first, compute, memory);
+  if (!residualLogicalNets)
+    return residualLogicalNets.takeError();
   (void)mappingIdentity;
-  return ImportedTechMappingView{*dataflowIdentity, *fabricIdentity,
-                                 std::move(cover->first), std::move(compute),
-                                 std::move(memory)};
+  return ImportedTechMappingView{
+      *dataflowIdentity,  *fabricIdentity,   std::move(cover->first),
+      std::move(compute), std::move(memory), std::move(*residualLogicalNets)};
 }
 
 llvm::Expected<TechMappingView>
@@ -1087,7 +1185,17 @@ llvm::Expected<TechMappingView> TechMappingView::import(
   return TechMappingView(
       mappingIdentity, std::move(imported->dataflowIdentity),
       std::move(imported->fabricIdentity), std::move(imported->covers),
-      std::move(imported->compute), std::move(imported->memory));
+      std::move(imported->compute), std::move(imported->memory),
+      std::move(imported->residualLogicalNets));
+}
+
+const TechResidualLogicalNetView *TechMappingView::residualLogicalNet(
+    const ::dataflow::CanonicalGraphProducerEndpointRef &producer) const {
+  const auto found = llvm::find_if(residualLogicalNets_,
+                                   [&](const TechResidualLogicalNetView &net) {
+                                     return net.producer == producer;
+                                   });
+  return found == residualLogicalNets_.end() ? nullptr : &*found;
 }
 
 llvm::Expected<FinalizedTechMapping>

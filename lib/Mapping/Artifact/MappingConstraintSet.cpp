@@ -667,62 +667,6 @@ bool hasMemoryRealization(const TechMappingView &techMapping,
                       });
 }
 
-std::optional<::dataflow::ActorRef>
-producerActor(const ::dataflow::CanonicalGraphProducerEndpointRef &producer) {
-  if (const auto *result =
-          std::get_if<::dataflow::ActorTokenResultRef>(&producer))
-    return result->actor;
-  return std::nullopt;
-}
-
-std::optional<::dataflow::ActorRef>
-consumerActor(const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer) {
-  if (const auto *operand =
-          std::get_if<::dataflow::ActorTokenOperandRef>(&consumer))
-    return operand->actor;
-  return std::nullopt;
-}
-
-bool sameComputeRealization(const TechMappingView &techMapping,
-                            ::dataflow::ActorRef producer,
-                            ::dataflow::ActorRef consumer) {
-  for (const TechComputeRealizationView &realization :
-       techMapping.computeRealizations()) {
-    bool hasProducer = false;
-    bool hasConsumer = false;
-    for (const TechComputeActorView &actor : realization.actors) {
-      hasProducer |= actor.actor == producer;
-      hasConsumer |= actor.actor == consumer;
-    }
-    if (hasProducer && hasConsumer)
-      return true;
-  }
-  return false;
-}
-
-bool isMemoryInternalEdge(
-    const TechMappingView &techMapping,
-    const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
-    const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer) {
-  for (const TechMemoryRealizationView &realization :
-       techMapping.memoryRealizations())
-    for (const TechMemoryInternalEdgeView &edge : realization.internalEdges)
-      if (edge.producer == producer && edge.consumer == consumer)
-        return true;
-  return false;
-}
-
-bool isResidualSink(
-    const TechMappingView &techMapping,
-    const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
-    const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer) {
-  std::optional<::dataflow::ActorRef> source = producerActor(producer);
-  std::optional<::dataflow::ActorRef> sink = consumerActor(consumer);
-  if (source && sink && sameComputeRealization(techMapping, *source, *sink))
-    return false;
-  return !isMemoryInternalEdge(techMapping, producer, consumer);
-}
-
 llvm::Error validateResidualProducer(
     const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -730,13 +674,7 @@ llvm::Error validateResidualProducer(
   if (llvm::Error error = dataflow.validate(producer))
     return contextual(std::move(error),
                       "constraint producer endpoint does not resolve");
-  auto consumers = dataflow.graphConsumers(producer);
-  if (!consumers)
-    return contextual(consumers.takeError(),
-                      "constraint producer relation does not resolve");
-  if (!llvm::any_of(*consumers, [&](const auto &consumer) {
-        return isResidualSink(techMapping, producer, consumer);
-      }))
+  if (!techMapping.residualLogicalNet(producer))
     return invalid("constraint producer has no residual logical net");
   return llvm::Error::success();
 }
@@ -755,7 +693,9 @@ llvm::Error validateResidualSink(
                       "constraint producer relation does not resolve");
   if (llvm::find(*consumers, consumer) == consumers->end())
     return invalid("constraint transfer sink is not fed by its producer");
-  if (!isResidualSink(techMapping, producer, consumer))
+  const TechResidualLogicalNetView *net =
+      techMapping.residualLogicalNet(producer);
+  if (!net || llvm::find(net->sinks, consumer) == net->sinks.end())
     return invalid("constraint transfer sink is realization-internal");
   return llvm::Error::success();
 }

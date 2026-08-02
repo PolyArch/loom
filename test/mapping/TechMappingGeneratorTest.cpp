@@ -701,6 +701,7 @@ void matchRowLimitPreservesGlobalActorOrder() {
 
   std::vector<std::uint64_t> pairActors;
   std::optional<std::uint64_t> singleActor;
+  std::optional<dataflow::GraphRef> singleGraph;
   for (const auto &graph : dataflow.graphs()) {
     std::vector<std::uint64_t> actors;
     for (const auto &actor : dataflow.actors())
@@ -708,11 +709,13 @@ void matchRowLimitPreservesGlobalActorOrder() {
         actors.push_back(actor.ref.entity.value());
     if (actors.size() == 2)
       pairActors = std::move(actors);
-    else if (actors.size() == 1)
+    else if (actors.size() == 1) {
       singleActor = actors.front();
+      singleGraph = graph.ref;
+    }
   }
   llvm::sort(pairActors);
-  if (pairActors.size() != 2 || !singleActor ||
+  if (pairActors.size() != 2 || !singleActor || !singleGraph ||
       !(pairActors.front() < *singleActor && *singleActor < pairActors.back()))
     fail("cross-graph ordering fixture does not interleave canonical actors: " +
          (pairActors.empty() ? std::string("none")
@@ -737,6 +740,27 @@ void matchRowLimitPreservesGlobalActorOrder() {
       std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
   if (!generated || generated->candidates.size() != 1)
     fail("match-row prefix was enumerated by graph instead of actor key");
+
+  const std::array<dataflow::GraphRef, 1> singleCover = {*singleGraph};
+  const auto singleOutcome = loom::mapping::generateTechMappings(
+      {dataflow, singleCover, fabric.view(), config, store});
+  const auto *singleGenerated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&singleOutcome);
+  if (!singleGenerated || singleGenerated->candidates.size() != 1)
+    fail("single covered graph did not produce an exact TechMapping");
+  const auto singleCandidate = take(loom::mapping::importTechMapping(
+      singleGenerated->candidates.front(), store));
+  for (const auto &net : singleCandidate.view().residualLogicalNets()) {
+    dataflow::GraphRef producerGraph = [&]() {
+      if (const auto *result =
+              std::get_if<dataflow::ActorTokenResultRef>(&net.producer))
+        return take(dataflow.resolve(result->actor)).graph;
+      return std::visit([](const auto &ingress) { return ingress.graph; },
+                        std::get<dataflow::GraphIngressTokenRef>(net.producer));
+    }();
+    if (producerGraph != *singleGraph)
+      fail("residual logical net escaped the TechMapping graph cover");
+  }
 }
 
 void serialTopologyPrunesIndependentActorScale() {
@@ -801,6 +825,9 @@ void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
     coveredActors += realization.actors.size();
   if (coveredActors != dataflow.actors().size())
     fail("schema-indexed match rows did not cover every selected actor");
+  if (!llvm::any_of(candidate.view().residualLogicalNets(),
+                    [](const auto &net) { return net.sinks.size() == 64; }))
+    fail("multicast producer lost residual sink obligations");
 }
 
 void forcedComputeAndMemoryRowsPublishDeterministically() {
@@ -949,6 +976,8 @@ void internalMemoryEdgeIsAnExplicitCandidateChoice() {
 
   bool foundExternal = false;
   bool foundInternal = false;
+  std::optional<std::size_t> externalNetCount;
+  std::optional<std::size_t> internalNetCount;
   for (const auto &reference : generated->candidates) {
     auto candidate = take(loom::mapping::importTechMapping(reference, store));
     if (candidate.view().memoryRealizations().size() != 1)
@@ -956,11 +985,20 @@ void internalMemoryEdgeIsAnExplicitCandidateChoice() {
     const auto &realization = candidate.view().memoryRealizations().front();
     if (realization.actors.size() != 2)
       continue;
-    foundExternal |= realization.internalEdges.empty();
-    foundInternal |= realization.internalEdges.size() == 1;
+    if (realization.internalEdges.empty()) {
+      foundExternal = true;
+      externalNetCount = candidate.view().residualLogicalNets().size();
+    }
+    if (realization.internalEdges.size() == 1) {
+      foundInternal = true;
+      internalNetCount = candidate.view().residualLogicalNets().size();
+    }
   }
   if (!foundExternal || !foundInternal)
     fail("memory internal edge was not retained as an explicit row choice");
+  if (!externalNetCount || !internalNetCount ||
+      *internalNetCount + 1 != *externalNetCount)
+    fail("memory internal edge did not remove exactly one residual net");
 }
 
 void semanticLimitsDoNotBecomeInfeasibilityProofs() {

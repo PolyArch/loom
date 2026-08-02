@@ -81,6 +81,15 @@ struct TechMemoryRealizationView final {
   std::vector<TechMemoryInternalEdgeView> internalEdges;
 };
 
+/// One exact residual graph-local transfer obligation derived from D/T after
+/// realization-internal sinks have been removed. The producer remains the
+/// persistent SpatialLogicalNetKey; this view is a removable import cache and
+/// introduces no Mapping-local identity.
+struct TechResidualLogicalNetView final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
+};
+
 /// Verifies the exact realization-wide topology and correspondence relation
 /// after each actor's typed operation capability has been resolved. Generator
 /// and strict importer share these owners so candidate pruning cannot diverge
@@ -131,18 +140,25 @@ public:
   llvm::ArrayRef<TechMemoryRealizationView> memoryRealizations() const {
     return memoryRealizations_;
   }
+  llvm::ArrayRef<TechResidualLogicalNetView> residualLogicalNets() const {
+    return residualLogicalNets_;
+  }
+  const TechResidualLogicalNetView *residualLogicalNet(
+      const ::dataflow::CanonicalGraphProducerEndpointRef &producer) const;
 
 private:
   TechMappingView(ArtifactIdentity identity, ArtifactIdentity dataflowIdentity,
                   ArtifactIdentity fabricIdentity,
                   std::vector<::dataflow::GraphRef> covers,
                   std::vector<TechComputeRealizationView> computeRealizations,
-                  std::vector<TechMemoryRealizationView> memoryRealizations)
+                  std::vector<TechMemoryRealizationView> memoryRealizations,
+                  std::vector<TechResidualLogicalNetView> residualLogicalNets)
       : identity_(std::move(identity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
         fabricIdentity_(std::move(fabricIdentity)), covers_(std::move(covers)),
         computeRealizations_(std::move(computeRealizations)),
-        memoryRealizations_(std::move(memoryRealizations)) {}
+        memoryRealizations_(std::move(memoryRealizations)),
+        residualLogicalNets_(std::move(residualLogicalNets)) {}
 
   ArtifactIdentity identity_;
   ArtifactIdentity dataflowIdentity_;
@@ -150,6 +166,7 @@ private:
   std::vector<::dataflow::GraphRef> covers_;
   std::vector<TechComputeRealizationView> computeRealizations_;
   std::vector<TechMemoryRealizationView> memoryRealizations_;
+  std::vector<TechResidualLogicalNetView> residualLogicalNets_;
 };
 
 /// The immutable result of failure-atomic publication or strict import of one
