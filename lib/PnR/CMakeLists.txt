@@ -25,6 +25,7 @@ add_mlir_library(LoomPnR
 
   LINK_LIBS PUBLIC
   LoomFabricIdentity
+  LoomDSEObjective
   LoomMappingArtifact
   LLVMSupport
 )

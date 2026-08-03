@@ -88,6 +88,11 @@ bool ratioStrictlyBetweenZeroAndOne(const ResolvedExactRatio &ratio) {
   return ratio.numerator != 0 && ratio.numerator < ratio.denominator;
 }
 
+constexpr std::uint32_t mappingMeasureKindCount = 0
+#define LOOM_MAPPING_MEASURE(Name, Ordinal, DisplayName) +1
+#include "Common/MappingObjectiveKinds.def"
+    ;
+
 auto dimensionKey(const ResolvedObjectiveDimension &dimension) {
   return std::make_tuple(dimension.sourceKind, dimension.sourceOrdinal,
                          dimension.direction, dimension.origin,
@@ -177,6 +182,22 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
 llvm::Error
 validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
+    if (static_cast<std::uint32_t>(dimension.sourceKind) >
+        static_cast<std::uint32_t>(ResolvedObjectiveSourceKind::MappingMeasure))
+      return invalid("objective source kind is unknown");
+    switch (dimension.sourceKind) {
+    case ResolvedObjectiveSourceKind::MappingViolation:
+      if (dimension.sourceOrdinal >= resolvedPnrViolationKindCount)
+        return invalid("Mapping violation source ordinal is out of range");
+      break;
+    case ResolvedObjectiveSourceKind::MappingMeasure:
+      if (dimension.sourceOrdinal >= mappingMeasureKindCount)
+        return invalid("Mapping measure source ordinal is out of range");
+      break;
+    }
+    if (static_cast<std::uint32_t>(dimension.direction) >
+        static_cast<std::uint32_t>(ResolvedObjectiveDirection::Maximize))
+      return invalid("objective direction is unknown");
     if (dimension.quantum == 0)
       return invalid("objective quantum must be positive");
     if (dimension.lowerIndex > dimension.upperIndex)

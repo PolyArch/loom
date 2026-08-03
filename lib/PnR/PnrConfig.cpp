@@ -1,5 +1,7 @@
 #include "PnR/PnrConfig.h"
 
+#include "DSE/Objective.h"
+
 #include "Common/ResolvedConfig.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -35,6 +37,14 @@ constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.1.0";
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "pnr_config_bytes_invalid: " + detail);
+}
+
+llvm::Error
+validateObjectiveArithmetic(const ResolvedObjectiveCatalogs &catalogs) {
+  auto program = dse::ObjectiveProgram::get(catalogs);
+  if (!program)
+    return program.takeError();
+  return llvm::Error::success();
 }
 
 llvm::ArrayRef<std::uint8_t> descriptorBytes(PnrConfigDomain domain) {
@@ -594,6 +604,8 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes) {
   if (llvm::Error error =
           validateResolvedPnrPolicyConfig(*policy, closure->first))
     return std::move(error);
+  if (llvm::Error error = validateObjectiveArithmetic(closure->first))
+    return std::move(error);
   return std::make_pair(std::move(*policy), std::move(closure->first));
 }
 
@@ -661,6 +673,8 @@ projectSelectedClosure(const ResolvedPnrPolicyConfig &sourcePolicy,
 
   if (llvm::Error error =
           validateResolvedPnrPolicyConfig(selectedPolicy, selectedCatalogs))
+    return std::move(error);
+  if (llvm::Error error = validateObjectiveArithmetic(selectedCatalogs))
     return std::move(error);
   return std::make_pair(std::move(selectedPolicy), std::move(selectedCatalogs));
 }

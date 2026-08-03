@@ -171,6 +171,15 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
           "Mapping measure registry does not own the closed catalog");
 }
 
+void objectiveArithmeticIsPreflightedByThePnrView() {
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[2];
+  energy.terms[0].weight = UINT64_MAX;
+  energy.terms[1].weight = UINT64_MAX - 1;
+  requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),
+                  "weighted level domain overflows uint128");
+}
+
 void malformedWireFailsClosed() {
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
@@ -203,6 +212,7 @@ int main() {
   workBudgetIsDerivedFromTheSelectedPolicy();
   routingKernelsConsumeTheProjectedOwnerRecord();
   mappingObjectiveRegistryIsClosedAndTyped();
+  objectiveArithmeticIsPreflightedByThePnrView();
   malformedWireFailsClosed();
   static_assert(
       !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);

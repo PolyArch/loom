@@ -1,0 +1,175 @@
+#include "DSE/Objective.h"
+
+#include "Common/ResolvedPnrPolicy.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+[[noreturn]] void fail(llvm::StringRef message) {
+  llvm::errs() << "DSE objective test: " << message << '\n';
+  std::exit(1);
+}
+
+void require(bool condition, llvm::StringRef message) {
+  if (!condition)
+    fail(message);
+}
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
+}
+
+template <typename T>
+void requireRejected(llvm::Expected<T> value, llvm::StringRef fragment) {
+  if (value)
+    fail("expected rejection");
+  const std::string message = llvm::toString(value.takeError());
+  require(llvm::StringRef(message).contains(fragment), message);
+}
+
+void requireRejected(llvm::Error error, llvm::StringRef fragment) {
+  if (!error)
+    fail("expected rejection");
+  const std::string message = llvm::toString(std::move(error));
+  require(llvm::StringRef(message).contains(fragment), message);
+}
+
+void exactAffineQuantizationIsCheckedAndDirected() {
+  loom::ResolvedObjectiveCatalogs catalogs;
+  catalogs.dimensions = {
+      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
+       loom::ResolvedObjectiveDirection::Minimize, 10, 3, 2, 5},
+      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
+       loom::ResolvedObjectiveDirection::Maximize, 10, 3, 2, 5},
+  };
+  const loom::dse::ObjectiveProgram program =
+      take(loom::dse::ObjectiveProgram::get(catalogs));
+  loom::dse::ObjectiveVector vector = program.makeVector();
+
+  const std::uint64_t values[] = {20};
+  requireSuccess(program.evaluate({values, {}}, vector));
+  require(vector.codes() == llvm::ArrayRef<std::uint64_t>({1, 2}),
+          "directed affine codes are incorrect");
+
+  const std::uint64_t belowOrigin[] = {9};
+  requireRejected(program.evaluate({belowOrigin, {}}, vector),
+                  "objective_contract_failure");
+  const std::uint64_t aboveUpperBound[] = {28};
+  requireRejected(program.evaluate({aboveUpperBound, {}}, vector),
+                  "objective_contract_failure");
+  requireRejected(program.evaluate({{}, {}}, vector), "objective_unavailable");
+}
+
+void builtinOrderingEnergyAndParetoUseOneVector() {
+  const loom::ResolvedObjectiveCatalogs catalogs =
+      loom::resolvedBuiltinObjectiveCatalogs();
+  const loom::dse::ObjectiveProgram program =
+      take(loom::dse::ObjectiveProgram::get(catalogs));
+
+  std::vector<std::uint64_t> leftViolations(8, 0);
+  leftViolations[0] = 1;
+  const std::uint64_t leftMeasures[] = {0};
+  loom::dse::ObjectiveVector left = program.makeVector();
+  requireSuccess(program.evaluate({leftViolations, leftMeasures}, left));
+
+  std::vector<std::uint64_t> rightViolations(8, 0);
+  const std::uint64_t rightMeasures[] = {
+      std::numeric_limits<std::uint64_t>::max()};
+  loom::dse::ObjectiveVector right = program.makeVector();
+  requireSuccess(program.evaluate({rightViolations, rightMeasures}, right));
+
+  const std::uint8_t leftKey[] = {0};
+  const std::uint8_t rightKey[] = {1};
+  require(
+      take(program.compareTotalOrdering(left, leftKey, right, rightKey, 0)) > 0,
+      "violation level did not dominate traversal quality");
+
+  const loom::dse::ObjectiveWideValue leftEnergy =
+      take(program.weightedLevelValue(left, 2));
+  require(leftEnergy.high == 0 && leftEnergy.low == UINT64_C(4294967296),
+          "search energy did not use the selected fixed weight");
+  const loom::dse::ObjectiveSignedDifference delta =
+      take(program.signedWeightedLevelDifference(left, right, 2));
+  require(delta.sign == loom::dse::ObjectiveDifferenceSign::Negative,
+          "energy difference has the wrong sign");
+
+  const std::uint32_t paretoDimensions[] = {0, 8};
+  require(take(program.comparePareto(left, right, paretoDimensions)) ==
+              loom::dse::ParetoRelation::Incomparable,
+          "crossing objective dimensions must remain incomparable");
+
+  loom::dse::ObjectiveVector zero = program.makeVector();
+  const std::uint64_t zeroMeasures[] = {0};
+  requireSuccess(program.evaluate({rightViolations, zeroMeasures}, zero));
+  require(take(program.comparePareto(zero, left, paretoDimensions)) ==
+              loom::dse::ParetoRelation::Dominates,
+          "componentwise lower code did not dominate");
+  require(take(program.compareTotalOrdering(zero, leftKey, zero, rightKey, 0)) <
+              0,
+          "equal objective rank did not use the candidate semantic key");
+}
+
+void completeDeclaredLevelDomainMustFitUint128() {
+  loom::ResolvedObjectiveCatalogs catalogs;
+  const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  catalogs.dimensions = {
+      {loom::ResolvedObjectiveSourceKind::MappingViolation, 0,
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+      {loom::ResolvedObjectiveSourceKind::MappingViolation, 1,
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+  };
+  catalogs.weightedLevels = {{{{0, maximum}, {1, maximum - 1}}}};
+  catalogs.totalOrderings = {{{0}}};
+  requireRejected(loom::dse::ObjectiveProgram::get(catalogs),
+                  "weighted level domain overflows uint128");
+}
+
+void malformedOwnerReferencesFailAtPreflight() {
+  loom::ResolvedObjectiveCatalogs stale;
+  stale.dimensions = {
+      {loom::ResolvedObjectiveSourceKind::MappingMeasure, 1,
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, 1},
+  };
+  requireRejected(loom::dse::ObjectiveProgram::get(stale),
+                  "Mapping measure source ordinal is out of range");
+
+  stale.dimensions.front().sourceKind =
+      static_cast<loom::ResolvedObjectiveSourceKind>(99);
+  stale.dimensions.front().sourceOrdinal = 0;
+  requireRejected(loom::dse::ObjectiveProgram::get(stale),
+                  "objective source kind is unknown");
+
+  stale.dimensions.front().sourceKind =
+      loom::ResolvedObjectiveSourceKind::MappingMeasure;
+  stale.dimensions.front().direction =
+      static_cast<loom::ResolvedObjectiveDirection>(99);
+  requireRejected(loom::dse::ObjectiveProgram::get(stale),
+                  "objective direction is unknown");
+}
+
+} // namespace
+
+int main() {
+  exactAffineQuantizationIsCheckedAndDirected();
+  builtinOrderingEnergyAndParetoUseOneVector();
+  completeDeclaredLevelDomainMustFitUint128();
+  malformedOwnerReferencesFailAtPreflight();
+  return 0;
+}

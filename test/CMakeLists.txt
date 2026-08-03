@@ -4,6 +4,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_subdirectory(common)
 add_subdirectory(adg)
 add_subdirectory(dataflow)
+add_subdirectory(dse)
 add_subdirectory(evaluation)
 add_subdirectory(frontend)
 add_subdirectory(mapping)
@@ -42,6 +43,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-operation-schema-codec-test
   loom-dataflow-operation-schema-test
   loom-dataflow-service-schema-test
+  loom-dse-objective-test
   loom-dfg-sim
   loom-dfg-run
   loom-tech-map
