@@ -238,16 +238,43 @@ struct SpatialComputeBindingView final {
   std::vector<SpatialPhysicalRefinementView> refinements;
 };
 
-/// One exact operation-resource use mechanically required by a selected
-/// compute realization. Mapping owns this projection so candidate
-/// materialization and strict import cannot diverge on actor transition or
-/// Fabric UsePattern selection.
-struct SpatialComputeUseRequirement final {
-  std::uint64_t realization = 0;
+struct SpatialActorTransitionEventRef final {
   ::dataflow::ActorRef actor;
   std::uint32_t transition = 0;
+
+  friend bool operator==(const SpatialActorTransitionEventRef &lhs,
+                         const SpatialActorTransitionEventRef &rhs) {
+    return lhs.actor == rhs.actor && lhs.transition == rhs.transition;
+  }
+};
+
+using SpatialActivityEventRef =
+    std::variant<SpatialActorTransitionEventRef,
+                 ::dataflow::CanonicalGraphProducerEndpointRef,
+                 ::dataflow::CanonicalGraphConsumerEndpointRef>;
+
+/// Canonical owner-local comparison key for the closed Spatial activity-event
+/// union. This is a derived key, not another persistent reference family.
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSpatialActivityEventKey(const ArtifactIdentity &dataflowIdentity,
+                              const SpatialActivityEventRef &event);
+
+/// One exact compute-resource use mechanically required by a selected
+/// realization. Mapping owns this projection so candidate materialization,
+/// strict import, and PnR cannot diverge on event or Fabric UsePattern
+/// selection.
+struct SpatialComputeUseRequirement final {
+  std::uint64_t realization = 0;
+  SpatialActivityEventRef trigger;
   ::loom::fabric::FabricUsePatternRef pattern;
 };
+
+llvm::Expected<std::vector<SpatialComputeUseRequirement>>
+deriveSpatialComputeBindingUseRequirements(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechComputeRealizationView &realization,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialComputeBindingView &binding);
 
 llvm::Expected<std::vector<SpatialComputeUseRequirement>>
 deriveSpatialComputeUseRequirements(
@@ -275,16 +302,6 @@ struct SpatialRouteTreeView final {
   std::vector<SpatialRouteNodeView> nodes;
   std::vector<SpatialRouteSinkView> sinks;
 };
-
-struct SpatialActorTransitionEventRef final {
-  ::dataflow::ActorRef actor;
-  std::uint32_t transition = 0;
-};
-
-using SpatialActivityEventRef =
-    std::variant<SpatialActorTransitionEventRef,
-                 ::dataflow::CanonicalGraphProducerEndpointRef,
-                 ::dataflow::CanonicalGraphConsumerEndpointRef>;
 
 struct SpatialEventPointView final {
   SpatialActivityEventRef event;

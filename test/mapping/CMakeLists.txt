@@ -29,6 +29,7 @@ add_executable(loom-spatial-mapping-wire-test
 
 add_executable(loom-spatial-mapping-artifact-test
   SpatialMappingArtifactTest.cpp
+  TechMappingCandidateTestSupport.cpp
 )
 
 target_link_libraries(loom-mapping-artifact-test PRIVATE

@@ -371,12 +371,56 @@ private:
   friend class FrozenSpatialResourceIndexBuilder;
 };
 
+struct FrozenSpatialResourceEvent final {
+  PnrIndex realization = 0;
+  ::loom::mapping::SpatialActivityEventRef reference;
+};
+
+struct FrozenSpatialResourceUse final {
+  PnrIndex event = 0;
+  PnrIndex pattern = 0;
+};
+
+struct FrozenSpatialResourceTimeSegment final {
+  PnrIndex capacityDimension = 0;
+  std::uint64_t beginRank = 0;
+  std::uint64_t endRank = 0;
+  std::uint64_t usageRaw = 0;
+  std::uint64_t overuseRaw = 0;
+};
+
+struct FrozenSpatialResourceTimeEnvelope final {
+  PnrIndex event = 0;
+  PnrIndex useOffset = 0;
+  PnrIndex useCount = 0;
+  PnrIndex segmentOffset = 0;
+  PnrIndex segmentCount = 0;
+  std::uint64_t capacityOveruse = 0;
+};
+
 /// Dense, cache-only projection of immediate atomic capacity envelopes. Each
 /// entry is the exact raw overuse selected by one hot Candidate decision; the
 /// Fabric ResourceContract remains the sole owner of capacities, claims, and
 /// event semantics.
 class FrozenSpatialCapacityIndex final {
 public:
+  llvm::ArrayRef<FrozenSpatialResourceEvent> resourceEvents() const {
+    return events_;
+  }
+  llvm::ArrayRef<FrozenSpatialResourceUse> resourceUses() const {
+    return uses_;
+  }
+  llvm::ArrayRef<FrozenSpatialResourceTimeEnvelope>
+  resourceTimeEnvelopes() const {
+    return envelopes_;
+  }
+  llvm::ArrayRef<FrozenSpatialResourceTimeSegment>
+  resourceTimeSegments() const {
+    return segments_;
+  }
+  llvm::ArrayRef<PnrIndex> computeInstructionContextEnvelopeOffsets() const {
+    return computeInstructionContextEnvelopeOffsets_;
+  }
   llvm::ArrayRef<std::uint64_t> computeInstructionContextOveruse() const {
     return computeInstructionContextOveruse_;
   }
@@ -385,6 +429,11 @@ public:
   }
 
 private:
+  std::vector<FrozenSpatialResourceEvent> events_;
+  std::vector<FrozenSpatialResourceUse> uses_;
+  std::vector<FrozenSpatialResourceTimeEnvelope> envelopes_;
+  std::vector<FrozenSpatialResourceTimeSegment> segments_;
+  std::vector<PnrIndex> computeInstructionContextEnvelopeOffsets_;
   std::vector<std::uint64_t> computeInstructionContextOveruse_;
   std::vector<std::uint64_t> memoryOperationPlanOveruse_;
 

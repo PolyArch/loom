@@ -11,6 +11,7 @@
 #include "Common/ComponentViewDigest.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -407,9 +408,81 @@ public:
       return invalid("actor-owner reverse projections are incomplete");
     if (capacity.computeInstructionContextOveruse().size() !=
             realizations.computeInstructionContexts().size() ||
+        capacity.computeInstructionContextEnvelopeOffsets().size() !=
+            realizations.computeInstructionContexts().size() + 1 ||
         capacity.memoryOperationPlanOveruse().size() !=
             handshake.memoryOperationPlans().size())
       return invalid("capacity envelope projection is incomplete");
+
+    const auto envelopeOffsets =
+        capacity.computeInstructionContextEnvelopeOffsets();
+    if (envelopeOffsets.empty() || envelopeOffsets.front() != 0 ||
+        envelopeOffsets.back() != capacity.resourceTimeEnvelopes().size())
+      return invalid("resource-time envelope offsets are incomplete");
+    for (PnrIndex context = 0;
+         context < realizations.computeInstructionContexts().size();
+         ++context) {
+      if (envelopeOffsets[context] > envelopeOffsets[context + 1])
+        return invalid("resource-time envelope offsets are not monotonic");
+      std::uint64_t contextOveruse = 0;
+      for (const FrozenSpatialResourceTimeEnvelope &envelope :
+           capacity.resourceTimeEnvelopes().slice(
+               envelopeOffsets[context],
+               envelopeOffsets[context + 1] - envelopeOffsets[context])) {
+        if (envelope.event >= capacity.resourceEvents().size() ||
+            !rangeFits(envelope.useOffset, envelope.useCount,
+                       capacity.resourceUses().size()) ||
+            !rangeFits(envelope.segmentOffset, envelope.segmentCount,
+                       capacity.resourceTimeSegments().size()) ||
+            envelope.useCount == 0)
+          return invalid("resource-time envelope slices are inconsistent");
+        for (const FrozenSpatialResourceUse &use :
+             capacity.resourceUses().slice(envelope.useOffset,
+                                           envelope.useCount))
+          if (use.event != envelope.event ||
+              use.pattern >= resources.usePatterns().size())
+            return invalid("resource-time use projection is inconsistent");
+
+        llvm::SmallDenseMap<PnrIndex, std::uint64_t, 8> maximumOveruse;
+        for (const FrozenSpatialResourceTimeSegment &segment :
+             capacity.resourceTimeSegments().slice(envelope.segmentOffset,
+                                                   envelope.segmentCount)) {
+          if (segment.capacityDimension >=
+                  resources.capacityDimensions().size() ||
+              segment.beginRank >= segment.endRank)
+            return invalid("resource-time segment is invalid");
+          const auto &dimension =
+              resources.capacityDimensions()[segment.capacityDimension];
+          const std::uint64_t expected =
+              segment.usageRaw > dimension.capacity
+                  ? segment.usageRaw - dimension.capacity
+                  : 0;
+          if (segment.overuseRaw != expected)
+            return invalid("resource-time segment overuse is inconsistent");
+          std::uint64_t &maximum = maximumOveruse[segment.capacityDimension];
+          maximum = std::max(maximum, segment.overuseRaw);
+        }
+        std::uint64_t envelopeOveruse = 0;
+        for (const auto &entry : maximumOveruse) {
+          if (entry.second >
+              std::numeric_limits<std::uint64_t>::max() - envelopeOveruse)
+            return invalid("resource-time envelope overuse overflows u64");
+          envelopeOveruse += entry.second;
+        }
+        if (envelopeOveruse != envelope.capacityOveruse)
+          return invalid("resource-time envelope overuse is inconsistent");
+        if (envelope.capacityOveruse >
+            std::numeric_limits<std::uint64_t>::max() - contextOveruse)
+          return invalid("resource-time context overuse overflows u64");
+        contextOveruse += envelope.capacityOveruse;
+      }
+      if (contextOveruse !=
+          capacity.computeInstructionContextOveruse()[context])
+        return invalid("resource-time context overuse is inconsistent");
+    }
+    for (const FrozenSpatialResourceEvent &event : capacity.resourceEvents())
+      if (event.realization >= realizations.computeRealizations().size())
+        return invalid("resource-time event has a foreign realization");
 
     for (auto [ordinal, realization] :
          llvm::enumerate(realizations.computeRealizations())) {

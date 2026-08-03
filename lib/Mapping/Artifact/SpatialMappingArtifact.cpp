@@ -11,6 +11,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -253,9 +254,6 @@ importComputeBinding(::mapping::ComputeBindingOp record,
   if (!parentPe || context->pe != *parentPe ||
       context->ordinal >= fabric.peResidentContextCount(*parentPe))
     return invalid("ComputeBinding instruction context is incompatible");
-  if (fabric.peSchedule(*parentPe) != ::fabric::Schedule::Spatial)
-    return invalid(
-        "Temporal ComputeBinding ResourceUse projection is unavailable");
   auto refinements = importRefinements(record.getRefinements(), fabric);
   if (!refinements)
     return refinements.takeError();
@@ -605,15 +603,21 @@ llvm::Expected<std::string>
 requiredUseKey(const RequiredComputeUse &use,
                const ArtifactIdentity &dataflowIdentity) {
   std::string result;
-  for (unsigned byte = 0; byte < 8; ++byte)
-    result.push_back(static_cast<char>(use.realization >> (8 * (7 - byte))));
-  auto actor = ::dataflow::encodeDataflowReference(dataflowIdentity, use.actor);
-  if (!actor)
-    return actor.takeError();
-  result += byteKey(*actor);
-  for (unsigned byte = 0; byte < 4; ++byte)
-    result.push_back(static_cast<char>(use.transition >> (8 * (3 - byte))));
-  result += byteKey(::loom::fabric::canonicalFabricBytes(use.pattern));
+  auto appendU64 = [&](std::uint64_t value) {
+    for (unsigned byte = 0; byte < 8; ++byte)
+      result.push_back(static_cast<char>(value >> (8 * (7 - byte))));
+  };
+  auto appendFramed = [&](llvm::ArrayRef<std::uint8_t> bytes) {
+    appendU64(bytes.size());
+    result.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+  };
+  appendU64(use.realization);
+  auto encodedEvent =
+      encodeSpatialActivityEventKey(dataflowIdentity, use.trigger);
+  if (!encodedEvent)
+    return encodedEvent.takeError();
+  appendFramed(*encodedEvent);
+  appendFramed(::loom::fabric::canonicalFabricBytes(use.pattern));
   return result;
 }
 
@@ -632,7 +636,8 @@ deriveRequiredComputeUses(
     auto key = requiredUseKey(use, dataflow.identity());
     if (!key)
       return key.takeError();
-    result.emplace(std::move(*key), use);
+    if (!result.emplace(std::move(*key), use).second)
+      return invalid("compute owner derives a duplicate ResourceUse");
   }
   return result;
 }
@@ -656,17 +661,12 @@ importResourceUse(::mapping::ResourceUseOp record,
       importEventPoint(record.getActivation().getTrigger(), dataflow);
   if (!trigger)
     return trigger.takeError();
-  const auto *transition =
-      std::get_if<SpatialActorTransitionEventRef>(&trigger->event);
-  if (!transition || trigger->guaranteedOffset ||
-      record.getActivation().getRelease())
-    return invalid(
-        "compute ResourceUse must use intrinsic actor-transition activation");
+  if (trigger->guaranteedOffset || record.getActivation().getRelease())
+    return invalid("compute ResourceUse must use intrinsic event activation");
   if (!record.getParameters().empty() ||
       !record.getSharingAssignments().empty())
     return invalid("compute ResourceUse owner schemas are empty");
-  RequiredComputeUse keyValue{compute.getEntity(), transition->actor,
-                              transition->transition, *pattern};
+  RequiredComputeUse keyValue{compute.getEntity(), trigger->event, *pattern};
   auto key = requiredUseKey(keyValue, dataflow.identity());
   if (!key)
     return key.takeError();
@@ -985,52 +985,178 @@ strictImport(const ArtifactIdentity &mappingIdentity,
 
 } // namespace
 
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSpatialActivityEventKey(const ArtifactIdentity &dataflowIdentity,
+                              const SpatialActivityEventRef &event) {
+  auto encoded = std::visit(
+      [&](const auto &typed)
+          -> llvm::Expected<
+              std::pair<std::uint32_t, std::vector<std::uint8_t>>> {
+        using Event = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<Event, SpatialActorTransitionEventRef>) {
+          auto actor = ::dataflow::encodeDataflowReference(dataflowIdentity,
+                                                           typed.actor);
+          if (!actor)
+            return actor.takeError();
+          for (unsigned byte = 0; byte < 4; ++byte)
+            actor->push_back(static_cast<std::uint8_t>(typed.transition >>
+                                                       (8 * (3 - byte))));
+          return std::make_pair(0U, std::move(*actor));
+        } else {
+          auto bytes =
+              ::dataflow::encodeDataflowReference(dataflowIdentity, typed);
+          if (!bytes)
+            return bytes.takeError();
+          constexpr std::uint32_t tag =
+              std::is_same_v<Event,
+                             ::dataflow::CanonicalGraphProducerEndpointRef>
+                  ? 1U
+                  : 2U;
+          return std::make_pair(tag, std::move(*bytes));
+        }
+      },
+      event);
+  if (!encoded)
+    return encoded.takeError();
+  std::vector<std::uint8_t> result;
+  result.reserve(4 + encoded->second.size());
+  for (unsigned byte = 0; byte < 4; ++byte)
+    result.push_back(
+        static_cast<std::uint8_t>(encoded->first >> (8 * (3 - byte))));
+  result.insert(result.end(), encoded->second.begin(), encoded->second.end());
+  return result;
+}
+
+llvm::Expected<std::vector<SpatialComputeUseRequirement>>
+deriveSpatialComputeBindingUseRequirements(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechComputeRealizationView &realization,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialComputeBindingView &binding) {
+  std::vector<SpatialComputeUseRequirement> result;
+  if (binding.realization != realization.entityId)
+    return invalid("compute ResourceUse binding has the wrong realization");
+  auto definition = fabric.fuTemplateOf(binding.occurrence);
+  if (!definition || *definition != realization.capabilityTemplate.fu)
+    return invalid("compute ResourceUse binding has the wrong FU definition");
+  auto parentPe = fabric.parentPeOf(binding.occurrence);
+  if (!parentPe || binding.context.pe != *parentPe ||
+      binding.context.ordinal >= fabric.peResidentContextCount(*parentPe))
+    return invalid("compute ResourceUse binding has an invalid context");
+  const bool temporal =
+      fabric.peSchedule(*parentPe) == ::fabric::Schedule::Temporal;
+
+  if (temporal) {
+    for (const auto &boundary : realization.boundaries) {
+      if (boundary.direction != ::loom::fabric::FabricPortDirection::Input)
+        continue;
+      auto pattern = ::fabric::resolveTemporalPeOperandQueuePattern(
+          fabric, binding.context, binding.occurrence,
+          boundary.fabricPort.ordinal,
+          ::fabric::TemporalOperandQueueUse::Enqueue);
+      if (!pattern)
+        return pattern.takeError();
+      result.push_back(SpatialComputeUseRequirement{
+          realization.entityId,
+          ::dataflow::CanonicalGraphConsumerEndpointRef(
+              ::dataflow::ActorTokenOperandRef{boundary.actor,
+                                               boundary.portOrdinal}),
+          *pattern});
+    }
+  }
+
+  for (const auto &actorBinding : realization.actors) {
+    auto actor = dataflow.resolve(actorBinding.actor);
+    if (!actor)
+      return actor.takeError();
+    auto projection =
+        ::dataflow::projectRegisteredActorSchemaProjection(actor->op);
+    if (!projection)
+      return projection.takeError();
+    auto cases = ::dataflow::semantics::projectActorHandshakeCases(
+        projection->schema, actorBinding.operandPorts.size(),
+        actorBinding.resultPorts.size());
+    if (!cases)
+      return cases.takeError();
+    auto occurrenceOperation = ::loom::fabric::deriveFabricFuOccurrenceNode(
+        fabric, actorBinding.fabricOperation, binding.occurrence);
+    if (!occurrenceOperation)
+      return occurrenceOperation.takeError();
+    const auto *capability =
+        fabric.resolvedFabricOpCapability(*occurrenceOperation);
+    if (!capability)
+      return invalid("selected compute actor has no physical capability");
+    for (const auto &transition : *cases) {
+      auto pattern = ::fabric::resolveOperationUsePattern(
+          capability->resourceStateAndTimingContract, transition.ordinal);
+      if (!pattern)
+        return pattern.takeError();
+      const SpatialActorTransitionEventRef event{actorBinding.actor,
+                                                 transition.ordinal};
+      result.push_back(SpatialComputeUseRequirement{
+          realization.entityId, event,
+          ::loom::fabric::FabricUsePatternRef{
+              ::loom::fabric::FabricUsePatternOwnerRef(
+                  ::loom::fabric::FabricInventoryOwnerRef::of(
+                      *occurrenceOperation)),
+              pattern->ordinal()}});
+      if (!temporal)
+        continue;
+      for (std::uint32_t operand : transition.consumedInputs) {
+        const TechComputeBoundaryView *boundary = nullptr;
+        for (const auto &candidate : realization.boundaries) {
+          if (candidate.actor != actorBinding.actor ||
+              candidate.direction !=
+                  ::loom::fabric::FabricPortDirection::Input ||
+              candidate.portOrdinal != operand)
+            continue;
+          if (boundary)
+            return invalid(
+                "actor input has duplicate compute boundary witnesses");
+          boundary = &candidate;
+        }
+        if (!boundary)
+          continue;
+        auto queuePattern = ::fabric::resolveTemporalPeOperandQueuePattern(
+            fabric, binding.context, binding.occurrence,
+            boundary->fabricPort.ordinal,
+            ::fabric::TemporalOperandQueueUse::Dequeue);
+        if (!queuePattern)
+          return queuePattern.takeError();
+        result.push_back(SpatialComputeUseRequirement{realization.entityId,
+                                                      event, *queuePattern});
+      }
+    }
+  }
+  return result;
+}
+
 llvm::Expected<std::vector<SpatialComputeUseRequirement>>
 deriveSpatialComputeUseRequirements(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+  if (bindings.size() != techMapping.computeRealizations().size())
+    return invalid("compute ResourceUse projection has incomplete bindings");
   std::vector<SpatialComputeUseRequirement> result;
   for (const auto &realization : techMapping.computeRealizations()) {
-    const auto *binding = findComputeBinding(bindings, realization.entityId);
+    const SpatialComputeBindingView *binding = nullptr;
+    for (const auto &candidate : bindings) {
+      if (candidate.realization != realization.entityId)
+        continue;
+      if (binding)
+        return invalid("compute ResourceUse projection has duplicate bindings");
+      binding = &candidate;
+    }
     if (!binding)
       return invalid("Compute realization has no Spatial binding");
-    for (const auto &actorBinding : realization.actors) {
-      auto actor = dataflow.resolve(actorBinding.actor);
-      if (!actor)
-        return actor.takeError();
-      auto projection =
-          ::dataflow::projectRegisteredActorSchemaProjection(actor->op);
-      if (!projection)
-        return projection.takeError();
-      auto cases = ::dataflow::semantics::projectActorHandshakeCases(
-          projection->schema, actorBinding.operandPorts.size(),
-          actorBinding.resultPorts.size());
-      if (!cases)
-        return cases.takeError();
-      auto occurrenceOperation = ::loom::fabric::deriveFabricFuOccurrenceNode(
-          fabric, actorBinding.fabricOperation, binding->occurrence);
-      if (!occurrenceOperation)
-        return occurrenceOperation.takeError();
-      const auto *capability =
-          fabric.resolvedFabricOpCapability(*occurrenceOperation);
-      if (!capability)
-        return invalid("selected compute actor has no physical capability");
-      for (const auto &transition : *cases) {
-        auto pattern = ::fabric::resolveOperationUsePattern(
-            capability->resourceStateAndTimingContract, transition.ordinal);
-        if (!pattern)
-          return pattern.takeError();
-        result.push_back(SpatialComputeUseRequirement{
-            realization.entityId, actorBinding.actor, transition.ordinal,
-            ::loom::fabric::FabricUsePatternRef{
-                ::loom::fabric::FabricUsePatternOwnerRef(
-                    ::loom::fabric::FabricInventoryOwnerRef::of(
-                        *occurrenceOperation)),
-                pattern->ordinal()}});
-      }
-    }
+    auto requirements = deriveSpatialComputeBindingUseRequirements(
+        dataflow, realization, fabric, *binding);
+    if (!requirements)
+      return requirements.takeError();
+    result.insert(result.end(), std::make_move_iterator(requirements->begin()),
+                  std::make_move_iterator(requirements->end()));
   }
   return result;
 }

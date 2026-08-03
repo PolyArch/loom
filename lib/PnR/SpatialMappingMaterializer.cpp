@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace loom::pnr {
@@ -204,14 +205,41 @@ llvm::Error materializeResourceUses(
     const ArtifactIdentity &dataflowIdentity) {
   builder.setInsertionPointToEnd(&body);
   for (const auto &use : uses) {
-    auto actor = dataflowAttr<::mapping::ActorRefAttr>(
-        builder.getContext(), dataflowIdentity, use.actor);
-    if (!actor)
-      return actor.takeError();
-    auto transition = ::mapping::ActorTransitionEventAttr::get(
-        builder.getContext(), *actor, use.transition);
+    auto event = std::visit(
+        [&](const auto &trigger) -> llvm::Expected<mlir::Attribute> {
+          using Trigger = std::decay_t<decltype(trigger)>;
+          if constexpr (std::is_same_v<
+                            Trigger,
+                            ::loom::mapping::SpatialActorTransitionEventRef>) {
+            auto actor = dataflowAttr<::mapping::ActorRefAttr>(
+                builder.getContext(), dataflowIdentity, trigger.actor);
+            if (!actor)
+              return actor.takeError();
+            return ::mapping::ActorTransitionEventAttr::get(
+                builder.getContext(), *actor, trigger.transition);
+          } else if constexpr (
+              std::is_same_v<Trigger,
+                             ::dataflow::CanonicalGraphProducerEndpointRef>) {
+            auto producer =
+                dataflowAttr<::mapping::GraphProducerEndpointRefAttr>(
+                    builder.getContext(), dataflowIdentity, trigger);
+            if (!producer)
+              return producer.takeError();
+            return mlir::Attribute(*producer);
+          } else {
+            auto consumer =
+                dataflowAttr<::mapping::GraphConsumerEndpointRefAttr>(
+                    builder.getContext(), dataflowIdentity, trigger);
+            if (!consumer)
+              return consumer.takeError();
+            return mlir::Attribute(*consumer);
+          }
+        },
+        use.trigger);
+    if (!event)
+      return event.takeError();
     auto trigger = ::mapping::SpatialEventPointAttr::get(
-        builder.getContext(), transition, ::mapping::OwnerTypedValueAttr());
+        builder.getContext(), *event, ::mapping::OwnerTypedValueAttr());
     auto activation = ::mapping::SpatialRelativeActivationAttr::get(
         builder.getContext(), trigger, ::mapping::SpatialEventPointAttr());
     ::mapping::ResourceUseOp::create(

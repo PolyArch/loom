@@ -1,6 +1,10 @@
 #include "TechMappingCandidateTestSupport.h"
 
 #include "ADG/FuLibrary.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/TemporalPeResourceContract.h"
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialCandidateInitializer.h"
@@ -9,6 +13,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <memory>
 #include <optional>
@@ -233,6 +238,99 @@ void loom::test::exerciseCapacityOveruseCandidate(
   if (candidate->capacityOveruse() != 0)
     fail("capacity rollback changed the committed objective value");
   requireSuccess(candidate->verify());
+}
+
+void loom::test::exerciseTemporalComputeUseProjection(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric,
+    const pnr::FrozenSpatialPnrProblemHandle &problem) {
+  const auto frozenRealizations = problem->realizations().computeRealizations();
+  const auto placements = problem->realizations().computePlacements();
+  const auto contexts = problem->realizations().computeInstructionContexts();
+  if (frozenRealizations.size() != 1 ||
+      techMapping.computeRealizations().size() != 1)
+    fail("temporal ResourceUse fixture does not contain one realization");
+  const auto &frozen = frozenRealizations.front();
+  if (frozen.placementCount == 0)
+    fail("temporal ResourceUse fixture has no placement");
+  const auto &placement = placements[frozen.placementOffset];
+  if (placement.contextCount == 0 ||
+      fabric.peSchedule(placement.parentPe) != ::fabric::Schedule::Temporal)
+    fail("temporal ResourceUse fixture has no temporal context");
+  const auto context = contexts[placement.contextOffset];
+  mapping::SpatialComputeBindingView selected;
+  selected.realization = frozen.reference.entity;
+  selected.occurrence = placement.fu;
+  selected.context = context;
+  const std::array<mapping::SpatialComputeBindingView, 1> bindings = {
+      std::move(selected)};
+  auto uses = take(mapping::deriveSpatialComputeUseRequirements(
+      dataflow, techMapping, fabric, bindings));
+
+  const auto &realization = techMapping.computeRealizations().front();
+  std::size_t expectedEnqueues = 0;
+  std::size_t expectedTransitionUses = 0;
+  for (const auto &boundary : realization.boundaries)
+    if (boundary.direction == fabric::FabricPortDirection::Input)
+      ++expectedEnqueues;
+  for (const auto &binding : realization.actors) {
+    auto actor = take(dataflow.resolve(binding.actor));
+    auto projection =
+        take(dataflow::projectRegisteredActorSchemaProjection(actor.op));
+    auto cases = take(dataflow::semantics::projectActorHandshakeCases(
+        projection.schema, binding.operandPorts.size(),
+        binding.resultPorts.size()));
+    for (const auto &transition : cases) {
+      ++expectedTransitionUses;
+      for (std::uint32_t operand : transition.consumedInputs)
+        if (llvm::any_of(realization.boundaries, [&](const auto &boundary) {
+              return boundary.actor == binding.actor &&
+                     boundary.direction == fabric::FabricPortDirection::Input &&
+                     boundary.portOrdinal == operand;
+            }))
+          ++expectedTransitionUses;
+    }
+  }
+
+  std::size_t enqueues = 0;
+  std::size_t transitionUses = 0;
+  for (const auto &use : uses) {
+    if (std::holds_alternative<dataflow::CanonicalGraphConsumerEndpointRef>(
+            use.trigger)) {
+      ++enqueues;
+      continue;
+    }
+    if (std::holds_alternative<mapping::SpatialActorTransitionEventRef>(
+            use.trigger))
+      ++transitionUses;
+  }
+  if (enqueues != expectedEnqueues)
+    fail("temporal ResourceUse projection omitted operand enqueue events");
+  if (transitionUses != expectedTransitionUses)
+    fail("temporal ResourceUse projection omitted operation or dequeue events");
+
+  const auto &capacity = problem->capacity();
+  const auto offsets = capacity.computeInstructionContextEnvelopeOffsets();
+  if (offsets.size() != contexts.size() + 1 ||
+      capacity.resourceEvents().empty() || capacity.resourceUses().empty() ||
+      capacity.resourceTimeEnvelopes().empty() ||
+      capacity.resourceTimeSegments().empty())
+    fail("temporal ResourceUse freeze omitted dense resource-time tables");
+  for (std::size_t contextOrdinal = 0; contextOrdinal < contexts.size();
+       ++contextOrdinal) {
+    std::uint64_t overuse = 0;
+    for (const auto &envelope : capacity.resourceTimeEnvelopes().slice(
+             offsets[contextOrdinal],
+             offsets[contextOrdinal + 1] - offsets[contextOrdinal])) {
+      if (envelope.event >= capacity.resourceEvents().size() ||
+          envelope.useCount == 0 || envelope.segmentCount == 0)
+        fail("temporal resource-time envelope has an incomplete dense slice");
+      overuse += envelope.capacityOveruse;
+    }
+    if (overuse != capacity.computeInstructionContextOveruse()[contextOrdinal])
+      fail("dense resource-time envelopes disagree with capacity overuse");
+  }
 }
 
 void loom::test::exerciseCanonicalCandidateInitialization(

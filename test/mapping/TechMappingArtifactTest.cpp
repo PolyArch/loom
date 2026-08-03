@@ -1711,6 +1711,8 @@ void computeBoundaryClosure() {
     fail("compute freeze omitted exact placement handshake fragments");
   loom::test::exerciseHandshakeCandidateRefcounts(frozen);
   loom::test::exerciseCapacityOveruseCandidate(frozen);
+  loom::test::exerciseTemporalComputeUseProjection(
+      dataflowView, finalized.view(), fabricRoot.view(), frozen);
   loom::test::exerciseCanonicalCandidateInitialization(frozen);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)

@@ -16,6 +16,12 @@ buildTemporalCapacityFabric(const ArtifactStore &store);
 void exerciseCapacityOveruseCandidate(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
+void exerciseTemporalComputeUseProjection(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric,
+    const pnr::FrozenSpatialPnrProblemHandle &problem);
+
 void exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 

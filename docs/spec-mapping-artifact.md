@@ -478,6 +478,16 @@ writers or ingress points. Instruction contexts remain owned by bindings.
 Static claims mechanically implied by a selected traversal are not duplicated
 as ResourceUse records.
 
+For a Temporal PE compute binding, Mapping derives operand-queue uses without
+another scheduler or event catalog. An external actor input enqueues at that
+exact `Consumed { ActorTokenOperandRef }` event. A transition that consumes an
+external actor input dequeues its corresponding logical operand queue at the
+same `ActorTransition` event as the selected operation use. Inputs internal to
+one Compute Realization do not cross the PE operand-queue boundary and derive
+no queue use. Spatial PE bindings derive only their operation uses. These
+records are mandatory owner projections: omission, duplication, a different
+trigger, or a use pattern outside the selected instruction context rejects.
+
 ### Physical Refinement
 
 Any semantic-preserving physical or QoR choice not derived from the selected

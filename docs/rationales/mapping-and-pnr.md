@@ -137,6 +137,14 @@ Mapping stores only the event-relative selection and owner-coded values. This
 keeps custom resource types extensible without a generic property bag or a
 second resource registry in Mapping.
 
+Temporal operand queues need no new Mapping event. The incoming token already
+has one exact consumer-terminal event, so that event is the enqueue boundary.
+The actor handshake transition already identifies the atomic consumption of
+its required inputs, so it is also the dequeue and operation-use boundary.
+Using either event avoids an instruction-local scheduler, while attaching an
+enqueue to the later transition would hide queue occupancy and attaching a
+dequeue to an operand alone would lose atomic multi-input firing semantics.
+
 Search builds dense event, use, and overlap-envelope tables once from these
 records. Reverse CSR from a decision to affected envelopes makes a move cost
 proportional to its incidence rather than to the whole mapping. Raw occupancy
