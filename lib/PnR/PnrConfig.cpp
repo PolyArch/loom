@@ -20,20 +20,17 @@ struct ResolvedPnrConfigViewAccess final {
   static ResolvedPnrConfigView
   create(PnrConfigDomain domain, ResolvedPnrPolicyConfig policy,
          ResolvedObjectiveCatalogs selectedObjectiveCatalogs,
-         std::vector<std::uint8_t> canonicalBytes,
-         ComponentViewDigest digest) {
-    return ResolvedPnrConfigView(
-        domain, std::move(policy), std::move(selectedObjectiveCatalogs),
-        std::move(canonicalBytes), digest);
+         std::vector<std::uint8_t> canonicalBytes, ComponentViewDigest digest) {
+    return ResolvedPnrConfigView(domain, std::move(policy),
+                                 std::move(selectedObjectiveCatalogs),
+                                 std::move(canonicalBytes), digest);
   }
 };
 
 namespace {
 
-constexpr llvm::StringLiteral spatialDescriptor =
-    "loom.spatial_pnr.config.1.0";
-constexpr llvm::StringLiteral systemDescriptor =
-    "loom.system_pnr.config.1.0";
+constexpr llvm::StringLiteral spatialDescriptor = "loom.spatial_pnr.config.1.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.1.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -123,8 +120,7 @@ private:
 
 void encodeNegotiation(Encoder &encoder,
                        const ResolvedRoutingNegotiationPolicy &policy) {
-  if (const auto *pathFinder =
-          std::get_if<ResolvedPathFinderPolicy>(&policy)) {
+  if (const auto *pathFinder = std::get_if<ResolvedPathFinderPolicy>(&policy)) {
     encoder.u32(0);
     encoder.u32(static_cast<std::uint32_t>(pathFinder->priceKernel));
     encoder.u64(pathFinder->presentPressureInitial);
@@ -145,8 +141,7 @@ void encodeNegotiation(Encoder &encoder,
   case ResolvedDualStepScheduleKind::GeometricDecay:
     encoder.u64(dual.stepSchedule.first);
     encoder.u64(dual.stepSchedule.second);
-    encoder.ratio(
-        {dual.stepSchedule.third, dual.stepSchedule.fourth});
+    encoder.ratio({dual.stepSchedule.third, dual.stepSchedule.fourth});
     break;
   case ResolvedDualStepScheduleKind::HarmonicDecay:
     encoder.u64(dual.stepSchedule.first);
@@ -188,8 +183,7 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
   encoder.u32(
       static_cast<std::uint32_t>(policy.determinism.acceptanceProtocol));
   encoder.u64(policy.temporaryViolations.admitted.size());
-  for (ResolvedPnrViolationKind violation :
-       policy.temporaryViolations.admitted)
+  for (ResolvedPnrViolationKind violation : policy.temporaryViolations.admitted)
     encoder.u32(static_cast<std::uint32_t>(violation));
 }
 
@@ -290,8 +284,8 @@ decodeNegotiation(Decoder &decoder) {
   auto scheduleTag = decoder.u32();
   if (!scheduleTag)
     return scheduleTag.takeError();
-  if (*scheduleTag > static_cast<std::uint32_t>(
-                         ResolvedDualStepScheduleKind::HarmonicDecay))
+  if (*scheduleTag >
+      static_cast<std::uint32_t>(ResolvedDualStepScheduleKind::HarmonicDecay))
     return invalid("unknown dual step schedule");
   ResolvedDualStepSchedule schedule{};
   schedule.kind = static_cast<ResolvedDualStepScheduleKind>(*scheduleTag);
@@ -319,8 +313,8 @@ decodeNegotiation(Decoder &decoder) {
     schedule.second = *second;
     schedule.third = *third;
   }
-  return ResolvedRoutingNegotiationPolicy{ResolvedDualSubgradientPolicy{
-      direction, momentum, schedule}};
+  return ResolvedRoutingNegotiationPolicy{
+      ResolvedDualSubgradientPolicy{direction, momentum, schedule}};
 }
 
 llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
@@ -393,7 +387,8 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
   auto repairTag = decoder.u32();
   if (!repairTag)
     return repairTag.takeError();
-  if (*repairTag > static_cast<std::uint32_t>(ResolvedPnrExactRepairKind::CpSat))
+  if (*repairTag >
+      static_cast<std::uint32_t>(ResolvedPnrExactRepairKind::CpSat))
     return invalid("unknown exact-repair union tag");
   ResolvedPnrExactRepairPolicy repair{
       static_cast<ResolvedPnrExactRepairKind>(*repairTag), 0, 0};
@@ -433,8 +428,7 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
     auto violation = decoder.u32();
     if (!violation)
       return violation.takeError();
-    if (*violation > static_cast<std::uint32_t>(
-                         ResolvedPnrViolationKind::HardServiceContractShortfall))
+    if (*violation >= resolvedPnrViolationKindCount)
       return invalid("unknown temporary violation kind");
     violations.admitted.push_back(
         static_cast<ResolvedPnrViolationKind>(*violation));
@@ -453,11 +447,13 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
           *masterSeed,
           ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
           ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
-      std::move(violations), ResolvedPnrObjectiveSelection{}, {}};
+      std::move(violations),
+      ResolvedPnrObjectiveSelection{},
+      {}};
 }
 
-llvm::Expected<std::pair<ResolvedObjectiveCatalogs,
-                         ResolvedPnrObjectiveSelection>>
+llvm::Expected<
+    std::pair<ResolvedObjectiveCatalogs, ResolvedPnrObjectiveSelection>>
 decodeClosure(Decoder &decoder,
               std::vector<ResolvedPnrEvaluationBindingSelection> &bindings) {
   auto templateCount = decoder.count();
@@ -501,8 +497,8 @@ decodeClosure(Decoder &decoder,
       return upper.takeError();
     catalogs.dimensions.push_back(
         {static_cast<ResolvedObjectiveSourceKind>(*source), *sourceOrdinal,
-         static_cast<ResolvedObjectiveDirection>(*direction), *origin,
-         *quantum, *lower, *upper});
+         static_cast<ResolvedObjectiveDirection>(*direction), *origin, *quantum,
+         *lower, *upper});
   }
 
   auto levelCount = decoder.count();
@@ -558,8 +554,8 @@ decodeClosure(Decoder &decoder,
     return selectedEnergy.takeError();
   if (!focusedCount)
     return focusedCount.takeError();
-  ResolvedPnrObjectiveSelection selection{*selectedOrdering, *selectedEnergy,
-                                          {}};
+  ResolvedPnrObjectiveSelection selection{
+      *selectedOrdering, *selectedEnergy, {}};
   for (std::size_t ordinal = 0; ordinal != *focusedCount; ++ordinal) {
     auto dimension = decoder.u32();
     if (!dimension)
@@ -610,12 +606,11 @@ projectSelectedClosure(const ResolvedPnrPolicyConfig &sourcePolicy,
 
   std::set<std::uint32_t> selectedLevels;
   const ResolvedTotalOrdering &sourceOrdering =
-      sourceCatalogs.totalOrderings[
-          sourcePolicy.objectiveSelection.selectedTotalOrdering];
+      sourceCatalogs.totalOrderings[sourcePolicy.objectiveSelection
+                                        .selectedTotalOrdering];
   selectedLevels.insert(sourceOrdering.weightedLevels.begin(),
                         sourceOrdering.weightedLevels.end());
-  selectedLevels.insert(
-      sourcePolicy.objectiveSelection.selectedSearchEnergy);
+  selectedLevels.insert(sourcePolicy.objectiveSelection.selectedSearchEnergy);
 
   std::set<std::uint32_t> selectedDimensions(
       sourcePolicy.objectiveSelection.focusedClosureDimensions.begin(),
@@ -667,13 +662,11 @@ projectSelectedClosure(const ResolvedPnrPolicyConfig &sourcePolicy,
   if (llvm::Error error =
           validateResolvedPnrPolicyConfig(selectedPolicy, selectedCatalogs))
     return std::move(error);
-  return std::make_pair(std::move(selectedPolicy),
-                        std::move(selectedCatalogs));
+  return std::make_pair(std::move(selectedPolicy), std::move(selectedCatalogs));
 }
 
 llvm::Expected<ResolvedPnrConfigView>
-makeProjectedView(PnrConfigDomain domain,
-                  const ResolvedPnrPolicyConfig &policy,
+makeProjectedView(PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
                   const ResolvedObjectiveCatalogs &catalogs) {
   auto selected = projectSelectedClosure(policy, catalogs);
   if (!selected)
@@ -683,9 +676,9 @@ makeProjectedView(PnrConfigDomain domain,
   auto digest = computeComponentViewDigest(descriptorBytes(domain), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedPnrConfigViewAccess::create(
-      domain, std::move(selected->first), std::move(selected->second),
-      std::move(bytes), *digest);
+  return ResolvedPnrConfigViewAccess::create(domain, std::move(selected->first),
+                                             std::move(selected->second),
+                                             std::move(bytes), *digest);
 }
 
 llvm::Expected<ResolvedPnrConfigView>
@@ -754,8 +747,7 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
       {PnrWorkUnit::SeedAttempt, search.initializer.seedAttemptCount},
       {PnrWorkUnit::AssignmentAttemptPerSeed,
        search.initializer.assignmentAttemptLimitPerSeed},
-      {PnrWorkUnit::EndpointExpansion,
-       search.routing.endpointExpansionLimit},
+      {PnrWorkUnit::EndpointExpansion, search.routing.endpointExpansionLimit},
       {PnrWorkUnit::NegotiationIteration,
        search.routing.negotiationIterationLimit},
       {PnrWorkUnit::CalibrationProposal,
@@ -764,8 +756,7 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
        search.annealing.proposalsPerLevelBase},
       {PnrWorkUnit::ProposalPerMovableDecision,
        search.annealing.proposalsPerMovableDecision},
-      {PnrWorkUnit::FocusedClosureProposal,
-       search.focusedClosureProposalLimit},
+      {PnrWorkUnit::FocusedClosureProposal, search.focusedClosureProposalLimit},
   };
   if (search.exactRepair.kind == ResolvedPnrExactRepairKind::CpSat) {
     result.push_back({PnrWorkUnit::ExactRepairRegionDecision,

@@ -3,6 +3,7 @@ add_mlir_library(LoomPnR
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
   IncrementalTopologicalOrder.cpp
+  MappingObjective.cpp
   PnrIndex.cpp
   PnrConfig.cpp
   RouteTreeState.cpp

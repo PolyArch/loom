@@ -1,4 +1,5 @@
 #include "PnR/PnrConfig.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/RoutingNegotiation.h"
 
 #include "Common/ComponentViewDigest.h"
@@ -149,6 +150,27 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
           "routing kernel did not consume the projected growth ratio");
 }
 
+void mappingObjectiveRegistryIsClosedAndTyped() {
+  const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
+  require(registry.identity == "loom.mapping.pnr.objective" &&
+              registry.schemaMajor == 1 && registry.schemaMinor == 0,
+          "Mapping objective registry has the wrong identity");
+
+  const auto violations = loom::pnr::mappingViolationDescriptors();
+  require(violations.size() == 8 &&
+              violations.front().kind ==
+                  loom::ResolvedPnrViolationKind::UnroutedObligation &&
+              violations.back().kind ==
+                  loom::ResolvedPnrViolationKind::HardServiceContractShortfall,
+          "Mapping violation registry does not own the closed catalog");
+
+  const auto measures = loom::pnr::mappingMeasureDescriptors();
+  require(measures.size() == 1 &&
+              measures.front().kind ==
+                  loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim,
+          "Mapping measure registry does not own the closed catalog");
+}
+
 void malformedWireFailsClosed() {
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
@@ -180,6 +202,7 @@ int main() {
   selectedAndUnselectedRecordsHaveExactDependencies();
   workBudgetIsDerivedFromTheSelectedPolicy();
   routingKernelsConsumeTheProjectedOwnerRecord();
+  mappingObjectiveRegistryIsClosedAndTyped();
   malformedWireFailsClosed();
   static_assert(
       !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);

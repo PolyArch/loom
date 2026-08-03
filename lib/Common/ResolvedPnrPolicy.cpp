@@ -62,14 +62,11 @@ constexpr BuiltinLimits limitsFor(ResolvedProfilePreset preset) {
 }
 
 ResolvedPnrTemporaryViolationPolicy allTemporaryViolations() {
-  return {{ResolvedPnrViolationKind::UnroutedObligation,
-           ResolvedPnrViolationKind::CapacityOveruse,
-           ResolvedPnrViolationKind::ResourceTimeOverbooking,
-           ResolvedPnrViolationKind::BufferOveruse,
-           ResolvedPnrViolationKind::TagUnassigned,
-           ResolvedPnrViolationKind::TagConflict,
-           ResolvedPnrViolationKind::HardProgressViolation,
-           ResolvedPnrViolationKind::HardServiceContractShortfall}};
+  return {{
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
+  ResolvedPnrViolationKind::Name,
+#include "Common/MappingObjectiveKinds.def"
+  }};
 }
 
 llvm::Error invalid(const char *detail) {
@@ -150,8 +147,9 @@ ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
 
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedObjectiveCatalogs catalogs;
-  catalogs.dimensions.reserve(9);
-  for (std::uint32_t ordinal = 0; ordinal != 8; ++ordinal)
+  catalogs.dimensions.reserve(resolvedPnrViolationKindCount + 1);
+  for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
+       ++ordinal)
     catalogs.dimensions.push_back(
         {ResolvedObjectiveSourceKind::MappingViolation, ordinal,
          ResolvedObjectiveDirection::Minimize, 0, 1, 0,
@@ -163,12 +161,13 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel closure;
   ResolvedWeightedObjectiveLevel traversal;
   ResolvedWeightedObjectiveLevel energy;
-  for (std::uint32_t dimension = 0; dimension != 8; ++dimension) {
+  for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
+       ++dimension) {
     closure.terms.push_back({dimension, 1});
     energy.terms.push_back({dimension, UINT64_C(4294967296)});
   }
-  traversal.terms.push_back({8, 1});
-  energy.terms.push_back({8, 1});
+  traversal.terms.push_back({resolvedPnrViolationKindCount, 1});
+  energy.terms.push_back({resolvedPnrViolationKindCount, 1});
   catalogs.weightedLevels = {std::move(traversal), std::move(closure),
                              std::move(energy)};
   catalogs.totalOrderings.push_back({{1, 0}});

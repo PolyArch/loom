@@ -748,22 +748,10 @@ parseViolationKind(const ConfigSyntax *node, const llvm::Twine &key) {
   if (!valueOrErr)
     return valueOrErr.takeError();
   using Kind = loom::ResolvedPnrViolationKind;
-  if (*valueOrErr == "unrouted_obligation")
-    return Kind::UnroutedObligation;
-  if (*valueOrErr == "capacity_overuse")
-    return Kind::CapacityOveruse;
-  if (*valueOrErr == "resource_time_overbooking")
-    return Kind::ResourceTimeOverbooking;
-  if (*valueOrErr == "buffer_overuse")
-    return Kind::BufferOveruse;
-  if (*valueOrErr == "tag_unassigned")
-    return Kind::TagUnassigned;
-  if (*valueOrErr == "tag_conflict")
-    return Kind::TagConflict;
-  if (*valueOrErr == "hard_progress_violation")
-    return Kind::HardProgressViolation;
-  if (*valueOrErr == "hard_service_contract_shortfall")
-    return Kind::HardServiceContractShortfall;
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
+  if (*valueOrErr == ConfigSpelling)                                           \
+    return Kind::Name;
+#include "Common/MappingObjectiveKinds.def"
   return diagnostic("config_unknown_enum", key, *valueOrErr);
 }
 
@@ -1300,22 +1288,10 @@ parseConfigPatchFromMapping(const ConfigSyntax &topMap,
 llvm::StringRef violationName(loom::ResolvedPnrViolationKind violation) {
   using Kind = loom::ResolvedPnrViolationKind;
   switch (violation) {
-  case Kind::UnroutedObligation:
-    return "unrouted_obligation";
-  case Kind::CapacityOveruse:
-    return "capacity_overuse";
-  case Kind::ResourceTimeOverbooking:
-    return "resource_time_overbooking";
-  case Kind::BufferOveruse:
-    return "buffer_overuse";
-  case Kind::TagUnassigned:
-    return "tag_unassigned";
-  case Kind::TagConflict:
-    return "tag_conflict";
-  case Kind::HardProgressViolation:
-    return "hard_progress_violation";
-  case Kind::HardServiceContractShortfall:
-    return "hard_service_contract_shortfall";
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
+  case Kind::Name:                                                             \
+    return ConfigSpelling;
+#include "Common/MappingObjectiveKinds.def"
   }
   llvm_unreachable("all PnR violation kinds are handled");
 }

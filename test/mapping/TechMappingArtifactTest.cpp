@@ -14,6 +14,7 @@
 #include "Mapping/IR/MappingOps.h"
 #include "PnR/EndpointRouter.h"
 #include "PnR/HandshakeCandidateState.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialCandidateState.h"
@@ -953,7 +954,9 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routeMove.commit());
   if (!spatialCandidate->routeTree(*routedNet).isRouted())
     fail("Spatial move did not commit its RouteTree");
-  if (spatialCandidate->totalSelectedTraversalClaim() == 0)
+  if (loom::pnr::spatialMappingMeasureValue(
+          *spatialCandidate,
+          loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim) == 0)
     fail("routed Spatial candidate has no exact traversal-claim objective");
   bool observedActiveClaimBit = false;
   const auto activeClaimBits =

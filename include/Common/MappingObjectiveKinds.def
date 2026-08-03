@@ -1,0 +1,37 @@
+//===- MappingObjectiveKinds.def - Mapping objective catalog -*- C++ -*-===//
+//
+// Single declaration source for the closed Mapping-owned PnR objective
+// registry. Ordinals are stable schema values. DisplayName is diagnostic-only;
+// ConfigSpelling is the canonical ResolvedConfig spelling.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LOOM_MAPPING_VIOLATION
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)
+#endif
+
+#ifndef LOOM_MAPPING_MEASURE
+#define LOOM_MAPPING_MEASURE(Name, Ordinal, DisplayName)
+#endif
+
+LOOM_MAPPING_VIOLATION(UnroutedObligation, 0, "UnroutedObligation",
+                       "unrouted_obligation")
+LOOM_MAPPING_VIOLATION(CapacityOveruse, 1, "CapacityOveruse",
+                       "capacity_overuse")
+LOOM_MAPPING_VIOLATION(ResourceTimeOverbooking, 2,
+                       "ResourceTimeOverbooking",
+                       "resource_time_overbooking")
+LOOM_MAPPING_VIOLATION(BufferOveruse, 3, "BufferOveruse", "buffer_overuse")
+LOOM_MAPPING_VIOLATION(TagUnassigned, 4, "TagUnassigned", "tag_unassigned")
+LOOM_MAPPING_VIOLATION(TagConflict, 5, "TagConflict", "tag_conflict")
+LOOM_MAPPING_VIOLATION(HardProgressViolation, 6, "HardProgressViolation",
+                       "hard_progress_violation")
+LOOM_MAPPING_VIOLATION(HardServiceContractShortfall, 7,
+                       "HardServiceContractShortfall",
+                       "hard_service_contract_shortfall")
+
+LOOM_MAPPING_MEASURE(TotalSelectedTraversalClaim, 0,
+                     "TotalSelectedTraversalClaim")
+
+#undef LOOM_MAPPING_MEASURE
+#undef LOOM_MAPPING_VIOLATION

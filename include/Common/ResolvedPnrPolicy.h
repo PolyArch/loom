@@ -120,15 +120,15 @@ struct ResolvedPnrDeterminismPolicy final {
 };
 
 enum class ResolvedPnrViolationKind : std::uint32_t {
-  UnroutedObligation,
-  CapacityOveruse,
-  ResourceTimeOverbooking,
-  BufferOveruse,
-  TagUnassigned,
-  TagConflict,
-  HardProgressViolation,
-  HardServiceContractShortfall,
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
+  Name = Ordinal,
+#include "Common/MappingObjectiveKinds.def"
 };
+
+inline constexpr std::uint32_t resolvedPnrViolationKindCount = 0
+#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling) +1
+#include "Common/MappingObjectiveKinds.def"
+    ;
 
 struct ResolvedPnrTemporaryViolationPolicy final {
   std::vector<ResolvedPnrViolationKind> admitted;
