@@ -29,9 +29,13 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
 } // namespace
 
 llvm::Expected<SpatialRouteCostState>
-SpatialRouteCostState::create(const SpatialCandidateState &candidate,
-                              const ResolvedPathFinderPolicy &policy) {
-  if (llvm::Error error = validateResolvedPathFinderPolicy(policy))
+SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
+  const auto *policy = std::get_if<ResolvedPathFinderPolicy>(
+      &candidate.problem().config().policy().search.routing.negotiation);
+  if (!policy)
+    return routeCostStateError(
+        "frozen routing policy does not select PathFinder");
+  if (llvm::Error error = validateResolvedPathFinderPolicy(*policy))
     return std::move(error);
   if (llvm::Error error = candidate.verify())
     return std::move(error);
@@ -46,14 +50,14 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate,
   SpatialRouteCostState state;
   state.candidate_ = &candidate;
   state.problem_ = &problem;
-  state.policy_ = policy;
+  state.policy_ = *policy;
   state.logicalNetCount_ =
       static_cast<PnrIndex>(problem.transfers().logicalNets().size());
   state.routeClaimCount_ =
       static_cast<PnrIndex>(problem.routing().routeClaims().size());
   state.routeClaimWordCount_ =
       (static_cast<std::size_t>(state.routeClaimCount_) + 63) / 64;
-  state.presentPressure_ = policy.presentPressureInitial;
+  state.presentPressure_ = policy->presentPressureInitial;
 
   for (PnrIndex logicalNet = 0; logicalNet < state.logicalNetCount_;
        ++logicalNet) {
@@ -66,12 +70,21 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate,
   const std::size_t capacityCount =
       problem.resources().capacityDimensions().size();
   state.workingCapacityUsageRaw_.reserve(capacityCount);
-  for (PnrIndex capacity = 0; capacity < capacityCount; ++capacity)
-    state.workingCapacityUsageRaw_.push_back(
-        candidate.routeCapacityUsageRaw(capacity));
+  state.capacityOveruseCosts_.reserve(capacityCount);
+  for (PnrIndex capacity = 0; capacity < capacityCount; ++capacity) {
+    const std::uint64_t usage = candidate.routeCapacityUsageRaw(capacity);
+    state.workingCapacityUsageRaw_.push_back(usage);
+    auto overuse = normalizedRouteOveruseCost(
+        usage, 0, problem.resources().capacityDimensions()[capacity].capacity);
+    if (!overuse)
+      return overuse.takeError();
+    state.capacityOveruseCosts_.push_back(*overuse);
+  }
   state.historyPressure_.assign(capacityCount, 0);
+  state.stagedHistoryPressure_.assign(capacityCount, 0);
   state.capacityUpdateEpochs_.assign(capacityCount, 0);
   state.stagedCapacityUsageRaw_.assign(capacityCount, 0);
+  state.stagedCapacityOveruseCosts_.assign(capacityCount, 0);
   state.affectedCapacities_.reserve(capacityCount);
 
   state.currentClaimOveruseCosts_.assign(state.routeClaimCount_, 0);
@@ -130,6 +143,23 @@ std::uint64_t SpatialRouteCostState::workingCapacityUsageRaw(
     PnrIndex capacityDimension) const {
   assert(capacityDimension < workingCapacityUsageRaw_.size());
   return workingCapacityUsageRaw_[capacityDimension];
+}
+
+std::uint64_t
+SpatialRouteCostState::historyPressure(PnrIndex capacityDimension) const {
+  assert(capacityDimension < historyPressure_.size());
+  return historyPressure_[capacityDimension];
+}
+
+RouteCost
+SpatialRouteCostState::capacityOveruseCost(PnrIndex capacityDimension) const {
+  assert(capacityDimension < capacityOveruseCosts_.size());
+  return capacityOveruseCosts_[capacityDimension];
+}
+
+bool SpatialRouteCostState::hasCapacityOveruse() const {
+  return llvm::any_of(capacityOveruseCosts_,
+                      [](RouteCost cost) { return cost != 0; });
 }
 
 llvm::ArrayRef<std::uint64_t>
@@ -211,6 +241,14 @@ SpatialRouteCostState::stageClaimBits(llvm::ArrayRef<std::uint64_t> claimBits,
 llvm::Error SpatialRouteCostState::finishUpdate() {
   const FrozenSpatialRoutingGraph &routing = problem_->routing();
   for (PnrIndex capacity : affectedCapacities_) {
+    const std::uint64_t capacityValue =
+        problem_->resources().capacityDimensions()[capacity].capacity;
+    auto aggregateOveruse = normalizedRouteOveruseCost(
+        capacityUsageForCost(capacity, true), 0, capacityValue);
+    if (!aggregateOveruse)
+      return aggregateOveruse.takeError();
+    stagedCapacityOveruseCosts_[capacity] = *aggregateOveruse;
+
     const auto claims = routing.capacityRouteClaims().slice(
         routing.capacityRouteClaimOffsets()[capacity],
         routing.capacityRouteClaimOffsets()[capacity + 1] -
@@ -254,6 +292,8 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
 
   for (PnrIndex capacity : affectedCapacities_)
     workingCapacityUsageRaw_[capacity] = stagedCapacityUsageRaw_[capacity];
+  for (PnrIndex capacity : affectedCapacities_)
+    capacityOveruseCosts_[capacity] = stagedCapacityOveruseCosts_[capacity];
   for (PnrIndex claim : affectedClaims_)
     currentClaimOveruseCosts_[claim] = stagedClaimOveruseCosts_[claim];
   for (PnrIndex traversal : affectedTraversals_) {
@@ -284,8 +324,25 @@ RouteCost SpatialRouteCostState::claimOveruseForCost(PnrIndex claim,
 
 llvm::Expected<RouteCost> SpatialRouteCostState::computeTraversalCost(
     PnrIndex traversal, bool dynamicCost, bool stagedClaims) const {
+  return computeTraversalCostImpl(traversal, dynamicCost, stagedClaims,
+                                  presentPressure_, historyPressure_);
+}
+
+llvm::Expected<RouteCost> SpatialRouteCostState::computeTraversalCost(
+    PnrIndex traversal, std::uint64_t presentPressure,
+    llvm::ArrayRef<std::uint64_t> historyPressure) const {
+  return computeTraversalCostImpl(traversal, true, false, presentPressure,
+                                  historyPressure);
+}
+
+llvm::Expected<RouteCost> SpatialRouteCostState::computeTraversalCostImpl(
+    PnrIndex traversal, bool dynamicCost, bool stagedClaims,
+    std::uint64_t presentPressure,
+    llvm::ArrayRef<std::uint64_t> historyPressure) const {
   if (traversal >= problem_->routing().traversals().size())
     return routeCostStateError("traversal cost index is out of range");
+  if (historyPressure.size() != historyPressure_.size())
+    return routeCostStateError("history-pressure vector has the wrong width");
   RouteCost cost = 0;
   const FrozenSpatialTraversal &record =
       problem_->routing().traversals()[traversal];
@@ -299,8 +356,8 @@ llvm::Expected<RouteCost> SpatialRouteCostState::computeTraversalCost(
     if (dynamicCost) {
       auto current = pathFinderResourceCost(
           policy_.priceKernel, claimRecord.qCost,
-          claimOveruseForCost(claim, stagedClaims), presentPressure_,
-          historyPressure_[claimRecord.capacityDimension]);
+          claimOveruseForCost(claim, stagedClaims), presentPressure,
+          historyPressure[claimRecord.capacityDimension]);
       if (!current)
         return current.takeError();
       term = *current;
@@ -339,6 +396,27 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
   return llvm::Error::success();
 }
 
+llvm::Error SpatialRouteCostState::selectLogicalNet(
+    PnrIndex logicalNet, llvm::ArrayRef<std::uint64_t> activeClaimBits) {
+  if (selectedLogicalNet_)
+    return routeCostStateError("another logical net is already selected");
+  if (logicalNet >= logicalNetCount_)
+    return routeCostStateError("selected logical net is out of range");
+  if (!activeClaimBits.empty() &&
+      activeClaimBits.size() != routeClaimWordCount_)
+    return routeCostStateError("active claim bitset has the wrong width");
+
+  beginUpdate();
+  if (llvm::Error error = stageClaimBits(activeClaimBits, false))
+    return error;
+  if (llvm::Error error = finishUpdate())
+    return error;
+  std::fill(selectedLogicalNetClaimBits_.begin(),
+            selectedLogicalNetClaimBits_.end(), 0);
+  selectedLogicalNet_ = logicalNet;
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialRouteCostState::updateSelectedLogicalNetClaims(
     llvm::ArrayRef<std::uint64_t> claimBits) {
   if (!selectedLogicalNet_)
@@ -371,9 +449,109 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetClaims(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
+  if (!selectedLogicalNet_)
+    return routeCostStateError("no selected logical net can be accepted");
+  std::fill(selectedLogicalNetClaimBits_.begin(),
+            selectedLogicalNetClaimBits_.end(), 0);
+  selectedLogicalNet_.reset();
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialRouteCostState::resetFromCandidate() {
+  if (llvm::Error error = candidate_->verify())
+    return error;
+
+  beginUpdate();
+  const auto capacities = problem_->resources().capacityDimensions();
+  for (PnrIndex capacity = 0; capacity < capacities.size(); ++capacity) {
+    capacityUpdateEpochs_[capacity] = updateEpoch_;
+    stagedCapacityUsageRaw_[capacity] =
+        candidate_->routeCapacityUsageRaw(capacity);
+    auto overuse = normalizedRouteOveruseCost(stagedCapacityUsageRaw_[capacity],
+                                              0, capacities[capacity].capacity);
+    if (!overuse)
+      return overuse.takeError();
+    stagedCapacityOveruseCosts_[capacity] = *overuse;
+  }
+  for (PnrIndex claim = 0; claim < routeClaimCount_; ++claim) {
+    claimUpdateEpochs_[claim] = updateEpoch_;
+    const FrozenSpatialRouteClaim &record =
+        problem_->routing().routeClaims()[claim];
+    auto overuse = normalizedRouteOveruseCost(
+        stagedCapacityUsageRaw_[record.capacityDimension], record.amount,
+        capacities[record.capacityDimension].capacity);
+    if (!overuse)
+      return overuse.takeError();
+    stagedClaimOveruseCosts_[claim] = *overuse;
+  }
+  std::fill(stagedHistoryPressure_.begin(), stagedHistoryPressure_.end(), 0);
+  for (PnrIndex traversal = 0;
+       traversal < problem_->routing().traversals().size(); ++traversal) {
+    auto cost = computeTraversalCostImpl(traversal, true, true,
+                                         policy_.presentPressureInitial,
+                                         stagedHistoryPressure_);
+    if (!cost)
+      return cost.takeError();
+    stagedTraversalCosts_[traversal] = *cost;
+  }
+
+  for (PnrIndex capacity = 0; capacity < capacities.size(); ++capacity) {
+    workingCapacityUsageRaw_[capacity] = stagedCapacityUsageRaw_[capacity];
+    capacityOveruseCosts_[capacity] = stagedCapacityOveruseCosts_[capacity];
+  }
+  llvm::copy(stagedClaimOveruseCosts_, currentClaimOveruseCosts_.begin());
+  llvm::copy(stagedTraversalCosts_, currentTraversalCosts_.begin());
+  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
+    currentArcCosts_[arc] = currentTraversalCosts_
+        [problem_->routing().routingArcs()[arc].traversal];
+  presentPressure_ = policy_.presentPressureInitial;
+  std::fill(historyPressure_.begin(), historyPressure_.end(), 0);
+  std::fill(selectedLogicalNetClaimBits_.begin(),
+            selectedLogicalNetClaimBits_.end(), 0);
+  selectedLogicalNet_.reset();
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
+  if (selectedLogicalNet_)
+    return routeCostStateError(
+        "cannot advance PathFinder while a logical net is selected");
+  auto nextPressure =
+      ceilMulDiv(presentPressure_, policy_.presentPressureGrowth.numerator,
+                 policy_.presentPressureGrowth.denominator);
+  if (!nextPressure)
+    return nextPressure.takeError();
+  for (PnrIndex capacity = 0; capacity < historyPressure_.size(); ++capacity) {
+    auto nextHistory = pathFinderHistoryUpdate(historyPressure_[capacity],
+                                               policy_.historyPressureIncrement,
+                                               capacityOveruseCosts_[capacity]);
+    if (!nextHistory)
+      return nextHistory.takeError();
+    stagedHistoryPressure_[capacity] = *nextHistory;
+  }
+  for (PnrIndex traversal = 0;
+       traversal < problem_->routing().traversals().size(); ++traversal) {
+    auto cost =
+        computeTraversalCost(traversal, *nextPressure, stagedHistoryPressure_);
+    if (!cost)
+      return cost.takeError();
+    stagedTraversalCosts_[traversal] = *cost;
+  }
+
+  presentPressure_ = *nextPressure;
+  llvm::copy(stagedHistoryPressure_, historyPressure_.begin());
+  llvm::copy(stagedTraversalCosts_, currentTraversalCosts_.begin());
+  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
+    currentArcCosts_[arc] = currentTraversalCosts_
+        [problem_->routing().routingArcs()[arc].traversal];
+  return llvm::Error::success();
+}
+
 std::size_t SpatialRouteCostState::retainedStorageBytes() const {
   return retainedBytes(workingCapacityUsageRaw_) +
          retainedBytes(historyPressure_) +
+         retainedBytes(capacityOveruseCosts_) +
          retainedBytes(currentClaimOveruseCosts_) +
          retainedBytes(lowerBoundTraversalCosts_) +
          retainedBytes(currentTraversalCosts_) +
@@ -383,6 +561,8 @@ std::size_t SpatialRouteCostState::retainedStorageBytes() const {
          retainedBytes(claimUpdateEpochs_) +
          retainedBytes(traversalUpdateEpochs_) +
          retainedBytes(stagedCapacityUsageRaw_) +
+         retainedBytes(stagedHistoryPressure_) +
+         retainedBytes(stagedCapacityOveruseCosts_) +
          retainedBytes(stagedClaimOveruseCosts_) +
          retainedBytes(stagedTraversalCosts_) +
          retainedBytes(affectedCapacities_) + retainedBytes(affectedClaims_) +

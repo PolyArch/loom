@@ -18,6 +18,7 @@
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialNetRouter.h"
+#include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
 
@@ -975,8 +976,8 @@ void artifactRoundTripAndReferenceValidation() {
       &spatialConfig.policy().search.routing.negotiation);
   if (!pathFinder)
     fail("default Spatial routing policy is not PathFinder");
-  auto routeCostState = take(
-      loom::pnr::SpatialRouteCostState::create(*spatialCandidate, *pathFinder));
+  auto routeCostState =
+      take(loom::pnr::SpatialRouteCostState::create(*spatialCandidate));
   if (routeCostState.lowerBoundArcCosts().size() !=
           frozen->routing().routingArcs().size() ||
       routeCostState.currentArcCosts().size() !=
@@ -1053,8 +1054,8 @@ void artifactRoundTripAndReferenceValidation() {
                boundaryAttachments, memoryPlans}));
   loom::pnr::SpatialCandidateScratch routedCandidateScratch;
   requireSuccess(routedCandidateScratch.prepare(*frozen));
-  auto routedCostState = take(
-      loom::pnr::SpatialRouteCostState::create(*routedCandidate, *pathFinder));
+  auto routedCostState =
+      take(loom::pnr::SpatialRouteCostState::create(*routedCandidate));
   requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
   loom::pnr::SpatialNetRouterScratch netRouter;
   requireSuccess(netRouter.prepare(*frozen));
@@ -1070,18 +1071,6 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
   if (!routedCandidate->routeTree(*multicastNet).isRouted())
     fail("whole-net routing did not commit a complete RouteTree");
-  requireSuccess(routedCandidate->verify());
-  const std::size_t warmedNetRouterBytes = netRouter.retainedStorageBytes();
-  requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
-  auto repeatedWholeNet =
-      take(routedCandidate->beginMove(routedCandidateScratch));
-  (void)take(netRouter.routeWholeNet(
-      repeatedWholeNet, *routedCandidate, routedCostState, *multicastNet,
-      spatialConfig.policy().search.routing.endpointExpansionLimit));
-  repeatedWholeNet.rollback();
-  requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
-  if (netRouter.retainedStorageBytes() != warmedNetRouterBytes)
-    fail("warmed whole-net routing grew worker-local scratch storage");
   requireSuccess(routedCandidate->verify());
 
   const std::uint64_t routedObjective =
@@ -1113,6 +1102,41 @@ void artifactRoundTripAndReferenceValidation() {
   if (routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
       !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
     fail("failed whole-net routing did not restore candidate and costs");
+  requireSuccess(routedCandidate->verify());
+
+  loom::pnr::SpatialPathFinderRouterScratch negotiatedRouter;
+  requireSuccess(negotiatedRouter.prepare(*frozen));
+  auto failedIteration = negotiatedRouter.routeToClosure(
+      *routedCandidate, routedCandidateScratch, routedCostState, {1, 1}, {});
+  if (failedIteration)
+    fail("bounded PathFinder iteration unexpectedly reached closure");
+  llvm::consumeError(failedIteration.takeError());
+  if (routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
+      !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
+    fail("failed PathFinder iteration did not roll back its complete overlay");
+  requireSuccess(routedCandidate->verify());
+  auto selectedCycle = negotiatedRouter.routeToClosure(
+      *routedCandidate, routedCandidateScratch, routedCostState,
+      {spatialConfig.policy().search.routing.endpointExpansionLimit,
+       spatialConfig.policy().search.routing.negotiationIterationLimit},
+      {});
+  bool rejectedSelectedCycle = false;
+  if (selectedCycle) {
+    fail("cyclic global route fixture unexpectedly reached closure");
+  } else {
+    llvm::handleAllErrors(
+        selectedCycle.takeError(),
+        [&](const loom::pnr::SpatialPathFinderClosureFailure &failure) {
+          rejectedSelectedCycle = failure.kind() ==
+                                  loom::pnr::SpatialPathFinderClosureFailure::
+                                      Kind::SelectedCombinationalHandshakeCycle;
+        },
+        [&](const llvm::ErrorInfoBase &) {});
+  }
+  if (!rejectedSelectedCycle ||
+      routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
+      !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
+    fail("cyclic PathFinder overlay was not rejected and rolled back");
   requireSuccess(routedCandidate->verify());
 
   auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));

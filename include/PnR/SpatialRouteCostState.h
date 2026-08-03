@@ -24,17 +24,28 @@ namespace loom::pnr {
 class SpatialRouteCostState final {
 public:
   static llvm::Expected<SpatialRouteCostState>
-  create(const SpatialCandidateState &candidate,
-         const ResolvedPathFinderPolicy &policy);
+  create(const SpatialCandidateState &candidate);
 
   llvm::Error selectLogicalNet(std::optional<PnrIndex> logicalNet);
+  llvm::Error selectLogicalNet(PnrIndex logicalNet,
+                               llvm::ArrayRef<std::uint64_t> activeClaimBits);
   llvm::Error
   updateSelectedLogicalNetClaims(llvm::ArrayRef<std::uint64_t> claimBits);
+  llvm::Error acceptSelectedLogicalNet();
+  llvm::Error resetFromCandidate();
+  llvm::Error advancePathFinderIteration();
 
   std::optional<PnrIndex> selectedLogicalNet() const {
     return selectedLogicalNet_;
   }
+  std::uint64_t presentPressure() const { return presentPressure_; }
+  std::uint64_t historyPressure(PnrIndex capacityDimension) const;
   std::uint64_t workingCapacityUsageRaw(PnrIndex capacityDimension) const;
+  RouteCost capacityOveruseCost(PnrIndex capacityDimension) const;
+  bool hasCapacityOveruse() const;
+  bool isBoundTo(const SpatialCandidateState &candidate) const {
+    return candidate_ == &candidate;
+  }
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
     return lowerBoundArcCosts_;
   }
@@ -53,6 +64,13 @@ private:
   llvm::Expected<RouteCost> computeTraversalCost(PnrIndex traversal,
                                                  bool dynamicCost,
                                                  bool stagedClaims) const;
+  llvm::Expected<RouteCost>
+  computeTraversalCost(PnrIndex traversal, std::uint64_t presentPressure,
+                       llvm::ArrayRef<std::uint64_t> historyPressure) const;
+  llvm::Expected<RouteCost>
+  computeTraversalCostImpl(PnrIndex traversal, bool dynamicCost,
+                           bool stagedClaims, std::uint64_t presentPressure,
+                           llvm::ArrayRef<std::uint64_t> historyPressure) const;
   std::uint64_t capacityUsageForCost(PnrIndex capacityDimension,
                                      bool stagedUsage) const;
   RouteCost claimOveruseForCost(PnrIndex claim, bool stagedClaims) const;
@@ -69,6 +87,7 @@ private:
 
   std::vector<std::uint64_t> workingCapacityUsageRaw_;
   std::vector<std::uint64_t> historyPressure_;
+  std::vector<RouteCost> capacityOveruseCosts_;
   std::vector<RouteCost> currentClaimOveruseCosts_;
   std::vector<RouteCost> lowerBoundTraversalCosts_;
   std::vector<RouteCost> currentTraversalCosts_;
@@ -80,6 +99,8 @@ private:
   std::vector<std::uint64_t> claimUpdateEpochs_;
   std::vector<std::uint64_t> traversalUpdateEpochs_;
   std::vector<std::uint64_t> stagedCapacityUsageRaw_;
+  std::vector<std::uint64_t> stagedHistoryPressure_;
+  std::vector<RouteCost> stagedCapacityOveruseCosts_;
   std::vector<RouteCost> stagedClaimOveruseCosts_;
   std::vector<RouteCost> stagedTraversalCosts_;
   std::vector<PnrIndex> affectedCapacities_;
