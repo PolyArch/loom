@@ -104,6 +104,32 @@ struct FabricBoundaryTagContinuityPointView final {
   std::uint32_t outputTagWidthBits = 0;
 };
 
+/// One Fabric-owned local interpretation domain for Physical Tags. Temporal
+/// PE and memory ingress match independently per physical input endpoint;
+/// temporal switch resident tables and boundary rewrite LUTs match in one
+/// owner-wide domain. This is a sealed, rebuildable projection with no
+/// persistent identity, configured value, or Mapping-owned namespace.
+enum class FabricPhysicalTagMatchDomainKind : std::uint8_t {
+  TemporalPeIngress,
+  TemporalMemoryIngress,
+  TemporalSwitchTable,
+  BoundaryLookup,
+};
+
+struct FabricPhysicalTagMatchDomainView final {
+  FabricPhysicalTagMatchDomainKind kind =
+      FabricPhysicalTagMatchDomainKind::TemporalPeIngress;
+  FabricInventoryOwnerRef owner;
+  std::optional<FabricTransportEndpointRef> ingress;
+  std::uint32_t tagWidthBits = 0;
+
+  friend bool operator==(const FabricPhysicalTagMatchDomainView &lhs,
+                         const FabricPhysicalTagMatchDomainView &rhs) {
+    return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
+           lhs.ingress == rhs.ingress && lhs.tagWidthBits == rhs.tagWidthBits;
+  }
+};
+
 /// The owner-defined domain that makes statically implied traversal uses one
 /// atomic activation. Most traversals select one exact UsePattern. Temporal
 /// switch broadcast is the sole current exception: every selected egress from
@@ -243,6 +269,14 @@ public:
   llvm::ArrayRef<FabricTransportEndpointRef> transportEndpoints() const;
   std::optional<::fabric::DataPathType>
   transportEndpointDataPath(const FabricTransportEndpointRef &endpoint) const;
+
+  /// Complete canonical local Physical Tag interpretation-domain inventory.
+  /// The endpoint query is defined only for a tagged input that performs
+  /// content matching. Tagged transport-only endpoints return no domain.
+  llvm::ArrayRef<FabricPhysicalTagMatchDomainView>
+  physicalTagMatchDomains() const;
+  std::optional<FabricOrdinal> transportEndpointTagMatchDomain(
+      const FabricTransportEndpointRef &endpoint) const;
 
   /// Size of the owner's canonical token transport inventory.
   std::uint64_t

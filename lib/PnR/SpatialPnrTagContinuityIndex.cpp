@@ -25,6 +25,15 @@ constexpr PnrCapacityContext pointIndexContext{frozenTagContinuity, "points",
 constexpr PnrCapacityContext traversalCountContext{
     frozenTagContinuity, "traversal_point_ordinals", "physical_traversals",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext domainCountContext{
+    frozenTagContinuity, "match_domains", "physical_tag_match_domains",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext domainIndexContext{
+    frozenTagContinuity, "endpoint_match_domain_ordinals",
+    "physical_tag_match_domains", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext endpointCountContext{
+    frozenTagContinuity, "endpoint_match_domain_ordinals",
+    "transport_endpoints", PnrCapacityMeasure::Count};
 
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(
@@ -38,11 +47,19 @@ llvm::Expected<FrozenSpatialTagContinuityIndex>
 loom::pnr::freezeSpatialTagContinuityIndex(const FabricArtifactView &fabric) {
   const auto boundaries = fabric.boundaryOccurrences();
   const auto traversals = fabric.physicalTraversals();
+  const auto endpoints = fabric.transportEndpoints();
+  const auto matchDomains = fabric.physicalTagMatchDomains();
   if (llvm::Error error =
           preflightPnrIndexCapacity(pointCountContext, boundaries.size()))
     return std::move(error);
   if (llvm::Error error =
           preflightPnrIndexCapacity(traversalCountContext, traversals.size()))
+    return std::move(error);
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(endpointCountContext, endpoints.size()))
+    return std::move(error);
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(domainCountContext, matchDomains.size()))
     return std::move(error);
 
   FrozenSpatialTagContinuityIndex result;
@@ -81,5 +98,33 @@ loom::pnr::freezeSpatialTagContinuityIndex(const FabricArtifactView &fabric) {
   }
   if (llvm::is_contained(pointObserved, std::uint8_t{0}))
     return invalid("a continuity point has no physical traversal");
+
+  result.matchDomains_.assign(matchDomains.begin(), matchDomains.end());
+  result.endpointMatchDomainOrdinals_.assign(endpoints.size(),
+                                             getInvalidPnrIndex());
+  std::vector<std::uint8_t> domainObserved(matchDomains.size(), 0);
+  for (auto [endpointOrdinal, endpoint] : llvm::enumerate(endpoints)) {
+    const auto domain = fabric.transportEndpointTagMatchDomain(endpoint);
+    if (!domain)
+      continue;
+    auto frozenDomain = checkedPnrIndex(domainIndexContext, *domain);
+    if (!frozenDomain)
+      return frozenDomain.takeError();
+    if (*frozenDomain >= matchDomains.size())
+      return invalid("a transport endpoint names an absent tag match domain");
+    const auto direction = fabric.transportEndpointDirection(endpoint);
+    const auto path = fabric.transportEndpointDataPath(endpoint);
+    if (!direction || *direction != FabricPortDirection::Input || !path ||
+        path->kind != ::fabric::DataPathKind::BitsTag ||
+        path->tagWidthBits != matchDomains[*frozenDomain].tagWidthBits)
+      return invalid("a tag match domain disagrees with its input endpoint");
+    if (matchDomains[*frozenDomain].ingress &&
+        *matchDomains[*frozenDomain].ingress != endpoint)
+      return invalid("an endpoint-local tag match domain names another input");
+    result.endpointMatchDomainOrdinals_[endpointOrdinal] = *frozenDomain;
+    domainObserved[*frozenDomain] = 1;
+  }
+  if (llvm::is_contained(domainObserved, std::uint8_t{0}))
+    return invalid("a tag match domain has no physical input endpoint");
   return result;
 }

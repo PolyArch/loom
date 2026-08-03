@@ -652,8 +652,9 @@ struct FrozenSpatialTagContinuityPoint final {
   std::uint32_t outputTagWidthBits = 0;
 };
 
-/// Cold projection from exact Fabric boundary owners to traversal-dense PnR
-/// ordinals. Non-boundary traversals carry getInvalidPnrIndex().
+/// Cold projection from exact Fabric boundary and tag match-domain owners to
+/// traversal- and endpoint-dense PnR ordinals. Entries with no corresponding
+/// owner carry getInvalidPnrIndex().
 class FrozenSpatialTagContinuityIndex final {
 public:
   llvm::ArrayRef<FrozenSpatialTagContinuityPoint> points() const {
@@ -662,10 +663,19 @@ public:
   llvm::ArrayRef<PnrIndex> traversalPointOrdinals() const {
     return traversalPointOrdinals_;
   }
+  llvm::ArrayRef<::loom::fabric::FabricPhysicalTagMatchDomainView>
+  matchDomains() const {
+    return matchDomains_;
+  }
+  llvm::ArrayRef<PnrIndex> endpointMatchDomainOrdinals() const {
+    return endpointMatchDomainOrdinals_;
+  }
 
 private:
   std::vector<FrozenSpatialTagContinuityPoint> points_;
   std::vector<PnrIndex> traversalPointOrdinals_;
+  std::vector<::loom::fabric::FabricPhysicalTagMatchDomainView> matchDomains_;
+  std::vector<PnrIndex> endpointMatchDomainOrdinals_;
 
   friend llvm::Expected<FrozenSpatialTagContinuityIndex>
   freezeSpatialTagContinuityIndex(

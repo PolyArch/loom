@@ -31,6 +31,12 @@ constexpr PnrCapacityContext segmentCountContext{selectedContinuity, "segments",
 constexpr PnrCapacityContext segmentIndexContext{selectedContinuity, "segments",
                                                  "tag_continuity_segments",
                                                  PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext domainCountContext{
+    selectedContinuity, "domain_segment_offsets", "tag_match_domains",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext incidenceCountContext{
+    selectedContinuity, "segment_domains", "segment_domain_incidence",
+    PnrCapacityMeasure::Count};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
@@ -66,10 +72,17 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     result.segments_.push_back({originKind, origin, tagWidthBits});
     return *ordinal;
   };
-  if (route.isUnrouted())
-    return result;
-
   const FrozenSpatialRoutingGraph &routing = route.routingGraph();
+  if (route.isUnrouted()) {
+    const auto matchDomains = routing.tagContinuity().matchDomains();
+    if (llvm::Error error =
+            preflightPnrIndexCapacity(domainCountContext, matchDomains.size()))
+      return std::move(error);
+    result.segmentDomainOffsets_.push_back(0);
+    result.domainSegmentOffsets_.assign(matchDomains.size() + 1, 0);
+    return result;
+  }
+
   const auto endpoints = routing.routingEndpoints();
   const auto arcs = routing.routingArcs();
   const auto arcSources = routing.arcSources();
@@ -217,5 +230,70 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
       segment = remap[segment];
     }
   result.segments_ = std::move(canonical);
+
+  const auto matchDomains = routing.tagContinuity().matchDomains();
+  const auto endpointDomains =
+      routing.tagContinuity().endpointMatchDomainOrdinals();
+  if (endpointDomains.size() != endpoints.size())
+    return invalid("the frozen tag match-domain index is not endpoint dense");
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(domainCountContext, matchDomains.size()))
+    return std::move(error);
+
+  std::vector<std::pair<PnrIndex, PnrIndex>> incidence;
+  incidence.reserve(route.activeNodeCount());
+  for (auto [slot, node] : llvm::enumerate(nodes)) {
+    if (!node.isActive())
+      continue;
+    if (node.endpoint >= endpointDomains.size())
+      return invalid("a route node has no frozen tag match-domain entry");
+    const PnrIndex domain = endpointDomains[node.endpoint];
+    if (domain == getInvalidPnrIndex())
+      continue;
+    const PnrIndex segment = result.nodeSegments_[slot];
+    if (domain >= matchDomains.size() || segment >= result.segments_.size())
+      return invalid("tag match-domain incidence names an absent record");
+    if (matchDomains[domain].tagWidthBits !=
+        result.segments_[segment].tagWidthBits)
+      return invalid("a tag segment intersects a domain of another width");
+    incidence.emplace_back(segment, domain);
+  }
+  llvm::sort(incidence);
+  incidence.erase(std::unique(incidence.begin(), incidence.end()),
+                  incidence.end());
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(incidenceCountContext, incidence.size()))
+    return std::move(error);
+
+  result.segmentDomainOffsets_.reserve(result.segments_.size() + 1);
+  result.segmentDomains_.reserve(incidence.size());
+  auto incidenceIt = incidence.begin();
+  for (PnrIndex segment = 0; segment < result.segments_.size(); ++segment) {
+    result.segmentDomainOffsets_.push_back(result.segmentDomains_.size());
+    while (incidenceIt != incidence.end() && incidenceIt->first == segment) {
+      result.segmentDomains_.push_back(incidenceIt->second);
+      ++incidenceIt;
+    }
+  }
+  result.segmentDomainOffsets_.push_back(result.segmentDomains_.size());
+  if (incidenceIt != incidence.end())
+    return invalid("segment/domain incidence is not segment ordered");
+
+  llvm::sort(incidence, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.second, lhs.first) < std::tie(rhs.second, rhs.first);
+  });
+  result.domainSegmentOffsets_.reserve(matchDomains.size() + 1);
+  result.domainSegments_.reserve(incidence.size());
+  incidenceIt = incidence.begin();
+  for (PnrIndex domain = 0; domain < matchDomains.size(); ++domain) {
+    result.domainSegmentOffsets_.push_back(result.domainSegments_.size());
+    while (incidenceIt != incidence.end() && incidenceIt->second == domain) {
+      result.domainSegments_.push_back(incidenceIt->first);
+      ++incidenceIt;
+    }
+  }
+  result.domainSegmentOffsets_.push_back(result.domainSegments_.size());
+  if (incidenceIt != incidence.end())
+    return invalid("segment/domain incidence is not domain ordered");
   return result;
 }

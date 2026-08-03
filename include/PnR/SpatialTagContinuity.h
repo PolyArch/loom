@@ -35,18 +35,32 @@ struct SpatialTagContinuitySegment final {
 
 /// Cold, removable projection of one selected route. The node array is dense
 /// in RouteTreeState::nodeStorage(); inactive and untagged nodes carry
-/// getInvalidPnrIndex(). Search-time tag state may cache this relation but may
-/// not reinterpret its Fabric-owned boundary transitions.
+/// getInvalidPnrIndex(). The two CSR relations describe the same deduplicated
+/// segment/domain incidence in both directions. Search-time tag state may
+/// cache this relation but may not reinterpret its Fabric-owned boundaries or
+/// local match domains.
 class SpatialTagContinuityProjection final {
 public:
   llvm::ArrayRef<SpatialTagContinuitySegment> segments() const {
     return segments_;
   }
   llvm::ArrayRef<PnrIndex> nodeSegments() const { return nodeSegments_; }
+  llvm::ArrayRef<PnrIndex> segmentDomainOffsets() const {
+    return segmentDomainOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> segmentDomains() const { return segmentDomains_; }
+  llvm::ArrayRef<PnrIndex> domainSegmentOffsets() const {
+    return domainSegmentOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> domainSegments() const { return domainSegments_; }
 
 private:
   std::vector<SpatialTagContinuitySegment> segments_;
   std::vector<PnrIndex> nodeSegments_;
+  std::vector<PnrIndex> segmentDomainOffsets_;
+  std::vector<PnrIndex> segmentDomains_;
+  std::vector<PnrIndex> domainSegmentOffsets_;
+  std::vector<PnrIndex> domainSegments_;
 
   friend llvm::Expected<SpatialTagContinuityProjection>
   deriveSpatialTagContinuity(const RouteTreeState &route);

@@ -107,6 +107,69 @@ bool haveSameTransportKind(llvm::ArrayRef<std::uint8_t> left,
          left.take_front(kindBytes) == right.take_front(kindBytes);
 }
 
+std::optional<FabricPhysicalTagMatchDomainView>
+projectPhysicalTagMatchDomain(const FabricArtifactView &view,
+                              const FabricTransportEndpointRef &endpoint) {
+  if (view.transportEndpointDirection(endpoint) != FabricPortDirection::Input)
+    return std::nullopt;
+  const auto path = view.transportEndpointDataPath(endpoint);
+  if (!path || path->kind != ::fabric::DataPathKind::BitsTag)
+    return std::nullopt;
+
+  switch (endpoint.owner.kind()) {
+  case FabricTransportEndpointOwnerKind::FabricPeOccurrence: {
+    const auto owner = std::get<FabricPeOccurrenceRef>(endpoint.owner.payload);
+    if (view.peSchedule(owner) != ::fabric::Schedule::Temporal)
+      return std::nullopt;
+    return FabricPhysicalTagMatchDomainView{
+        FabricPhysicalTagMatchDomainKind::TemporalPeIngress,
+        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits};
+  }
+  case FabricTransportEndpointOwnerKind::FabricMemoryOccurrence: {
+    const auto owner =
+        std::get<FabricMemoryOccurrenceRef>(endpoint.owner.payload);
+    if (view.memorySchedule(owner) != ::fabric::Schedule::Temporal)
+      return std::nullopt;
+    return FabricPhysicalTagMatchDomainView{
+        FabricPhysicalTagMatchDomainKind::TemporalMemoryIngress,
+        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits};
+  }
+  case FabricTransportEndpointOwnerKind::FabricSwitchOccurrence: {
+    const auto owner =
+        std::get<FabricSwitchOccurrenceRef>(endpoint.owner.payload);
+    return FabricPhysicalTagMatchDomainView{
+        FabricPhysicalTagMatchDomainKind::TemporalSwitchTable,
+        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits};
+  }
+  case FabricTransportEndpointOwnerKind::FabricBoundaryOccurrence: {
+    const auto owner =
+        std::get<FabricBoundaryOccurrenceRef>(endpoint.owner.payload);
+    const auto point = view.boundaryTagContinuityPoint(owner);
+    if (!point || point->kind != FabricBoundaryTagContinuityKind::Rewriter)
+      return std::nullopt;
+    return FabricPhysicalTagMatchDomainView{
+        FabricPhysicalTagMatchDomainKind::BoundaryLookup,
+        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits};
+  }
+  case FabricTransportEndpointOwnerKind::SpatialCoreOccurrence:
+  case FabricTransportEndpointOwnerKind::FabricFuOccurrence:
+  case FabricTransportEndpointOwnerKind::FabricFifoOccurrence:
+  case FabricTransportEndpointOwnerKind::SystemServiceEndpoint:
+  case FabricTransportEndpointOwnerKind::SystemTransportResource:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::uint8_t>
+ownerWideTagMatchDomainKey(const FabricPhysicalTagMatchDomainView &domain) {
+  std::vector<std::uint8_t> result;
+  result.push_back(static_cast<std::uint8_t>(domain.kind));
+  const auto owner = canonicalFabricBytes(domain.owner);
+  result.insert(result.end(), owner.begin(), owner.end());
+  return result;
+}
+
 llvm::Error invalidView(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "fabric_artifact_invalid: " + message);
@@ -280,6 +343,21 @@ FabricArtifactView::transportEndpointDataPath(
   const detail::FabricTransportEndpointViewData *record =
       storage_->transportEndpoint(endpoint);
   return record ? decodeTransportDataPath(record->canonicalType) : std::nullopt;
+}
+
+llvm::ArrayRef<FabricPhysicalTagMatchDomainView>
+FabricArtifactView::physicalTagMatchDomains() const {
+  return storage_->physicalTagMatchDomains;
+}
+
+std::optional<FabricOrdinal>
+FabricArtifactView::transportEndpointTagMatchDomain(
+    const FabricTransportEndpointRef &endpoint) const {
+  const auto found =
+      storage_->tagMatchDomainByEndpoint.find(canonicalFabricBytes(endpoint));
+  return found == storage_->tagMatchDomainByEndpoint.end()
+             ? std::nullopt
+             : std::optional<FabricOrdinal>(found->second);
 }
 
 std::uint64_t FabricArtifactView::transportEndpointCount(
@@ -1416,6 +1494,32 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   storage->pointConnectionKeys = std::move(pointConnectionKeys);
   storage->traversalKeys = std::move(traversalKeys);
   FabricArtifactView view(storage);
+  std::map<std::vector<std::uint8_t>, FabricOrdinal> ownerWideTagDomains;
+  for (const FabricTransportEndpointRef &endpoint : view.transportEndpoints()) {
+    const auto projected = projectPhysicalTagMatchDomain(view, endpoint);
+    if (!projected)
+      continue;
+    FabricOrdinal domainOrdinal = 0;
+    if (projected->ingress) {
+      domainOrdinal = storage->physicalTagMatchDomains.size();
+      storage->physicalTagMatchDomains.push_back(*projected);
+    } else {
+      auto [found, inserted] = ownerWideTagDomains.try_emplace(
+          ownerWideTagMatchDomainKey(*projected),
+          storage->physicalTagMatchDomains.size());
+      domainOrdinal = found->second;
+      if (inserted)
+        storage->physicalTagMatchDomains.push_back(*projected);
+      else if (!(storage->physicalTagMatchDomains[domainOrdinal] == *projected))
+        return invalidView(
+            "one Physical Tag match domain has inconsistent endpoint shape");
+    }
+    if (!storage->tagMatchDomainByEndpoint
+             .try_emplace(canonicalFabricBytes(endpoint), domainOrdinal)
+             .second)
+      return invalidView(
+          "one transport endpoint belongs to multiple tag match domains");
+  }
   auto moduleResourceOwners = detail::projectModuleResourceOwners(view);
   if (!moduleResourceOwners)
     return moduleResourceOwners.takeError();

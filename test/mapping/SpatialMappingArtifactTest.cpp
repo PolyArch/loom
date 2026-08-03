@@ -43,6 +43,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -210,6 +211,53 @@ void frozenTagContinuityIndexIsOwnerNormalized() {
     }
   if (!observedSplitRemover)
     fail("split remover did not share one tag-continuity point");
+
+  const auto domains = fabric.view().physicalTagMatchDomains();
+  if (domains.size() != 1 ||
+      domains.front().kind !=
+          loom::fabric::FabricPhysicalTagMatchDomainKind::BoundaryLookup ||
+      domains.front().ingress || domains.front().tagWidthBits != 3)
+    fail("t2t boundary did not expose its exact owner-wide tag match domain");
+  for (auto boundary : boundaries) {
+    const auto point = fabric.view().boundaryTagContinuityPoint(boundary);
+    if (!point)
+      fail("boundary match-domain fixture lost a continuity point");
+    const auto owner =
+        loom::fabric::FabricTransportEndpointOwnerRef::of(boundary);
+    for (std::uint64_t ordinal = 0;
+         ordinal < fabric.view().transportEndpointCount(owner); ++ordinal) {
+      const loom::fabric::FabricTransportEndpointRef endpoint{owner, ordinal};
+      if (fabric.view().transportEndpointDirection(endpoint) !=
+          loom::fabric::FabricPortDirection::Input)
+        continue;
+      const auto domain =
+          fabric.view().transportEndpointTagMatchDomain(endpoint);
+      const bool expected =
+          point->kind ==
+          loom::fabric::FabricBoundaryTagContinuityKind::Rewriter;
+      if (domain.has_value() != expected || (domain && *domain != 0))
+        fail("boundary input acquired the wrong tag match domain");
+    }
+  }
+
+  const auto frozenDomains = index.matchDomains();
+  if (!llvm::equal(frozenDomains, domains))
+    fail("frozen tag match domains changed canonical Fabric order");
+  const auto endpointDomains = index.endpointMatchDomainOrdinals();
+  const auto endpoints = fabric.view().transportEndpoints();
+  if (endpointDomains.size() != endpoints.size())
+    fail("frozen tag match-domain index is not endpoint dense");
+  for (auto [ordinal, endpoint] : llvm::enumerate(endpoints)) {
+    const auto expected =
+        fabric.view().transportEndpointTagMatchDomain(endpoint);
+    const auto actual = endpointDomains[ordinal];
+    if (expected) {
+      if (actual != *expected || actual >= frozenDomains.size())
+        fail("frozen endpoint names the wrong tag match domain");
+    } else if (actual != loom::pnr::getInvalidPnrIndex()) {
+      fail("transport-only endpoint acquired a frozen tag match domain");
+    }
+  }
 }
 
 dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
@@ -483,6 +531,42 @@ buildBoundaryTemporalFabric(loom::ArtifactStore &store) {
   return design.roots().front();
 }
 
+void temporalPeTagMatchDomainsAreIngressLocal() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  const auto fabric = buildBoundaryTemporalFabric(store);
+  const auto domains = fabric.view().physicalTagMatchDomains();
+  if (fabric.view().peOccurrences().size() != 1 || domains.size() != 5)
+    fail("temporal PE did not expose one tag match domain per ingress");
+
+  const auto owner = loom::fabric::FabricTransportEndpointOwnerRef::of(
+      fabric.view().peOccurrences().front());
+  std::vector<std::uint64_t> observed;
+  for (std::uint64_t ordinal = 0;
+       ordinal < fabric.view().transportEndpointCount(owner); ++ordinal) {
+    const loom::fabric::FabricTransportEndpointRef endpoint{owner, ordinal};
+    const auto domain = fabric.view().transportEndpointTagMatchDomain(endpoint);
+    if (fabric.view().transportEndpointDirection(endpoint) ==
+        loom::fabric::FabricPortDirection::Input) {
+      if (!domain || *domain >= domains.size())
+        fail("temporal PE ingress has no tag match domain");
+      const auto &record = domains[*domain];
+      if (record.kind != loom::fabric::FabricPhysicalTagMatchDomainKind::
+                             TemporalPeIngress ||
+          record.owner != loom::fabric::FabricInventoryOwnerRef::of(
+                              fabric.view().peOccurrences().front()) ||
+          record.ingress != endpoint || record.tagWidthBits != 4)
+        fail("temporal PE ingress tag match domain changed owner or width");
+      observed.push_back(*domain);
+    } else if (domain) {
+      fail("temporal PE output became a tag match domain");
+    }
+  }
+  llvm::sort(observed);
+  if (std::adjacent_find(observed.begin(), observed.end()) != observed.end())
+    fail("two temporal PE ingresses share a tag match domain");
+}
+
 std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
   std::string text = "[";
   for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
@@ -680,6 +764,20 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
   loom::pnr::SpatialCandidateStateHandle candidate;
   if (temporal) {
     candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
+    for (loom::pnr::PnrIndex net = 0;
+         net < problem->transfers().logicalNets().size(); ++net) {
+      const auto unrouted = take(
+          loom::pnr::deriveSpatialTagContinuity(candidate->routeTree(net)));
+      if (!unrouted.segments().empty() || !unrouted.segmentDomains().empty() ||
+          !unrouted.domainSegments().empty() ||
+          !llvm::equal(unrouted.segmentDomainOffsets(),
+                       std::array<loom::pnr::PnrIndex, 1>{0}) ||
+          unrouted.domainSegmentOffsets().size() !=
+              problem->routing().tagContinuity().matchDomains().size() + 1 ||
+          llvm::any_of(unrouted.domainSegmentOffsets(),
+                       [](loom::pnr::PnrIndex value) { return value != 0; }))
+        fail("unrouted tag continuity did not produce a complete empty CSR");
+    }
     loom::pnr::SpatialCandidateScratch candidateScratch;
     requireSuccess(candidateScratch.prepare(*problem));
     selectLegalTemporalBinding(*candidate, candidateScratch);
@@ -723,6 +821,7 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
     bool observedRouteSourceOrigin = false;
     bool observedUntaggedNode = false;
     bool observedRemoverStop = false;
+    bool observedTagMatchDomain = false;
     for (loom::pnr::PnrIndex net = 0;
          net < problem->transfers().logicalNets().size(); ++net) {
       const auto projection = take(
@@ -730,7 +829,14 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
       const auto repeated = take(
           loom::pnr::deriveSpatialTagContinuity(candidate->routeTree(net)));
       if (!llvm::equal(projection.segments(), repeated.segments()) ||
-          !llvm::equal(projection.nodeSegments(), repeated.nodeSegments()))
+          !llvm::equal(projection.nodeSegments(), repeated.nodeSegments()) ||
+          !llvm::equal(projection.segmentDomainOffsets(),
+                       repeated.segmentDomainOffsets()) ||
+          !llvm::equal(projection.segmentDomains(),
+                       repeated.segmentDomains()) ||
+          !llvm::equal(projection.domainSegmentOffsets(),
+                       repeated.domainSegmentOffsets()) ||
+          !llvm::equal(projection.domainSegments(), repeated.domainSegments()))
         fail("tag-continuity projection is not deterministic");
       const auto &tree = candidate->routeTree(net);
       if (projection.nodeSegments().size() != tree.nodeStorage().size())
@@ -766,9 +872,39 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
             projection.nodeSegments()[slot] == loom::pnr::getInvalidPnrIndex())
           observedRemoverStop = true;
       }
+
+      const auto segmentDomainOffsets = projection.segmentDomainOffsets();
+      const auto segmentDomains = projection.segmentDomains();
+      const auto domainSegmentOffsets = projection.domainSegmentOffsets();
+      const auto domainSegments = projection.domainSegments();
+      const auto matchDomains =
+          problem->routing().tagContinuity().matchDomains();
+      if (segmentDomainOffsets.size() != projection.segments().size() + 1 ||
+          domainSegmentOffsets.size() != matchDomains.size() + 1 ||
+          segmentDomainOffsets.back() != segmentDomains.size() ||
+          domainSegmentOffsets.back() != domainSegments.size())
+        fail("tag match-domain incidence has malformed CSR bounds");
+      for (loom::pnr::PnrIndex segment = 0;
+           segment < projection.segments().size(); ++segment) {
+        for (loom::pnr::PnrIndex incidence = segmentDomainOffsets[segment];
+             incidence < segmentDomainOffsets[segment + 1]; ++incidence) {
+          const auto domain = segmentDomains[incidence];
+          if (domain >= matchDomains.size() ||
+              matchDomains[domain].tagWidthBits !=
+                  projection.segments()[segment].tagWidthBits)
+            fail("tag segment intersects an incompatible match domain");
+          const auto reverse = domainSegments.slice(
+              domainSegmentOffsets[domain],
+              domainSegmentOffsets[domain + 1] - domainSegmentOffsets[domain]);
+          if (!llvm::is_contained(reverse, segment))
+            fail("tag segment/domain reverse incidence is incomplete");
+          observedTagMatchDomain = true;
+        }
+      }
     }
     if (!observedBoundaryOrigin || !observedRouteSourceOrigin ||
-        !observedUntaggedNode || !observedRemoverStop)
+        !observedUntaggedNode || !observedRemoverStop ||
+        !observedTagMatchDomain)
       fail("boundary Temporal route did not exercise start and stop semantics");
   }
 
@@ -1226,6 +1362,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
 
 int main() {
   frozenTagContinuityIndexIsOwnerNormalized();
+  temporalPeTagMatchDomainsAreIngressLocal();
   completeCandidateRoundTrip(false);
   completeCandidateRoundTrip(true);
   completeCandidateRoundTrip(true, true);
