@@ -28,6 +28,9 @@ constexpr PnrCapacityContext nodeIndexContext{routeTreeArtifact, "node_storage",
 constexpr PnrCapacityContext sinkCountContext{
     routeTreeArtifact, "sink_bindings", "logical_sink_obligations",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext traversalDeltaCountContext{
+    routeTreeArtifact, "transaction_traversal_deltas", "route_tree_nodes",
+    PnrCapacityMeasure::Count};
 
 llvm::Error routeTreeError(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
@@ -54,6 +57,7 @@ RouteTreeTransactionScratch::retainedLookupRollbackStorageBytes() const {
 
 void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
+  traversalDeltas_.clear();
   worklist_.clear();
   lookupBaselineActive_ = false;
 }
@@ -514,7 +518,8 @@ RouteTreeTransaction::RouteTreeTransaction(
       initialActiveNodeCount_(other.initialActiveNodeCount_),
       initialBoundSinkObligationCount_(other.initialBoundSinkObligationCount_),
       initialAttachedSinkObligationCount_(
-          other.initialAttachedSinkObligationCount_) {
+          other.initialAttachedSinkObligationCount_),
+      prepared_(other.prepared_) {
   if (state_)
     state_->activeTransaction_ = this;
   if (scratch_)
@@ -645,6 +650,7 @@ llvm::Expected<PnrIndex> RouteTreeTransaction::addNode(PnrIndex endpoint,
   node.parentArc = parentArc;
   insertLookup(endpoint, slot);
   ++state_->activeNodeCount_;
+  recordTraversalDelta(parentArc, true);
   return slot;
 }
 
@@ -699,11 +705,26 @@ void RouteTreeTransaction::removeNode(PnrIndex slot) {
   state_->nodes_[slot] = {};
   state_->freeSlots_.push_back(slot);
   --state_->activeNodeCount_;
+  recordTraversalDelta(snapshot.parentArc, false);
+}
+
+void RouteTreeTransaction::recordTraversalDelta(PnrIndex parentArc,
+                                                bool added) {
+  if (parentArc == getInvalidPnrIndex())
+    return;
+  assert(parentArc < state_->graph_->routingArcs().size());
+  RouteTreeTraversalDelta delta;
+  delta.traversal = state_->graph_->routingArcs()[parentArc].traversal;
+  delta.added = added ? 1 : 0;
+  delta.removed = added ? 0 : 1;
+  scratch_->traversalDeltas_.push_back(delta);
 }
 
 llvm::Error RouteTreeTransaction::bindSource(PnrIndex endpoint) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   if (endpoint >= state_->graph_->routingEndpoints().size())
     return routeTreeError(
         "source endpoint is outside FrozenSpatialRoutingGraph");
@@ -720,6 +741,8 @@ llvm::Error RouteTreeTransaction::bindSink(PnrIndex obligation,
                                            PnrIndex endpoint) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   if (obligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
   if (endpoint >= state_->graph_->routingEndpoints().size())
@@ -742,6 +765,8 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
                                  PnrIndex sinkObligation) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   if (sinkObligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
   const RouteTreeState::SinkBinding binding =
@@ -815,6 +840,8 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
                          static_cast<std::size_t>(addedCount) - reused);
   scratch_->deltas_.reserve(scratch_->deltas_.size() +
                             static_cast<std::size_t>(addedCount) * 3 + 5);
+  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
+                                     forwardArcs.size());
   if (llvm::Error error = ensureLookupCapacity(*finalNodeCount))
     return error;
 
@@ -841,6 +868,8 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
 llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   if (sinkObligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
   const RouteTreeState::SinkBinding binding =
@@ -883,6 +912,8 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
 
   const std::size_t pruneCount = scratch_->worklist_.size();
   scratch_->deltas_.reserve(scratch_->deltas_.size() + 4 + pruneCount * 5);
+  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
+                                     pruneCount);
   state_->freeSlots_.reserve(state_->freeSlots_.size() + pruneCount);
   unlinkSinkBinding(sinkObligation);
   for (PnrIndex slot : scratch_->worklist_) {
@@ -896,6 +927,8 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
 llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   const std::optional<PnrIndex> subtreeRoot =
       state_->lookupSlot(subtreeRootEndpoint);
   if (!subtreeRoot)
@@ -925,6 +958,8 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
       ++bindingCount;
   scratch_->deltas_.reserve(scratch_->deltas_.size() + bindingCount +
                             scratch_->worklist_.size() * 2 + 3);
+  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
+                                     scratch_->worklist_.size());
   state_->freeSlots_.reserve(state_->freeSlots_.size() +
                              scratch_->worklist_.size());
 
@@ -947,12 +982,17 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
 llvm::Error RouteTreeTransaction::ripUpWholeNet() {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("transaction is already prepared");
   const std::size_t activeNodeCount =
       static_cast<std::size_t>(state_->activeNodeCount_);
   const std::size_t boundSinkCount =
       static_cast<std::size_t>(state_->boundSinkObligationCount_);
   scratch_->deltas_.reserve(scratch_->deltas_.size() + activeNodeCount * 2 +
                             boundSinkCount + 1);
+  if (activeNodeCount != 0)
+    scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
+                                       activeNodeCount - 1);
   state_->freeSlots_.reserve(state_->freeSlots_.size() + activeNodeCount);
 
   for (PnrIndex obligation = 0; obligation < state_->sinkBindings_.size();
@@ -977,15 +1017,72 @@ llvm::Error RouteTreeTransaction::verify() const {
   return state_->verifyState();
 }
 
-llvm::Error RouteTreeTransaction::commit() {
+llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>>
+RouteTreeTransaction::prepare() {
   if (!state_)
     return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return llvm::ArrayRef<RouteTreeTraversalDelta>(scratch_->traversalDeltas_);
+
   if (state_->activeNodeCount_ == 0) {
     if (state_->sourceEndpoint_ != getInvalidPnrIndex() ||
         state_->boundSinkObligationCount_ != 0 ||
         state_->attachedSinkObligationCount_ != 0)
       return routeTreeError(
           "explicit unrouted candidate retains physical bindings");
+  } else {
+    if (state_->sourceEndpoint_ == getInvalidPnrIndex() ||
+        state_->boundSinkObligationCount_ != state_->sinkBindings_.size() ||
+        state_->attachedSinkObligationCount_ != state_->sinkBindings_.size())
+      return routeTreeError("sink obligation is not covered");
+    const std::optional<PnrIndex> root =
+        state_->lookupSlot(state_->sourceEndpoint_);
+    if (!root || state_->nodes_[*root].parentArc != getInvalidPnrIndex())
+      return routeTreeError("routed state is missing its source root");
+  }
+
+  auto &deltas = scratch_->traversalDeltas_;
+  llvm::sort(deltas, [](const RouteTreeTraversalDelta &lhs,
+                        const RouteTreeTraversalDelta &rhs) {
+    return lhs.traversal < rhs.traversal;
+  });
+  std::size_t write = 0;
+  for (std::size_t begin = 0; begin < deltas.size();) {
+    const PnrIndex traversal = deltas[begin].traversal;
+    PnrIndex removed = 0;
+    PnrIndex added = 0;
+    std::size_t end = begin;
+    for (; end < deltas.size() && deltas[end].traversal == traversal; ++end) {
+      auto nextRemoved = checkedPnrIndexAdd(traversalDeltaCountContext, removed,
+                                            deltas[end].removed);
+      if (!nextRemoved)
+        return nextRemoved.takeError();
+      removed = *nextRemoved;
+      auto nextAdded = checkedPnrIndexAdd(traversalDeltaCountContext, added,
+                                          deltas[end].added);
+      if (!nextAdded)
+        return nextAdded.takeError();
+      added = *nextAdded;
+    }
+    const PnrIndex cancelled = std::min(removed, added);
+    removed -= cancelled;
+    added -= cancelled;
+    if (removed != 0 || added != 0)
+      deltas[write++] = {traversal, removed, added};
+    begin = end;
+  }
+  deltas.resize(write);
+  prepared_ = true;
+  return llvm::ArrayRef<RouteTreeTraversalDelta>(deltas);
+}
+
+llvm::Error RouteTreeTransaction::commit() {
+  if (!state_)
+    return routeTreeError("transaction is no longer active");
+  auto prepared = prepare();
+  if (!prepared)
+    return prepared.takeError();
+  if (state_->activeNodeCount_ == 0) {
     state_->nodes_.clear();
     state_->freeSlots_.clear();
     state_->endpointSlots_.clear();
@@ -994,14 +1091,6 @@ llvm::Error RouteTreeTransaction::commit() {
     return llvm::Error::success();
   }
 
-  if (state_->sourceEndpoint_ == getInvalidPnrIndex() ||
-      state_->boundSinkObligationCount_ != state_->sinkBindings_.size() ||
-      state_->attachedSinkObligationCount_ != state_->sinkBindings_.size())
-    return routeTreeError("sink obligation is not covered");
-  const std::optional<PnrIndex> root =
-      state_->lookupSlot(state_->sourceEndpoint_);
-  if (!root || state_->nodes_[*root].parentArc != getInvalidPnrIndex())
-    return routeTreeError("routed state is missing its source root");
   finish();
   return llvm::Error::success();
 }

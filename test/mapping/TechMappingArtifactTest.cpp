@@ -820,18 +820,34 @@ void artifactRoundTripAndReferenceValidation() {
       std::shared_ptr<const loom::pnr::FrozenSpatialRoutingGraph>(
           frozen, &frozen->routing());
   loom::pnr::RouteTreeStateHandle routeTree =
-      take(loom::pnr::RouteTreeState::create(std::move(routingOwner), 1));
+      take(loom::pnr::RouteTreeState::create(std::move(routingOwner), 2));
   loom::pnr::RouteTreeTransactionScratch scratch;
   auto transaction = take(routeTree->beginTransaction(scratch));
   requireSuccess(transaction.bindSource(*source));
   requireSuccess(transaction.bindSink(0, target));
+  requireSuccess(transaction.bindSink(1, target));
   requireSuccess(transaction.attachPath(*source, {arc}, 0));
+  requireSuccess(transaction.attachPath(target, {}, 1));
+  const auto addedTraversals = take(transaction.prepare());
+  if (addedTraversals.size() != 1 ||
+      addedTraversals.front().traversal !=
+          frozen->routing().routingArcs()[arc].traversal ||
+      addedTraversals.front().added != 1 ||
+      addedTraversals.front().removed != 0)
+    fail("shared RouteTree path did not produce one canonical traversal delta");
   requireSuccess(transaction.commit());
   requireSuccess(routeTree->verify());
   {
     loom::pnr::RouteTreeTransactionScratch rollbackScratch;
     auto rollback = take(routeTree->beginTransaction(rollbackScratch));
     requireSuccess(rollback.ripUpWholeNet());
+    const auto removedTraversals = take(rollback.prepare());
+    if (removedTraversals.size() != 1 ||
+        removedTraversals.front().traversal !=
+            frozen->routing().routingArcs()[arc].traversal ||
+        removedTraversals.front().removed != 1 ||
+        removedTraversals.front().added != 0)
+      fail("RouteTree rip-up did not produce one canonical traversal delta");
     rollback.rollback();
   }
   if (!routeTree->isRouted())
@@ -841,6 +857,11 @@ void artifactRoundTripAndReferenceValidation() {
     loom::pnr::RouteTreeTransactionScratch ripUpScratch;
     auto ripUp = take(routeTree->beginTransaction(ripUpScratch));
     requireSuccess(ripUp.ripUpWholeNet());
+    const auto removedTraversals = take(ripUp.prepare());
+    if (removedTraversals.size() != 1 ||
+        removedTraversals.front().removed != 1 ||
+        removedTraversals.front().added != 0)
+      fail("committed RouteTree rip-up lost its traversal delta");
     requireSuccess(ripUp.commit());
   }
   if (!routeTree->isUnrouted())

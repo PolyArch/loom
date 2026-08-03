@@ -54,6 +54,12 @@ struct RouteTreeNode {
   }
 };
 
+struct RouteTreeTraversalDelta final {
+  PnrIndex traversal = getInvalidPnrIndex();
+  PnrIndex removed = 0;
+  PnrIndex added = 0;
+};
+
 class RouteTreeState;
 class RouteTreeTransaction;
 using FrozenSpatialRoutingGraphHandle =
@@ -104,6 +110,7 @@ private:
   void resetTransaction();
 
   std::vector<Delta> deltas_;
+  std::vector<RouteTreeTraversalDelta> traversalDeltas_;
   std::vector<PnrIndex> worklist_;
   std::vector<std::uint64_t> pathMarks_;
   std::vector<detail::RouteTreeLookupEntry> lookupBaseline_;
@@ -207,6 +214,7 @@ public:
   llvm::Error ripUpSubtree(PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeNet();
 
+  llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>> prepare();
   llvm::Error verify() const;
   llvm::Error commit();
   void rollback() noexcept;
@@ -233,6 +241,7 @@ private:
   PnrIndex parentSlot(PnrIndex childSlot) const;
   void detachNode(PnrIndex slot, PnrIndex parentSlot);
   void removeNode(PnrIndex slot);
+  void recordTraversalDelta(PnrIndex parentArc, bool added);
   void finish();
 
   RouteTreeStateHandle state_;
@@ -241,6 +250,7 @@ private:
   PnrIndex initialActiveNodeCount_;
   PnrIndex initialBoundSinkObligationCount_;
   PnrIndex initialAttachedSinkObligationCount_;
+  bool prepared_ = false;
 
   friend class RouteTreeState;
   friend class RouteTreeTransactionScratch;
