@@ -279,6 +279,22 @@ validateResolvedPathFinderPolicy(const ResolvedPathFinderPolicy &policy) {
   return llvm::Error::success();
 }
 
+llvm::Error validateResolvedPnrActionProposalPolicy(
+    const ResolvedPnrActionProposalPolicy &policy) {
+  const std::uint64_t realization = policy.realizationBindingWeight;
+  const std::uint64_t transport = policy.transportRoutingWeight;
+  const std::uint64_t resource = policy.resourceAllocationWeight;
+  if ((realization | transport | resource) == 0)
+    return invalid("action proposal weights are all zero");
+  if (std::gcd(std::gcd(realization, transport), resource) != 1)
+    return invalid("action proposal weights are not reduced");
+  if (realization > std::numeric_limits<std::uint64_t>::max() - transport ||
+      realization + transport >
+          std::numeric_limits<std::uint64_t>::max() - resource)
+    return invalid("action proposal weight sum is not representable");
+  return llvm::Error::success();
+}
+
 llvm::Error
 validateResolvedDualStepSchedule(const ResolvedDualStepSchedule &schedule) {
   switch (schedule.kind) {
@@ -342,14 +358,9 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
       policy.search.initializer.assignmentAttemptLimitPerSeed == 0)
     return invalid("initializer work limits must be positive");
 
-  const auto &weights = policy.search.actionProposal;
-  if ((weights.realizationBindingWeight | weights.transportRoutingWeight |
-       weights.resourceAllocationWeight) == 0)
-    return invalid("action proposal weights are all zero");
-  if (std::gcd(std::gcd(weights.realizationBindingWeight,
-                        weights.transportRoutingWeight),
-               weights.resourceAllocationWeight) != 1)
-    return invalid("action proposal weights are not reduced");
+  if (llvm::Error error =
+          validateResolvedPnrActionProposalPolicy(policy.search.actionProposal))
+    return error;
 
   const ResolvedPnrRoutingPolicy &routing = policy.search.routing;
   if (routing.endpointExpansionLimit == 0 ||

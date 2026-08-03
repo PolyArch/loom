@@ -68,3 +68,12 @@ target_link_libraries(loom-pnr-deterministic-search-protocol-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-spatial-action-proposal-test
+  SpatialActionProposalTest.cpp
+)
+
+target_link_libraries(loom-pnr-spatial-action-proposal-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)

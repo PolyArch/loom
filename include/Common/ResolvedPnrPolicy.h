@@ -208,6 +208,8 @@ llvm::Error
 validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs);
 llvm::Error
 validateResolvedPathFinderPolicy(const ResolvedPathFinderPolicy &policy);
+llvm::Error validateResolvedPnrActionProposalPolicy(
+    const ResolvedPnrActionProposalPolicy &policy);
 llvm::Error
 validateResolvedDualStepSchedule(const ResolvedDualStepSchedule &schedule);
 llvm::Error validateResolvedDualSubgradientPolicy(

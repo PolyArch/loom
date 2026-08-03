@@ -117,6 +117,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-incremental-topology-test
   loom-pnr-index-test
   loom-pnr-routing-negotiation-test
+  loom-pnr-spatial-action-proposal-test
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test

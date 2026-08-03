@@ -11,6 +11,7 @@ add_mlir_library(LoomPnR
   PnrConfig.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
+  SpatialAction.cpp
   SpatialBindingRelationModel.cpp
   SpatialCanonicalSeed.cpp
   SpatialCandidateInitializer.cpp
