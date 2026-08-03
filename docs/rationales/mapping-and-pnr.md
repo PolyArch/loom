@@ -305,6 +305,42 @@ useful for comparing pressure across unlike resources, but rounding each claim
 up can make several individually small claims appear to exceed capacity. Those
 values therefore order search only; they cannot create a capacity violation.
 
+## Why Routing Cost Uses One Q-Scaled Algebra
+
+Raw claim sizes cannot rank unlike Fabric resources. A claim of 32 units from
+a capacity of 64 and a claim of 4 units from a capacity of 8 both consume one
+half of their resource. Pricing the raw integers would prefer the second claim
+for an accidental unit-size reason. The fixed `Q = 2^32` projection gives both
+claims the same search cost while leaving exact raw integers in sole control of
+legality.
+
+Once a value is Q-scaled, every multiplicative factor must preserve that unit.
+Treating `Q` as the integer one causes an ordinary full-capacity claim and one
+full-capacity conflict to overflow immediately. PathFinder, conflict ordering,
+DualSubgradient, and optional Evaluation route guidance therefore share one
+checked algebra. Multiplicative PathFinder applies one final ceiling to the
+complete product; staged ceilings are rejected because even a one-unit change
+can alter deterministic A* ties.
+
+Dual residuals normalize the signed aggregate difference once, rather than
+summing rounded per-claim projections. Rounding the nonzero magnitude upward
+preserves its sign, while normalization makes the same proportional violation
+produce the same pressure on unlike capacities.
+
+The hot representation remains `uint64_t`. Floating point would make replay
+depend on host arithmetic. Dynamic scaling would add an iteration-owned
+exponent and another ordering rule. A 128-bit cost would double the principal
+A* cost arrays while only postponing, rather than eliminating, unbounded price
+growth. Checked overflow is consequently an explicit failed Action, not
+saturation, infeasibility, or permission to change representation.
+
+The complete dynamic-cost baseline is derived once from the complete route
+overlay at an iteration boundary. Candidate-local changes reuse Fabric's raw
+occupancy owner and the frozen capacity-to-claim-to-traversal-to-arc incidence
+to update only affected costs. The cost cache does not copy per-net claim
+ownership and can be deleted and rebuilt without changing the candidate. This
+keeps one authority while allowing contiguous, allocation-free A* hot paths.
+
 Objective facts also do not imply one universal scalar. Final ordering, Pareto
 dominance, and annealing energy ask different questions. They share the same
 central dimensions and exact normalized codes, but derive a lexicographic

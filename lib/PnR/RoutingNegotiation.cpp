@@ -4,6 +4,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -50,8 +52,8 @@ template <typename... Parts> llvm::Error arithmeticOverflow(Parts &&...parts) {
       renderMessage("routing negotiation arithmetic overflow: ", parts...));
 }
 
-// The single checked-math path. Every kernel forms intermediates in 128-bit
-// and narrows through these helpers; nothing wraps, saturates, or changes
+// The single checked-math path. Kernels use fixed-width widened intermediates
+// and narrow through these helpers; nothing wraps, saturates, or changes
 // representation silently.
 
 llvm::Expected<std::uint64_t> checkedAdd(std::uint64_t lhs, std::uint64_t rhs,
@@ -85,6 +87,90 @@ llvm::Expected<RouteCost> narrowFiniteCost(unsigned __int128 cost,
     return arithmeticOverflow(operation, ": exceeds the largest finite cost ",
                               maxFiniteRouteCost);
   return static_cast<RouteCost>(cost);
+}
+
+// Exact ceil(lhs * middle * rhs / Q^2) without staged rounding. Q^2 is 2^64,
+// so the quotient and remainder are recovered directly from fixed-width limbs;
+// no division, heap allocation, or widened persistent representation enters
+// the routing hot path.
+llvm::Expected<RouteCost>
+scaledRouteTripleProduct64(RouteCost lhs, RouteCost middle, RouteCost rhs,
+                           llvm::StringRef operation) {
+  static_assert(routeCostScale == (std::uint64_t{1} << 32));
+  if (lhs == 0 || middle == 0 || rhs == 0)
+    return RouteCost{0};
+
+  const unsigned __int128 first = static_cast<unsigned __int128>(lhs) * middle;
+  const std::uint64_t firstLow = static_cast<std::uint64_t>(first);
+  const std::uint64_t firstHigh = static_cast<std::uint64_t>(first >> 64);
+  const unsigned __int128 lowProduct =
+      static_cast<unsigned __int128>(firstLow) * rhs;
+  const unsigned __int128 quotient =
+      static_cast<unsigned __int128>(firstHigh) * rhs + (lowProduct >> 64) +
+      (static_cast<std::uint64_t>(lowProduct) != 0 ? 1 : 0);
+  return narrowFiniteCost(quotient, operation);
+}
+
+template <std::size_t LhsSize, std::size_t RhsSize>
+std::array<std::uint64_t, LhsSize + RhsSize>
+multiplyLimbs(const std::array<std::uint64_t, LhsSize> &lhs,
+              const std::array<std::uint64_t, RhsSize> &rhs) {
+  std::array<std::uint64_t, LhsSize + RhsSize> result{};
+  for (std::size_t lhsIndex = 0; lhsIndex < LhsSize; ++lhsIndex) {
+    for (std::size_t rhsIndex = 0; rhsIndex < RhsSize; ++rhsIndex) {
+      const unsigned __int128 product =
+          static_cast<unsigned __int128>(lhs[lhsIndex]) * rhs[rhsIndex];
+      std::size_t resultIndex = lhsIndex + rhsIndex;
+      const unsigned __int128 lowSum =
+          static_cast<unsigned __int128>(result[resultIndex]) +
+          static_cast<std::uint64_t>(product);
+      result[resultIndex++] = static_cast<std::uint64_t>(lowSum);
+      unsigned __int128 carry = (product >> 64) + (lowSum >> 64);
+      while (carry != 0) {
+        assert(resultIndex < result.size());
+        const unsigned __int128 next =
+            static_cast<unsigned __int128>(result[resultIndex]) + carry;
+        result[resultIndex++] = static_cast<std::uint64_t>(next);
+        carry = next >> 64;
+      }
+    }
+  }
+  return result;
+}
+
+llvm::Expected<RouteCost> scaledRouteTripleProduct(RouteCost lhs,
+                                                   unsigned __int128 middle,
+                                                   unsigned __int128 rhs,
+                                                   llvm::StringRef operation) {
+  if (lhs == 0 || middle == 0 || rhs == 0)
+    return RouteCost{0};
+  if ((middle >> 64) == 0 && (rhs >> 64) == 0)
+    return scaledRouteTripleProduct64(lhs, static_cast<std::uint64_t>(middle),
+                                      static_cast<std::uint64_t>(rhs),
+                                      operation);
+
+  const std::array<std::uint64_t, 1> lhsLimbs = {lhs};
+  const std::array<std::uint64_t, 2> middleLimbs = {
+      static_cast<std::uint64_t>(middle),
+      static_cast<std::uint64_t>(middle >> 64)};
+  const std::array<std::uint64_t, 2> rhsLimbs = {
+      static_cast<std::uint64_t>(rhs), static_cast<std::uint64_t>(rhs >> 64)};
+  const auto first = multiplyLimbs(lhsLimbs, middleLimbs);
+  auto product = multiplyLimbs(first, rhsLimbs);
+
+  if (product[0] != 0) {
+    std::size_t index = 1;
+    while (index < product.size() && ++product[index] == 0)
+      ++index;
+    if (index == product.size())
+      return arithmeticOverflow(operation,
+                                ": rounded quotient exceeds fixed limbs");
+  }
+  for (std::size_t index = 2; index < product.size(); ++index)
+    if (product[index] != 0)
+      return arithmeticOverflow(operation, ": exceeds the largest finite cost ",
+                                maxFiniteRouteCost);
+  return narrowFiniteCost(product[1], operation);
 }
 
 llvm::Expected<std::int64_t> checkedAddSigned(std::int64_t lhs,
@@ -219,6 +305,15 @@ llvm::Expected<RouteCost> loom::pnr::normalizedRouteOveruseCost(
   return narrowFiniteCost(*result, "normalized route overuse cost");
 }
 
+llvm::Expected<RouteCost> loom::pnr::scaledRouteProduct(RouteCost lhs,
+                                                        RouteCost rhs) {
+  const unsigned __int128 product = static_cast<unsigned __int128>(lhs) * rhs;
+  const unsigned __int128 quotient = product / routeCostScale;
+  const unsigned __int128 result =
+      quotient + (product % routeCostScale != 0 ? 1 : 0);
+  return narrowFiniteCost(result, "scaled route product");
+}
+
 llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
     ResolvedPathFinderPriceKernel kernel, RouteCost qCost, RouteCost xCost,
     std::uint64_t presentPressure, std::uint64_t historyPressure) {
@@ -227,40 +322,27 @@ llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
   if (llvm::Error error =
           requireAtLeast(presentPressure, 1, "present_pressure"))
     return std::move(error);
-  auto pressureProduct = checkedMultiply(presentPressure, xCost,
-                                         "PathFinder present-pressure product");
-  if (!pressureProduct)
-    return pressureProduct.takeError();
 
   switch (kernel) {
   case ResolvedPathFinderPriceKernel::Multiplicative: {
-    auto pressureFactor =
-        checkedAdd(*pressureProduct, 1, "PathFinder present-pressure factor");
-    if (!pressureFactor)
-      return pressureFactor.takeError();
-    auto historyFactor =
-        checkedAdd(historyPressure, 1, "PathFinder history factor");
-    if (!historyFactor)
-      return historyFactor.takeError();
-    auto claimed = checkedMultiply(qCost, *pressureFactor,
-                                   "PathFinder multiplicative claim product");
-    if (!claimed)
-      return claimed.takeError();
-    return narrowFiniteCost(static_cast<unsigned __int128>(*claimed) *
-                                *historyFactor,
-                            "PathFinder multiplicative cost");
+    const unsigned __int128 pressureFactor =
+        static_cast<unsigned __int128>(presentPressure) * xCost +
+        routeCostScale;
+    const unsigned __int128 historyFactor =
+        static_cast<unsigned __int128>(historyPressure) + routeCostScale;
+    return scaledRouteTripleProduct(qCost, pressureFactor, historyFactor,
+                                    "PathFinder multiplicative cost");
   }
   case ResolvedPathFinderPriceKernel::Additive: {
-    auto historyProduct = checkedMultiply(
-        qCost, historyPressure, "PathFinder additive history product");
-    if (!historyProduct)
-      return historyProduct.takeError();
-    auto withPressure =
-        checkedAdd(qCost, *pressureProduct, "PathFinder additive pressure sum");
-    if (!withPressure)
-      return withPressure.takeError();
-    return narrowFiniteCost(static_cast<unsigned __int128>(*withPressure) +
-                                *historyProduct,
+    auto pressureProduct = checkedMultiply(
+        presentPressure, xCost, "PathFinder present-pressure product");
+    if (!pressureProduct)
+      return pressureProduct.takeError();
+    auto historyTerm = scaledRouteProduct(qCost, historyPressure);
+    if (!historyTerm)
+      return historyTerm.takeError();
+    return narrowFiniteCost(static_cast<unsigned __int128>(qCost) +
+                                *pressureProduct + *historyTerm,
                             "PathFinder additive cost");
   }
   }
@@ -291,33 +373,46 @@ llvm::Expected<RouteCost> loom::pnr::dualArcResourceCost(std::uint64_t claim,
                                                          DualPrice price) {
   if (llvm::Error error = requireAtLeast(claim, 1, "normalized claim"))
     return std::move(error);
-  // The claim factor (1 + price) and the product are formed in the 128-bit
-  // intermediate, so the maximum price is priced exactly rather than wrapped.
-  return narrowFiniteCost(static_cast<unsigned __int128>(claim) *
-                              (static_cast<unsigned __int128>(price) + 1),
+  auto priceTerm = scaledRouteProduct(claim, price);
+  if (!priceTerm)
+    return priceTerm.takeError();
+  return narrowFiniteCost(static_cast<unsigned __int128>(claim) + *priceTerm,
                           "dual arc resource cost");
 }
 
 llvm::Expected<DualDirection>
 loom::pnr::dualResidual(std::uint64_t aggregatedUsage,
                         std::uint64_t effectiveCapacity) {
+  if (aggregatedUsage == effectiveCapacity)
+    return DualDirection{0};
+  if (effectiveCapacity == 0)
+    return invalidPolicy(
+        "dual residual has positive usage and zero effective capacity");
+
   if (aggregatedUsage >= effectiveCapacity) {
     const std::uint64_t magnitude = aggregatedUsage - effectiveCapacity;
-    if (magnitude >
+    auto normalized = ceilMulDiv(magnitude, routeCostScale, effectiveCapacity);
+    if (!normalized)
+      return normalized.takeError();
+    if (*normalized >
         static_cast<std::uint64_t>(std::numeric_limits<DualDirection>::max()))
       return arithmeticOverflow("dual residual: ", aggregatedUsage, " - ",
                                 effectiveCapacity,
-                                " is not representable in int64_t");
-    return static_cast<DualDirection>(magnitude);
+                                " normalized by Q is not "
+                                "representable in int64_t");
+    return static_cast<DualDirection>(*normalized);
   }
   const std::uint64_t magnitude = effectiveCapacity - aggregatedUsage;
-  if (magnitude > int64MinMagnitude)
-    return arithmeticOverflow("dual residual: ", aggregatedUsage, " - ",
-                              effectiveCapacity,
-                              " is not representable in int64_t");
-  if (magnitude == int64MinMagnitude)
+  auto normalized = ceilMulDiv(magnitude, routeCostScale, effectiveCapacity);
+  if (!normalized)
+    return normalized.takeError();
+  if (*normalized > int64MinMagnitude)
+    return arithmeticOverflow(
+        "dual residual: ", aggregatedUsage, " - ", effectiveCapacity,
+        " normalized by Q is not representable in int64_t");
+  if (*normalized == int64MinMagnitude)
     return std::numeric_limits<DualDirection>::min();
-  return -static_cast<DualDirection>(magnitude);
+  return -static_cast<DualDirection>(*normalized);
 }
 
 llvm::Expected<DualDirection> loom::pnr::dualDirectionFromResidual(

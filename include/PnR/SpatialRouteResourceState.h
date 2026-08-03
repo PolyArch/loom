@@ -19,7 +19,7 @@ class SpatialMoveTransaction;
 /// Worker-local exact occupancy induced by selected RouteTrees. One dense
 /// net-by-claim refcount matrix normalizes shared prefixes and owner-defined
 /// atomic activation groups without persistent-reference work in the move
-/// loop. Raw capacity integers and Q32 search cost remain separate.
+/// loop. Raw capacity integers and Q-scaled search cost remain separate.
 class SpatialRouteResourceState final {
 public:
   static llvm::Expected<SpatialRouteResourceState>

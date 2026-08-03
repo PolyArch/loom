@@ -18,6 +18,7 @@
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialRouteCostState.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -952,6 +953,73 @@ void artifactRoundTripAndReferenceValidation() {
   const std::uint64_t committedTraversalClaim =
       spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());
+
+  const auto *pathFinder = std::get_if<loom::ResolvedPathFinderPolicy>(
+      &spatialConfig.policy().search.routing.negotiation);
+  if (!pathFinder)
+    fail("default Spatial routing policy is not PathFinder");
+  auto routeCostState = take(
+      loom::pnr::SpatialRouteCostState::create(*spatialCandidate, *pathFinder));
+  if (routeCostState.lowerBoundArcCosts().size() !=
+          frozen->routing().routingArcs().size() ||
+      routeCostState.currentArcCosts().size() !=
+          frozen->routing().routingArcs().size())
+    fail("PathFinder route-cost overlay omitted a routing arc");
+  bool observedDynamicBaseline = false;
+  for (auto [lower, current] :
+       llvm::zip_equal(routeCostState.lowerBoundArcCosts(),
+                       routeCostState.currentArcCosts())) {
+    if (current < lower)
+      fail("PathFinder current arc cost fell below its lower bound");
+    observedDynamicBaseline |= current > lower;
+  }
+  if (!observedDynamicBaseline)
+    fail("PathFinder route-cost overlay ignored committed route occupancy");
+
+  std::vector<std::uint64_t> baselineUsage;
+  baselineUsage.reserve(frozen->resources().capacityDimensions().size());
+  for (loom::pnr::PnrIndex capacity = 0;
+       capacity < frozen->resources().capacityDimensions().size(); ++capacity)
+    baselineUsage.push_back(routeCostState.workingCapacityUsageRaw(capacity));
+  const std::vector<loom::pnr::RouteCost> baselineCosts(
+      routeCostState.currentArcCosts().begin(),
+      routeCostState.currentArcCosts().end());
+  std::vector<std::uint64_t> excludedUsage(baselineUsage.size(), 0);
+  for (loom::pnr::PnrIndex claim = 0;
+       claim < frozen->routing().routeClaims().size(); ++claim) {
+    if (((activeClaimBits[claim / 64] >> (claim % 64)) & 1) == 0)
+      continue;
+    const auto &record = frozen->routing().routeClaims()[claim];
+    excludedUsage[record.capacityDimension] += record.amount;
+  }
+  const std::size_t warmedRouteCostBytes =
+      routeCostState.retainedStorageBytes();
+  requireSuccess(routeCostState.selectLogicalNet(*routedNet));
+  if (routeCostState.selectedLogicalNet() != routedNet)
+    fail("PathFinder route-cost overlay lost its selected logical net");
+  for (loom::pnr::PnrIndex capacity = 0; capacity < baselineUsage.size();
+       ++capacity) {
+    if (baselineUsage[capacity] < excludedUsage[capacity] ||
+        routeCostState.workingCapacityUsageRaw(capacity) !=
+            baselineUsage[capacity] - excludedUsage[capacity])
+      fail("PathFinder route-cost overlay did not remove exactly one old net");
+  }
+  bool observedRipUpCostChange = false;
+  for (auto [baseline, current] :
+       llvm::zip_equal(baselineCosts, routeCostState.currentArcCosts()))
+    observedRipUpCostChange |= baseline != current;
+  if (!observedRipUpCostChange)
+    fail("PathFinder route-cost overlay did not reprice the rip-up closure");
+  requireSuccess(routeCostState.selectLogicalNet(std::nullopt));
+  if (routeCostState.selectedLogicalNet() ||
+      !llvm::equal(routeCostState.currentArcCosts(), baselineCosts) ||
+      routeCostState.retainedStorageBytes() != warmedRouteCostBytes)
+    fail("PathFinder route-cost overlay did not restore its warmed baseline");
+  for (loom::pnr::PnrIndex capacity = 0; capacity < baselineUsage.size();
+       ++capacity)
+    if (routeCostState.workingCapacityUsageRaw(capacity) !=
+        baselineUsage[capacity])
+      fail("PathFinder route-cost overlay did not restore raw occupancy");
 
   auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));
   requireSuccess(rollbackMove.ripUpWholeRoute(*routedNet));

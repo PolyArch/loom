@@ -14,6 +14,7 @@ add_mlir_library(LoomPnR
   SpatialPnrProblem.cpp
   SpatialPnrResourceIndex.cpp
   SpatialPnrTransferIndex.cpp
+  SpatialRouteCostState.cpp
   SpatialRouteResourceState.cpp
 
   ADDITIONAL_HEADER_DIRS

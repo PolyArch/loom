@@ -12,9 +12,9 @@
 
 namespace loom::pnr {
 
-// Checked numeric protocol shared by both negotiation algorithms. These are
-// the sole representations; there is no fixed-point, rational, or
-// floating-point variant.
+// Checked numeric protocol shared by both negotiation algorithms. Search
+// costs use one unsigned Q-scaled representation; raw resource legality stays
+// in the owning capacity units and no floating-point variant exists.
 using RouteCost = std::uint64_t;
 using DualPrice = std::uint64_t;
 using DualDirection = std::int64_t;
@@ -71,8 +71,12 @@ llvm::Expected<RouteCost> normalizedRouteOveruseCost(std::uint64_t usageBefore,
                                                      std::uint64_t amount,
                                                      std::uint64_t capacity);
 
+// Exact ceil(lhs * rhs / Q) for two nonnegative Q-scaled values. This is the
+// sole scaled-product authority used by routing kernels and conflict scoring.
+llvm::Expected<RouteCost> scaledRouteProduct(RouteCost lhs, RouteCost rhs);
+
 // PathFinder cost of one already normalized claim against the frozen working
-// occupancy. qCost and xCost are the exact Q32 projections produced by the
+// occupancy. qCost and xCost are the exact Q-scaled projections produced by the
 // shared normalization functions above. The kernel must not reinterpret raw
 // capacity. qCost and present pressure are positive; xCost and history may be
 // zero.
@@ -96,12 +100,17 @@ pathFinderHistoryUpdate(std::uint64_t history,
                         std::uint64_t historyPressureIncrement,
                         std::uint64_t overuse);
 
-// Dual fixed-price cost of one normalized claim: claim * (1 + price). Both
-// algorithms price the same normalized claim, so it must be positive here too.
+// Dual fixed-price cost of one normalized claim:
+// ceil(claim * (Q + price) / Q). Both algorithms price the same normalized
+// claim, so it must be positive here too.
 llvm::Expected<RouteCost> dualArcResourceCost(std::uint64_t claim,
                                               DualPrice price);
 
-// Signed constraint residual: aggregatedUsage - effectiveCapacity.
+// Signed Q-scaled constraint residual. The magnitude is
+// ceil(abs(aggregatedUsage - effectiveCapacity) * Q / effectiveCapacity), so
+// unlike raw capacities have comparable update pressure and a nonzero residual
+// never rounds to zero. Equal zero usage/capacity is the only zero-capacity
+// case admitted here.
 llvm::Expected<DualDirection> dualResidual(std::uint64_t aggregatedUsage,
                                            std::uint64_t effectiveCapacity);
 

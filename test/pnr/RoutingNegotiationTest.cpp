@@ -132,35 +132,37 @@ void routeCostInfinityBoundary() {
                 accumulateRouteCost(maxFiniteRouteCost, 1),
                 Kind::ArithmeticOverflow);
 
-  requireEqual(
-      __func__, "dual arc largest finite",
-      takeValue(__func__, dualArcResourceCost(1, maxFiniteRouteCost - 1)),
-      maxFiniteRouteCost);
+  requireEqual(__func__, "dual arc largest finite",
+               takeValue(__func__, dualArcResourceCost(routeCostScale,
+                                                       maxFiniteRouteCost -
+                                                           routeCostScale)),
+               maxFiniteRouteCost);
   expectFailure(__func__, "dual arc reaches infinity",
-                dualArcResourceCost(1, maxFiniteRouteCost),
+                dualArcResourceCost(routeCostScale,
+                                    maxFiniteRouteCost - routeCostScale + 1),
                 Kind::ArithmeticOverflow);
 
-  // X = 1, so the cost is 1 + present pressure in both price kernels.
   const ResolvedPathFinderPriceKernel multiplicative =
       ResolvedPathFinderPriceKernel::Multiplicative;
   const ResolvedPathFinderPriceKernel additive =
       ResolvedPathFinderPriceKernel::Additive;
-  requireEqual(
-      __func__, "multiplicative largest finite",
-      takeValue(__func__, pathFinderResourceCost(multiplicative, 1, 1,
-                                                 maxFiniteRouteCost - 1, 0)),
-      maxFiniteRouteCost);
-  expectFailure(
-      __func__, "multiplicative reaches infinity",
-      pathFinderResourceCost(multiplicative, 1, 1, maxFiniteRouteCost, 0),
-      Kind::ArithmeticOverflow);
-  requireEqual(
-      __func__, "additive largest finite",
-      takeValue(__func__, pathFinderResourceCost(additive, 1, 1,
-                                                 maxFiniteRouteCost - 1, 0)),
-      maxFiniteRouteCost);
+  requireEqual(__func__, "multiplicative largest finite",
+               takeValue(__func__, pathFinderResourceCost(
+                                       multiplicative, routeCostScale, 0, 1,
+                                       maxFiniteRouteCost - routeCostScale)),
+               maxFiniteRouteCost);
+  expectFailure(__func__, "multiplicative reaches infinity",
+                pathFinderResourceCost(multiplicative, routeCostScale, 0, 1,
+                                       maxFiniteRouteCost - routeCostScale + 1),
+                Kind::ArithmeticOverflow);
+  requireEqual(__func__, "additive largest finite",
+               takeValue(__func__, pathFinderResourceCost(
+                                       additive, routeCostScale, 0, 1,
+                                       maxFiniteRouteCost - routeCostScale)),
+               maxFiniteRouteCost);
   expectFailure(__func__, "additive reaches infinity",
-                pathFinderResourceCost(additive, 1, 1, maxFiniteRouteCost, 0),
+                pathFinderResourceCost(additive, routeCostScale, 0, 1,
+                                       maxFiniteRouteCost - routeCostScale + 1),
                 Kind::ArithmeticOverflow);
 }
 
@@ -190,16 +192,21 @@ void deterministicRounding() {
                 Kind::InvalidPolicy);
 }
 
-// Signed intermediates must fail in both directions instead of wrapping.
+// Dual residuals normalize unlike raw capacities to one sign-preserving scale;
+// signed intermediates still fail rather than wrapping.
 void signedOverflowBoundaries() {
-  requireEqualSigned(__func__, "largest violation",
-                     takeValue(__func__, dualResidual(i64Max, 0)), i64Max);
-  requireEqualSigned(__func__, "largest slack",
-                     takeValue(__func__, dualResidual(0, two63)), i64Min);
-  expectFailure(__func__, "violation above the maximum",
-                dualResidual(u64Max, 0), Kind::ArithmeticOverflow);
-  expectFailure(__func__, "slack below the minimum", dualResidual(0, u64Max),
-                Kind::ArithmeticOverflow);
+  requireEqualSigned(__func__, "half-capacity violation",
+                     takeValue(__func__, dualResidual(6, 4)),
+                     routeCostScale / 2);
+  requireEqualSigned(__func__, "half-capacity slack",
+                     takeValue(__func__, dualResidual(2, 4)),
+                     -static_cast<std::int64_t>(routeCostScale / 2));
+  requireEqualSigned(__func__, "balanced zero capacity",
+                     takeValue(__func__, dualResidual(0, 0)), 0);
+  expectFailure(__func__, "positive use with zero capacity", dualResidual(1, 0),
+                Kind::InvalidPolicy);
+  expectFailure(__func__, "normalized violation above the maximum",
+                dualResidual(u64Max, 1), Kind::ArithmeticOverflow);
 
   const ResolvedDualSubgradientPolicy momentum = directionPolicy(
       ResolvedDualDirectionKernel::MomentumDeflected, ResolvedExactRatio{1, 2});
@@ -220,37 +227,75 @@ void pathFinderCostVectors() {
   requireEqual(__func__, "half-capacity claim",
                takeValue(__func__, normalizedRouteClaimCost(3, 6)),
                std::uint64_t{1} << 31);
+  requireEqual(__func__, "heterogeneous half-capacity claim",
+               takeValue(__func__, normalizedRouteClaimCost(4, 8)),
+               takeValue(__func__, normalizedRouteClaimCost(32, 64)));
   requireEqual(__func__, "rounded normalized overuse",
                takeValue(__func__, normalizedRouteOveruseCost(4, 3, 6)),
                715827883);
 
-  // q=3, x=1, P=2, H=1.
   requireEqual(
-      __func__, "multiplicative congested claim",
-      takeValue(__func__, pathFinderResourceCost(multiplicative, 3, 1, 2, 1)),
-      18);
+      __func__, "full-capacity multiplicative congestion",
+      takeValue(__func__, pathFinderResourceCost(multiplicative, routeCostScale,
+                                                 routeCostScale, 1, 0)),
+      2 * routeCostScale);
+  requireEqual(__func__, "full-capacity additive congestion and history",
+               takeValue(__func__, pathFinderResourceCost(
+                                       additive, routeCostScale, routeCostScale,
+                                       1, routeCostScale)),
+               3 * routeCostScale);
+
+  const RouteCost oneThird =
+      takeValue(__func__, normalizedRouteClaimCost(1, 3));
+  requireEqual(__func__, "single-ceiling non-divisible product",
+               takeValue(__func__, pathFinderResourceCost(multiplicative,
+                                                          oneThird, oneThird, 3,
+                                                          3 * routeCostScale)),
+               11453246131ULL);
   requireEqual(
-      __func__, "additive congested claim",
-      takeValue(__func__, pathFinderResourceCost(additive, 3, 1, 2, 1)), 8);
+      __func__, "widened present-pressure factor",
+      takeValue(__func__, pathFinderResourceCost(multiplicative, 1,
+                                                 maxFiniteRouteCost, 1, 0)),
+      routeCostScale + 1);
+  requireEqual(
+      __func__, "widened history factor",
+      takeValue(__func__, pathFinderResourceCost(multiplicative, 1, 0, 1,
+                                                 maxFiniteRouteCost)),
+      routeCostScale + 1);
+
+  requireEqual(__func__, "scaled conflict contribution",
+               takeValue(__func__, scaledRouteProduct(routeCostScale / 2,
+                                                      routeCostScale / 4)),
+               routeCostScale / 8);
+  requireEqual(
+      __func__, "dual one-unit price",
+      takeValue(__func__, dualArcResourceCost(routeCostScale, routeCostScale)),
+      2 * routeCostScale);
 
   // Without congestion both kernels charge the generic lower bound.
   requireEqual(
       __func__, "multiplicative uncongested claim",
-      takeValue(__func__, pathFinderResourceCost(multiplicative, 7, 0, 3, 0)),
-      7);
-  requireEqual(
-      __func__, "additive uncongested claim",
-      takeValue(__func__, pathFinderResourceCost(additive, 7, 0, 3, 0)), 7);
+      takeValue(__func__, pathFinderResourceCost(multiplicative,
+                                                 routeCostScale / 2, 0, 3, 0)),
+      routeCostScale / 2);
+  requireEqual(__func__, "additive uncongested claim",
+               takeValue(__func__, pathFinderResourceCost(
+                                       additive, routeCostScale / 2, 0, 3, 0)),
+               routeCostScale / 2);
 
   RouteCost arc = 0;
-  for (RouteCost term : {18, 8, 7})
+  for (RouteCost term :
+       {2 * routeCostScale, 3 * routeCostScale, routeCostScale / 2})
     arc = takeValue(__func__, accumulateRouteCost(arc, term));
-  requireEqual(__func__, "accumulated arc", arc, 33);
+  requireEqual(__func__, "accumulated arc", arc,
+               5 * routeCostScale + routeCostScale / 2);
 }
 
 void pathFinderPressureUpdates() {
   requireEqual(__func__, "proportional history",
-               takeValue(__func__, pathFinderHistoryUpdate(2, 3, 4)), 14);
+               takeValue(__func__, pathFinderHistoryUpdate(routeCostScale, 3,
+                                                           routeCostScale / 4)),
+               routeCostScale + 3 * (routeCostScale / 4));
   requireEqual(__func__, "no overuse keeps history",
                takeValue(__func__, pathFinderHistoryUpdate(5, 1, 0)), 5);
   expectFailure(__func__, "history above the representable range",

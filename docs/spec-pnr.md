@@ -1116,11 +1116,12 @@ arc_cost(a) = mapping_lower_bound_cost(a)
 
 All terms are nonnegative. Evaluation guidance is absent unless routing names
 one exact `ResolvedPnrEvaluationBindingRef` whose model safely supplies an
-arc-local value. Once selected, unavailable guidance or a failed guidance
-query fails the owning Action; it never becomes zero or silently selects
-another model. Guidance can order proposals only. It cannot filter legal
-arcs, prove legality, alter the Mapping-owned admissible heuristic, or replace
-full `Q` evaluation.
+arc-local value encoded as the same Q-scaled `RouteCost` used by Mapping.
+Once selected, unavailable guidance, a noncanonical guidance value, or a
+failed guidance query fails the owning Action; it never becomes zero or
+silently selects another model. Guidance can order proposals only. It cannot
+filter legal arcs, prove legality, alter the Mapping-owned admissible
+heuristic, or replace full `Q` evaluation.
 
 `RouteCost` is `uint64_t`; `UINT64_MAX` is infinity. All arithmetic is checked,
 with typed overflow distinct from unreachable topology and work-budget
@@ -1181,17 +1182,36 @@ For traversal `a` and each claimed resource-state capacity dimension `r`, use
 the cost-only projections defined by `Resource Use, Tags, Buffers, And Memory`:
 
 ```text
+Q = 2^32
+
+Q-scaled values:
+  q_cost, x_cost, overuse_cost, H, lambda, RouteCost
+
+dimensionless nonnegative integer scalars:
+  P, history_pressure_increment, alpha
+
 base_cost(a,r) = q_cost(a,r)
 lower_bound_cost(a) = sum_r q_cost(a,r)
 
 MultiplicativeCost(a,r) =
-  q_cost(a,r) * (1 + P * x_cost(a,r)) * (1 + H(r))
+  ceil(q_cost(a,r)
+       * (Q + P * x_cost(a,r))
+       * (Q + H(r))
+       / Q^2)
 
 AdditiveCost(a,r) =
-  q_cost(a,r) + P * x_cost(a,r) + q_cost(a,r) * H(r)
+  q_cost(a,r)
+  + P * x_cost(a,r)
+  + ceil(q_cost(a,r) * H(r) / Q)
 
 arc_cost(a)             = sum_r ResourceCost(a,r)
 ```
+
+A Multiplicative resource cost has exactly one final ceiling after the complete
+three-factor product. Staged Q-scaled multiplication is noncanonical because
+its intermediate ceiling can change deterministic route order. Additive terms
+use the one ceiling shown above. Callers cannot reinterpret a Q-scaled value as
+a raw amount or duplicate these formulas.
 
 A pure structural traversal with no claim may have zero cost. Both kernels
 share occupancy, iteration order, update rules, A*, route trees, and
@@ -1210,9 +1230,13 @@ P_(k+1) = ceil_mul_div(P_k,
 
 `H_0(r) = 0`, `P_0 >= 1`, history increment is at least one, and the reduced
 growth ratio is at least one. Updates occur atomically only after a complete,
-non-closed iteration. At the start of iteration `k`, PathFinder derives this
-complete key from the previous complete route overlay and then freezes it for
-the whole iteration:
+non-closed iteration. At the start of each iteration, the complete current
+cost projection is derived from the complete working route overlay before any
+net is selected. Ripping up or installing one net may then update only costs
+whose raw occupancy changed, but every untouched cost retains that complete
+baseline rather than reverting to its lower bound. At the start of iteration
+`k`, PathFinder also derives this complete key from the previous complete route
+overlay and then freezes it for the whole iteration:
 
 ```text
 NetOrderKey_k(n) = (
@@ -1228,7 +1252,7 @@ route_state_rank(n):
   2 = other participating net
 
 generic_conflict_pressure_k(n) =
-  sum_r q_cost_k(n,r) * overuse_cost_k(r)
+  sum_r ceil(q_cost_k(n,r) * overuse_cost_k(r) / Q)
 ```
 
 A shared Route Tree prefix contributes once under normalized claim semantics.
@@ -1245,16 +1269,18 @@ external fixed occupancy is subtracted from raw physical capacity before
 normalization. At price snapshot `lambda_k`, each selected traversal uses:
 
 ```text
-dual_arc_cost(a) = sum_r q_cost(a,r) * (1 + lambda_k(r))
+dual_arc_cost(a) =
+  sum_r ceil(q_cost(a,r) * (Q + lambda_k(r)) / Q)
 ```
 
 After routing the complete region, `U_k(r)` is the total raw selected amount
-normalized once with the same `Q` scale, and `C(r)` is the effective raw
-capacity normalized once. Per-claim rounded costs are not summed to determine
-the pressure sign:
+and `C(r)` is the effective raw capacity. Their signed difference is normalized
+once with the same `Q` scale. Per-claim rounded costs are not summed to
+determine the pressure sign:
 
 ```text
-g_k(r) = U_k(r) - C(r)
+g_k(r) = sign(U_k(r) - C(r))
+         * ceil(abs(U_k(r) - C(r)) * Q / C(r))
 
 ProjectedSigned:       d_k(r) = g_k(r)
 PositiveViolationOnly: d_k(r) = max(0, g_k(r))
@@ -1263,7 +1289,9 @@ MomentumDeflected:     d_k(r) = g_k(r) + beta * d_(k-1)(r)
 lambda_(k+1)(r) = max(0, lambda_k(r) + alpha_k * d_k(r))
 ```
 
-`beta = beta_numerator / beta_denominator` with
+`g`, `d`, and `lambda` use the same Q scale. `alpha` is the dimensionless
+integer returned by the selected step schedule. `beta` is the exact ratio
+`beta_numerator / beta_denominator` with
 `0 <= beta_numerator < beta_denominator`. The single numeric protocol is:
 
 ```text
@@ -1272,9 +1300,11 @@ DualDirection = int64_t
 DualStep      = uint64_t
 ```
 
-Every operation uses checked widened integer arithmetic. Overflow rejects and
-rolls back the Action; wrap, saturation, and representation switching are
-forbidden.
+Every operation uses checked widened integer arithmetic and one owner-provided
+Q-scaled multiplication primitive. Every finite published cost is strictly
+less than `UINT64_MAX`, which remains the A* infinity sentinel. Overflow
+rejects and rolls back the Action; wrap, saturation, dynamic rescaling,
+floating-point substitution, and representation switching are forbidden.
 
 The closed `DualStepSchedule` variants are:
 
@@ -1397,6 +1427,9 @@ claims replaced by the current proposal. All products, sums, and ceilings use
 checked widened integer arithmetic and produce checked `uint64` values. A
 positive amount therefore has positive `q_cost`; zero amount has zero cost.
 Rounding may change proposal order but cannot create or erase a raw violation.
+The normalized values encode the nonnegative real value `encoded / Q`; they
+are not raw capacity units. Their composition is owned by `Negotiated Routing`
+and cannot use unscaled integer multiplication.
 
 Each stateful Fabric resource schema also owns its closed typed
 `ResourceState` set, canonical initial state, capacity dimensions, atomic
@@ -2275,9 +2308,9 @@ Tests protect semantic anchors rather than implementation shape:
 * endpoint-only A*, multi-sink route trees, explicit broadcast, checked route
   cost, PathFinder net order and termination, all negotiation kernels, and the
   five closed TransportRouting scopes without arbitrary sink subsets;
-* raw capacity legality versus Q32 cost-only normalization, including a legal
-  set of small claims whose individually rounded costs exceed one capacity
-  unit, normalized history update, and shared-prefix `G` accounting;
+* raw capacity legality versus Q-scaled cost-only normalization, including a
+  legal set of small claims whose individually rounded costs exceed one
+  capacity unit, normalized history update, and shared-prefix `G` accounting;
 * route-wide widening acceptance plus rejection of a narrowing bottleneck or
   attempted payload borrowing from tag bits;
 * exact memory access-form, element, lane, mask, and use-pattern domain freeze,

@@ -580,7 +580,7 @@ public:
         return invalid("invalid normalized route claim: " +
                        llvm::toString(qCost.takeError()));
       if (claim.qCost != *qCost)
-        return invalid("route claim Q32 projection is inconsistent");
+        return invalid("route claim Q-scaled projection is inconsistent");
       auto index = checked(routeClaimIndexContext, ordinal);
       if (!index)
         return index.takeError();
