@@ -423,6 +423,8 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
     return std::move(error);
   if (llvm::Error error = candidate->verifyMemorySelections())
     return std::move(error);
+  if (llvm::Error error = candidate->rebuildResourceTimeEnvelopeSelections())
+    return std::move(error);
   for (PnrIndex index = 0; index < candidate->routeTrees_.size(); ++index)
     if (llvm::Error error = candidate->validateLogicalNet(index))
       return std::move(error);
@@ -910,6 +912,8 @@ llvm::Error SpatialCandidateState::verify() const {
   if (capacityOveruse_ != *expectedCapacityOveruse)
     return candidateError(
         "capacity overuse diverges from selected resource envelopes");
+  if (llvm::Error error = verifyResourceTimeEnvelopeSelections())
+    return error;
   if (llvm::Error error = routeResources_.verify(routeTrees_))
     return error;
   return verifyHandshakeProjection();
@@ -1267,6 +1271,16 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
           overuse[old.instructionContext], overuse[instructionContext],
           state_->capacityOveruse_, "compute capacity overuse"))
     return error;
+  const auto envelopeOffsets =
+      state_->problem_->capacity().computeInstructionContextEnvelopeOffsets();
+  if (llvm::Error error = state_->replaceResourceTimeEnvelopeSlice(
+          envelopeOffsets[old.instructionContext],
+          envelopeOffsets[old.instructionContext + 1] -
+              envelopeOffsets[old.instructionContext],
+          envelopeOffsets[instructionContext],
+          envelopeOffsets[instructionContext + 1] -
+              envelopeOffsets[instructionContext]))
+    return error;
   state_->computeBindings_[realization] = {placement, instructionContext};
   state_->bindingRelationChoices_[realization] = *relationChoice;
   return llvm::Error::success();
@@ -1377,6 +1391,11 @@ llvm::Error SpatialMoveTransaction::setMemoryOperationPlan(PnrIndex actor,
   if (llvm::Error error = replaceContribution(overuse[old], overuse[plan],
                                               state_->capacityOveruse_,
                                               "memory capacity overuse"))
+    return error;
+  const auto planEnvelopes =
+      state_->problem_->capacity().memoryOperationPlanEnvelopes();
+  if (llvm::Error error = state_->replaceResourceTimeEnvelope(
+          planEnvelopes[old], planEnvelopes[plan]))
     return error;
   state_->memoryOperationPlans_[actor] = plan;
   return llvm::Error::success();
@@ -1671,11 +1690,24 @@ void SpatialMoveTransaction::rollback() noexcept {
   for (const SpatialCandidateScratch::DecisionDelta &delta :
        llvm::reverse(scratch_->decisionDeltas_)) {
     switch (delta.kind) {
-    case SpatialCandidateScratch::DecisionKind::ComputeBinding:
+    case SpatialCandidateScratch::DecisionKind::ComputeBinding: {
+      const auto current = state_->computeBindings_[delta.index];
+      const auto offsets = state_->problem_->capacity()
+                               .computeInstructionContextEnvelopeOffsets();
+      if (llvm::Error error = state_->replaceResourceTimeEnvelopeSlice(
+              offsets[current.instructionContext],
+              offsets[current.instructionContext + 1] -
+                  offsets[current.instructionContext],
+              offsets[delta.oldValue1],
+              offsets[delta.oldValue1 + 1] - offsets[delta.oldValue1])) {
+        assert(false && "validated compute resource-time rollback failed");
+        llvm::consumeError(std::move(error));
+      }
       state_->computeBindings_[delta.index] = {delta.oldValue0,
                                                delta.oldValue1};
       state_->bindingRelationChoices_[delta.index] = delta.oldValue2;
       break;
+    }
     case SpatialCandidateScratch::DecisionKind::MemoryBinding:
       state_->memoryBindings_[delta.index].placement = delta.oldValue0;
       state_->bindingRelationChoices_[state_->problem_->bindingRelations()
@@ -1688,9 +1720,18 @@ void SpatialMoveTransaction::rollback() noexcept {
     case SpatialCandidateScratch::DecisionKind::GraphBoundaryAttachment:
       state_->graphBoundaryAttachments_[delta.index] = delta.oldValue0;
       break;
-    case SpatialCandidateScratch::DecisionKind::MemoryOperationPlan:
+    case SpatialCandidateScratch::DecisionKind::MemoryOperationPlan: {
+      const PnrIndex current = state_->memoryOperationPlans_[delta.index];
+      const auto envelopes =
+          state_->problem_->capacity().memoryOperationPlanEnvelopes();
+      if (llvm::Error error = state_->replaceResourceTimeEnvelope(
+              envelopes[current], envelopes[delta.oldValue0])) {
+        assert(false && "validated memory resource-time rollback failed");
+        llvm::consumeError(std::move(error));
+      }
       state_->memoryOperationPlans_[delta.index] = delta.oldValue0;
       break;
+    }
     case SpatialCandidateScratch::DecisionKind::LogicalMemoryBinding:
       state_->logicalMemoryBindings_[delta.index] = {delta.oldValue0,
                                                      delta.oldWideValue};

@@ -214,6 +214,29 @@ void loom::test::exerciseCapacityOveruseCandidate(
       take(pnr::spatialMappingViolationValue(
           *candidate, ResolvedPnrViolationKind::CapacityOveruse)) != 1)
     fail("shared temporal operand service lost its exact overuse");
+  auto resourceTime = pnr::spatialMappingViolationValue(
+      *candidate, ResolvedPnrViolationKind::ResourceTimeOverbooking);
+  if (resourceTime)
+    fail("selected envelopes exposed an incomplete resource-time objective");
+  const std::string resourceTimeFailure =
+      llvm::toString(resourceTime.takeError());
+  if (!llvm::StringRef(resourceTimeFailure).contains("objective_unavailable"))
+    fail("resource-time objective returned the wrong failure class");
+  const auto envelopeOffsets =
+      problem->capacity().computeInstructionContextEnvelopeOffsets();
+  const auto requireContextEnvelopeState =
+      [&](const pnr::SpatialComputeBindingSelection &binding, bool active) {
+        for (pnr::PnrIndex envelope =
+                 envelopeOffsets[binding.instructionContext];
+             envelope != envelopeOffsets[binding.instructionContext + 1];
+             ++envelope)
+          if (candidate->resourceTimeEnvelopeActive(envelope) != active ||
+              candidate->resourceTimeEnvelopeRefcount(envelope) !=
+                  (active ? 1U : 0U))
+            fail("compute context selected the wrong resource-time envelope");
+      };
+  requireContextEnvelopeState(*overused, true);
+  requireContextEnvelopeState(*legal, false);
 
   pnr::SpatialCandidateScratch scratch;
   requireSuccess(scratch.prepare(*problem));
@@ -231,6 +254,8 @@ void loom::test::exerciseCapacityOveruseCandidate(
   }
   if (candidate->capacityOveruse() != 0)
     fail("legal temporal operand allocation retained capacity overuse");
+  requireContextEnvelopeState(*overused, false);
+  requireContextEnvelopeState(*legal, true);
 
   {
     auto move = take(candidate->beginMove(scratch));
@@ -244,6 +269,8 @@ void loom::test::exerciseCapacityOveruseCandidate(
   }
   if (candidate->capacityOveruse() != 0)
     fail("capacity rollback changed the committed objective value");
+  requireContextEnvelopeState(*overused, false);
+  requireContextEnvelopeState(*legal, true);
   requireSuccess(candidate->verify());
 }
 
@@ -358,6 +385,14 @@ void loom::test::exerciseCanonicalCandidateInitialization(
         binding.placement != repeat.placement ||
         binding.instructionContext != repeat.instructionContext)
       fail("canonical initializer changed compute choice order");
+    const auto envelopeOffsets =
+        problem->capacity().computeInstructionContextEnvelopeOffsets();
+    for (pnr::PnrIndex envelope = envelopeOffsets[binding.instructionContext];
+         envelope != envelopeOffsets[binding.instructionContext + 1];
+         ++envelope)
+      if (first->resourceTimeEnvelopeRefcount(envelope) != 1 ||
+          !first->resourceTimeEnvelopeActive(envelope))
+        fail("canonical initializer lost a compute resource-time envelope");
   }
   for (pnr::PnrIndex index = 0;
        index < realizations.memoryRealizations().size(); ++index) {

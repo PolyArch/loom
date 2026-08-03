@@ -12,6 +12,7 @@ add_mlir_library(LoomPnR
   SpatialBindingRelationModel.cpp
   SpatialCandidateInitializer.cpp
   SpatialCandidateMemory.cpp
+  SpatialCandidateResourceTime.cpp
   SpatialCandidateRelations.cpp
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp

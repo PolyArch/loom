@@ -683,6 +683,18 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
       !(*serviceIssue == issueEvent) || serviceEnvelope.useCount != 1 ||
       serviceEnvelope.segmentCount == 0)
     fail("memory service resource-time projection is incomplete");
+  const loom::pnr::PnrIndex planEnvelopeOrdinal = planEnvelopes[selectedPlan];
+  const loom::pnr::PnrIndex serviceEnvelopeOrdinal =
+      groupEnvelopes.front().envelope;
+  if (candidate->resourceTimeEnvelopeRefcount(planEnvelopeOrdinal) != 1 ||
+      candidate->resourceTimeEnvelopeRefcount(serviceEnvelopeOrdinal) != 1 ||
+      !candidate->resourceTimeEnvelopeActive(planEnvelopeOrdinal) ||
+      !candidate->resourceTimeEnvelopeActive(serviceEnvelopeOrdinal))
+    fail("initial candidate lost a selected resource-time envelope");
+  const loom::pnr::PnrIndex initialActiveEnvelopeCount =
+      candidate->activeResourceTimeEnvelopeCount();
+  if (initialActiveEnvelopeCount < 2)
+    fail("initial candidate has too few active resource-time envelopes");
   std::optional<loom::pnr::PnrIndex> boundaryTarget;
   for (auto [ordinal, target] : llvm::enumerate(memoryIndex.bindingTargets()))
     if (std::holds_alternative<loom::pnr::FrozenSpatialMemoryBoundaryProxy>(
@@ -721,9 +733,14 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   }
   if (candidate->logicalMemoryBinding(0).target !=
           originalLogicalBinding.target ||
-      llvm::any_of(serviceUses, [&](loom::pnr::PnrIndex use) {
-        return candidate->memoryUseDispatch(use) != originalDispatch;
-      }))
+      llvm::any_of(serviceUses,
+                   [&](loom::pnr::PnrIndex use) {
+                     return candidate->memoryUseDispatch(use) !=
+                            originalDispatch;
+                   }) ||
+      candidate->resourceTimeEnvelopeRefcount(serviceEnvelopeOrdinal) != 1 ||
+      candidate->activeResourceTimeEnvelopeCount() !=
+          initialActiveEnvelopeCount)
     fail("failed memory transaction did not roll back atomically");
 
   {
@@ -735,6 +752,13 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
       fail("paired BoundaryProxy move closes a selected handshake cycle");
     requireSuccess(move.commit());
   }
+  if (candidate->resourceTimeEnvelopeRefcount(planEnvelopeOrdinal) != 1 ||
+      candidate->resourceTimeEnvelopeRefcount(serviceEnvelopeOrdinal) != 0 ||
+      !candidate->resourceTimeEnvelopeActive(planEnvelopeOrdinal) ||
+      candidate->resourceTimeEnvelopeActive(serviceEnvelopeOrdinal) ||
+      candidate->activeResourceTimeEnvelopeCount() + 1 !=
+          initialActiveEnvelopeCount)
+    fail("BoundaryProxy move retained a local-service envelope");
   requireSuccess(candidate->verify());
   {
     auto move = take(candidate->beginMove(candidateScratch));
@@ -748,9 +772,14 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
     move.rollback();
   }
   if (candidate->logicalMemoryBinding(0).target != *boundaryTarget ||
-      llvm::any_of(serviceUses, [&](loom::pnr::PnrIndex use) {
-        return candidate->memoryUseDispatch(use) != *managerDispatch;
-      }))
+      llvm::any_of(serviceUses,
+                   [&](loom::pnr::PnrIndex use) {
+                     return candidate->memoryUseDispatch(use) !=
+                            *managerDispatch;
+                   }) ||
+      candidate->resourceTimeEnvelopeRefcount(serviceEnvelopeOrdinal) != 0 ||
+      candidate->activeResourceTimeEnvelopeCount() + 1 !=
+          initialActiveEnvelopeCount)
     fail("memory transaction rollback did not preserve committed state");
   {
     auto move = take(candidate->beginMove(candidateScratch));
@@ -763,6 +792,11 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
       fail("restored local memory move closes a selected handshake cycle");
     requireSuccess(move.commit());
   }
+  if (candidate->resourceTimeEnvelopeRefcount(serviceEnvelopeOrdinal) != 1 ||
+      !candidate->resourceTimeEnvelopeActive(serviceEnvelopeOrdinal) ||
+      candidate->activeResourceTimeEnvelopeCount() !=
+          initialActiveEnvelopeCount)
+    fail("restored local memory move lost its resource-time envelope");
   {
     auto move = take(candidate->beginMove(candidateScratch));
     selectReachableGraphBoundaries(*candidate, move);

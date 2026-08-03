@@ -315,6 +315,24 @@ llvm::Error SpatialCandidateState::changeMemoryServiceUsage(
       active == std::numeric_limits<PnrIndex>::max())
     return candidateError("memory service active-pattern count overflows");
 
+  std::optional<PnrIndex> removedEnvelope;
+  if (oldPattern != getInvalidPnrIndex() && oldRefcount == 1) {
+    auto envelope = memoryServiceResourceTimeEnvelope(group, oldPattern);
+    if (!envelope)
+      return envelope.takeError();
+    removedEnvelope = *envelope;
+  }
+  std::optional<PnrIndex> addedEnvelope;
+  if (newPattern != getInvalidPnrIndex() && newRefcount == 0) {
+    auto envelope = memoryServiceResourceTimeEnvelope(group, newPattern);
+    if (!envelope)
+      return envelope.takeError();
+    addedEnvelope = *envelope;
+  }
+  if (llvm::Error error =
+          replaceResourceTimeEnvelope(removedEnvelope, addedEnvelope))
+    return error;
+
   if (oldPattern != getInvalidPnrIndex()) {
     auto found = memoryServicePatternRefcounts_.find({group, oldPattern});
     if (--found->second == 0) {

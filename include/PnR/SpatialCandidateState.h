@@ -183,6 +183,16 @@ public:
     return unroutedObligationCount_;
   }
   std::uint64_t capacityOveruse() const { return capacityOveruse_; }
+  /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
+  /// sole owner of envelope semantics; these dense views are rebuildable.
+  PnrIndex resourceTimeEnvelopeRefcount(PnrIndex envelope) const;
+  bool resourceTimeEnvelopeActive(PnrIndex envelope) const;
+  PnrIndex activeResourceTimeEnvelopeCount() const {
+    return activeResourceTimeEnvelopeCount_;
+  }
+  llvm::ArrayRef<std::uint64_t> activeResourceTimeEnvelopeBits() const {
+    return activeResourceTimeEnvelopeBits_;
+  }
   std::uint64_t totalSelectedTraversalClaim() const {
     return routeResources_.totalSelectedTraversalClaim();
   }
@@ -264,6 +274,19 @@ private:
   llvm::Error verifyBindingRelation(PnrIndex relation) const;
   llvm::Error verifyHandshakeProjection() const;
   llvm::Expected<std::uint64_t> recomputeCapacityOveruse() const;
+  llvm::Expected<std::vector<PnrIndex>>
+  deriveResourceTimeEnvelopeRefcounts() const;
+  llvm::Error rebuildResourceTimeEnvelopeSelections();
+  llvm::Error verifyResourceTimeEnvelopeSelections() const;
+  llvm::Error replaceResourceTimeEnvelopeSlice(PnrIndex oldOffset,
+                                               PnrIndex oldCount,
+                                               PnrIndex newOffset,
+                                               PnrIndex newCount);
+  llvm::Error replaceResourceTimeEnvelope(std::optional<PnrIndex> oldEnvelope,
+                                          std::optional<PnrIndex> newEnvelope);
+  void applyResourceTimeEnvelopeDelta(PnrIndex envelope, bool add) noexcept;
+  llvm::Expected<PnrIndex>
+  memoryServiceResourceTimeEnvelope(PnrIndex group, PnrIndex pattern) const;
   PnrIndex terminalEndpoint(FrozenSpatialTerminalBinding binding) const;
   std::uint32_t
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
@@ -280,6 +303,9 @@ private:
   llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
       memoryServicePatternRefcounts_;
   std::vector<PnrIndex> memoryServiceGroupActivePatternCounts_;
+  std::vector<PnrIndex> resourceTimeEnvelopeRefcounts_;
+  std::vector<std::uint64_t> activeResourceTimeEnvelopeBits_;
+  PnrIndex activeResourceTimeEnvelopeCount_ = 0;
   std::vector<PnrIndex> memoryExposureSelections_;
   llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
       memoryExposureProviderRefcounts_;
