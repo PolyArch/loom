@@ -22,6 +22,7 @@ struct EndpointRoutingGraphView final {
   llvm::ArrayRef<PnrIndex> adjacencyOffsets;
   llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets;
   llvm::ArrayRef<PnrIndex> reverseArcOrdinals;
+  llvm::ArrayRef<PnrIndex> traversalReplicationGroups;
 };
 
 EndpointRoutingGraphView
@@ -53,7 +54,9 @@ private:
 
 struct EndpointRouteSearchRequest final {
   llvm::ArrayRef<PnrIndex> sourceEndpoints;
+  llvm::ArrayRef<PnrIndex> sourceReplicationGroups;
   llvm::ArrayRef<PnrIndex> targetEndpoints;
+  llvm::ArrayRef<PnrIndex> targetPreferenceRanks;
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts;
   llvm::ArrayRef<RouteCost> currentArcCosts;
   std::uint32_t requiredPayloadWidthBits = 0;
@@ -106,8 +109,9 @@ private:
   RouteCost distance(PnrIndex endpoint) const;
   bool isTarget(PnrIndex endpoint) const;
   bool isSource(PnrIndex endpoint) const;
-  bool arcEligible(PnrIndex arc,
-                   const EndpointRouteSearchRequest &request) const;
+  PnrIndex targetPreferenceRank(PnrIndex endpoint) const;
+  bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
+                   bool enforceSourceReplication) const;
   llvm::Error buildHeuristic(const EndpointRouteSearchRequest &request);
 
   EndpointRoutingGraphView graph_;
@@ -119,6 +123,8 @@ private:
   std::vector<std::uint64_t> distanceEpochs_;
   std::vector<std::uint64_t> targetEpochs_;
   std::vector<std::uint64_t> sourceEpochs_;
+  std::vector<PnrIndex> targetPreferenceRanks_;
+  std::vector<PnrIndex> sourceReplicationGroups_;
   std::vector<PnrIndex> heap_;
   std::vector<PnrIndex> heapPositions_;
   std::vector<PnrIndex> path_;

@@ -856,6 +856,9 @@ void artifactRoundTripAndReferenceValidation() {
   loom::pnr::EndpointRouteSearchScratch routeSearch;
   requireSuccess(routeSearch.prepare(
       loom::pnr::endpointRoutingGraphView(frozen->routing())));
+  const loom::pnr::PnrIndex unrestrictedReplicationGroup =
+      loom::pnr::getInvalidPnrIndex();
+  const loom::pnr::PnrIndex firstTargetRank = 0;
   std::optional<std::vector<loom::pnr::PnrIndex>> routedArcs;
   for (loom::pnr::PnrIndex claimArc = 0;
        claimArc < frozen->routing().routingArcs().size() && !routedArcs;
@@ -872,7 +875,9 @@ void artifactRoundTripAndReferenceValidation() {
     const loom::pnr::PnrIndex claimTarget = claimArcRecord.target;
     auto prefix = routeSearch.search(
         {{&routeSource, 1},
+         {&unrestrictedReplicationGroup, 1},
          {&claimSource, 1},
+         {&firstTargetRank, 1},
          routeCosts,
          routeCosts,
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
@@ -886,7 +891,9 @@ void artifactRoundTripAndReferenceValidation() {
                                                prefix->forwardArcs.end());
     auto suffix = routeSearch.search(
         {{&claimTarget, 1},
+         {&unrestrictedReplicationGroup, 1},
          {&routeTarget, 1},
+         {&firstTargetRank, 1},
          routeCosts,
          routeCosts,
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
@@ -1310,6 +1317,81 @@ void artifactRoundTripAndReferenceValidation() {
   if (!routeTree->isUnrouted())
     fail("route-tree whole-net rip-up retained committed state");
   requireSuccess(routeTree->verify());
+
+  const auto replicationGroups = frozen->routing().traversalReplicationGroups();
+  if (replicationGroups.size() != frozen->routing().traversals().size())
+    fail("aggregate Spatial routing graph omitted replication groups");
+  struct BranchPair final {
+    loom::pnr::PnrIndex source;
+    loom::pnr::PnrIndex firstArc;
+    loom::pnr::PnrIndex secondArc;
+  };
+  const auto findBranchPair =
+      [&](bool explicitReplication) -> std::optional<BranchPair> {
+    for (loom::pnr::PnrIndex branchSource = 0;
+         branchSource + 1 < offsets.size(); ++branchSource) {
+      for (loom::pnr::PnrIndex firstArc = offsets[branchSource];
+           firstArc < offsets[branchSource + 1]; ++firstArc) {
+        const auto &first = frozen->routing().routingArcs()[firstArc];
+        const loom::pnr::PnrIndex firstGroup =
+            replicationGroups[first.traversal];
+        for (loom::pnr::PnrIndex secondArc = firstArc + 1;
+             secondArc < offsets[branchSource + 1]; ++secondArc) {
+          const auto &second = frozen->routing().routingArcs()[secondArc];
+          if (first.target == second.target)
+            continue;
+          const loom::pnr::PnrIndex secondGroup =
+              replicationGroups[second.traversal];
+          const bool sameExplicitGroup =
+              firstGroup != loom::pnr::getInvalidPnrIndex() &&
+              firstGroup == secondGroup;
+          if (sameExplicitGroup == explicitReplication)
+            return BranchPair{branchSource, firstArc, secondArc};
+        }
+      }
+    }
+    return std::nullopt;
+  };
+  const auto exerciseBranch = [&](const BranchPair &branch,
+                                  bool shouldSucceed) {
+    auto branchOwner =
+        std::shared_ptr<const loom::pnr::FrozenSpatialRoutingGraph>(
+            frozen, &frozen->routing());
+    auto tree =
+        take(loom::pnr::RouteTreeState::create(std::move(branchOwner), 2));
+    loom::pnr::RouteTreeTransactionScratch branchScratch;
+    auto branchTransaction = take(tree->beginTransaction(branchScratch));
+    const loom::pnr::PnrIndex firstTarget =
+        frozen->routing().routingArcs()[branch.firstArc].target;
+    const loom::pnr::PnrIndex secondTarget =
+        frozen->routing().routingArcs()[branch.secondArc].target;
+    requireSuccess(branchTransaction.bindSource(branch.source));
+    requireSuccess(branchTransaction.bindSink(0, firstTarget));
+    requireSuccess(branchTransaction.bindSink(1, secondTarget));
+    requireSuccess(
+        branchTransaction.attachPath(branch.source, {branch.firstArc}, 0));
+    requireSuccess(
+        branchTransaction.attachPath(branch.source, {branch.secondArc}, 1));
+    auto prepared = branchTransaction.prepare();
+    if (shouldSucceed) {
+      if (!prepared)
+        fail("explicit switch replication was rejected: " +
+             llvm::toString(prepared.takeError()));
+      requireSuccess(branchTransaction.commit());
+      requireSuccess(tree->verify());
+    } else if (prepared) {
+      fail("selector alternatives were accepted as a broadcast branch");
+    } else {
+      llvm::consumeError(prepared.takeError());
+    }
+  };
+
+  const std::optional<BranchPair> broadcastBranch = findBranchPair(true);
+  const std::optional<BranchPair> selectorBranch = findBranchPair(false);
+  if (!broadcastBranch || !selectorBranch)
+    fail("builtin SpatialCore lacks replication and selector branch anchors");
+  exerciseBranch(*broadcastBranch, true);
+  exerciseBranch(*selectorBranch, false);
 
   const loom::pnr::ResolvedPnrConfigView systemConfig =
       take(loom::pnr::projectResolvedSystemPnrConfigView(

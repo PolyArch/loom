@@ -28,6 +28,10 @@ inline constexpr std::uint64_t getPnrIndexMax() {
   return std::numeric_limits<PnrIndex>::max();
 }
 
+inline constexpr PnrIndex getInvalidPnrIndex() {
+  return static_cast<PnrIndex>(getPnrIndexMax());
+}
+
 inline constexpr std::string_view getPnrIndexBuildIdentity() {
   return getPnrIndexBits() == 32 ? "LOOM_PNR_INDEX_BITS=32"
                                  : "LOOM_PNR_INDEX_BITS=64";

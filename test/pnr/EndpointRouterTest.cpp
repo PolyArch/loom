@@ -53,6 +53,8 @@ void expectFailure(const char *test,
 }
 
 struct Fixture final {
+  static constexpr PnrIndex noReplicationGroup = getInvalidPnrIndex();
+
   std::array<FrozenSpatialRoutingArc, 7> arcs{{
       {1, 0, 64, 8},
       {2, 1, 64, 8},
@@ -66,6 +68,15 @@ struct Fixture final {
   std::array<PnrIndex, 7> adjacencyOffsets{{0, 2, 3, 5, 6, 6, 7}};
   std::array<PnrIndex, 7> reverseAdjacencyOffsets{{0, 0, 1, 2, 3, 6, 7}};
   std::array<PnrIndex, 7> reverseArcOrdinals{{0, 1, 3, 2, 5, 6, 4}};
+  std::array<PnrIndex, 7> traversalReplicationGroups{{
+      noReplicationGroup,
+      noReplicationGroup,
+      noReplicationGroup,
+      7,
+      8,
+      noReplicationGroup,
+      noReplicationGroup,
+  }};
   std::array<RouteCost, 7> lowerCosts{{10, 1, 1, 1, 1, 1, 1}};
   std::array<RouteCost, 7> currentCosts{{10, 1, 1, 1, 1, 1, 1}};
 
@@ -75,17 +86,25 @@ struct Fixture final {
             arcSources,
             adjacencyOffsets,
             reverseAdjacencyOffsets,
-            reverseArcOrdinals};
+            reverseArcOrdinals,
+            traversalReplicationGroups};
   }
 };
 
-EndpointRouteSearchRequest request(const Fixture &fixture,
-                                   llvm::ArrayRef<PnrIndex> sources,
-                                   llvm::ArrayRef<PnrIndex> targets,
-                                   std::uint32_t payloadWidth,
-                                   std::uint64_t expansionLimit) {
-  return {sources,      targets, fixture.lowerCosts, fixture.currentCosts,
-          payloadWidth, 0,       expansionLimit};
+EndpointRouteSearchRequest
+request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
+        llvm::ArrayRef<PnrIndex> sourceGroups, llvm::ArrayRef<PnrIndex> targets,
+        llvm::ArrayRef<PnrIndex> targetRanks, std::uint32_t payloadWidth,
+        std::uint64_t expansionLimit) {
+  return {sources,
+          sourceGroups,
+          targets,
+          targetRanks,
+          fixture.lowerCosts,
+          fixture.currentCosts,
+          payloadWidth,
+          0,
+          expansionLimit};
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
@@ -95,17 +114,31 @@ void arbitraryTopologyAndCanonicalTieBreak() {
   const std::size_t retained = scratch.retainedStorageBytes();
 
   const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> unrestricted{{Fixture::noReplicationGroup}};
   const std::array<PnrIndex, 1> targetFour{{4}};
+  const std::array<PnrIndex, 1> rankZero{{0}};
   const std::array<PnrIndex, 3> expected{{1, 3, 5}};
-  const auto result = take(
-      __func__, scratch.search(request(fixture, sources, targetFour, 1, 64)));
+  const auto result =
+      take(__func__, scratch.search(request(fixture, sources, unrestricted,
+                                            targetFour, rankZero, 1, 64)));
   requirePath(__func__, result, 0, 4, 3, expected);
 
   const std::array<PnrIndex, 2> equalTargets{{3, 5}};
-  const std::array<PnrIndex, 2> lowerTargetPath{{1, 3}};
-  const auto tied = take(
-      __func__, scratch.search(request(fixture, sources, equalTargets, 1, 64)));
-  requirePath(__func__, tied, 0, 3, 2, lowerTargetPath);
+  const std::array<PnrIndex, 2> targetRanks{{1, 0}};
+  const std::array<PnrIndex, 2> preferredTargetPath{{1, 4}};
+  const auto tied =
+      take(__func__, scratch.search(request(fixture, sources, unrestricted,
+                                            equalTargets, targetRanks, 1, 64)));
+  requirePath(__func__, tied, 0, 5, 2, preferredTargetPath);
+
+  const std::array<PnrIndex, 1> branchSource{{2}};
+  const std::array<PnrIndex, 1> requiredGroup{{8}};
+  const std::array<PnrIndex, 2> branchRanks{{0, 1}};
+  const std::array<PnrIndex, 1> groupEightPath{{4}};
+  const auto groupFiltered = take(
+      __func__, scratch.search(request(fixture, branchSource, requiredGroup,
+                                       equalTargets, branchRanks, 1, 64)));
+  requirePath(__func__, groupFiltered, 2, 5, 1, groupEightPath);
   if (scratch.retainedStorageBytes() != retained)
     fail(__func__, "warm route search changed retained scratch storage");
 }
@@ -115,18 +148,23 @@ void widthFilteringAndWorkLimit() {
   EndpointRouteSearchScratch scratch;
   requireSuccess(__func__, scratch.prepare(fixture.graph()));
   const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
   const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
 
   const std::array<PnrIndex, 3> widePath{{1, 4, 6}};
-  const auto wide = take(
-      __func__, scratch.search(request(fixture, sources, targets, 32, 64)));
+  const auto wide =
+      take(__func__, scratch.search(request(fixture, sources, sourceGroups,
+                                            targets, targetRanks, 32, 64)));
   requirePath(__func__, wide, 0, 4, 3, widePath);
 
   expectFailure(__func__,
-                scratch.search(request(fixture, sources, targets, 128, 64)),
+                scratch.search(request(fixture, sources, sourceGroups, targets,
+                                       targetRanks, 128, 64)),
                 EndpointRouteSearchFailureKind::Unreachable);
   expectFailure(__func__,
-                scratch.search(request(fixture, sources, targets, 1, 1)),
+                scratch.search(request(fixture, sources, sourceGroups, targets,
+                                       targetRanks, 1, 1)),
                 EndpointRouteSearchFailureKind::WorkLimit);
 }
 
@@ -135,18 +173,22 @@ void checkedCostAndAdmissibility() {
   EndpointRouteSearchScratch scratch;
   requireSuccess(__func__, scratch.prepare(fixture.graph()));
   const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
   const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
 
   fixture.currentCosts[1] = 0;
   expectFailure(__func__,
-                scratch.search(request(fixture, sources, targets, 1, 64)),
+                scratch.search(request(fixture, sources, sourceGroups, targets,
+                                       targetRanks, 1, 64)),
                 EndpointRouteSearchFailureKind::Invalid);
 
   fixture.currentCosts = fixture.lowerCosts;
   fixture.lowerCosts[5] = maxFiniteRouteCost;
   fixture.currentCosts[5] = maxFiniteRouteCost;
   expectFailure(__func__,
-                scratch.search(request(fixture, sources, targets, 1, 64)),
+                scratch.search(request(fixture, sources, sourceGroups, targets,
+                                       targetRanks, 1, 64)),
                 EndpointRouteSearchFailureKind::ArithmeticOverflow);
 }
 

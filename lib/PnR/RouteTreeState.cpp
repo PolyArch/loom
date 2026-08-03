@@ -278,7 +278,48 @@ llvm::Error RouteTreeState::verify() const {
   return verifyState();
 }
 
+llvm::Error RouteTreeState::verifyReplicationBranches() const {
+  if (graph_->traversalReplicationGroups().size() !=
+      graph_->traversals().size())
+    return routeTreeError(
+        "FrozenSpatialRoutingGraph has no exact replication projection");
+
+  for (const RouteTreeNode &parent : nodes_) {
+    if (!parent.isActive())
+      continue;
+    PnrIndex child = parent.firstChild;
+    PnrIndex replicationGroup = getInvalidPnrIndex();
+    std::size_t childCount = 0;
+    while (child != getInvalidPnrIndex()) {
+      if (child >= nodes_.size() || !nodes_[child].isActive())
+        return routeTreeError("child linkage references an inactive slot");
+      if (++childCount > activeNodeCount_)
+        return routeTreeError("child linkage contains a cycle");
+      const PnrIndex parentArc = nodes_[child].parentArc;
+      if (parentArc == getInvalidPnrIndex() ||
+          parentArc >= graph_->routingArcs().size())
+        return routeTreeError("non-root node has no valid parent arc");
+      const PnrIndex traversal = graph_->routingArcs()[parentArc].traversal;
+      if (traversal >= graph_->traversalReplicationGroups().size())
+        return routeTreeError("parent arc names an invalid traversal");
+      const PnrIndex childGroup =
+          graph_->traversalReplicationGroups()[traversal];
+      if (childCount == 1) {
+        replicationGroup = childGroup;
+      } else if (replicationGroup == getInvalidPnrIndex() ||
+                 childGroup != replicationGroup) {
+        return routeTreeError(
+            "route branch is not one explicit Fabric replication group");
+      }
+      child = nodes_[child].nextSibling;
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error RouteTreeState::verifyState() const {
+  if (llvm::Error error = verifyReplicationBranches())
+    return error;
   if (!endpointSlots_.empty() &&
       (endpointSlots_.size() < 8 ||
        (endpointSlots_.size() & (endpointSlots_.size() - 1)) != 0))
@@ -1040,6 +1081,8 @@ RouteTreeTransaction::prepare() {
     if (!root || state_->nodes_[*root].parentArc != getInvalidPnrIndex())
       return routeTreeError("routed state is missing its source root");
   }
+  if (llvm::Error error = state_->verifyReplicationBranches())
+    return std::move(error);
 
   auto &deltas = scratch_->traversalDeltas_;
   llvm::sort(deltas, [](const RouteTreeTraversalDelta &lhs,

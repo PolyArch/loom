@@ -62,6 +62,9 @@ constexpr PnrCapacityContext traversalCountContext{
     frozenArtifact, "traversals", "traversals", PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext traversalIndexContext{
     frozenArtifact, "traversals", "traversals", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext replicationGroupIndexContext{
+    frozenArtifact, "traversal_replication_groups", "replication_groups",
+    PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext traversalEndpointOffsetContext{
     frozenArtifact, "traversals", "traversal_endpoints",
     PnrCapacityMeasure::Offset};
@@ -110,16 +113,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.4\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.5\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 4;
+constexpr std::uint32_t cacheSchemaMinor = 5;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.4";
+    "loom.spatial_pnr.freeze.2.5";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.4";
+    "loom.spatial_pnr.native_layout.2.5";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -236,6 +239,17 @@ routeClaimKey(const FabricTraversalActivationGroupView &activationGroup,
   appendU32Be(bytes, static_cast<std::uint32_t>(activationGroup.kind));
   appendU64Be(bytes, activationGroup.ordinal);
   appendU64Be(bytes, capacityDimension);
+  bytes.insert(bytes.end(), owner.begin(), owner.end());
+  return byteKey(bytes);
+}
+
+std::string
+activationGroupKey(const FabricTraversalActivationGroupView &activationGroup) {
+  std::vector<std::uint8_t> bytes;
+  const auto owner = canonicalFabricBytes(activationGroup.owner);
+  bytes.reserve(12 + owner.size());
+  appendU32Be(bytes, static_cast<std::uint32_t>(activationGroup.kind));
+  appendU64Be(bytes, activationGroup.ordinal);
   bytes.insert(bytes.end(), owner.begin(), owner.end());
   return byteKey(bytes);
 }
@@ -519,6 +533,8 @@ public:
         routing.reverseAdjacencyOffsets().size() !=
             routing.routingEndpoints().size() + 1 ||
         routing.reverseArcOrdinals().size() != routing.routingArcs().size() ||
+        routing.traversalReplicationGroups().size() !=
+            routing.traversals().size() ||
         routing.arcSources().size() != routing.routingArcs().size() ||
         routing.adjacencyOffsets().empty() ||
         routing.adjacencyOffsets().front() != 0 ||
@@ -527,6 +543,7 @@ public:
         routing.reverseAdjacencyOffsets().back() !=
             routing.routingArcs().size())
       return invalid("routing CSR dimensions are inconsistent");
+
     for (std::size_t source = 0; source < routing.routingEndpoints().size();
          ++source) {
       const PnrIndex begin = routing.adjacencyOffsets()[source];
@@ -666,7 +683,9 @@ public:
         routing.traversalArcs() !=
             llvm::ArrayRef<PnrIndex>(expectedTraversalArcs))
       return invalid("traversal-to-arc reverse incidence is inconsistent");
-    for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
+    llvm::StringMap<PnrIndex> expectedReplicationGroups;
+    for (auto [traversalOrdinal, traversal] :
+         llvm::enumerate(routing.traversals())) {
       const bool endpointlessRegisterFifo =
           traversal.reference.kind() ==
           FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
@@ -708,6 +727,32 @@ public:
         firstClaim = false;
         previousClaim = claim;
       }
+      PnrIndex expectedReplicationGroup = getInvalidPnrIndex();
+      for (PnrIndex claimOrdinal : routing.traversalClaimKeys().slice(
+               traversal.routeClaimOffset, traversal.routeClaimCount)) {
+        const FabricTraversalActivationGroupView &activation =
+            routing.routeClaims()[claimOrdinal].activationGroup;
+        if (activation.kind !=
+            FabricTraversalActivationGroupKind::SwitchRequester)
+          continue;
+        const std::string key = activationGroupKey(activation);
+        auto found = expectedReplicationGroups.find(key);
+        if (found == expectedReplicationGroups.end()) {
+          auto group = checked(replicationGroupIndexContext,
+                               expectedReplicationGroups.size());
+          if (!group)
+            return group.takeError();
+          found = expectedReplicationGroups.try_emplace(key, *group).first;
+        }
+        if (expectedReplicationGroup != getInvalidPnrIndex() &&
+            expectedReplicationGroup != found->second)
+          return invalid("one traversal names multiple replication groups");
+        expectedReplicationGroup = found->second;
+      }
+      if (routing.traversalReplicationGroups()[traversalOrdinal] !=
+          expectedReplicationGroup)
+        return invalid(
+            "traversal replication group is not the Fabric projection");
     }
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
             handshake, realizations, resources, routing))
@@ -974,6 +1019,7 @@ private:
         return invalid("the frozen use-pattern inventory has a duplicate");
     }
     llvm::StringMap<PnrIndex> routeClaimByKey;
+    llvm::StringMap<PnrIndex> replicationGroupByKey;
 
     struct ArcDraft final {
       PnrIndex source;
@@ -981,6 +1027,7 @@ private:
     };
     std::vector<ArcDraft> arcDrafts;
     result.traversals_.reserve(traversalViews.size());
+    result.traversalReplicationGroups_.reserve(traversalViews.size());
     for (auto [traversalOrdinal, traversal] : llvm::enumerate(traversalViews)) {
       auto traversalIndex = checked(traversalIndexContext, traversalOrdinal);
       if (!traversalIndex)
@@ -1065,6 +1112,7 @@ private:
       if (!routeClaimOffset)
         return routeClaimOffset.takeError();
       std::vector<PnrIndex> traversalClaimKeys;
+      PnrIndex replicationGroup = getInvalidPnrIndex();
       for (const FabricTraversalUseView &use : traversal.impliedUses) {
         const auto patternFound =
             patternByCanonicalRef.find(refKey(use.pattern));
@@ -1085,6 +1133,21 @@ private:
           if (use.activationGroup.ordinal != pattern.requester)
             return invalid(
                 "a switch traversal activation disagrees with its requester");
+          {
+            const std::string key = activationGroupKey(use.activationGroup);
+            auto found = replicationGroupByKey.find(key);
+            if (found == replicationGroupByKey.end()) {
+              auto group = checked(replicationGroupIndexContext,
+                                   replicationGroupByKey.size());
+              if (!group)
+                return group.takeError();
+              found = replicationGroupByKey.try_emplace(key, *group).first;
+            }
+            if (replicationGroup != getInvalidPnrIndex() &&
+                replicationGroup != found->second)
+              return invalid("one traversal names multiple replication groups");
+            replicationGroup = found->second;
+          }
           break;
         }
 
@@ -1150,6 +1213,7 @@ private:
           {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
            *destinationCount, *resourceStateOffset, *resourceStateCount,
            *routeClaimOffset, *routeClaimCount});
+      result.traversalReplicationGroups_.push_back(replicationGroup);
 
       for (PnrIndex source : sources) {
         const auto &sourcePath = result.endpoints_[source].dataPath;

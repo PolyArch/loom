@@ -16,10 +16,6 @@
 
 namespace loom::pnr {
 
-inline constexpr PnrIndex getInvalidPnrIndex() {
-  return static_cast<PnrIndex>(getPnrIndexMax());
-}
-
 namespace detail {
 
 struct RouteTreeLookupEntry {
@@ -180,6 +176,7 @@ private:
   std::optional<PnrIndex> lookupSlot(PnrIndex endpoint) const;
 
   PnrIndex arcSourceEndpoint(PnrIndex arc) const;
+  llvm::Error verifyReplicationBranches() const;
   llvm::Error verifyState() const;
 
   FrozenSpatialRoutingGraphHandle graph_;

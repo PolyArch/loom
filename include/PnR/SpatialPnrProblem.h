@@ -422,6 +422,9 @@ public:
   llvm::ArrayRef<PnrIndex> traversalClaimKeys() const {
     return traversalClaimKeys_;
   }
+  llvm::ArrayRef<PnrIndex> traversalReplicationGroups() const {
+    return traversalReplicationGroups_;
+  }
   llvm::ArrayRef<PnrIndex> capacityRouteClaimOffsets() const {
     return capacityRouteClaimOffsets_;
   }
@@ -457,6 +460,7 @@ private:
   std::vector<PnrIndex> traversalResourceStates_;
   std::vector<FrozenSpatialRouteClaim> routeClaims_;
   std::vector<PnrIndex> traversalClaimKeys_;
+  std::vector<PnrIndex> traversalReplicationGroups_;
   std::vector<PnrIndex> capacityRouteClaimOffsets_;
   std::vector<PnrIndex> capacityRouteClaims_;
   std::vector<PnrIndex> routeClaimTraversalOffsets_;

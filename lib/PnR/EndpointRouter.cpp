@@ -1,11 +1,13 @@
 #include "PnR/EndpointRouter.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 using namespace loom::pnr;
@@ -41,7 +43,8 @@ loom::pnr::endpointRoutingGraphView(const FrozenSpatialRoutingGraph &graph) {
           graph.arcSources(),
           graph.adjacencyOffsets(),
           graph.reverseAdjacencyOffsets(),
-          graph.reverseArcOrdinals()};
+          graph.reverseArcOrdinals(),
+          graph.traversalReplicationGroups()};
 }
 
 namespace {
@@ -130,6 +133,8 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
                        " is not owned by its forward CSR endpoint");
       if (graph.arcs[arc].target >= graph.endpointCount)
         return invalid("arc ", arc, " has an out-of-range target");
+      if (graph.arcs[arc].traversal >= graph.traversalReplicationGroups.size())
+        return invalid("arc ", arc, " has an out-of-range traversal");
     }
 
     const PnrIndex reverseBegin = graph.reverseAdjacencyOffsets[endpoint];
@@ -160,6 +165,8 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   distanceEpochs_.assign(endpointCount, 0);
   targetEpochs_.assign(endpointCount, 0);
   sourceEpochs_.assign(endpointCount, 0);
+  targetPreferenceRanks_.assign(endpointCount, 0);
+  sourceReplicationGroups_.assign(endpointCount, getInvalidPnrIndex());
   heap_.clear();
   heap_.reserve(endpointCount);
   heapPositions_.assign(endpointCount, invalidIndex);
@@ -291,11 +298,25 @@ bool EndpointRouteSearchScratch::isSource(PnrIndex endpoint) const {
   return sourceEpochs_[endpoint] == sourceGeneration_;
 }
 
+PnrIndex
+EndpointRouteSearchScratch::targetPreferenceRank(PnrIndex endpoint) const {
+  assert(isTarget(endpoint));
+  return targetPreferenceRanks_[endpoint];
+}
+
 bool EndpointRouteSearchScratch::arcEligible(
-    PnrIndex arc, const EndpointRouteSearchRequest &request) const {
-  return graph_.arcs[arc].payloadCapacityBits >=
-             request.requiredPayloadWidthBits &&
-         graph_.arcs[arc].tagCapacityBits >= request.requiredTagWidthBits;
+    PnrIndex arc, const EndpointRouteSearchRequest &request,
+    bool enforceSourceReplication) const {
+  if (graph_.arcs[arc].payloadCapacityBits < request.requiredPayloadWidthBits ||
+      graph_.arcs[arc].tagCapacityBits < request.requiredTagWidthBits)
+    return false;
+  const PnrIndex source = graph_.arcSources[arc];
+  if (!enforceSourceReplication || !isSource(source))
+    return true;
+  const PnrIndex required = sourceReplicationGroups_[source];
+  return required == getInvalidPnrIndex() ||
+         graph_.traversalReplicationGroups[graph_.arcs[arc].traversal] ==
+             required;
 }
 
 llvm::Error EndpointRouteSearchScratch::buildHeuristic(
@@ -316,7 +337,7 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     const PnrIndex end = graph_.reverseAdjacencyOffsets[endpoint + 1];
     for (PnrIndex offset = begin; offset < end; ++offset) {
       const PnrIndex arc = graph_.reverseArcOrdinals[offset];
-      if (!arcEligible(arc, request))
+      if (!arcEligible(arc, request, false))
         continue;
       const PnrIndex predecessor = graph_.arcSources[arc];
       auto candidate =
@@ -340,6 +361,12 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     return invalid("scratch must be prepared before search");
   if (request.sourceEndpoints.empty() || request.targetEndpoints.empty())
     return invalid("source and target endpoint sets must be nonempty");
+  if (request.sourceReplicationGroups.size() !=
+          request.sourceEndpoints.size() ||
+      request.targetPreferenceRanks.size() != request.targetEndpoints.size())
+    return invalid(
+        "source replication and target preference arrays must match their "
+        "endpoint domains");
   if (!isCanonicalEndpointSet(request.sourceEndpoints) ||
       !isCanonicalEndpointSet(request.targetEndpoints))
     return invalid("source and target endpoint sets must be sorted and unique");
@@ -364,8 +391,11 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   }
 
   beginTargetGeneration();
-  for (PnrIndex target : request.targetEndpoints)
+  for (auto [target, rank] : llvm::zip_equal(request.targetEndpoints,
+                                             request.targetPreferenceRanks)) {
     targetEpochs_[target] = targetGeneration_;
+    targetPreferenceRanks_[target] = rank;
+  }
   if (llvm::Error error = buildHeuristic(request))
     return std::move(error);
 
@@ -373,8 +403,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   heapMode_ = HeapMode::ForwardAStar;
   beginSearchGeneration();
   beginSourceGeneration();
-  for (PnrIndex source : request.sourceEndpoints) {
+  for (auto [source, replicationGroup] : llvm::zip_equal(
+           request.sourceEndpoints, request.sourceReplicationGroups)) {
     sourceEpochs_[source] = sourceGeneration_;
+    sourceReplicationGroups_[source] = replicationGroup;
     const RouteCost lowerBound = heuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
@@ -401,7 +433,11 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     const RouteCost endpointDistance = distances_[endpoint];
     if (isTarget(endpoint)) {
       if (endpointDistance < bestCost ||
-          (endpointDistance == bestCost && endpoint < bestTarget)) {
+          (endpointDistance == bestCost &&
+           (bestTarget == invalidIndex ||
+            std::make_tuple(targetPreferenceRank(endpoint), endpoint) <
+                std::make_tuple(targetPreferenceRank(bestTarget),
+                                bestTarget)))) {
         bestTarget = endpoint;
         bestCost = endpointDistance;
       }
@@ -411,7 +447,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     const PnrIndex begin = graph_.adjacencyOffsets[endpoint];
     const PnrIndex end = graph_.adjacencyOffsets[endpoint + 1];
     for (PnrIndex arc = begin; arc < end; ++arc) {
-      if (!arcEligible(arc, request))
+      if (!arcEligible(arc, request, true))
         continue;
       const PnrIndex successor = graph_.arcs[arc].target;
       const RouteCost successorHeuristic = heuristic(successor);
@@ -461,6 +497,8 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
          distanceEpochs_.capacity() * sizeof(std::uint64_t) +
          targetEpochs_.capacity() * sizeof(std::uint64_t) +
          sourceEpochs_.capacity() * sizeof(std::uint64_t) +
+         targetPreferenceRanks_.capacity() * sizeof(PnrIndex) +
+         sourceReplicationGroups_.capacity() * sizeof(PnrIndex) +
          heap_.capacity() * sizeof(PnrIndex) +
          heapPositions_.capacity() * sizeof(PnrIndex) +
          path_.capacity() * sizeof(PnrIndex);
