@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -202,6 +203,72 @@ FabricArtifactView::boundaryOccurrences() const {
   return storage_->boundaryOccurrences;
 }
 
+std::optional<FabricBoundaryTagContinuityPointView>
+FabricArtifactView::boundaryTagContinuityPoint(
+    FabricBoundaryOccurrenceRef boundary) const {
+  const detail::FabricEntityViewData *entity = storage_->entity(boundary);
+  if (!entity || entity->kind != FabricEntityKind::FabricBoundaryOccurrence)
+    return std::nullopt;
+
+  std::array<::fabric::DataPathType, 2> inputs{};
+  std::array<::fabric::DataPathType, 2> outputs{};
+  std::size_t inputCount = 0;
+  std::size_t outputCount = 0;
+  for (const detail::FabricTransportEndpointViewData &endpoint :
+       entity->owner.transportEndpoints) {
+    const auto dataPath = decodeTransportDataPath(endpoint.canonicalType);
+    if (!dataPath)
+      return std::nullopt;
+    if (endpoint.direction == FabricPortDirection::Input) {
+      if (inputCount == inputs.size())
+        return std::nullopt;
+      inputs[inputCount++] = *dataPath;
+    } else if (endpoint.direction == FabricPortDirection::Output) {
+      if (outputCount == outputs.size())
+        return std::nullopt;
+      outputs[outputCount++] = *dataPath;
+    } else {
+      return std::nullopt;
+    }
+  }
+  if (inputCount == 0 || outputCount == 0)
+    return std::nullopt;
+
+  const ::fabric::DataPathType &input = inputs.front();
+  const ::fabric::DataPathType &output = outputs.front();
+  if (input.kind == ::fabric::DataPathKind::Bits &&
+      output.kind == ::fabric::DataPathKind::BitsTag) {
+    if (outputCount != 1)
+      return std::nullopt;
+    if (inputCount == 2 && (inputs[1].kind != ::fabric::DataPathKind::Bits ||
+                            inputs[1].payloadWidthBits != output.tagWidthBits))
+      return std::nullopt;
+    return FabricBoundaryTagContinuityPointView{
+        inputCount == 2 ? FabricBoundaryTagContinuityKind::TokenWriter
+                        : FabricBoundaryTagContinuityKind::ConfigurableWriter,
+        0, output.tagWidthBits};
+  }
+  if (input.kind == ::fabric::DataPathKind::BitsTag &&
+      output.kind == ::fabric::DataPathKind::BitsTag) {
+    if (inputCount != 1 || outputCount != 1)
+      return std::nullopt;
+    return FabricBoundaryTagContinuityPointView{
+        FabricBoundaryTagContinuityKind::Rewriter, input.tagWidthBits,
+        output.tagWidthBits};
+  }
+  if (input.kind == ::fabric::DataPathKind::BitsTag &&
+      output.kind == ::fabric::DataPathKind::Bits) {
+    if (inputCount != 1)
+      return std::nullopt;
+    if (outputCount == 2 && (outputs[1].kind != ::fabric::DataPathKind::Bits ||
+                             outputs[1].payloadWidthBits != input.tagWidthBits))
+      return std::nullopt;
+    return FabricBoundaryTagContinuityPointView{
+        FabricBoundaryTagContinuityKind::Remover, input.tagWidthBits, 0};
+  }
+  return std::nullopt;
+}
+
 llvm::ArrayRef<FabricTransportEndpointRef>
 FabricArtifactView::transportEndpoints() const {
   return storage_->transportEndpoints;
@@ -381,8 +448,7 @@ bool FabricArtifactView::declaresLocalMemoryService(
 }
 
 const ::fabric::MemoryServiceContractRecord *
-FabricArtifactView::localMemoryService(
-    FabricMemoryOccurrenceRef memory) const {
+FabricArtifactView::localMemoryService(FabricMemoryOccurrenceRef memory) const {
   const detail::FabricEntityViewData *record = storage_->entity(memory);
   return record && record->localMemoryService
              ? &record->localMemoryService->record
@@ -1071,9 +1137,8 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
               validateNestedOwner(*entity.instructionCore, "instruction core"))
         return std::move(error);
     if (entity.localMemoryService) {
-      if (llvm::Error error =
-              validateNestedOwner(entity.localMemoryService->owner,
-                                  "local memory service"))
+      if (llvm::Error error = validateNestedOwner(
+              entity.localMemoryService->owner, "local memory service"))
         return std::move(error);
       if (inventoryCount(entity.localMemoryService->owner.inventoryCounts,
                          FabricInventoryKind::MemoryServiceRegion) !=

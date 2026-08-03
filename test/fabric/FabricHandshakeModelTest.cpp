@@ -545,6 +545,109 @@ void atomicBoundaryRequiresItsCompleteLegSet() {
           "complete boundary selection activated no handshake equations");
 }
 
+void oneToOneBoundariesUseDirectHandshake() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto source = parse(test, R"mlir(
+    module {
+      fabric.module @direct_boundaries(
+          %data: !fabric.bits<16>,
+          %rewrite_input: !fabric.bits_tag<8, 3>,
+          %remove_input: !fabric.bits_tag<64, 5>)
+          -> (!fabric.bits_tag<16, 6>, !fabric.bits_tag<8, 7>,
+              !fabric.bits<64>) {
+        %configured = fabric.boundary [s2t] %data
+            : !fabric.bits<16> -> !fabric.bits_tag<16, 6>
+        %rewritten = fabric.boundary [t2t] %rewrite_input
+            {hw_params = [{lut_size = 5 : i32}]}
+            : !fabric.bits_tag<8, 3> -> !fabric.bits_tag<8, 7>
+        %removed = fabric.boundary [t2s] %remove_input
+            : !fabric.bits_tag<64, 5> -> !fabric.bits<64>
+        fabric.yield %configured, %rewritten, %removed
+            : !fabric.bits_tag<16, 6>, !fabric.bits_tag<8, 7>,
+              !fabric.bits<64>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  const auto unconditional =
+      take(test, loom::fabric::deriveUnconditionalHandshakeDependencyArcs(
+                     finalized.view()));
+  require(test, unconditional.empty(),
+          "unconfigured one-to-one boundary became an unconditional arc");
+  std::vector<HandshakeOwnerModel> models =
+      take(test, loom::fabric::compileHandshakeOwnerModels(finalized.view()));
+
+  std::uint32_t checked = 0;
+  for (const HandshakeOwnerModel &model : models) {
+    if (model.owner().kind() != FabricHandshakeOwnerKind::BoundaryOccurrence)
+      continue;
+    const auto boundary = std::get<loom::fabric::FabricBoundaryOccurrenceRef>(
+        model.owner().payload());
+    const auto endpointOwner =
+        loom::fabric::FabricTransportEndpointOwnerRef::of(boundary);
+    std::optional<loom::fabric::FabricTransportEndpointRef> input;
+    std::optional<loom::fabric::FabricTransportEndpointRef> output;
+    for (std::uint64_t ordinal = 0;
+         ordinal < finalized.view().transportEndpointCount(endpointOwner);
+         ++ordinal) {
+      const loom::fabric::FabricTransportEndpointRef endpoint{endpointOwner,
+                                                              ordinal};
+      const auto direction =
+          finalized.view().transportEndpointDirection(endpoint);
+      if (direction == FabricPortDirection::Input) {
+        require(test, !input.has_value(),
+                "one-to-one boundary has multiple inputs");
+        input = endpoint;
+      } else if (direction == FabricPortDirection::Output) {
+        require(test, !output.has_value(),
+                "one-to-one boundary has multiple outputs");
+        output = endpoint;
+      }
+    }
+    require(test, input.has_value() && output.has_value(),
+            "one-to-one boundary omitted an endpoint");
+
+    std::optional<FabricPhysicalTraversalRef> selectedTraversal;
+    for (const FabricPhysicalTraversalRef &traversal :
+         finalized.view().admittedTraversals()) {
+      if (traversal.kind() != FabricPhysicalTraversalKind::BoundaryTraversal)
+        continue;
+      if (std::get<loom::fabric::FabricBoundaryTraversalPayload>(
+              traversal.payload)
+              .owner != boundary)
+        continue;
+      require(test, !selectedTraversal.has_value(),
+              "one-to-one boundary has multiple traversal legs");
+      selectedTraversal = traversal;
+    }
+    require(test, selectedTraversal.has_value(),
+            "one-to-one boundary has no traversal leg");
+
+    FabricHandshakeSelection selection;
+    selection.traversals.push_back(*selectedTraversal);
+    const ResolvedHandshakeActivation activation =
+        take(test, loom::fabric::resolveSelectedHandshake(model, selection));
+    require(test, activation.arcOrdinals().size() == 2,
+            "one-to-one boundary does not own two direct handshake arcs");
+    require(test,
+            hasPath(model, activation,
+                    node(test, model, {*input, HandshakeSignalKind::Valid}),
+                    node(test, model, {*output, HandshakeSignalKind::Valid})),
+            "one-to-one boundary lost forward valid dependence");
+    require(test,
+            hasPath(model, activation,
+                    node(test, model, {*output, HandshakeSignalKind::Ready}),
+                    node(test, model, {*input, HandshakeSignalKind::Ready})),
+            "one-to-one boundary lost backward ready dependence");
+    ++checked;
+  }
+  require(test, checked == 3,
+          "fixture did not validate all one-to-one boundary forms");
+}
+
 void registerFifoPathsAreRegisteredBreaks() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
@@ -916,6 +1019,7 @@ int main() {
   unconditionalReadyCycleIsRejectedBeforePublication();
   selectedGlobalCycleUsesExactTraversalSelection();
   atomicBoundaryRequiresItsCompleteLegSet();
+  oneToOneBoundariesUseDirectHandshake();
   registerFifoPathsAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();
   fuSelectionUsesExactActorPortCorrespondence();

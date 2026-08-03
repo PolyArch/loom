@@ -88,6 +88,22 @@ struct ResolvedFabricOpCapabilityView {
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 };
 
+/// One boundary's exact role in Physical Tag continuity. The point is a
+/// read-only projection of the validated boundary port shape; it carries no
+/// configured tag value, lookup-table row, or persistent identity.
+enum class FabricBoundaryTagContinuityKind : std::uint8_t {
+  TokenWriter,
+  ConfigurableWriter,
+  Rewriter,
+  Remover,
+};
+
+struct FabricBoundaryTagContinuityPointView final {
+  FabricBoundaryTagContinuityKind kind;
+  std::uint32_t inputTagWidthBits = 0;
+  std::uint32_t outputTagWidthBits = 0;
+};
+
 /// The owner-defined domain that makes statically implied traversal uses one
 /// atomic activation. Most traversals select one exact UsePattern. Temporal
 /// switch broadcast is the sole current exception: every selected egress from
@@ -214,6 +230,12 @@ public:
   llvm::ArrayRef<FabricSwitchOccurrenceRef> switchOccurrences() const;
   llvm::ArrayRef<FabricFifoOccurrenceRef> fifoOccurrences() const;
   llvm::ArrayRef<FabricBoundaryOccurrenceRef> boundaryOccurrences() const;
+
+  /// Derive the exact continuity action of one validated boundary occurrence.
+  /// Writers have no incoming tagged domain, removers have no outgoing tagged
+  /// domain, and a foreign or malformed reference returns no value.
+  std::optional<FabricBoundaryTagContinuityPointView>
+  boundaryTagContinuityPoint(FabricBoundaryOccurrenceRef boundary) const;
 
   /// Complete canonical token-endpoint inventory and its typed physical data
   /// path. The latter is decoded from the endpoint's canonical type bytes and

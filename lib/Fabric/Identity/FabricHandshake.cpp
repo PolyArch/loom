@@ -828,6 +828,16 @@ compileBoundaryModel(const FabricArtifactView &view,
     arcs = {{inputValid, dataValid}, {tagReady, dataValid},
             {inputValid, tagValid},  {dataReady, tagValid},
             {dataReady, inputReady}, {tagReady, inputReady}};
+  } else if (inputs.size() == 1 && outputs.size() == 1) {
+    const std::uint32_t inputValid =
+        builder.boundarySignal({inputs[0], HandshakeSignalKind::Valid});
+    const std::uint32_t inputReady =
+        builder.boundarySignal({inputs[0], HandshakeSignalKind::Ready});
+    const std::uint32_t outputValid =
+        builder.boundarySignal({outputs[0], HandshakeSignalKind::Valid});
+    const std::uint32_t outputReady =
+        builder.boundarySignal({outputs[0], HandshakeSignalKind::Ready});
+    arcs = {{inputValid, outputValid}, {outputReady, inputReady}};
   } else {
     return invalid("boundary occurrence has an unsupported endpoint shape");
   }

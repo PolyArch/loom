@@ -29,6 +29,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -722,6 +723,83 @@ void canonicalPublicationAndStrictImport() {
           imported.canonicalBytes().bytes().equals(
               firstResult.canonicalBytes().bytes()),
           "strict import changed canonical bytes");
+}
+
+void boundaryTagContinuityProjection() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto source = parse(test, R"mlir(
+    module {
+      fabric.module @tag_boundaries(
+          %dynamic_data: !fabric.bits<32>,
+          %dynamic_tag: !fabric.bits<4>,
+          %configured_data: !fabric.bits<16>,
+          %rewrite_input: !fabric.bits_tag<8, 3>,
+          %remove_input: !fabric.bits_tag<64, 5>)
+          -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<16, 6>,
+              !fabric.bits_tag<8, 7>, !fabric.bits<64>) {
+        %dynamic = fabric.boundary [s2t] %dynamic_data, %dynamic_tag
+            : (!fabric.bits<32>, !fabric.bits<4>)
+           -> !fabric.bits_tag<32, 4>
+        %configured = fabric.boundary [s2t] %configured_data
+            : !fabric.bits<16> -> !fabric.bits_tag<16, 6>
+        %rewritten = fabric.boundary [t2t] %rewrite_input
+            {hw_params = [{lut_size = 5 : i32}]}
+            : !fabric.bits_tag<8, 3> -> !fabric.bits_tag<8, 7>
+        %removed = fabric.boundary [t2s] %remove_input
+            : !fabric.bits_tag<64, 5> -> !fabric.bits<64>
+        fabric.yield %dynamic, %configured, %rewritten, %removed
+            : !fabric.bits_tag<32, 4>, !fabric.bits_tag<16, 6>,
+              !fabric.bits_tag<8, 7>, !fabric.bits<64>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+
+  using Kind = loom::fabric::FabricBoundaryTagContinuityKind;
+  std::array<bool, 4> seen{};
+  for (loom::fabric::FabricBoundaryOccurrenceRef boundary :
+       finalized.view().boundaryOccurrences()) {
+    auto point = finalized.view().boundaryTagContinuityPoint(boundary);
+    require(test, point.has_value(),
+            "boundary occurrence has no tag-continuity projection");
+    const auto index = static_cast<std::size_t>(point->kind);
+    require(test, index < seen.size() && !seen[index],
+            "tag-continuity kind is duplicate or outside the closed domain");
+    seen[index] = true;
+    switch (point->kind) {
+    case Kind::TokenWriter:
+      require(test,
+              point->inputTagWidthBits == 0 && point->outputTagWidthBits == 4,
+              "dynamic writer changed its continuity widths");
+      break;
+    case Kind::ConfigurableWriter:
+      require(test,
+              point->inputTagWidthBits == 0 && point->outputTagWidthBits == 6,
+              "configurable writer changed its continuity widths");
+      break;
+    case Kind::Rewriter:
+      require(test,
+              point->inputTagWidthBits == 3 && point->outputTagWidthBits == 7,
+              "rewriter changed its continuity widths");
+      break;
+    case Kind::Remover:
+      require(test,
+              point->inputTagWidthBits == 5 && point->outputTagWidthBits == 0,
+              "remover changed its continuity widths");
+      break;
+    }
+  }
+  require(test, llvm::all_of(seen, [](bool value) { return value; }),
+          "tag-continuity projection omitted a boundary kind");
+  require(test,
+          !finalized.view()
+               .boundaryTagContinuityPoint(
+                   loom::fabric::FabricBoundaryOccurrenceRef(9999))
+               .has_value(),
+          "foreign boundary reference acquired a continuity projection");
 }
 
 void visualizationCoordinatesHaveNoFabricSemantics() {
@@ -1561,6 +1639,7 @@ void systemRequiresExplicitClockCrossing() {
 
 int main() {
   canonicalPublicationAndStrictImport();
+  boundaryTagContinuityProjection();
   visualizationCoordinatesHaveNoFabricSemantics();
   malformedStoredPayloadIsRejected();
   spatialSwitchConnectivityBecomesTraversals();
