@@ -12,9 +12,11 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
+#include "PnR/EndpointRouter.h"
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
+#include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -684,6 +686,141 @@ void artifactRoundTripAndReferenceValidation() {
         realization.actorCount)
       fail("memory-placement plan incidence changed its actor domain");
   }
+
+  std::vector<loom::pnr::SpatialComputeBindingSelection> computeBindings;
+  computeBindings.reserve(frozen->realizations().computeRealizations().size());
+  for (const auto &realization : frozen->realizations().computeRealizations()) {
+    const loom::pnr::PnrIndex placement = realization.placementOffset;
+    computeBindings.push_back(
+        {placement,
+         frozen->realizations().computePlacements()[placement].contextOffset});
+  }
+  std::vector<loom::pnr::SpatialMemoryBindingSelection> memoryBindings;
+  memoryBindings.reserve(frozen->realizations().memoryRealizations().size());
+  for (const auto &realization : frozen->realizations().memoryRealizations())
+    memoryBindings.push_back({realization.placementOffset});
+
+  std::vector<loom::pnr::PnrIndex> portAttachments;
+  portAttachments.reserve(frozen->ports().portDemands().size());
+  for (const auto &demand : frozen->ports().portDemands()) {
+    const loom::pnr::PnrIndex placement =
+        demand.kind == loom::pnr::FrozenSpatialPortDemandKind::Compute
+            ? computeBindings[demand.realization].placement
+            : memoryBindings[demand.realization].placement;
+    const loom::pnr::PnrIndex realizationPlacementOffset =
+        demand.kind == loom::pnr::FrozenSpatialPortDemandKind::Compute
+            ? frozen->realizations()
+                  .computeRealizations()[demand.realization]
+                  .placementOffset
+            : frozen->realizations()
+                  .memoryRealizations()[demand.realization]
+                  .placementOffset;
+    const auto &domain =
+        frozen->ports()
+            .placementDomains()[demand.placementDomainOffset + placement -
+                                realizationPlacementOffset];
+    portAttachments.push_back(domain.attachmentOptionOffset);
+  }
+  std::vector<loom::pnr::PnrIndex> boundaryAttachments;
+  boundaryAttachments.reserve(frozen->ports().graphBoundaries().size());
+  for (const auto &boundary : frozen->ports().graphBoundaries())
+    boundaryAttachments.push_back(boundary.attachmentOptionOffset);
+
+  std::vector<loom::pnr::PnrIndex> memoryPlans(
+      frozen->realizations().memoryActors().size(),
+      loom::pnr::getInvalidPnrIndex());
+  for (auto [realizationOrdinal, realization] :
+       llvm::enumerate(frozen->realizations().memoryRealizations())) {
+    const loom::pnr::PnrIndex placement =
+        memoryBindings[realizationOrdinal].placement;
+    const loom::pnr::PnrIndex domainOffset =
+        handshake.memoryPlacementDomainOffsets()[placement];
+    for (loom::pnr::PnrIndex localActor = 0;
+         localActor < realization.actorCount; ++localActor) {
+      const auto &domain =
+          handshake.memoryOperationDomains()[domainOffset + localActor];
+      memoryPlans[realization.actorOffset + localActor] = domain.planOffset;
+    }
+  }
+
+  if (!computeBindings.empty()) {
+    auto malformedBindings = computeBindings;
+    malformedBindings.front().placement = loom::pnr::getInvalidPnrIndex();
+    if (!rejected(loom::pnr::SpatialCandidateState::create(
+            frozen, {malformedBindings, memoryBindings, portAttachments,
+                     boundaryAttachments, memoryPlans})))
+      fail("Spatial candidate accepted a foreign compute placement");
+  }
+
+  auto spatialCandidate = take(loom::pnr::SpatialCandidateState::create(
+      frozen, {computeBindings, memoryBindings, portAttachments,
+               boundaryAttachments, memoryPlans}));
+  requireSuccess(spatialCandidate->verify());
+
+  std::optional<loom::pnr::PnrIndex> routedNet;
+  for (auto [netOrdinal, net] :
+       llvm::enumerate(frozen->transfers().logicalNets())) {
+    if (net.sinkCount == 1 &&
+        spatialCandidate->logicalNetSourceEndpoint(netOrdinal) !=
+            spatialCandidate->logicalNetSinkEndpoint(netOrdinal, 0)) {
+      routedNet = static_cast<loom::pnr::PnrIndex>(netOrdinal);
+      break;
+    }
+  }
+  if (!routedNet)
+    fail("Spatial candidate fixture has no nontrivial single-sink net");
+  const loom::pnr::PnrIndex routeSource =
+      spatialCandidate->logicalNetSourceEndpoint(*routedNet);
+  const loom::pnr::PnrIndex routeTarget =
+      spatialCandidate->logicalNetSinkEndpoint(*routedNet, 0);
+  std::vector<loom::pnr::RouteCost> routeCosts(
+      frozen->routing().routingArcs().size(), 1);
+  loom::pnr::EndpointRouteSearchScratch routeSearch;
+  requireSuccess(routeSearch.prepare(
+      loom::pnr::endpointRoutingGraphView(frozen->routing())));
+  const auto route = take(
+      routeSearch.search({{&routeSource, 1},
+                          {&routeTarget, 1},
+                          routeCosts,
+                          routeCosts,
+                          spatialCandidate->logicalNetPayloadWidth(*routedNet),
+                          0,
+                          262144}));
+  if (route.forwardArcs.empty())
+    fail("Spatial candidate route anchor selected an empty path");
+
+  loom::pnr::SpatialCandidateScratch candidateScratch;
+  requireSuccess(candidateScratch.prepare(*frozen));
+  auto routeMove = take(spatialCandidate->beginMove(candidateScratch));
+  requireSuccess(routeMove.bindRouteSource(*routedNet, routeSource));
+  requireSuccess(routeMove.bindRouteSink(*routedNet, 0, routeTarget));
+  requireSuccess(
+      routeMove.attachRoutePath(*routedNet, routeSource, route.forwardArcs, 0));
+  if (!take(routeMove.close()))
+    fail("valid Spatial route closed a combinational handshake cycle");
+  requireSuccess(routeMove.commit());
+  if (!spatialCandidate->routeTree(*routedNet).isRouted())
+    fail("Spatial move did not commit its RouteTree");
+  requireSuccess(spatialCandidate->verify());
+
+  auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));
+  requireSuccess(rollbackMove.ripUpWholeRoute(*routedNet));
+  if (!take(rollbackMove.close()))
+    fail("route deletion reported a combinational handshake cycle");
+  rollbackMove.rollback();
+  if (!spatialCandidate->routeTree(*routedNet).isRouted())
+    fail("Spatial move rollback discarded the committed RouteTree");
+  requireSuccess(spatialCandidate->verify());
+  const std::size_t warmedCandidateScratchBytes =
+      candidateScratch.retainedStorageBytes();
+  auto repeatedRollback = take(spatialCandidate->beginMove(candidateScratch));
+  requireSuccess(repeatedRollback.ripUpWholeRoute(*routedNet));
+  if (!take(repeatedRollback.close()))
+    fail("repeated route deletion reported a handshake cycle");
+  repeatedRollback.rollback();
+  if (candidateScratch.retainedStorageBytes() != warmedCandidateScratchBytes)
+    fail("warmed Spatial move grew worker-local scratch storage");
+  requireSuccess(spatialCandidate->verify());
 
   if (handshake.allTraversalGroups().empty())
     fail("aggregate Spatial freeze omitted atomic traversal activation");
