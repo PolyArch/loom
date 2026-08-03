@@ -20,6 +20,10 @@
 #include <utility>
 #include <vector>
 
+namespace fabric {
+class MemoryServiceContractRecord;
+} // namespace fabric
+
 namespace loom {
 namespace fabric {
 
@@ -259,6 +263,12 @@ public:
 
   /// Whether the memory occurrence declares its optional Local Memory Service.
   bool declaresLocalMemoryService(FabricMemoryOccurrenceRef memory) const;
+
+  /// The complete occurrence-owned Local Memory Service contract. The
+  /// returned record is the exact canonical owner projection imported from
+  /// the Fabric artifact; an occurrence without a local service returns null.
+  const ::fabric::MemoryServiceContractRecord *
+  localMemoryService(FabricMemoryOccurrenceRef memory) const;
 
   /// The role the owner's inventory declares for this memory endpoint.
   std::optional<FabricMemoryEndpointRole>

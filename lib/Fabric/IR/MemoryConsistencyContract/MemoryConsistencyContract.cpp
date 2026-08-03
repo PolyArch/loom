@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Twine.h"

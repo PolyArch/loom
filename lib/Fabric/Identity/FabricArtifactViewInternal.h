@@ -5,6 +5,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
+#include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -52,6 +53,11 @@ struct FabricMemoryOperationPortViewData {
   ::fabric::MemoryOperationPortRecord record;
 };
 
+struct FabricLocalMemoryServiceViewData {
+  FabricNestedOwnerViewData owner;
+  ::fabric::MemoryServiceContractRecord record;
+};
+
 struct FabricEntityViewData {
   FabricEntityKind kind = FabricEntityKind::FabricModuleTemplate;
   FabricNestedOwnerViewData owner;
@@ -73,7 +79,7 @@ struct FabricEntityViewData {
       instructionCoreArchitecture;
   std::optional<InstructionCoreMicroarchitecturalRealization>
       instructionCoreMicroarchitecture;
-  std::optional<FabricNestedOwnerViewData> localMemoryService;
+  std::optional<FabricLocalMemoryServiceViewData> localMemoryService;
   std::optional<::fabric::Schedule> peSchedule;
   std::optional<FabricPeOccurrenceRef> parentPe;
   std::optional<FabricFuTemplateRef> fuTemplate;

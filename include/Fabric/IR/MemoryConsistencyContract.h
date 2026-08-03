@@ -2,7 +2,6 @@
 #define FABRIC_IR_MEMORYCONSISTENCYCONTRACT_H
 
 #include "Fabric/IR/ResourceContract.h"
-#include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -16,6 +15,11 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+namespace loom::fabric {
+class FabricArtifactView;
+struct FabricImportBinding;
+} // namespace loom::fabric
 
 namespace fabric {
 

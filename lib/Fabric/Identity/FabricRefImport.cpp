@@ -380,6 +380,15 @@ bool FabricArtifactView::declaresLocalMemoryService(
   return record && record->localMemoryService.has_value();
 }
 
+const ::fabric::MemoryServiceContractRecord *
+FabricArtifactView::localMemoryService(
+    FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->localMemoryService
+             ? &record->localMemoryService->record
+             : nullptr;
+}
+
 std::optional<FabricMemoryEndpointRole> FabricArtifactView::memoryEndpointRole(
     const FabricMemoryEndpointRef &endpoint) const {
   const detail::FabricMemoryEndpointViewData *record =
@@ -1061,10 +1070,31 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
       if (llvm::Error error =
               validateNestedOwner(*entity.instructionCore, "instruction core"))
         return std::move(error);
-    if (entity.localMemoryService)
-      if (llvm::Error error = validateNestedOwner(*entity.localMemoryService,
-                                                  "local memory service"))
+    if (entity.localMemoryService) {
+      if (llvm::Error error =
+              validateNestedOwner(entity.localMemoryService->owner,
+                                  "local memory service"))
         return std::move(error);
+      if (inventoryCount(entity.localMemoryService->owner.inventoryCounts,
+                         FabricInventoryKind::MemoryServiceRegion) !=
+          entity.localMemoryService->record.regions().size())
+        return invalidView(
+            "local memory service region inventory does not match its record");
+      if (!entity.localMemoryService->owner.resourceContract)
+        return invalidView(
+            "local memory service has no derived resource contract");
+      auto derivedResource = ::fabric::encodeResourceContractRecord(
+          *entity.localMemoryService->owner.resourceContract);
+      if (!derivedResource)
+        return derivedResource.takeError();
+      auto ownerResource = ::fabric::encodeResourceContractRecord(
+          entity.localMemoryService->record.resourceContract());
+      if (!ownerResource)
+        return ownerResource.takeError();
+      if (*derivedResource != *ownerResource)
+        return invalidView(
+            "local memory service resource contract is not owner-exact");
+    }
 
     if (inventoryCount(entity.owner.inventoryCounts,
                        FabricInventoryKind::FuNode) != entity.fuNodes.size())

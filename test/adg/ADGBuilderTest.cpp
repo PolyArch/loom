@@ -884,8 +884,17 @@ void typedMemoryFormsFinalize() {
     std::vector<loom::fabric::FabricMemoryEngineTemplateRef> engineTemplates;
     for (const loom::fabric::FabricMemoryOccurrenceRef memory : memories) {
       auto ports = view.memoryOperationPorts(memory);
-      if (view.declaresLocalMemoryService(memory))
+      if (view.declaresLocalMemoryService(memory)) {
         ++localServices;
+        const auto *service = view.localMemoryService(memory);
+        require(test,
+                service && service->regions().size() == 1 &&
+                    service->regions().front().addressBaseBytes == 0 &&
+                    service->regions().front().sizeBytes == 4096 &&
+                    service->capabilities().size() == 1 &&
+                    service->resourceContract().usePatternCount() == 1,
+                "local memory service contract was not preserved");
+      }
       if (!ports.empty()) {
         ++operationEngines;
         const auto engine = view.memoryEngineTemplateOf(memory);

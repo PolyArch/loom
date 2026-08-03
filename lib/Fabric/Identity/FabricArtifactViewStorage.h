@@ -149,8 +149,9 @@ struct FabricArtifactView::Storage {
     case FabricMemoryServiceKind::Local: {
       const detail::FabricEntityViewData *record =
           entity(std::get<FabricMemoryOccurrenceRef>(ref.payload));
-      return record && record->localMemoryService ? &*record->localMemoryService
-                                                  : nullptr;
+      return record && record->localMemoryService
+                 ? &record->localMemoryService->owner
+                 : nullptr;
     }
     case FabricMemoryServiceKind::System:
       return nullptr;
