@@ -14,6 +14,10 @@ add_executable(loom-fabric-boundary-data-path-test
   BoundaryDataPathTest.cpp
 )
 
+add_executable(loom-fabric-physical-tag-test
+  PhysicalTagTest.cpp
+)
+
 add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp
 )
@@ -82,6 +86,11 @@ target_link_libraries(loom-fabric-elaboration-header-test PRIVATE
 
 target_link_libraries(loom-fabric-boundary-data-path-test PRIVATE
   MLIRFabric
+)
+
+target_link_libraries(loom-fabric-physical-tag-test PRIVATE
+  LoomFabricPhysicalTag
+  LLVMSupport
 )
 
 target_link_libraries(loom-fabric-resource-contract-test PRIVATE

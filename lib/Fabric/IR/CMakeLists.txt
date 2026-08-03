@@ -1,4 +1,5 @@
 add_subdirectory(BoundaryDataPath)
+add_subdirectory(PhysicalTag)
 add_subdirectory(FuCapabilityDomain)
 add_subdirectory(MemoryCapabilityDomains)
 add_subdirectory(MemoryPortTransaction)
