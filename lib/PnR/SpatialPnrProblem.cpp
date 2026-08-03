@@ -77,17 +77,19 @@ constexpr PnrCapacityContext arcOffsetContext{
     frozenArtifact, "adjacency", "routing_arcs", PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext arcCountContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext arcIndexContext{
+    frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.1\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.2\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 1;
+constexpr std::uint32_t cacheSchemaMinor = 2;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.1";
+    "loom.spatial_pnr.freeze.2.2";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.1";
+    "loom.spatial_pnr.native_layout.2.2";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -446,10 +448,16 @@ public:
 
     if (routing.adjacencyOffsets().size() !=
             routing.routingEndpoints().size() + 1 ||
+        routing.reverseAdjacencyOffsets().size() !=
+            routing.routingEndpoints().size() + 1 ||
+        routing.reverseArcOrdinals().size() != routing.routingArcs().size() ||
         routing.arcSources().size() != routing.routingArcs().size() ||
         routing.adjacencyOffsets().empty() ||
         routing.adjacencyOffsets().front() != 0 ||
-        routing.adjacencyOffsets().back() != routing.routingArcs().size())
+        routing.adjacencyOffsets().back() != routing.routingArcs().size() ||
+        routing.reverseAdjacencyOffsets().front() != 0 ||
+        routing.reverseAdjacencyOffsets().back() !=
+            routing.routingArcs().size())
       return invalid("routing CSR dimensions are inconsistent");
     for (std::size_t source = 0; source < routing.routingEndpoints().size();
          ++source) {
@@ -465,6 +473,34 @@ public:
           return invalid("routing arc projection is inconsistent");
       }
     }
+    std::vector<std::uint8_t> reverseArcSeen(routing.routingArcs().size(), 0);
+    for (std::size_t target = 0; target < routing.routingEndpoints().size();
+         ++target) {
+      const PnrIndex begin = routing.reverseAdjacencyOffsets()[target];
+      const PnrIndex end = routing.reverseAdjacencyOffsets()[target + 1];
+      if (begin > end || end > routing.reverseArcOrdinals().size())
+        return invalid("routing reverse CSR offsets are inconsistent");
+      PnrIndex previousSource = 0;
+      PnrIndex previousTraversal = 0;
+      bool first = true;
+      for (PnrIndex cursor = begin; cursor < end; ++cursor) {
+        const PnrIndex arc = routing.reverseArcOrdinals()[cursor];
+        if (arc >= routing.routingArcs().size() || reverseArcSeen[arc] ||
+            routing.routingArcs()[arc].target != target)
+          return invalid("routing reverse CSR is not an exact arc partition");
+        const PnrIndex source = routing.arcSources()[arc];
+        const PnrIndex traversal = routing.routingArcs()[arc].traversal;
+        if (!first && std::tie(previousSource, previousTraversal) >
+                          std::tie(source, traversal))
+          return invalid("routing reverse CSR is not canonical");
+        first = false;
+        previousSource = source;
+        previousTraversal = traversal;
+        reverseArcSeen[arc] = 1;
+      }
+    }
+    if (llvm::find(reverseArcSeen, 0) != reverseArcSeen.end())
+      return invalid("routing reverse CSR omitted an arc");
     for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
       const bool endpointlessRegisterFifo =
           traversal.reference.kind() ==
@@ -877,6 +913,34 @@ private:
     result.adjacencyOffsets_.push_back(*end);
     if (cursor != arcDrafts.size())
       return invalid("routing CSR construction left an out-of-range source");
+
+    std::vector<PnrIndex> reverseOffsets(result.endpoints_.size() + 1, 0);
+    for (const FrozenSpatialRoutingArc &arc : result.arcs_) {
+      auto count = checkedPnrIndexAdd(arcCountContext,
+                                      reverseOffsets[arc.target + 1], 1);
+      if (!count)
+        return count.takeError();
+      reverseOffsets[arc.target + 1] = *count;
+    }
+    for (std::size_t endpoint = 1; endpoint < reverseOffsets.size();
+         ++endpoint) {
+      auto prefix =
+          checkedPnrIndexAdd(arcOffsetContext, reverseOffsets[endpoint - 1],
+                             reverseOffsets[endpoint]);
+      if (!prefix)
+        return prefix.takeError();
+      reverseOffsets[endpoint] = *prefix;
+    }
+    result.reverseAdjacencyOffsets_ = reverseOffsets;
+    result.reverseArcOrdinals_.resize(result.arcs_.size());
+    std::vector<PnrIndex> reverseCursors = std::move(reverseOffsets);
+    for (auto [arcOrdinal, arc] : llvm::enumerate(result.arcs_)) {
+      auto index = checked(arcIndexContext, arcOrdinal);
+      if (!index)
+        return index.takeError();
+      const PnrIndex slot = reverseCursors[arc.target]++;
+      result.reverseArcOrdinals_[slot] = *index;
+    }
     return result;
   }
 };

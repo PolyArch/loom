@@ -399,6 +399,12 @@ public:
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
+  llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets() const {
+    return reverseAdjacencyOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
+    return reverseArcOrdinals_;
+  }
   llvm::ArrayRef<PnrIndex> arcSources() const { return arcSources_; }
   llvm::ArrayRef<FrozenSpatialRoutingArc> routingArcs() const { return arcs_; }
 
@@ -408,6 +414,8 @@ private:
   std::vector<PnrIndex> traversalEndpoints_;
   std::vector<PnrIndex> traversalResourceStates_;
   std::vector<PnrIndex> adjacencyOffsets_;
+  std::vector<PnrIndex> reverseAdjacencyOffsets_;
+  std::vector<PnrIndex> reverseArcOrdinals_;
   std::vector<PnrIndex> arcSources_;
   std::vector<FrozenSpatialRoutingArc> arcs_;
 

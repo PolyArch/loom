@@ -837,6 +837,27 @@ void artifactRoundTripAndReferenceValidation() {
     fail("cache-hit validation accepted a changed selected PnR view");
 
   const auto offsets = frozen->routing().adjacencyOffsets();
+  const auto reverseOffsets = frozen->routing().reverseAdjacencyOffsets();
+  const auto reverseArcs = frozen->routing().reverseArcOrdinals();
+  if (reverseOffsets.size() !=
+          frozen->routing().routingEndpoints().size() + 1 ||
+      reverseArcs.size() != frozen->routing().routingArcs().size())
+    fail("aggregate Spatial routing graph omitted reverse CSR");
+  std::vector<bool> reverseSeen(reverseArcs.size(), false);
+  for (std::size_t endpoint = 0; endpoint + 1 < reverseOffsets.size();
+       ++endpoint) {
+    for (loom::pnr::PnrIndex cursor = reverseOffsets[endpoint];
+         cursor < reverseOffsets[endpoint + 1]; ++cursor) {
+      const loom::pnr::PnrIndex reverseArc = reverseArcs[cursor];
+      if (reverseArc >= frozen->routing().routingArcs().size() ||
+          frozen->routing().routingArcs()[reverseArc].target != endpoint ||
+          reverseSeen[reverseArc])
+        fail("aggregate Spatial routing reverse CSR is not exact");
+      reverseSeen[reverseArc] = true;
+    }
+  }
+  if (llvm::find(reverseSeen, false) != reverseSeen.end())
+    fail("aggregate Spatial routing reverse CSR omitted an arc");
   std::optional<loom::pnr::PnrIndex> source;
   for (std::size_t endpoint = 0; endpoint + 1 < offsets.size(); ++endpoint) {
     if (offsets[endpoint] != offsets[endpoint + 1]) {
