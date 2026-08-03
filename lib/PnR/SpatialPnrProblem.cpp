@@ -1252,6 +1252,10 @@ private:
       return std::move(error);
 
     FrozenSpatialRoutingGraph result;
+    auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
+    if (!tagContinuity)
+      return tagContinuity.takeError();
+    result.tagContinuity_ = std::move(*tagContinuity);
     result.endpoints_.reserve(endpointRefs.size());
     llvm::StringMap<PnrIndex> endpointByCanonicalRef;
     for (auto [ordinal, reference] : llvm::enumerate(endpointRefs)) {

@@ -642,6 +642,39 @@ struct FrozenSpatialRoutingEndpoint final {
   ::fabric::DataPathType dataPath;
 };
 
+/// One Fabric-owned Physical Tag continuity point retained in canonical
+/// boundary-occurrence order. The dense ordinal is a rebuildable PnR cache;
+/// `reference` remains the exact owner.
+struct FrozenSpatialTagContinuityPoint final {
+  ::loom::fabric::FabricBoundaryOccurrenceRef reference;
+  ::loom::fabric::FabricBoundaryTagContinuityKind kind;
+  std::uint32_t inputTagWidthBits = 0;
+  std::uint32_t outputTagWidthBits = 0;
+};
+
+/// Cold projection from exact Fabric boundary owners to traversal-dense PnR
+/// ordinals. Non-boundary traversals carry getInvalidPnrIndex().
+class FrozenSpatialTagContinuityIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialTagContinuityPoint> points() const {
+    return points_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalPointOrdinals() const {
+    return traversalPointOrdinals_;
+  }
+
+private:
+  std::vector<FrozenSpatialTagContinuityPoint> points_;
+  std::vector<PnrIndex> traversalPointOrdinals_;
+
+  friend llvm::Expected<FrozenSpatialTagContinuityIndex>
+  freezeSpatialTagContinuityIndex(
+      const ::loom::fabric::FabricArtifactView &fabric);
+};
+
+llvm::Expected<FrozenSpatialTagContinuityIndex> freezeSpatialTagContinuityIndex(
+    const ::loom::fabric::FabricArtifactView &fabric);
+
 struct FrozenSpatialTraversal final {
   ::loom::fabric::FabricPhysicalTraversalRef reference;
   PnrIndex sourceOffset = 0;
@@ -721,6 +754,9 @@ public:
   }
   llvm::ArrayRef<PnrIndex> arcSources() const { return arcSources_; }
   llvm::ArrayRef<FrozenSpatialRoutingArc> routingArcs() const { return arcs_; }
+  const FrozenSpatialTagContinuityIndex &tagContinuity() const {
+    return tagContinuity_;
+  }
 
 private:
   std::vector<FrozenSpatialRoutingEndpoint> endpoints_;
@@ -741,6 +777,7 @@ private:
   std::vector<PnrIndex> reverseArcOrdinals_;
   std::vector<PnrIndex> arcSources_;
   std::vector<FrozenSpatialRoutingArc> arcs_;
+  FrozenSpatialTagContinuityIndex tagContinuity_;
 
   friend class FrozenSpatialPnrProblemBuilder;
 };
