@@ -22,7 +22,7 @@
 #                    drifted;
 #                    never builds CIRCT, but offers an already-built
 #                    shared CIRCT via -DCIRCT_DIR when one matches)
-#   make test      - run lit FileCheck tests (target: check-fabric)
+#   make test      - run the complete Loom lit test suite (target: check-loom)
 #   make clean     - remove this worktree's loom build only
 #   make distclean - main worktree: remove the loom build and shared LLVM,
 #                    CIRCT, and OR-Tools builds. Linked worktree: remove only

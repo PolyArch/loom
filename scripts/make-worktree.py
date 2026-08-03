@@ -143,6 +143,11 @@ def validate_lock_timeout(value: str | float) -> float:
     return timeout
 
 
+def bounded_job_count(requested: int, cpu_count: int | None = None) -> int:
+    available = (os.cpu_count() or 1) if cpu_count is None else cpu_count
+    return max(1, min(requested, max(1, available - 4), 120))
+
+
 class _CommandInterrupted(Exception):
     def __init__(self, signum: int):
         self.signum = signum
@@ -1768,6 +1773,7 @@ def main() -> None:
     ):
         sub.add_parser(name)
     args = p.parse_args()
+    args.jobs = bounded_job_count(args.jobs)
 
     paths = Paths(Path(args.root))
     dispatch = {

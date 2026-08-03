@@ -1,5 +1,23 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+include(ProcessorCount)
+
+ProcessorCount(LOOM_HOST_PROCESSOR_COUNT)
+if(LOOM_HOST_PROCESSOR_COUNT GREATER 4)
+  math(EXPR LOOM_MAX_TEST_JOBS "${LOOM_HOST_PROCESSOR_COUNT} - 4")
+else()
+  set(LOOM_MAX_TEST_JOBS 1)
+endif()
+if(LOOM_MAX_TEST_JOBS GREATER 120)
+  set(LOOM_MAX_TEST_JOBS 120)
+endif()
+set(LOOM_TEST_JOBS "${LOOM_MAX_TEST_JOBS}" CACHE STRING
+  "Parallel workers used by Loom lit test targets")
+if(NOT LOOM_TEST_JOBS MATCHES "^[1-9][0-9]*$" OR
+   LOOM_TEST_JOBS GREATER LOOM_MAX_TEST_JOBS)
+  message(FATAL_ERROR
+    "LOOM_TEST_JOBS must be a positive integer no greater than ${LOOM_MAX_TEST_JOBS}")
+endif()
 
 add_subdirectory(common)
 add_subdirectory(adg)
@@ -111,16 +129,18 @@ set(LOOM_TEST_DEPENDS
   loom-tblgen
 )
 
-add_lit_testsuite(check-fabric "Running the fabric regression tests"
+add_lit_testsuite(check-loom "Running the Loom regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${LOOM_TEST_DEPENDS}
+  ARGS "-j${LOOM_TEST_JOBS}"
 )
-set_target_properties(check-fabric PROPERTIES FOLDER "Tests")
+set_target_properties(check-loom PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(LOOM ${CMAKE_CURRENT_SOURCE_DIR}
   BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${LOOM_TEST_DEPENDS}
-  SKIP "cmsis-dsp.*" "cmsis-nn.*"
+  ARGS "-j${LOOM_TEST_JOBS}"
+  SKIP "(^|/)__pycache__(/|$)" "cmsis-dsp.*" "cmsis-nn.*"
 )
 
 add_test(
@@ -137,10 +157,10 @@ set_tests_properties(loom-semantic-baseline PROPERTIES
   TIMEOUT 1800
 )
 
-add_custom_target(check-semantic-baseline
+add_custom_target(check-loom-semantic-baseline
   COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L semantic-baseline
   DEPENDS ${LOOM_TEST_DEPENDS}
   WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
   USES_TERMINAL
 )
-set_target_properties(check-semantic-baseline PROPERTIES FOLDER "Tests")
+set_target_properties(check-loom-semantic-baseline PROPERTIES FOLDER "Tests")

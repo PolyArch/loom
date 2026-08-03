@@ -185,6 +185,12 @@ class MakeWorktreeTest(unittest.TestCase):
         self.or_tools_identity = self.module.or_tools_build_identity(self.state.or_tools_commit, self.loom_compilers)
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
+    def test_parallelism_reserves_development_capacity_and_caps_workers(self) -> None:
+        self.assertEqual(self.module.bounded_job_count(999, cpu_count=32), 28)
+        self.assertEqual(self.module.bounded_job_count(999, cpu_count=256), 120)
+        self.assertEqual(self.module.bounded_job_count(999, cpu_count=4), 1)
+        self.assertEqual(self.module.bounded_job_count(8, cpu_count=32), 8)
+
     def test_shared_llvm_build_includes_corpus_targets(self) -> None:
         targets = next(
             argument
