@@ -140,6 +140,9 @@ LogicalResult mapping::FabricFuTemplatePortRefAttr::verify(
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricFuOccurrenceRef, FabricFuOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPeOccurrenceRef, FabricPeOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(InstructionContextRef, InstructionContextRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricUsePatternRef, FabricUsePatternRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPhysicalRefinementDomainRef,
+                                  FabricPhysicalRefinementDomainRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryOccurrenceRef,
                                   FabricMemoryOccurrenceRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricPhysicalTraversalRef,
@@ -154,6 +157,28 @@ LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryServiceRef,
                                   FabricMemoryServiceRef)
 
 #undef LOOM_VERIFY_FABRIC_CONSTRAINT_REF
+
+LogicalResult mapping::OwnerTypedValueAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  // The exact referenced owner supplies the only codec and canonicality rule.
+  // This carrier has no context-free semantic invariant of its own.
+  (void)emitError;
+  (void)record;
+  return success();
+}
+
+LogicalResult mapping::SpatialEventPointAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, Attribute event,
+    mapping::OwnerTypedValueAttr guaranteedOffset) {
+  if (!isa<mapping::ActorTransitionEventAttr,
+           mapping::GraphProducerEndpointRefAttr,
+           mapping::GraphConsumerEndpointRefAttr>(event)) {
+    emitError() << "event must be a closed Spatial activity-event reference";
+    return failure();
+  }
+  (void)guaranteedOffset;
+  return success();
+}
 
 LogicalResult mapping::SpatialTransferTerminalAttr::verify(
     function_ref<InFlightDiagnostic()> emitError,

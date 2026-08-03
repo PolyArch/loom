@@ -112,6 +112,50 @@ def Mapping_MemoryInternalEdgeOp
   let hasVerifier = 1;
 }
 
+def Mapping_SpatialOp
+    : Mapping_Op<"spatial", [IsolatedFromAbove, SingleBlock, NoTerminator]> {
+  let summary = "complete loom.mapping 2.0 SpatialMapping root";
+  let arguments = (ins
+      Mapping_ArtifactIdentityAttr:$tech_mapping,
+      Mapping_ArtifactIdentityAttr:$dataflow,
+      Mapping_ArtifactIdentityAttr:$fabric);
+  let regions = (region SizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Mapping_ComputeBindingOp
+    : Mapping_Op<"compute_binding", [HasParent<"SpatialOp">]> {
+  let summary = "one TechMapping compute realization placement";
+  let arguments = (ins
+      Mapping_ComputeRealizationRefAttr:$realization,
+      Mapping_FabricFuOccurrenceRefAttr:$occurrence,
+      Mapping_InstructionContextRefAttr:$context,
+      ArrayAttr:$refinements);
+  let assemblyFormat = [{`realization` `(` $realization `)`
+                         `occurrence` `(` $occurrence `)`
+                         `context` `(` $context `)`
+                         `refinements` `(` $refinements `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_ResourceUseOp
+    : Mapping_Op<"resource_use", [HasParent<"SpatialOp">]> {
+  let summary = "one event-relative Mapping selection of a Fabric UsePattern";
+  let arguments = (ins
+      Mapping_SpatialResourceOwnerRef:$owner,
+      Mapping_FabricUsePatternRefAttr:$use_site,
+      Mapping_SpatialRelativeActivationAttr:$activation,
+      ArrayAttr:$parameters,
+      ArrayAttr:$sharing_assignments);
+  let assemblyFormat = [{`owner` `(` $owner `)`
+                         `use_site` `(` $use_site `)`
+                         `activation` `(` $activation `)`
+                         `parameters` `(` $parameters `)`
+                         `sharing` `(` $sharing_assignments `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                           NoTerminator]> {

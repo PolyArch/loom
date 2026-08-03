@@ -89,6 +89,38 @@ graphEndpointKey(Attribute endpoint) {
   return {1, unsignedBytes(consumer.getRecord())};
 }
 
+LogicalResult verifyOwnerTypedValues(Operation *operation, ArrayAttr values,
+                                     llvm::StringRef field) {
+  for (Attribute value : values)
+    if (!isa<mapping::OwnerTypedValueAttr>(value))
+      return operation->emitOpError()
+             << field << " must contain only owner_typed_value attributes";
+  return success();
+}
+
+LogicalResult verifyPhysicalRefinements(Operation *operation,
+                                        ArrayAttr refinements) {
+  llvm::DenseSet<Attribute> domains;
+  for (Attribute value : refinements) {
+    auto assignment =
+        dyn_cast<mapping::PhysicalRefinementAssignmentAttr>(value);
+    if (!assignment)
+      return operation->emitOpError(
+          "refinements must contain only physical_refinement_assignment "
+          "attributes");
+    if (!domains.insert(assignment.getDomain()).second)
+      return operation->emitOpError(
+          "refinements contains a duplicate Fabric domain");
+  }
+  return success();
+}
+
+Attribute resourceUseKey(mapping::ResourceUseOp use) {
+  return ArrayAttr::get(use.getContext(),
+                        {use.getOwner(), use.getUseSite(), use.getActivation(),
+                         use.getParameters(), use.getSharingAssignments()});
+}
+
 } // namespace
 
 ParseResult mapping::TechOp::parse(OpAsmParser &parser,
@@ -382,6 +414,107 @@ LogicalResult mapping::MemoryInternalEdgeOp::verify() {
       connection->sink.engine != connection->engine)
     return emitOpError(
         "internal connection endpoints must share the connection owner");
+  return success();
+}
+
+ParseResult mapping::SpatialOp::parse(OpAsmParser &parser,
+                                      OperationState &result) {
+  std::uint32_t major = 0;
+  std::uint32_t minor = 0;
+  if (parser.parseKeyword("version") || parser.parseLess() ||
+      parser.parseInteger(major) || parser.parseComma() ||
+      parser.parseInteger(minor) || parser.parseGreater())
+    return failure();
+  if (major != 2 || minor != 0)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "mapping.spatial requires schema version 2.0");
+
+  mapping::ArtifactIdentityAttr techMapping;
+  mapping::ArtifactIdentityAttr dataflow;
+  mapping::ArtifactIdentityAttr fabric;
+  if (parser.parseKeyword("tech_mapping") || parser.parseLParen() ||
+      parser.parseAttribute(techMapping, "tech_mapping", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("dataflow") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(dataflow, "dataflow", result.attributes) ||
+      parser.parseRParen() || parser.parseKeyword("fabric") ||
+      parser.parseLParen() ||
+      parser.parseAttribute(fabric, "fabric", result.attributes) ||
+      parser.parseRParen())
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, {}, /*enableNameShadowing=*/false) ||
+      parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  return success();
+}
+
+void mapping::SpatialOp::print(OpAsmPrinter &printer) {
+  printer << " version<2, 0> tech_mapping(" << getTechMapping() << ") dataflow("
+          << getDataflow() << ") fabric(" << getFabric() << ") ";
+  printer.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                      /*printBlockTerminators=*/false);
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"tech_mapping", "dataflow", "fabric"});
+}
+
+LogicalResult mapping::SpatialOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"tech_mapping", "dataflow", "fabric"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+
+  llvm::SmallDenseSet<std::uint64_t, 8> computeBindings;
+  llvm::DenseSet<Attribute> resourceUses;
+  llvm::SmallVector<mapping::ResourceUseOp, 8> deferredUses;
+  for (Operation &child : getBody().front()) {
+    if (auto binding = dyn_cast<mapping::ComputeBindingOp>(child)) {
+      if (!computeBindings.insert(binding.getRealization().getEntity()).second)
+        return binding.emitOpError("duplicates a ComputeBinding key");
+      continue;
+    }
+    if (auto use = dyn_cast<mapping::ResourceUseOp>(child)) {
+      if (!resourceUses.insert(resourceUseKey(use)).second)
+        return use.emitOpError("duplicates a ResourceUse structural key");
+      deferredUses.push_back(use);
+      continue;
+    }
+    return child.emitOpError(
+        "is not an implemented closed SpatialMapping record kind");
+  }
+
+  for (mapping::ResourceUseOp use : deferredUses) {
+    auto compute = dyn_cast<mapping::ComputeRealizationRefAttr>(use.getOwner());
+    if (!compute)
+      return use.emitOpError(
+          "references a Spatial owner family not present in this root");
+    if (!computeBindings.contains(compute.getEntity()))
+      return use.emitOpError("references an absent ComputeBinding owner");
+  }
+  return success();
+}
+
+LogicalResult mapping::ComputeBindingOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"realization", "occurrence", "context", "refinements"})))
+    return failure();
+  if (failed(verifyPhysicalRefinements(*this, getRefinements())))
+    return failure();
+  return success();
+}
+
+LogicalResult mapping::ResourceUseOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"owner", "use_site", "activation",
+                                      "parameters", "sharing_assignments"})))
+    return failure();
+  if (failed(verifyOwnerTypedValues(*this, getParameters(), "parameters")) ||
+      failed(verifyOwnerTypedValues(*this, getSharingAssignments(), "sharing")))
+    return failure();
   return success();
 }
 

@@ -88,6 +88,15 @@ def Mapping_InstructionContextRefAttr
     : Mapping_CanonicalBytesAttr<"InstructionContextRef",
         "instruction_context_ref", "Fabric-owned instruction context reference">;
 
+def Mapping_FabricUsePatternRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricUsePatternRef",
+        "fabric_use_pattern_ref", "Fabric-owned atomic use-pattern reference">;
+
+def Mapping_FabricPhysicalRefinementDomainRefAttr
+    : Mapping_CanonicalBytesAttr<"FabricPhysicalRefinementDomainRef",
+        "fabric_physical_refinement_domain_ref",
+        "Fabric-owned physical-refinement domain reference">;
+
 def Mapping_FabricMemoryOccurrenceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricMemoryOccurrenceRef",
         "fabric_memory_occurrence_ref", "Fabric-owned memory occurrence reference">;
@@ -111,6 +120,77 @@ def Mapping_FabricMemoryOperationPortRefAttr
 def Mapping_FabricMemoryServiceRefAttr
     : Mapping_CanonicalBytesAttr<"FabricMemoryServiceRef",
         "fabric_memory_service_ref", "Fabric-owned memory service reference">;
+
+def Mapping_OwnerTypedValueAttr
+    : Mapping_CanonicalBytesAttr<"OwnerTypedValue", "owner_typed_value",
+        "canonical bytes decoded by the exact referenced owner codec">;
+
+def Mapping_MemoryBindingRefAttr
+    : Mapping_Attr<"MemoryBindingRef", "memory_binding_ref"> {
+  let summary = "SpatialMapping-owned MemoryBindingRef";
+  let parameters = (ins "uint64_t":$entity);
+  let assemblyFormat = "`<` $entity `>`";
+}
+
+def Mapping_RouteTreeNodeRefAttr
+    : Mapping_Attr<"RouteTreeNodeRef", "route_tree_node_ref"> {
+  let summary = "Spatial logical-net key and canonical route-node ordinal";
+  let parameters = (ins
+      "::mapping::GraphProducerEndpointRefAttr":$logical_net,
+      "uint64_t":$node_ordinal);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_ActorTransitionEventAttr
+    : Mapping_Attr<"ActorTransitionEvent", "actor_transition_event"> {
+  let summary = "OperationSchema-owned actor handshake transition occurrence";
+  let parameters = (ins "::mapping::ActorRefAttr":$actor,
+                        "uint32_t":$transition);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_SpatialActivityEventRef : AnyAttrOf<[
+    Mapping_ActorTransitionEventAttr,
+    Mapping_GraphProducerEndpointRefAttr,
+    Mapping_GraphConsumerEndpointRefAttr],
+    "graph-local actor transition, produced terminal, or consumed terminal">;
+
+def Mapping_SpatialEventPointAttr
+    : Mapping_Attr<"SpatialEventPoint", "spatial_event_point"> {
+  let summary = "graph-local activity event with an optional guaranteed offset";
+  let parameters = (ins
+      "::mlir::Attribute":$event,
+      OptionalParameter<"::mapping::OwnerTypedValueAttr">:$guaranteed_offset);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def Mapping_SpatialRelativeActivationAttr
+    : Mapping_Attr<"SpatialRelativeActivation",
+                   "spatial_relative_activation"> {
+  let summary = "one trigger and intrinsic or causal release";
+  let parameters = (ins
+      "::mapping::SpatialEventPointAttr":$trigger,
+      OptionalParameter<"::mapping::SpatialEventPointAttr">:$release);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_PhysicalRefinementAssignmentAttr
+    : Mapping_Attr<"PhysicalRefinementAssignment",
+                   "physical_refinement_assignment"> {
+  let summary = "one Fabric-owned physical-refinement selection";
+  let parameters = (ins
+      "::mapping::FabricPhysicalRefinementDomainRefAttr":$domain,
+      "::mapping::OwnerTypedValueAttr":$value);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_SpatialResourceOwnerRef : AnyAttrOf<[
+    Mapping_ComputeRealizationRefAttr,
+    Mapping_MemoryRealizationRefAttr,
+    Mapping_MemoryBindingRefAttr,
+    Mapping_RouteTreeNodeRefAttr],
+    "closed Spatial ResourceUse owner reference">;
 
 def Mapping_SpatialTransferTerminalAttr
     : Mapping_Attr<"SpatialTransferTerminal", "spatial_transfer_terminal"> {

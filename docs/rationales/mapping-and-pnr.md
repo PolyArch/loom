@@ -113,6 +113,39 @@ couple a semantic realization decision to a backend search mechanism. CP-SAT
 is reserved for a closed local repair region after ordinary Spatial or System
 search has identified a concrete conflict.
 
+## Why Spatial Resource Time Uses Graph-Local Events
+
+Spatial resource occupancy must distinguish actor firing from token production
+and consumption. A mux transition, for example, consumes its selector and only
+the selected data input; naming one operand alone would lose the atomic firing
+relation. Conversely, a route reservation may begin when a producer publishes
+a token and end only when an exact consumer observes it. Treating all three as
+one generic event would move actor semantics into Mapping.
+
+SpatialMapping therefore references the existing Dataflow actor and graph
+terminal catalogs. Actor transition ordinals come from the exact
+OperationSchema handshake projection, while produced and consumed terminal
+events retain their direction. No event receives another EntityId, and no
+symbol, operation position, simulator occurrence, or absolute cycle becomes a
+persistent key. SystemMapping later rebases applicable Spatial activity onto
+its Dataflow-owned boundary event families rather than copying this local
+catalog.
+
+The selected Fabric UsePattern remains the sole owner of timing, claims,
+parameter positions, sharing positions, and any guaranteed-offset codec.
+Mapping stores only the event-relative selection and owner-coded values. This
+keeps custom resource types extensible without a generic property bag or a
+second resource registry in Mapping.
+
+Search builds dense event, use, and overlap-envelope tables once from these
+records. Reverse CSR from a decision to affected envelopes makes a move cost
+proportional to its incidence rather than to the whole mapping. Raw occupancy
+and overuse stay in contiguous candidate arrays and are journaled
+transactionally; canonical references, event relations, and owner codecs stay
+in immutable frozen storage. These tables are disposable projections, so a
+cold verifier can rebuild them from the exact artifacts and catch divergence
+without making a performance cache authoritative.
+
 ## Why PnR Has Exact Immutable Inputs
 
 Spatial PnR binds an exact Canonical Dataflow program, TechMapping, fully

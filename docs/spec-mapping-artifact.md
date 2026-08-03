@@ -424,6 +424,47 @@ ResourceUse {
 }
 ```
 
+Spatial `relative_activation` is a closed graph-local event relation:
+
+```text
+SpatialActivityEventRef =
+    ActorTransition {
+      ActorRef
+      transition_case_ordinal
+    }
+  | Produced { CanonicalGraphProducerEndpointRef }
+  | Consumed { CanonicalGraphConsumerEndpointRef }
+
+relative_activation:
+  trigger = SpatialActivityEventRef + optional guaranteed offset
+  release = intrinsic
+          | causal_event(SpatialActivityEventRef + optional guaranteed offset)
+```
+
+`transition_case_ordinal` resolves in the exact actor's canonical
+`ActorHandshakeCase` projection from OperationSchema. It is not a new event
+entity, operation registry, firing mode, or simulator-private transition.
+Produced and Consumed name the exact existing graph terminal event; the two
+directions remain distinct even when they name opposite ends of one canonical
+edge. Every referenced actor or endpoint must belong to inherited TechMapping
+coverage and must be causally applicable to the selected owner's use; a
+MemoryBinding shared by several covered graphs does not acquire a synthetic
+single-graph owner.
+
+A guaranteed offset is an owner-typed value decoded and re-encoded by the
+exact selected Fabric use-pattern timing provider. It is legal only when that
+provider proves the offset for every admitted execution. A provider without
+such a codec admits only the absent form; Mapping cannot interpret an integer
+as cycles, infer a clock domain, or persist an absolute time.
+
+Pattern parameters and sharing assignments are canonical positional arrays in
+the exact use site's closed owner schemas. Each value is encoded by that
+position's owner codec, adopted as an immutable typed value, re-encoded, and
+required to match byte-for-byte. Unknown, missing, extra, malformed, or
+noncanonical values reject. These arrays are not keyed property bags, generic
+attributes, or a second declaration of the Fabric parameter domains. An empty
+owner schema has exactly one valid value: the empty array.
+
 Its closed owner union is a `ComputeBindingKey`, `MemoryEngineBindingKey`,
 `MemoryBindingRef`, or `(RouteTreeKey, RouteNodeOrdinal)`. The use site must
 resolve a Fabric-owned use pattern within the occurrence, service, or

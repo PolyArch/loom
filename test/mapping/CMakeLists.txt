@@ -23,6 +23,10 @@ add_executable(loom-tech-mapping-joint-legality-test
   TechMappingJointLegalityTest.cpp
 )
 
+add_executable(loom-spatial-mapping-wire-test
+  SpatialMappingWireTest.cpp
+)
+
 target_link_libraries(loom-mapping-artifact-test PRIVATE
   LoomMappingArtifact
   MLIRIR
@@ -87,6 +91,13 @@ target_link_libraries(loom-tech-mapping-joint-legality-test PRIVATE
   MLIRIR
   MLIRLLVMDialect
   MLIRMemRefDialect
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-spatial-mapping-wire-test PRIVATE
+  LoomMappingArtifact
+  MLIRIR
   MLIRParser
   LLVMSupport
 )
