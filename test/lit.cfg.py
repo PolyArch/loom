@@ -64,6 +64,7 @@ tools = [
     "loom-fabric-artifact-gate-test",
     "loom-fabric-artifact-codec-test",
     "loom-fabric-artifact-finalizer-test",
+    "loom-fabric-handshake-model-test",
     "loom-fabric-boundary-data-path-test",
     "loom-fabric-boundary-transfer-test",
     "loom-fabric-canonical-labeling-test",
