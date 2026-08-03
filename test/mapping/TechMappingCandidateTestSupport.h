@@ -16,6 +16,9 @@ buildTemporalCapacityFabric(const ArtifactStore &store);
 void exerciseCapacityOveruseCandidate(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
+void exerciseCanonicalCandidateInitialization(
+    const pnr::FrozenSpatialPnrProblemHandle &problem);
+
 } // namespace loom::test
 
 #endif // LOOM_TEST_MAPPING_TECHMAPPINGCANDIDATETESTSUPPORT_H

@@ -3,6 +3,7 @@
 #include "ADG/FuLibrary.h"
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
+#include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
 
 #include "llvm/Support/Error.h"
@@ -232,4 +233,85 @@ void loom::test::exerciseCapacityOveruseCandidate(
   if (candidate->capacityOveruse() != 0)
     fail("capacity rollback changed the committed objective value");
   requireSuccess(candidate->verify());
+}
+
+void loom::test::exerciseCanonicalCandidateInitialization(
+    const pnr::FrozenSpatialPnrProblemHandle &problem) {
+  auto first = take(pnr::createCanonicalSpatialCandidate(problem));
+  auto second = take(pnr::createCanonicalSpatialCandidate(problem));
+  const auto &realizations = problem->realizations();
+
+  for (pnr::PnrIndex index = 0;
+       index < realizations.computeRealizations().size(); ++index) {
+    const auto &record = realizations.computeRealizations()[index];
+    const auto &binding = first->computeBinding(index);
+    const auto &repeat = second->computeBinding(index);
+    if (binding.placement != record.placementOffset ||
+        binding.instructionContext !=
+            realizations.computePlacements()[record.placementOffset]
+                .contextOffset ||
+        binding.placement != repeat.placement ||
+        binding.instructionContext != repeat.instructionContext)
+      fail("canonical initializer changed compute choice order");
+  }
+  for (pnr::PnrIndex index = 0;
+       index < realizations.memoryRealizations().size(); ++index) {
+    const auto &record = realizations.memoryRealizations()[index];
+    if (first->memoryBinding(index).placement != record.placementOffset ||
+        first->memoryBinding(index).placement !=
+            second->memoryBinding(index).placement)
+      fail("canonical initializer changed memory choice order");
+  }
+  for (pnr::PnrIndex demand = 0; demand < problem->ports().portDemands().size();
+       ++demand) {
+    const auto &record = problem->ports().portDemands()[demand];
+    const pnr::PnrIndex placement =
+        record.kind == pnr::FrozenSpatialPortDemandKind::Compute
+            ? first->computeBinding(record.realization).placement
+            : first->memoryBinding(record.realization).placement;
+    const pnr::PnrIndex ownerOffset =
+        record.kind == pnr::FrozenSpatialPortDemandKind::Compute
+            ? realizations.computeRealizations()[record.realization]
+                  .placementOffset
+            : realizations.memoryRealizations()[record.realization]
+                  .placementOffset;
+    const auto &domain =
+        problem->ports().placementDomains()[record.placementDomainOffset +
+                                            placement - ownerOffset];
+    if (first->portAttachment(demand) != domain.attachmentOptionOffset ||
+        first->portAttachment(demand) != second->portAttachment(demand))
+      fail("canonical initializer changed port attachment order");
+  }
+  for (pnr::PnrIndex boundary = 0;
+       boundary < problem->ports().graphBoundaries().size(); ++boundary) {
+    const auto &record = problem->ports().graphBoundaries()[boundary];
+    if (first->graphBoundaryAttachment(boundary) !=
+            record.attachmentOptionOffset ||
+        first->graphBoundaryAttachment(boundary) !=
+            second->graphBoundaryAttachment(boundary))
+      fail("canonical initializer changed graph-boundary attachment order");
+  }
+  for (pnr::PnrIndex actor = 0; actor < realizations.memoryActors().size();
+       ++actor) {
+    const pnr::PnrIndex realization =
+        realizations.memoryActorRealizations()[actor];
+    const pnr::PnrIndex placement = first->memoryBinding(realization).placement;
+    const auto &owner = realizations.memoryRealizations()[realization];
+    const pnr::PnrIndex localActor = actor - owner.actorOffset;
+    const pnr::PnrIndex domainOffset =
+        problem->handshake().memoryPlacementDomainOffsets()[placement];
+    const auto &domain =
+        problem->handshake()
+            .memoryOperationDomains()[domainOffset + localActor];
+    if (first->memoryOperationPlan(actor) != domain.planOffset ||
+        first->memoryOperationPlan(actor) != second->memoryOperationPlan(actor))
+      fail("canonical initializer changed memory plan order");
+  }
+  for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
+       ++net)
+    if (!first->routeTree(net).isUnrouted() ||
+        !second->routeTree(net).isUnrouted())
+      fail("candidate initializer hid the explicit global routing action");
+  requireSuccess(first->verify());
+  requireSuccess(second->verify());
 }

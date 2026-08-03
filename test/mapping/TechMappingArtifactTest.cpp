@@ -773,6 +773,7 @@ void artifactRoundTripAndReferenceValidation() {
         realization.actorCount)
       fail("memory-placement plan incidence changed its actor domain");
   }
+  loom::test::exerciseCanonicalCandidateInitialization(frozen);
 
   std::vector<loom::pnr::SpatialComputeBindingSelection> computeBindings;
   computeBindings.reserve(frozen->realizations().computeRealizations().size());
@@ -1710,6 +1711,7 @@ void computeBoundaryClosure() {
     fail("compute freeze omitted exact placement handshake fragments");
   loom::test::exerciseHandshakeCandidateRefcounts(frozen);
   loom::test::exerciseCapacityOveruseCandidate(frozen);
+  loom::test::exerciseCanonicalCandidateInitialization(frozen);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");
