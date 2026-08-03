@@ -143,6 +143,8 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
     routeTransactions_.emplace_back(std::nullopt);
     routeScratch_.push_back(std::make_unique<RouteTreeTransactionScratch>());
   }
+  if (llvm::Error error = tagScratch_.prepare(problem))
+    return error;
   if (llvm::Error error = handshakeScratch_.prepare(problem.handshake()))
     return error;
 
@@ -216,6 +218,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
 std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
   std::size_t bytes = retainedBytes(routeScratch_) +
                       retainedBytes(routeTransactions_) +
+                      tagScratch_.retainedStorageBytes() +
                       handshakeScratch_.retainedStorageBytes();
   for (const auto &scratch : routeScratch_)
     bytes += scratch->retainedLookupRollbackStorageBytes();
@@ -383,6 +386,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   auto routeResources = SpatialRouteResourceState::create(*problem);
   if (!routeResources)
     return routeResources.takeError();
+  auto tagAssignments = SpatialTagAssignmentState::create(*problem, routeTrees);
+  if (!tagAssignments)
+    return tagAssignments.takeError();
   std::uint64_t unroutedObligationCount = 0;
   for (const FrozenSpatialLogicalNet &net :
        problem->transfers().logicalNets()) {
@@ -399,7 +405,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(logicalMemoryBindings), std::move(memoryUseDispatches),
       std::move(memoryExposureSelections), std::move(routeTrees),
       std::move(*handshake), std::move(*routeResources),
-      unroutedObligationCount, 0));
+      std::move(*tagAssignments), unroutedObligationCount, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
       return std::move(error);
@@ -916,6 +922,8 @@ llvm::Error SpatialCandidateState::verify() const {
     return error;
   if (llvm::Error error = routeResources_.verify(routeTrees_))
     return error;
+  if (llvm::Error error = tagAssignments_.verify(routeTrees_))
+    return error;
   return verifyHandshakeProjection();
 }
 
@@ -970,6 +978,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
     : state_(std::move(other.state_)), scratch_(other.scratch_),
       closed_(other.closed_), cycle_(other.cycle_),
       routeDeltasCollected_(other.routeDeltasCollected_),
+      tagDeltasCollected_(other.tagDeltasCollected_),
       routeViolationApplied_(other.routeViolationApplied_),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
       initialCapacityOveruse_(other.initialCapacityOveruse_) {
@@ -1640,6 +1649,11 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     return !cycle_;
   if (llvm::Error error = collectRouteTraversalDeltas())
     return std::move(error);
+  if (llvm::Error error = state_->tagAssignments_.stageRouteUpdates(
+          state_->routeTrees_, scratch_->routeTransactions_,
+          scratch_->touchedRoutes_, scratch_->tagScratch_))
+    return std::move(error);
+  tagDeltasCollected_ = true;
   if (llvm::Error error = validateAffectedState())
     return std::move(error);
   auto closure = scratch_->handshakeTransaction_->close();
@@ -1672,6 +1686,8 @@ llvm::Error SpatialMoveTransaction::commit() {
   if (llvm::Error error = scratch_->handshakeTransaction_->commit())
     return candidateError("closed handshake commit failed: " +
                           llvm::toString(std::move(error)));
+  if (tagDeltasCollected_)
+    state_->tagAssignments_.commit(scratch_->tagScratch_);
   acceptAppliedRouteResources();
   finish();
   return llvm::Error::success();
@@ -1680,6 +1696,8 @@ llvm::Error SpatialMoveTransaction::commit() {
 void SpatialMoveTransaction::rollback() noexcept {
   if (!scratch_)
     return;
+  if (tagDeltasCollected_)
+    state_->tagAssignments_.rollback(scratch_->tagScratch_);
   rollbackAppliedRouteResources();
   for (PnrIndex logicalNet : llvm::reverse(scratch_->touchedRoutes_))
     if (scratch_->routeTransactions_[logicalNet])

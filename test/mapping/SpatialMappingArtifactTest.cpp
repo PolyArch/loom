@@ -7,6 +7,7 @@
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -20,6 +21,7 @@
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCanonicalSeed.h"
@@ -582,20 +584,38 @@ std::string identityAttr(const loom::ArtifactIdentity &identity) {
   return "#mapping.artifact_identity<" + byteList(identity.bytes()) + ">";
 }
 
+template <typename Ref>
+std::string dataflowAttr(llvm::StringRef spelling,
+                         const loom::ArtifactIdentity &owner, const Ref &ref) {
+  return "#mapping." + spelling.str() + "<" +
+         byteList(take(dataflow::encodeDataflowReference(owner, ref))) + ">";
+}
+
 loom::mapping::FinalizedSpatialMappingConstraintSet
 buildConstraints(mlir::MLIRContext &context,
                  const dataflow::CanonicalDataflowProgramView &dataflow,
                  const loom::mapping::TechMappingView &tech,
                  const loom::fabric::FabricArtifactView &fabric,
-                 const loom::ArtifactStore &store) {
+                 const loom::ArtifactStore &store,
+                 bool restrictTagsToZero = false) {
+  std::string clauses;
+  if (restrictTagsToZero)
+    for (const auto &net : tech.residualLogicalNets())
+      clauses += "    mapping.constraint.domain_restriction "
+                 "projection(net_assigned_tag_values) subject(" +
+                 dataflowAttr("graph_producer_endpoint_ref",
+                              dataflow.identity(), net.producer) +
+                 ") admissible_domain(["
+                 "#mapping.constraint_unsigned_interval<lower = 0 : ui8, "
+                 "upper = 1 : ui8>])\n";
   const std::string text = "module {\n  mapping.constraints.spatial dataflow(" +
                            identityAttr(dataflow.identity()) +
                            ") tech_mapping(" + identityAttr(tech.identity()) +
                            ") fabric(" + identityAttr(fabric.identity()) +
-                           ") {\n  }\n}\n";
+                           ") {\n" + clauses + "  }\n}\n";
   auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
   if (!module)
-    fail("cannot parse empty MappingConstraintSet fixture");
+    fail("cannot parse MappingConstraintSet fixture");
   auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
   return take(loom::mapping::finalizeSpatialMappingConstraintSet(
       *roots.begin(), dataflow, tech, fabric, store));
@@ -727,7 +747,8 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   requireSuccess(move.commit());
 }
 
-void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
+void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
+                                bool forceTagConflict = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -753,8 +774,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
     fail("TechMapping fixture did not produce one candidate");
   const auto tech = take(
       loom::mapping::importTechMapping(candidates->candidates.front(), store));
-  const auto constraints =
-      buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
+  const auto constraints = buildConstraints(
+      context, dataflow, tech.view(), fabric.view(), store, forceTagConflict);
   const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
       loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
@@ -828,13 +849,24 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
   const auto repeatedTagAssignments =
       take(loom::pnr::deriveCanonicalSpatialTagAssignments(*problem,
                                                            selectedRoutes));
+  const std::uint64_t expectedTagConflicts = tagAssignments.conflictCount();
   if (tagAssignments.segments() != repeatedTagAssignments.segments() ||
       tagAssignments.values() != repeatedTagAssignments.values() ||
       tagAssignments.segmentDomains() !=
           repeatedTagAssignments.segmentDomains() ||
       tagAssignments.unassignedCount() != 0 ||
-      tagAssignments.conflictCount() != 0)
+      (forceTagConflict ? expectedTagConflicts == 0
+                        : expectedTagConflicts != 0))
     fail("canonical Physical Tag assignment is incomplete or unstable");
+  if (candidate->tagUnassignedCount() != 0 ||
+      candidate->tagConflictCount() != expectedTagConflicts)
+    fail("Spatial Candidate lost its Physical Tag assignment violations");
+  if (take(loom::pnr::spatialMappingViolationValue(
+          *candidate, loom::ResolvedPnrViolationKind::TagUnassigned)) != 0 ||
+      take(loom::pnr::spatialMappingViolationValue(
+          *candidate, loom::ResolvedPnrViolationKind::TagConflict)) !=
+          expectedTagConflicts)
+    fail("Spatial objective did not project Candidate-owned Tag violations");
   for (auto [segment, value] :
        llvm::zip_equal(tagAssignments.segments(), tagAssignments.values())) {
     if (!value)
@@ -854,7 +886,8 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
     observedSharedLocalDomain |= members.size() > 1;
     for (auto [position, lhs] : llvm::enumerate(members))
       for (loom::pnr::PnrIndex rhs : llvm::drop_begin(members, position + 1))
-        if (tagAssignments.values()[lhs] == tagAssignments.values()[rhs])
+        if (!forceTagConflict &&
+            tagAssignments.values()[lhs] == tagAssignments.values()[rhs])
           fail("one local Physical Tag match domain contains a collision");
   }
   if (boundaryWrapped && !observedSharedLocalDomain)
@@ -882,6 +915,32 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
     }
   if (boundaryWrapped && !observedDisjointDomainReuse)
     fail("Physical Tags were made globally unique across disjoint domains");
+
+  if (boundaryWrapped) {
+    const std::vector<loom::pnr::SpatialTagContinuitySegment> originalSegments(
+        candidate->tagSegments(0).begin(), candidate->tagSegments(0).end());
+    const std::vector<std::optional<llvm::APInt>> originalValues(
+        candidate->tagValues(0).begin(), candidate->tagValues(0).end());
+    if (originalSegments.empty() ||
+        originalSegments.size() != originalValues.size())
+      fail("routed Spatial Candidate has no Physical Tag decisions");
+
+    loom::pnr::SpatialCandidateScratch tagScratch;
+    requireSuccess(tagScratch.prepare(*problem));
+    auto move = take(candidate->beginMove(tagScratch));
+    requireSuccess(move.ripUpWholeRoute(0));
+    if (!take(move.close()))
+      fail("Physical Tag rollback fixture closed a handshake cycle");
+    if (!candidate->tagSegments(0).empty() || !candidate->tagValues(0).empty())
+      fail("route rip-up retained stale Physical Tag decisions");
+    move.rollback();
+    if (!llvm::equal(candidate->tagSegments(0), originalSegments) ||
+        !llvm::equal(candidate->tagValues(0), originalValues) ||
+        candidate->tagUnassignedCount() != 0 ||
+        candidate->tagConflictCount() != expectedTagConflicts)
+      fail("Spatial move rollback changed Physical Tag decisions");
+    requireSuccess(candidate->verify());
+  }
 
   if (boundaryWrapped) {
     bool observedBoundaryOrigin = false;
@@ -974,6 +1033,9 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
         !observedTagMatchDomain)
       fail("boundary Temporal route did not exercise start and stop semantics");
   }
+
+  if (forceTagConflict)
+    return;
 
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
       *candidate, dataflow, tech.view(), fabric.view(), store));
@@ -1433,6 +1495,7 @@ int main() {
   completeCandidateRoundTrip(false);
   completeCandidateRoundTrip(true);
   completeCandidateRoundTrip(true, true);
+  completeCandidateRoundTrip(true, true, true);
   completeMemoryCandidateRoundTrip(false);
   completeMemoryCandidateRoundTrip(true);
   llvm::outs() << "spatial mapping artifact tests passed\n";

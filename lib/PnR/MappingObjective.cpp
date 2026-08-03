@@ -51,11 +51,11 @@ bool loom::pnr::spatialMappingViolationAvailable(
   switch (kind) {
   case ResolvedPnrViolationKind::UnroutedObligation:
   case ResolvedPnrViolationKind::CapacityOveruse:
+  case ResolvedPnrViolationKind::TagUnassigned:
+  case ResolvedPnrViolationKind::TagConflict:
     return true;
   case ResolvedPnrViolationKind::ResourceTimeOverbooking:
   case ResolvedPnrViolationKind::BufferOveruse:
-  case ResolvedPnrViolationKind::TagUnassigned:
-  case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::HardProgressViolation:
   case ResolvedPnrViolationKind::HardServiceContractShortfall:
     return false;
@@ -81,10 +81,12 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     return candidate.unroutedObligationCount();
   case ResolvedPnrViolationKind::CapacityOveruse:
     return candidate.capacityOveruse();
+  case ResolvedPnrViolationKind::TagUnassigned:
+    return candidate.tagUnassignedCount();
+  case ResolvedPnrViolationKind::TagConflict:
+    return candidate.tagConflictCount();
   case ResolvedPnrViolationKind::ResourceTimeOverbooking:
   case ResolvedPnrViolationKind::BufferOveruse:
-  case ResolvedPnrViolationKind::TagUnassigned:
-  case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::HardProgressViolation:
   case ResolvedPnrViolationKind::HardServiceContractShortfall:
     llvm_unreachable("unavailable Spatial violation passed preflight");

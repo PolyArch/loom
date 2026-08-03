@@ -52,16 +52,19 @@ std::optional<std::uint32_t> tagWidth(const ::fabric::DataPathType &path) {
 
 } // namespace
 
-llvm::Expected<SpatialTagContinuityProjection>
-loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
-  if (llvm::Error error = route.verify())
-    return std::move(error);
+llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
+    const RouteTreeState &route, SpatialTagContinuityProjection &result,
+    SpatialTagContinuityScratch &scratch) {
   const auto nodes = route.nodeStorage();
   if (llvm::Error error =
           preflightPnrIndexCapacity(nodeCountContext, nodes.size()))
-    return std::move(error);
-  SpatialTagContinuityProjection result;
+    return error;
+  result.segments_.clear();
   result.nodeSegments_.assign(nodes.size(), getInvalidPnrIndex());
+  result.segmentDomainOffsets_.clear();
+  result.segmentDomains_.clear();
+  result.domainSegmentOffsets_.clear();
+  result.domainSegments_.clear();
   const auto appendSegment =
       [&](SpatialTagContinuityOriginKind originKind, PnrIndex origin,
           std::uint32_t tagWidthBits) -> llvm::Expected<PnrIndex> {
@@ -77,10 +80,10 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     const auto matchDomains = routing.tagContinuity().matchDomains();
     if (llvm::Error error =
             preflightPnrIndexCapacity(domainCountContext, matchDomains.size()))
-      return std::move(error);
+      return error;
     result.segmentDomainOffsets_.push_back(0);
     result.domainSegmentOffsets_.assign(matchDomains.size() + 1, 0);
-    return result;
+    return llvm::Error::success();
   }
 
   const auto endpoints = routing.routingEndpoints();
@@ -103,7 +106,8 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     result.nodeSegments_[*root] = *segment;
   }
 
-  std::vector<PnrIndex> worklist;
+  auto &worklist = scratch.worklist_;
+  worklist.clear();
   worklist.reserve(route.activeNodeCount());
   worklist.push_back(*root);
   std::size_t visited = 0;
@@ -199,8 +203,9 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     return invalid("route traversal did not reach every active node");
   if (llvm::Error error = preflightPnrIndexCapacity(segmentCountContext,
                                                     result.segments_.size()))
-    return std::move(error);
-  std::vector<PnrIndex> order(result.segments_.size());
+    return error;
+  auto &order = scratch.order_;
+  order.resize(result.segments_.size());
   std::iota(order.begin(), order.end(), PnrIndex{0});
   llvm::sort(order, [&](PnrIndex lhs, PnrIndex rhs) {
     const auto &left = result.segments_[lhs];
@@ -208,8 +213,10 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     return std::tie(left.originKind, left.origin) <
            std::tie(right.originKind, right.origin);
   });
-  std::vector<PnrIndex> remap(order.size(), getInvalidPnrIndex());
-  std::vector<SpatialTagContinuitySegment> canonical;
+  auto &remap = scratch.remap_;
+  remap.assign(order.size(), getInvalidPnrIndex());
+  auto &canonical = scratch.canonicalSegments_;
+  canonical.clear();
   canonical.reserve(order.size());
   for (PnrIndex oldOrdinal : order) {
     const auto &segment = result.segments_[oldOrdinal];
@@ -229,7 +236,7 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
         return invalid("a route node names an absent continuity segment");
       segment = remap[segment];
     }
-  result.segments_ = std::move(canonical);
+  result.segments_.assign(canonical.begin(), canonical.end());
 
   const auto matchDomains = routing.tagContinuity().matchDomains();
   const auto endpointDomains =
@@ -238,9 +245,10 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
     return invalid("the frozen tag match-domain index is not endpoint dense");
   if (llvm::Error error =
           preflightPnrIndexCapacity(domainCountContext, matchDomains.size()))
-    return std::move(error);
+    return error;
 
-  std::vector<std::pair<PnrIndex, PnrIndex>> incidence;
+  auto &incidence = scratch.incidence_;
+  incidence.clear();
   incidence.reserve(route.activeNodeCount());
   for (auto [slot, node] : llvm::enumerate(nodes)) {
     if (!node.isActive())
@@ -263,7 +271,7 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
                   incidence.end());
   if (llvm::Error error =
           preflightPnrIndexCapacity(incidenceCountContext, incidence.size()))
-    return std::move(error);
+    return error;
 
   result.segmentDomainOffsets_.reserve(result.segments_.size() + 1);
   result.segmentDomains_.reserve(incidence.size());
@@ -295,5 +303,45 @@ loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
   result.domainSegmentOffsets_.push_back(result.domainSegments_.size());
   if (incidenceIt != incidence.end())
     return invalid("segment/domain incidence is not domain ordered");
+  return llvm::Error::success();
+}
+
+std::size_t SpatialTagContinuityScratch::retainedStorageBytes() const {
+  return worklist_.capacity() * sizeof(PnrIndex) +
+         order_.capacity() * sizeof(PnrIndex) +
+         remap_.capacity() * sizeof(PnrIndex) +
+         canonicalSegments_.capacity() * sizeof(SpatialTagContinuitySegment) +
+         incidence_.capacity() * sizeof(std::pair<PnrIndex, PnrIndex>);
+}
+
+llvm::Expected<SpatialTagContinuityProjection>
+loom::pnr::deriveSpatialTagContinuity(const RouteTreeState &route) {
+  if (llvm::Error error = route.verify())
+    return error;
+  SpatialTagContinuityProjection result;
+  SpatialTagContinuityScratch scratch;
+  if (llvm::Error error =
+          detail::rebuildSpatialTagContinuityUnchecked(route, result, scratch))
+    return error;
   return result;
+}
+
+llvm::Expected<SpatialTagContinuityProjection>
+loom::pnr::deriveSpatialTagContinuity(const RouteTreeTransaction &route) {
+  SpatialTagContinuityProjection result;
+  SpatialTagContinuityScratch scratch;
+  if (llvm::Error error = rebuildSpatialTagContinuity(route, result, scratch))
+    return error;
+  return result;
+}
+
+llvm::Error
+loom::pnr::rebuildSpatialTagContinuity(const RouteTreeTransaction &route,
+                                       SpatialTagContinuityProjection &result,
+                                       SpatialTagContinuityScratch &scratch) {
+  auto prepared = route.preparedState();
+  if (!prepared)
+    return prepared.takeError();
+  return detail::rebuildSpatialTagContinuityUnchecked(**prepared, result,
+                                                      scratch);
 }

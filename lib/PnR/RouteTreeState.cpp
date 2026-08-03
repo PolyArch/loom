@@ -1119,6 +1119,18 @@ RouteTreeTransaction::prepare() {
   return llvm::ArrayRef<RouteTreeTraversalDelta>(deltas);
 }
 
+llvm::Expected<const RouteTreeState *>
+RouteTreeTransaction::preparedState() const {
+  if (!state_)
+    return routeTreeError("transaction is no longer active");
+  if (!prepared_)
+    return routeTreeError("transaction has not been prepared");
+  if (state_->isRouted())
+    if (llvm::Error error = state_->verifyState())
+      return error;
+  return state_.get();
+}
+
 llvm::Error RouteTreeTransaction::commit() {
   if (!state_)
     return routeTreeError("transaction is no longer active");

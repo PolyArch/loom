@@ -5,6 +5,7 @@
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteResourceState.h"
+#include "PnR/SpatialTagAssignment.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -89,6 +90,7 @@ private:
 
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
   std::vector<std::optional<RouteTreeTransaction>> routeTransactions_;
+  SpatialTagAssignmentScratch tagScratch_;
   HandshakeCandidateScratch handshakeScratch_;
   std::optional<HandshakeCandidateTransaction> handshakeTransaction_;
 
@@ -213,6 +215,24 @@ public:
   std::uint64_t routeCapacityOveruseRaw(PnrIndex capacityDimension) const {
     return routeResources_.capacityOveruseRaw(capacityDimension);
   }
+  llvm::ArrayRef<SpatialTagContinuitySegment>
+  tagSegments(PnrIndex logicalNet) const {
+    return tagAssignments_.segments(logicalNet);
+  }
+  llvm::ArrayRef<std::optional<llvm::APInt>>
+  tagValues(PnrIndex logicalNet) const {
+    return tagAssignments_.values(logicalNet);
+  }
+  llvm::ArrayRef<PnrIndex> tagSegmentDomains(PnrIndex logicalNet,
+                                             PnrIndex segment) const {
+    return tagAssignments_.segmentDomains(logicalNet, segment);
+  }
+  std::uint64_t tagUnassignedCount() const {
+    return tagAssignments_.unassignedCount();
+  }
+  std::uint64_t tagConflictCount() const {
+    return tagAssignments_.conflictCount();
+  }
 
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>
@@ -235,6 +255,7 @@ private:
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
+      SpatialTagAssignmentState tagAssignments,
       std::uint64_t unroutedObligationCount, std::uint64_t capacityOveruse)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
@@ -248,6 +269,7 @@ private:
         memoryExposureSelections_(std::move(memoryExposureSelections)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
         routeResources_(std::move(routeResources)),
+        tagAssignments_(std::move(tagAssignments)),
         unroutedObligationCount_(unroutedObligationCount),
         capacityOveruse_(capacityOveruse) {}
 
@@ -313,6 +335,7 @@ private:
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
+  SpatialTagAssignmentState tagAssignments_;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t capacityOveruse_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
@@ -397,6 +420,7 @@ private:
   bool closed_ = false;
   bool cycle_ = false;
   bool routeDeltasCollected_ = false;
+  bool tagDeltasCollected_ = false;
   bool routeViolationApplied_ = false;
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialCapacityOveruse_ = 0;

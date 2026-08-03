@@ -6,10 +6,22 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr {
+
+class SpatialTagContinuityProjection;
+class SpatialTagContinuityScratch;
+
+namespace detail {
+llvm::Error
+rebuildSpatialTagContinuityUnchecked(const RouteTreeState &route,
+                                     SpatialTagContinuityProjection &result,
+                                     SpatialTagContinuityScratch &scratch);
+} // namespace detail
 
 enum class SpatialTagContinuityOriginKind : std::uint8_t {
   RouteSource,
@@ -33,6 +45,33 @@ struct SpatialTagContinuitySegment final {
   }
 };
 
+/// Reusable work storage for deriving exact route-local tag continuity. One
+/// instance may be shared sequentially across nets in a worker-local move.
+class SpatialTagContinuityScratch final {
+public:
+  SpatialTagContinuityScratch() = default;
+  SpatialTagContinuityScratch(const SpatialTagContinuityScratch &) = delete;
+  SpatialTagContinuityScratch &
+  operator=(const SpatialTagContinuityScratch &) = delete;
+  SpatialTagContinuityScratch(SpatialTagContinuityScratch &&) = delete;
+  SpatialTagContinuityScratch &
+  operator=(SpatialTagContinuityScratch &&) = delete;
+  ~SpatialTagContinuityScratch() = default;
+
+  std::size_t retainedStorageBytes() const;
+
+private:
+  std::vector<PnrIndex> worklist_;
+  std::vector<PnrIndex> order_;
+  std::vector<PnrIndex> remap_;
+  std::vector<SpatialTagContinuitySegment> canonicalSegments_;
+  std::vector<std::pair<PnrIndex, PnrIndex>> incidence_;
+
+  friend llvm::Error detail::rebuildSpatialTagContinuityUnchecked(
+      const RouteTreeState &route, SpatialTagContinuityProjection &result,
+      SpatialTagContinuityScratch &scratch);
+};
+
 /// Cold, removable projection of one selected route. The node array is dense
 /// in RouteTreeState::nodeStorage(); inactive and untagged nodes carry
 /// getInvalidPnrIndex(). The two CSR relations describe the same deduplicated
@@ -53,6 +92,14 @@ public:
     return domainSegmentOffsets_;
   }
   llvm::ArrayRef<PnrIndex> domainSegments() const { return domainSegments_; }
+  std::size_t retainedStorageBytes() const {
+    return segments_.capacity() * sizeof(SpatialTagContinuitySegment) +
+           nodeSegments_.capacity() * sizeof(PnrIndex) +
+           segmentDomainOffsets_.capacity() * sizeof(PnrIndex) +
+           segmentDomains_.capacity() * sizeof(PnrIndex) +
+           domainSegmentOffsets_.capacity() * sizeof(PnrIndex) +
+           domainSegments_.capacity() * sizeof(PnrIndex);
+  }
 
 private:
   std::vector<SpatialTagContinuitySegment> segments_;
@@ -62,12 +109,18 @@ private:
   std::vector<PnrIndex> domainSegmentOffsets_;
   std::vector<PnrIndex> domainSegments_;
 
-  friend llvm::Expected<SpatialTagContinuityProjection>
-  deriveSpatialTagContinuity(const RouteTreeState &route);
+  friend llvm::Error detail::rebuildSpatialTagContinuityUnchecked(
+      const RouteTreeState &route, SpatialTagContinuityProjection &result,
+      SpatialTagContinuityScratch &scratch);
 };
 
 llvm::Expected<SpatialTagContinuityProjection>
 deriveSpatialTagContinuity(const RouteTreeState &route);
+llvm::Expected<SpatialTagContinuityProjection>
+deriveSpatialTagContinuity(const RouteTreeTransaction &route);
+llvm::Error rebuildSpatialTagContinuity(const RouteTreeTransaction &route,
+                                        SpatialTagContinuityProjection &result,
+                                        SpatialTagContinuityScratch &scratch);
 
 } // namespace loom::pnr
 

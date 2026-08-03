@@ -9,11 +9,21 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace loom::pnr {
+
+class SpatialCandidateState;
+class SpatialMoveTransaction;
+
+namespace detail {
+struct SpatialTagAssignmentScratchStorage;
+struct SpatialTagAssignmentStateStorage;
+} // namespace detail
 
 /// Canonical, removable Physical Tag assignment for exact selected routes.
 /// Segment ordinals are grouped by canonical logical-net order. The two CSR
@@ -61,6 +71,71 @@ llvm::Expected<SpatialTagAssignmentProjection>
 deriveCanonicalSpatialTagAssignments(
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<const RouteTreeState *> routes);
+
+/// Reusable transaction storage for route-local Physical Tag updates. The
+/// storage is prepared once per Frozen model and retains prior net buffers so
+/// repeated route moves can reuse capacity.
+class SpatialTagAssignmentScratch final {
+public:
+  SpatialTagAssignmentScratch();
+  SpatialTagAssignmentScratch(const SpatialTagAssignmentScratch &) = delete;
+  SpatialTagAssignmentScratch &
+  operator=(const SpatialTagAssignmentScratch &) = delete;
+  SpatialTagAssignmentScratch(SpatialTagAssignmentScratch &&) = delete;
+  SpatialTagAssignmentScratch &
+  operator=(SpatialTagAssignmentScratch &&) = delete;
+  ~SpatialTagAssignmentScratch();
+
+  llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
+  std::size_t retainedStorageBytes() const;
+
+private:
+  std::unique_ptr<detail::SpatialTagAssignmentScratchStorage> storage_;
+
+  friend class SpatialTagAssignmentState;
+};
+
+/// Candidate-owned Physical Tag decisions plus rebuildable route-continuity
+/// and local-domain occupancy caches. Values are decisions; segment and
+/// occupancy tables are exact removable projections of routes and values.
+class SpatialTagAssignmentState final {
+public:
+  SpatialTagAssignmentState(SpatialTagAssignmentState &&) noexcept;
+  SpatialTagAssignmentState(const SpatialTagAssignmentState &) = delete;
+  SpatialTagAssignmentState &
+  operator=(const SpatialTagAssignmentState &) = delete;
+  SpatialTagAssignmentState &operator=(SpatialTagAssignmentState &&) = delete;
+  ~SpatialTagAssignmentState();
+
+  llvm::ArrayRef<SpatialTagContinuitySegment>
+  segments(PnrIndex logicalNet) const;
+  llvm::ArrayRef<std::optional<llvm::APInt>> values(PnrIndex logicalNet) const;
+  llvm::ArrayRef<PnrIndex> segmentDomains(PnrIndex logicalNet,
+                                          PnrIndex segment) const;
+  std::uint64_t unassignedCount() const;
+  std::uint64_t conflictCount() const;
+
+private:
+  explicit SpatialTagAssignmentState(
+      std::unique_ptr<detail::SpatialTagAssignmentStateStorage> storage);
+
+  static llvm::Expected<SpatialTagAssignmentState>
+  create(const FrozenSpatialPnrProblem &problem,
+         llvm::ArrayRef<RouteTreeStateHandle> routes);
+  llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
+  llvm::Error stageRouteUpdates(
+      llvm::ArrayRef<RouteTreeStateHandle> routes,
+      llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,
+      llvm::ArrayRef<PnrIndex> touchedRoutes,
+      SpatialTagAssignmentScratch &scratch);
+  void commit(SpatialTagAssignmentScratch &scratch) noexcept;
+  void rollback(SpatialTagAssignmentScratch &scratch) noexcept;
+
+  std::unique_ptr<detail::SpatialTagAssignmentStateStorage> storage_;
+
+  friend class SpatialCandidateState;
+  friend class SpatialMoveTransaction;
+};
 
 } // namespace loom::pnr
 
