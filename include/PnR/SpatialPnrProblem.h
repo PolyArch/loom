@@ -136,6 +136,27 @@ struct FrozenSpatialMemoryRootedUse final {
   std::optional<PnrIndex> logicalBinding;
 };
 
+struct FrozenSpatialMemoryExposure final {
+  ::dataflow::MemoryExposureRef exposure;
+  PnrIndex logicalBinding = 0;
+};
+
+struct FrozenSpatialMemoryExposureProvider final {
+  ::loom::fabric::SubordinateEndpointRef terminal;
+  std::uint64_t maxExposedBindings = 0;
+};
+
+using FrozenSpatialMemoryExposureDispatchTarget =
+    std::variant<::loom::fabric::LocalMemoryServiceRef,
+                 ::loom::fabric::ManagerEndpointRef>;
+
+/// One atomic provider/dispatch choice from the Fabric-owned subordinate
+/// H_dispatch row. Search stores only its dense ordinal.
+struct FrozenSpatialMemoryExposureOption final {
+  PnrIndex provider = 0;
+  FrozenSpatialMemoryExposureDispatchTarget target;
+};
+
 using FrozenSpatialMemoryDispatchTarget =
     std::variant<::loom::fabric::LocalMemoryServiceRef,
                  ::loom::fabric::ManagerEndpointRef,
@@ -178,6 +199,22 @@ public:
     return bindingUseOffsets_;
   }
   llvm::ArrayRef<PnrIndex> bindingUses() const { return bindingUses_; }
+  llvm::ArrayRef<FrozenSpatialMemoryExposure> exposures() const {
+    return exposures_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryExposureProvider>
+  exposureProviders() const {
+    return exposureProviders_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryExposureOption> exposureOptions() const {
+    return exposureOptions_;
+  }
+  llvm::ArrayRef<PnrIndex> bindingExposureOffsets() const {
+    return bindingExposureOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> bindingExposures() const {
+    return bindingExposures_;
+  }
   llvm::ArrayRef<FrozenSpatialMemoryDispatchDomain> dispatchDomains() const {
     return dispatchDomains_;
   }
@@ -198,6 +235,11 @@ private:
   std::vector<PnrIndex> actorUseOffsets_;
   std::vector<PnrIndex> bindingUseOffsets_;
   std::vector<PnrIndex> bindingUses_;
+  std::vector<FrozenSpatialMemoryExposure> exposures_;
+  std::vector<FrozenSpatialMemoryExposureProvider> exposureProviders_;
+  std::vector<FrozenSpatialMemoryExposureOption> exposureOptions_;
+  std::vector<PnrIndex> bindingExposureOffsets_;
+  std::vector<PnrIndex> bindingExposures_;
   std::vector<FrozenSpatialMemoryDispatchDomain> dispatchDomains_;
   std::vector<PnrIndex> memoryPlacementDomainOffsets_;
   std::vector<FrozenSpatialMemoryDispatchOption> dispatchOptions_;

@@ -898,6 +898,14 @@ void memoryViewExposureService() {
   require(test, view.logicalMemoryRoots().size() == 2,
           "two distinct thread memory formals are two roots");
   RootThreadLaunchRef root = view.rootThreadLaunches().front().ref;
+  llvm::SmallVector<MemoryExposureRef> exposures;
+  view.forEachMemoryExposure(
+      [&](MemoryExposureRef exposure) { exposures.push_back(exposure); });
+  require(test, exposures.size() == 5,
+          "the Dataflow owner enumerates every rooted memory result");
+  for (MemoryExposureRef exposure : exposures)
+    require(test, static_cast<bool>(view.resolveExposure(exposure)),
+            "every enumerated memory exposure resolves");
   auto rootByFormal = [&](unsigned f) -> LogicalMemoryRootRef {
     for (const CanonicalLogicalMemoryRootView &r : view.logicalMemoryRoots())
       if (r.formalArgIndex && *r.formalArgIndex == f)

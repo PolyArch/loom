@@ -678,6 +678,21 @@ void CanonicalDataflowProgramView::forEachRootedGraphLaunch(
                   staticGraphLaunches_[staticSlot].ref});
 }
 
+void CanonicalDataflowProgramView::forEachMemoryExposure(
+    llvm::function_ref<void(MemoryExposureRef)> callback) const {
+  for (unsigned t = 0; t < rootsByThreadSlot_.size(); ++t) {
+    for (unsigned rootSlot : rootsByThreadSlot_[t]) {
+      for (unsigned staticSlot : staticsByThreadSlot_[t]) {
+        const RootedGraphLaunchRef launch{rootThreadLaunches_[rootSlot].ref,
+                                          staticGraphLaunches_[staticSlot].ref};
+        for (StructuralOrdinal ordinal = 0;
+             ordinal < exposureByStaticSlot_[staticSlot].size(); ++ordinal)
+          callback({launch, ordinal});
+      }
+    }
+  }
+}
+
 llvm::Expected<GraphRef>
 CanonicalDataflowProgramView::resolve(RootedGraphLaunchRef ref) const {
   auto rootSlot = requireKind(ref.rootThreadLaunch.artifact,

@@ -93,6 +93,20 @@ matchingDispatch(const FrozenSpatialPnrProblem &problem,
   return std::nullopt;
 }
 
+bool exposureOptionMatches(
+    const FrozenSpatialMemoryBindingTargetOption &bindingTarget,
+    const FrozenSpatialMemoryExposureOption &option) {
+  if (const auto *region =
+          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
+              &bindingTarget.target)) {
+    const auto *local =
+        std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
+    return local && local->underlying() == region->service;
+  }
+  return std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
+      option.target);
+}
+
 } // namespace
 
 llvm::Expected<SpatialCandidateStateHandle>
@@ -207,8 +221,15 @@ loom::pnr::createCanonicalSpatialCandidate(
       memory.logicalBindings().size());
   std::vector<PnrIndex> memoryUseDispatches(memory.rootedUses().size(),
                                             getInvalidPnrIndex());
+  std::vector<PnrIndex> memoryExposureSelections(memory.exposures().size(),
+                                                 getInvalidPnrIndex());
   std::vector<std::uint64_t> targetNextOffset(memory.bindingTargets().size(),
                                               0);
+  std::vector<PnrIndex> providerBindingCounts(memory.exposureProviders().size(),
+                                              0);
+  std::vector<std::uint64_t> providerMarks(memory.exposureProviders().size(),
+                                           0);
+  std::uint64_t providerEpoch = 0;
   for (PnrIndex binding = 0; binding < memory.logicalBindings().size();
        ++binding) {
     const auto extent = memory.logicalBindings()[binding].staticExtentBytes;
@@ -216,8 +237,12 @@ loom::pnr::createCanonicalSpatialCandidate(
         memory.bindingUses().slice(memory.bindingUseOffsets()[binding],
                                    memory.bindingUseOffsets()[binding + 1] -
                                        memory.bindingUseOffsets()[binding]);
-    if (uses.empty())
-      return initializerError("logical memory binding has no rooted use");
+    const auto exposures = memory.bindingExposures().slice(
+        memory.bindingExposureOffsets()[binding],
+        memory.bindingExposureOffsets()[binding + 1] -
+            memory.bindingExposureOffsets()[binding]);
+    if (uses.empty() && exposures.empty())
+      return initializerError("logical memory binding has no owner use");
     bool selected = false;
     for (PnrIndex targetOrdinal = 0;
          targetOrdinal < memory.bindingTargets().size(); ++targetOrdinal) {
@@ -243,10 +268,54 @@ loom::pnr::createCanonicalSpatialCandidate(
       }
       if (!complete)
         continue;
+
+      if (++providerEpoch == 0) {
+        std::fill(providerMarks.begin(), providerMarks.end(), 0);
+        providerEpoch = 1;
+      }
+      std::vector<PnrIndex> exposureChoices;
+      std::vector<PnrIndex> selectedProviders;
+      exposureChoices.reserve(exposures.size());
+      selectedProviders.reserve(exposures.size());
+      for (std::size_t exposureIndex = 0; exposureIndex < exposures.size();
+           ++exposureIndex) {
+        std::optional<PnrIndex> choice;
+        for (PnrIndex optionOrdinal = 0;
+             optionOrdinal < memory.exposureOptions().size(); ++optionOrdinal) {
+          const auto &option = memory.exposureOptions()[optionOrdinal];
+          if (!exposureOptionMatches(target, option))
+            continue;
+          const auto &provider = memory.exposureProviders()[option.provider];
+          const bool alreadySelected =
+              providerMarks[option.provider] == providerEpoch;
+          if (!alreadySelected && providerBindingCounts[option.provider] >=
+                                      provider.maxExposedBindings)
+            continue;
+          choice = optionOrdinal;
+          if (!alreadySelected) {
+            providerMarks[option.provider] = providerEpoch;
+            selectedProviders.push_back(option.provider);
+          }
+          break;
+        }
+        if (!choice) {
+          complete = false;
+          break;
+        }
+        exposureChoices.push_back(*choice);
+      }
+      if (!complete)
+        continue;
+
       logicalMemoryBindings[binding] = {
           targetOrdinal, local ? targetNextOffset[targetOrdinal] : 0};
       for (const auto &[useOrdinal, dispatch] : dispatches)
         memoryUseDispatches[useOrdinal] = dispatch;
+      for (auto [exposure, choice] :
+           llvm::zip_equal(exposures, exposureChoices))
+        memoryExposureSelections[exposure] = choice;
+      for (PnrIndex provider : selectedProviders)
+        ++providerBindingCounts[provider];
       if (local)
         targetNextOffset[targetOrdinal] += *extent;
       selected = true;
@@ -271,7 +340,8 @@ loom::pnr::createCanonicalSpatialCandidate(
   }
 
   return SpatialCandidateState::create(
-      std::move(problem), {computeBindings, memoryBindings, portAttachments,
-                           graphBoundaryAttachments, memoryOperationPlans,
-                           logicalMemoryBindings, memoryUseDispatches});
+      std::move(problem),
+      {computeBindings, memoryBindings, portAttachments,
+       graphBoundaryAttachments, memoryOperationPlans, logicalMemoryBindings,
+       memoryUseDispatches, memoryExposureSelections});
 }

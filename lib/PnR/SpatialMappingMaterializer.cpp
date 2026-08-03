@@ -124,6 +124,17 @@ llvm::Expected<mlir::Attribute> materializeMemoryBindingTarget(
   return mlir::Attribute(::mapping::MemoryBoundaryProxyAttr::get(context));
 }
 
+llvm::Expected<mlir::Attribute> materializeExposureDispatch(
+    mlir::MLIRContext *context,
+    const FrozenSpatialMemoryExposureDispatchTarget &target) {
+  if (const auto *local =
+          std::get_if<::loom::fabric::LocalMemoryServiceRef>(&target))
+    return mlir::Attribute(
+        fabricAttr<::mapping::LocalMemoryServiceRefAttr>(context, *local));
+  return mlir::Attribute(fabricAttr<::mapping::ManagerEndpointRefAttr>(
+      context, std::get<::loom::fabric::ManagerEndpointRef>(target)));
+}
+
 llvm::Error
 materializeMemoryBindings(mlir::OpBuilder &builder, mlir::Location location,
                           mlir::Block &body,
@@ -152,6 +163,36 @@ materializeMemoryBindings(mlir::OpBuilder &builder, mlir::Location location,
         *logicalAttr,
         ::mapping::MemoryWholeIntervalAttr::get(builder.getContext()), *target);
     record.getBody().push_back(new mlir::Block());
+    builder.setInsertionPointToEnd(&record.getBody().front());
+    for (PnrIndex exposureOrdinal : memory.bindingExposures().slice(
+             memory.bindingExposureOffsets()[bindingOrdinal],
+             memory.bindingExposureOffsets()[bindingOrdinal + 1] -
+                 memory.bindingExposureOffsets()[bindingOrdinal])) {
+      if (exposureOrdinal >= memory.exposures().size())
+        return invalid("logical memory binding has a foreign exposure");
+      const PnrIndex optionOrdinal =
+          candidate.memoryExposureSelection(exposureOrdinal);
+      if (optionOrdinal >= memory.exposureOptions().size())
+        return invalid("memory exposure option is out of range");
+      const auto &exposure = memory.exposures()[exposureOrdinal];
+      const auto &option = memory.exposureOptions()[optionOrdinal];
+      if (option.provider >= memory.exposureProviders().size())
+        return invalid("memory exposure provider is out of range");
+      auto exposureAttr = dataflowAttr<::mapping::MemoryExposureRefAttr>(
+          builder.getContext(), dataflowIdentity, exposure.exposure);
+      if (!exposureAttr)
+        return exposureAttr.takeError();
+      auto dispatch =
+          materializeExposureDispatch(builder.getContext(), option.target);
+      if (!dispatch)
+        return dispatch.takeError();
+      ::mapping::ExposureEntryOp::create(
+          builder, location, *exposureAttr,
+          fabricAttr<::mapping::SubordinateEndpointRefAttr>(
+              builder.getContext(),
+              memory.exposureProviders()[option.provider].terminal),
+          *dispatch);
+    }
   }
   return llvm::Error::success();
 }

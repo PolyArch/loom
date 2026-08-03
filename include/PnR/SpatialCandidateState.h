@@ -7,6 +7,7 @@
 #include "PnR/SpatialRouteResourceState.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 
@@ -41,6 +42,7 @@ struct SpatialCandidateInitialization final {
   llvm::ArrayRef<PnrIndex> memoryOperationPlans;
   llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings;
   llvm::ArrayRef<PnrIndex> memoryUseDispatches;
+  llvm::ArrayRef<PnrIndex> memoryExposureSelections;
 };
 
 class SpatialCandidateState;
@@ -70,6 +72,7 @@ private:
     MemoryOperationPlan,
     LogicalMemoryBinding,
     MemoryUseDispatch,
+    MemoryExposure,
   };
 
   struct DecisionDelta final {
@@ -96,6 +99,7 @@ private:
   std::vector<std::uint64_t> memoryPlanJournalMarks_;
   std::vector<std::uint64_t> logicalMemoryJournalMarks_;
   std::vector<std::uint64_t> memoryDispatchJournalMarks_;
+  std::vector<std::uint64_t> memoryExposureJournalMarks_;
   std::vector<DecisionDelta> decisionDeltas_;
   std::uint64_t decisionEpoch_ = 0;
 
@@ -106,6 +110,7 @@ private:
   std::vector<std::uint64_t> affectedMemoryPlanMarks_;
   std::vector<std::uint64_t> affectedLogicalMemoryMarks_;
   std::vector<std::uint64_t> affectedMemoryDispatchMarks_;
+  std::vector<std::uint64_t> affectedMemoryExposureMarks_;
   std::vector<std::uint64_t> affectedNetMarks_;
   std::vector<std::uint64_t> affectedBindingRelationMarks_;
   std::vector<PnrIndex> affectedComputes_;
@@ -115,6 +120,7 @@ private:
   std::vector<PnrIndex> affectedMemoryPlans_;
   std::vector<PnrIndex> affectedLogicalMemories_;
   std::vector<PnrIndex> affectedMemoryDispatches_;
+  std::vector<PnrIndex> affectedMemoryExposures_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> affectedBindingRelations_;
   std::uint64_t affectedEpoch_ = 0;
@@ -163,6 +169,7 @@ public:
   const SpatialLogicalMemoryBindingSelection &
   logicalMemoryBinding(PnrIndex binding) const;
   PnrIndex memoryUseDispatch(PnrIndex use) const;
+  PnrIndex memoryExposureSelection(PnrIndex exposure) const;
 
   PnrIndex logicalNetSourceEndpoint(PnrIndex logicalNet) const;
   PnrIndex logicalNetSinkEndpoint(PnrIndex logicalNet,
@@ -212,6 +219,7 @@ private:
       std::vector<PnrIndex> memoryOperationPlans,
       std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings,
       std::vector<PnrIndex> memoryUseDispatches,
+      std::vector<PnrIndex> memoryExposureSelections,
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
@@ -225,6 +233,7 @@ private:
         memoryOperationPlans_(std::move(memoryOperationPlans)),
         logicalMemoryBindings_(std::move(logicalMemoryBindings)),
         memoryUseDispatches_(std::move(memoryUseDispatches)),
+        memoryExposureSelections_(std::move(memoryExposureSelections)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
         routeResources_(std::move(routeResources)),
         unroutedObligationCount_(unroutedObligationCount),
@@ -240,7 +249,11 @@ private:
   llvm::Expected<const FrozenSpatialMemoryDispatchDomain *>
   memoryDispatchDomain(PnrIndex use) const;
   llvm::Error validateMemoryUseDispatch(PnrIndex use) const;
+  llvm::Error validateMemoryExposureSelection(PnrIndex exposure) const;
   llvm::Error verifyMemorySelections() const;
+  llvm::Error rebuildMemoryExposureUsage();
+  void changeMemoryExposureUsage(PnrIndex exposure, PnrIndex oldOption,
+                                 PnrIndex newOption);
   llvm::Error validateLogicalNet(PnrIndex logicalNet) const;
   llvm::Error verifyBindingRelations() const;
   llvm::Error verifyBindingRelation(PnrIndex relation) const;
@@ -259,6 +272,10 @@ private:
   std::vector<PnrIndex> memoryOperationPlans_;
   std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings_;
   std::vector<PnrIndex> memoryUseDispatches_;
+  std::vector<PnrIndex> memoryExposureSelections_;
+  llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
+      memoryExposureProviderRefcounts_;
+  std::vector<PnrIndex> memoryExposureProviderBindingCounts_;
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
@@ -287,6 +304,8 @@ public:
   llvm::Error setLogicalMemoryBinding(PnrIndex binding, PnrIndex target,
                                       std::uint64_t physicalOffsetBytes);
   llvm::Error setMemoryUseDispatch(PnrIndex use, PnrIndex dispatchOption);
+  llvm::Error setMemoryExposureSelection(PnrIndex exposure,
+                                         PnrIndex exposureOption);
 
   llvm::Error bindRouteSource(PnrIndex logicalNet, PnrIndex endpoint);
   llvm::Error bindRouteSink(PnrIndex logicalNet, PnrIndex sinkObligation,
@@ -317,6 +336,7 @@ private:
   void recordMemoryPlan(PnrIndex actor);
   void recordLogicalMemory(PnrIndex binding);
   void recordMemoryDispatch(PnrIndex use);
+  void recordMemoryExposure(PnrIndex exposure);
   void markCompute(PnrIndex realization);
   void markMemory(PnrIndex realization);
   void markPort(PnrIndex demand);
@@ -324,6 +344,7 @@ private:
   void markMemoryPlan(PnrIndex actor);
   void markLogicalMemory(PnrIndex binding);
   void markMemoryDispatch(PnrIndex use);
+  void markMemoryExposure(PnrIndex exposure);
   void markNet(PnrIndex logicalNet);
   void markBindingRelations(PnrIndex decision);
   llvm::Error changeFragments(llvm::ArrayRef<PnrIndex> oldFragments,

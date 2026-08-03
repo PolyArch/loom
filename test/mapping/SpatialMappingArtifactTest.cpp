@@ -7,7 +7,11 @@
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/IR/MemoryActorContractDomain.h"
+#include "Fabric/IR/MemoryCapabilityDomains.h"
+#include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -58,6 +62,16 @@ template <typename T> T take(llvm::Expected<T> value) {
 void requireSuccess(llvm::Error error) {
   if (error)
     fail(llvm::toString(std::move(error)));
+}
+
+template <typename Attr, typename Ref>
+Attr fabricReferenceAttr(mlir::MLIRContext *context, const Ref &reference) {
+  const auto bytes = loom::fabric::canonicalFabricBytes(reference);
+  std::vector<std::int8_t> signedBytes;
+  signedBytes.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    signedBytes.push_back(static_cast<std::int8_t>(byte));
+  return Attr::get(context, mlir::DenseI8ArrayAttr::get(context, signedBytes));
 }
 
 template <typename T> bool rejected(llvm::Expected<T> value) {
@@ -122,23 +136,29 @@ buildMemoryDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @load(
-      %start: none, %index: index, %memory: memref<4xi32>) -> i32
-      attributes {input_segments = array<i32: 1, 0, 1>,
-                  result_segments = array<i32: 1, 0, 0>} {
+      %start: none, %index: index, %memory: memref<4xi32>,
+      %exported: memref<4xi32>) -> (i32, memref<4xi32>, memref<4xi32>)
+      attributes {input_segments = array<i32: 1, 0, 2>,
+                  result_segments = array<i32: 1, 0, 2>} {
     %value, %done = dataflow.load %memory[%index] %start : memref<4xi32>
-    dataflow.graph.return values(%value : i32) streams() memories()
+    dataflow.graph.return values(%value : i32) streams()
+        memories(%exported, %exported : memref<4xi32>, memref<4xi32>)
         complete(%done : none)
   }
   dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %index: index, %memory: memref<4xi32>) ctrl (%ctrl: none) {
-    %value, %done = dataflow.graph.launch @load deps(%ctrl) values(%index)
-        stream_inputs() memories(%memory) stream_outputs()
-        : (none, index, memref<4xi32>) -> (i32, none)
+      %index: index, %memory: memref<4xi32>,
+      %exported: memref<4xi32>) ctrl (%ctrl: none) {
+    %value, %exposed0, %exposed1, %done = dataflow.graph.launch @load deps(%ctrl)
+        values(%index) stream_inputs() memories(%memory, %exported)
+        stream_outputs()
+        : (none, index, memref<4xi32>, memref<4xi32>)
+          -> (i32, memref<4xi32>, memref<4xi32>, none)
     dataflow.thread.yield %done : none
   }
-  func.func private @host(%index: index, %memory: memref<4xi32>) {
-    %token = dataflow.thread.launch @worker(%index, %memory)
-        : (index, memref<4xi32>) -> !dataflow.thread_token
+  func.func private @host(%index: index, %memory: memref<4xi32>,
+                          %exported: memref<4xi32>) {
+    %token = dataflow.thread.launch @worker(%index, %memory, %exported)
+        : (index, memref<4xi32>, memref<4xi32>) -> !dataflow.thread_token
     return
   }
 }
@@ -147,6 +167,60 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   if (!module)
     fail("cannot parse memory Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+::fabric::UnsignedDomain singleton(std::uint64_t value) {
+  return take(::fabric::UnsignedDomain::fromCanonical({{value, value}}));
+}
+
+loom::adg::MemorySpec makeStorageProvider(mlir::MLIRContext &context) {
+  auto alignment = take(::fabric::AlignmentDomain::create(
+      take(::fabric::UnsignedDomain::fromCanonical({{0, 3}}))));
+  auto read = take(
+      ::fabric::ClosedEnumDomain<::fabric::ReadSubwordSemantics>::fromCanonical(
+          {::fabric::ReadSubwordSemantics::Exact}));
+  auto write =
+      take(::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
+               fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
+  auto access = take(::fabric::MemoryAccessClass::create(
+      ::dataflow::semantics::MemoryAccessForm::Element, singleton(32),
+      singleton(1),
+      {{::dataflow::semantics::MemoryMaskForm::Absent,
+        ::fabric::InactiveLaneSemantics::NotApplicable}},
+      std::move(alignment), std::move(read), std::move(write)));
+  auto accesses = take(
+      ::fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
+  ::fabric::MemoryActorContractClause plain =
+      ::fabric::LoadStorePlainContractClause{{false}};
+  auto actors = take(::fabric::MemoryActorContractDomain::create(
+      ::dataflow::OperationSchemaId::DataflowLoad, {plain}));
+  auto serviceRecord = take(::fabric::MemoryServiceContractRecord::create(
+      &context, ::fabric::MemoryServiceOwnerKind::Local,
+      {{{0, 4096, ::fabric::MemoryServiceRegionBehavior::Storage,
+         std::nullopt}},
+       ::fabric::oneCycleElasticOperationResourceContract(),
+       {{std::move(actors),
+         std::move(accesses),
+         {0},
+         32,
+         {::fabric::UsePatternKey(0)},
+         ::fabric::NoMemoryServiceConsistency{}}}}));
+  auto service =
+      take(loom::adg::LocalMemoryServiceSpec::create(4096, serviceRecord));
+  ::fabric::MemoryConnectivityDeclaration connectivity;
+  connectivity.subordinateEndpoints = {
+      {1,
+       {},
+       ::fabric::MemoryProviderAddressTransform::None,
+       {::fabric::MemoryDispatchTarget(
+           std::in_place_type<::fabric::LocalMemoryDispatchTarget>)}}};
+  auto connectivitySpec =
+      take(loom::adg::MemoryConnectivitySpec::create(std::move(connectivity)));
+  auto bits32 = take(loom::adg::PortType::bits(32));
+  auto memory = take(loom::adg::PortType::memory({4}, bits32));
+  return take(loom::adg::MemorySpec::create({}, {memory}, {}, {0}, std::nullopt,
+                                            std::move(service),
+                                            std::move(connectivitySpec)));
 }
 
 void addTokenSyncFu(loom::adg::PeBuilder &pe,
@@ -214,8 +288,12 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
   auto memory = take(loom::adg::makeGeneral64LocalMemory(parameters));
   const std::vector<loom::adg::PortType> inputs(memory.inputTypes().begin(),
                                                 memory.inputTypes().end());
-  const std::vector<loom::adg::PortType> outputs(memory.outputTypes().begin(),
-                                                 memory.outputTypes().end());
+  mlir::MLIRContext storageContext(mlir::MLIRContext::Threading::DISABLED);
+  auto storage = makeStorageProvider(storageContext);
+  std::vector<loom::adg::PortType> outputs(memory.outputTypes().begin(),
+                                           memory.outputTypes().end());
+  outputs.insert(outputs.end(), storage.outputTypes().begin(),
+                 storage.outputTypes().end());
   loom::adg::DesignBuilder builder(store);
   auto spatial = take(builder.createSpatialCore("memory", inputs, outputs));
   std::vector<loom::adg::SpatialValue> values;
@@ -223,6 +301,9 @@ loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
     values.push_back(take(spatial.input(ordinal)));
   auto memoryOutputs = take(spatial.addMemory(values, memory));
+  auto storageOutputs = take(spatial.addMemory({}, storage));
+  memoryOutputs.insert(memoryOutputs.end(), storageOutputs.begin(),
+                       storageOutputs.end());
   requireSuccess(spatial.close(memoryOutputs));
   auto design = take(std::move(builder).finalize());
   if (design.roots().size() != 1)
@@ -525,9 +606,12 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   requireSuccess(candidateScratch.prepare(*problem));
 
   const auto &memoryIndex = problem->memory();
-  if (memoryIndex.logicalBindings().size() != 1 ||
-      memoryIndex.rootedUses().size() != 1)
-    fail("memory transaction fixture does not have one binding and use");
+  if (memoryIndex.logicalBindings().size() != 2 ||
+      memoryIndex.rootedUses().size() != 1 ||
+      memoryIndex.exposures().size() != 2 ||
+      memoryIndex.exposureProviders().size() != 1 ||
+      memoryIndex.exposureOptions().size() != 1)
+    fail("memory transaction fixture lost its bindings or rooted use");
   const auto originalLogicalBinding = candidate->logicalMemoryBinding(0);
   const auto originalDispatch = candidate->memoryUseDispatch(0);
   std::optional<loom::pnr::PnrIndex> boundaryTarget;
@@ -654,8 +738,13 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   auto imported =
       take(loom::mapping::importSpatialMapping(finalized.reference(), store));
   if (imported.view().memoryEngineBindings().size() != 1 ||
-      imported.view().memoryBindings().size() != 1)
+      imported.view().memoryBindings().size() != 2)
     fail("strict SpatialMapping round trip lost memory bindings");
+  std::size_t exposureCount = 0;
+  for (const auto &binding : imported.view().memoryBindings())
+    exposureCount += binding.exposures.size();
+  if (exposureCount != 2)
+    fail("strict SpatialMapping round trip lost the memory exposure");
   const auto &engine = imported.view().memoryEngineBindings().front();
   if (engine.operations.size() != 1 ||
       !std::holds_alternative<
@@ -702,6 +791,55 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   (*resourceUses.begin()).erase();
   if (!rejected(loom::mapping::finalizeSpatialMapping(missingUseRoot, store)))
     fail("SpatialMapping finalized without a required memory ResourceUse");
+
+  auto missingExposure = parseSpatial(context, finalized.canonicalBytes());
+  if (!missingExposure)
+    fail("cannot reparse memory exposure fixture");
+  auto missingExposureRoot =
+      *missingExposure->getOps<::mapping::SpatialOp>().begin();
+  std::optional<::mapping::ExposureEntryOp> exposureToErase;
+  missingExposureRoot.walk(
+      [&](::mapping::ExposureEntryOp exposure) { exposureToErase = exposure; });
+  if (!exposureToErase)
+    fail("memory SpatialMapping fixture has no ExposureEntry to remove");
+  exposureToErase->erase();
+  if (!rejected(
+          loom::mapping::finalizeSpatialMapping(missingExposureRoot, store)))
+    fail("SpatialMapping finalized without a required memory exposure");
+
+  std::optional<loom::fabric::FabricMemoryEndpointRef> managerEndpoint;
+  for (loom::fabric::FabricMemoryOccurrenceRef memory :
+       fabric.view().memoryOccurrences()) {
+    const auto owner = loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
+    for (std::uint64_t ordinal = 0;
+         ordinal < fabric.view().memoryEndpointCount(owner); ++ordinal) {
+      const loom::fabric::FabricMemoryEndpointRef endpoint{owner, ordinal};
+      if (fabric.view().memoryEndpointRole(endpoint) ==
+          loom::fabric::FabricMemoryEndpointRole::Manager)
+        managerEndpoint = endpoint;
+    }
+  }
+  if (!managerEndpoint)
+    fail("memory SpatialMapping fixture has no manager endpoint");
+  auto wrongTerminal = parseSpatial(context, finalized.canonicalBytes());
+  if (!wrongTerminal)
+    fail("cannot reparse memory exposure terminal fixture");
+  auto wrongTerminalRoot =
+      *wrongTerminal->getOps<::mapping::SpatialOp>().begin();
+  std::optional<::mapping::ExposureEntryOp> exposureToMutate;
+  wrongTerminalRoot.walk([&](::mapping::ExposureEntryOp exposure) {
+    exposureToMutate = exposure;
+  });
+  if (!exposureToMutate)
+    fail("memory SpatialMapping fixture has no ExposureEntry to mutate");
+  (*exposureToMutate)
+      ->setAttr("terminal",
+                fabricReferenceAttr<::mapping::SubordinateEndpointRefAttr>(
+                    &context,
+                    loom::fabric::SubordinateEndpointRef(*managerEndpoint)));
+  if (!rejected(
+          loom::mapping::finalizeSpatialMapping(wrongTerminalRoot, store)))
+    fail("SpatialMapping accepted a manager as an exposure terminal");
 
   if (!temporal) {
     auto overlap = parseSpatial(context, finalized.canonicalBytes());

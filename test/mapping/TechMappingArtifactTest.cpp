@@ -24,6 +24,7 @@
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
 
+#include "TechMappingArtifactTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -571,6 +572,41 @@ spatialConstraintText(const dataflow::CanonicalDataflowProgramView &dataflow,
          identityAttr(fabric.identity()) + ") {\n" + clauses.str() + "  }\n}\n";
 }
 
+} // namespace
+
+namespace loom::test::tech_mapping_artifact {
+
+mlir::MLIRContext makeComputeBoundaryContext() { return makeContext(); }
+
+dataflow::CanonicalDataflowArtifact
+buildComputeBoundaryDataflow(mlir::MLIRContext &context) {
+  return buildComputeDataflow(context);
+}
+
+std::string computeBoundaryMappingText(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const loom::fabric::FabricArtifactView &fabric, bool includeBoundaries) {
+  return computeMappingText(
+      dataflow, fabric, selectComputeCapability(computeActor(dataflow), fabric),
+      includeBoundaries);
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> parseTechMapping(mlir::MLIRContext &context,
+                                                   llvm::StringRef text) {
+  return parseMapping(context, text);
+}
+
+std::string spatialConstraintMappingText(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const loom::mapping::TechMappingView &techMapping,
+    const loom::fabric::FabricArtifactView &fabric, llvm::StringRef clauses) {
+  return spatialConstraintText(dataflow, techMapping, fabric, clauses);
+}
+
+} // namespace loom::test::tech_mapping_artifact
+
+namespace {
+
 void artifactRoundTripAndReferenceValidation() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -865,6 +901,12 @@ void artifactRoundTripAndReferenceValidation() {
   for (loom::pnr::PnrIndex use = 0; use < frozen->memory().rootedUses().size();
        ++use)
     memoryUseDispatches.push_back(canonicalCandidate->memoryUseDispatch(use));
+  std::vector<loom::pnr::PnrIndex> memoryExposureSelections;
+  memoryExposureSelections.reserve(frozen->memory().exposures().size());
+  for (loom::pnr::PnrIndex exposure = 0;
+       exposure < frozen->memory().exposures().size(); ++exposure)
+    memoryExposureSelections.push_back(
+        canonicalCandidate->memoryExposureSelection(exposure));
   for (loom::pnr::PnrIndex realization = 0; realization < memoryBindings.size();
        ++realization)
     if (canonicalCandidate->memoryBinding(realization).placement !=
@@ -877,14 +919,14 @@ void artifactRoundTripAndReferenceValidation() {
     if (!rejected(loom::pnr::SpatialCandidateState::create(
             frozen, {malformedBindings, memoryBindings, portAttachments,
                      boundaryAttachments, memoryPlans, logicalMemoryBindings,
-                     memoryUseDispatches})))
+                     memoryUseDispatches, memoryExposureSelections})))
       fail("Spatial candidate accepted a foreign compute placement");
   }
 
   auto spatialCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen,
-      {computeBindings, memoryBindings, portAttachments, boundaryAttachments,
-       memoryPlans, logicalMemoryBindings, memoryUseDispatches}));
+      frozen, {computeBindings, memoryBindings, portAttachments,
+               boundaryAttachments, memoryPlans, logicalMemoryBindings,
+               memoryUseDispatches, memoryExposureSelections}));
   requireSuccess(spatialCandidate->verify());
   std::uint64_t initialUnroutedObligations = 0;
   for (const auto &net : frozen->transfers().logicalNets())
@@ -1108,9 +1150,9 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder route-cost overlay did not restore raw occupancy");
 
   auto routedCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen,
-      {computeBindings, memoryBindings, portAttachments, boundaryAttachments,
-       memoryPlans, logicalMemoryBindings, memoryUseDispatches}));
+      frozen, {computeBindings, memoryBindings, portAttachments,
+               boundaryAttachments, memoryPlans, logicalMemoryBindings,
+               memoryUseDispatches, memoryExposureSelections}));
   loom::pnr::SpatialCandidateScratch routedCandidateScratch;
   requireSuccess(routedCandidateScratch.prepare(*frozen));
   auto routedCostState =
@@ -1700,98 +1742,11 @@ void artifactRoundTripAndReferenceValidation() {
     fail("stale Fabric memory endpoint was published");
 }
 
-void computeBoundaryClosure() {
-  TemporaryDirectory directory;
-  loom::ArtifactStore store(directory.path());
-  mlir::MLIRContext context = makeContext();
-
-  auto dataflowArtifact = buildComputeDataflow(context);
-  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflowView = take(dataflowArtifact.view());
-
-  auto design = loom::test::buildTemporalCapacityFabric(store);
-  const auto &fabricRoot = design.roots().front();
-  const auto selected =
-      selectComputeCapability(computeActor(dataflowView), fabricRoot.view());
-
-  auto complete =
-      parseMapping(context, computeMappingText(dataflowView, fabricRoot.view(),
-                                               selected, true));
-  if (!complete)
-    fail("complete compute TechMapping fixture did not parse");
-  auto completeRoots = complete->getOps<::mapping::TechOp>();
-  auto finalized = take(loom::mapping::finalizeTechMapping(
-      *completeRoots.begin(), dataflowView, fabricRoot.view(), store));
-
-  auto emptyConstraints = parseMapping(
-      context,
-      spatialConstraintText(dataflowView, finalized.view(), fabricRoot.view(),
-                            /*clauses=*/""));
-  if (!emptyConstraints)
-    fail("compute Spatial MappingConstraintSet fixture did not parse");
-  auto constraintRoots =
-      emptyConstraints->getOps<::mapping::ConstraintsSpatialOp>();
-  auto constraints = take(loom::mapping::finalizeSpatialMappingConstraintSet(
-      *constraintRoots.begin(), dataflowView, finalized.view(),
-      fabricRoot.view(), store));
-  const loom::pnr::ResolvedPnrConfigView spatialConfig =
-      take(loom::pnr::projectResolvedSpatialPnrConfigView(
-          loom::defaultResolvedConfig()));
-  auto frozen = take(loom::pnr::freezeSpatialPnrProblem(
-      dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
-      constraints.view()));
-  const auto &handshake = frozen->handshake();
-  if (handshake.computePlacementFragmentOffsets().size() !=
-          frozen->realizations().computePlacements().size() + 1 ||
-      handshake.computePlacementFragments().empty())
-    fail("compute freeze omitted exact placement handshake fragments");
-  loom::test::exerciseHandshakeCandidateRefcounts(frozen);
-  loom::test::exerciseCapacityOveruseCandidate(frozen);
-  loom::test::exerciseTemporalComputeUseProjection(
-      dataflowView, finalized.view(), fabricRoot.view(), frozen);
-  loom::test::exerciseCanonicalCandidateInitialization(frozen);
-  if (frozen->ports().portDemands().size() != 4 ||
-      frozen->ports().graphBoundaries().size() != 4)
-    fail("compute freeze omitted actor or graph-boundary demands");
-  for (const auto &demand : frozen->ports().portDemands()) {
-    if (demand.kind != loom::pnr::FrozenSpatialPortDemandKind::Compute ||
-        demand.placementDomainCount == 0)
-      fail("compute PortDemand lost its factorized placement domain");
-    for (const auto &domain : frozen->ports().placementDomains().slice(
-             demand.placementDomainOffset, demand.placementDomainCount)) {
-      const auto &placement =
-          frozen->realizations().computePlacements()[domain.placement];
-      for (const auto &option : frozen->ports().attachmentOptions().slice(
-               domain.attachmentOptionOffset, domain.attachmentOptionCount)) {
-        if (!option.localTraversal)
-          fail("compute PortDemand omitted its exact PE selector traversal");
-        const auto &traversal =
-            frozen->routing().traversals()[*option.localTraversal].reference;
-        const auto *selector =
-            std::get_if<loom::fabric::FabricPeSelectorPayload>(
-                &traversal.payload);
-        if (!selector || selector->owner != placement.parentPe)
-          fail("compute PortDemand selected a foreign local traversal");
-      }
-    }
-  }
-
-  auto missing =
-      parseMapping(context, computeMappingText(dataflowView, fabricRoot.view(),
-                                               selected, false));
-  if (!missing)
-    fail("missing-boundary TechMapping fixture did not parse");
-  auto missingRoots = missing->getOps<::mapping::TechOp>();
-  if (!rejected(
-          loom::mapping::finalizeTechMapping(*missingRoots.begin(), store)))
-    fail("compute realization without its FU boundaries was published");
-}
-
 } // namespace
 
 int main() {
   artifactRoundTripAndReferenceValidation();
-  computeBoundaryClosure();
+  loom::test::tech_mapping_artifact::computeBoundaryClosure();
   llvm::outs() << "tech mapping artifact tests passed\n";
   return 0;
 }

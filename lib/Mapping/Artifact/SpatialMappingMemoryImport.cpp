@@ -468,8 +468,34 @@ bool consistencyBelongsToOccurrence(
   return true;
 }
 
+struct MemoryEndpointInventory final {
+  std::vector<::loom::fabric::ManagerEndpointRef> managers;
+  std::vector<::loom::fabric::SubordinateEndpointRef> subordinates;
+};
+
+llvm::Expected<MemoryEndpointInventory>
+memoryEndpointInventory(const ::loom::fabric::FabricArtifactView &fabric,
+                        ::loom::fabric::FabricMemoryOccurrenceRef occurrence) {
+  MemoryEndpointInventory result;
+  const auto owner =
+      ::loom::fabric::FabricMemoryEndpointOwnerRef::of(occurrence);
+  for (std::uint64_t ordinal = 0; ordinal < fabric.memoryEndpointCount(owner);
+       ++ordinal) {
+    const ::loom::fabric::FabricMemoryEndpointRef endpoint{owner, ordinal};
+    const auto role = fabric.memoryEndpointRole(endpoint);
+    if (!role)
+      return invalid("memory occurrence has an untyped endpoint");
+    if (*role == ::loom::fabric::FabricMemoryEndpointRole::Manager)
+      result.managers.emplace_back(endpoint);
+    else
+      result.subordinates.emplace_back(endpoint);
+  }
+  return result;
+}
+
 bool targetAdmitted(llvm::ArrayRef<::fabric::MemoryDispatchTarget> domain,
-                    const SpatialMemoryDispatchTargetView &target) {
+                    const SpatialMemoryDispatchTargetView &target,
+                    const MemoryEndpointInventory &endpoints) {
   return llvm::any_of(domain, [&](const auto &candidate) {
     if (std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(target))
       return std::holds_alternative<::fabric::LocalMemoryDispatchTarget>(
@@ -478,8 +504,38 @@ bool targetAdmitted(llvm::ArrayRef<::fabric::MemoryDispatchTarget> domain,
         std::get<::loom::fabric::ManagerEndpointRef>(target).underlying();
     const auto *declared =
         std::get_if<::fabric::ManagerMemoryDispatchTarget>(&candidate);
-    return declared && declared->endpointOrdinal == manager.ordinal;
+    return declared && declared->endpointOrdinal < endpoints.managers.size() &&
+           endpoints.managers[declared->endpointOrdinal].underlying() ==
+               manager;
   });
+}
+
+llvm::Expected<std::uint64_t>
+validateExposureDispatch(const ::loom::fabric::SubordinateEndpointRef &terminal,
+                         const SpatialMemoryDispatchTargetView &dispatch,
+                         const ::loom::fabric::FabricArtifactView &fabric) {
+  const auto &endpoint = terminal.underlying();
+  if (endpoint.owner.kind() !=
+      ::loom::fabric::FabricMemoryEndpointOwnerKind::FabricMemoryOccurrence)
+    return invalid("ExposureEntry terminal is not memory-occurrence-owned");
+  const auto occurrence = std::get<::loom::fabric::FabricMemoryOccurrenceRef>(
+      endpoint.owner.payload);
+  auto endpoints = memoryEndpointInventory(fabric, occurrence);
+  if (!endpoints)
+    return endpoints.takeError();
+  const auto found = llvm::find(endpoints->subordinates, terminal);
+  if (found == endpoints->subordinates.end())
+    return invalid("ExposureEntry terminal is absent from the subordinate "
+                   "inventory");
+  const std::size_t row = std::distance(endpoints->subordinates.begin(), found);
+  const auto *connectivity = fabric.memoryConnectivity(occurrence);
+  if (!connectivity || row >= connectivity->subordinateEndpoints().size())
+    return invalid("ExposureEntry terminal has no subordinate H_dispatch row");
+  if (!dispatchBelongsToOccurrence(dispatch, occurrence) ||
+      !targetAdmitted(connectivity->subordinateEndpoints()[row].targetDomain,
+                      dispatch, *endpoints))
+    return invalid("ExposureEntry dispatch is outside Fabric H_dispatch");
+  return connectivity->subordinateEndpoints()[row].maxExposedBindings;
 }
 
 using RootedLaunchInventory =
@@ -638,6 +694,92 @@ importMemoryBinding(::mapping::MemoryBindingOp record,
   return result;
 }
 
+struct ExpectedExposure final {
+  ::dataflow::MemoryExposureRef reference;
+  ::dataflow::LogicalMemoryRootOrViewRef logicalMemory;
+};
+
+llvm::Expected<std::map<std::string, ExpectedExposure>> deriveExpectedExposures(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  std::map<std::string, ExpectedExposure> result;
+  std::optional<std::string> failure;
+  dataflow.forEachMemoryExposure([&](auto reference) {
+    if (failure)
+      return;
+    auto logical = dataflow.resolveExposure(reference);
+    if (!logical) {
+      failure = llvm::toString(logical.takeError());
+      return;
+    }
+    auto bytes =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), reference);
+    if (!bytes) {
+      failure = llvm::toString(bytes.takeError());
+      return;
+    }
+    auto [entry, inserted] = result.try_emplace(
+        byteKey(*bytes), ExpectedExposure{reference, *logical});
+    if (!inserted && (entry->second.reference != reference ||
+                      entry->second.logicalMemory != *logical)) {
+      failure = "memory exposure inventory is not a function";
+      return;
+    }
+  });
+  if (failure)
+    return invalid("cannot derive memory exposure inventory: " + *failure);
+  return result;
+}
+
+llvm::Error verifyExposureInventory(
+    llvm::ArrayRef<SpatialMemoryBindingView> bindings,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  auto expected = deriveExpectedExposures(dataflow);
+  if (!expected)
+    return expected.takeError();
+
+  struct ProviderUse final {
+    std::uint64_t maxBindings = 0;
+    std::set<std::uint64_t> bindings;
+  };
+  std::set<std::string> actual;
+  std::map<std::string, ProviderUse> providerUses;
+  for (const SpatialMemoryBindingView &binding : bindings) {
+    for (const SpatialExposureEntryView &exposure : binding.exposures) {
+      auto bytes = ::dataflow::encodeDataflowReference(dataflow.identity(),
+                                                       exposure.exposure);
+      if (!bytes)
+        return bytes.takeError();
+      const std::string key = byteKey(*bytes);
+      if (!actual.insert(key).second)
+        return invalid("SpatialMapping duplicates a MemoryExposureRef");
+      const auto expectedExposure = expected->find(key);
+      if (expectedExposure == expected->end())
+        return invalid("SpatialMapping contains an extra memory exposure");
+      if (expectedExposure->second.logicalMemory != binding.logicalMemory)
+        return invalid("memory exposure belongs to another MemoryBinding");
+
+      auto maxBindings = validateExposureDispatch(exposure.terminal,
+                                                  exposure.dispatch, fabric);
+      if (!maxBindings)
+        return maxBindings.takeError();
+      const std::string terminalKey =
+          byteKey(::loom::fabric::canonicalFabricBytes(exposure.terminal));
+      auto [provider, inserted] =
+          providerUses.try_emplace(terminalKey, ProviderUse{*maxBindings, {}});
+      if (!inserted && provider->second.maxBindings != *maxBindings)
+        return invalid("one subordinate terminal has inconsistent capacity");
+      provider->second.bindings.insert(binding.entityId);
+    }
+  }
+  if (actual.size() != expected->size())
+    return invalid("SpatialMapping omits a required memory exposure");
+  for (const auto &[terminal, use] : providerUses)
+    if (use.bindings.size() > use.maxBindings)
+      return invalid("subordinate terminal exceeds max_exposed_bindings");
+  return llvm::Error::success();
+}
+
 llvm::Error verifyNoBindingOverlap(
     llvm::ArrayRef<SpatialMemoryBindingView> bindings,
     const ::dataflow::CanonicalDataflowProgramView &dataflow) {
@@ -733,6 +875,9 @@ importEngineBinding(::mapping::MemoryEngineBindingOp record,
   if (!connectivity)
     return invalid(
         "MemoryEngineBinding occurrence has no connectivity contract");
+  auto endpoints = memoryEndpointInventory(fabric, *occurrence);
+  if (!endpoints)
+    return endpoints.takeError();
 
   std::map<std::uint64_t, const SpatialMemoryBindingView *> bindingById;
   for (const auto &binding : bindings)
@@ -804,7 +949,7 @@ importEngineBinding(::mapping::MemoryEngineBindingOp record,
                                       .capabilityTargetDomains.size() ||
             !targetAdmitted(connectivity->operationPorts()[portOrdinal]
                                 .capabilityTargetDomains[alternativeOrdinal],
-                            *dispatch))
+                            *dispatch, *endpoints))
           return invalid("addressed dispatch is outside Fabric H_dispatch");
         imported.uses.push_back(SpatialAddressedMemoryUseView{
             *launch, use.getBinding().getEntity(), std::move(*dispatch)});
@@ -965,6 +1110,9 @@ llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
   }
   if (llvm::Error error =
           verifyNoBindingOverlap(result.memoryBindings, dataflow))
+    return std::move(error);
+  if (llvm::Error error =
+          verifyExposureInventory(result.memoryBindings, dataflow, fabric))
     return std::move(error);
 
   std::set<std::uint64_t> engineIds;

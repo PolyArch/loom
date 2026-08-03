@@ -201,9 +201,15 @@ void loom::test::exerciseCapacityOveruseCandidate(
   for (const auto &boundary : problem->ports().graphBoundaries())
     boundaryAttachments.push_back(boundary.attachmentOptionOffset);
 
-  auto candidate = take(pnr::SpatialCandidateState::create(
-      problem,
-      {{*overused}, {}, initialAttachments, boundaryAttachments, {}, {}, {}}));
+  auto candidate =
+      take(pnr::SpatialCandidateState::create(problem, {{*overused},
+                                                        {},
+                                                        initialAttachments,
+                                                        boundaryAttachments,
+                                                        {},
+                                                        {},
+                                                        {},
+                                                        {}}));
   if (candidate->capacityOveruse() != 1 ||
       take(pnr::spatialMappingViolationValue(
           *candidate, ResolvedPnrViolationKind::CapacityOveruse)) != 1)

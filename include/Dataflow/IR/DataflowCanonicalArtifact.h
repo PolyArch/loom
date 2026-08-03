@@ -157,6 +157,12 @@ public:
   void forEachRootedGraphLaunch(
       llvm::function_ref<void(RootedGraphLaunchRef)>) const;
 
+  /// Enumerate the complete Dataflow-owned memory-exposure inventory in
+  /// rooted-launch order, then graph memory-result ordinal. The inventory is
+  /// derived from the same sealed static-launch relation used by
+  /// resolveExposure; consumers must not reconstruct it from graph IR.
+  void forEachMemoryExposure(llvm::function_ref<void(MemoryExposureRef)>) const;
+
   /// Validate a rooted graph launch: the root launch and the static graph
   /// launch must resolve, and the graph-launch site must belong to the thread
   /// definition reached from the root launch. Returns the launched graph.

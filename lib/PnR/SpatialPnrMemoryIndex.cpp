@@ -44,6 +44,18 @@ constexpr PnrCapacityContext useOffsetContext{frozenArtifact, "memory_actors",
 constexpr PnrCapacityContext useCountContext{
     frozenArtifact, "rooted_memory_uses", "rooted_memory_uses",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext exposureOffsetContext{
+    frozenArtifact, "logical_memory_bindings", "memory_exposures",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext exposureCountContext{
+    frozenArtifact, "memory_exposures", "memory_exposures",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext exposureProviderContext{
+    frozenArtifact, "memory_exposure_providers", "memory_exposure_providers",
+    PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext exposureOptionContext{
+    frozenArtifact, "memory_exposure_options", "memory_exposure_options",
+    PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext domainOffsetContext{
     frozenArtifact, "memory_placements", "memory_dispatch_domains",
     PnrCapacityMeasure::Offset};
@@ -96,6 +108,31 @@ struct ActorProjection final {
   ::dataflow::semantics::CanonicalService service;
   std::optional<::dataflow::semantics::CanonicalMemoryAccessView> access;
 };
+
+struct MemoryEndpointInventory final {
+  std::vector<ManagerEndpointRef> managers;
+  std::vector<SubordinateEndpointRef> subordinates;
+};
+
+llvm::Expected<MemoryEndpointInventory>
+buildEndpointInventory(const FabricArtifactView &fabric,
+                       FabricMemoryOccurrenceRef occurrence) {
+  MemoryEndpointInventory result;
+  const FabricMemoryEndpointOwnerRef owner =
+      FabricMemoryEndpointOwnerRef::of(occurrence);
+  for (std::uint64_t ordinal = 0; ordinal < fabric.memoryEndpointCount(owner);
+       ++ordinal) {
+    const FabricMemoryEndpointRef endpoint{owner, ordinal};
+    const auto role = fabric.memoryEndpointRole(endpoint);
+    if (!role)
+      return invalid("memory occurrence has an untyped endpoint");
+    if (*role == FabricMemoryEndpointRole::Manager)
+      result.managers.emplace_back(endpoint);
+    else
+      result.subordinates.emplace_back(endpoint);
+  }
+  return result;
+}
 
 llvm::Expected<ActorProjection>
 projectActor(const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -152,7 +189,8 @@ llvm::Expected<std::vector<DispatchDraft>>
 buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                      const FabricArtifactView &fabric,
                      const FrozenSpatialMemoryActorBinding &actor,
-                     FabricMemoryOccurrenceRef occurrence) {
+                     FabricMemoryOccurrenceRef occurrence,
+                     const MemoryEndpointInventory &endpoints) {
   auto projection = projectActor(dataflow, actor.actor);
   if (!projection)
     return projection.takeError();
@@ -202,9 +240,10 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
        portDispatch.capabilityTargetDomains[actor.capability.ordinal]) {
     if (const auto *manager =
             std::get_if<::fabric::ManagerMemoryDispatchTarget>(&target)) {
-      const ManagerEndpointRef endpoint(
-          FabricMemoryEndpointRef{FabricMemoryEndpointOwnerRef::of(occurrence),
-                                  manager->endpointOrdinal});
+      if (manager->endpointOrdinal >= endpoints.managers.size())
+        return invalid("memory dispatch names an absent manager endpoint");
+      const ManagerEndpointRef endpoint =
+          endpoints.managers[manager->endpointOrdinal];
       if (llvm::Error error = validateFabricRef(fabric, endpoint))
         return std::move(error);
       add(endpoint, std::nullopt);
@@ -274,16 +313,23 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
 
   FrozenSpatialMemoryIndex result;
 
+  std::map<std::string, MemoryEndpointInventory> endpointInventories;
+  for (FabricMemoryOccurrenceRef occurrence : fabric.memoryOccurrences()) {
+    auto endpoints = buildEndpointInventory(fabric, occurrence);
+    if (!endpoints)
+      return endpoints.takeError();
+    endpointInventories.emplace(fabricKey(occurrence), std::move(*endpoints));
+  }
+
   std::map<std::string, std::pair<FabricMemoryServiceRegionRef, std::uint64_t>>
       localTargets;
-  for (const FrozenSpatialMemoryPlacement &placement :
-       realizations.memoryPlacements()) {
-    const auto *service = fabric.localMemoryService(placement.memory);
+  for (FabricMemoryOccurrenceRef occurrence : fabric.memoryOccurrences()) {
+    const auto *service = fabric.localMemoryService(occurrence);
     if (!service)
       continue;
     for (auto [ordinal, region] : llvm::enumerate(service->regions())) {
       const FabricMemoryServiceRegionRef reference{
-          FabricMemoryServiceRef::local(placement.memory), ordinal};
+          FabricMemoryServiceRef::local(occurrence), ordinal};
       const std::string key = fabricKey(reference);
       auto [iterator, inserted] =
           localTargets.try_emplace(key, reference, region.sizeBytes);
@@ -348,7 +394,12 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     PnrIndex actor = 0;
     std::optional<std::string> bindingKey;
   };
+  struct ExposureDraft final {
+    ::dataflow::MemoryExposureRef exposure;
+    std::string bindingKey;
+  };
   std::map<std::string, BindingDraft> bindingDrafts;
+  std::map<std::string, ExposureDraft> exposureDrafts;
   std::vector<std::vector<UseDraft>> usesByActor(
       realizations.memoryActors().size());
 
@@ -393,6 +444,48 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     }
   }
 
+  std::optional<std::string> exposureError;
+  dataflow.forEachMemoryExposure([&](auto exposure) {
+    if (exposureError)
+      return;
+    auto logical = dataflow.resolveExposure(exposure);
+    if (!logical) {
+      exposureError = llvm::toString(logical.takeError());
+      return;
+    }
+    auto logicalKey = dataflowKey(dataflow.identity(), *logical);
+    if (!logicalKey) {
+      exposureError = llvm::toString(logicalKey.takeError());
+      return;
+    }
+    auto extent = dataflow.staticMemoryByteExtent(*logical);
+    if (!extent) {
+      exposureError = llvm::toString(extent.takeError());
+      return;
+    }
+    auto [binding, bindingInserted] =
+        bindingDrafts.try_emplace(*logicalKey, BindingDraft{*logical, *extent});
+    if (!bindingInserted && (binding->second.logicalMemory != *logical ||
+                             binding->second.extent != *extent)) {
+      exposureError = "one exposed logical memory has inconsistent projections";
+      return;
+    }
+    auto exposureKey = dataflowKey(dataflow.identity(), exposure);
+    if (!exposureKey) {
+      exposureError = llvm::toString(exposureKey.takeError());
+      return;
+    }
+    auto [entry, inserted] = exposureDrafts.try_emplace(
+        *exposureKey, ExposureDraft{exposure, *logicalKey});
+    if (!inserted && (entry->second.exposure != exposure ||
+                      entry->second.bindingKey != *logicalKey)) {
+      exposureError = "one memory exposure has inconsistent projections";
+      return;
+    }
+  });
+  if (exposureError)
+    return invalid("cannot enumerate memory exposures: " + *exposureError);
+
   if (llvm::Error error =
           preflightPnrIndexCapacity(bindingIndexContext, bindingDrafts.size()))
     return std::move(error);
@@ -405,6 +498,98 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     bindingByKey.emplace(key, *ordinal);
     result.logicalBindings_.push_back(
         {std::move(binding.logicalMemory), binding.extent});
+  }
+
+  if (llvm::Error error = preflightPnrIndexCapacity(exposureCountContext,
+                                                    exposureDrafts.size()))
+    return std::move(error);
+  result.exposures_.reserve(exposureDrafts.size());
+  for (auto &[key, exposure] : exposureDrafts) {
+    const auto binding = bindingByKey.find(exposure.bindingKey);
+    if (binding == bindingByKey.end())
+      return invalid("memory exposure has no logical binding");
+    result.exposures_.push_back(
+        {std::move(exposure.exposure), binding->second});
+  }
+
+  result.bindingExposureOffsets_.assign(result.logicalBindings_.size() + 1, 0);
+  for (const auto &exposure : result.exposures_)
+    ++result.bindingExposureOffsets_[exposure.logicalBinding + 1];
+  for (std::size_t index = 1; index < result.bindingExposureOffsets_.size();
+       ++index) {
+    auto prefix = checkedPnrIndexAdd(exposureOffsetContext,
+                                     result.bindingExposureOffsets_[index - 1],
+                                     result.bindingExposureOffsets_[index]);
+    if (!prefix)
+      return prefix.takeError();
+    result.bindingExposureOffsets_[index] = *prefix;
+  }
+  result.bindingExposures_.resize(result.bindingExposureOffsets_.back());
+  std::vector<PnrIndex> exposureCursors = result.bindingExposureOffsets_;
+  for (auto [ordinalValue, exposure] : llvm::enumerate(result.exposures_)) {
+    auto ordinal = checked(exposureCountContext, ordinalValue);
+    if (!ordinal)
+      return ordinal.takeError();
+    result.bindingExposures_[exposureCursors[exposure.logicalBinding]++] =
+        *ordinal;
+  }
+
+  if (!result.exposures_.empty()) {
+    for (FabricMemoryOccurrenceRef occurrence : fabric.memoryOccurrences()) {
+      const auto endpointInventory =
+          endpointInventories.find(fabricKey(occurrence));
+      if (endpointInventory == endpointInventories.end())
+        return invalid("memory occurrence has no endpoint inventory");
+      const auto *connectivity = fabric.memoryConnectivity(occurrence);
+      if (!connectivity || connectivity->subordinateEndpoints().size() !=
+                               endpointInventory->second.subordinates.size())
+        return invalid("memory occurrence has no exact subordinate dispatch "
+                       "inventory");
+      for (auto [rowOrdinal, row] :
+           llvm::enumerate(connectivity->subordinateEndpoints())) {
+        auto provider =
+            checked(exposureProviderContext, result.exposureProviders_.size());
+        if (!provider)
+          return provider.takeError();
+        result.exposureProviders_.push_back(
+            {endpointInventory->second.subordinates[rowOrdinal],
+             row.maxExposedBindings});
+        for (const ::fabric::MemoryDispatchTarget &target : row.targetDomain) {
+          if (std::holds_alternative<::fabric::LocalMemoryDispatchTarget>(
+                  target)) {
+            if (!fabric.localMemoryService(occurrence))
+              return invalid("subordinate H_dispatch names an absent local "
+                             "memory service");
+            result.exposureOptions_.push_back(
+                {*provider,
+                 FrozenSpatialMemoryExposureDispatchTarget(
+                     std::in_place_type<LocalMemoryServiceRef>,
+                     LocalMemoryServiceRef(
+                         FabricMemoryServiceRef::local(occurrence)))});
+            continue;
+          }
+          const auto manager =
+              std::get<::fabric::ManagerMemoryDispatchTarget>(target);
+          if (manager.endpointOrdinal >=
+              endpointInventory->second.managers.size())
+            return invalid("subordinate H_dispatch names an absent manager "
+                           "endpoint");
+          result.exposureOptions_.push_back(
+              {*provider, FrozenSpatialMemoryExposureDispatchTarget(
+                              std::in_place_type<ManagerEndpointRef>,
+                              endpointInventory->second
+                                  .managers[manager.endpointOrdinal])});
+        }
+      }
+    }
+    if (result.exposureProviders_.empty() || result.exposureOptions_.empty())
+      return infeasible("memory exposure has no Fabric provider dispatch");
+    if (llvm::Error error = preflightPnrIndexCapacity(
+            exposureProviderContext, result.exposureProviders_.size()))
+      return std::move(error);
+    if (llvm::Error error = preflightPnrIndexCapacity(
+            exposureOptionContext, result.exposureOptions_.size()))
+      return std::move(error);
   }
 
   result.actorUseOffsets_.reserve(usesByActor.size() + 1);
@@ -465,9 +650,13 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     for (PnrIndex localActor = 0; localActor < realization.actorCount;
          ++localActor) {
       const PnrIndex actorOrdinal = realization.actorOffset + localActor;
+      const auto endpoints =
+          endpointInventories.find(fabricKey(placement.memory));
+      if (endpoints == endpointInventories.end())
+        return invalid("memory placement has no endpoint inventory");
       auto options = buildDispatchOptions(
           dataflow, fabric, realizations.memoryActors()[actorOrdinal],
-          placement.memory);
+          placement.memory, endpoints->second);
       if (!options)
         return options.takeError();
       auto optionOffset =
@@ -515,6 +704,8 @@ llvm::Error FrozenSpatialMemoryIndexBuilder::verify(
           realizations.memoryActors().size() + 1 ||
       memory.bindingUseOffsets().size() !=
           memory.logicalBindings().size() + 1 ||
+      memory.bindingExposureOffsets().size() !=
+          memory.logicalBindings().size() + 1 ||
       memory.memoryPlacementDomainOffsets().size() !=
           realizations.memoryPlacements().size() + 1)
     return invalid("memory CSR dimensions are incomplete");
@@ -524,6 +715,10 @@ llvm::Error FrozenSpatialMemoryIndexBuilder::verify(
       memory.bindingUseOffsets().empty() ||
       memory.bindingUseOffsets().front() != 0 ||
       memory.bindingUseOffsets().back() != memory.bindingUses().size() ||
+      memory.bindingExposureOffsets().empty() ||
+      memory.bindingExposureOffsets().front() != 0 ||
+      memory.bindingExposureOffsets().back() !=
+          memory.bindingExposures().size() ||
       memory.memoryPlacementDomainOffsets().empty() ||
       memory.memoryPlacementDomainOffsets().front() != 0 ||
       memory.memoryPlacementDomainOffsets().back() !=
@@ -555,7 +750,29 @@ llvm::Error FrozenSpatialMemoryIndexBuilder::verify(
       if (use >= memory.rootedUses().size() ||
           memory.rootedUses()[use].logicalBinding != binding)
         return invalid("logical-memory reverse-use projection is inconsistent");
+    if (memory.bindingExposureOffsets()[binding] >
+        memory.bindingExposureOffsets()[binding + 1])
+      return invalid("logical-memory exposure offsets are not monotonic");
+    for (PnrIndex exposure : memory.bindingExposures().slice(
+             memory.bindingExposureOffsets()[binding],
+             memory.bindingExposureOffsets()[binding + 1] -
+                 memory.bindingExposureOffsets()[binding]))
+      if (exposure >= memory.exposures().size() ||
+          memory.exposures()[exposure].logicalBinding != binding)
+        return invalid(
+            "logical-memory reverse-exposure projection is inconsistent");
   }
+  for (const auto &exposure : memory.exposures())
+    if (exposure.logicalBinding >= memory.logicalBindings().size())
+      return invalid("memory exposure has a foreign logical binding");
+  for (const auto &provider : memory.exposureProviders())
+    if (provider.maxExposedBindings == 0)
+      return invalid("memory exposure provider has zero binding capacity");
+  for (const auto &option : memory.exposureOptions())
+    if (option.provider >= memory.exposureProviders().size())
+      return invalid("memory exposure option has a foreign provider");
+  if (!memory.exposures().empty() && memory.exposureOptions().empty())
+    return invalid("memory exposure option inventory is incomplete");
   for (PnrIndex placement = 0;
        placement < realizations.memoryPlacements().size(); ++placement) {
     if (memory.memoryPlacementDomainOffsets()[placement] >

@@ -2,6 +2,7 @@
 
 #include "SpatialBindingRelationModel.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
@@ -155,6 +156,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   const std::size_t logicalMemoryCount =
       problem.memory().logicalBindings().size();
   const std::size_t memoryDispatchCount = problem.memory().rootedUses().size();
+  const std::size_t memoryExposureCount = problem.memory().exposures().size();
   const std::size_t traversalCount = problem.routing().traversals().size();
   const std::size_t bindingRelationCount =
       problem.bindingRelations().relations().relations().size();
@@ -166,10 +168,11 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   memoryPlanJournalMarks_.assign(memoryPlanCount, 0);
   logicalMemoryJournalMarks_.assign(logicalMemoryCount, 0);
   memoryDispatchJournalMarks_.assign(memoryDispatchCount, 0);
+  memoryExposureJournalMarks_.assign(memoryExposureCount, 0);
   decisionDeltas_.clear();
   decisionDeltas_.reserve(computeCount + memoryCount + portCount +
                           boundaryCount + memoryPlanCount + logicalMemoryCount +
-                          memoryDispatchCount);
+                          memoryDispatchCount + memoryExposureCount);
 
   affectedComputeMarks_.assign(computeCount, 0);
   affectedMemoryMarks_.assign(memoryCount, 0);
@@ -178,6 +181,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   affectedMemoryPlanMarks_.assign(memoryPlanCount, 0);
   affectedLogicalMemoryMarks_.assign(logicalMemoryCount, 0);
   affectedMemoryDispatchMarks_.assign(memoryDispatchCount, 0);
+  affectedMemoryExposureMarks_.assign(memoryExposureCount, 0);
   affectedNetMarks_.assign(netCount, 0);
   affectedBindingRelationMarks_.assign(bindingRelationCount, 0);
   affectedComputes_.reserve(computeCount);
@@ -187,6 +191,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   affectedMemoryPlans_.reserve(memoryPlanCount);
   affectedLogicalMemories_.reserve(logicalMemoryCount);
   affectedMemoryDispatches_.reserve(memoryDispatchCount);
+  affectedMemoryExposures_.reserve(memoryExposureCount);
   affectedNets_.reserve(netCount);
   affectedBindingRelations_.reserve(bindingRelationCount);
 
@@ -216,12 +221,14 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(memoryPlanJournalMarks_) +
       retainedBytes(logicalMemoryJournalMarks_) +
       retainedBytes(memoryDispatchJournalMarks_) +
+      retainedBytes(memoryExposureJournalMarks_) +
       retainedBytes(decisionDeltas_) + retainedBytes(affectedComputeMarks_) +
       retainedBytes(affectedMemoryMarks_) + retainedBytes(affectedPortMarks_) +
       retainedBytes(affectedBoundaryMarks_) +
       retainedBytes(affectedMemoryPlanMarks_) +
       retainedBytes(affectedLogicalMemoryMarks_) +
       retainedBytes(affectedMemoryDispatchMarks_) +
+      retainedBytes(affectedMemoryExposureMarks_) +
       retainedBytes(affectedNetMarks_) +
       retainedBytes(affectedBindingRelationMarks_) +
       retainedBytes(affectedComputes_) + retainedBytes(affectedMemories_) +
@@ -229,6 +236,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(affectedMemoryPlans_) + retainedBytes(affectedNets_) +
       retainedBytes(affectedLogicalMemories_) +
       retainedBytes(affectedMemoryDispatches_) +
+      retainedBytes(affectedMemoryExposures_) +
       retainedBytes(affectedBindingRelations_) + retainedBytes(touchedRoutes_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
       retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_);
@@ -240,13 +248,14 @@ void SpatialCandidateScratch::beginTransaction() {
   advanceEpoch(decisionEpoch_,
                {&computeJournalMarks_, &memoryJournalMarks_, &portJournalMarks_,
                 &boundaryJournalMarks_, &memoryPlanJournalMarks_,
-                &logicalMemoryJournalMarks_, &memoryDispatchJournalMarks_});
+                &logicalMemoryJournalMarks_, &memoryDispatchJournalMarks_,
+                &memoryExposureJournalMarks_});
   advanceEpoch(affectedEpoch_,
                {&affectedComputeMarks_, &affectedMemoryMarks_,
                 &affectedPortMarks_, &affectedBoundaryMarks_,
                 &affectedMemoryPlanMarks_, &affectedLogicalMemoryMarks_,
-                &affectedMemoryDispatchMarks_, &affectedNetMarks_,
-                &affectedBindingRelationMarks_});
+                &affectedMemoryDispatchMarks_, &affectedMemoryExposureMarks_,
+                &affectedNetMarks_, &affectedBindingRelationMarks_});
   advanceEpoch(traversalEpoch_, {&traversalDeltaMarks_});
 }
 
@@ -263,6 +272,7 @@ void SpatialCandidateScratch::resetTransaction() {
   affectedMemoryPlans_.clear();
   affectedLogicalMemories_.clear();
   affectedMemoryDispatches_.clear();
+  affectedMemoryExposures_.clear();
   affectedNets_.clear();
   affectedBindingRelations_.clear();
   handshakeTransaction_.reset();
@@ -289,7 +299,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       initialization.logicalMemoryBindings.size() !=
           problem->memory().logicalBindings().size() ||
       initialization.memoryUseDispatches.size() !=
-          problem->memory().rootedUses().size())
+          problem->memory().rootedUses().size() ||
+      initialization.memoryExposureSelections.size() !=
+          problem->memory().exposures().size())
     return candidateError(
         "initialization dimensions do not match the frozen problem");
 
@@ -339,6 +351,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   std::vector<PnrIndex> memoryUseDispatches(
       initialization.memoryUseDispatches.begin(),
       initialization.memoryUseDispatches.end());
+  std::vector<PnrIndex> memoryExposureSelections(
+      initialization.memoryExposureSelections.begin(),
+      initialization.memoryExposureSelections.end());
 
   auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
       problem, &problem->handshake());
@@ -374,7 +389,8 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(bindingRelationChoices), std::move(portAttachments),
       std::move(graphBoundaryAttachments), std::move(memoryOperationPlans),
       std::move(logicalMemoryBindings), std::move(memoryUseDispatches),
-      std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
+      std::move(memoryExposureSelections), std::move(routeTrees),
+      std::move(*handshake), std::move(*routeResources),
       unroutedObligationCount, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
@@ -393,6 +409,8 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
        ++index)
     if (llvm::Error error = candidate->validateMemoryOperationPlan(index))
       return std::move(error);
+  if (llvm::Error error = candidate->rebuildMemoryExposureUsage())
+    return std::move(error);
   if (llvm::Error error = candidate->verifyMemorySelections())
     return std::move(error);
   for (PnrIndex index = 0; index < candidate->routeTrees_.size(); ++index)
@@ -449,6 +467,12 @@ SpatialCandidateState::logicalMemoryBinding(PnrIndex binding) const {
 PnrIndex SpatialCandidateState::memoryUseDispatch(PnrIndex use) const {
   assert(use < memoryUseDispatches_.size());
   return memoryUseDispatches_[use];
+}
+
+PnrIndex
+SpatialCandidateState::memoryExposureSelection(PnrIndex exposure) const {
+  assert(exposure < memoryExposureSelections_.size());
+  return memoryExposureSelections_[exposure];
 }
 
 llvm::Error
@@ -762,6 +786,34 @@ SpatialCandidateState::recomputeCapacityOveruse() const {
       return candidateError("capacity overuse total overflows u64");
     total += dispatch[option];
   }
+  llvm::DenseSet<std::pair<PnrIndex, PnrIndex>> providerBindings;
+  providerBindings.reserve(memoryExposureSelections_.size() * 2);
+  std::vector<std::uint64_t> providerCounts(
+      problem_->memory().exposureProviders().size(), 0);
+  for (PnrIndex exposure = 0; exposure < memoryExposureSelections_.size();
+       ++exposure) {
+    const PnrIndex option = memoryExposureSelections_[exposure];
+    if (option >= problem_->memory().exposureOptions().size())
+      return candidateError("memory exposure option is out of range");
+    const PnrIndex provider =
+        problem_->memory().exposureOptions()[option].provider;
+    if (provider >= providerCounts.size())
+      return candidateError("memory exposure provider is out of range");
+    const auto key = std::make_pair(
+        problem_->memory().exposures()[exposure].logicalBinding, provider);
+    if (providerBindings.insert(key).second)
+      ++providerCounts[provider];
+  }
+  for (PnrIndex provider = 0; provider < providerCounts.size(); ++provider) {
+    const std::uint64_t capacity =
+        problem_->memory().exposureProviders()[provider].maxExposedBindings;
+    const std::uint64_t overuse = providerCounts[provider] > capacity
+                                      ? providerCounts[provider] - capacity
+                                      : 0;
+    if (overuse > std::numeric_limits<std::uint64_t>::max() - total)
+      return candidateError("capacity overuse total overflows u64");
+    total += overuse;
+  }
   return total;
 }
 
@@ -783,6 +835,8 @@ llvm::Error SpatialCandidateState::verify() const {
       logicalMemoryBindings_.size() !=
           problem_->memory().logicalBindings().size() ||
       memoryUseDispatches_.size() != problem_->memory().rootedUses().size() ||
+      memoryExposureSelections_.size() !=
+          problem_->memory().exposures().size() ||
       routeTrees_.size() != problem_->transfers().logicalNets().size())
     return candidateError("candidate shape does not match its frozen problem");
   for (PnrIndex index = 0; index < computeBindings_.size(); ++index)
@@ -851,6 +905,8 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
           logicalMemoryBindings_.size() ||
       scratch.memoryDispatchJournalMarks_.size() !=
           memoryUseDispatches_.size() ||
+      scratch.memoryExposureJournalMarks_.size() !=
+          memoryExposureSelections_.size() ||
       scratch.routeTransactions_.size() != routeTrees_.size() ||
       scratch.traversalDeltaMarks_.size() !=
           problem_->routing().traversals().size() ||
@@ -973,6 +1029,16 @@ void SpatialMoveTransaction::recordMemoryDispatch(PnrIndex use) {
        state_->memoryUseDispatches_[use], 0});
 }
 
+void SpatialMoveTransaction::recordMemoryExposure(PnrIndex exposure) {
+  if (scratch_->memoryExposureJournalMarks_[exposure] ==
+      scratch_->decisionEpoch_)
+    return;
+  scratch_->memoryExposureJournalMarks_[exposure] = scratch_->decisionEpoch_;
+  scratch_->decisionDeltas_.push_back(
+      {SpatialCandidateScratch::DecisionKind::MemoryExposure, exposure,
+       state_->memoryExposureSelections_[exposure], 0});
+}
+
 void SpatialMoveTransaction::markCompute(PnrIndex realization) {
   if (scratch_->affectedComputeMarks_[realization] !=
       scratch_->affectedEpoch_) {
@@ -1044,6 +1110,11 @@ void SpatialMoveTransaction::markLogicalMemory(PnrIndex binding) {
                                   memory.bindingUseOffsets()[binding + 1] -
                                       memory.bindingUseOffsets()[binding]))
     markMemoryDispatch(use);
+  for (PnrIndex exposure : memory.bindingExposures().slice(
+           memory.bindingExposureOffsets()[binding],
+           memory.bindingExposureOffsets()[binding + 1] -
+               memory.bindingExposureOffsets()[binding]))
+    markMemoryExposure(exposure);
 }
 
 void SpatialMoveTransaction::markMemoryDispatch(PnrIndex use) {
@@ -1051,6 +1122,14 @@ void SpatialMoveTransaction::markMemoryDispatch(PnrIndex use) {
     return;
   scratch_->affectedMemoryDispatchMarks_[use] = scratch_->affectedEpoch_;
   scratch_->affectedMemoryDispatches_.push_back(use);
+}
+
+void SpatialMoveTransaction::markMemoryExposure(PnrIndex exposure) {
+  if (scratch_->affectedMemoryExposureMarks_[exposure] ==
+      scratch_->affectedEpoch_)
+    return;
+  scratch_->affectedMemoryExposureMarks_[exposure] = scratch_->affectedEpoch_;
+  scratch_->affectedMemoryExposures_.push_back(exposure);
 }
 
 void SpatialMoveTransaction::markNet(PnrIndex logicalNet) {
@@ -1322,6 +1401,25 @@ SpatialMoveTransaction::setMemoryUseDispatch(PnrIndex use,
   return llvm::Error::success();
 }
 
+llvm::Error
+SpatialMoveTransaction::setMemoryExposureSelection(PnrIndex exposure,
+                                                   PnrIndex exposureOption) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (exposure >= state_->memoryExposureSelections_.size() ||
+      exposureOption >= state_->problem_->memory().exposureOptions().size())
+    return candidateError("new memory exposure selection is out of range");
+  const PnrIndex old = state_->memoryExposureSelections_[exposure];
+  if (old == exposureOption)
+    return llvm::Error::success();
+
+  recordMemoryExposure(exposure);
+  markMemoryExposure(exposure);
+  state_->changeMemoryExposureUsage(exposure, old, exposureOption);
+  state_->memoryExposureSelections_[exposure] = exposureOption;
+  return llvm::Error::success();
+}
+
 llvm::Expected<RouteTreeTransaction *>
 SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
   if (llvm::Error error = ensureCollecting())
@@ -1443,6 +1541,9 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
   for (PnrIndex use : scratch_->affectedMemoryDispatches_)
     if (llvm::Error error = state_->validateMemoryUseDispatch(use))
       return error;
+  for (PnrIndex exposure : scratch_->affectedMemoryExposures_)
+    if (llvm::Error error = state_->validateMemoryExposureSelection(exposure))
+      return error;
   for (PnrIndex relation : scratch_->affectedBindingRelations_)
     if (llvm::Error error = state_->verifyBindingRelation(relation))
       return error;
@@ -1526,7 +1627,6 @@ void SpatialMoveTransaction::rollback() noexcept {
       scratch_->routeTransactions_[logicalNet]->rollback();
   if (scratch_->handshakeTransaction_)
     scratch_->handshakeTransaction_->rollback();
-  state_->capacityOveruse_ = initialCapacityOveruse_;
 
   for (const SpatialCandidateScratch::DecisionDelta &delta :
        llvm::reverse(scratch_->decisionDeltas_)) {
@@ -1558,8 +1658,15 @@ void SpatialMoveTransaction::rollback() noexcept {
     case SpatialCandidateScratch::DecisionKind::MemoryUseDispatch:
       state_->memoryUseDispatches_[delta.index] = delta.oldValue0;
       break;
+    case SpatialCandidateScratch::DecisionKind::MemoryExposure: {
+      const PnrIndex current = state_->memoryExposureSelections_[delta.index];
+      state_->changeMemoryExposureUsage(delta.index, current, delta.oldValue0);
+      state_->memoryExposureSelections_[delta.index] = delta.oldValue0;
+      break;
+    }
     }
   }
+  state_->capacityOveruse_ = initialCapacityOveruse_;
   finish();
 }
 
