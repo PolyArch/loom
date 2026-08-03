@@ -3,6 +3,7 @@
 
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ResolvedConfig.h"
 #include "PnR/SpatialPnrProblem.h"
 
 namespace loom::test {
@@ -12,6 +13,8 @@ void exerciseHandshakeCandidateRefcounts(
 
 adg::FinalizedFabricDesign
 buildTemporalCapacityFabric(const ArtifactStore &store);
+
+ResolvedConfig buildSpatialPnrTestResolvedConfig();
 
 void exerciseCapacityOveruseCandidate(
     const pnr::FrozenSpatialPnrProblemHandle &problem);

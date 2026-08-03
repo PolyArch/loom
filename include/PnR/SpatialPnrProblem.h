@@ -9,6 +9,7 @@
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/SpatialObjective.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -909,6 +910,9 @@ public:
     return constraintSetIdentity_;
   }
   const ResolvedPnrConfigView &config() const { return config_; }
+  const SpatialObjectiveProgram &objectiveProgram() const {
+    return objectiveProgram_;
+  }
   llvm::ArrayRef<DeterministicWorkBudgetEntry> workBudget() const {
     return workBudget_;
   }
@@ -932,7 +936,7 @@ private:
   FrozenSpatialPnrProblem(
       ArtifactIdentity dataflowIdentity, ArtifactIdentity techMappingIdentity,
       ArtifactIdentity fabricIdentity, ArtifactIdentity constraintSetIdentity,
-      ResolvedPnrConfigView config,
+      ResolvedPnrConfigView config, SpatialObjectiveProgram objectiveProgram,
       std::vector<DeterministicWorkBudgetEntry> workBudget,
       FrozenConstraintIndex constraints,
       FrozenSpatialRealizationIndex realizations,
@@ -947,7 +951,9 @@ private:
         techMappingIdentity_(std::move(techMappingIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
         constraintSetIdentity_(std::move(constraintSetIdentity)),
-        config_(std::move(config)), workBudget_(std::move(workBudget)),
+        config_(std::move(config)),
+        objectiveProgram_(std::move(objectiveProgram)),
+        workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
         realizations_(std::move(realizations)), memory_(std::move(memory)),
         transfers_(std::move(transfers)), ports_(std::move(ports)),
@@ -960,6 +966,7 @@ private:
   ArtifactIdentity fabricIdentity_;
   ArtifactIdentity constraintSetIdentity_;
   ResolvedPnrConfigView config_;
+  SpatialObjectiveProgram objectiveProgram_;
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;

@@ -43,6 +43,12 @@ const MappingObjectiveRegistryDescriptor &mappingObjectiveRegistryDescriptor();
 llvm::ArrayRef<MappingViolationDescriptor> mappingViolationDescriptors();
 llvm::ArrayRef<MappingMeasureDescriptor> mappingMeasureDescriptors();
 
+/// Returns whether Spatial CandidateState has the complete unique owner for
+/// this violation projection. Search preflight uses this before allocating a
+/// candidate; unavailable dimensions cannot be replaced by a provisional
+/// value.
+bool spatialMappingViolationAvailable(ResolvedPnrViolationKind kind);
+
 /// Projects one exact Mapping-owned violation magnitude. A kind without a
 /// complete CandidateState owner returns ObjectiveUnavailable rather than a
 /// provisional value.

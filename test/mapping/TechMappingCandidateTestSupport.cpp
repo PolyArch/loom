@@ -1,6 +1,7 @@
 #include "TechMappingCandidateTestSupport.h"
 
 #include "ADG/FuLibrary.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -9,12 +10,14 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialObjective.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,7 +42,45 @@ void requireSuccess(llvm::Error error) {
     fail(llvm::toString(std::move(error)));
 }
 
+loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
+  loom::ResolvedObjectiveCatalogs catalogs;
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  catalogs.dimensions = {
+      {loom::ResolvedObjectiveSourceKind::MappingViolation,
+       static_cast<std::uint32_t>(
+           loom::ResolvedPnrViolationKind::UnroutedObligation),
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+      {loom::ResolvedObjectiveSourceKind::MappingViolation,
+       static_cast<std::uint32_t>(
+           loom::ResolvedPnrViolationKind::CapacityOveruse),
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+      {loom::ResolvedObjectiveSourceKind::MappingMeasure,
+       static_cast<std::uint32_t>(
+           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim),
+       loom::ResolvedObjectiveDirection::Minimize, 0, 1, 0, maximum},
+  };
+  catalogs.weightedLevels = {
+      {{{0, 1}, {1, 1}, {2, 1}}},
+  };
+  catalogs.totalOrderings = {{{0}}};
+  return catalogs;
+}
+
 } // namespace
+
+loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
+  ResolvedConfig config = defaultResolvedConfig();
+  config.dse.objectiveCatalogs = availableSpatialObjectiveCatalogs();
+  for (ResolvedPnrPolicyConfig *policy :
+       {&config.dse.spatialPnr, &config.dse.systemPnr}) {
+    policy->temporaryViolations.admitted = {
+        ResolvedPnrViolationKind::UnroutedObligation,
+        ResolvedPnrViolationKind::CapacityOveruse,
+    };
+    policy->objectiveSelection = {0, 0, {}};
+  }
+  return config;
+}
 
 loom::adg::FinalizedFabricDesign
 loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
@@ -454,4 +495,11 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       fail("candidate initializer hid the explicit global routing action");
   requireSuccess(first->verify());
   requireSuccess(second->verify());
+
+  const auto vector = take(problem->objectiveProgram().evaluate(*first));
+  if (vector.codes() !=
+      llvm::ArrayRef<std::uint64_t>({first->unroutedObligationCount(),
+                                     first->capacityOveruse(),
+                                     first->totalSelectedTraversalClaim()}))
+    fail("Spatial objective adapter changed a Mapping-owned value");
 }

@@ -46,9 +46,36 @@ loom::pnr::mappingMeasureDescriptors() {
   return measures;
 }
 
+bool loom::pnr::spatialMappingViolationAvailable(
+    ResolvedPnrViolationKind kind) {
+  switch (kind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+  case ResolvedPnrViolationKind::CapacityOveruse:
+    return true;
+  case ResolvedPnrViolationKind::ResourceTimeOverbooking:
+  case ResolvedPnrViolationKind::BufferOveruse:
+  case ResolvedPnrViolationKind::TagUnassigned:
+  case ResolvedPnrViolationKind::TagConflict:
+  case ResolvedPnrViolationKind::HardProgressViolation:
+  case ResolvedPnrViolationKind::HardServiceContractShortfall:
+    return false;
+  }
+  llvm_unreachable("unknown Mapping violation kind");
+}
+
 llvm::Expected<std::uint64_t>
 loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
                                         ResolvedPnrViolationKind kind) {
+  if (!spatialMappingViolationAvailable(kind)) {
+    const auto ordinal = static_cast<std::uint32_t>(kind);
+    if (ordinal >= violations.size())
+      llvm_unreachable("unknown Mapping violation kind");
+    return llvm::createStringError(
+        std::make_error_code(std::errc::operation_not_supported),
+        "objective_unavailable: required Spatial violation owner '%s' is "
+        "absent",
+        violations[ordinal].spelling.str().c_str());
+  }
   switch (kind) {
   case ResolvedPnrViolationKind::UnroutedObligation:
     return candidate.unroutedObligationCount();
@@ -60,10 +87,7 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::HardProgressViolation:
   case ResolvedPnrViolationKind::HardServiceContractShortfall:
-    return llvm::createStringError(
-        std::make_error_code(std::errc::operation_not_supported),
-        "objective_unavailable: required Spatial violation projection is "
-        "absent");
+    llvm_unreachable("unavailable Spatial violation passed preflight");
   }
   llvm_unreachable("unknown Mapping violation kind");
 }

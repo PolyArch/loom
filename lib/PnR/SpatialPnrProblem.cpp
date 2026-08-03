@@ -298,6 +298,11 @@ public:
                                            config, constraintSet))
       return std::move(error);
 
+    auto objectiveProgram =
+        SpatialObjectiveProgram::get(config.selectedObjectiveCatalogs());
+    if (!objectiveProgram)
+      return objectiveProgram.takeError();
+
     auto constraints = detail::buildFrozenConstraintIndex(constraintSet);
     if (!constraints)
       return constraints.takeError();
@@ -347,10 +352,11 @@ public:
 
     return FrozenSpatialPnrProblemHandle(new FrozenSpatialPnrProblem(
         dataflow.identity(), techMapping.identity(), fabric.identity(),
-        constraintSet.identity(), config, std::move(workBudget),
-        std::move(*constraints), std::move(*realizations), std::move(*memory),
-        std::move(*transfers), std::move(*ports), std::move(*resources),
-        std::move(*capacity), std::move(*routing), std::move(*handshake),
+        constraintSet.identity(), config, std::move(*objectiveProgram),
+        std::move(workBudget), std::move(*constraints),
+        std::move(*realizations), std::move(*memory), std::move(*transfers),
+        std::move(*ports), std::move(*resources), std::move(*capacity),
+        std::move(*routing), std::move(*handshake),
         std::move(*bindingRelations), cacheKey));
   }
 

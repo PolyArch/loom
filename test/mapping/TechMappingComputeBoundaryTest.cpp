@@ -96,7 +96,7 @@ void computeBoundaryClosure() {
       fabricRoot.view(), store));
   const loom::pnr::ResolvedPnrConfigView spatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
-          loom::defaultResolvedConfig()));
+          loom::test::buildSpatialPnrTestResolvedConfig()));
   auto frozen = take(loom::pnr::freezeSpatialPnrProblem(
       dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
       constraints.view()));

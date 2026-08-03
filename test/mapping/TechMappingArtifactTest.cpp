@@ -691,9 +691,25 @@ void artifactRoundTripAndReferenceValidation() {
           finalizedConstraints.canonicalBytes().bytes()))
     fail("strict Spatial MappingConstraintSet import changed the artifact");
 
-  const loom::pnr::ResolvedPnrConfigView spatialConfig =
+  const loom::pnr::ResolvedPnrConfigView defaultSpatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(
           loom::defaultResolvedConfig()));
+  auto unavailableObjective = loom::pnr::freezeSpatialPnrProblem(
+      dataflowView, finalized.view(), fabricRoot.view(), defaultSpatialConfig,
+      importedConstraints.view());
+  if (unavailableObjective)
+    fail("Spatial freeze accepted an objective with absent source owners");
+  const std::string unavailableObjectiveMessage =
+      llvm::toString(unavailableObjective.takeError());
+  if (!llvm::StringRef(unavailableObjectiveMessage)
+           .contains("objective_unavailable") ||
+      !llvm::StringRef(unavailableObjectiveMessage)
+           .contains("ResourceTimeOverbooking"))
+    fail("Spatial freeze returned the wrong unavailable objective source");
+
+  const loom::pnr::ResolvedPnrConfigView spatialConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(
+          loom::test::buildSpatialPnrTestResolvedConfig()));
   loom::pnr::FrozenSpatialPnrProblemHandle frozen =
       take(loom::pnr::freezeSpatialPnrProblem(dataflowView, finalized.view(),
                                               fabricRoot.view(), spatialConfig,
@@ -1432,7 +1448,8 @@ void artifactRoundTripAndReferenceValidation() {
       *frozen, dataflowView, finalized.view(), fabricRoot.view(), spatialConfig,
       importedConstraints.view()));
 
-  loom::ResolvedConfig changedResolved = loom::defaultResolvedConfig();
+  loom::ResolvedConfig changedResolved =
+      loom::test::buildSpatialPnrTestResolvedConfig();
   ++changedResolved.dse.spatialPnr.search.routing.endpointExpansionLimit;
   const loom::pnr::ResolvedPnrConfigView changedConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(changedResolved));

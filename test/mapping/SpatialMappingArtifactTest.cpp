@@ -18,8 +18,8 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/PnrConfig.h"
-#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialCandidateInitializer.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
@@ -509,7 +509,7 @@ void completeCandidateRoundTrip(bool temporal) {
   const auto constraints =
       buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
   const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      loom::defaultResolvedConfig()));
+      loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
   loom::pnr::SpatialCandidateStateHandle candidate;
@@ -627,7 +627,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   const auto constraints =
       buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
   const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      loom::defaultResolvedConfig()));
+      loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
   auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
