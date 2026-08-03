@@ -1,5 +1,6 @@
 #include "PnR/SpatialRouteCostState.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -74,6 +75,7 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate,
   state.affectedCapacities_.reserve(capacityCount);
 
   state.currentClaimOveruseCosts_.assign(state.routeClaimCount_, 0);
+  state.selectedLogicalNetClaimBits_.assign(state.routeClaimWordCount_, 0);
   state.claimUpdateEpochs_.assign(state.routeClaimCount_, 0);
   state.stagedClaimOveruseCosts_.assign(state.routeClaimCount_, 0);
   state.affectedClaims_.reserve(state.routeClaimCount_);
@@ -181,8 +183,17 @@ llvm::Error SpatialRouteCostState::stageLogicalNet(PnrIndex logicalNet,
                                                    bool restore) {
   if (logicalNet >= logicalNetCount_)
     return routeCostStateError("selected logical net is out of range");
-  for (auto [wordOrdinal, initialWord] :
-       llvm::enumerate(logicalNetClaimBits(logicalNet))) {
+  return stageClaimBits(logicalNetClaimBits(logicalNet), restore);
+}
+
+llvm::Error
+SpatialRouteCostState::stageClaimBits(llvm::ArrayRef<std::uint64_t> claimBits,
+                                      bool restore) {
+  if (claimBits.empty())
+    return llvm::Error::success();
+  if (claimBits.size() != routeClaimWordCount_)
+    return routeCostStateError("selected claim bitset has the wrong width");
+  for (auto [wordOrdinal, initialWord] : llvm::enumerate(claimBits)) {
     std::uint64_t word = initialWord;
     while (word != 0) {
       const unsigned bit = llvm::countr_zero(word);
@@ -197,7 +208,7 @@ llvm::Error SpatialRouteCostState::stageLogicalNet(PnrIndex logicalNet,
   return llvm::Error::success();
 }
 
-llvm::Error SpatialRouteCostState::collectAndPriceAffectedClaims() {
+llvm::Error SpatialRouteCostState::finishUpdate() {
   const FrozenSpatialRoutingGraph &routing = problem_->routing();
   for (PnrIndex capacity : affectedCapacities_) {
     const auto claims = routing.capacityRouteClaims().slice(
@@ -233,6 +244,25 @@ llvm::Error SpatialRouteCostState::collectAndPriceAffectedClaims() {
         affectedTraversals_.push_back(traversal);
       }
     }
+  }
+  for (PnrIndex traversal : affectedTraversals_) {
+    auto cost = computeTraversalCost(traversal, true, true);
+    if (!cost)
+      return cost.takeError();
+    stagedTraversalCosts_[traversal] = *cost;
+  }
+
+  for (PnrIndex capacity : affectedCapacities_)
+    workingCapacityUsageRaw_[capacity] = stagedCapacityUsageRaw_[capacity];
+  for (PnrIndex claim : affectedClaims_)
+    currentClaimOveruseCosts_[claim] = stagedClaimOveruseCosts_[claim];
+  for (PnrIndex traversal : affectedTraversals_) {
+    currentTraversalCosts_[traversal] = stagedTraversalCosts_[traversal];
+    for (PnrIndex arc : problem_->routing().traversalArcs().slice(
+             problem_->routing().traversalArcOffsets()[traversal],
+             problem_->routing().traversalArcOffsets()[traversal + 1] -
+                 problem_->routing().traversalArcOffsets()[traversal]))
+      currentArcCosts_[arc] = stagedTraversalCosts_[traversal];
   }
   return llvm::Error::success();
 }
@@ -291,35 +321,53 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
     return llvm::Error::success();
 
   beginUpdate();
-  if (selectedLogicalNet_)
+  if (selectedLogicalNet_) {
+    if (llvm::Error error = stageClaimBits(selectedLogicalNetClaimBits_, false))
+      return error;
     if (llvm::Error error = stageLogicalNet(*selectedLogicalNet_, true))
       return error;
+  }
   if (logicalNet)
     if (llvm::Error error = stageLogicalNet(*logicalNet, false))
       return error;
-
-  if (llvm::Error error = collectAndPriceAffectedClaims())
+  if (llvm::Error error = finishUpdate())
     return error;
-  for (PnrIndex traversal : affectedTraversals_) {
-    auto cost = computeTraversalCost(traversal, true, true);
-    if (!cost)
-      return cost.takeError();
-    stagedTraversalCosts_[traversal] = *cost;
-  }
 
-  for (PnrIndex capacity : affectedCapacities_)
-    workingCapacityUsageRaw_[capacity] = stagedCapacityUsageRaw_[capacity];
-  for (PnrIndex claim : affectedClaims_)
-    currentClaimOveruseCosts_[claim] = stagedClaimOveruseCosts_[claim];
-  for (PnrIndex traversal : affectedTraversals_) {
-    currentTraversalCosts_[traversal] = stagedTraversalCosts_[traversal];
-    for (PnrIndex arc : problem_->routing().traversalArcs().slice(
-             problem_->routing().traversalArcOffsets()[traversal],
-             problem_->routing().traversalArcOffsets()[traversal + 1] -
-                 problem_->routing().traversalArcOffsets()[traversal]))
-      currentArcCosts_[arc] = stagedTraversalCosts_[traversal];
-  }
+  std::fill(selectedLogicalNetClaimBits_.begin(),
+            selectedLogicalNetClaimBits_.end(), 0);
   selectedLogicalNet_ = logicalNet;
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialRouteCostState::updateSelectedLogicalNetClaims(
+    llvm::ArrayRef<std::uint64_t> claimBits) {
+  if (!selectedLogicalNet_)
+    return routeCostStateError(
+        "prospective claims require one selected logical net");
+  if (!claimBits.empty() && claimBits.size() != routeClaimWordCount_)
+    return routeCostStateError("selected claim bitset has the wrong width");
+  const bool unchanged =
+      claimBits.empty()
+          ? llvm::all_of(selectedLogicalNetClaimBits_,
+                         [](std::uint64_t word) { return word == 0; })
+          : llvm::equal(claimBits, selectedLogicalNetClaimBits_);
+  if (unchanged)
+    return llvm::Error::success();
+
+  beginUpdate();
+  if (llvm::Error error = stageClaimBits(selectedLogicalNetClaimBits_, false))
+    return error;
+  if (llvm::Error error = stageClaimBits(claimBits, true))
+    return error;
+  if (llvm::Error error = finishUpdate())
+    return error;
+
+  if (claimBits.empty()) {
+    std::fill(selectedLogicalNetClaimBits_.begin(),
+              selectedLogicalNetClaimBits_.end(), 0);
+  } else {
+    llvm::copy(claimBits, selectedLogicalNetClaimBits_.begin());
+  }
   return llvm::Error::success();
 }
 
@@ -330,6 +378,7 @@ std::size_t SpatialRouteCostState::retainedStorageBytes() const {
          retainedBytes(lowerBoundTraversalCosts_) +
          retainedBytes(currentTraversalCosts_) +
          retainedBytes(lowerBoundArcCosts_) + retainedBytes(currentArcCosts_) +
+         retainedBytes(selectedLogicalNetClaimBits_) +
          retainedBytes(capacityUpdateEpochs_) +
          retainedBytes(claimUpdateEpochs_) +
          retainedBytes(traversalUpdateEpochs_) +

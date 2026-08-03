@@ -9,6 +9,7 @@ add_mlir_library(LoomPnR
   RoutingNegotiation.cpp
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
+  SpatialNetRouter.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp

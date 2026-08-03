@@ -28,6 +28,8 @@ public:
          const ResolvedPathFinderPolicy &policy);
 
   llvm::Error selectLogicalNet(std::optional<PnrIndex> logicalNet);
+  llvm::Error
+  updateSelectedLogicalNetClaims(llvm::ArrayRef<std::uint64_t> claimBits);
 
   std::optional<PnrIndex> selectedLogicalNet() const {
     return selectedLogicalNet_;
@@ -44,8 +46,10 @@ private:
 
   void beginUpdate();
   llvm::Error stageLogicalNet(PnrIndex logicalNet, bool restore);
+  llvm::Error stageClaimBits(llvm::ArrayRef<std::uint64_t> claimBits,
+                             bool restore);
   llvm::Error stageClaim(PnrIndex claim, bool restore);
-  llvm::Error collectAndPriceAffectedClaims();
+  llvm::Error finishUpdate();
   llvm::Expected<RouteCost> computeTraversalCost(PnrIndex traversal,
                                                  bool dynamicCost,
                                                  bool stagedClaims) const;
@@ -70,6 +74,7 @@ private:
   std::vector<RouteCost> currentTraversalCosts_;
   std::vector<RouteCost> lowerBoundArcCosts_;
   std::vector<RouteCost> currentArcCosts_;
+  std::vector<std::uint64_t> selectedLogicalNetClaimBits_;
 
   std::vector<std::uint64_t> capacityUpdateEpochs_;
   std::vector<std::uint64_t> claimUpdateEpochs_;

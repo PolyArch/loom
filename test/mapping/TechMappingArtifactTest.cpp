@@ -17,6 +17,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialNetRouter.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
 
@@ -144,11 +145,11 @@ dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @load_only(
-      %start: none, %index: index, %memory: memref<4xi32>) -> i32
+      %start: none, %index: index, %memory: memref<4xi32>) -> (i32, i32)
       attributes {input_segments = array<i32: 1, 0, 1>,
-                  result_segments = array<i32: 1, 0, 0>} {
+                  result_segments = array<i32: 2, 0, 0>} {
     %value, %done = dataflow.load %memory[%index] %start : memref<4xi32>
-    dataflow.graph.return values(%value : i32) streams() memories()
+    dataflow.graph.return values(%value, %value : i32, i32) streams() memories()
         complete(%done : none)
   }
 }
@@ -472,6 +473,10 @@ std::string mappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
   children += boundary(consumer(dataflow::CanonicalGraphConsumerEndpointRef{
                            dataflow::GraphEgressTokenRef{
                                dataflow::GraphValueOutputTokenRef{graph, 0}}}),
+                       dataflow::semantics::ServiceValueRole::Data);
+  children += boundary(consumer(dataflow::CanonicalGraphConsumerEndpointRef{
+                           dataflow::GraphEgressTokenRef{
+                               dataflow::GraphValueOutputTokenRef{graph, 1}}}),
                        dataflow::semantics::ServiceValueRole::Data);
   children +=
       boundary(consumer(dataflow::CanonicalGraphConsumerEndpointRef{
@@ -801,6 +806,13 @@ void artifactRoundTripAndReferenceValidation() {
   }
   std::vector<loom::pnr::PnrIndex> boundaryAttachments;
   boundaryAttachments.reserve(frozen->ports().graphBoundaries().size());
+  std::optional<loom::pnr::PnrIndex> multicastNet;
+  for (auto [netOrdinal, net] :
+       llvm::enumerate(frozen->transfers().logicalNets()))
+    if (net.sinkCount > 1)
+      multicastNet = static_cast<loom::pnr::PnrIndex>(netOrdinal);
+  if (!multicastNet)
+    fail("Spatial candidate fixture has no multicast net");
   for (const auto &boundary : frozen->ports().graphBoundaries())
     boundaryAttachments.push_back(boundary.attachmentOptionOffset);
 
@@ -838,12 +850,10 @@ void artifactRoundTripAndReferenceValidation() {
   std::optional<loom::pnr::PnrIndex> routedNet;
   for (auto [netOrdinal, net] :
        llvm::enumerate(frozen->transfers().logicalNets())) {
-    if (net.sinkCount == 1 &&
+    if (!routedNet && net.sinkCount == 1 &&
         spatialCandidate->logicalNetSourceEndpoint(netOrdinal) !=
-            spatialCandidate->logicalNetSinkEndpoint(netOrdinal, 0)) {
+            spatialCandidate->logicalNetSinkEndpoint(netOrdinal, 0))
       routedNet = static_cast<loom::pnr::PnrIndex>(netOrdinal);
-      break;
-    }
   }
   if (!routedNet)
     fail("Spatial candidate fixture has no nontrivial single-sink net");
@@ -1017,6 +1027,16 @@ void artifactRoundTripAndReferenceValidation() {
     observedRipUpCostChange |= baseline != current;
   if (!observedRipUpCostChange)
     fail("PathFinder route-cost overlay did not reprice the rip-up closure");
+  requireSuccess(
+      routeCostState.updateSelectedLogicalNetClaims(activeClaimBits));
+  if (!llvm::equal(routeCostState.currentArcCosts(), baselineCosts))
+    fail("PathFinder route-cost overlay did not price a prospective install");
+  requireSuccess(routeCostState.updateSelectedLogicalNetClaims({}));
+  for (loom::pnr::PnrIndex capacity = 0; capacity < baselineUsage.size();
+       ++capacity)
+    if (routeCostState.workingCapacityUsageRaw(capacity) !=
+        baselineUsage[capacity] - excludedUsage[capacity])
+      fail("PathFinder prospective rip-up did not restore excluded occupancy");
   requireSuccess(routeCostState.selectLogicalNet(std::nullopt));
   if (routeCostState.selectedLogicalNet() ||
       !llvm::equal(routeCostState.currentArcCosts(), baselineCosts) ||
@@ -1027,6 +1047,73 @@ void artifactRoundTripAndReferenceValidation() {
     if (routeCostState.workingCapacityUsageRaw(capacity) !=
         baselineUsage[capacity])
       fail("PathFinder route-cost overlay did not restore raw occupancy");
+
+  auto routedCandidate = take(loom::pnr::SpatialCandidateState::create(
+      frozen, {computeBindings, memoryBindings, portAttachments,
+               boundaryAttachments, memoryPlans}));
+  loom::pnr::SpatialCandidateScratch routedCandidateScratch;
+  requireSuccess(routedCandidateScratch.prepare(*frozen));
+  auto routedCostState = take(
+      loom::pnr::SpatialRouteCostState::create(*routedCandidate, *pathFinder));
+  requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
+  loom::pnr::SpatialNetRouterScratch netRouter;
+  requireSuccess(netRouter.prepare(*frozen));
+  auto wholeNetMove = take(routedCandidate->beginMove(routedCandidateScratch));
+  const loom::pnr::RouteCost wholeNetCost = take(netRouter.routeWholeNet(
+      wholeNetMove, *routedCandidate, routedCostState, *multicastNet,
+      spatialConfig.policy().search.routing.endpointExpansionLimit));
+  if (wholeNetCost == loom::pnr::routeCostInfinity)
+    fail("whole-net routing returned the infinity sentinel");
+  if (!take(wholeNetMove.close()))
+    fail("whole-net routing closed a combinational handshake cycle");
+  requireSuccess(wholeNetMove.commit());
+  requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
+  if (!routedCandidate->routeTree(*multicastNet).isRouted())
+    fail("whole-net routing did not commit a complete RouteTree");
+  requireSuccess(routedCandidate->verify());
+  const std::size_t warmedNetRouterBytes = netRouter.retainedStorageBytes();
+  requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
+  auto repeatedWholeNet =
+      take(routedCandidate->beginMove(routedCandidateScratch));
+  (void)take(netRouter.routeWholeNet(
+      repeatedWholeNet, *routedCandidate, routedCostState, *multicastNet,
+      spatialConfig.policy().search.routing.endpointExpansionLimit));
+  repeatedWholeNet.rollback();
+  requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
+  if (netRouter.retainedStorageBytes() != warmedNetRouterBytes)
+    fail("warmed whole-net routing grew worker-local scratch storage");
+  requireSuccess(routedCandidate->verify());
+
+  const std::uint64_t routedObjective =
+      routedCandidate->totalSelectedTraversalClaim();
+  const std::vector<loom::pnr::RouteCost> routedBaselineCosts(
+      routedCostState.currentArcCosts().begin(),
+      routedCostState.currentArcCosts().end());
+  requireSuccess(routedCostState.selectLogicalNet(*multicastNet));
+  auto limitedWholeNet =
+      take(routedCandidate->beginMove(routedCandidateScratch));
+  auto limitedResult = netRouter.routeWholeNet(
+      limitedWholeNet, *routedCandidate, routedCostState, *multicastNet, 1);
+  bool observedWorkLimit = false;
+  if (limitedResult) {
+    fail("whole-net routing ignored its endpoint work limit");
+  } else {
+    llvm::handleAllErrors(
+        limitedResult.takeError(),
+        [&](const loom::pnr::EndpointRouteSearchFailure &error) {
+          observedWorkLimit =
+              error.kind() ==
+              loom::pnr::EndpointRouteSearchFailureKind::WorkLimit;
+        });
+  }
+  if (!observedWorkLimit)
+    fail("whole-net routing returned the wrong bounded failure");
+  limitedWholeNet.rollback();
+  requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
+  if (routedCandidate->totalSelectedTraversalClaim() != routedObjective ||
+      !llvm::equal(routedCostState.currentArcCosts(), routedBaselineCosts))
+    fail("failed whole-net routing did not restore candidate and costs");
+  requireSuccess(routedCandidate->verify());
 
   auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));
   requireSuccess(rollbackMove.ripUpWholeRoute(*routedNet));
@@ -1116,10 +1203,10 @@ void artifactRoundTripAndReferenceValidation() {
 
   if (frozen->transfers().logicalNets().size() !=
           finalized.view().residualLogicalNets().size() ||
-      frozen->transfers().logicalNetSinks().size() != 4)
+      frozen->transfers().logicalNetSinks().size() != 5)
     fail("aggregate Spatial freeze omitted residual transfer obligations");
   if (frozen->ports().portDemands().size() != 4 ||
-      frozen->ports().graphBoundaries().size() != 4)
+      frozen->ports().graphBoundaries().size() != 5)
     fail("aggregate Spatial freeze omitted memory or graph-boundary demands");
   if (frozen->transfers().logicalNetSourceBindings().size() !=
           frozen->transfers().logicalNets().size() ||
