@@ -1,0 +1,1112 @@
+#include "Mapping/Artifact/MappingArtifact.h"
+
+#include "Common/ArtifactFinalizer.h"
+#include "Common/IndexWidth.h"
+#include "Common/PointerLayout.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/IR/ImplementationFamily.h"
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricHandshake.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/IR/MappingDialect.h"
+#include "MappingAssemblyInternal.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
+
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Error.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+using namespace mlir;
+
+namespace loom::mapping {
+namespace {
+
+llvm::Error invalid(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "mapping_artifact_invalid: " + message);
+}
+
+std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
+  std::vector<std::uint8_t> result;
+  result.reserve(record.size());
+  for (std::int8_t byte : record.asArrayRef())
+    result.push_back(static_cast<std::uint8_t>(byte));
+  return result;
+}
+
+std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
+llvm::Expected<ArtifactIdentity>
+decodeIdentity(::mapping::ArtifactIdentityAttr attribute) {
+  return ArtifactIdentity::fromBytes(unsignedBytes(attribute.getRecord()));
+}
+
+template <typename Ref, typename Attr>
+llvm::Expected<Ref> decodeDataflow(Attr attribute,
+                                   const ArtifactIdentity &owner) {
+  return ::dataflow::decodeDataflowReference<Ref>(
+      unsignedBytes(attribute.getRecord()), owner);
+}
+
+template <typename Ref, typename Attr>
+llvm::Expected<Ref> decodeFabric(Attr attribute) {
+  return ::loom::fabric::decodeFabricRef<Ref>(
+      unsignedBytes(attribute.getRecord()));
+}
+
+struct ParsedSpatialRoot final {
+  std::unique_ptr<MLIRContext> context;
+  OwningOpRef<ModuleOp> module;
+  ::mapping::SpatialOp root;
+};
+
+llvm::Expected<ParsedSpatialRoot>
+parseSpatialRoot(const CanonicalSemanticBytes &canonicalBytes) {
+  std::string wrapped = "module {\n";
+  wrapped.append(reinterpret_cast<const char *>(canonicalBytes.bytes().data()),
+                 canonicalBytes.bytes().size());
+  wrapped += "}\n";
+
+  DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  auto context =
+      std::make_unique<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
+  auto module = parseSourceString<ModuleOp>(wrapped, context.get());
+  if (!module)
+    return invalid("canonical SpatialMapping payload cannot be parsed");
+
+  ::mapping::SpatialOp root;
+  unsigned rootCount = 0;
+  for (Operation &operation : module->getBody()->without_terminator()) {
+    auto candidate = dyn_cast<::mapping::SpatialOp>(operation);
+    if (!candidate)
+      return invalid("mapping artifact contains a non-SpatialMapping root");
+    root = candidate;
+    ++rootCount;
+  }
+  if (rootCount != 1)
+    return invalid(
+        "mapping artifact must contain exactly one SpatialMapping root");
+  if (failed(verify(root)))
+    return invalid("SpatialMapping root is structurally invalid");
+  return ParsedSpatialRoot{std::move(context), std::move(module), root};
+}
+
+llvm::Expected<std::vector<SpatialPhysicalRefinementView>>
+importRefinements(ArrayAttr refinements,
+                  const ::loom::fabric::FabricArtifactView &fabric) {
+  std::vector<SpatialPhysicalRefinementView> result;
+  result.reserve(refinements.size());
+  for (Attribute attribute : refinements) {
+    auto assignment =
+        cast<::mapping::PhysicalRefinementAssignmentAttr>(attribute);
+    auto domain =
+        decodeFabric<::loom::fabric::FabricPhysicalRefinementDomainRef>(
+            assignment.getDomain());
+    if (!domain)
+      return domain.takeError();
+    if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *domain))
+      return std::move(error);
+    return invalid(
+        "nonempty physical refinement requires its owner value codec");
+  }
+  return result;
+}
+
+llvm::Expected<::dataflow::GraphRef>
+graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+        const ::dataflow::CanonicalGraphProducerEndpointRef &endpoint) {
+  if (const auto *ingress =
+          std::get_if<::dataflow::GraphIngressTokenRef>(&endpoint))
+    return std::visit([](const auto &token) { return token.graph; }, *ingress);
+  auto actor = dataflow.resolve(
+      std::get<::dataflow::ActorTokenResultRef>(endpoint).actor);
+  if (!actor)
+    return actor.takeError();
+  return actor->graph;
+}
+
+llvm::Expected<::dataflow::GraphRef>
+graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+        const ::dataflow::CanonicalGraphConsumerEndpointRef &endpoint) {
+  if (const auto *egress =
+          std::get_if<::dataflow::GraphEgressTokenRef>(&endpoint))
+    return std::visit([](const auto &token) { return token.graph; }, *egress);
+  auto actor = dataflow.resolve(
+      std::get<::dataflow::ActorTokenOperandRef>(endpoint).actor);
+  if (!actor)
+    return actor.takeError();
+  return actor->graph;
+}
+
+template <typename Endpoint>
+llvm::Expected<std::uint32_t>
+semanticPayloadWidth(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                     const Endpoint &endpoint) {
+  auto type = dataflow.tokenType(endpoint);
+  if (!type)
+    return type.takeError();
+  auto graph = graphOf(dataflow, endpoint);
+  if (!graph)
+    return graph.takeError();
+  auto graphView = dataflow.resolve(*graph);
+  if (!graphView)
+    return graphView.takeError();
+  auto indexWidth = ::loom::getIndexBitWidth(graphView->op);
+  if (!indexWidth)
+    return indexWidth.takeError();
+  std::optional<::loom::PointerLayout> pointerLayout;
+  if (auto pointer = dyn_cast<mlir::LLVM::LLVMPointerType>(*type)) {
+    auto resolved = dataflow.pointerLayout(pointer.getAddressSpace());
+    if (!resolved)
+      return resolved.takeError();
+    pointerLayout = *resolved;
+  }
+  std::string message;
+  auto width = ::fabric::getSemanticPayloadWidth(
+      *type, *indexWidth, pointerLayout ? &*pointerLayout : nullptr, message);
+  if (failed(width))
+    return invalid("cannot resolve logical-net payload width: " + message);
+  return static_cast<std::uint32_t>(*width);
+}
+
+const ::loom::fabric::FabricPhysicalTraversalView *
+findTraversal(const ::loom::fabric::FabricArtifactView &fabric,
+              const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
+  auto found =
+      llvm::find_if(fabric.physicalTraversals(), [&](const auto &candidate) {
+        return candidate.reference == reference;
+      });
+  return found == fabric.physicalTraversals().end() ? nullptr : &*found;
+}
+
+const TechComputeRealizationView *
+findComputeRealization(const TechMappingView &techMapping,
+                       std::uint64_t entity) {
+  auto found = llvm::find_if(
+      techMapping.computeRealizations(),
+      [&](const auto &candidate) { return candidate.entityId == entity; });
+  return found == techMapping.computeRealizations().end() ? nullptr : &*found;
+}
+
+const SpatialComputeBindingView *
+findComputeBinding(llvm::ArrayRef<SpatialComputeBindingView> bindings,
+                   std::uint64_t realization) {
+  auto found = llvm::find_if(bindings, [&](const auto &candidate) {
+    return candidate.realization == realization;
+  });
+  return found == bindings.end() ? nullptr : &*found;
+}
+
+llvm::Expected<SpatialComputeBindingView>
+importComputeBinding(::mapping::ComputeBindingOp record,
+                     const TechMappingView &techMapping,
+                     const ::loom::fabric::FabricArtifactView &fabric) {
+  const std::uint64_t realizationEntity = record.getRealization().getEntity();
+  const TechComputeRealizationView *realization =
+      findComputeRealization(techMapping, realizationEntity);
+  if (!realization)
+    return invalid("ComputeBinding references an absent Tech realization");
+  auto occurrence = decodeFabric<::loom::fabric::FabricFuOccurrenceRef>(
+      record.getOccurrence());
+  if (!occurrence)
+    return occurrence.takeError();
+  auto context =
+      decodeFabric<::loom::fabric::InstructionContextRef>(record.getContext());
+  if (!context)
+    return context.takeError();
+  if (llvm::Error error =
+          ::loom::fabric::validateFabricRef(fabric, *occurrence))
+    return std::move(error);
+  if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *context))
+    return std::move(error);
+  auto definition = fabric.fuTemplateOf(*occurrence);
+  if (!definition || *definition != realization->capabilityTemplate.fu)
+    return invalid("ComputeBinding occurrence has the wrong FU definition");
+  auto parentPe = fabric.parentPeOf(*occurrence);
+  if (!parentPe || context->pe != *parentPe ||
+      context->ordinal >= fabric.peResidentContextCount(*parentPe))
+    return invalid("ComputeBinding instruction context is incompatible");
+  if (fabric.peSchedule(*parentPe) != ::fabric::Schedule::Spatial)
+    return invalid(
+        "Temporal ComputeBinding ResourceUse projection is unavailable");
+  auto refinements = importRefinements(record.getRefinements(), fabric);
+  if (!refinements)
+    return refinements.takeError();
+  return SpatialComputeBindingView{realizationEntity, *occurrence, *context,
+                                   std::move(*refinements)};
+}
+
+struct TerminalProjectionContext final {
+  const ::dataflow::CanonicalDataflowProgramView &dataflow;
+  const TechMappingView &techMapping;
+  const ::loom::fabric::FabricArtifactView &fabric;
+  llvm::ArrayRef<SpatialComputeBindingView> computeBindings;
+};
+
+template <typename ActorTerminal>
+llvm::Expected<std::vector<::loom::fabric::FabricFuPortAttachmentView>>
+computeTerminalAttachments(const TerminalProjectionContext &context,
+                           const ActorTerminal &terminal) {
+  const TechComputeRealizationView *owner = nullptr;
+  for (const auto &realization : context.techMapping.computeRealizations()) {
+    if (llvm::any_of(realization.actors, [&](const auto &actor) {
+          return actor.actor == terminal.actor;
+        })) {
+      if (owner)
+        return invalid("actor belongs to multiple Compute Realizations");
+      owner = &realization;
+    }
+  }
+  if (!owner)
+    return invalid("route terminal actor has no Compute Realization");
+  const auto direction =
+      std::is_same_v<ActorTerminal, ::dataflow::ActorTokenOperandRef>
+          ? ::loom::fabric::FabricPortDirection::Input
+          : ::loom::fabric::FabricPortDirection::Output;
+  const TechComputeBoundaryView *boundary = nullptr;
+  for (const auto &candidate : owner->boundaries) {
+    if (candidate.actor == terminal.actor && candidate.direction == direction &&
+        candidate.portOrdinal == terminal.ordinal) {
+      if (boundary)
+        return invalid("actor terminal has duplicate boundary witnesses");
+      boundary = &candidate;
+    }
+  }
+  if (!boundary)
+    return invalid("route terminal has no Tech boundary witness");
+  const SpatialComputeBindingView *binding =
+      findComputeBinding(context.computeBindings, owner->entityId);
+  if (!binding)
+    return invalid("route terminal owner has no ComputeBinding");
+  const auto attachments = context.fabric.fuOccurrencePortAttachments(
+      ::loom::fabric::FabricFuOccurrencePortRef{binding->occurrence, direction,
+                                                boundary->fabricPort.ordinal});
+  if (attachments.empty())
+    return invalid("ComputeBinding terminal has no local attachment");
+  return std::vector<::loom::fabric::FabricFuPortAttachmentView>(
+      attachments.begin(), attachments.end());
+}
+
+template <typename Endpoint>
+llvm::Expected<std::vector<::loom::fabric::FabricTransportEndpointRef>>
+terminalDomain(const TerminalProjectionContext &context,
+               const Endpoint &endpoint) {
+  auto width = semanticPayloadWidth(context.dataflow, endpoint);
+  if (!width)
+    return width.takeError();
+  std::vector<::loom::fabric::FabricTransportEndpointRef> result;
+  bool graphBoundary = true;
+  if constexpr (std::is_same_v<Endpoint,
+                               ::dataflow::CanonicalGraphProducerEndpointRef>) {
+    if (const auto *actor =
+            std::get_if<::dataflow::ActorTokenResultRef>(&endpoint)) {
+      graphBoundary = false;
+      auto attachments = computeTerminalAttachments(context, *actor);
+      if (!attachments)
+        return attachments.takeError();
+      for (const auto &attachment : *attachments) {
+        auto path =
+            context.fabric.transportEndpointDataPath(attachment.endpoint);
+        if (context.fabric.transportEndpointDirection(attachment.endpoint) ==
+                ::loom::fabric::FabricPortDirection::Output &&
+            path && path->payloadWidthBits >= *width)
+          result.push_back(attachment.endpoint);
+      }
+    }
+  } else {
+    if (const auto *actor =
+            std::get_if<::dataflow::ActorTokenOperandRef>(&endpoint)) {
+      graphBoundary = false;
+      auto attachments = computeTerminalAttachments(context, *actor);
+      if (!attachments)
+        return attachments.takeError();
+      for (const auto &attachment : *attachments) {
+        auto path =
+            context.fabric.transportEndpointDataPath(attachment.endpoint);
+        if (context.fabric.transportEndpointDirection(attachment.endpoint) ==
+                ::loom::fabric::FabricPortDirection::Input &&
+            path && path->payloadWidthBits >= *width)
+          result.push_back(attachment.endpoint);
+      }
+    }
+  }
+  if (graphBoundary) {
+    const auto direction =
+        std::is_same_v<Endpoint, ::dataflow::CanonicalGraphProducerEndpointRef>
+            ? ::loom::fabric::FabricPortDirection::Input
+            : ::loom::fabric::FabricPortDirection::Output;
+    for (const auto &attachment :
+         context.fabric.moduleBoundaryTransportAttachments()) {
+      if (attachment.boundary.direction != direction ||
+          context.fabric.transportEndpointDirection(attachment.endpoint) !=
+              direction)
+        continue;
+      auto path = context.fabric.transportEndpointDataPath(attachment.endpoint);
+      if (path && path->payloadWidthBits >= *width)
+        result.push_back(attachment.endpoint);
+    }
+  }
+  llvm::sort(result, [](const auto &left, const auto &right) {
+    return ::loom::fabric::canonicalFabricBytes(left) <
+           ::loom::fabric::canonicalFabricBytes(right);
+  });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  if (result.empty())
+    return invalid("route terminal has no compatible Fabric endpoint");
+  return result;
+}
+
+template <typename Endpoint>
+llvm::Expected<std::optional<::loom::fabric::FabricPhysicalTraversalRef>>
+selectedLocalTraversal(
+    const TerminalProjectionContext &context, const Endpoint &terminal,
+    const ::loom::fabric::FabricTransportEndpointRef &selected) {
+  if constexpr (std::is_same_v<Endpoint,
+                               ::dataflow::CanonicalGraphProducerEndpointRef>) {
+    if (const auto *actor =
+            std::get_if<::dataflow::ActorTokenResultRef>(&terminal)) {
+      auto attachments = computeTerminalAttachments(context, *actor);
+      if (!attachments)
+        return attachments.takeError();
+      auto found = llvm::find_if(*attachments, [&](const auto &attachment) {
+        return attachment.endpoint == selected;
+      });
+      if (found == attachments->end())
+        return invalid("selected producer has no local traversal witness");
+      return std::optional<::loom::fabric::FabricPhysicalTraversalRef>(
+          found->localTraversal);
+    }
+  } else {
+    if (const auto *actor =
+            std::get_if<::dataflow::ActorTokenOperandRef>(&terminal)) {
+      auto attachments = computeTerminalAttachments(context, *actor);
+      if (!attachments)
+        return attachments.takeError();
+      auto found = llvm::find_if(*attachments, [&](const auto &attachment) {
+        return attachment.endpoint == selected;
+      });
+      if (found == attachments->end())
+        return invalid("selected consumer has no local traversal witness");
+      return std::optional<::loom::fabric::FabricPhysicalTraversalRef>(
+          found->localTraversal);
+    }
+  }
+  return std::optional<::loom::fabric::FabricPhysicalTraversalRef>();
+}
+
+template <typename Endpoint>
+llvm::Error requireTerminalEndpoint(
+    const TerminalProjectionContext &context, const Endpoint &terminal,
+    const ::loom::fabric::FabricTransportEndpointRef &selected) {
+  auto domain = terminalDomain(context, terminal);
+  if (!domain)
+    return domain.takeError();
+  if (!llvm::is_contained(*domain, selected))
+    return invalid("RouteTree endpoint is outside its terminal domain");
+  return llvm::Error::success();
+}
+
+llvm::Expected<SpatialRouteTreeView>
+importRouteTree(::mapping::RouteTreeOp record,
+                const TerminalProjectionContext &context,
+                const TechResidualLogicalNetView &residual) {
+  auto logicalNet =
+      decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+          record.getLogicalNet(), context.dataflow.identity());
+  if (!logicalNet)
+    return logicalNet.takeError();
+  if (*logicalNet != residual.producer)
+    return invalid("RouteTree logical-net key disagrees with TechMapping");
+  auto rootEndpoint = decodeFabric<::loom::fabric::FabricTransportEndpointRef>(
+      record.getRootEndpoint());
+  if (!rootEndpoint)
+    return rootEndpoint.takeError();
+  if (llvm::Error error =
+          ::loom::fabric::validateFabricRef(context.fabric, *rootEndpoint))
+    return std::move(error);
+  if (llvm::Error error =
+          requireTerminalEndpoint(context, *logicalNet, *rootEndpoint))
+    return std::move(error);
+  auto payloadWidth = semanticPayloadWidth(context.dataflow, *logicalNet);
+  if (!payloadWidth)
+    return payloadWidth.takeError();
+
+  SpatialRouteTreeView result{*logicalNet, *rootEndpoint, {}, {}};
+  std::set<std::vector<std::uint8_t>> endpoints;
+  result.nodes.reserve(std::distance(
+      record.getBody().front().getOps<::mapping::RouteNodeOp>().begin(),
+      record.getBody().front().getOps<::mapping::RouteNodeOp>().end()));
+  for (auto node : record.getBody().front().getOps<::mapping::RouteNodeOp>()) {
+    if (node.getNodeOrdinal() != result.nodes.size())
+      return invalid("RouteTree node ordinals are not canonical");
+    std::optional<std::uint64_t> parent = node.getParentNodeOrdinal();
+    std::optional<::loom::fabric::FabricPhysicalTraversalRef> traversal;
+    ::loom::fabric::FabricTransportEndpointRef endpoint = *rootEndpoint;
+    if (parent) {
+      if (*parent >= result.nodes.size())
+        return invalid("RouteTree parent is not in preorder");
+      auto decoded = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+          *node.getIncomingTraversal());
+      if (!decoded)
+        return decoded.takeError();
+      if (llvm::Error error =
+              ::loom::fabric::validateFabricRef(context.fabric, *decoded))
+        return std::move(error);
+      const auto *physical = findTraversal(context.fabric, *decoded);
+      if (!physical || physical->destinations.size() != 1 ||
+          !llvm::is_contained(physical->sources,
+                              result.nodes[*parent].endpoint))
+        return invalid("RouteTree traversal is not continuous");
+      endpoint = physical->destinations.front();
+      traversal = *decoded;
+    } else if (node.getNodeOrdinal() != 0) {
+      return invalid("nonzero RouteTree node has no parent");
+    }
+    auto path = context.fabric.transportEndpointDataPath(endpoint);
+    if (!path || path->payloadWidthBits < *payloadWidth)
+      return invalid("RouteTree segment narrows below its logical payload");
+    if (!endpoints.insert(::loom::fabric::canonicalFabricBytes(endpoint))
+             .second)
+      return invalid("RouteTree contains a repeated physical endpoint");
+    auto refinements = importRefinements(node.getRefinements(), context.fabric);
+    if (!refinements)
+      return refinements.takeError();
+    result.nodes.push_back(SpatialRouteNodeView{node.getNodeOrdinal(), endpoint,
+                                                parent, traversal,
+                                                std::move(*refinements)});
+  }
+
+  std::map<std::string, ::dataflow::CanonicalGraphConsumerEndpointRef>
+      requiredSinks;
+  for (const auto &sink : residual.sinks) {
+    auto key =
+        ::dataflow::encodeDataflowReference(context.dataflow.identity(), sink);
+    if (!key)
+      return key.takeError();
+    requiredSinks.emplace(byteKey(*key), sink);
+  }
+  for (auto attachment :
+       record.getBody().front().getOps<::mapping::RouteSinkOp>()) {
+    auto sink = decodeDataflow<::dataflow::CanonicalGraphConsumerEndpointRef>(
+        attachment.getSink(), context.dataflow.identity());
+    if (!sink)
+      return sink.takeError();
+    auto key =
+        ::dataflow::encodeDataflowReference(context.dataflow.identity(), *sink);
+    if (!key)
+      return key.takeError();
+    auto required = requiredSinks.find(byteKey(*key));
+    if (required == requiredSinks.end())
+      return invalid("RouteTree contains a non-residual sink");
+    if (attachment.getNodeOrdinal() >= result.nodes.size())
+      return invalid("RouteTree sink names an absent node");
+    if (llvm::Error error = requireTerminalEndpoint(
+            context, *sink, result.nodes[attachment.getNodeOrdinal()].endpoint))
+      return std::move(error);
+    result.sinks.push_back(
+        SpatialRouteSinkView{*sink, attachment.getNodeOrdinal()});
+    requiredSinks.erase(required);
+  }
+  if (!requiredSinks.empty())
+    return invalid("RouteTree omits a residual sink obligation");
+  return result;
+}
+
+llvm::Expected<SpatialActivityEventRef>
+importEvent(Attribute attribute,
+            const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  if (auto transition =
+          dyn_cast<::mapping::ActorTransitionEventAttr>(attribute)) {
+    auto actor = decodeDataflow<::dataflow::ActorRef>(transition.getActor(),
+                                                      dataflow.identity());
+    if (!actor)
+      return actor.takeError();
+    auto resolved = dataflow.resolve(*actor);
+    if (!resolved)
+      return resolved.takeError();
+    auto projection =
+        ::dataflow::projectRegisteredActorSchemaProjection(resolved->op);
+    if (!projection)
+      return projection.takeError();
+    auto cases = ::dataflow::semantics::projectActorHandshakeCases(
+        projection->schema, resolved->op->getNumOperands(),
+        resolved->op->getNumResults());
+    if (!cases)
+      return cases.takeError();
+    if (transition.getTransition() >= cases->size() ||
+        (*cases)[transition.getTransition()].ordinal !=
+            transition.getTransition())
+      return invalid("ResourceUse actor transition is out of range");
+    return SpatialActivityEventRef(
+        SpatialActorTransitionEventRef{*actor, transition.getTransition()});
+  }
+  if (auto producer =
+          dyn_cast<::mapping::GraphProducerEndpointRefAttr>(attribute)) {
+    auto decoded =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            producer, dataflow.identity());
+    if (!decoded)
+      return decoded.takeError();
+    if (llvm::Error error = dataflow.validate(*decoded))
+      return std::move(error);
+    return SpatialActivityEventRef(*decoded);
+  }
+  auto decoded = decodeDataflow<::dataflow::CanonicalGraphConsumerEndpointRef>(
+      cast<::mapping::GraphConsumerEndpointRefAttr>(attribute),
+      dataflow.identity());
+  if (!decoded)
+    return decoded.takeError();
+  if (llvm::Error error = dataflow.validate(*decoded))
+    return std::move(error);
+  return SpatialActivityEventRef(*decoded);
+}
+
+llvm::Expected<SpatialEventPointView>
+importEventPoint(::mapping::SpatialEventPointAttr point,
+                 const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  auto event = importEvent(point.getEvent(), dataflow);
+  if (!event)
+    return event.takeError();
+  if (point.getGuaranteedOffset())
+    return invalid("guaranteed event offset requires its owner timing codec");
+  return SpatialEventPointView{std::move(*event), std::nullopt};
+}
+
+using RequiredComputeUse = SpatialComputeUseRequirement;
+
+llvm::Expected<std::string>
+requiredUseKey(const RequiredComputeUse &use,
+               const ArtifactIdentity &dataflowIdentity) {
+  std::string result;
+  for (unsigned byte = 0; byte < 8; ++byte)
+    result.push_back(static_cast<char>(use.realization >> (8 * (7 - byte))));
+  auto actor = ::dataflow::encodeDataflowReference(dataflowIdentity, use.actor);
+  if (!actor)
+    return actor.takeError();
+  result += byteKey(*actor);
+  for (unsigned byte = 0; byte < 4; ++byte)
+    result.push_back(static_cast<char>(use.transition >> (8 * (3 - byte))));
+  result += byteKey(::loom::fabric::canonicalFabricBytes(use.pattern));
+  return result;
+}
+
+llvm::Expected<std::map<std::string, RequiredComputeUse>>
+deriveRequiredComputeUses(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+  std::map<std::string, RequiredComputeUse> result;
+  auto requirements = deriveSpatialComputeUseRequirements(dataflow, techMapping,
+                                                          fabric, bindings);
+  if (!requirements)
+    return requirements.takeError();
+  for (const auto &use : *requirements) {
+    auto key = requiredUseKey(use, dataflow.identity());
+    if (!key)
+      return key.takeError();
+    result.emplace(std::move(*key), use);
+  }
+  return result;
+}
+
+llvm::Expected<SpatialResourceUseView>
+importResourceUse(::mapping::ResourceUseOp record,
+                  const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                  const ::loom::fabric::FabricArtifactView &fabric,
+                  std::map<std::string, RequiredComputeUse> &required) {
+  auto compute =
+      dyn_cast<::mapping::ComputeRealizationRefAttr>(record.getOwner());
+  if (!compute)
+    return invalid("non-compute ResourceUse projection is unavailable");
+  auto pattern =
+      decodeFabric<::loom::fabric::FabricUsePatternRef>(record.getUseSite());
+  if (!pattern)
+    return pattern.takeError();
+  if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, *pattern))
+    return std::move(error);
+  auto trigger =
+      importEventPoint(record.getActivation().getTrigger(), dataflow);
+  if (!trigger)
+    return trigger.takeError();
+  const auto *transition =
+      std::get_if<SpatialActorTransitionEventRef>(&trigger->event);
+  if (!transition || trigger->guaranteedOffset ||
+      record.getActivation().getRelease())
+    return invalid(
+        "compute ResourceUse must use intrinsic actor-transition activation");
+  if (!record.getParameters().empty() ||
+      !record.getSharingAssignments().empty())
+    return invalid("compute ResourceUse owner schemas are empty");
+  RequiredComputeUse keyValue{compute.getEntity(), transition->actor,
+                              transition->transition, *pattern};
+  auto key = requiredUseKey(keyValue, dataflow.identity());
+  if (!key)
+    return key.takeError();
+  auto found = required.find(*key);
+  if (found == required.end())
+    return invalid("ResourceUse is not required by its compute owner");
+  required.erase(found);
+  return SpatialResourceUseView{
+      SpatialComputeResourceOwnerRef{compute.getEntity()},
+      *pattern,
+      SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+      {},
+      {}};
+}
+
+llvm::Expected<std::optional<::loom::PointerLayout>>
+pointerLayoutFor(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                 const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  auto addressSpace = ::dataflow::projectActorPointerAddressSpace(actor);
+  if (!addressSpace)
+    return addressSpace.takeError();
+  if (!*addressSpace)
+    return std::optional<::loom::PointerLayout>();
+  auto layout = dataflow.pointerLayout(**addressSpace);
+  if (!layout)
+    return layout.takeError();
+  return std::optional<::loom::PointerLayout>(*layout);
+}
+
+llvm::Expected<::loom::fabric::FabricHandshakeSelection>
+deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
+                                 llvm::ArrayRef<SpatialRouteTreeView> routes) {
+  ::loom::fabric::FabricHandshakeSelection selection;
+  for (const auto &realization : context.techMapping.computeRealizations()) {
+    const auto *binding =
+        findComputeBinding(context.computeBindings, realization.entityId);
+    if (!binding)
+      return invalid("selected handshake compute owner has no binding");
+    std::vector<::loom::fabric::FabricFuOperationHandshakeBinding>
+        actorBindings;
+    actorBindings.reserve(realization.actors.size());
+    for (const auto &actorBinding : realization.actors) {
+      auto actor = context.dataflow.resolve(actorBinding.actor);
+      if (!actor)
+        return actor.takeError();
+      auto projection =
+          ::dataflow::projectRegisteredActorSchemaProjection(actor->op);
+      if (!projection)
+        return projection.takeError();
+      auto indexWidth = ::loom::getIndexBitWidth(actor->op);
+      if (!indexWidth)
+        return indexWidth.takeError();
+      auto pointerLayout = pointerLayoutFor(context.dataflow, *projection);
+      if (!pointerLayout)
+        return pointerLayout.takeError();
+      actorBindings.push_back(
+          {actorBinding.fabricOperation, std::move(*projection), *indexWidth,
+           std::move(*pointerLayout), actorBinding.operandPorts,
+           actorBinding.resultPorts});
+    }
+    auto fuSelection = ::loom::fabric::makeFuHandshakeSelection(
+        context.fabric, binding->occurrence, realization.capabilityTemplate,
+        actorBindings);
+    if (!fuSelection)
+      return fuSelection.takeError();
+    selection.fuCapabilities.push_back(std::move(*fuSelection));
+  }
+
+  const auto appendLocal =
+      [&](const auto &terminal,
+          const ::loom::fabric::FabricTransportEndpointRef &endpoint)
+      -> llvm::Error {
+    auto traversal = selectedLocalTraversal(context, terminal, endpoint);
+    if (!traversal)
+      return traversal.takeError();
+    if (*traversal)
+      selection.traversals.push_back(**traversal);
+    return llvm::Error::success();
+  };
+  for (const SpatialRouteTreeView &route : routes) {
+    if (llvm::Error error = appendLocal(route.logicalNet, route.rootEndpoint))
+      return std::move(error);
+    for (const SpatialRouteNodeView &node : route.nodes)
+      if (node.incomingTraversal)
+        selection.traversals.push_back(*node.incomingTraversal);
+    for (const SpatialRouteSinkView &sink : route.sinks) {
+      if (sink.nodeOrdinal >= route.nodes.size())
+        return invalid("selected handshake sink names an absent route node");
+      if (llvm::Error error =
+              appendLocal(sink.sink, route.nodes[sink.nodeOrdinal].endpoint))
+        return std::move(error);
+    }
+  }
+  llvm::sort(selection.traversals, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  selection.traversals.erase(
+      std::unique(selection.traversals.begin(), selection.traversals.end()),
+      selection.traversals.end());
+  return selection;
+}
+
+struct ImportedSpatialView final {
+  ArtifactIdentity techMappingIdentity;
+  ArtifactIdentity dataflowIdentity;
+  ArtifactIdentity fabricIdentity;
+  std::vector<SpatialComputeBindingView> computeBindings;
+  std::vector<SpatialRouteTreeView> routeTrees;
+  std::vector<SpatialResourceUseView> resourceUses;
+};
+
+llvm::Expected<ImportedSpatialView>
+importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
+           const ::dataflow::CanonicalDataflowProgramView &dataflow,
+           const TechMappingView &techMapping,
+           const ::loom::fabric::FabricArtifactView &fabric) {
+  (void)mappingIdentity;
+  auto techIdentity = decodeIdentity(root.getTechMapping());
+  auto dataflowIdentity = decodeIdentity(root.getDataflow());
+  auto fabricIdentity = decodeIdentity(root.getFabric());
+  if (!techIdentity)
+    return techIdentity.takeError();
+  if (!dataflowIdentity)
+    return dataflowIdentity.takeError();
+  if (!fabricIdentity)
+    return fabricIdentity.takeError();
+  if (*techIdentity != techMapping.identity() ||
+      *dataflowIdentity != dataflow.identity() ||
+      *fabricIdentity != fabric.identity())
+    return invalid("SpatialMapping upstream binding does not match importer");
+  if (techMapping.dataflowIdentity() != dataflow.identity() ||
+      techMapping.fabricIdentity() != fabric.identity())
+    return invalid(
+        "TechMapping upstream closure disagrees with SpatialMapping");
+  if (!techMapping.memoryRealizations().empty())
+    return invalid("Spatial memory binding wire is unavailable");
+
+  std::vector<SpatialComputeBindingView> computeBindings;
+  std::set<std::uint64_t> boundComputes;
+  for (auto record :
+       root.getBody().front().getOps<::mapping::ComputeBindingOp>()) {
+    auto binding = importComputeBinding(record, techMapping, fabric);
+    if (!binding)
+      return binding.takeError();
+    if (!boundComputes.insert(binding->realization).second)
+      return invalid("duplicate ComputeBinding realization");
+    computeBindings.push_back(std::move(*binding));
+  }
+  if (computeBindings.size() != techMapping.computeRealizations().size())
+    return invalid("SpatialMapping omits a Tech compute realization");
+
+  TerminalProjectionContext terminalContext{dataflow, techMapping, fabric,
+                                            computeBindings};
+  std::map<std::string, const TechResidualLogicalNetView *> residual;
+  for (const auto &net : techMapping.residualLogicalNets()) {
+    auto encoded =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), net.producer);
+    if (!encoded)
+      return encoded.takeError();
+    residual.emplace(byteKey(*encoded), &net);
+  }
+  std::vector<SpatialRouteTreeView> routes;
+  for (auto record : root.getBody().front().getOps<::mapping::RouteTreeOp>()) {
+    auto producer =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            record.getLogicalNet(), dataflow.identity());
+    if (!producer)
+      return producer.takeError();
+    auto encoded =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
+    if (!encoded)
+      return encoded.takeError();
+    auto found = residual.find(byteKey(*encoded));
+    if (found == residual.end())
+      return invalid("RouteTree does not name a residual logical net");
+    auto route = importRouteTree(record, terminalContext, *found->second);
+    if (!route)
+      return route.takeError();
+    routes.push_back(std::move(*route));
+    residual.erase(found);
+  }
+  if (!residual.empty())
+    return invalid("SpatialMapping omits a residual logical net RouteTree");
+
+  auto requiredUses =
+      deriveRequiredComputeUses(dataflow, techMapping, fabric, computeBindings);
+  if (!requiredUses)
+    return requiredUses.takeError();
+  std::vector<SpatialResourceUseView> uses;
+  for (auto record :
+       root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
+    auto use = importResourceUse(record, dataflow, fabric, *requiredUses);
+    if (!use)
+      return use.takeError();
+    uses.push_back(std::move(*use));
+  }
+  if (!requiredUses->empty())
+    return invalid("SpatialMapping omits a required compute ResourceUse");
+
+  auto handshake = deriveSelectedHandshakeSelection(terminalContext, routes);
+  if (!handshake)
+    return handshake.takeError();
+  if (llvm::Error error =
+          ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              fabric, *handshake))
+    return std::move(error);
+
+  return ImportedSpatialView{*techIdentity,     *dataflowIdentity,
+                             *fabricIdentity,   std::move(computeBindings),
+                             std::move(routes), std::move(uses)};
+}
+
+struct PreparedSpatialMapping final {
+  ArtifactRootReference reference;
+  CanonicalSemanticBytes canonicalBytes;
+  OwningOpRef<Operation *> canonicalRoot;
+};
+
+llvm::Expected<PreparedSpatialMapping>
+prepareSpatialMapping(::mapping::SpatialOp source) {
+  auto assembly = detail::prepareCanonicalSpatialMappingAssembly(source);
+  if (!assembly)
+    return assembly.takeError();
+  ArtifactRootReference reference{
+      mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
+      finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes)};
+  return PreparedSpatialMapping{std::move(reference),
+                                std::move(assembly->bytes),
+                                std::move(assembly->root)};
+}
+
+llvm::Error
+publishPreparedSpatialMapping(const PreparedSpatialMapping &prepared,
+                              const ArtifactStore &store) {
+  auto stored = store.put(mappingArtifactSchema, prepared.canonicalBytes);
+  if (!stored)
+    return stored.takeError();
+  if (*stored != prepared.reference.artifact)
+    return invalid("ArtifactStore returned a different Mapping identity");
+  return llvm::Error::success();
+}
+
+llvm::Error requirePublishedUpstream(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ArtifactStore &store) {
+  const ArtifactRootReference references[] = {
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, dataflow.identity()},
+      {mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
+       techMapping.identity()},
+      {::loom::fabric::fabricArtifactSchema.identity.str(),
+       ::loom::fabric::fabricArtifactSchema.version, fabric.identity()}};
+  for (const auto &reference : references) {
+    auto bytes = store.get(reference);
+    if (!bytes)
+      return bytes.takeError();
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<SpatialMappingView>
+strictImport(const ArtifactIdentity &mappingIdentity,
+             const CanonicalSemanticBytes &canonicalBytes,
+             const ArtifactStore &store) {
+  if (finalizeArtifactIdentity(mappingArtifactSchema, canonicalBytes) !=
+      mappingIdentity)
+    return invalid("mapping identity does not match canonical bytes");
+  auto parsed = parseSpatialRoot(canonicalBytes);
+  if (!parsed)
+    return parsed.takeError();
+
+  auto dataflowIdentity = decodeIdentity(parsed->root.getDataflow());
+  auto fabricIdentity = decodeIdentity(parsed->root.getFabric());
+  auto techIdentity = decodeIdentity(parsed->root.getTechMapping());
+  if (!dataflowIdentity)
+    return dataflowIdentity.takeError();
+  if (!fabricIdentity)
+    return fabricIdentity.takeError();
+  if (!techIdentity)
+    return techIdentity.takeError();
+  auto dataflow = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, *dataflowIdentity},
+      store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  auto fabric = ::loom::fabric::importEntireFabricRoot(
+      {::loom::fabric::fabricArtifactSchema.identity.str(),
+       ::loom::fabric::fabricArtifactSchema.version, *fabricIdentity},
+      store);
+  if (!fabric)
+    return fabric.takeError();
+  auto tech = importTechMapping({mappingArtifactSchema.identity.str(),
+                                 mappingArtifactSchema.version, *techIdentity},
+                                store);
+  if (!tech)
+    return tech.takeError();
+  auto view =
+      SpatialMappingView::import(mappingIdentity, parsed->root, *dataflowView,
+                                 tech->view(), fabric->view());
+  if (!view)
+    return view.takeError();
+  auto rewritten = writeCanonicalSpatialMappingAssembly(parsed->root);
+  if (!rewritten)
+    return rewritten.takeError();
+  if (!rewritten->bytes().equals(canonicalBytes.bytes()))
+    return invalid("stored SpatialMapping payload is not canonical");
+  return view;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<SpatialComputeUseRequirement>>
+deriveSpatialComputeUseRequirements(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+  std::vector<SpatialComputeUseRequirement> result;
+  for (const auto &realization : techMapping.computeRealizations()) {
+    const auto *binding = findComputeBinding(bindings, realization.entityId);
+    if (!binding)
+      return invalid("Compute realization has no Spatial binding");
+    for (const auto &actorBinding : realization.actors) {
+      auto actor = dataflow.resolve(actorBinding.actor);
+      if (!actor)
+        return actor.takeError();
+      auto projection =
+          ::dataflow::projectRegisteredActorSchemaProjection(actor->op);
+      if (!projection)
+        return projection.takeError();
+      auto cases = ::dataflow::semantics::projectActorHandshakeCases(
+          projection->schema, actorBinding.operandPorts.size(),
+          actorBinding.resultPorts.size());
+      if (!cases)
+        return cases.takeError();
+      auto occurrenceOperation = ::loom::fabric::deriveFabricFuOccurrenceNode(
+          fabric, actorBinding.fabricOperation, binding->occurrence);
+      if (!occurrenceOperation)
+        return occurrenceOperation.takeError();
+      const auto *capability =
+          fabric.resolvedFabricOpCapability(*occurrenceOperation);
+      if (!capability)
+        return invalid("selected compute actor has no physical capability");
+      for (const auto &transition : *cases) {
+        auto pattern = ::fabric::resolveOperationUsePattern(
+            capability->resourceStateAndTimingContract, transition.ordinal);
+        if (!pattern)
+          return pattern.takeError();
+        result.push_back(SpatialComputeUseRequirement{
+            realization.entityId, actorBinding.actor, transition.ordinal,
+            ::loom::fabric::FabricUsePatternRef{
+                ::loom::fabric::FabricUsePatternOwnerRef(
+                    ::loom::fabric::FabricInventoryOwnerRef::of(
+                        *occurrenceOperation)),
+                pattern->ordinal()}});
+      }
+    }
+  }
+  return result;
+}
+
+llvm::Expected<SpatialMappingView> SpatialMappingView::import(
+    const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  auto imported =
+      importView(mappingIdentity, root, dataflow, techMapping, fabric);
+  if (!imported)
+    return imported.takeError();
+  return SpatialMappingView(
+      mappingIdentity, std::move(imported->techMappingIdentity),
+      std::move(imported->dataflowIdentity),
+      std::move(imported->fabricIdentity), std::move(imported->computeBindings),
+      std::move(imported->routeTrees), std::move(imported->resourceUses));
+}
+
+llvm::Expected<FinalizedSpatialMapping>
+finalizeSpatialMapping(::mapping::SpatialOp source,
+                       const ArtifactStore &store) {
+  auto prepared = prepareSpatialMapping(source);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = strictImport(prepared->reference.artifact,
+                           prepared->canonicalBytes, store);
+  if (!view)
+    return view.takeError();
+  if (llvm::Error error = publishPreparedSpatialMapping(*prepared, store))
+    return std::move(error);
+  return FinalizedSpatialMapping(std::move(prepared->reference),
+                                 std::move(prepared->canonicalBytes),
+                                 std::move(*view));
+}
+
+llvm::Expected<FinalizedSpatialMapping>
+finalizeSpatialMapping(::mapping::SpatialOp source,
+                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                       const TechMappingView &techMapping,
+                       const ::loom::fabric::FabricArtifactView &fabric,
+                       const ArtifactStore &store) {
+  if (llvm::Error error =
+          requirePublishedUpstream(dataflow, techMapping, fabric, store))
+    return std::move(error);
+  auto prepared = prepareSpatialMapping(source);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = SpatialMappingView::import(
+      prepared->reference.artifact,
+      cast<::mapping::SpatialOp>(prepared->canonicalRoot.get()), dataflow,
+      techMapping, fabric);
+  if (!view)
+    return view.takeError();
+  if (llvm::Error error = publishPreparedSpatialMapping(*prepared, store))
+    return std::move(error);
+  return FinalizedSpatialMapping(std::move(prepared->reference),
+                                 std::move(prepared->canonicalBytes),
+                                 std::move(*view));
+}
+
+llvm::Expected<FinalizedSpatialMapping>
+importSpatialMapping(const ArtifactRootReference &reference,
+                     const ArtifactStore &store) {
+  if (reference.schemaIdentity != mappingArtifactSchema.identity ||
+      reference.schemaVersion != mappingArtifactSchema.version)
+    return invalid("root reference has the wrong Mapping schema");
+  auto canonicalBytes = store.get(reference);
+  if (!canonicalBytes)
+    return canonicalBytes.takeError();
+  auto view = strictImport(reference.artifact, *canonicalBytes, store);
+  if (!view)
+    return view.takeError();
+  return FinalizedSpatialMapping(reference, std::move(*canonicalBytes),
+                                 std::move(*view));
+}
+
+} // namespace loom::mapping

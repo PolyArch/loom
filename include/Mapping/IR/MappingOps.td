@@ -139,6 +139,45 @@ def Mapping_ComputeBindingOp
   let hasVerifier = 1;
 }
 
+def Mapping_RouteTreeOp
+    : Mapping_Op<"route_tree", [HasParent<"SpatialOp">, SingleBlock,
+                                  NoTerminator]> {
+  let summary = "one complete Spatial logical-net route tree";
+  let arguments = (ins
+      Mapping_GraphProducerEndpointRefAttr:$logical_net,
+      Mapping_FabricTransportEndpointRefAttr:$root_endpoint);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{`logical_net` `(` $logical_net `)`
+                         `root_endpoint` `(` $root_endpoint `)`
+                         $body attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_RouteNodeOp
+    : Mapping_Op<"route_node", [HasParent<"RouteTreeOp">]> {
+  let summary = "one canonical node in a flat Spatial route tree";
+  let arguments = (ins
+      I64Attr:$node_ordinal,
+      OptionalAttr<I64Attr>:$parent_node_ordinal,
+      OptionalAttr<Mapping_FabricPhysicalTraversalRefAttr>:$incoming_traversal,
+      ArrayAttr:$refinements);
+  let assemblyFormat = [{`node` $node_ordinal
+                         (`parent` $parent_node_ordinal^
+                          `traversal` `(` $incoming_traversal `)`)?
+                         `refinements` `(` $refinements `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
+def Mapping_RouteSinkOp
+    : Mapping_Op<"route_sink", [HasParent<"RouteTreeOp">]> {
+  let summary = "one logical sink obligation attached to a route-tree node";
+  let arguments = (ins
+      Mapping_GraphConsumerEndpointRefAttr:$sink,
+      I64Attr:$node_ordinal);
+  let assemblyFormat = [{`sink` `(` $sink `)` `node` $node_ordinal attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_ResourceUseOp
     : Mapping_Op<"resource_use", [HasParent<"SpatialOp">]> {
   let summary = "one event-relative Mapping selection of a Fabric UsePattern";

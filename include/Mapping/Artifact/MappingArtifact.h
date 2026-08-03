@@ -11,6 +11,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,6 +27,12 @@ inline constexpr ArtifactSchemaDescriptor mappingArtifactSchema{
 /// finalizer that publishes a MappingArtifact.
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalMappingAssembly(::mapping::TechOp root);
+
+/// Canonicalizes one complete in-memory SpatialMapping root. Route-node
+/// ordinals and schema-owned record order are assigned from typed semantic
+/// keys; exact upstream closure remains the Spatial finalizer's responsibility.
+llvm::Expected<CanonicalSemanticBytes>
+writeCanonicalSpatialMappingAssembly(::mapping::SpatialOp root);
 
 struct TechComputeActorView final {
   ::dataflow::ActorRef actor;
@@ -218,6 +225,204 @@ finalizeTechMapping(::mapping::TechOp source,
 llvm::Expected<FinalizedTechMapping>
 importTechMapping(const ArtifactRootReference &reference,
                   const ArtifactStore &store);
+
+struct SpatialPhysicalRefinementView final {
+  ::loom::fabric::FabricPhysicalRefinementDomainRef domain;
+  std::vector<std::uint8_t> canonicalValue;
+};
+
+struct SpatialComputeBindingView final {
+  std::uint64_t realization = 0;
+  ::loom::fabric::FabricFuOccurrenceRef occurrence;
+  ::loom::fabric::InstructionContextRef context;
+  std::vector<SpatialPhysicalRefinementView> refinements;
+};
+
+/// One exact operation-resource use mechanically required by a selected
+/// compute realization. Mapping owns this projection so candidate
+/// materialization and strict import cannot diverge on actor transition or
+/// Fabric UsePattern selection.
+struct SpatialComputeUseRequirement final {
+  std::uint64_t realization = 0;
+  ::dataflow::ActorRef actor;
+  std::uint32_t transition = 0;
+  ::loom::fabric::FabricUsePatternRef pattern;
+};
+
+llvm::Expected<std::vector<SpatialComputeUseRequirement>>
+deriveSpatialComputeUseRequirements(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings);
+
+struct SpatialRouteNodeView final {
+  std::uint64_t ordinal = 0;
+  ::loom::fabric::FabricTransportEndpointRef endpoint;
+  std::optional<std::uint64_t> parentOrdinal;
+  std::optional<::loom::fabric::FabricPhysicalTraversalRef> incomingTraversal;
+  std::vector<SpatialPhysicalRefinementView> refinements;
+};
+
+struct SpatialRouteSinkView final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  std::uint64_t nodeOrdinal = 0;
+};
+
+struct SpatialRouteTreeView final {
+  ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+  ::loom::fabric::FabricTransportEndpointRef rootEndpoint;
+  std::vector<SpatialRouteNodeView> nodes;
+  std::vector<SpatialRouteSinkView> sinks;
+};
+
+struct SpatialActorTransitionEventRef final {
+  ::dataflow::ActorRef actor;
+  std::uint32_t transition = 0;
+};
+
+using SpatialActivityEventRef =
+    std::variant<SpatialActorTransitionEventRef,
+                 ::dataflow::CanonicalGraphProducerEndpointRef,
+                 ::dataflow::CanonicalGraphConsumerEndpointRef>;
+
+struct SpatialEventPointView final {
+  SpatialActivityEventRef event;
+  std::optional<std::vector<std::uint8_t>> guaranteedOffset;
+};
+
+struct SpatialRelativeActivationView final {
+  SpatialEventPointView trigger;
+  std::optional<SpatialEventPointView> release;
+};
+
+struct SpatialComputeResourceOwnerRef final {
+  std::uint64_t realization = 0;
+};
+
+struct SpatialMemoryEngineResourceOwnerRef final {
+  std::uint64_t realization = 0;
+};
+
+struct SpatialMemoryBindingResourceOwnerRef final {
+  std::uint64_t binding = 0;
+};
+
+struct SpatialRouteNodeResourceOwnerRef final {
+  ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+  std::uint64_t nodeOrdinal = 0;
+};
+
+using SpatialResourceOwnerRef = std::variant<
+    SpatialComputeResourceOwnerRef, SpatialMemoryEngineResourceOwnerRef,
+    SpatialMemoryBindingResourceOwnerRef, SpatialRouteNodeResourceOwnerRef>;
+
+struct SpatialResourceUseView final {
+  SpatialResourceOwnerRef owner;
+  ::loom::fabric::FabricUsePatternRef useSite;
+  SpatialRelativeActivationView activation;
+  std::vector<std::vector<std::uint8_t>> parameters;
+  std::vector<std::vector<std::uint8_t>> sharingAssignments;
+};
+
+/// Immutable projection of one independently verified mapping.spatial object.
+/// Dense PnR indices, search history, selected-edge bitsets, and derived
+/// claims are deliberately absent.
+class SpatialMappingView final {
+public:
+  static llvm::Expected<SpatialMappingView>
+  import(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
+         const ::dataflow::CanonicalDataflowProgramView &dataflow,
+         const TechMappingView &techMapping,
+         const ::loom::fabric::FabricArtifactView &fabric);
+
+  const ArtifactIdentity &identity() const { return identity_; }
+  const ArtifactIdentity &techMappingIdentity() const {
+    return techMappingIdentity_;
+  }
+  const ArtifactIdentity &dataflowIdentity() const { return dataflowIdentity_; }
+  const ArtifactIdentity &fabricIdentity() const { return fabricIdentity_; }
+  llvm::ArrayRef<SpatialComputeBindingView> computeBindings() const {
+    return computeBindings_;
+  }
+  llvm::ArrayRef<SpatialRouteTreeView> routeTrees() const {
+    return routeTrees_;
+  }
+  llvm::ArrayRef<SpatialResourceUseView> resourceUses() const {
+    return resourceUses_;
+  }
+
+private:
+  SpatialMappingView(ArtifactIdentity identity,
+                     ArtifactIdentity techMappingIdentity,
+                     ArtifactIdentity dataflowIdentity,
+                     ArtifactIdentity fabricIdentity,
+                     std::vector<SpatialComputeBindingView> computeBindings,
+                     std::vector<SpatialRouteTreeView> routeTrees,
+                     std::vector<SpatialResourceUseView> resourceUses)
+      : identity_(std::move(identity)),
+        techMappingIdentity_(std::move(techMappingIdentity)),
+        dataflowIdentity_(std::move(dataflowIdentity)),
+        fabricIdentity_(std::move(fabricIdentity)),
+        computeBindings_(std::move(computeBindings)),
+        routeTrees_(std::move(routeTrees)),
+        resourceUses_(std::move(resourceUses)) {}
+
+  ArtifactIdentity identity_;
+  ArtifactIdentity techMappingIdentity_;
+  ArtifactIdentity dataflowIdentity_;
+  ArtifactIdentity fabricIdentity_;
+  std::vector<SpatialComputeBindingView> computeBindings_;
+  std::vector<SpatialRouteTreeView> routeTrees_;
+  std::vector<SpatialResourceUseView> resourceUses_;
+};
+
+class FinalizedSpatialMapping final {
+public:
+  const ArtifactRootReference &reference() const { return reference_; }
+  const CanonicalSemanticBytes &canonicalBytes() const {
+    return canonicalBytes_;
+  }
+  const SpatialMappingView &view() const { return view_; }
+
+private:
+  FinalizedSpatialMapping(ArtifactRootReference reference,
+                          CanonicalSemanticBytes canonicalBytes,
+                          SpatialMappingView view)
+      : reference_(std::move(reference)),
+        canonicalBytes_(std::move(canonicalBytes)), view_(std::move(view)) {}
+
+  ArtifactRootReference reference_;
+  CanonicalSemanticBytes canonicalBytes_;
+  SpatialMappingView view_;
+
+  friend llvm::Expected<FinalizedSpatialMapping>
+  finalizeSpatialMapping(::mapping::SpatialOp source,
+                         const ArtifactStore &store);
+  friend llvm::Expected<FinalizedSpatialMapping> finalizeSpatialMapping(
+      ::mapping::SpatialOp source,
+      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+      const TechMappingView &techMapping,
+      const ::loom::fabric::FabricArtifactView &fabric,
+      const ArtifactStore &store);
+  friend llvm::Expected<FinalizedSpatialMapping>
+  importSpatialMapping(const ArtifactRootReference &reference,
+                       const ArtifactStore &store);
+};
+
+llvm::Expected<FinalizedSpatialMapping>
+finalizeSpatialMapping(::mapping::SpatialOp source, const ArtifactStore &store);
+
+llvm::Expected<FinalizedSpatialMapping>
+finalizeSpatialMapping(::mapping::SpatialOp source,
+                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                       const TechMappingView &techMapping,
+                       const ::loom::fabric::FabricArtifactView &fabric,
+                       const ArtifactStore &store);
+
+llvm::Expected<FinalizedSpatialMapping>
+importSpatialMapping(const ArtifactRootReference &reference,
+                     const ArtifactStore &store);
 
 } // namespace loom::mapping
 

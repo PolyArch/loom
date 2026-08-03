@@ -354,6 +354,13 @@ llvm::Expected<ResolvedHandshakeActivation>
 resolveSelectedHandshake(const HandshakeOwnerModel &model,
                          const FabricHandshakeSelection &selection);
 
+/// Resolves every owner against one exact Mapping selection, flattens shared
+/// boundary signals and owner-local junctions, and rejects a selected
+/// combinational dependency cycle. The implementation is linear after
+/// deterministic arc ordering and owns no persistent graph identity.
+llvm::Error verifySelectedCombinationalHandshakeAcyclic(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection);
+
 /// Derives the root-complete boundary relation that is present in every legal
 /// configured view. Internal junctions never escape this projection.
 llvm::Expected<std::vector<HandshakeDependencyArc>>

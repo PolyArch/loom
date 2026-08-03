@@ -109,6 +109,7 @@ set(LOOM_TEST_DEPENDS
   loom-tech-mapping-generator-test
   loom-tech-mapping-joint-legality-test
   loom-tech-mapping-search-test
+  loom-spatial-mapping-artifact-test
   loom-spatial-mapping-wire-test
   loom-pnr-endpoint-router-test
   loom-pnr-initializer-relation-solver-test

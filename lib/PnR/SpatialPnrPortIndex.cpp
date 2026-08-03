@@ -569,30 +569,19 @@ public:
               fixedEndpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
             return options;
 
-          for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
-            const auto *selector = std::get_if<FabricPeSelectorPayload>(
-                &traversal.reference.payload);
-            if (!selector || selector->owner != placement.parentPe)
-              continue;
-            FabricTransportEndpointRef attachment;
-            if (templatePort.direction == FabricPortDirection::Input) {
-              if (selector->destination != *fixed)
-                continue;
-              attachment = selector->source;
-            } else {
-              if (selector->source != *fixed)
-                continue;
-              attachment = selector->destination;
-            }
-            const auto attachmentIndex = endpointIndex(attachment);
+          for (const FabricFuPortAttachmentView &attachment :
+               fabric.fuOccurrencePortAttachments(FabricFuOccurrencePortRef{
+                   placement.fu, templatePort.direction,
+                   templatePort.ordinal})) {
+            const auto attachmentIndex = endpointIndex(attachment.endpoint);
             if (!attachmentIndex)
               continue;
             const auto &endpoint = routing.routingEndpoints()[*attachmentIndex];
             if (endpoint.direction != templatePort.direction ||
                 endpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
               continue;
-            const auto traversalIndex =
-                traversalByRef.find(canonicalFabricBytes(traversal.reference));
+            const auto traversalIndex = traversalByRef.find(
+                canonicalFabricBytes(attachment.localTraversal));
             if (traversalIndex == traversalByRef.end())
               continue;
             options.push_back({*attachmentIndex, traversalIndex->second});

@@ -7,7 +7,9 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
@@ -119,6 +121,10 @@ Attribute resourceUseKey(mapping::ResourceUseOp use) {
   return ArrayAttr::get(use.getContext(),
                         {use.getOwner(), use.getUseSite(), use.getActivation(),
                          use.getParameters(), use.getSharingAssignments()});
+}
+
+std::int64_t integerValue(Operation *operation, llvm::StringRef field) {
+  return operation->getAttrOfType<IntegerAttr>(field).getInt();
 }
 
 } // namespace
@@ -469,12 +475,22 @@ LogicalResult mapping::SpatialOp::verify() {
     return emitOpError("declarative block must not have arguments");
 
   llvm::SmallDenseSet<std::uint64_t, 8> computeBindings;
+  llvm::DenseMap<Attribute, llvm::SmallDenseSet<std::uint64_t, 8>> routeNodes;
   llvm::DenseSet<Attribute> resourceUses;
   llvm::SmallVector<mapping::ResourceUseOp, 8> deferredUses;
   for (Operation &child : getBody().front()) {
     if (auto binding = dyn_cast<mapping::ComputeBindingOp>(child)) {
       if (!computeBindings.insert(binding.getRealization().getEntity()).second)
         return binding.emitOpError("duplicates a ComputeBinding key");
+      continue;
+    }
+    if (auto route = dyn_cast<mapping::RouteTreeOp>(child)) {
+      auto [position, inserted] = routeNodes.try_emplace(route.getLogicalNet());
+      if (!inserted)
+        return route.emitOpError("duplicates a RouteTree logical-net key");
+      for (auto node : route.getBody().front().getOps<mapping::RouteNodeOp>())
+        position->second.insert(
+            static_cast<std::uint64_t>(integerValue(node, "node_ordinal")));
       continue;
     }
     if (auto use = dyn_cast<mapping::ResourceUseOp>(child)) {
@@ -488,12 +504,22 @@ LogicalResult mapping::SpatialOp::verify() {
   }
 
   for (mapping::ResourceUseOp use : deferredUses) {
-    auto compute = dyn_cast<mapping::ComputeRealizationRefAttr>(use.getOwner());
-    if (!compute)
-      return use.emitOpError(
-          "references a Spatial owner family not present in this root");
-    if (!computeBindings.contains(compute.getEntity()))
+    if (auto compute =
+            dyn_cast<mapping::ComputeRealizationRefAttr>(use.getOwner())) {
+      if (computeBindings.contains(compute.getEntity()))
+        continue;
       return use.emitOpError("references an absent ComputeBinding owner");
+    }
+    if (auto route = dyn_cast<mapping::RouteTreeNodeRefAttr>(use.getOwner())) {
+      auto nodes = routeNodes.find(route.getLogicalNet());
+      if (nodes == routeNodes.end())
+        return use.emitOpError("references an absent RouteTree owner");
+      if (!nodes->second.contains(route.getNodeOrdinal()))
+        return use.emitOpError("references an absent RouteTree node owner");
+      continue;
+    }
+    return use.emitOpError(
+        "references a Spatial owner family not present in this root");
   }
   return success();
 }
@@ -504,6 +530,119 @@ LogicalResult mapping::ComputeBindingOp::verify() {
     return failure();
   if (failed(verifyPhysicalRefinements(*this, getRefinements())))
     return failure();
+  return success();
+}
+
+LogicalResult mapping::RouteTreeOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"logical_net", "root_endpoint"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+
+  llvm::DenseMap<std::uint64_t, mapping::RouteNodeOp> nodes;
+  llvm::DenseSet<Attribute> sinks;
+  llvm::DenseSet<Attribute> incomingArcs;
+  llvm::SmallVector<std::uint64_t, 8> roots;
+  for (Operation &child : getBody().front()) {
+    if (auto node = dyn_cast<mapping::RouteNodeOp>(child)) {
+      const std::int64_t ordinal = integerValue(node, "node_ordinal");
+      if (ordinal < 0)
+        return node.emitOpError("node ordinal must be nonnegative");
+      if (!nodes.try_emplace(static_cast<std::uint64_t>(ordinal), node).second)
+        return node.emitOpError("duplicates a route-node ordinal");
+
+      auto parent = node->getAttrOfType<IntegerAttr>("parent_node_ordinal");
+      auto traversal = node.getIncomingTraversalAttr();
+      if (static_cast<bool>(parent) != static_cast<bool>(traversal))
+        return node.emitOpError(
+            "parent and incoming traversal must be present together");
+      if (!parent) {
+        roots.push_back(static_cast<std::uint64_t>(ordinal));
+        continue;
+      }
+      if (parent.getInt() < 0)
+        return node.emitOpError("parent node ordinal must be nonnegative");
+      Attribute arc = ArrayAttr::get(getContext(), {parent, traversal});
+      if (!incomingArcs.insert(arc).second)
+        return node.emitOpError(
+            "duplicates a parent and incoming-traversal arc");
+      continue;
+    }
+    if (auto sink = dyn_cast<mapping::RouteSinkOp>(child)) {
+      if (!sinks.insert(sink.getSink()).second)
+        return sink.emitOpError("duplicates a sink obligation");
+      continue;
+    }
+    return child.emitOpError("is not a closed RouteTree record kind");
+  }
+
+  if (nodes.empty())
+    return emitOpError("must contain at least one route node");
+  if (roots.size() != 1)
+    return emitOpError("must contain exactly one root route node");
+  if (sinks.empty())
+    return emitOpError("must contain at least one sink attachment");
+
+  for (auto [ordinal, node] : nodes) {
+    (void)ordinal;
+    auto parent = node->getAttrOfType<IntegerAttr>("parent_node_ordinal");
+    if (parent && !nodes.contains(static_cast<std::uint64_t>(parent.getInt())))
+      return node.emitOpError("references an absent parent route node");
+  }
+  for (auto sink : getBody().front().getOps<mapping::RouteSinkOp>()) {
+    const std::int64_t ordinal = integerValue(sink, "node_ordinal");
+    if (ordinal < 0)
+      return sink.emitOpError("node ordinal must be nonnegative");
+    if (!nodes.contains(static_cast<std::uint64_t>(ordinal)))
+      return sink.emitOpError("references an absent route node");
+  }
+
+  llvm::DenseMap<std::uint64_t, std::uint8_t> visitState;
+  for (auto [start, unused] : nodes) {
+    (void)unused;
+    llvm::SmallVector<std::uint64_t, 8> path;
+    std::uint64_t current = start;
+    while (visitState.lookup(current) == 0) {
+      visitState[current] = 1;
+      path.push_back(current);
+      auto parent = nodes.lookup(current)->getAttrOfType<IntegerAttr>(
+          "parent_node_ordinal");
+      if (!parent)
+        break;
+      current = static_cast<std::uint64_t>(parent.getInt());
+    }
+    if (visitState.lookup(current) == 1 && current != roots.front())
+      return emitOpError("route-node parent relation contains a cycle");
+    for (std::uint64_t ordinal : path)
+      visitState[ordinal] = 2;
+  }
+  return success();
+}
+
+LogicalResult mapping::RouteNodeOp::verify() {
+  if (failed(rejectUnknownAttributes(*this,
+                                     {"node_ordinal", "parent_node_ordinal",
+                                      "incoming_traversal", "refinements"})))
+    return failure();
+  if (integerValue(*this, "node_ordinal") < 0)
+    return emitOpError("node ordinal must be nonnegative");
+  auto parent = (*this)->getAttrOfType<IntegerAttr>("parent_node_ordinal");
+  if (parent && parent.getInt() < 0)
+    return emitOpError("parent node ordinal must be nonnegative");
+  if (static_cast<bool>(parent) !=
+      static_cast<bool>(getIncomingTraversalAttr()))
+    return emitOpError(
+        "parent and incoming traversal must be present together");
+  return verifyPhysicalRefinements(*this, getRefinements());
+}
+
+LogicalResult mapping::RouteSinkOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"sink", "node_ordinal"})))
+    return failure();
+  if (integerValue(*this, "node_ordinal") < 0)
+    return emitOpError("node ordinal must be nonnegative");
   return success();
 }
 

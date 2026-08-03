@@ -32,6 +32,8 @@ using loom::ArtifactStore;
 using loom::adg::DesignBuilder;
 using loom::adg::FifoSpec;
 using loom::adg::PortType;
+using loom::adg::SpatialValue;
+using loom::adg::SwitchSpec;
 using loom::fabric::FabricFuCapabilityTemplateRef;
 using loom::fabric::FabricFuNodeKind;
 using loom::fabric::FabricFuOccurrenceRef;
@@ -76,6 +78,15 @@ void requireRejected(llvm::StringRef test, llvm::Expected<T> value,
   if (value)
     fail(test, "invalid handshake selection was accepted");
   const std::string message = llvm::toString(value.takeError());
+  if (!llvm::StringRef(message).contains(expected))
+    fail(test, "unexpected rejection: " + message);
+}
+
+void requireRejected(llvm::StringRef test, llvm::Error error,
+                     llvm::StringRef expected) {
+  if (!error)
+    fail(test, "invalid handshake selection was accepted");
+  const std::string message = llvm::toString(std::move(error));
   if (!llvm::StringRef(message).contains(expected))
     fail(test, "unexpected rejection: " + message);
 }
@@ -411,6 +422,76 @@ void unconditionalReadyCycleIsRejectedBeforePublication() {
     fail(test, llvm::toString(std::move(error)));
   requireRejected(test, std::move(design).finalize(),
                   "UnconditionalCombinationalHandshakeCycle");
+}
+
+void selectedGlobalCycleUsesExactTraversalSelection() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const PortType bits32 = take(test, PortType::bits(32));
+  auto spatial = take(
+      test, design.createSpatialCore("selected-cycle", {bits32}, {bits32}));
+  auto external = take(test, spatial.input(0));
+  auto backedge = take(test, spatial.createBackedge(bits32));
+  auto routed =
+      take(test, spatial.addSwitch({external, backedge.value()},
+                                   SwitchSpec::spatial({bits32, bits32},
+                                                       {bits32, bits32},
+                                                       {{0, 1}, {0, 1}})));
+  SpatialValue feedback =
+      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}));
+  if (llvm::Error error =
+          spatial.resolveBackedge(std::move(backedge), feedback))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({routed[1]}))
+    fail(test, llvm::toString(std::move(error)));
+  auto completed = take(test, std::move(design).finalize());
+  require(test, completed.roots().size() == 1,
+          "fixture did not publish exactly one Fabric root");
+  const FinalizedFabricRoot &finalized = completed.roots().front();
+
+  std::vector<FabricPhysicalTraversalRef> acyclic;
+  std::vector<FabricPhysicalTraversalRef> cyclic;
+  std::optional<FabricPhysicalTraversalRef> bypass;
+  for (const auto &traversal : finalized.view().physicalTraversals()) {
+    if (traversal.reference.kind() ==
+        FabricPhysicalTraversalKind::SwitchTraversal) {
+      const auto &payload =
+          std::get<loom::fabric::FabricSwitchTraversalPayload>(
+              traversal.reference.payload);
+      if (payload.input == 0)
+        acyclic.push_back(traversal.reference);
+      if ((payload.input == 1 && payload.output == 0) ||
+          (payload.input == 0 && payload.output == 1))
+        cyclic.push_back(traversal.reference);
+      continue;
+    }
+    if (traversal.reference.kind() !=
+        FabricPhysicalTraversalKind::FifoTraversal)
+      continue;
+    const auto &payload = std::get<loom::fabric::FabricFifoTraversalPayload>(
+        traversal.reference.payload);
+    if (payload.mode == loom::fabric::FabricFifoTraversalMode::Bypass)
+      bypass = traversal.reference;
+  }
+  require(test, acyclic.size() == 2 && cyclic.size() == 2 && bypass,
+          "fixture did not expose the exact switch and FIFO alternatives");
+
+  FabricHandshakeSelection legal;
+  legal.traversals = acyclic;
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              finalized.view(), legal))
+    fail(test, llvm::toString(std::move(error)));
+
+  FabricHandshakeSelection illegal;
+  illegal.traversals = cyclic;
+  illegal.traversals.push_back(*bypass);
+  requireRejected(test,
+                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                      finalized.view(), illegal),
+                  "SelectedCombinationalHandshakeCycle");
 }
 
 void atomicBoundaryRequiresItsCompleteLegSet() {
@@ -794,6 +875,10 @@ void fuSelectionUsesExactActorPortCorrespondence() {
 
   FabricHandshakeSelection selection;
   selection.fuCapabilities.push_back(selected);
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              module.view(), selection))
+    fail(test, llvm::toString(std::move(error)));
   const ResolvedHandshakeActivation activation =
       take(test, loom::fabric::resolveSelectedHandshake(*model, selection));
   require(test,
@@ -829,6 +914,7 @@ int main() {
   atomicBroadcastProjectionIsLinear(256);
   fifoModeOwnsItsExactCombinationalBreak();
   unconditionalReadyCycleIsRejectedBeforePublication();
+  selectedGlobalCycleUsesExactTraversalSelection();
   atomicBoundaryRequiresItsCompleteLegSet();
   registerFifoPathsAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();

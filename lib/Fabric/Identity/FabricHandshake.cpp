@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace loom::fabric {
@@ -37,6 +38,26 @@ std::vector<std::uint8_t> signalKey(const HandshakeSignalRef &signal) {
   std::vector<std::uint8_t> key = canonicalFabricBytes(signal.endpoint);
   key.insert(key.begin(), static_cast<std::uint8_t>(signal.signal));
   key.insert(key.begin(), 0);
+  return key;
+}
+
+std::vector<std::uint8_t> ownerKey(const FabricHandshakeOwner &owner) {
+  std::vector<std::uint8_t> key{static_cast<std::uint8_t>(owner.kind())};
+  std::visit(
+      [&](const auto &payload) {
+        using Payload = std::decay_t<decltype(payload)>;
+        if constexpr (std::is_same_v<Payload, FabricPointConnectionPayload>) {
+          const auto source = canonicalFabricBytes(payload.source);
+          const auto destination = canonicalFabricBytes(payload.destination);
+          key.insert(key.end(), source.begin(), source.end());
+          key.push_back(0xff);
+          key.insert(key.end(), destination.begin(), destination.end());
+        } else {
+          const auto bytes = canonicalFabricBytes(payload);
+          key.insert(key.end(), bytes.begin(), bytes.end());
+        }
+      },
+      owner.payload());
   return key;
 }
 
@@ -1314,6 +1335,153 @@ deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
   });
   result.erase(std::unique(result.begin(), result.end()), result.end());
   return result;
+}
+
+llvm::Error verifySelectedCombinationalHandshakeAcyclic(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection) {
+  auto models = compileHandshakeOwnerModels(view);
+  if (!models)
+    return models.takeError();
+
+  using OwnerKey = std::vector<std::uint8_t>;
+  std::map<OwnerKey, FabricHandshakeSelection> ownerSelections;
+  std::set<std::vector<std::uint8_t>> traversalKeys;
+  for (const FabricPhysicalTraversalRef &traversal : selection.traversals) {
+    if (!traversalKeys.insert(canonicalFabricBytes(traversal)).second)
+      return invalid("selected traversal relation contains a duplicate");
+    const auto owner = ownerOfTraversal(traversal);
+    if (!owner)
+      return invalid("selected traversal has no handshake owner");
+    ownerSelections[ownerKey(*owner)].traversals.push_back(traversal);
+  }
+  for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities) {
+    auto &local = ownerSelections[ownerKey(
+        FabricHandshakeOwner::fu(selected.occurrence()))];
+    if (!local.fuCapabilities.empty())
+      return invalid("selected FU capability relation repeats one occurrence");
+    local.fuCapabilities.push_back(selected);
+  }
+  std::set<std::vector<std::uint8_t>> memorySelections;
+  std::set<std::vector<std::uint8_t>> memoryPlacements;
+  for (const FabricMemoryHandshakeSelection &selected :
+       selection.memoryOperations) {
+    if (!memorySelections.insert(memorySelectionKey(selected)).second)
+      return invalid("selected memory operation relation contains a duplicate");
+    if (!memoryPlacements.insert(memoryPlacementKey(selected.placement()))
+             .second)
+      return invalid("selected memory operation placement is contradictory");
+    ownerSelections[ownerKey(FabricHandshakeOwner::memory(
+                        selected.capability().port.memory))]
+        .memoryOperations.push_back(selected);
+  }
+
+  std::map<std::vector<std::uint8_t>, std::size_t> boundaryNodes;
+  for (const HandshakeOwnerModel &model : *models)
+    for (const HandshakeOwnerNode &node : model.nodes())
+      if (node.boundarySignal)
+        boundaryNodes.try_emplace(signalKey(*node.boundarySignal), 0);
+  std::size_t nodeCount = 0;
+  for (auto &[key, ordinal] : boundaryNodes) {
+    (void)key;
+    ordinal = nodeCount++;
+  }
+
+  std::vector<std::vector<std::size_t>> modelNodes(models->size());
+  for (auto [modelOrdinal, model] : llvm::enumerate(*models)) {
+    auto &nodes = modelNodes[modelOrdinal];
+    nodes.reserve(model.nodes().size());
+    for (const HandshakeOwnerNode &node : model.nodes()) {
+      if (node.boundarySignal) {
+        auto found = boundaryNodes.find(signalKey(*node.boundarySignal));
+        if (found == boundaryNodes.end())
+          return invalid("selected handshake boundary node is absent");
+        nodes.push_back(found->second);
+      } else {
+        nodes.push_back(nodeCount++);
+      }
+    }
+  }
+
+  using Arc = std::pair<std::size_t, std::size_t>;
+  std::vector<Arc> arcs;
+  std::set<OwnerKey> consumedOwners;
+  for (auto [modelOrdinal, model] : llvm::enumerate(*models)) {
+    const OwnerKey key = ownerKey(model.owner());
+    const auto selected = ownerSelections.find(key);
+    if (selected != ownerSelections.end())
+      consumedOwners.insert(key);
+
+    std::vector<std::uint32_t> activeArcs;
+    if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence &&
+        (selected == ownerSelections.end() ||
+         selected->second.fuCapabilities.empty())) {
+      for (const HandshakeActivationFragment &fragment : model.fragments()) {
+        if (fragment.activationKind != HandshakeActivationKind::Always)
+          continue;
+        for (std::uint32_t index = 0; index < fragment.contributionCount;
+             ++index)
+          activeArcs.push_back(
+              model.fragmentContributionOrdinals()[fragment.contributionOffset +
+                                                   index]);
+      }
+    } else {
+      static const FabricHandshakeSelection empty;
+      auto active = resolveSelectedHandshake(
+          model, selected == ownerSelections.end() ? empty : selected->second);
+      if (!active)
+        return active.takeError();
+      activeArcs.assign(active->arcOrdinals().begin(),
+                        active->arcOrdinals().end());
+    }
+    for (std::uint32_t arcOrdinal : activeArcs) {
+      if (arcOrdinal >= model.arcs().size())
+        return invalid("selected handshake arc is out of range");
+      const HandshakeOwnerArc &arc = model.arcs()[arcOrdinal];
+      if (arc.source >= modelNodes[modelOrdinal].size() ||
+          arc.destination >= modelNodes[modelOrdinal].size())
+        return invalid("selected handshake arc endpoint is out of range");
+      arcs.emplace_back(modelNodes[modelOrdinal][arc.source],
+                        modelNodes[modelOrdinal][arc.destination]);
+    }
+  }
+  if (consumedOwners.size() != ownerSelections.size())
+    return invalid("selected handshake relation names a stale owner");
+  llvm::sort(arcs);
+  arcs.erase(std::unique(arcs.begin(), arcs.end()), arcs.end());
+
+  std::vector<std::size_t> offsets(nodeCount + 1, 0);
+  std::vector<std::size_t> indegree(nodeCount, 0);
+  for (const Arc &arc : arcs) {
+    ++offsets[arc.first + 1];
+    ++indegree[arc.second];
+  }
+  for (std::size_t node = 1; node < offsets.size(); ++node)
+    offsets[node] += offsets[node - 1];
+  std::vector<std::size_t> destinations(arcs.size());
+  std::vector<std::size_t> cursor(offsets.begin(), offsets.end() - 1);
+  for (const Arc &arc : arcs)
+    destinations[cursor[arc.first]++] = arc.second;
+
+  std::vector<std::size_t> worklist;
+  worklist.reserve(nodeCount);
+  for (std::size_t node = 0; node < nodeCount; ++node)
+    if (indegree[node] == 0)
+      worklist.push_back(node);
+  std::size_t visited = 0;
+  while (!worklist.empty()) {
+    const std::size_t node = worklist.back();
+    worklist.pop_back();
+    ++visited;
+    for (std::size_t cursor = offsets[node]; cursor < offsets[node + 1];
+         ++cursor) {
+      const std::size_t destination = destinations[cursor];
+      if (--indegree[destination] == 0)
+        worklist.push_back(destination);
+    }
+  }
+  if (visited != nodeCount)
+    return invalid("SelectedCombinationalHandshakeCycle");
+  return llvm::Error::success();
 }
 
 } // namespace loom::fabric

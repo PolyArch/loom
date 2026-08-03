@@ -27,6 +27,10 @@ add_executable(loom-spatial-mapping-wire-test
   SpatialMappingWireTest.cpp
 )
 
+add_executable(loom-spatial-mapping-artifact-test
+  SpatialMappingArtifactTest.cpp
+)
+
 target_link_libraries(loom-mapping-artifact-test PRIVATE
   LoomMappingArtifact
   MLIRIR
@@ -98,6 +102,23 @@ target_link_libraries(loom-tech-mapping-joint-legality-test PRIVATE
 target_link_libraries(loom-spatial-mapping-wire-test PRIVATE
   LoomMappingArtifact
   MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
+  LoomADGBuilder
+  LoomMappingArtifact
+  LoomPnR
+  LoomTechMapping
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMapping
+  MLIRMemRefDialect
   MLIRParser
   LLVMSupport
 )

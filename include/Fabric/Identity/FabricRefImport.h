@@ -151,6 +151,20 @@ struct FabricModuleBoundaryTransportAttachmentView final {
   }
 };
 
+/// One occurrence-local routing terminal reachable from an exact FU port
+/// through a Fabric-owned PE selector traversal. This sealed projection is
+/// indexed by the fixed occurrence port and is never persisted separately.
+struct FabricFuPortAttachmentView final {
+  FabricTransportEndpointRef endpoint;
+  FabricPhysicalTraversalRef localTraversal;
+
+  friend bool operator==(const FabricFuPortAttachmentView &lhs,
+                         const FabricFuPortAttachmentView &rhs) {
+    return lhs.endpoint == rhs.endpoint &&
+           lhs.localTraversal == rhs.localTraversal;
+  }
+};
+
 class FabricArtifactView;
 class FabricSystemRootView;
 
@@ -290,6 +304,11 @@ public:
   /// Invalid or out-of-range ports return no endpoint.
   std::optional<FabricTransportEndpointRef>
   fuOccurrenceTransportEndpoint(FabricFuOccurrencePortRef port) const;
+
+  /// Exact factorized terminal domain for one occurrence port. Invalid ports
+  /// and ports with no declared local attachment have an empty domain.
+  llvm::ArrayRef<FabricFuPortAttachmentView>
+  fuOccurrencePortAttachments(FabricFuOccurrencePortRef port) const;
 
   /// The FU template this occurrence was elaborated from.
   std::optional<FabricFuTemplateRef>
