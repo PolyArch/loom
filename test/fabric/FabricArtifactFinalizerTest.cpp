@@ -1070,9 +1070,25 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
           singleTemplates.front().activeNodes.size() == 1 &&
               singleTemplates.front().activeEdges.size() == 3,
           "single operation FU capability template is incomplete");
+  const loom::fabric::FabricFuTemplateNodeRef singleTemplateNode =
+      singleTemplates.front().activeNodes.front();
+  const loom::fabric::FabricFuOccurrenceNodeRef singleOccurrenceNode =
+      take(test, loom::fabric::deriveFabricFuOccurrenceNode(
+                     single.view(), singleTemplateNode, singleFuOccurrence));
+  if (llvm::Error error =
+          loom::fabric::validateFabricRef(single.view(), singleOccurrenceNode))
+    fail(test, llvm::toString(std::move(error)));
+  const loom::fabric::FabricInventoryOwnerRef singleOccurrenceNodeOwner =
+      loom::fabric::FabricInventoryOwnerRef::of(singleOccurrenceNode);
+  require(test,
+          single.view().resourceContract(singleOccurrenceNodeOwner) != nullptr,
+          "FU occurrence node lost its template-owned resource contract");
+  require(test,
+          llvm::is_contained(single.view().moduleResourceOwners(),
+                             singleOccurrenceNodeOwner),
+          "physical resource-owner inventory omitted an FU occurrence node");
   const loom::fabric::ResolvedFabricOpCapabilityView *singleCapability =
-      single.view().resolvedFabricOpCapability(
-          singleTemplates.front().activeNodes.front());
+      single.view().resolvedFabricOpCapability(singleTemplateNode);
   require(test, singleCapability != nullptr,
           "finalized Fabric lost the concrete operation capability");
   require(test,

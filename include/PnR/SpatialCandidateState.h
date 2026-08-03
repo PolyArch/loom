@@ -151,6 +151,7 @@ public:
   std::uint64_t unroutedObligationCount() const {
     return unroutedObligationCount_;
   }
+  std::uint64_t capacityOveruse() const { return capacityOveruse_; }
   std::uint64_t totalSelectedTraversalClaim() const {
     return routeResources_.totalSelectedTraversalClaim();
   }
@@ -189,7 +190,7 @@ private:
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
-      std::uint64_t unroutedObligationCount)
+      std::uint64_t unroutedObligationCount, std::uint64_t capacityOveruse)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
@@ -198,7 +199,8 @@ private:
         memoryOperationPlans_(std::move(memoryOperationPlans)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
         routeResources_(std::move(routeResources)),
-        unroutedObligationCount_(unroutedObligationCount) {}
+        unroutedObligationCount_(unroutedObligationCount),
+        capacityOveruse_(capacityOveruse) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -207,6 +209,7 @@ private:
   llvm::Error validateMemoryOperationPlan(PnrIndex actor) const;
   llvm::Error validateLogicalNet(PnrIndex logicalNet) const;
   llvm::Error verifyHandshakeProjection() const;
+  llvm::Expected<std::uint64_t> recomputeCapacityOveruse() const;
   PnrIndex terminalEndpoint(FrozenSpatialTerminalBinding binding) const;
   std::uint32_t
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
@@ -221,6 +224,7 @@ private:
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
   std::uint64_t unroutedObligationCount_ = 0;
+  std::uint64_t capacityOveruse_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialMoveTransaction;
@@ -292,6 +296,7 @@ private:
   bool routeDeltasCollected_ = false;
   bool routeViolationApplied_ = false;
   std::uint64_t initialUnroutedObligationCount_ = 0;
+  std::uint64_t initialCapacityOveruse_ = 0;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

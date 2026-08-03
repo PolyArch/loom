@@ -295,3 +295,91 @@ TemporalPeResourceContract::registerFifoReadPattern(std::uint32_t fifo) const {
   assert(fifo < registerFifoCount_ && "register FIFO ordinal out of range");
   return UsePatternKey(registerPatternOffset_ + registerFifoCount_ + fifo);
 }
+
+llvm::Expected<loom::fabric::FabricUsePatternRef>
+fabric::resolveTemporalPeOperandQueuePattern(
+    const loom::fabric::FabricArtifactView &view,
+    loom::fabric::InstructionContextRef context,
+    loom::fabric::FabricFuOccurrenceRef fu, loom::fabric::FabricOrdinal fuInput,
+    TemporalOperandQueueUse use) {
+  using namespace loom::fabric;
+
+  if (llvm::Error error = validateFabricRef(view, context))
+    return std::move(error);
+  if (llvm::Error error = validateFabricRef(view, fu))
+    return std::move(error);
+  if (view.peSchedule(context.pe) != Schedule::Temporal)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue owner is not a temporal PE");
+  if (view.parentPeOf(fu) != context.pe)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue FU belongs to a different PE");
+
+  std::uint64_t inputsPerContext = 0;
+  std::uint64_t inputPrefix = 0;
+  bool foundFu = false;
+  for (FabricFuOccurrenceRef candidate : view.fuOccurrences()) {
+    if (view.parentPeOf(candidate) != context.pe)
+      continue;
+    std::uint64_t candidateInputs = 0;
+    const FabricTransportEndpointOwnerRef owner =
+        FabricTransportEndpointOwnerRef::of(candidate);
+    for (FabricOrdinal ordinal = 0;
+         ordinal != view.transportEndpointCount(owner); ++ordinal) {
+      const FabricTransportEndpointRef endpoint{owner, ordinal};
+      if (view.transportEndpointDirection(endpoint) ==
+          FabricPortDirection::Input)
+        ++candidateInputs;
+    }
+    if (candidate == fu) {
+      foundFu = true;
+      if (fuInput >= candidateInputs)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "logical operand queue input is outside the FU domain");
+      inputPrefix = inputsPerContext;
+    }
+    inputsPerContext += candidateInputs;
+  }
+  if (!foundFu)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue FU is absent from its PE inventory");
+
+  const std::uint64_t contextCount = view.peResidentContextCount(context.pe);
+  if (context.ordinal >= contextCount)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue context is outside the PE domain");
+  if (inputsPerContext == 0 ||
+      inputsPerContext > std::numeric_limits<std::uint32_t>::max() ||
+      contextCount > std::numeric_limits<std::uint32_t>::max() ||
+      contextCount * inputsPerContext >
+          std::numeric_limits<std::uint32_t>::max())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue domain exceeds the owner key domain");
+
+  const std::uint32_t queueCount =
+      static_cast<std::uint32_t>(contextCount * inputsPerContext);
+  const std::uint32_t queue = static_cast<std::uint32_t>(
+      context.ordinal * inputsPerContext + inputPrefix + fuInput);
+  const std::uint32_t patternOrdinal =
+      queue + (use == TemporalOperandQueueUse::Dequeue ? queueCount : 0);
+  const FabricInventoryOwnerRef peOwner =
+      FabricInventoryOwnerRef::of(context.pe);
+  const ResourceContract *contract = view.resourceContract(peOwner);
+  if (!contract || patternOrdinal >= contract->usePatternCount())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue pattern is absent from the PE contract");
+  const UsePattern pattern =
+      contract->usePattern(UsePatternKey(patternOrdinal));
+  if (pattern.requester.ordinal() != queue || pattern.claims.size() != 1)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "logical operand queue pattern disagrees with its canonical key");
+  return FabricUsePatternRef{FabricUsePatternOwnerRef(peOwner), patternOrdinal};
+}

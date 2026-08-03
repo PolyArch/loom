@@ -860,9 +860,10 @@ void artifactRoundTripAndReferenceValidation() {
           loom::ResolvedPnrViolationKind::UnroutedObligation)) !=
           initialUnroutedObligations)
     fail("initial candidate lost explicit unrouted sink obligations");
-  if (!rejected(loom::pnr::spatialMappingViolationValue(
-          *spatialCandidate, loom::ResolvedPnrViolationKind::CapacityOveruse)))
-    fail("unowned Spatial violation was projected as an exact value");
+  if (take(loom::pnr::spatialMappingViolationValue(
+          *spatialCandidate,
+          loom::ResolvedPnrViolationKind::CapacityOveruse)) != 0)
+    fail("legal builtin resource envelopes gained capacity overuse");
   std::optional<loom::pnr::PnrIndex> routedNet;
   for (auto [netOrdinal, net] :
        llvm::enumerate(frozen->transfers().logicalNets())) {
@@ -1671,12 +1672,7 @@ void computeBoundaryClosure() {
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflowView = take(dataflowArtifact.view());
 
-  loom::adg::DesignBuilder builder(store);
-  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      builder, loom::adg::BuiltinTargetPreset::Small));
-  if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
-    fail(llvm::toString(std::move(error)));
-  auto design = take(std::move(builder).finalize());
+  auto design = loom::test::buildTemporalCapacityFabric(store);
   const auto &fabricRoot = design.roots().front();
   const auto selected =
       selectComputeCapability(computeActor(dataflowView), fabricRoot.view());
@@ -1713,6 +1709,7 @@ void computeBoundaryClosure() {
       handshake.computePlacementFragments().empty())
     fail("compute freeze omitted exact placement handshake fragments");
   loom::test::exerciseHandshakeCandidateRefcounts(frozen);
+  loom::test::exerciseCapacityOveruseCandidate(frozen);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");

@@ -41,6 +41,17 @@ llvm::Error increment(PnrIndex &value, PnrIndex amount,
   return llvm::Error::success();
 }
 
+llvm::Error replaceContribution(std::uint64_t oldValue, std::uint64_t newValue,
+                                std::uint64_t &total, llvm::StringRef subject) {
+  if (oldValue > total)
+    return candidateError(subject + " is inconsistent with its total");
+  const std::uint64_t base = total - oldValue;
+  if (newValue > std::numeric_limits<std::uint64_t>::max() - base)
+    return candidateError(subject + " total overflows u64");
+  total = base + newValue;
+  return llvm::Error::success();
+}
+
 void advanceEpoch(std::uint64_t &epoch,
                   llvm::ArrayRef<std::vector<std::uint64_t> *> marks) {
   if (++epoch != 0)
@@ -296,7 +307,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(portAttachments), std::move(graphBoundaryAttachments),
       std::move(memoryOperationPlans), std::move(routeTrees),
       std::move(*handshake), std::move(*routeResources),
-      unroutedObligationCount));
+      unroutedObligationCount, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
       return std::move(error);
@@ -322,6 +333,10 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
           candidate->portAttachments_, candidate->memoryOperationPlans_,
           *candidate->handshake_))
     return std::move(error);
+  auto capacityOveruse = candidate->recomputeCapacityOveruse();
+  if (!capacityOveruse)
+    return capacityOveruse.takeError();
+  candidate->capacityOveruse_ = *capacityOveruse;
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -635,6 +650,31 @@ llvm::Error SpatialCandidateState::verifyHandshakeProjection() const {
   return llvm::Error::success();
 }
 
+llvm::Expected<std::uint64_t>
+SpatialCandidateState::recomputeCapacityOveruse() const {
+  const auto compute = problem_->capacity().computeInstructionContextOveruse();
+  const auto memory = problem_->capacity().memoryOperationPlanOveruse();
+  std::uint64_t total = 0;
+  for (const SpatialComputeBindingSelection &binding : computeBindings_) {
+    if (binding.instructionContext >= compute.size())
+      return candidateError(
+          "compute binding has no capacity-envelope projection");
+    if (compute[binding.instructionContext] >
+        std::numeric_limits<std::uint64_t>::max() - total)
+      return candidateError("capacity overuse total overflows u64");
+    total += compute[binding.instructionContext];
+  }
+  for (PnrIndex plan : memoryOperationPlans_) {
+    if (plan >= memory.size())
+      return candidateError(
+          "memory operation plan has no capacity-envelope projection");
+    if (memory[plan] > std::numeric_limits<std::uint64_t>::max() - total)
+      return candidateError("capacity overuse total overflows u64");
+    total += memory[plan];
+  }
+  return total;
+}
+
 llvm::Error SpatialCandidateState::verify() const {
   if (activeTransaction_)
     return candidateError("cannot verify during a move");
@@ -682,6 +722,12 @@ llvm::Error SpatialCandidateState::verify() const {
   if (unroutedObligationCount_ != expectedUnroutedObligationCount)
     return candidateError(
         "unrouted obligation count diverges from RouteTree state");
+  auto expectedCapacityOveruse = recomputeCapacityOveruse();
+  if (!expectedCapacityOveruse)
+    return expectedCapacityOveruse.takeError();
+  if (capacityOveruse_ != *expectedCapacityOveruse)
+    return candidateError(
+        "capacity overuse diverges from selected resource envelopes");
   if (llvm::Error error = routeResources_.verify(routeTrees_))
     return error;
   return verifyHandshakeProjection();
@@ -719,7 +765,8 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
 SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialCandidateStateHandle state, SpatialCandidateScratch &scratch)
     : state_(std::move(state)), scratch_(&scratch),
-      initialUnroutedObligationCount_(state_->unroutedObligationCount_) {
+      initialUnroutedObligationCount_(state_->unroutedObligationCount_),
+      initialCapacityOveruse_(state_->capacityOveruse_) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -730,7 +777,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       closed_(other.closed_), cycle_(other.cycle_),
       routeDeltasCollected_(other.routeDeltasCollected_),
       routeViolationApplied_(other.routeViolationApplied_),
-      initialUnroutedObligationCount_(other.initialUnroutedObligationCount_) {
+      initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
+      initialCapacityOveruse_(other.initialCapacityOveruse_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -917,6 +965,12 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
                                 state_->problem_->handshake(), placement)))
       return error;
   }
+  const auto overuse =
+      state_->problem_->capacity().computeInstructionContextOveruse();
+  if (llvm::Error error = replaceContribution(
+          overuse[old.instructionContext], overuse[instructionContext],
+          state_->capacityOveruse_, "compute capacity overuse"))
+    return error;
   state_->computeBindings_[realization] = {placement, instructionContext};
   return llvm::Error::success();
 }
@@ -1012,6 +1066,12 @@ llvm::Error SpatialMoveTransaction::setMemoryOperationPlan(PnrIndex actor,
   if (llvm::Error error = changeFragments(
           memoryPlanFragments(state_->problem_->handshake(), old),
           memoryPlanFragments(state_->problem_->handshake(), plan)))
+    return error;
+  const auto overuse =
+      state_->problem_->capacity().memoryOperationPlanOveruse();
+  if (llvm::Error error = replaceContribution(overuse[old], overuse[plan],
+                                              state_->capacityOveruse_,
+                                              "memory capacity overuse"))
     return error;
   state_->memoryOperationPlans_[actor] = plan;
   return llvm::Error::success();
@@ -1208,6 +1268,7 @@ void SpatialMoveTransaction::rollback() noexcept {
       scratch_->routeTransactions_[logicalNet]->rollback();
   if (scratch_->handshakeTransaction_)
     scratch_->handshakeTransaction_->rollback();
+  state_->capacityOveruse_ = initialCapacityOveruse_;
 
   for (const SpatialCandidateScratch::DecisionDelta &delta :
        llvm::reverse(scratch_->decisionDeltas_)) {

@@ -11,6 +11,7 @@ add_mlir_library(LoomPnR
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
   SpatialNetRouter.cpp
+  SpatialPnrCapacityIndex.cpp
   SpatialPathFinderRouter.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrPortIndex.cpp
@@ -25,6 +26,7 @@ add_mlir_library(LoomPnR
 
   LINK_LIBS PUBLIC
   LoomFabricIdentity
+  LoomFabricTemporalOperandBuffer
   LoomDSEObjective
   LoomMappingArtifact
   LLVMSupport

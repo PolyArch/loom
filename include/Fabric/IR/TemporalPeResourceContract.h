@@ -2,6 +2,7 @@
 #define FABRIC_IR_TEMPORALPERESOURCECONTRACT_H
 
 #include "Fabric/IR/TemporalOperandBuffer.h"
+#include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -10,6 +11,8 @@
 #include <system_error>
 
 namespace fabric {
+
+enum class TemporalOperandQueueUse : std::uint32_t { Enqueue, Dequeue };
 
 /// The complete resource declaration of one temporal PE. Operand buffering
 /// and register FIFOs are parts of the same physical owner and therefore share
@@ -105,6 +108,17 @@ resolveTemporalPeRegisterFifoPattern(const ResourceContract &contract,
         "register FIFO pattern disagrees with its canonical state");
   return UsePatternKey(ordinal);
 }
+
+/// Resolves one exact logical operand queue through a sealed Fabric view. The
+/// FU occurrence ordinal and queue ordinal are derived from the canonical
+/// occurrence and port inventories used by temporal-PE finalization; Mapping
+/// never reproduces that layout.
+llvm::Expected<loom::fabric::FabricUsePatternRef>
+resolveTemporalPeOperandQueuePattern(
+    const loom::fabric::FabricArtifactView &view,
+    loom::fabric::InstructionContextRef context,
+    loom::fabric::FabricFuOccurrenceRef fu, loom::fabric::FabricOrdinal fuInput,
+    TemporalOperandQueueUse use);
 
 } // namespace fabric
 

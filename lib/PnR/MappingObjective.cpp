@@ -53,6 +53,7 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   case ResolvedPnrViolationKind::UnroutedObligation:
     return candidate.unroutedObligationCount();
   case ResolvedPnrViolationKind::CapacityOveruse:
+    return candidate.capacityOveruse();
   case ResolvedPnrViolationKind::ResourceTimeOverbooking:
   case ResolvedPnrViolationKind::BufferOveruse:
   case ResolvedPnrViolationKind::TagUnassigned:

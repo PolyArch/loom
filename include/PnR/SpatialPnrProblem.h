@@ -367,6 +367,26 @@ private:
   friend class FrozenSpatialResourceIndexBuilder;
 };
 
+/// Dense, cache-only projection of immediate atomic capacity envelopes. Each
+/// entry is the exact raw overuse selected by one hot Candidate decision; the
+/// Fabric ResourceContract remains the sole owner of capacities, claims, and
+/// event semantics.
+class FrozenSpatialCapacityIndex final {
+public:
+  llvm::ArrayRef<std::uint64_t> computeInstructionContextOveruse() const {
+    return computeInstructionContextOveruse_;
+  }
+  llvm::ArrayRef<std::uint64_t> memoryOperationPlanOveruse() const {
+    return memoryOperationPlanOveruse_;
+  }
+
+private:
+  std::vector<std::uint64_t> computeInstructionContextOveruse_;
+  std::vector<std::uint64_t> memoryOperationPlanOveruse_;
+
+  friend class FrozenSpatialCapacityIndexBuilder;
+};
+
 struct FrozenSpatialRoutingEndpoint final {
   ::loom::fabric::FabricTransportEndpointRef reference;
   ::loom::fabric::FabricPortDirection direction;
@@ -650,6 +670,7 @@ public:
   const FrozenSpatialTransferIndex &transfers() const { return transfers_; }
   const FrozenSpatialPortIndex &ports() const { return ports_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
+  const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
@@ -663,8 +684,9 @@ private:
       FrozenConstraintIndex constraints,
       FrozenSpatialRealizationIndex realizations,
       FrozenSpatialTransferIndex transfers, FrozenSpatialPortIndex ports,
-      FrozenSpatialResourceIndex resources, FrozenSpatialRoutingGraph routing,
-      FrozenSpatialHandshakeIndex handshake, FrozenSpatialPnrCacheKey cacheKey)
+      FrozenSpatialResourceIndex resources, FrozenSpatialCapacityIndex capacity,
+      FrozenSpatialRoutingGraph routing, FrozenSpatialHandshakeIndex handshake,
+      FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
@@ -673,8 +695,9 @@ private:
         constraints_(std::move(constraints)),
         realizations_(std::move(realizations)),
         transfers_(std::move(transfers)), ports_(std::move(ports)),
-        resources_(std::move(resources)), routing_(std::move(routing)),
-        handshake_(std::move(handshake)), cacheKey_(cacheKey) {}
+        resources_(std::move(resources)), capacity_(std::move(capacity)),
+        routing_(std::move(routing)), handshake_(std::move(handshake)),
+        cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -687,6 +710,7 @@ private:
   FrozenSpatialTransferIndex transfers_;
   FrozenSpatialPortIndex ports_;
   FrozenSpatialResourceIndex resources_;
+  FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
   FrozenSpatialPnrCacheKey cacheKey_;

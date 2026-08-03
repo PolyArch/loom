@@ -1,6 +1,7 @@
 #include "FabricHandshakeInternal.h"
 
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -119,14 +120,10 @@ llvm::Expected<std::uint32_t> operationPortNode(
 llvm::Expected<bool>
 isRegisteredCase(const ::fabric::ResourceContract &contract,
                  std::uint32_t caseOrdinal) {
-  if (contract.usePatternCount() == 0)
-    return invalid("fabric.op resource contract has no use pattern");
-  const std::uint32_t patternOrdinal =
-      contract.usePatternCount() == 1 ? 0 : caseOrdinal;
-  if (patternOrdinal >= contract.usePatternCount())
-    return invalid("fabric.op transition case has no resource use pattern");
-  const ::fabric::UsePattern pattern =
-      contract.usePattern(::fabric::UsePatternKey(patternOrdinal));
+  auto patternKey = ::fabric::resolveOperationUsePattern(contract, caseOrdinal);
+  if (!patternKey)
+    return patternKey.takeError();
+  const ::fabric::UsePattern pattern = contract.usePattern(*patternKey);
   const auto eventOrder = contract.eventOrder(pattern.timingAndProgress);
   if (pattern.acquire.ordinal() >= eventOrder.size() ||
       pattern.release.ordinal() >= eventOrder.size())

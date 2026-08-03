@@ -22,6 +22,14 @@ const ResourceContract &loopCarryOperationResourceContract();
 const ResourceContract &loopInvariantOperationResourceContract();
 const ResourceContract &loopGateOperationResourceContract();
 
+/// Resolves one schema-owned actor transition case to the exact physical use
+/// pattern selected by a concrete fabric.op contract. A single-pattern
+/// contract shares that pattern across every transition case; otherwise the
+/// canonical case ordinal selects the pattern directly.
+llvm::Expected<UsePatternKey>
+resolveOperationUsePattern(const ResourceContract &contract,
+                           std::uint32_t transitionCaseOrdinal);
+
 UsePatternKey
 loopControlUsePattern(::dataflow::semantics::StreamCase transition);
 UsePatternKey

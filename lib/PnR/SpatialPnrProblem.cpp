@@ -1,6 +1,7 @@
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/RoutingNegotiation.h"
 
+#include "SpatialPnrCapacityIndex.h"
 #include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
@@ -113,12 +114,12 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.5\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.6\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 5;
+constexpr std::uint32_t cacheSchemaMinor = 6;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.5";
+    "loom.spatial_pnr.freeze.2.6";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
@@ -318,8 +319,14 @@ public:
         dataflow, techMapping, fabric, *realizations, *resources, *routing);
     if (!handshake)
       return handshake.takeError();
-    if (llvm::Error error = verifyAggregate(*realizations, *transfers, *ports,
-                                            *resources, *routing, *handshake))
+    auto capacity = detail::buildFrozenSpatialCapacityIndex(
+        dataflow, techMapping, fabric, *realizations, *resources, *routing,
+        *handshake);
+    if (!capacity)
+      return capacity.takeError();
+    if (llvm::Error error =
+            verifyAggregate(*realizations, *transfers, *ports, *resources,
+                            *capacity, *routing, *handshake))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -332,7 +339,8 @@ public:
         constraintSet.identity(), config, std::move(workBudget),
         std::move(*constraints), std::move(*realizations),
         std::move(*transfers), std::move(*ports), std::move(*resources),
-        std::move(*routing), std::move(*handshake), cacheKey));
+        std::move(*capacity), std::move(*routing), std::move(*handshake),
+        cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -373,6 +381,7 @@ public:
                   const FrozenSpatialTransferIndex &transfers,
                   const FrozenSpatialPortIndex &ports,
                   const FrozenSpatialResourceIndex &resources,
+                  const FrozenSpatialCapacityIndex &capacity,
                   const FrozenSpatialRoutingGraph &routing,
                   const FrozenSpatialHandshakeIndex &handshake) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
@@ -391,6 +400,11 @@ public:
         realizations.memoryActorRealizations().size() !=
             realizations.memoryActors().size())
       return invalid("actor-owner reverse projections are incomplete");
+    if (capacity.computeInstructionContextOveruse().size() !=
+            realizations.computeInstructionContexts().size() ||
+        capacity.memoryOperationPlanOveruse().size() !=
+            handshake.memoryOperationPlans().size())
+      return invalid("capacity envelope projection is incomplete");
 
     for (auto [ordinal, realization] :
          llvm::enumerate(realizations.computeRealizations())) {

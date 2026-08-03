@@ -635,6 +635,12 @@ std::uint64_t FabricArtifactView::memoryEndpointCount(
 std::uint64_t
 FabricArtifactView::inventorySize(const FabricInventoryOwnerRef &owner,
                                   FabricInventoryKind inventory) const {
+  if (inventory == FabricInventoryKind::FuNode &&
+      owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
+    const auto *nodes =
+        storage_->fuNodes(std::get<FabricFuOccurrenceRef>(owner.payload));
+    return nodes ? nodes->size() : 0;
+  }
   const detail::FabricNestedOwnerViewData *resolved =
       storage_->inventoryOwner(owner);
   if (!resolved)

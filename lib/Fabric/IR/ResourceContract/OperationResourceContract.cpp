@@ -121,6 +121,22 @@ const fabric::ResourceContract &fabric::loopGateOperationResourceContract() {
   return contract;
 }
 
+llvm::Expected<fabric::UsePatternKey>
+fabric::resolveOperationUsePattern(const ResourceContract &contract,
+                                   std::uint32_t transitionCaseOrdinal) {
+  if (contract.usePatternCount() == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fabric.op resource contract has no use pattern");
+  const std::uint32_t ordinal =
+      contract.usePatternCount() == 1 ? 0 : transitionCaseOrdinal;
+  if (ordinal >= contract.usePatternCount())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "fabric.op transition case has no resource use pattern");
+  return UsePatternKey(ordinal);
+}
+
 fabric::UsePatternKey
 fabric::loopControlUsePattern(::dataflow::semantics::StreamCase transition) {
   return usePattern(transition);
