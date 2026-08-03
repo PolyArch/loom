@@ -1,6 +1,5 @@
 #include "PnR/SpatialMappingMaterializer.h"
 
-#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -523,26 +522,6 @@ llvm::Error materializeComputeResourceUses(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::uint32_t>
-memoryIssueTransition(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                      ::dataflow::ActorRef actor) {
-  auto resolved = dataflow.resolve(actor);
-  if (!resolved)
-    return resolved.takeError();
-  auto projection =
-      ::dataflow::projectRegisteredActorSchemaProjection(resolved->op);
-  if (!projection)
-    return projection.takeError();
-  auto transitions = ::dataflow::semantics::projectActorHandshakeCases(
-      projection->schema, resolved->op->getNumOperands(),
-      resolved->op->getNumResults());
-  if (!transitions)
-    return transitions.takeError();
-  if (transitions->size() != 1 || transitions->front().ordinal != 0)
-    return invalid("memory actor has no unique issue transition");
-  return transitions->front().ordinal;
-}
-
 llvm::Error materializeMemoryResourceUses(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
     const SpatialCandidateState &candidate,
@@ -561,12 +540,12 @@ llvm::Error materializeMemoryResourceUses(
       if (actorOrdinal >= realizations.memoryActors().size())
         return invalid("memory ResourceUse actor is out of range");
       const auto &actor = realizations.memoryActors()[actorOrdinal];
-      auto transition = memoryIssueTransition(dataflow, actor.actor);
-      if (!transition)
-        return transition.takeError();
+      auto issue =
+          ::loom::mapping::deriveSpatialMemoryIssueEvent(dataflow, actor.actor);
+      if (!issue)
+        return issue.takeError();
       const ::loom::mapping::SpatialActivityEventRef trigger =
-          ::loom::mapping::SpatialActorTransitionEventRef{actor.actor,
-                                                          *transition};
+          std::move(*issue);
       const PnrIndex plan = candidate.memoryOperationPlan(actorOrdinal);
       if (plan >= plans.size() || plans[plan].usePattern >= patterns.size())
         return invalid("memory ResourceUse operation plan is out of range");

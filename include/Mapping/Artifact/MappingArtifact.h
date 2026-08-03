@@ -340,6 +340,13 @@ struct SpatialActorTransitionEventRef final {
   }
 };
 
+/// Derives the unique issue transition owned by one canonical memory actor.
+/// This is the sole Mapping projection used by strict import, materialization,
+/// and PnR event indexing.
+llvm::Expected<SpatialActorTransitionEventRef> deriveSpatialMemoryIssueEvent(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::ActorRef actor);
+
 using SpatialActivityEventRef =
     std::variant<SpatialActorTransitionEventRef,
                  ::dataflow::CanonicalGraphProducerEndpointRef,

@@ -421,6 +421,10 @@ public:
             realizations.computeInstructionContexts().size() + 1 ||
         capacity.memoryOperationPlanOveruse().size() !=
             handshake.memoryOperationPlans().size() ||
+        capacity.memoryOperationPlanEnvelopes().size() !=
+            handshake.memoryOperationPlans().size() ||
+        capacity.memoryServiceGroupEnvelopeOffsets().size() !=
+            memory.serviceUseGroups().size() + 1 ||
         capacity.memoryDispatchOptionOveruse().size() !=
             memory.dispatchOptions().size() ||
         capacity.memoryDispatchOptionPatterns().size() !=
@@ -445,8 +449,54 @@ public:
     const auto envelopeOffsets =
         capacity.computeInstructionContextEnvelopeOffsets();
     if (envelopeOffsets.empty() || envelopeOffsets.front() != 0 ||
-        envelopeOffsets.back() != capacity.resourceTimeEnvelopes().size())
+        envelopeOffsets.back() > capacity.resourceTimeEnvelopes().size())
       return invalid("resource-time envelope offsets are incomplete");
+    const auto verifyEnvelope =
+        [&](const FrozenSpatialResourceTimeEnvelope &envelope)
+        -> llvm::Expected<std::uint64_t> {
+      if (envelope.event >= capacity.resourceEvents().size() ||
+          !rangeFits(envelope.useOffset, envelope.useCount,
+                     capacity.resourceUses().size()) ||
+          !rangeFits(envelope.segmentOffset, envelope.segmentCount,
+                     capacity.resourceTimeSegments().size()) ||
+          envelope.useCount == 0)
+        return invalid("resource-time envelope slices are inconsistent");
+      for (const FrozenSpatialResourceUse &use :
+           capacity.resourceUses().slice(envelope.useOffset, envelope.useCount))
+        if (use.event != envelope.event ||
+            use.pattern >= resources.usePatterns().size())
+          return invalid("resource-time use projection is inconsistent");
+
+      llvm::SmallDenseMap<PnrIndex, std::uint64_t, 8> maximumOveruse;
+      for (const FrozenSpatialResourceTimeSegment &segment :
+           capacity.resourceTimeSegments().slice(envelope.segmentOffset,
+                                                 envelope.segmentCount)) {
+        if (segment.capacityDimension >=
+                resources.capacityDimensions().size() ||
+            segment.beginRank >= segment.endRank)
+          return invalid("resource-time segment is invalid");
+        const auto &dimension =
+            resources.capacityDimensions()[segment.capacityDimension];
+        const std::uint64_t expected =
+            segment.usageRaw > dimension.capacity
+                ? segment.usageRaw - dimension.capacity
+                : 0;
+        if (segment.overuseRaw != expected)
+          return invalid("resource-time segment overuse is inconsistent");
+        std::uint64_t &maximum = maximumOveruse[segment.capacityDimension];
+        maximum = std::max(maximum, segment.overuseRaw);
+      }
+      std::uint64_t envelopeOveruse = 0;
+      for (const auto &entry : maximumOveruse) {
+        if (entry.second >
+            std::numeric_limits<std::uint64_t>::max() - envelopeOveruse)
+          return invalid("resource-time envelope overuse overflows u64");
+        envelopeOveruse += entry.second;
+      }
+      if (envelopeOveruse != envelope.capacityOveruse)
+        return invalid("resource-time envelope overuse is inconsistent");
+      return envelopeOveruse;
+    };
     for (PnrIndex context = 0;
          context < realizations.computeInstructionContexts().size();
          ++context) {
@@ -457,60 +507,150 @@ public:
            capacity.resourceTimeEnvelopes().slice(
                envelopeOffsets[context],
                envelopeOffsets[context + 1] - envelopeOffsets[context])) {
-        if (envelope.event >= capacity.resourceEvents().size() ||
-            !rangeFits(envelope.useOffset, envelope.useCount,
-                       capacity.resourceUses().size()) ||
-            !rangeFits(envelope.segmentOffset, envelope.segmentCount,
-                       capacity.resourceTimeSegments().size()) ||
-            envelope.useCount == 0)
-          return invalid("resource-time envelope slices are inconsistent");
-        for (const FrozenSpatialResourceUse &use :
-             capacity.resourceUses().slice(envelope.useOffset,
-                                           envelope.useCount))
-          if (use.event != envelope.event ||
-              use.pattern >= resources.usePatterns().size())
-            return invalid("resource-time use projection is inconsistent");
-
-        llvm::SmallDenseMap<PnrIndex, std::uint64_t, 8> maximumOveruse;
-        for (const FrozenSpatialResourceTimeSegment &segment :
-             capacity.resourceTimeSegments().slice(envelope.segmentOffset,
-                                                   envelope.segmentCount)) {
-          if (segment.capacityDimension >=
-                  resources.capacityDimensions().size() ||
-              segment.beginRank >= segment.endRank)
-            return invalid("resource-time segment is invalid");
-          const auto &dimension =
-              resources.capacityDimensions()[segment.capacityDimension];
-          const std::uint64_t expected =
-              segment.usageRaw > dimension.capacity
-                  ? segment.usageRaw - dimension.capacity
-                  : 0;
-          if (segment.overuseRaw != expected)
-            return invalid("resource-time segment overuse is inconsistent");
-          std::uint64_t &maximum = maximumOveruse[segment.capacityDimension];
-          maximum = std::max(maximum, segment.overuseRaw);
-        }
-        std::uint64_t envelopeOveruse = 0;
-        for (const auto &entry : maximumOveruse) {
-          if (entry.second >
-              std::numeric_limits<std::uint64_t>::max() - envelopeOveruse)
-            return invalid("resource-time envelope overuse overflows u64");
-          envelopeOveruse += entry.second;
-        }
-        if (envelopeOveruse != envelope.capacityOveruse)
-          return invalid("resource-time envelope overuse is inconsistent");
-        if (envelope.capacityOveruse >
+        auto envelopeOveruse = verifyEnvelope(envelope);
+        if (!envelopeOveruse)
+          return envelopeOveruse.takeError();
+        if (*envelopeOveruse >
             std::numeric_limits<std::uint64_t>::max() - contextOveruse)
           return invalid("resource-time context overuse overflows u64");
-        contextOveruse += envelope.capacityOveruse;
+        contextOveruse += *envelopeOveruse;
       }
       if (contextOveruse !=
           capacity.computeInstructionContextOveruse()[context])
         return invalid("resource-time context overuse is inconsistent");
     }
-    for (const FrozenSpatialResourceEvent &event : capacity.resourceEvents())
-      if (event.realization >= realizations.computeRealizations().size())
-        return invalid("resource-time event has a foreign realization");
+    PnrIndex expectedMemoryEnvelope = envelopeOffsets.back();
+    for (auto [planOrdinal, plan] :
+         llvm::enumerate(handshake.memoryOperationPlans())) {
+      const PnrIndex envelopeOrdinal =
+          capacity.memoryOperationPlanEnvelopes()[planOrdinal];
+      if (envelopeOrdinal != expectedMemoryEnvelope++ ||
+          envelopeOrdinal >= capacity.resourceTimeEnvelopes().size())
+        return invalid("memory plan envelope ordering is inconsistent");
+      const FrozenSpatialResourceTimeEnvelope &envelope =
+          capacity.resourceTimeEnvelopes()[envelopeOrdinal];
+      auto envelopeOveruse = verifyEnvelope(envelope);
+      if (!envelopeOveruse)
+        return envelopeOveruse.takeError();
+      if (envelope.useCount != 1 ||
+          capacity.resourceUses()[envelope.useOffset].pattern !=
+              plan.usePattern ||
+          *envelopeOveruse !=
+              capacity.memoryOperationPlanOveruse()[planOrdinal])
+        return invalid("memory plan resource-time envelope diverges");
+    }
+    if (expectedMemoryEnvelope > capacity.resourceTimeEnvelopes().size())
+      return invalid("memory operation envelope inventory is incomplete");
+
+    std::vector<std::vector<PnrIndex>> actorPatterns(
+        realizations.memoryActors().size());
+    for (const FrozenSpatialMemoryDispatchDomain &domain :
+         memory.dispatchDomains()) {
+      if (domain.actor >= actorPatterns.size() ||
+          !rangeFits(domain.optionOffset, domain.optionCount,
+                     memory.dispatchOptions().size()))
+        return invalid("memory dispatch domain is outside its frozen index");
+      auto &patterns = actorPatterns[domain.actor];
+      for (PnrIndex option = domain.optionOffset;
+           option != domain.optionOffset + domain.optionCount; ++option) {
+        const PnrIndex pattern =
+            capacity.memoryDispatchOptionPatterns()[option];
+        if (pattern != getInvalidPnrIndex())
+          patterns.push_back(pattern);
+      }
+    }
+    for (auto &patterns : actorPatterns) {
+      llvm::sort(patterns);
+      patterns.erase(std::unique(patterns.begin(), patterns.end()),
+                     patterns.end());
+    }
+
+    std::vector<std::optional<SpatialActorTransitionEventRef>> actorIssueEvents(
+        realizations.memoryActors().size());
+    for (const FrozenSpatialMemoryOperationHandshakeDomain &domain :
+         handshake.memoryOperationDomains()) {
+      if (domain.actor >= actorIssueEvents.size() || domain.planCount == 0 ||
+          !rangeFits(domain.planOffset, domain.planCount,
+                     handshake.memoryOperationPlans().size()))
+        return invalid("memory operation domain has no exact actor event");
+      const PnrIndex envelopeOrdinal =
+          capacity.memoryOperationPlanEnvelopes()[domain.planOffset];
+      if (envelopeOrdinal >= capacity.resourceTimeEnvelopes().size())
+        return invalid("memory operation domain has no resource-time event");
+      const PnrIndex eventOrdinal =
+          capacity.resourceTimeEnvelopes()[envelopeOrdinal].event;
+      if (eventOrdinal >= capacity.resourceEvents().size())
+        return invalid("memory operation domain has a foreign event");
+      const auto *event = std::get_if<SpatialActorTransitionEventRef>(
+          &capacity.resourceEvents()[eventOrdinal].reference);
+      if (!event)
+        return invalid("memory operation domain event is not an actor issue");
+      if (actorIssueEvents[domain.actor] &&
+          !(*actorIssueEvents[domain.actor] == *event))
+        return invalid("memory actor has divergent issue events");
+      actorIssueEvents[domain.actor] = *event;
+    }
+
+    const auto groupOffsets = capacity.memoryServiceGroupEnvelopeOffsets();
+    if (groupOffsets.empty() || groupOffsets.front() != 0 ||
+        groupOffsets.back() != capacity.memoryServicePatternEnvelopes().size())
+      return invalid("memory service envelope offsets are incomplete");
+    PnrIndex expectedServiceEnvelope = expectedMemoryEnvelope;
+    for (auto [groupOrdinal, group] :
+         llvm::enumerate(memory.serviceUseGroups())) {
+      if (group.actor >= actorPatterns.size() ||
+          group.logicalBinding >= memory.logicalBindings().size() ||
+          !actorIssueEvents[group.actor] ||
+          groupOffsets[groupOrdinal] > groupOffsets[groupOrdinal + 1])
+        return invalid("memory service-use group has no exact event domain");
+      const auto choices = capacity.memoryServicePatternEnvelopes().slice(
+          groupOffsets[groupOrdinal],
+          groupOffsets[groupOrdinal + 1] - groupOffsets[groupOrdinal]);
+      if (choices.size() != actorPatterns[group.actor].size())
+        return invalid("memory service envelope domain is incomplete");
+      for (auto [choiceOrdinal, choice] : llvm::enumerate(choices)) {
+        if (choice.pattern != actorPatterns[group.actor][choiceOrdinal] ||
+            choice.envelope != expectedServiceEnvelope++ ||
+            choice.envelope >= capacity.resourceTimeEnvelopes().size())
+          return invalid("memory service envelope ordering is inconsistent");
+        const auto &envelope =
+            capacity.resourceTimeEnvelopes()[choice.envelope];
+        auto envelopeOveruse = verifyEnvelope(envelope);
+        if (!envelopeOveruse)
+          return envelopeOveruse.takeError();
+        const auto &event = capacity.resourceEvents()[envelope.event];
+        const auto *issue =
+            std::get_if<SpatialActorTransitionEventRef>(&event.reference);
+        if (envelope.useCount != 1 ||
+            capacity.resourceUses()[envelope.useOffset].pattern !=
+                choice.pattern ||
+            event.ownerKind !=
+                FrozenSpatialResourceEventOwnerKind::LogicalMemoryBinding ||
+            event.owner != group.logicalBinding || !issue ||
+            !(*issue == *actorIssueEvents[group.actor]))
+          return invalid("memory service resource-time envelope diverges");
+      }
+    }
+    if (expectedServiceEnvelope != capacity.resourceTimeEnvelopes().size())
+      return invalid("resource-time envelope inventory has unowned records");
+
+    for (const FrozenSpatialResourceEvent &event : capacity.resourceEvents()) {
+      switch (event.ownerKind) {
+      case FrozenSpatialResourceEventOwnerKind::ComputeRealization:
+        if (event.owner >= realizations.computeRealizations().size())
+          return invalid("resource-time event has a foreign compute owner");
+        break;
+      case FrozenSpatialResourceEventOwnerKind::MemoryRealization:
+        if (event.owner >= realizations.memoryRealizations().size())
+          return invalid("resource-time event has a foreign memory owner");
+        break;
+      case FrozenSpatialResourceEventOwnerKind::LogicalMemoryBinding:
+        if (event.owner >= memory.logicalBindings().size())
+          return invalid(
+              "resource-time event has a foreign logical-memory owner");
+        break;
+      }
+    }
 
     for (auto [ordinal, realization] :
          llvm::enumerate(realizations.computeRealizations())) {

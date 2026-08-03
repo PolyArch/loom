@@ -531,8 +531,16 @@ private:
   friend class FrozenSpatialResourceIndexBuilder;
 };
 
+enum class FrozenSpatialResourceEventOwnerKind : std::uint8_t {
+  ComputeRealization,
+  MemoryRealization,
+  LogicalMemoryBinding,
+};
+
 struct FrozenSpatialResourceEvent final {
-  PnrIndex realization = 0;
+  FrozenSpatialResourceEventOwnerKind ownerKind =
+      FrozenSpatialResourceEventOwnerKind::ComputeRealization;
+  PnrIndex owner = 0;
   ::loom::mapping::SpatialActivityEventRef reference;
 };
 
@@ -556,6 +564,11 @@ struct FrozenSpatialResourceTimeEnvelope final {
   PnrIndex segmentOffset = 0;
   PnrIndex segmentCount = 0;
   std::uint64_t capacityOveruse = 0;
+};
+
+struct FrozenSpatialMemoryServicePatternEnvelope final {
+  PnrIndex pattern = 0;
+  PnrIndex envelope = 0;
 };
 
 /// Dense, cache-only projection of immediate atomic capacity envelopes. Each
@@ -587,6 +600,16 @@ public:
   llvm::ArrayRef<std::uint64_t> memoryOperationPlanOveruse() const {
     return memoryOperationPlanOveruse_;
   }
+  llvm::ArrayRef<PnrIndex> memoryOperationPlanEnvelopes() const {
+    return memoryOperationPlanEnvelopes_;
+  }
+  llvm::ArrayRef<PnrIndex> memoryServiceGroupEnvelopeOffsets() const {
+    return memoryServiceGroupEnvelopeOffsets_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryServicePatternEnvelope>
+  memoryServicePatternEnvelopes() const {
+    return memoryServicePatternEnvelopes_;
+  }
   llvm::ArrayRef<std::uint64_t> memoryDispatchOptionOveruse() const {
     return memoryDispatchOptionOveruse_;
   }
@@ -602,6 +625,10 @@ private:
   std::vector<PnrIndex> computeInstructionContextEnvelopeOffsets_;
   std::vector<std::uint64_t> computeInstructionContextOveruse_;
   std::vector<std::uint64_t> memoryOperationPlanOveruse_;
+  std::vector<PnrIndex> memoryOperationPlanEnvelopes_;
+  std::vector<PnrIndex> memoryServiceGroupEnvelopeOffsets_;
+  std::vector<FrozenSpatialMemoryServicePatternEnvelope>
+      memoryServicePatternEnvelopes_;
   std::vector<std::uint64_t> memoryDispatchOptionOveruse_;
   std::vector<PnrIndex> memoryDispatchOptionPatterns_;
 

@@ -9,8 +9,10 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -50,14 +52,16 @@ std::string refKey(const FabricUsePatternRef &reference) {
 }
 
 llvm::Expected<std::string> eventKey(const ArtifactIdentity &dataflowIdentity,
-                                     PnrIndex realization,
+                                     FrozenSpatialResourceEventOwnerKind kind,
+                                     PnrIndex owner,
                                      const SpatialActivityEventRef &event) {
   std::string result;
   auto appendU64 = [&](std::uint64_t value) {
     for (unsigned byte = 0; byte < 8; ++byte)
       result.push_back(static_cast<char>(value >> (8 * (7 - byte))));
   };
-  appendU64(realization);
+  result.push_back(static_cast<char>(kind));
+  appendU64(owner);
   auto encoded = encodeSpatialActivityEventKey(dataflowIdentity, event);
   if (!encoded)
     return encoded.takeError();
@@ -254,6 +258,56 @@ public:
 
     FrozenSpatialCapacityIndex result;
     llvm::StringMap<PnrIndex> eventByKey;
+    const auto findOrAppendEvent =
+        [&](FrozenSpatialResourceEventOwnerKind ownerKind, PnrIndex owner,
+            const SpatialActivityEventRef &event) -> llvm::Expected<PnrIndex> {
+      auto key = eventKey(dataflow.identity(), ownerKind, owner, event);
+      if (!key)
+        return key.takeError();
+      const auto found = eventByKey.find(*key);
+      if (found != eventByKey.end())
+        return found->second;
+      auto ordinal =
+          checkedIndex("resource_events", "resource_events",
+                       PnrCapacityMeasure::Index, result.events_.size());
+      if (!ordinal)
+        return ordinal.takeError();
+      eventByKey.try_emplace(*key, *ordinal);
+      result.events_.push_back({ownerKind, owner, event});
+      return *ordinal;
+    };
+    struct TimedPatternProjection final {
+      PnrIndex segmentOffset = 0;
+      PnrIndex segmentCount = 0;
+      std::uint64_t overuse = 0;
+    };
+    std::vector<std::optional<TimedPatternProjection>> timedPatternCache(
+        resources.usePatterns().size());
+    const auto projectTimedPattern =
+        [&](PnrIndex pattern) -> llvm::Expected<TimedPatternProjection> {
+      if (pattern >= timedPatternCache.size())
+        return invalid("timed pattern projection is out of range");
+      if (timedPatternCache[pattern])
+        return *timedPatternCache[pattern];
+      auto segmentOffset =
+          checkedIndex("resource_time_envelopes", "resource_time_segments",
+                       PnrCapacityMeasure::Offset, result.segments_.size());
+      if (!segmentOffset)
+        return segmentOffset.takeError();
+      const PnrIndex selected[] = {pattern};
+      auto overuse = appendTimedEnvelope(resources, selected, result.segments_);
+      if (!overuse)
+        return overuse.takeError();
+      auto segmentCount = checkedIndex(
+          "resource_time_envelopes", "resource_time_segments",
+          PnrCapacityMeasure::Count, result.segments_.size() - *segmentOffset);
+      if (!segmentCount)
+        return segmentCount.takeError();
+      TimedPatternProjection projection{*segmentOffset, *segmentCount,
+                                        *overuse};
+      timedPatternCache[pattern] = projection;
+      return projection;
+    };
     const auto contexts = realizations.computeInstructionContexts();
     if (contexts.size() >= std::numeric_limits<PnrIndex>::max())
       return invalid("compute context envelope-offset domain exceeds PnrIndex");
@@ -301,27 +355,12 @@ public:
                    (*requirements)[end].trigger ==
                        (*requirements)[begin].trigger)
               ++end;
-            auto key = eventKey(dataflow.identity(),
-                                static_cast<PnrIndex>(realizationOrdinal),
-                                (*requirements)[begin].trigger);
-            if (!key)
-              return key.takeError();
-            PnrIndex eventOrdinal = 0;
-            auto found = eventByKey.find(*key);
-            if (found == eventByKey.end()) {
-              auto checkedEvent = checkedIndex(
-                  "resource_events", "resource_events",
-                  PnrCapacityMeasure::Index, result.events_.size());
-              if (!checkedEvent)
-                return checkedEvent.takeError();
-              eventOrdinal = *checkedEvent;
-              eventByKey.try_emplace(*key, eventOrdinal);
-              result.events_.push_back(
-                  {static_cast<PnrIndex>(realizationOrdinal),
-                   (*requirements)[begin].trigger});
-            } else {
-              eventOrdinal = found->second;
-            }
+            auto eventOrdinal = findOrAppendEvent(
+                FrozenSpatialResourceEventOwnerKind::ComputeRealization,
+                static_cast<PnrIndex>(realizationOrdinal),
+                (*requirements)[begin].trigger);
+            if (!eventOrdinal)
+              return eventOrdinal.takeError();
 
             auto useOffset =
                 checkedIndex("resource_time_envelopes", "resource_uses",
@@ -336,7 +375,7 @@ public:
               if (!dense)
                 return dense.takeError();
               patterns.push_back(*dense);
-              result.uses_.push_back({eventOrdinal, *dense});
+              result.uses_.push_back({*eventOrdinal, *dense});
             }
             auto useCount =
                 checkedIndex("resource_time_envelopes", "resource_uses",
@@ -358,7 +397,7 @@ public:
                 result.segments_.size() - *segmentOffset);
             if (!segmentCount)
               return segmentCount.takeError();
-            result.envelopes_.push_back({eventOrdinal, *useOffset, *useCount,
+            result.envelopes_.push_back({*eventOrdinal, *useOffset, *useCount,
                                          *segmentOffset, *segmentCount,
                                          *overuse});
             if (llvm::Error error =
@@ -392,16 +431,71 @@ public:
               result.computeInstructionContextEnvelopeOffsets_.begin(),
               missing)));
 
-    result.memoryOperationPlanOveruse_.reserve(
-        handshake.memoryOperationPlans().size());
-    for (const FrozenSpatialMemoryOperationHandshakePlan &plan :
-         handshake.memoryOperationPlans()) {
-      const PnrIndex selected[] = {plan.usePattern};
-      auto overuse = atomicEnvelopeOveruse(resources, selected);
-      if (!overuse)
-        return overuse.takeError();
-      result.memoryOperationPlanOveruse_.push_back(*overuse);
+    const auto memoryPlans = handshake.memoryOperationPlans();
+    result.memoryOperationPlanOveruse_.assign(memoryPlans.size(), 0);
+    result.memoryOperationPlanEnvelopes_.assign(memoryPlans.size(),
+                                                getInvalidPnrIndex());
+    std::vector<PnrIndex> memoryActorEvents;
+    std::vector<SpatialActorTransitionEventRef> memoryActorIssues;
+    memoryActorEvents.reserve(realizations.memoryActors().size());
+    memoryActorIssues.reserve(realizations.memoryActors().size());
+    for (auto [actorOrdinal, actor] :
+         llvm::enumerate(realizations.memoryActors())) {
+      if (actorOrdinal >= realizations.memoryActorRealizations().size())
+        return invalid("memory operation event has no realization owner");
+      const PnrIndex realization =
+          realizations.memoryActorRealizations()[actorOrdinal];
+      if (realization >= realizations.memoryRealizations().size())
+        return invalid("memory operation event has a foreign realization");
+      auto issue = deriveSpatialMemoryIssueEvent(dataflow, actor.actor);
+      if (!issue)
+        return issue.takeError();
+      auto eventOrdinal = findOrAppendEvent(
+          FrozenSpatialResourceEventOwnerKind::MemoryRealization, realization,
+          SpatialActivityEventRef(*issue));
+      if (!eventOrdinal)
+        return eventOrdinal.takeError();
+      memoryActorEvents.push_back(*eventOrdinal);
+      memoryActorIssues.push_back(*issue);
     }
+    for (const FrozenSpatialMemoryOperationHandshakeDomain &domain :
+         handshake.memoryOperationDomains()) {
+      if (domain.actor >= memoryActorEvents.size())
+        return invalid("memory operation domain has a foreign actor");
+      const PnrIndex eventOrdinal = memoryActorEvents[domain.actor];
+
+      for (PnrIndex planOrdinal = domain.planOffset;
+           planOrdinal != domain.planOffset + domain.planCount; ++planOrdinal) {
+        if (planOrdinal >= memoryPlans.size() ||
+            result.memoryOperationPlanEnvelopes_[planOrdinal] !=
+                getInvalidPnrIndex())
+          return invalid("memory operation plan has duplicate event ownership");
+        const FrozenSpatialMemoryOperationHandshakePlan &plan =
+            memoryPlans[planOrdinal];
+        auto useOffset =
+            checkedIndex("resource_time_envelopes", "resource_uses",
+                         PnrCapacityMeasure::Offset, result.uses_.size());
+        if (!useOffset)
+          return useOffset.takeError();
+        result.uses_.push_back({eventOrdinal, plan.usePattern});
+        auto timing = projectTimedPattern(plan.usePattern);
+        if (!timing)
+          return timing.takeError();
+        auto envelopeOrdinal =
+            checkedIndex("resource_time_envelopes", "resource_time_envelopes",
+                         PnrCapacityMeasure::Index, result.envelopes_.size());
+        if (!envelopeOrdinal)
+          return envelopeOrdinal.takeError();
+        result.envelopes_.push_back({eventOrdinal, *useOffset, 1,
+                                     timing->segmentOffset,
+                                     timing->segmentCount, timing->overuse});
+        result.memoryOperationPlanEnvelopes_[planOrdinal] = *envelopeOrdinal;
+        result.memoryOperationPlanOveruse_[planOrdinal] = timing->overuse;
+      }
+    }
+    if (llvm::is_contained(result.memoryOperationPlanEnvelopes_,
+                           getInvalidPnrIndex()))
+      return invalid("memory operation plan has no resource-time envelope");
 
     result.memoryDispatchOptionOveruse_.reserve(
         memory.dispatchOptions().size());
@@ -423,6 +517,76 @@ public:
         return overuse.takeError();
       result.memoryDispatchOptionOveruse_.push_back(*overuse);
       result.memoryDispatchOptionPatterns_.push_back(*selected);
+    }
+
+    std::vector<std::vector<PnrIndex>> actorPatterns(
+        realizations.memoryActors().size());
+    for (const FrozenSpatialMemoryDispatchDomain &domain :
+         memory.dispatchDomains()) {
+      if (domain.actor >= actorPatterns.size() ||
+          domain.optionOffset > memory.dispatchOptions().size() ||
+          domain.optionCount >
+              memory.dispatchOptions().size() - domain.optionOffset)
+        return invalid("memory dispatch domain is outside its frozen index");
+      auto &patterns = actorPatterns[domain.actor];
+      for (PnrIndex option = domain.optionOffset;
+           option != domain.optionOffset + domain.optionCount; ++option) {
+        const PnrIndex pattern = result.memoryDispatchOptionPatterns_[option];
+        if (pattern != getInvalidPnrIndex())
+          patterns.push_back(pattern);
+      }
+    }
+    for (auto &patterns : actorPatterns) {
+      llvm::sort(patterns);
+      patterns.erase(std::unique(patterns.begin(), patterns.end()),
+                     patterns.end());
+    }
+
+    result.memoryServiceGroupEnvelopeOffsets_.reserve(
+        memory.serviceUseGroups().size() + 1);
+    result.memoryServiceGroupEnvelopeOffsets_.push_back(0);
+    for (const FrozenSpatialMemoryServiceUseGroup &group :
+         memory.serviceUseGroups()) {
+      if (group.actor >= memoryActorIssues.size() ||
+          group.logicalBinding >= memory.logicalBindings().size())
+        return invalid("memory service-use group has a foreign owner");
+      const auto &patterns = actorPatterns[group.actor];
+      if (!patterns.empty()) {
+        auto eventOrdinal = findOrAppendEvent(
+            FrozenSpatialResourceEventOwnerKind::LogicalMemoryBinding,
+            group.logicalBinding,
+            SpatialActivityEventRef(memoryActorIssues[group.actor]));
+        if (!eventOrdinal)
+          return eventOrdinal.takeError();
+        for (PnrIndex pattern : patterns) {
+          auto useOffset =
+              checkedIndex("resource_time_envelopes", "resource_uses",
+                           PnrCapacityMeasure::Offset, result.uses_.size());
+          if (!useOffset)
+            return useOffset.takeError();
+          result.uses_.push_back({*eventOrdinal, pattern});
+          auto timing = projectTimedPattern(pattern);
+          if (!timing)
+            return timing.takeError();
+          auto envelopeOrdinal =
+              checkedIndex("resource_time_envelopes", "resource_time_envelopes",
+                           PnrCapacityMeasure::Index, result.envelopes_.size());
+          if (!envelopeOrdinal)
+            return envelopeOrdinal.takeError();
+          result.envelopes_.push_back({*eventOrdinal, *useOffset, 1,
+                                       timing->segmentOffset,
+                                       timing->segmentCount, timing->overuse});
+          result.memoryServicePatternEnvelopes_.push_back(
+              {pattern, *envelopeOrdinal});
+        }
+      }
+      auto envelopeEnd = checkedIndex(
+          "memory_service_group_envelope_offsets",
+          "memory_service_pattern_envelopes", PnrCapacityMeasure::Offset,
+          result.memoryServicePatternEnvelopes_.size());
+      if (!envelopeEnd)
+        return envelopeEnd.takeError();
+      result.memoryServiceGroupEnvelopeOffsets_.push_back(*envelopeEnd);
     }
 
     // A traversal activation group is one owner-normalized physical use. It

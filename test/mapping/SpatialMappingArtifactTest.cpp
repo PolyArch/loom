@@ -617,6 +617,39 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (memoryIndex.serviceUseGroups().size() != 1 ||
       memoryIndex.serviceUseGroups().front().useCount != 2)
     fail("same-binding rooted uses were not factorized into one service use");
+  const auto &memoryActor =
+      problem->realizations()
+          .memoryActors()[memoryIndex.rootedUses().front().actor]
+          .actor;
+  const auto issueEvent =
+      take(loom::mapping::deriveSpatialMemoryIssueEvent(dataflow, memoryActor));
+  if (issueEvent.actor != memoryActor || issueEvent.transition != 0)
+    fail("Mapping owner derived the wrong memory issue event");
+  const auto &capacity = problem->capacity();
+  const auto planEnvelopes = capacity.memoryOperationPlanEnvelopes();
+  if (planEnvelopes.size() !=
+      problem->handshake().memoryOperationPlans().size())
+    fail("memory operation plans lost their resource-time envelopes");
+  const loom::pnr::PnrIndex selectedActor =
+      memoryIndex.rootedUses().front().actor;
+  const loom::pnr::PnrIndex selectedPlan =
+      candidate->memoryOperationPlan(selectedActor);
+  if (selectedPlan >= planEnvelopes.size() ||
+      planEnvelopes[selectedPlan] >= capacity.resourceTimeEnvelopes().size())
+    fail("selected memory operation plan has no resource-time envelope");
+  const auto &planEnvelope =
+      capacity.resourceTimeEnvelopes()[planEnvelopes[selectedPlan]];
+  if (planEnvelope.event >= capacity.resourceEvents().size())
+    fail("memory operation envelope has no resource event");
+  const auto &planEvent = capacity.resourceEvents()[planEnvelope.event];
+  const auto *planIssue =
+      std::get_if<loom::mapping::SpatialActorTransitionEventRef>(
+          &planEvent.reference);
+  if (planEvent.ownerKind !=
+          loom::pnr::FrozenSpatialResourceEventOwnerKind::MemoryRealization ||
+      planEvent.owner != 0 || !planIssue || !(*planIssue == issueEvent) ||
+      planEnvelope.useCount != 1 || planEnvelope.segmentCount == 0)
+    fail("memory operation resource-time projection is incomplete");
   const auto originalLogicalBinding = candidate->logicalMemoryBinding(0);
   const auto &serviceGroup = memoryIndex.serviceUseGroups().front();
   const auto serviceUses = memoryIndex.serviceGroupUses().slice(
@@ -625,6 +658,31 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   for (loom::pnr::PnrIndex use : serviceUses)
     if (candidate->memoryUseDispatch(use) != originalDispatch)
       fail("same-binding rooted uses selected different service dispatches");
+  const auto groupEnvelopeOffsets =
+      capacity.memoryServiceGroupEnvelopeOffsets();
+  if (groupEnvelopeOffsets.size() != memoryIndex.serviceUseGroups().size() + 1)
+    fail("memory service groups lost their envelope offsets");
+  const auto groupEnvelopes = capacity.memoryServicePatternEnvelopes().slice(
+      groupEnvelopeOffsets.front(),
+      groupEnvelopeOffsets.back() - groupEnvelopeOffsets.front());
+  if (groupEnvelopes.size() != 1 ||
+      groupEnvelopes.front().pattern !=
+          capacity.memoryDispatchOptionPatterns()[originalDispatch] ||
+      groupEnvelopes.front().envelope >=
+          capacity.resourceTimeEnvelopes().size())
+    fail("memory service group lost its distinct UsePattern envelope");
+  const auto &serviceEnvelope =
+      capacity.resourceTimeEnvelopes()[groupEnvelopes.front().envelope];
+  const auto &serviceEvent = capacity.resourceEvents()[serviceEnvelope.event];
+  const auto *serviceIssue =
+      std::get_if<loom::mapping::SpatialActorTransitionEventRef>(
+          &serviceEvent.reference);
+  if (serviceEvent.ownerKind != loom::pnr::FrozenSpatialResourceEventOwnerKind::
+                                    LogicalMemoryBinding ||
+      serviceEvent.owner != serviceGroup.logicalBinding || !serviceIssue ||
+      !(*serviceIssue == issueEvent) || serviceEnvelope.useCount != 1 ||
+      serviceEnvelope.segmentCount == 0)
+    fail("memory service resource-time projection is incomplete");
   std::optional<loom::pnr::PnrIndex> boundaryTarget;
   for (auto [ordinal, target] : llvm::enumerate(memoryIndex.bindingTargets()))
     if (std::holds_alternative<loom::pnr::FrozenSpatialMemoryBoundaryProxy>(

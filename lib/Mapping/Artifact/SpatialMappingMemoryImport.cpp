@@ -21,6 +21,30 @@
 
 using namespace mlir;
 
+llvm::Expected<loom::mapping::SpatialActorTransitionEventRef>
+loom::mapping::deriveSpatialMemoryIssueEvent(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::ActorRef actor) {
+  auto resolved = dataflow.resolve(actor);
+  if (!resolved)
+    return resolved.takeError();
+  auto projection =
+      ::dataflow::projectRegisteredActorSchemaProjection(resolved->op);
+  if (!projection)
+    return projection.takeError();
+  auto transitions = ::dataflow::semantics::projectActorHandshakeCases(
+      projection->schema, resolved->op->getNumOperands(),
+      resolved->op->getNumResults());
+  if (!transitions)
+    return transitions.takeError();
+  if (transitions->size() != 1 || transitions->front().ordinal != 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mapping_artifact_invalid: memory actor has no unique issue "
+        "transition");
+  return SpatialActorTransitionEventRef{actor, transitions->front().ordinal};
+}
+
 namespace loom::mapping::detail {
 namespace {
 
@@ -100,16 +124,11 @@ projectMemoryActor(const ::dataflow::CanonicalDataflowProgramView &dataflow,
       return projected.takeError();
     access.emplace(std::move(*projected));
   }
-  auto transitions = ::dataflow::semantics::projectActorHandshakeCases(
-      projection->schema, resolved->op->getNumOperands(),
-      resolved->op->getNumResults());
-  if (!transitions)
-    return transitions.takeError();
-  if (transitions->size() != 1 || transitions->front().ordinal != 0)
-    return invalid("memory actor has no unique issue transition");
-  return MemoryActorProjection{
-      std::move(*projection), std::move(*service), std::move(access),
-      SpatialActorTransitionEventRef{actor, transitions->front().ordinal}};
+  auto trigger = deriveSpatialMemoryIssueEvent(dataflow, actor);
+  if (!trigger)
+    return trigger.takeError();
+  return MemoryActorProjection{std::move(*projection), std::move(*service),
+                               std::move(access), std::move(*trigger)};
 }
 
 ::loom::fabric::FabricMemoryOperationPortRef
