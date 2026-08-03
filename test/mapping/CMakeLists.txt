@@ -4,6 +4,7 @@ add_executable(loom-mapping-artifact-test
 
 add_executable(loom-tech-mapping-artifact-test
   TechMappingArtifactTest.cpp
+  TechMappingCandidateTestSupport.cpp
 )
 
 add_executable(loom-tech-mapping-config-test

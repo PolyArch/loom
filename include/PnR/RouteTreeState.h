@@ -212,6 +212,8 @@ public:
   llvm::Error ripUpWholeNet();
 
   llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>> prepare();
+  bool initiallyRouted() const { return initialActiveNodeCount_ != 0; }
+  bool proposedRouted() const { return state_ && state_->isRouted(); }
   llvm::Error verify() const;
   llvm::Error commit();
   void rollback() noexcept;

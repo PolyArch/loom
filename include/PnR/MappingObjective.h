@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <cstdint>
 
@@ -41,6 +42,13 @@ struct MappingMeasureDescriptor final {
 const MappingObjectiveRegistryDescriptor &mappingObjectiveRegistryDescriptor();
 llvm::ArrayRef<MappingViolationDescriptor> mappingViolationDescriptors();
 llvm::ArrayRef<MappingMeasureDescriptor> mappingMeasureDescriptors();
+
+/// Projects one exact Mapping-owned violation magnitude. A kind without a
+/// complete CandidateState owner returns ObjectiveUnavailable rather than a
+/// provisional value.
+llvm::Expected<std::uint64_t>
+spatialMappingViolationValue(const SpatialCandidateState &candidate,
+                             ResolvedPnrViolationKind kind);
 
 /// Projects one Mapping-owned domain-independent measure from the exact
 /// candidate state. The candidate remains the sole owner of incremental route

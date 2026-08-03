@@ -23,6 +23,8 @@
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
 
+#include "TechMappingCandidateTestSupport.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -848,7 +850,19 @@ void artifactRoundTripAndReferenceValidation() {
       frozen, {computeBindings, memoryBindings, portAttachments,
                boundaryAttachments, memoryPlans}));
   requireSuccess(spatialCandidate->verify());
-
+  std::uint64_t initialUnroutedObligations = 0;
+  for (const auto &net : frozen->transfers().logicalNets())
+    initialUnroutedObligations += net.sinkCount;
+  if (spatialCandidate->unroutedObligationCount() !=
+          initialUnroutedObligations ||
+      take(loom::pnr::spatialMappingViolationValue(
+          *spatialCandidate,
+          loom::ResolvedPnrViolationKind::UnroutedObligation)) !=
+          initialUnroutedObligations)
+    fail("initial candidate lost explicit unrouted sink obligations");
+  if (!rejected(loom::pnr::spatialMappingViolationValue(
+          *spatialCandidate, loom::ResolvedPnrViolationKind::CapacityOveruse)))
+    fail("unowned Spatial violation was projected as an exact value");
   std::optional<loom::pnr::PnrIndex> routedNet;
   for (auto [netOrdinal, net] :
        llvm::enumerate(frozen->transfers().logicalNets())) {
@@ -954,6 +968,10 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routeMove.commit());
   if (!spatialCandidate->routeTree(*routedNet).isRouted())
     fail("Spatial move did not commit its RouteTree");
+  if (spatialCandidate->unroutedObligationCount() !=
+      initialUnroutedObligations -
+          frozen->transfers().logicalNets()[*routedNet].sinkCount)
+    fail("routed net did not discharge its exact sink obligations");
   if (loom::pnr::spatialMappingMeasureValue(
           *spatialCandidate,
           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim) == 0)
@@ -1074,8 +1092,11 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routedCostState.selectLogicalNet(std::nullopt));
   if (!routedCandidate->routeTree(*multicastNet).isRouted())
     fail("whole-net routing did not commit a complete RouteTree");
+  if (routedCandidate->unroutedObligationCount() !=
+      initialUnroutedObligations -
+          frozen->transfers().logicalNets()[*multicastNet].sinkCount)
+    fail("multicast route did not discharge every sink obligation");
   requireSuccess(routedCandidate->verify());
-
   const std::uint64_t routedObjective =
       routedCandidate->totalSelectedTraversalClaim();
   const std::vector<loom::pnr::RouteCost> routedBaselineCosts(
@@ -1146,12 +1167,18 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(rollbackMove.ripUpWholeRoute(*routedNet));
   if (!take(rollbackMove.close()))
     fail("route deletion reported a combinational handshake cycle");
+  if (spatialCandidate->unroutedObligationCount() != initialUnroutedObligations)
+    fail("closed route deletion did not restore unrouted obligations");
   rollbackMove.rollback();
   if (!spatialCandidate->routeTree(*routedNet).isRouted())
     fail("Spatial move rollback discarded the committed RouteTree");
   if (spatialCandidate->totalSelectedTraversalClaim() !=
       committedTraversalClaim)
     fail("Spatial move rollback changed traversal resource accounting");
+  if (spatialCandidate->unroutedObligationCount() !=
+      initialUnroutedObligations -
+          frozen->transfers().logicalNets()[*routedNet].sinkCount)
+    fail("Spatial move rollback changed unrouted obligations");
   requireSuccess(spatialCandidate->verify());
   const std::size_t warmedCandidateScratchBytes =
       candidateScratch.retainedStorageBytes();
@@ -1635,72 +1662,6 @@ void artifactRoundTripAndReferenceValidation() {
     fail("stale Fabric memory endpoint was published");
 }
 
-void exerciseHandshakeCandidateRefcounts(
-    const loom::pnr::FrozenSpatialPnrProblemHandle &frozen) {
-  const auto &handshake = frozen->handshake();
-  auto handshakeOwner =
-      std::shared_ptr<const loom::pnr::FrozenSpatialHandshakeIndex>(
-          frozen, &frozen->handshake());
-  auto candidate =
-      take(loom::pnr::HandshakeCandidateState::create(handshakeOwner));
-  requireSuccess(candidate->verify());
-  loom::pnr::HandshakeCandidateScratch scratch;
-  requireSuccess(scratch.prepare(*handshakeOwner));
-  const std::size_t retainedScratchBytes = scratch.retainedStorageBytes();
-  const auto offsets = handshake.computePlacementFragmentOffsets();
-  const auto fragments = handshake.computePlacementFragments().slice(
-      offsets.front(), offsets[1] - offsets.front());
-  std::optional<loom::pnr::PnrIndex> observedFragment;
-  std::optional<loom::pnr::PnrIndex> observedArc;
-  for (loom::pnr::PnrIndex fragment : fragments) {
-    const auto record = handshake.fragments()[fragment];
-    if (record.contributionCount == 0)
-      continue;
-    observedFragment = fragment;
-    observedArc = handshake.fragmentArcOrdinals()[record.contributionOffset];
-    break;
-  }
-  if (!observedFragment || !observedArc)
-    fail("compute placement has no observable handshake contribution");
-  const loom::pnr::PnrIndex baseArcRefcount =
-      candidate->arcRefcount(*observedArc);
-  for (unsigned selection = 0; selection < 2; ++selection) {
-    auto transaction = take(candidate->beginTransaction(scratch));
-    requireSuccess(transaction.addFragments(fragments));
-    if (!take(transaction.close()))
-      fail("exact compute placement closed a handshake cycle");
-    requireSuccess(transaction.commit());
-  }
-  if (candidate->fragmentRefcount(*observedFragment) != 2)
-    fail("shared handshake fragment lost its decision refcount");
-  const loom::pnr::PnrIndex selectedArcRefcount =
-      candidate->arcRefcount(*observedArc);
-  if (selectedArcRefcount <= baseArcRefcount)
-    fail("selected handshake fragment did not activate its arc");
-  {
-    auto transaction = take(candidate->beginTransaction(scratch));
-    requireSuccess(transaction.removeFragments(fragments));
-    if (!take(transaction.close()))
-      fail("handshake deletion reported a cycle");
-    transaction.rollback();
-  }
-  if (candidate->fragmentRefcount(*observedFragment) != 2 ||
-      candidate->arcRefcount(*observedArc) != selectedArcRefcount)
-    fail("handshake rollback changed the committed refcounts");
-  for (unsigned selection = 0; selection < 2; ++selection) {
-    auto transaction = take(candidate->beginTransaction(scratch));
-    requireSuccess(transaction.removeFragments(fragments));
-    if (!take(transaction.close()))
-      fail("handshake deletion reported a cycle");
-    requireSuccess(transaction.commit());
-  }
-  if (candidate->fragmentRefcount(*observedFragment) != 0 ||
-      candidate->arcRefcount(*observedArc) != baseArcRefcount ||
-      scratch.retainedStorageBytes() != retainedScratchBytes)
-    fail("handshake selection removal retained state or expanded scratch");
-  requireSuccess(candidate->verify());
-}
-
 void computeBoundaryClosure() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -1751,7 +1712,7 @@ void computeBoundaryClosure() {
           frozen->realizations().computePlacements().size() + 1 ||
       handshake.computePlacementFragments().empty())
     fail("compute freeze omitted exact placement handshake fragments");
-  exerciseHandshakeCandidateRefcounts(frozen);
+  loom::test::exerciseHandshakeCandidateRefcounts(frozen);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");

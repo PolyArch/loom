@@ -5,6 +5,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <array>
+#include <system_error>
 
 using namespace loom;
 using namespace loom::pnr;
@@ -43,6 +44,27 @@ loom::pnr::mappingViolationDescriptors() {
 llvm::ArrayRef<MappingMeasureDescriptor>
 loom::pnr::mappingMeasureDescriptors() {
   return measures;
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
+                                        ResolvedPnrViolationKind kind) {
+  switch (kind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+    return candidate.unroutedObligationCount();
+  case ResolvedPnrViolationKind::CapacityOveruse:
+  case ResolvedPnrViolationKind::ResourceTimeOverbooking:
+  case ResolvedPnrViolationKind::BufferOveruse:
+  case ResolvedPnrViolationKind::TagUnassigned:
+  case ResolvedPnrViolationKind::TagConflict:
+  case ResolvedPnrViolationKind::HardProgressViolation:
+  case ResolvedPnrViolationKind::HardServiceContractShortfall:
+    return llvm::createStringError(
+        std::make_error_code(std::errc::operation_not_supported),
+        "objective_unavailable: required Spatial violation projection is "
+        "absent");
+  }
+  llvm_unreachable("unknown Mapping violation kind");
 }
 
 std::uint64_t

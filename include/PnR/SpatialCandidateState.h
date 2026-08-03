@@ -148,6 +148,9 @@ public:
   std::uint32_t logicalNetPayloadWidth(PnrIndex logicalNet) const;
   const RouteTreeState &routeTree(PnrIndex logicalNet) const;
   const HandshakeCandidateState &handshake() const { return *handshake_; }
+  std::uint64_t unroutedObligationCount() const {
+    return unroutedObligationCount_;
+  }
   std::uint64_t totalSelectedTraversalClaim() const {
     return routeResources_.totalSelectedTraversalClaim();
   }
@@ -185,7 +188,8 @@ private:
       std::vector<PnrIndex> memoryOperationPlans,
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
-      SpatialRouteResourceState routeResources)
+      SpatialRouteResourceState routeResources,
+      std::uint64_t unroutedObligationCount)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
@@ -193,7 +197,8 @@ private:
         graphBoundaryAttachments_(std::move(graphBoundaryAttachments)),
         memoryOperationPlans_(std::move(memoryOperationPlans)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
-        routeResources_(std::move(routeResources)) {}
+        routeResources_(std::move(routeResources)),
+        unroutedObligationCount_(unroutedObligationCount) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -215,6 +220,7 @@ private:
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
+  std::uint64_t unroutedObligationCount_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialMoveTransaction;
@@ -284,6 +290,8 @@ private:
   bool closed_ = false;
   bool cycle_ = false;
   bool routeDeltasCollected_ = false;
+  bool routeViolationApplied_ = false;
+  std::uint64_t initialUnroutedObligationCount_ = 0;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

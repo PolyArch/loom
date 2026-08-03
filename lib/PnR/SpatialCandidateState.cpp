@@ -282,12 +282,21 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   auto routeResources = SpatialRouteResourceState::create(*problem);
   if (!routeResources)
     return routeResources.takeError();
+  std::uint64_t unroutedObligationCount = 0;
+  for (const FrozenSpatialLogicalNet &net :
+       problem->transfers().logicalNets()) {
+    if (net.sinkCount >
+        std::numeric_limits<std::uint64_t>::max() - unroutedObligationCount)
+      return candidateError("unrouted obligation count overflows u64");
+    unroutedObligationCount += net.sinkCount;
+  }
 
   auto candidate = SpatialCandidateStateHandle(new SpatialCandidateState(
       std::move(problem), std::move(computeBindings), std::move(memoryBindings),
       std::move(portAttachments), std::move(graphBoundaryAttachments),
       std::move(memoryOperationPlans), std::move(routeTrees),
-      std::move(*handshake), std::move(*routeResources)));
+      std::move(*handshake), std::move(*routeResources),
+      unroutedObligationCount));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
       return std::move(error);
@@ -659,6 +668,20 @@ llvm::Error SpatialCandidateState::verify() const {
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index)
     if (llvm::Error error = validateLogicalNet(index))
       return error;
+  std::uint64_t expectedUnroutedObligationCount = 0;
+  const auto logicalNets = problem_->transfers().logicalNets();
+  for (PnrIndex index = 0; index < routeTrees_.size(); ++index) {
+    if (!routeTrees_[index]->isUnrouted())
+      continue;
+    const std::uint64_t sinkCount = logicalNets[index].sinkCount;
+    if (sinkCount > std::numeric_limits<std::uint64_t>::max() -
+                        expectedUnroutedObligationCount)
+      return candidateError("unrouted obligation count overflows u64");
+    expectedUnroutedObligationCount += sinkCount;
+  }
+  if (unroutedObligationCount_ != expectedUnroutedObligationCount)
+    return candidateError(
+        "unrouted obligation count diverges from RouteTree state");
   if (llvm::Error error = routeResources_.verify(routeTrees_))
     return error;
   return verifyHandshakeProjection();
@@ -695,7 +718,8 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
 
 SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialCandidateStateHandle state, SpatialCandidateScratch &scratch)
-    : state_(std::move(state)), scratch_(&scratch) {
+    : state_(std::move(state)), scratch_(&scratch),
+      initialUnroutedObligationCount_(state_->unroutedObligationCount_) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -704,7 +728,9 @@ SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialMoveTransaction &&other) noexcept
     : state_(std::move(other.state_)), scratch_(other.scratch_),
       closed_(other.closed_), cycle_(other.cycle_),
-      routeDeltasCollected_(other.routeDeltasCollected_) {
+      routeDeltasCollected_(other.routeDeltasCollected_),
+      routeViolationApplied_(other.routeViolationApplied_),
+      initialUnroutedObligationCount_(other.initialUnroutedObligationCount_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;

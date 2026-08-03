@@ -32,11 +32,30 @@ llvm::Error increment(PnrIndex &value, PnrIndex amount,
 llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
   if (routeDeltasCollected_)
     return llvm::Error::success();
+  std::uint64_t proposedUnroutedObligationCount =
+      state_->unroutedObligationCount_;
   for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
-    auto deltas = scratch_->routeTransactions_[logicalNet]->prepare();
+    RouteTreeTransaction &route = *scratch_->routeTransactions_[logicalNet];
+    auto deltas = route.prepare();
     if (!deltas) {
       rollbackAppliedRouteResources();
       return deltas.takeError();
+    }
+    const std::uint64_t sinkCount =
+        state_->problem_->transfers().logicalNets()[logicalNet].sinkCount;
+    if (!route.initiallyRouted() && route.proposedRouted()) {
+      if (proposedUnroutedObligationCount < sinkCount) {
+        rollbackAppliedRouteResources();
+        return candidateError("unrouted obligation count underflows u64");
+      }
+      proposedUnroutedObligationCount -= sinkCount;
+    } else if (route.initiallyRouted() && !route.proposedRouted()) {
+      if (sinkCount > std::numeric_limits<std::uint64_t>::max() -
+                          proposedUnroutedObligationCount) {
+        rollbackAppliedRouteResources();
+        return candidateError("unrouted obligation count overflows u64");
+      }
+      proposedUnroutedObligationCount += sinkCount;
     }
     for (const RouteTreeTraversalDelta &delta : *deltas) {
       if (llvm::Error error = state_->routeResources_.applyTraversalDelta(
@@ -98,6 +117,8 @@ llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
         return error;
       }
   }
+  state_->unroutedObligationCount_ = proposedUnroutedObligationCount;
+  routeViolationApplied_ = true;
   routeDeltasCollected_ = true;
   return llvm::Error::success();
 }
@@ -105,6 +126,10 @@ llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
 void SpatialMoveTransaction::rollbackAppliedRouteResources() noexcept {
   if (!scratch_)
     return;
+  if (routeViolationApplied_) {
+    state_->unroutedObligationCount_ = initialUnroutedObligationCount_;
+    routeViolationApplied_ = false;
+  }
   const std::size_t full = scratch_->resourceFullyAppliedRouteCount_;
   if (scratch_->resourcePartiallyAppliedDeltaCount_ != 0) {
     assert(full < scratch_->touchedRoutes_.size());
@@ -137,4 +162,5 @@ void SpatialMoveTransaction::acceptAppliedRouteResources() noexcept {
   scratch_->resourceFullyAppliedRouteCount_ = 0;
   scratch_->resourcePartiallyAppliedDeltaCount_ = 0;
   routeDeltasCollected_ = false;
+  routeViolationApplied_ = false;
 }
