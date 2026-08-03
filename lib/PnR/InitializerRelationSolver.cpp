@@ -167,6 +167,9 @@ InitializerRelationSolver::InitializerRelationSolver(
   removalJournal_.reserve(choiceCount);
   relationQueue_.resize(model.relations().size());
   relationPending_.resize(model.relations().size());
+  canonicalActiveChoices_.resize(choiceCount);
+  choiceOrder_.resize(choiceCount);
+  choiceFenwick_.resize(choiceCount);
   reset();
 }
 
@@ -421,8 +424,9 @@ void InitializerRelationSolver::rollback(std::size_t journalMark) {
   }
 }
 
-InitializerRelationSolver::SearchResult
-InitializerRelationSolver::search(std::uint64_t assignmentLimit) {
+InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
+    std::uint64_t assignmentLimit,
+    DeterministicPnrRandomStream *diversificationStream) {
   if (!propagate())
     return SearchResult::Contradiction;
 
@@ -443,10 +447,9 @@ InitializerRelationSolver::search(std::uint64_t assignmentLimit) {
 
   const PnrIndex choiceCount = model_->decisionChoiceOffsets()[selected + 1] -
                                model_->decisionChoiceOffsets()[selected];
-  for (PnrIndex selectedChoice = 0; selectedChoice < choiceCount;
-       ++selectedChoice) {
-    if (!choiceActive(selected, selectedChoice))
-      continue;
+  const llvm::ArrayRef<PnrIndex> choiceOrder =
+      buildChoiceOrder(selected, diversificationStream);
+  for (PnrIndex selectedChoice : choiceOrder) {
     if (assignmentAttempts_ == assignmentLimit)
       return SearchResult::WorkLimit;
     ++assignmentAttempts_;
@@ -456,7 +459,8 @@ InitializerRelationSolver::search(std::uint64_t assignmentLimit) {
       if (choice != selectedChoice && choiceActive(selected, choice))
         retainedChoice &= removeChoice(selected, choice);
     const SearchResult result =
-        retainedChoice ? search(assignmentLimit) : SearchResult::Contradiction;
+        retainedChoice ? search(assignmentLimit, diversificationStream)
+                       : SearchResult::Contradiction;
     if (result != SearchResult::Contradiction)
       return result;
     rollback(journalMark);
@@ -464,10 +468,82 @@ InitializerRelationSolver::search(std::uint64_t assignmentLimit) {
   return SearchResult::Contradiction;
 }
 
+PnrIndex InitializerRelationSolver::selectRemainingChoice(
+    PnrIndex fenwickOffset, PnrIndex activeCount, std::uint64_t selectedRank) {
+  PnrIndex step = 1;
+  while (step <= activeCount / 2)
+    step *= 2;
+
+  PnrIndex prefix = 0;
+  for (; step != 0; step /= 2) {
+    const PnrIndex next = prefix + step;
+    if (next > activeCount)
+      continue;
+    const PnrIndex count = choiceFenwick_[fenwickOffset + next - 1];
+    if (count <= selectedRank) {
+      selectedRank -= count;
+      prefix = next;
+    }
+  }
+  assert(prefix < activeCount && "selected rank exceeds active domain");
+
+  for (PnrIndex index = prefix + 1; index <= activeCount;
+       index += index & (0 - index)) {
+    PnrIndex &count = choiceFenwick_[fenwickOffset + index - 1];
+    assert(count != 0 && "selected initializer choice was already removed");
+    --count;
+  }
+  return prefix;
+}
+
+llvm::ArrayRef<PnrIndex> InitializerRelationSolver::buildChoiceOrder(
+    PnrIndex decision, DeterministicPnrRandomStream *diversificationStream) {
+  const PnrIndex choiceOffset = model_->decisionChoiceOffsets()[decision];
+  const PnrIndex choiceCount =
+      model_->decisionChoiceOffsets()[decision + 1] - choiceOffset;
+  PnrIndex activeCount = 0;
+  for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+    if (choiceActive(decision, choice))
+      canonicalActiveChoices_[choiceOffset + activeCount++] = choice;
+  assert(activeCount == domainCounts_[decision]);
+
+  if (!diversificationStream) {
+    std::copy_n(canonicalActiveChoices_.begin() + choiceOffset, activeCount,
+                choiceOrder_.begin() + choiceOffset);
+    return llvm::ArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
+  }
+
+  for (PnrIndex local = 1; local <= activeCount; ++local)
+    choiceFenwick_[choiceOffset + local - 1] = local & (0 - local);
+  for (PnrIndex position = 0; position < activeCount; ++position) {
+    const std::uint64_t remaining = activeCount - position;
+    const std::uint64_t rank =
+        llvm::cantFail(diversificationStream->nextBounded(remaining));
+    const PnrIndex selected =
+        selectRemainingChoice(choiceOffset, activeCount, rank);
+    choiceOrder_[choiceOffset + position] =
+        canonicalActiveChoices_[choiceOffset + selected];
+  }
+  return llvm::ArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
+}
+
 llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonical(std::uint64_t assignmentLimit) {
+  return solve(assignmentLimit, nullptr);
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveDiversified(
+    std::uint64_t assignmentLimit,
+    DeterministicPnrRandomStream &diversificationStream) {
+  return solve(assignmentLimit, &diversificationStream);
+}
+
+llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
+    std::uint64_t assignmentLimit,
+    DeterministicPnrRandomStream *diversificationStream) {
   reset();
-  const SearchResult result = search(assignmentLimit);
+  const SearchResult result = search(assignmentLimit, diversificationStream);
   if (result == SearchResult::WorkLimit)
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::WorkLimit,
@@ -488,5 +564,7 @@ InitializerRelationSolver::solveCanonical(std::uint64_t assignmentLimit) {
 std::size_t InitializerRelationSolver::retainedStorageBytes() const {
   return retainedBytes(activeChoices_) + retainedBytes(domainCounts_) +
          retainedBytes(removalJournal_) + retainedBytes(relationQueue_) +
-         retainedBytes(relationPending_);
+         retainedBytes(relationPending_) +
+         retainedBytes(canonicalActiveChoices_) + retainedBytes(choiceOrder_) +
+         retainedBytes(choiceFenwick_);
 }

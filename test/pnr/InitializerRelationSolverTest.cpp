@@ -1,5 +1,7 @@
 #include "InitializerRelationSolver.h"
 
+#include "PnR/DeterministicSearchProtocol.h"
+
 #include "llvm/Support/Error.h"
 
 #include <cstdlib>
@@ -10,7 +12,9 @@
 
 namespace {
 
+using loom::pnr::DeterministicPnrRandomStream;
 using loom::pnr::PnrIndex;
+using loom::pnr::PnrRandomStreamPurpose;
 using loom::pnr::detail::InitializerRelationInput;
 using loom::pnr::detail::InitializerRelationKind;
 using loom::pnr::detail::InitializerRelationMemberInput;
@@ -109,6 +113,51 @@ void sparseDomainsReusePreparedStorage() {
     fail("sparse warm solve expanded retained solver storage");
 }
 
+void diversifiedSearchUsesExactWithoutReplacementOrder() {
+  constexpr PnrIndex decisionCount = 4;
+  constexpr PnrIndex choiceCount = 5;
+  InitializerRelationModel model =
+      makeModel(std::vector<PnrIndex>(decisionCount, choiceCount), {});
+  InitializerRelationSolver solver(model);
+
+  auto stream = DeterministicPnrRandomStream::create(
+      /*masterSeed=*/17, /*seedIndex=*/3,
+      PnrRandomStreamPurpose::InitializerDiversification);
+  auto expectedStream = DeterministicPnrRandomStream::create(
+      /*masterSeed=*/17, /*seedIndex=*/3,
+      PnrRandomStreamPurpose::InitializerDiversification);
+  std::vector<PnrIndex> expected;
+  expected.reserve(decisionCount);
+  for (PnrIndex decision = 0; decision < decisionCount; ++decision) {
+    std::vector<PnrIndex> remaining{0, 1, 2, 3, 4};
+    for (PnrIndex position = 0; position < choiceCount; ++position) {
+      const std::uint64_t selected = take(expectedStream.nextBounded(
+          static_cast<std::uint64_t>(choiceCount - position)));
+      const PnrIndex choice = remaining[selected];
+      if (position == 0)
+        expected.push_back(choice);
+      remaining.erase(remaining.begin() + selected);
+    }
+  }
+
+  const std::size_t retainedBytes = solver.retainedStorageBytes();
+  const auto result = take(solver.solveDiversified(
+      /*assignmentLimit=*/decisionCount, stream));
+  if (result.choices != expected || result.assignmentAttempts != decisionCount)
+    fail("diversified DFS did not use the exact without-replacement order");
+  if (solver.retainedStorageBytes() != retainedBytes)
+    fail("warm diversified DFS expanded retained solver storage");
+
+  auto replayStream = DeterministicPnrRandomStream::create(
+      /*masterSeed=*/17, /*seedIndex=*/3,
+      PnrRandomStreamPurpose::InitializerDiversification);
+  const auto replay = take(solver.solveDiversified(
+      /*assignmentLimit=*/decisionCount, replayStream));
+  if (replay.choices != result.choices ||
+      replay.assignmentAttempts != result.assignmentAttempts)
+    fail("diversified initializer replay changed its assignment");
+}
+
 } // namespace
 
 int main() {
@@ -116,5 +165,6 @@ int main() {
   canonicalSearchBacktracksWithoutCopyingState();
   workLimitDoesNotBecomeInfeasibility();
   sparseDomainsReusePreparedStorage();
+  diversifiedSearchUsesExactWithoutReplacementOrder();
   return 0;
 }

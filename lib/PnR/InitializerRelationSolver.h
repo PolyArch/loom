@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_INITIALIZERRELATIONSOLVER_H
 #define LOOM_PNR_INITIALIZERRELATIONSOLVER_H
 
+#include "PnR/DeterministicSearchProtocol.h"
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -118,6 +119,9 @@ public:
 
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonical(std::uint64_t assignmentLimit);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveDiversified(std::uint64_t assignmentLimit,
+                   DeterministicPnrRandomStream &diversificationStream);
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -146,9 +150,19 @@ private:
                                PnrIndex decision, PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
   bool propagate();
-  SearchResult search(std::uint64_t assignmentLimit);
+  SearchResult search(std::uint64_t assignmentLimit,
+                      DeterministicPnrRandomStream *diversificationStream);
+  llvm::ArrayRef<PnrIndex>
+  buildChoiceOrder(PnrIndex decision,
+                   DeterministicPnrRandomStream *diversificationStream);
+  PnrIndex selectRemainingChoice(PnrIndex fenwickOffset,
+                                 PnrIndex remainingCount,
+                                 std::uint64_t selectedRank);
   void rollback(std::size_t journalMark);
   PnrIndex soleChoice(PnrIndex decision) const;
+  llvm::Expected<InitializerRelationSolveResult>
+  solve(std::uint64_t assignmentLimit,
+        DeterministicPnrRandomStream *diversificationStream);
 
   const InitializerRelationModel *model_ = nullptr;
   std::vector<std::uint8_t> activeChoices_;
@@ -156,6 +170,9 @@ private:
   std::vector<RemovedChoice> removalJournal_;
   std::vector<PnrIndex> relationQueue_;
   std::vector<std::uint8_t> relationPending_;
+  std::vector<PnrIndex> canonicalActiveChoices_;
+  std::vector<PnrIndex> choiceOrder_;
+  std::vector<PnrIndex> choiceFenwick_;
   std::size_t queueHead_ = 0;
   std::size_t queueTail_ = 0;
   std::size_t queueCount_ = 0;
