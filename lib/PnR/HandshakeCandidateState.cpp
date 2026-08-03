@@ -36,25 +36,6 @@ llvm::Error candidateError(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument));
 }
 
-std::size_t bitWordCount(std::size_t bitCount) {
-  return bitCount / 64 + (bitCount % 64 != 0 ? 1 : 0);
-}
-
-bool bitIsSet(llvm::ArrayRef<std::uint64_t> words, PnrIndex bit) {
-  const std::size_t ordinal = static_cast<std::size_t>(bit);
-  return (words[ordinal / 64] & (UINT64_C(1) << (ordinal % 64))) != 0;
-}
-
-void setBit(llvm::MutableArrayRef<std::uint64_t> words, PnrIndex bit,
-            bool value) {
-  const std::size_t ordinal = static_cast<std::size_t>(bit);
-  const std::uint64_t mask = UINT64_C(1) << (ordinal % 64);
-  if (value)
-    words[ordinal / 64] |= mask;
-  else
-    words[ordinal / 64] &= ~mask;
-}
-
 detail::IncrementalTopologicalGraphView
 topologyView(const FrozenSpatialHandshakeIndex &index) {
   return {index.nodeCount(), index.arcs(), index.adjacencyOffsets(),
@@ -170,8 +151,7 @@ HandshakeCandidateState::create(FrozenSpatialHandshakeIndexHandle index) {
   const std::size_t groupCount = index->allTraversalGroups().size();
   return HandshakeCandidateStateHandle(new HandshakeCandidateState(
       std::move(index), std::move(*topology), std::move(fragmentRefcounts),
-      std::move(arcRefcounts),
-      std::vector<std::uint64_t>(bitWordCount(traversalCount), 0),
+      std::move(arcRefcounts), std::vector<PnrIndex>(traversalCount, 0),
       std::vector<PnrIndex>(groupCount, 0)));
 }
 
@@ -189,14 +169,13 @@ bool HandshakeCandidateState::isArcActive(PnrIndex arc) const {
   return topology_->isArcActive(arc);
 }
 
-bool HandshakeCandidateState::isTraversalSelected(PnrIndex traversal) const {
-  assert(traversal < index_->traversalFragmentOffsets().size() - 1);
-  return bitIsSet(traversalSelectedBits_, traversal);
+PnrIndex HandshakeCandidateState::traversalRefcount(PnrIndex traversal) const {
+  assert(traversal < traversalRefcounts_.size());
+  return traversalRefcounts_[traversal];
 }
 
-void HandshakeCandidateState::setTraversalSelected(PnrIndex traversal,
-                                                   bool selected) {
-  setBit(traversalSelectedBits_, traversal, selected);
+bool HandshakeCandidateState::isTraversalSelected(PnrIndex traversal) const {
+  return traversalRefcount(traversal) != 0;
 }
 
 llvm::ArrayRef<PnrIndex> HandshakeCandidateState::topologicalOrder() const {
@@ -210,6 +189,8 @@ llvm::ArrayRef<PnrIndex> HandshakeCandidateState::topologicalRanks() const {
 llvm::Error HandshakeCandidateState::verify() const {
   if (!index_ || fragmentRefcounts_.size() != index_->fragments().size() ||
       arcRefcounts_.size() != index_->arcs().size() ||
+      traversalRefcounts_.size() + 1 !=
+          index_->traversalFragmentOffsets().size() ||
       allGroupSelectedWitnessCounts_.size() !=
           index_->allTraversalGroups().size())
     return candidateError("candidate shape does not match its frozen index");
@@ -336,7 +317,7 @@ void HandshakeCandidateTransaction::recordTraversal(PnrIndex traversal) {
     return;
   scratch_->traversalJournalMarks_[traversal] = scratch_->transactionEpoch_;
   scratch_->traversalDeltas_.push_back(
-      {traversal, state_->isTraversalSelected(traversal)});
+      {traversal, state_->traversalRefcounts_[traversal]});
 }
 
 void HandshakeCandidateTransaction::recordGroup(PnrIndex group) {
@@ -406,17 +387,24 @@ llvm::Error HandshakeCandidateTransaction::removeFragments(
   return llvm::Error::success();
 }
 
-llvm::Error HandshakeCandidateTransaction::selectTraversal(PnrIndex traversal) {
+llvm::Error HandshakeCandidateTransaction::addTraversalUses(PnrIndex traversal,
+                                                            PnrIndex count) {
   if (!scratch_ || closed_)
     return candidateError("transaction is not collecting changes");
   const std::size_t traversalCount =
       state_->index_->traversalFragmentOffsets().size() - 1;
   if (traversal >= traversalCount)
     return candidateError("selected traversal is out of range");
-  if (state_->isTraversalSelected(traversal))
-    return candidateError("traversal is already selected");
+  if (count == 0)
+    return candidateError("traversal use increment is zero");
+  PnrIndex &refcount = state_->traversalRefcounts_[traversal];
+  if (count > std::numeric_limits<PnrIndex>::max() - refcount)
+    return candidateError("traversal use refcount overflows PnrIndex");
   recordTraversal(traversal);
-  state_->setTraversalSelected(traversal, true);
+  const bool activate = refcount == 0;
+  refcount += count;
+  if (!activate)
+    return llvm::Error::success();
 
   const auto fragmentOffsets = state_->index_->traversalFragmentOffsets();
   if (llvm::Error error =
@@ -443,17 +431,23 @@ llvm::Error HandshakeCandidateTransaction::selectTraversal(PnrIndex traversal) {
 }
 
 llvm::Error
-HandshakeCandidateTransaction::deselectTraversal(PnrIndex traversal) {
+HandshakeCandidateTransaction::removeTraversalUses(PnrIndex traversal,
+                                                   PnrIndex count) {
   if (!scratch_ || closed_)
     return candidateError("transaction is not collecting changes");
   const std::size_t traversalCount =
       state_->index_->traversalFragmentOffsets().size() - 1;
   if (traversal >= traversalCount)
     return candidateError("deselected traversal is out of range");
-  if (!state_->isTraversalSelected(traversal))
-    return candidateError("traversal is not selected");
+  if (count == 0)
+    return candidateError("traversal use decrement is zero");
+  PnrIndex &refcount = state_->traversalRefcounts_[traversal];
+  if (count > refcount)
+    return candidateError("traversal use refcount underflows");
   recordTraversal(traversal);
-  state_->setTraversalSelected(traversal, false);
+  refcount -= count;
+  if (refcount != 0)
+    return llvm::Error::success();
 
   const auto fragmentOffsets = state_->index_->traversalFragmentOffsets();
   if (llvm::Error error =
@@ -541,7 +535,7 @@ void HandshakeCandidateTransaction::rollback() noexcept {
   for (const auto &delta : scratch_->arcDeltas_)
     state_->arcRefcounts_[delta.index] = delta.oldValue;
   for (const auto &delta : scratch_->traversalDeltas_)
-    state_->setTraversalSelected(delta.index, delta.oldValue);
+    state_->traversalRefcounts_[delta.index] = delta.oldValue;
   for (const auto &delta : scratch_->groupDeltas_)
     state_->allGroupSelectedWitnessCounts_[delta.index] = delta.oldValue;
   finish();

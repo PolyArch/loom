@@ -44,11 +44,6 @@ private:
     PnrIndex oldValue = 0;
   };
 
-  struct BitDelta final {
-    PnrIndex index = 0;
-    bool oldValue = false;
-  };
-
   void beginTransaction();
   void resetTransaction();
 
@@ -59,7 +54,7 @@ private:
   std::vector<std::uint64_t> groupJournalMarks_;
   std::vector<IndexDelta> fragmentDeltas_;
   std::vector<IndexDelta> arcDeltas_;
-  std::vector<BitDelta> traversalDeltas_;
+  std::vector<IndexDelta> traversalDeltas_;
   std::vector<IndexDelta> groupDeltas_;
   std::uint64_t transactionEpoch_ = 0;
   HandshakeCandidateTransaction *activeTransaction_ = nullptr;
@@ -87,6 +82,7 @@ public:
   const FrozenSpatialHandshakeIndex &index() const { return *index_; }
   PnrIndex fragmentRefcount(PnrIndex fragment) const;
   PnrIndex arcRefcount(PnrIndex arc) const;
+  PnrIndex traversalRefcount(PnrIndex traversal) const;
   bool isArcActive(PnrIndex arc) const;
   bool isTraversalSelected(PnrIndex traversal) const;
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;
@@ -104,22 +100,20 @@ private:
       std::shared_ptr<detail::IncrementalTopologicalOrder> topology,
       std::vector<PnrIndex> fragmentRefcounts,
       std::vector<PnrIndex> arcRefcounts,
-      std::vector<std::uint64_t> traversalSelectedBits,
+      std::vector<PnrIndex> traversalRefcounts,
       std::vector<PnrIndex> allGroupSelectedWitnessCounts)
       : index_(std::move(index)), topology_(std::move(topology)),
         fragmentRefcounts_(std::move(fragmentRefcounts)),
         arcRefcounts_(std::move(arcRefcounts)),
-        traversalSelectedBits_(std::move(traversalSelectedBits)),
+        traversalRefcounts_(std::move(traversalRefcounts)),
         allGroupSelectedWitnessCounts_(
             std::move(allGroupSelectedWitnessCounts)) {}
-
-  void setTraversalSelected(PnrIndex traversal, bool selected);
 
   FrozenSpatialHandshakeIndexHandle index_;
   std::shared_ptr<detail::IncrementalTopologicalOrder> topology_;
   std::vector<PnrIndex> fragmentRefcounts_;
   std::vector<PnrIndex> arcRefcounts_;
-  std::vector<std::uint64_t> traversalSelectedBits_;
+  std::vector<PnrIndex> traversalRefcounts_;
   std::vector<PnrIndex> allGroupSelectedWitnessCounts_;
   HandshakeCandidateTransaction *activeTransaction_ = nullptr;
 
@@ -138,8 +132,8 @@ public:
 
   llvm::Error addFragments(llvm::ArrayRef<PnrIndex> fragments);
   llvm::Error removeFragments(llvm::ArrayRef<PnrIndex> fragments);
-  llvm::Error selectTraversal(PnrIndex traversal);
-  llvm::Error deselectTraversal(PnrIndex traversal);
+  llvm::Error addTraversalUses(PnrIndex traversal, PnrIndex count);
+  llvm::Error removeTraversalUses(PnrIndex traversal, PnrIndex count);
 
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
