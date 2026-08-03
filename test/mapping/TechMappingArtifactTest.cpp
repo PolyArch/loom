@@ -651,6 +651,43 @@ void artifactRoundTripAndReferenceValidation() {
   if (frozen->routing().routeClaims().empty() ||
       frozen->routing().traversalClaimKeys().empty())
     fail("Spatial freeze omitted traversal-implied resource claims");
+  const auto &routing = frozen->routing();
+  if (routing.capacityRouteClaimOffsets().size() !=
+          frozen->resources().capacityDimensions().size() + 1 ||
+      routing.routeClaimTraversalOffsets().size() !=
+          routing.routeClaims().size() + 1 ||
+      routing.traversalArcOffsets().size() != routing.traversals().size() + 1)
+    fail("Spatial freeze omitted route-cost reverse CSR offsets");
+  for (loom::pnr::PnrIndex claim = 0; claim < routing.routeClaims().size();
+       ++claim) {
+    const auto &record = routing.routeClaims()[claim];
+    const auto capacityClaims = routing.capacityRouteClaims().slice(
+        routing.capacityRouteClaimOffsets()[record.capacityDimension],
+        routing.capacityRouteClaimOffsets()[record.capacityDimension + 1] -
+            routing.capacityRouteClaimOffsets()[record.capacityDimension]);
+    if (!llvm::is_contained(capacityClaims, claim))
+      fail("capacity-to-route-claim reverse incidence is incomplete");
+  }
+  for (loom::pnr::PnrIndex traversal = 0;
+       traversal < routing.traversals().size(); ++traversal) {
+    const auto &record = routing.traversals()[traversal];
+    for (loom::pnr::PnrIndex claim : routing.traversalClaimKeys().slice(
+             record.routeClaimOffset, record.routeClaimCount)) {
+      const auto claimTraversals = routing.routeClaimTraversals().slice(
+          routing.routeClaimTraversalOffsets()[claim],
+          routing.routeClaimTraversalOffsets()[claim + 1] -
+              routing.routeClaimTraversalOffsets()[claim]);
+      if (!llvm::is_contained(claimTraversals, traversal))
+        fail("route-claim-to-traversal reverse incidence is incomplete");
+    }
+    for (loom::pnr::PnrIndex arc : routing.traversalArcs().slice(
+             routing.traversalArcOffsets()[traversal],
+             routing.traversalArcOffsets()[traversal + 1] -
+                 routing.traversalArcOffsets()[traversal]))
+      if (arc >= routing.routingArcs().size() ||
+          routing.routingArcs()[arc].traversal != traversal)
+        fail("traversal-to-arc reverse incidence is inconsistent");
+  }
   bool observedSharedSwitchIngress = false;
   for (std::size_t first = 0; first < frozen->routing().traversals().size() &&
                               !observedSharedSwitchIngress;

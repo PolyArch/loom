@@ -422,6 +422,22 @@ public:
   llvm::ArrayRef<PnrIndex> traversalClaimKeys() const {
     return traversalClaimKeys_;
   }
+  llvm::ArrayRef<PnrIndex> capacityRouteClaimOffsets() const {
+    return capacityRouteClaimOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> capacityRouteClaims() const {
+    return capacityRouteClaims_;
+  }
+  llvm::ArrayRef<PnrIndex> routeClaimTraversalOffsets() const {
+    return routeClaimTraversalOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> routeClaimTraversals() const {
+    return routeClaimTraversals_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalArcOffsets() const {
+    return traversalArcOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalArcs() const { return traversalArcs_; }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
@@ -441,6 +457,12 @@ private:
   std::vector<PnrIndex> traversalResourceStates_;
   std::vector<FrozenSpatialRouteClaim> routeClaims_;
   std::vector<PnrIndex> traversalClaimKeys_;
+  std::vector<PnrIndex> capacityRouteClaimOffsets_;
+  std::vector<PnrIndex> capacityRouteClaims_;
+  std::vector<PnrIndex> routeClaimTraversalOffsets_;
+  std::vector<PnrIndex> routeClaimTraversals_;
+  std::vector<PnrIndex> traversalArcOffsets_;
+  std::vector<PnrIndex> traversalArcs_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<PnrIndex> reverseAdjacencyOffsets_;
   std::vector<PnrIndex> reverseArcOrdinals_;

@@ -84,6 +84,24 @@ constexpr PnrCapacityContext routeClaimIndexContext{
 constexpr PnrCapacityContext routeClaimCapacityContext{
     frozenArtifact, "route_claims", "capacity_dimensions",
     PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext capacityRouteClaimOffsetContext{
+    frozenArtifact, "capacity_route_claims", "capacity_route_claims",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext capacityRouteClaimCountContext{
+    frozenArtifact, "capacity_route_claims", "route_claims",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext routeClaimTraversalOffsetContext{
+    frozenArtifact, "route_claim_traversals", "route_claim_traversals",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext routeClaimTraversalCountContext{
+    frozenArtifact, "route_claim_traversals", "traversals",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext traversalArcOffsetContext{
+    frozenArtifact, "traversal_arcs", "traversal_arcs",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext traversalArcCountContext{
+    frozenArtifact, "traversal_arcs", "routing_arcs",
+    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext arcOffsetContext{
     frozenArtifact, "adjacency", "routing_arcs", PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext arcCountContext{
@@ -91,16 +109,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.3\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.4\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 3;
+constexpr std::uint32_t cacheSchemaMinor = 4;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.3";
+    "loom.spatial_pnr.freeze.2.4";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.3";
+    "loom.spatial_pnr.native_layout.2.4";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -582,6 +600,81 @@ public:
                .second)
         return invalid("route claim key is duplicated");
     }
+    if (routing.capacityRouteClaimOffsets().size() !=
+            resources.capacityDimensions().size() + 1 ||
+        routing.routeClaimTraversalOffsets().size() !=
+            routing.routeClaims().size() + 1 ||
+        routing.traversalArcOffsets().size() !=
+            routing.traversals().size() + 1 ||
+        routing.capacityRouteClaimOffsets().back() !=
+            routing.capacityRouteClaims().size() ||
+        routing.routeClaimTraversalOffsets().back() !=
+            routing.routeClaimTraversals().size() ||
+        routing.traversalArcOffsets().back() != routing.traversalArcs().size())
+      return invalid("routing reverse-incidence CSR shape is inconsistent");
+
+    std::vector<PnrIndex> expectedCapacityOffsets(
+        resources.capacityDimensions().size() + 1, 0);
+    for (const FrozenSpatialRouteClaim &claim : routing.routeClaims())
+      ++expectedCapacityOffsets[claim.capacityDimension + 1];
+    for (std::size_t capacity = 1; capacity < expectedCapacityOffsets.size();
+         ++capacity)
+      expectedCapacityOffsets[capacity] +=
+          expectedCapacityOffsets[capacity - 1];
+    std::vector<PnrIndex> expectedCapacityClaims(routing.routeClaims().size());
+    std::vector<PnrIndex> capacityCursors = expectedCapacityOffsets;
+    for (auto [claimOrdinal, claim] : llvm::enumerate(routing.routeClaims()))
+      expectedCapacityClaims[capacityCursors[claim.capacityDimension]++] =
+          static_cast<PnrIndex>(claimOrdinal);
+    if (routing.capacityRouteClaimOffsets() !=
+            llvm::ArrayRef<PnrIndex>(expectedCapacityOffsets) ||
+        routing.capacityRouteClaims() !=
+            llvm::ArrayRef<PnrIndex>(expectedCapacityClaims))
+      return invalid(
+          "capacity-to-route-claim reverse incidence is inconsistent");
+
+    std::vector<PnrIndex> expectedClaimOffsets(routing.routeClaims().size() + 1,
+                                               0);
+    for (const FrozenSpatialTraversal &traversal : routing.traversals())
+      for (PnrIndex claim : routing.traversalClaimKeys().slice(
+               traversal.routeClaimOffset, traversal.routeClaimCount))
+        ++expectedClaimOffsets[claim + 1];
+    for (std::size_t claim = 1; claim < expectedClaimOffsets.size(); ++claim)
+      expectedClaimOffsets[claim] += expectedClaimOffsets[claim - 1];
+    std::vector<PnrIndex> expectedClaimTraversals(
+        routing.traversalClaimKeys().size());
+    std::vector<PnrIndex> claimCursors = expectedClaimOffsets;
+    for (auto [traversalOrdinal, traversal] :
+         llvm::enumerate(routing.traversals()))
+      for (PnrIndex claim : routing.traversalClaimKeys().slice(
+               traversal.routeClaimOffset, traversal.routeClaimCount))
+        expectedClaimTraversals[claimCursors[claim]++] =
+            static_cast<PnrIndex>(traversalOrdinal);
+    if (routing.routeClaimTraversalOffsets() !=
+            llvm::ArrayRef<PnrIndex>(expectedClaimOffsets) ||
+        routing.routeClaimTraversals() !=
+            llvm::ArrayRef<PnrIndex>(expectedClaimTraversals))
+      return invalid(
+          "route-claim-to-traversal reverse incidence is inconsistent");
+
+    std::vector<PnrIndex> expectedTraversalOffsets(
+        routing.traversals().size() + 1, 0);
+    for (const FrozenSpatialRoutingArc &arc : routing.routingArcs())
+      ++expectedTraversalOffsets[arc.traversal + 1];
+    for (std::size_t traversal = 1; traversal < expectedTraversalOffsets.size();
+         ++traversal)
+      expectedTraversalOffsets[traversal] +=
+          expectedTraversalOffsets[traversal - 1];
+    std::vector<PnrIndex> expectedTraversalArcs(routing.routingArcs().size());
+    std::vector<PnrIndex> traversalCursors = expectedTraversalOffsets;
+    for (auto [arcOrdinal, arc] : llvm::enumerate(routing.routingArcs()))
+      expectedTraversalArcs[traversalCursors[arc.traversal]++] =
+          static_cast<PnrIndex>(arcOrdinal);
+    if (routing.traversalArcOffsets() !=
+            llvm::ArrayRef<PnrIndex>(expectedTraversalOffsets) ||
+        routing.traversalArcs() !=
+            llvm::ArrayRef<PnrIndex>(expectedTraversalArcs))
+      return invalid("traversal-to-arc reverse incidence is inconsistent");
     for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
       const bool endpointlessRegisterFifo =
           traversal.reference.kind() ==
@@ -1128,6 +1221,102 @@ private:
         return index.takeError();
       const PnrIndex slot = reverseCursors[arc.target]++;
       result.reverseArcOrdinals_[slot] = *index;
+    }
+
+    result.capacityRouteClaimOffsets_.assign(
+        resources.capacityDimensions().size() + 1, 0);
+    for (const FrozenSpatialRouteClaim &claim : result.routeClaims_) {
+      auto count = checkedPnrIndexAdd(
+          capacityRouteClaimCountContext,
+          result.capacityRouteClaimOffsets_[claim.capacityDimension + 1], 1);
+      if (!count)
+        return count.takeError();
+      result.capacityRouteClaimOffsets_[claim.capacityDimension + 1] = *count;
+    }
+    for (std::size_t capacity = 1;
+         capacity < result.capacityRouteClaimOffsets_.size(); ++capacity) {
+      auto prefix =
+          checkedPnrIndexAdd(capacityRouteClaimOffsetContext,
+                             result.capacityRouteClaimOffsets_[capacity - 1],
+                             result.capacityRouteClaimOffsets_[capacity]);
+      if (!prefix)
+        return prefix.takeError();
+      result.capacityRouteClaimOffsets_[capacity] = *prefix;
+    }
+    result.capacityRouteClaims_.resize(result.routeClaims_.size());
+    std::vector<PnrIndex> capacityClaimCursors =
+        result.capacityRouteClaimOffsets_;
+    for (auto [claimOrdinal, claim] : llvm::enumerate(result.routeClaims_)) {
+      auto claimIndex = checked(routeClaimIndexContext, claimOrdinal);
+      if (!claimIndex)
+        return claimIndex.takeError();
+      result.capacityRouteClaims_
+          [capacityClaimCursors[claim.capacityDimension]++] = *claimIndex;
+    }
+
+    result.routeClaimTraversalOffsets_.assign(result.routeClaims_.size() + 1,
+                                              0);
+    for (const FrozenSpatialTraversal &traversal : result.traversals_)
+      for (PnrIndex claim :
+           llvm::ArrayRef(result.traversalClaimKeys_)
+               .slice(traversal.routeClaimOffset, traversal.routeClaimCount)) {
+        auto count = checkedPnrIndexAdd(
+            routeClaimTraversalCountContext,
+            result.routeClaimTraversalOffsets_[claim + 1], 1);
+        if (!count)
+          return count.takeError();
+        result.routeClaimTraversalOffsets_[claim + 1] = *count;
+      }
+    for (std::size_t claim = 1;
+         claim < result.routeClaimTraversalOffsets_.size(); ++claim) {
+      auto prefix =
+          checkedPnrIndexAdd(routeClaimTraversalOffsetContext,
+                             result.routeClaimTraversalOffsets_[claim - 1],
+                             result.routeClaimTraversalOffsets_[claim]);
+      if (!prefix)
+        return prefix.takeError();
+      result.routeClaimTraversalOffsets_[claim] = *prefix;
+    }
+    result.routeClaimTraversals_.resize(result.traversalClaimKeys_.size());
+    std::vector<PnrIndex> claimTraversalCursors =
+        result.routeClaimTraversalOffsets_;
+    for (auto [traversalOrdinal, traversal] :
+         llvm::enumerate(result.traversals_)) {
+      auto traversalIndex = checked(traversalIndexContext, traversalOrdinal);
+      if (!traversalIndex)
+        return traversalIndex.takeError();
+      for (PnrIndex claim :
+           llvm::ArrayRef(result.traversalClaimKeys_)
+               .slice(traversal.routeClaimOffset, traversal.routeClaimCount))
+        result.routeClaimTraversals_[claimTraversalCursors[claim]++] =
+            *traversalIndex;
+    }
+
+    result.traversalArcOffsets_.assign(result.traversals_.size() + 1, 0);
+    for (const FrozenSpatialRoutingArc &arc : result.arcs_) {
+      auto count =
+          checkedPnrIndexAdd(traversalArcCountContext,
+                             result.traversalArcOffsets_[arc.traversal + 1], 1);
+      if (!count)
+        return count.takeError();
+      result.traversalArcOffsets_[arc.traversal + 1] = *count;
+    }
+    for (std::size_t traversal = 1;
+         traversal < result.traversalArcOffsets_.size(); ++traversal) {
+      auto prefix = checkedPnrIndexAdd(
+          traversalArcOffsetContext, result.traversalArcOffsets_[traversal - 1],
+          result.traversalArcOffsets_[traversal]);
+      if (!prefix)
+        return prefix.takeError();
+      result.traversalArcOffsets_[traversal] = *prefix;
+    }
+    result.traversalArcs_.resize(result.arcs_.size());
+    std::vector<PnrIndex> traversalArcCursors = result.traversalArcOffsets_;
+    for (auto [arcOrdinal, arc] : llvm::enumerate(result.arcs_)) {
+      auto arcIndex = checked(arcIndexContext, arcOrdinal);
+      if (!arcIndex)
+        return arcIndex.takeError();
+      result.traversalArcs_[traversalArcCursors[arc.traversal]++] = *arcIndex;
     }
     return result;
   }
