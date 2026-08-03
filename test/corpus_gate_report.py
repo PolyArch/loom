@@ -19,7 +19,7 @@ class CorpusGateReportContext:
     case_timeout_seconds: float
     dfg_simulation_timeout_seconds: float
     dfg_execution_limits: Mapping[str, int]
-    config: str | None
+    acceleration_profile: str | None
     duration_seconds: float
     human_header: str
     target: Mapping[str, str]
@@ -93,7 +93,7 @@ def render_json(results: Sequence[CaseResult], context: CorpusGateReportContext)
         "case_count": len(results),
         "case_timeout_seconds": context.case_timeout_seconds,
         "candidate_jobs": context.candidate_jobs,
-        "config": context.config,
+        "acceleration_profile": context.acceleration_profile,
         "dfg_execution_limits": dict(context.dfg_execution_limits),
         "dfg_simulation_timeout_seconds": context.dfg_simulation_timeout_seconds,
         "cases": [result.as_dict() for result in results],

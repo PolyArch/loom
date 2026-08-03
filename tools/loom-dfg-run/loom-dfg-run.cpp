@@ -58,8 +58,10 @@ llvm::cl::opt<std::string>
                       llvm::cl::value_desc("path"), llvm::cl::Required);
 
 llvm::cl::opt<std::string>
-    configPath("config", llvm::cl::desc("resolved configuration file"),
-               llvm::cl::value_desc("path"), llvm::cl::init(""));
+    accelerationProfile(
+        "loom-accel-profile",
+        llvm::cl::desc("builtin acceleration preset or configuration path"),
+        llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string> outputPath("output",
                                       llvm::cl::desc("comparison report JSON"),
@@ -423,9 +425,7 @@ int main(int argc, char **argv) {
   if (!preset)
     return reportError(preset.takeError());
   llvm::Expected<loom::ResolvedConfig> config =
-      configPath.empty()
-          ? llvm::Expected<loom::ResolvedConfig>(loom::defaultResolvedConfig())
-          : loom::loadResolvedConfig(configPath);
+      loom::resolveConfigProfile(accelerationProfile);
   if (!config)
     return reportError(config.takeError());
   loom::ArtifactStore store(artifactStorePath);

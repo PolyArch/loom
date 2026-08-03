@@ -140,7 +140,7 @@ class CommandConstructionTest(CorpusGateTestBase):
             [
                 self.tool_paths["dfg_run"],
                 "--builtin=small",
-                f"--config={config}",
+                f"--loom-accel-profile={config}",
                 f"--artifact-store={self.out_dir / 'store'}",
                 f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",
                 f"--output={self.out_dir / 'simulation.json'}",
@@ -325,14 +325,14 @@ class DeterministicResultsTest(CorpusGateTestBase):
             "1",
             "--candidate-jobs",
             "3",
-            "--config",
+            "--loom-accel-profile",
             str(config),
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["candidate_jobs"], 3)
-        self.assertEqual(summary["config"], str(config.resolve()))
+        self.assertEqual(summary["acceleration_profile"], str(config.resolve()))
         self.assertIn("candidate-jobs=3", human)
-        self.assertIn(f"config={config.resolve()}", human)
+        self.assertIn(f"acceleration-profile={config.resolve()}", human)
         pre_mapping = [
             line
             for line in self.invocation_lines()
@@ -344,10 +344,32 @@ class DeterministicResultsTest(CorpusGateTestBase):
         )
         self.assertTrue(
             all(
-                f"--config={config.resolve()}" in invocation
+                f"--loom-accel-profile={config.resolve()}" in invocation
                 for invocation in pre_mapping
             )
         )
+
+    def test_d0_builtin_acceleration_profile_is_forwarded(self) -> None:
+        exit_code, human, summary = self.run_gate(
+            "--case",
+            AXPY_WORKLOAD_ID,
+            "--stage",
+            "d0",
+            "--jobs",
+            "1",
+            "--loom-accel-profile",
+            "quick_explore",
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["acceleration_profile"], "quick_explore")
+        self.assertIn("acceleration-profile=quick_explore", human)
+        pre_mapping = [
+            line
+            for line in self.invocation_lines()
+            if line.split(" ", 1)[0].endswith("stub-pre-mapping")
+        ]
+        self.assertEqual(len(pre_mapping), 1)
+        self.assertIn("--loom-accel-profile=quick_explore", pre_mapping[0])
 
 
 class TimeoutCleanupTest(CorpusGateTestBase):

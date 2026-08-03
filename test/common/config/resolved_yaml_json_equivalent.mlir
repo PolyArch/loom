@@ -1,8 +1,8 @@
-// RUN: loom-config-test --resolved-json %p/resolved_equiv.yaml > %t.yaml.json
-// RUN: loom-config-test --resolved-json %p/resolved_equiv.json > %t.json.json
+// RUN: loom-config-test --resolved-json --loom-accel-profile=%p/resolved_equiv.yaml > %t.yaml.json
+// RUN: loom-config-test --resolved-json --loom-accel-profile=%p/resolved_equiv.json > %t.json.json
 // RUN: diff %t.yaml.json %t.json.json
-// RUN: loom-config-test --resolved-identity %p/resolved_equiv.yaml > %t.yaml.identity
-// RUN: loom-config-test --resolved-identity %p/resolved_equiv.json > %t.json.identity
+// RUN: loom-config-test --resolved-identity --loom-accel-profile=%p/resolved_equiv.yaml > %t.yaml.identity
+// RUN: loom-config-test --resolved-identity --loom-accel-profile=%p/resolved_equiv.json > %t.json.identity
 // RUN: diff %t.yaml.identity %t.json.identity
 // RUN: FileCheck %s < %t.yaml.json
 // RUN: FileCheck %s --check-prefix=NO-TECHMAP < %t.yaml.json

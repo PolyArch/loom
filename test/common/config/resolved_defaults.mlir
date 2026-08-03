@@ -1,11 +1,13 @@
 // RUN: loom-config-test --resolved-json | FileCheck %s --check-prefix=JSON
 // RUN: loom-config-test --resolved-json | FileCheck %s --check-prefix=NO-TECHMAP
 // RUN: loom-config-test --resolved-identity | FileCheck %s --check-prefix=IDENTITY
+// RUN: loom-config-test --resolved-json --loom-accel-profile=quick_explore | FileCheck %s --check-prefix=QUICK
+// RUN: loom-config-test --resolved-json --loom-accel-profile=implementation | FileCheck %s --check-prefix=IMPLEMENTATION
 // RUN: loom-config-test --resolved-json > %t.canonical.json
-// RUN: loom-config-test --resolved-json %t.canonical.json > %t.reparsed.json
+// RUN: loom-config-test --resolved-json --loom-accel-profile=%t.canonical.json > %t.reparsed.json
 // RUN: diff %t.canonical.json %t.reparsed.json
 // RUN: loom-config-test --resolved-identity > %t.identity
-// RUN: loom-config-test --resolved-identity %t.canonical.json > %t.reparsed.identity
+// RUN: loom-config-test --resolved-identity --loom-accel-profile=%t.canonical.json > %t.reparsed.identity
 // RUN: diff %t.identity %t.reparsed.identity
 
 // JSON-DAG: "hardware_target"
@@ -42,3 +44,13 @@
 // JSON-NOT: "objectives"
 // NO-TECHMAP-NOT: "fabric_techmap"
 // IDENTITY: {{^[0-9a-f]{64}$}}
+// QUICK-DAG: "seed_attempt_count": 2
+// QUICK-DAG: "assignment_attempt_limit_per_seed": 16384
+// QUICK-DAG: "endpoint_expansion_limit": 65536
+// QUICK-DAG: "max_region_decisions": 64
+// QUICK-DAG: "max_solver_calls": 128
+// IMPLEMENTATION-DAG: "seed_attempt_count": 16
+// IMPLEMENTATION-DAG: "assignment_attempt_limit_per_seed": 524288
+// IMPLEMENTATION-DAG: "endpoint_expansion_limit": 2097152
+// IMPLEMENTATION-DAG: "max_region_decisions": 1024
+// IMPLEMENTATION-DAG: "max_solver_calls": 8192

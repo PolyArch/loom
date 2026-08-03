@@ -12,7 +12,6 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/YAMLParser.h"
 #include "llvm/Support/raw_ostream.h"
@@ -288,33 +287,6 @@ requireSequence(const ConfigSyntax *node, const llvm::Twine &key) {
 
 llvm::Error touch(ConfigPatch &patch, llvm::StringRef canonicalKey) {
   patch.touchedKeys.insert(canonicalKey.str());
-  return llvm::Error::success();
-}
-
-llvm::Error mergeSiblingPatch(ConfigPatch &dst, const ConfigPatch &src) {
-  for (const std::string &key : src.touchedKeys)
-    if (dst.touchedKeys.count(key) != 0)
-      return diagnostic("config_conflicting_sources", key);
-
-  if (src.hardwareTarget)
-    dst.hardwareTarget = src.hardwareTarget;
-  if (src.ownershipScopeExpansionLimit)
-    dst.ownershipScopeExpansionLimit = src.ownershipScopeExpansionLimit;
-  if (src.techMappingMatchRowAttemptLimit)
-    dst.techMappingMatchRowAttemptLimit = src.techMappingMatchRowAttemptLimit;
-  if (src.techMappingPartialCoverExpansionLimit)
-    dst.techMappingPartialCoverExpansionLimit =
-        src.techMappingPartialCoverExpansionLimit;
-  if (src.techMappingCandidatePublicationLimit)
-    dst.techMappingCandidatePublicationLimit =
-        src.techMappingCandidatePublicationLimit;
-  if (src.objectiveCatalogs)
-    dst.objectiveCatalogs = src.objectiveCatalogs;
-  if (src.spatialPnr)
-    dst.spatialPnr = src.spatialPnr;
-  if (src.systemPnr)
-    dst.systemPnr = src.systemPnr;
-  dst.touchedKeys.insert(src.touchedKeys.begin(), src.touchedKeys.end());
   return llvm::Error::success();
 }
 
@@ -1232,75 +1204,33 @@ llvm::Error parseDse(ConfigPatch &patch, const ConfigSyntax *node) {
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<std::string>> parseIncludes(const ConfigSyntax *node,
-                                                       llvm::StringRef key) {
-  std::vector<std::string> includes;
-  if (auto scalar = requireScalarString(node, key)) {
-    includes.push_back(*scalar);
-    return includes;
-  } else {
-    llvm::consumeError(scalar.takeError());
-  }
-  if (!node || node->kind != ConfigSyntax::Kind::Sequence)
-    return diagnostic("config_type_mismatch", key,
-                      "include must be a scalar or array of scalars");
-  for (const ConfigSyntax &entry : node->sequence) {
-    auto valueOrErr = requireScalarString(&entry, key);
-    if (!valueOrErr)
-      return valueOrErr.takeError();
-    includes.push_back(*valueOrErr);
-  }
-  return includes;
-}
-
 llvm::Expected<ConfigPatch>
 parseConfigPatchFromMapping(const ConfigSyntax &topMap,
-                            llvm::StringRef sourceName, llvm::StringRef baseDir,
-                            std::set<std::string> &activeFiles);
+                            llvm::StringRef sourceName);
 
 llvm::Expected<ConfigPatch>
-parseConfigFilePatch(llvm::StringRef path, std::set<std::string> &activeFiles) {
-  if (activeFiles.count(path.str()) != 0)
-    return diagnostic("config_parse_failed", path, "cyclic include");
-  activeFiles.insert(path.str());
-
+parseConfigFilePatch(llvm::StringRef path) {
   auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
-  if (std::error_code ec = bufferOrErr.getError()) {
-    activeFiles.erase(path.str());
+  if (std::error_code ec = bufferOrErr.getError())
     return makeErr("config_parse_failed: " + path + ": " + ec.message());
-  }
   llvm::SourceMgr sourceMgr;
   llvm::yaml::Stream stream((*bufferOrErr)->getBuffer(), sourceMgr);
   auto it = stream.begin();
-  if (it == stream.end()) {
-    activeFiles.erase(path.str());
+  if (it == stream.end())
     return ConfigPatch();
-  }
   llvm::yaml::Node *root = it->getRoot();
-  if (!root) {
-    activeFiles.erase(path.str());
+  if (!root)
     return ConfigPatch();
-  }
   auto syntaxOrErr = materializeSyntax(root, path);
-  if (!syntaxOrErr) {
-    activeFiles.erase(path.str());
+  if (!syntaxOrErr)
     return syntaxOrErr.takeError();
-  }
   ++it;
-  if (it != stream.end()) {
-    activeFiles.erase(path.str());
+  if (it != stream.end())
     return diagnostic("config_parse_failed", path,
                       "multiple YAML documents are not supported");
-  }
-  if (stream.failed()) {
-    activeFiles.erase(path.str());
+  if (stream.failed())
     return diagnostic("config_parse_failed", path);
-  }
-  llvm::SmallString<256> base(path);
-  llvm::sys::path::remove_filename(base);
-  auto patchOrErr =
-      parseConfigPatchFromMapping(*syntaxOrErr, path, base.str(), activeFiles);
-  activeFiles.erase(path.str());
+  auto patchOrErr = parseConfigPatchFromMapping(*syntaxOrErr, path);
   if (!patchOrErr)
     return patchOrErr.takeError();
   return *patchOrErr;
@@ -1308,33 +1238,12 @@ parseConfigFilePatch(llvm::StringRef path, std::set<std::string> &activeFiles) {
 
 llvm::Expected<ConfigPatch>
 parseConfigPatchFromMapping(const ConfigSyntax &topMap,
-                            llvm::StringRef sourceName, llvm::StringRef baseDir,
-                            std::set<std::string> &activeFiles) {
+                            llvm::StringRef sourceName) {
   if (topMap.kind != ConfigSyntax::Kind::Mapping)
     return diagnostic("config_type_mismatch", sourceName, "top-level mapping");
-  ConfigPatch included;
   ConfigPatch local;
   for (const auto &[keyStorage, value] : topMap.mapping) {
     StringRef key(keyStorage);
-    if (key == "include") {
-      auto includesOrErr = parseIncludes(&value, "include");
-      if (!includesOrErr)
-        return includesOrErr.takeError();
-      for (const std::string &include : *includesOrErr) {
-        llvm::SmallString<256> includePath(include);
-        if (!llvm::sys::path::is_absolute(includePath)) {
-          includePath = baseDir;
-          llvm::sys::path::append(includePath, include);
-        }
-        auto includePatchOrErr =
-            parseConfigFilePatch(includePath.str(), activeFiles);
-        if (!includePatchOrErr)
-          return includePatchOrErr.takeError();
-        if (llvm::Error err = mergeSiblingPatch(included, *includePatchOrErr))
-          return err;
-      }
-      continue;
-    }
     if (key == "hardware_target") {
       auto targetOrErr = parseHardwareTarget(&value);
       if (!targetOrErr)
@@ -1350,30 +1259,7 @@ parseConfigPatchFromMapping(const ConfigSyntax &topMap,
     }
   }
 
-  ConfigPatch merged = included;
-  for (const std::string &key : local.touchedKeys)
-    merged.touchedKeys.insert(key);
-  if (local.hardwareTarget)
-    merged.hardwareTarget = local.hardwareTarget;
-  if (local.ownershipScopeExpansionLimit)
-    merged.ownershipScopeExpansionLimit = local.ownershipScopeExpansionLimit;
-  if (local.techMappingMatchRowAttemptLimit)
-    merged.techMappingMatchRowAttemptLimit =
-        local.techMappingMatchRowAttemptLimit;
-  if (local.techMappingPartialCoverExpansionLimit)
-    merged.techMappingPartialCoverExpansionLimit =
-        local.techMappingPartialCoverExpansionLimit;
-  if (local.techMappingCandidatePublicationLimit)
-    merged.techMappingCandidatePublicationLimit =
-        local.techMappingCandidatePublicationLimit;
-  if (local.objectiveCatalogs)
-    merged.objectiveCatalogs = local.objectiveCatalogs;
-  if (local.spatialPnr)
-    merged.spatialPnr = local.spatialPnr;
-  if (local.systemPnr)
-    merged.systemPnr = local.systemPnr;
-  (void)sourceName;
-  return merged;
+  return local;
 }
 
 llvm::StringRef violationName(loom::ResolvedPnrViolationKind violation) {
@@ -1701,22 +1587,54 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
 
 } // namespace
 
-loom::ResolvedConfig loom::defaultResolvedConfig() {
-  ResolvedConfig config;
-  config.hardwareTarget = {adg::builtinDefaultTarget.templateIdentity.str(),
-                           {adg::builtinDefaultTarget.schemaMajor,
-                            adg::builtinDefaultTarget.schemaMinor},
-                           adg::builtinDefaultTarget.scale};
-  config.dse.objectiveCatalogs = resolvedBuiltinObjectiveCatalogs();
-  config.dse.spatialPnr =
-      resolvedBuiltinPnrPolicy(ResolvedProfilePreset::BalancedExplore);
-  config.dse.systemPnr =
-      resolvedBuiltinPnrPolicy(ResolvedProfilePreset::BalancedExplore);
-  llvm::cantFail(validateResolvedPnrPolicyConfig(config.dse.spatialPnr,
-                                                 config.dse.objectiveCatalogs));
-  llvm::cantFail(validateResolvedPnrPolicyConfig(config.dse.systemPnr,
-                                                 config.dse.objectiveCatalogs));
+static std::optional<loom::ResolvedProfilePreset>
+profilePresetForName(llvm::StringRef spelling) {
+  using Preset = loom::ResolvedProfilePreset;
+  if (spelling == "report_only")
+    return Preset::ReportOnly;
+  if (spelling == "quick_explore")
+    return Preset::QuickExplore;
+  if (spelling == "balanced_explore")
+    return Preset::BalancedExplore;
+  if (spelling == "performance_explore")
+    return Preset::PerformanceExplore;
+  if (spelling == "implementation")
+    return Preset::Implementation;
+  if (spelling == "strict_implementation")
+    return Preset::StrictImplementation;
+  return std::nullopt;
+}
+
+static loom::ResolvedConfig
+builtinResolvedConfig(loom::ResolvedProfilePreset preset) {
+  loom::ResolvedConfig config;
+  config.hardwareTarget = {
+      loom::adg::builtinDefaultTarget.templateIdentity.str(),
+      {loom::adg::builtinDefaultTarget.schemaMajor,
+       loom::adg::builtinDefaultTarget.schemaMinor},
+      loom::adg::builtinDefaultTarget.scale};
+  config.dse.objectiveCatalogs = loom::resolvedBuiltinObjectiveCatalogs();
+  config.dse.spatialPnr = loom::resolvedBuiltinPnrPolicy(preset);
+  config.dse.systemPnr = loom::resolvedBuiltinPnrPolicy(preset);
+  llvm::cantFail(loom::validateResolvedPnrPolicyConfig(
+      config.dse.spatialPnr, config.dse.objectiveCatalogs));
+  llvm::cantFail(loom::validateResolvedPnrPolicyConfig(
+      config.dse.systemPnr, config.dse.objectiveCatalogs));
   return config;
+}
+
+loom::ResolvedConfig loom::defaultResolvedConfig() {
+  return builtinResolvedConfig(ResolvedProfilePreset::BalancedExplore);
+}
+
+llvm::Expected<loom::ResolvedConfig>
+loom::resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath) {
+  if (builtinPresetOrConfigPath.empty())
+    return defaultResolvedConfig();
+  if (std::optional<ResolvedProfilePreset> preset =
+          profilePresetForName(builtinPresetOrConfigPath))
+    return builtinResolvedConfig(*preset);
+  return loadResolvedConfig(builtinPresetOrConfigPath);
 }
 
 llvm::Expected<loom::ResolvedConfig>
@@ -1739,9 +1657,7 @@ loom::parseResolvedConfig(llvm::StringRef body, llvm::StringRef sourceName) {
   if (stream.failed())
     return diagnostic("config_parse_failed", sourceName);
 
-  std::set<std::string> activeFiles;
-  auto patchOrErr =
-      parseConfigPatchFromMapping(*syntaxOrErr, sourceName, "", activeFiles);
+  auto patchOrErr = parseConfigPatchFromMapping(*syntaxOrErr, sourceName);
   if (!patchOrErr)
     return patchOrErr.takeError();
 
@@ -1754,8 +1670,7 @@ loom::parseResolvedConfig(llvm::StringRef body, llvm::StringRef sourceName) {
 
 llvm::Expected<loom::ResolvedConfig>
 loom::loadResolvedConfig(llvm::StringRef path) {
-  std::set<std::string> activeFiles;
-  auto patchOrErr = parseConfigFilePatch(path, activeFiles);
+  auto patchOrErr = parseConfigFilePatch(path);
   if (!patchOrErr)
     return patchOrErr.takeError();
 

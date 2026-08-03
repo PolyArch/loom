@@ -1,0 +1,10 @@
+# RUN: loom-tech-map --help | FileCheck %s --check-prefix=TECH-MAP
+# RUN: loom-pre-mapping --help | FileCheck %s --check-prefix=PRE-MAPPING
+# RUN: loom-dfg-run --help | FileCheck %s --check-prefix=DFG
+
+# TECH-MAP: --loom-accel-profile=<preset-or-path>
+# TECH-MAP-NOT: --config
+# PRE-MAPPING: --loom-accel-profile=<preset-or-path>
+# PRE-MAPPING-NOT: --config
+# DFG: --loom-accel-profile=<preset-or-path>
+# DFG-NOT: --config

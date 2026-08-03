@@ -1,6 +1,6 @@
 // Tiny CLI used by lit tests to exercise resolved configuration loading.
 //
-// Usage: loom-config-test [output option] [path]
+// Usage: loom-config-test [output option] [--loom-accel-profile=<selector>]
 
 #include "Common/ResolvedConfig.h"
 
@@ -9,9 +9,10 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 
-static ::llvm::cl::opt<std::string> inputPath(::llvm::cl::Positional,
-                                              ::llvm::cl::desc("<config-path>"),
-                                              ::llvm::cl::init(""));
+static ::llvm::cl::opt<std::string> accelerationProfile(
+    "loom-accel-profile",
+    ::llvm::cl::desc("builtin acceleration preset or configuration path"),
+    ::llvm::cl::value_desc("preset-or-path"), ::llvm::cl::init(""));
 
 static ::llvm::cl::opt<bool>
     resolvedJson("resolved-json",
@@ -33,9 +34,7 @@ int main(int argc, char **argv) {
   }
 
   ::llvm::Expected<::loom::ResolvedConfig> cfg =
-      inputPath.empty() ? ::llvm::Expected<::loom::ResolvedConfig>(
-                              ::loom::defaultResolvedConfig())
-                        : ::loom::loadResolvedConfig(inputPath);
+      ::loom::resolveConfigProfile(accelerationProfile);
   if (!cfg) {
     ::llvm::errs() << "error: " << ::llvm::toString(cfg.takeError()) << "\n";
     return 1;

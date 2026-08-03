@@ -57,8 +57,10 @@ llvm::cl::list<std::string> fabricReferenceFiles(
     llvm::cl::value_desc("path"), llvm::cl::OneOrMore);
 
 llvm::cl::opt<std::string>
-    configPath("config", llvm::cl::desc("resolved configuration file"),
-               llvm::cl::value_desc("path"), llvm::cl::init(""));
+    accelerationProfile(
+        "loom-accel-profile",
+        llvm::cl::desc("builtin acceleration preset or configuration path"),
+        llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string> reportPath("report",
                                       llvm::cl::desc("coverage report JSON"),
@@ -251,9 +253,7 @@ int main(int argc, char **argv) {
     return reportError(dataflowReference.takeError());
 
   llvm::Expected<loom::ResolvedConfig> resolved =
-      configPath.empty()
-          ? llvm::Expected<loom::ResolvedConfig>(loom::defaultResolvedConfig())
-          : loom::loadResolvedConfig(configPath);
+      loom::resolveConfigProfile(accelerationProfile);
   if (!resolved)
     return reportError(resolved.takeError());
   auto techConfig =

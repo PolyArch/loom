@@ -67,6 +67,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-promotion-test
   loom-dfg-sim
   loom-dfg-run
+  loom-pre-mapping
   loom-tech-map
   loom-evaluation-case-test
   loom-evaluation-evidence-test

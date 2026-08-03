@@ -546,7 +546,7 @@ def pre_mapping_command(
     counts: Path,
     candidate_jobs: int,
     protocol_symbols: Sequence[str],
-    config_path: Path | None = None,
+    config_path: str | Path | None = None,
 ) -> list[str]:
     command = [
         toolchain.pre_mapping,
@@ -562,7 +562,7 @@ def pre_mapping_command(
         f"--operator-protocol-symbol={symbol}" for symbol in protocol_symbols
     ]
     if config_path is not None:
-        command.insert(2, f"--config={config_path}")
+        command.insert(2, f"--loom-accel-profile={config_path}")
     return command
 
 
@@ -576,7 +576,7 @@ def dfg_sim_command(
     limits: DfgExecutionLimits,
     simulation_timeout: float,
     protocol_symbols: Sequence[str],
-    config_path: Path | None = None,
+    config_path: str | Path | None = None,
     expected_entry_result: int | None = None,
 ) -> list[str]:
     command = [
@@ -601,7 +601,7 @@ def dfg_sim_command(
             f"--expected-entry-result={expected_entry_result}",
         )
     if config_path is not None:
-        command.insert(2, f"--config={config_path}")
+        command.insert(2, f"--loom-accel-profile={config_path}")
     return command
 
 
@@ -1204,7 +1204,7 @@ def run_case(
     out_root: Path,
     case_timeout: float,
     candidate_jobs: int,
-    config_path: Path | None,
+    config_path: str | Path | None,
     dfg_limits: DfgExecutionLimits,
     dfg_simulation_timeout: float,
     provider_results: dict[str, ProducedWorkload | StepFailure],
@@ -1456,7 +1456,7 @@ def run_cases(
     jobs: int,
     case_timeout: float,
     candidate_jobs: int,
-    config_path: Path | None,
+    config_path: str | Path | None,
     dfg_limits: DfgExecutionLimits,
     dfg_simulation_timeout: float,
 ) -> list[CaseResult]:
@@ -1594,9 +1594,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "incomplete execution (default: %(default)s)",
     )
     parser.add_argument(
-        "--config",
-        type=Path,
-        help="resolved semantic configuration forwarded to pre-Mapping tools",
+        "--loom-accel-profile",
+        dest="acceleration_profile",
+        help="builtin acceleration preset or semantic configuration path",
     )
     parser.add_argument(
         "--sysroot",
@@ -1679,13 +1679,14 @@ def main(argv: Sequence[str]) -> int:
         )
         external_root = corpus_inventory.resolve_externals_root(ROOT)
         toolchain = resolve_toolchain(args)
-        config_path = None
-        if args.config is not None:
-            config_path = args.config.expanduser().resolve()
-            if not config_path.is_file():
-                raise GateConfigError(
-                    f"resolved configuration is not a file: {config_path}"
-                )
+        config_path: str | None = None
+        if args.acceleration_profile is not None:
+            candidate = Path(args.acceleration_profile).expanduser()
+            config_path = (
+                str(candidate.resolve())
+                if candidate.is_file()
+                else args.acceleration_profile
+            )
     except (corpus_inventory.InventoryError, GateConfigError) as exc:
         print(f"[corpus-gate] configuration error: {exc}", file=sys.stderr)
         return 2
@@ -1725,7 +1726,7 @@ def main(argv: Sequence[str]) -> int:
         case_timeout_seconds=args.case_timeout,
         dfg_simulation_timeout_seconds=args.dfg_simulation_timeout,
         dfg_execution_limits=dfg_limits.as_dict(),
-        config=str(config_path) if config_path is not None else None,
+        acceleration_profile=config_path,
         duration_seconds=duration,
         human_header=(
             f"[corpus-gate] stage={args.stage} target={TARGET_TRIPLE} "
@@ -1735,7 +1736,8 @@ def main(argv: Sequence[str]) -> int:
             f"dfg-limits={dfg_limits.max_wavefront_steps}/"
             f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
             f"dfg-wall-time={args.dfg_simulation_timeout:g}s "
-            f"config={config_path if config_path is not None else '<default>'} "
+            "acceleration-profile="
+            f"{config_path if config_path is not None else '<default>'} "
             f"sysroot={toolchain.sysroot} "
             f"gcc-toolchain={toolchain.gcc_toolchain}"
         ),

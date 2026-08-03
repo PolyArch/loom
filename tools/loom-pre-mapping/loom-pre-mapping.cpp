@@ -78,8 +78,10 @@ namespace {
                       ::llvm::cl::value_desc("path"), ::llvm::cl::Required);
 
 ::llvm::cl::opt<std::string>
-    configPath("config", ::llvm::cl::desc("resolved configuration file"),
-               ::llvm::cl::value_desc("path"), ::llvm::cl::init(""));
+    accelerationProfile(
+        "loom-accel-profile",
+        ::llvm::cl::desc("builtin acceleration preset or configuration path"),
+        ::llvm::cl::value_desc("preset-or-path"), ::llvm::cl::init(""));
 
 ::llvm::cl::opt<std::string>
     countsFilename("counts",
@@ -305,9 +307,7 @@ int main(int argc, char **argv) {
   if (!preset)
     return reportError(preset.takeError());
   ::llvm::Expected<loom::ResolvedConfig> config =
-      configPath.empty() ? ::llvm::Expected<loom::ResolvedConfig>(
-                               loom::defaultResolvedConfig())
-                         : loom::loadResolvedConfig(configPath);
+      loom::resolveConfigProfile(accelerationProfile);
   if (!config)
     return reportError(config.takeError());
 

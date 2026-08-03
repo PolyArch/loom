@@ -47,6 +47,8 @@ struct ResolvedConfig {
 };
 
 ResolvedConfig defaultResolvedConfig();
+llvm::Expected<ResolvedConfig>
+resolveConfigProfile(llvm::StringRef builtinPresetOrConfigPath);
 
 llvm::Expected<ResolvedConfig> loadResolvedConfig(llvm::StringRef path);
 llvm::Expected<ResolvedConfig> parseResolvedConfig(llvm::StringRef body,
