@@ -298,8 +298,8 @@ public:
                                            config, constraintSet))
       return std::move(error);
 
-    auto objectiveProgram =
-        SpatialObjectiveProgram::get(config.selectedObjectiveCatalogs());
+    auto objectiveProgram = SpatialObjectiveProgram::get(
+        config.selectedObjectiveCatalogs(), config.policy().objectiveSelection);
     if (!objectiveProgram)
       return objectiveProgram.takeError();
 

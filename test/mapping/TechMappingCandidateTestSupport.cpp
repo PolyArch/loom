@@ -251,6 +251,8 @@ void loom::test::exerciseCapacityOveruseCandidate(
                                                         {},
                                                         {},
                                                         {}}));
+  const dse::ObjectiveVector overusedObjective =
+      take(problem->objectiveProgram().evaluate(*candidate));
   if (candidate->capacityOveruse() != 1 ||
       take(pnr::spatialMappingViolationValue(
           *candidate, ResolvedPnrViolationKind::CapacityOveruse)) != 1)
@@ -295,6 +297,27 @@ void loom::test::exerciseCapacityOveruseCandidate(
   }
   if (candidate->capacityOveruse() != 0)
     fail("legal temporal operand allocation retained capacity overuse");
+  const dse::ObjectiveVector legalObjective =
+      take(problem->objectiveProgram().evaluate(*candidate));
+  const dse::ObjectiveWideValue legalEnergy =
+      take(problem->objectiveProgram().selectedEnergy(legalObjective));
+  const dse::ObjectiveWideValue overusedEnergy =
+      take(problem->objectiveProgram().selectedEnergy(overusedObjective));
+  if (!(legalEnergy < overusedEnergy))
+    fail("selected Spatial energy did not improve after legal placement");
+  const dse::ObjectiveSignedDifference reward =
+      take(problem->objectiveProgram().selectedEnergyDifference(
+          overusedObjective, legalObjective));
+  if (reward.sign != dse::ObjectiveDifferenceSign::Positive ||
+      reward.magnitude != dse::ObjectiveWideValue{0, 1})
+    fail("selected Spatial reward changed sign or magnitude");
+  const std::array<std::uint8_t, 1> earlierKey = {0};
+  const std::array<std::uint8_t, 1> laterKey = {1};
+  if (take(problem->objectiveProgram().compareSelectedRank(
+          legalObjective, laterKey, overusedObjective, earlierKey)) >= 0 ||
+      take(problem->objectiveProgram().compareSelectedRank(
+          legalObjective, earlierKey, legalObjective, laterKey)) >= 0)
+    fail("selected Spatial rank lost objective or semantic-key ordering");
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(*legal, true);
 

@@ -18,21 +18,38 @@ class SpatialCandidateState;
 class SpatialObjectiveProgram final {
 public:
   static llvm::Expected<SpatialObjectiveProgram>
-  get(const ResolvedObjectiveCatalogs &catalogs);
+  get(const ResolvedObjectiveCatalogs &catalogs,
+      const ResolvedPnrObjectiveSelection &selection);
 
   llvm::Expected<dse::ObjectiveVector>
   evaluate(const SpatialCandidateState &candidate) const;
+  llvm::Expected<dse::ObjectiveWideValue>
+  selectedEnergy(const dse::ObjectiveVector &vector) const;
+  llvm::Expected<dse::ObjectiveSignedDifference>
+  selectedEnergyDifference(const dse::ObjectiveVector &left,
+                           const dse::ObjectiveVector &right) const;
+  llvm::Expected<int>
+  compareSelectedRank(const dse::ObjectiveVector &left,
+                      llvm::ArrayRef<std::uint8_t> leftCandidateKey,
+                      const dse::ObjectiveVector &right,
+                      llvm::ArrayRef<std::uint8_t> rightCandidateKey) const;
 
 private:
   SpatialObjectiveProgram(dse::ObjectiveProgram program,
                           std::uint64_t selectedViolations,
-                          std::uint64_t selectedMeasures)
+                          std::uint64_t selectedMeasures,
+                          std::uint32_t selectedTotalOrdering,
+                          std::uint32_t selectedSearchEnergy)
       : program_(std::move(program)), selectedViolations_(selectedViolations),
-        selectedMeasures_(selectedMeasures) {}
+        selectedMeasures_(selectedMeasures),
+        selectedTotalOrdering_(selectedTotalOrdering),
+        selectedSearchEnergy_(selectedSearchEnergy) {}
 
   dse::ObjectiveProgram program_;
   std::uint64_t selectedViolations_ = 0;
   std::uint64_t selectedMeasures_ = 0;
+  std::uint32_t selectedTotalOrdering_ = 0;
+  std::uint32_t selectedSearchEnergy_ = 0;
 };
 
 } // namespace loom::pnr

@@ -26,13 +26,25 @@ llvm::Error unavailable(llvm::StringRef source) {
       source.str().c_str());
 }
 
+llvm::Error invalid(llvm::StringRef detail) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "dse_objective_invalid: selected Spatial %s reference is out of range",
+      detail.str().c_str());
+}
+
 } // namespace
 
 llvm::Expected<SpatialObjectiveProgram>
-SpatialObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs) {
+SpatialObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs,
+                             const ResolvedPnrObjectiveSelection &selection) {
   auto program = dse::ObjectiveProgram::get(catalogs);
   if (!program)
     return program.takeError();
+  if (selection.selectedTotalOrdering >= program->totalOrderingCount())
+    return invalid("total ordering");
+  if (selection.selectedSearchEnergy >= program->weightedLevelCount())
+    return invalid("search energy");
 
   std::uint64_t selectedViolations = 0;
   std::uint64_t selectedMeasures = 0;
@@ -48,8 +60,9 @@ SpatialObjectiveProgram::get(const ResolvedObjectiveCatalogs &catalogs) {
     }
     selectedMeasures |= UINT64_C(1) << dimension.sourceOrdinal;
   }
-  return SpatialObjectiveProgram(std::move(*program), selectedViolations,
-                                 selectedMeasures);
+  return SpatialObjectiveProgram(
+      std::move(*program), selectedViolations, selectedMeasures,
+      selection.selectedTotalOrdering, selection.selectedSearchEnergy);
 }
 
 llvm::Expected<dse::ObjectiveVector> SpatialObjectiveProgram::evaluate(
@@ -75,4 +88,25 @@ llvm::Expected<dse::ObjectiveVector> SpatialObjectiveProgram::evaluate(
   if (llvm::Error error = program_.evaluate({violations, measures}, result))
     return std::move(error);
   return result;
+}
+
+llvm::Expected<dse::ObjectiveWideValue> SpatialObjectiveProgram::selectedEnergy(
+    const dse::ObjectiveVector &vector) const {
+  return program_.weightedLevelValue(vector, selectedSearchEnergy_);
+}
+
+llvm::Expected<dse::ObjectiveSignedDifference>
+SpatialObjectiveProgram::selectedEnergyDifference(
+    const dse::ObjectiveVector &left, const dse::ObjectiveVector &right) const {
+  return program_.signedWeightedLevelDifference(left, right,
+                                                selectedSearchEnergy_);
+}
+
+llvm::Expected<int> SpatialObjectiveProgram::compareSelectedRank(
+    const dse::ObjectiveVector &left,
+    llvm::ArrayRef<std::uint8_t> leftCandidateKey,
+    const dse::ObjectiveVector &right,
+    llvm::ArrayRef<std::uint8_t> rightCandidateKey) const {
+  return program_.compareTotalOrdering(
+      left, leftCandidateKey, right, rightCandidateKey, selectedTotalOrdering_);
 }
