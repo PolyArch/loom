@@ -150,6 +150,108 @@ std::string resourceUseSemanticKey(::mapping::ResourceUseOp use) {
   return result;
 }
 
+std::string memoryIntervalKey(Attribute interval) {
+  std::string result;
+  if (isa<::mapping::MemoryWholeIntervalAttr>(interval)) {
+    appendU32(result, 0);
+    return result;
+  }
+  auto range = cast<::mapping::MemoryByteRangeAttr>(interval);
+  appendU32(result, 1);
+  appendU64(result, range.getOffsetBytes());
+  appendU64(result, range.getSizeBytes());
+  return result;
+}
+
+std::string memoryBindingTargetKey(Attribute target) {
+  std::string result;
+  if (auto local = dyn_cast<::mapping::MemoryLocalRegionAttr>(target)) {
+    appendU32(result, 0);
+    appendFramed(result, recordKey(local.getServiceRegion().getRecord()));
+    appendU64(result, local.getPhysicalOffsetBytes());
+    return result;
+  }
+  appendU32(result, 1);
+  return result;
+}
+
+std::string memoryBindingSemanticKey(::mapping::MemoryBindingOp binding) {
+  std::string result;
+  appendFramed(result, recordKey(binding.getLogicalMemory().getRecord()));
+  appendFramed(result, memoryIntervalKey(binding.getInterval()));
+  appendFramed(result, memoryBindingTargetKey(binding.getTarget()));
+  return result;
+}
+
+void canonicalizeMemoryBinding(::mapping::MemoryBindingOp binding) {
+  Block &body = binding.getBody().front();
+  SmallVector<::mapping::ExposureEntryOp> exposures;
+  for (auto exposure : body.getOps<::mapping::ExposureEntryOp>())
+    exposures.push_back(exposure);
+  llvm::sort(exposures, [](auto left, auto right) {
+    return recordKey(left.getExposure().getRecord()) <
+           recordKey(right.getExposure().getRecord());
+  });
+  for (auto exposure : exposures)
+    exposure->moveBefore(&body, body.end());
+}
+
+void canonicalizeMemoryEngine(
+    ::mapping::MemoryEngineBindingOp binding,
+    const llvm::DenseMap<std::uint64_t, std::uint64_t> &bindingRenumbering) {
+  Block &body = binding.getBody().front();
+  std::vector<Operation *> operations;
+  for (Operation &operation : body) {
+    if (auto addressed =
+            dyn_cast<::mapping::AddressedMemoryOperationOp>(operation)) {
+      SmallVector<::mapping::AddressedMemoryUseOp> uses;
+      for (auto use : addressed.getBody()
+                          .front()
+                          .getOps<::mapping::AddressedMemoryUseOp>()) {
+        auto found = bindingRenumbering.find(use.getBinding().getEntity());
+        if (found != bindingRenumbering.end())
+          use.setBindingAttr(::mapping::MemoryBindingRefAttr::get(
+              binding.getContext(), found->second));
+        uses.push_back(use);
+      }
+      llvm::sort(uses, [](auto left, auto right) {
+        return recordKey(left.getLaunch().getRecord()) <
+               recordKey(right.getLaunch().getRecord());
+      });
+      for (auto use : uses)
+        use->moveBefore(&addressed.getBody().front(),
+                        addressed.getBody().front().end());
+    } else if (auto fence =
+                   dyn_cast<::mapping::FenceMemoryOperationOp>(operation)) {
+      SmallVector<::mapping::FenceMemoryUseOp> uses;
+      for (auto use :
+           fence.getBody().front().getOps<::mapping::FenceMemoryUseOp>())
+        uses.push_back(use);
+      llvm::sort(uses, [](auto left, auto right) {
+        return recordKey(left.getLaunch().getRecord()) <
+               recordKey(right.getLaunch().getRecord());
+      });
+      for (auto use : uses)
+        use->moveBefore(&fence.getBody().front(),
+                        fence.getBody().front().end());
+    }
+    operations.push_back(&operation);
+  }
+  llvm::sort(operations, [](Operation *left, Operation *right) {
+    auto actor = [](Operation *operation) {
+      if (auto addressed =
+              dyn_cast<::mapping::AddressedMemoryOperationOp>(operation))
+        return recordKey(addressed.getActor().getRecord());
+      return recordKey(cast<::mapping::FenceMemoryOperationOp>(operation)
+                           .getActor()
+                           .getRecord());
+    };
+    return actor(left) < actor(right);
+  });
+  for (Operation *operation : operations)
+    operation->moveBefore(&body, body.end());
+}
+
 Attribute routeNodeKey(MLIRContext *context,
                        ::mapping::GraphProducerEndpointRefAttr logicalNet,
                        std::uint64_t ordinal) {
@@ -308,6 +410,32 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
            right.getRealization().getEntity();
   });
 
+  SmallVector<::mapping::MemoryBindingOp> memoryBindings;
+  for (auto binding : body.getOps<::mapping::MemoryBindingOp>()) {
+    canonicalizeMemoryBinding(binding);
+    memoryBindings.push_back(binding);
+  }
+  llvm::sort(memoryBindings, [](auto left, auto right) {
+    return memoryBindingSemanticKey(left) < memoryBindingSemanticKey(right);
+  });
+  llvm::DenseMap<std::uint64_t, std::uint64_t> memoryBindingRenumbering;
+  Builder builder(root.getContext());
+  for (auto [ordinal, binding] : llvm::enumerate(memoryBindings)) {
+    memoryBindingRenumbering.try_emplace(
+        static_cast<std::uint64_t>(binding.getEntityId()), ordinal);
+    binding.setEntityIdAttr(builder.getI64IntegerAttr(ordinal));
+  }
+
+  SmallVector<::mapping::MemoryEngineBindingOp> memoryEngines;
+  for (auto binding : body.getOps<::mapping::MemoryEngineBindingOp>()) {
+    canonicalizeMemoryEngine(binding, memoryBindingRenumbering);
+    memoryEngines.push_back(binding);
+  }
+  llvm::sort(memoryEngines, [](auto left, auto right) {
+    return left.getRealization().getEntity() <
+           right.getRealization().getEntity();
+  });
+
   llvm::DenseMap<Attribute, std::uint64_t> routeNodeRenumbering;
   SmallVector<::mapping::RouteTreeOp> routes;
   for (auto route : body.getOps<::mapping::RouteTreeOp>()) {
@@ -321,6 +449,13 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
 
   SmallVector<::mapping::ResourceUseOp> uses;
   for (auto use : body.getOps<::mapping::ResourceUseOp>()) {
+    if (auto bindingOwner =
+            dyn_cast<::mapping::MemoryBindingRefAttr>(use.getOwner())) {
+      auto found = memoryBindingRenumbering.find(bindingOwner.getEntity());
+      if (found != memoryBindingRenumbering.end())
+        use->setAttr("owner", ::mapping::MemoryBindingRefAttr::get(
+                                  root.getContext(), found->second));
+    }
     if (auto routeOwner =
             dyn_cast<::mapping::RouteTreeNodeRefAttr>(use.getOwner())) {
       Attribute key =
@@ -337,6 +472,10 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
   });
 
   for (auto binding : computeBindings)
+    binding->moveBefore(&body, body.end());
+  for (auto binding : memoryEngines)
+    binding->moveBefore(&body, body.end());
+  for (auto binding : memoryBindings)
     binding->moveBefore(&body, body.end());
   for (auto route : routes)
     route->moveBefore(&body, body.end());

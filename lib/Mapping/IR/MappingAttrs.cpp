@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 using namespace mlir;
 
@@ -96,9 +97,25 @@ mapping::ActorRefAttr::verify(function_ref<InFlightDiagnostic()> emitError,
   return verifyDataflowRef<::dataflow::ActorRef>(emitError, record);
 }
 
+LogicalResult mapping::RootedGraphLaunchRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::RootedGraphLaunchRef>(emitError, record);
+}
+
 LogicalResult mapping::LogicalMemoryRootRefAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
   return verifyDataflowRef<::dataflow::LogicalMemoryRootRef>(emitError, record);
+}
+
+LogicalResult mapping::LogicalMemoryRootOrViewRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::LogicalMemoryRootOrViewRef>(emitError,
+                                                                   record);
+}
+
+LogicalResult mapping::MemoryExposureRefAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {
+  return verifyDataflowRef<::dataflow::MemoryExposureRef>(emitError, record);
 }
 
 LogicalResult mapping::GraphProducerEndpointRefAttr::verify(
@@ -153,10 +170,34 @@ LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricTransportEndpointRef,
                                   FabricTransportEndpointRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryOperationPortRef,
                                   FabricMemoryOperationPortRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryOperationContextRef,
+                                  FabricMemoryOperationContextRef)
 LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryServiceRef,
                                   FabricMemoryServiceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(FabricMemoryServiceRegionRef,
+                                  FabricMemoryServiceRegionRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(LocalMemoryServiceRef, LocalMemoryServiceRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(ManagerEndpointRef, ManagerEndpointRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(SubordinateEndpointRef,
+                                  SubordinateEndpointRef)
+LOOM_VERIFY_FABRIC_CONSTRAINT_REF(MemoryConsistencyDomainRef,
+                                  MemoryConsistencyDomainRef)
 
 #undef LOOM_VERIFY_FABRIC_CONSTRAINT_REF
+
+LogicalResult mapping::MemoryByteRangeAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, std::uint64_t offsetBytes,
+    std::uint64_t sizeBytes) {
+  if (sizeBytes == 0) {
+    emitError() << "memory byte range size must be positive";
+    return failure();
+  }
+  if (offsetBytes > std::numeric_limits<std::uint64_t>::max() - sizeBytes) {
+    emitError() << "memory byte range end overflows u64";
+    return failure();
+  }
+  return success();
+}
 
 LogicalResult mapping::OwnerTypedValueAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, DenseI8ArrayAttr record) {

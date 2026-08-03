@@ -177,6 +177,229 @@ std::string routeModule(bool canonicalOrdinals, bool duplicateSink,
          "}\n";
 }
 
+std::string memoryBindingModule(bool localRegion, bool zeroSizedRange,
+                                bool duplicateBinding) {
+  const loom::ArtifactIdentity dataflowOwner = identity(17);
+  const dataflow::LogicalMemoryRootRef firstRoot{
+      dataflowOwner, dataflow::LogicalMemoryRootId(3)};
+  const dataflow::LogicalMemoryRootRef secondRoot{
+      dataflowOwner, dataflow::LogicalMemoryRootId(4)};
+  const dataflow::LogicalMemoryRootOrViewRef firstMemory(firstRoot);
+  const dataflow::LogicalMemoryRootOrViewRef secondMemory(secondRoot);
+  const loom::fabric::FabricMemoryOccurrenceRef occurrence(11);
+  const loom::fabric::FabricMemoryServiceRegionRef serviceRegion{
+      loom::fabric::FabricMemoryServiceRef::local(occurrence), 2};
+
+  const std::string firstInterval =
+      localRegion
+          ? "#mapping.memory_byte_range<offset_bytes = 8, size_bytes = " +
+                std::to_string(zeroSizedRange ? 0 : 16) + ">"
+          : "#mapping.memory_whole_interval";
+  const std::string firstTarget =
+      localRegion
+          ? "#mapping.memory_local_region<service_region = " +
+                fabricAttr("fabric_memory_service_region_ref", serviceRegion) +
+                ", physical_offset_bytes = 32>"
+          : "#mapping.memory_boundary_proxy";
+  const std::string first = "    mapping.memory_binding 7 logical_memory(" +
+                            dataflowAttr("logical_memory_root_or_view_ref",
+                                         dataflowOwner, firstMemory) +
+                            ") interval(" + firstInterval + ") target(" +
+                            firstTarget + ") {}\n";
+  const std::string second = "    mapping.memory_binding " +
+                             std::to_string(duplicateBinding ? 7 : 8) +
+                             " logical_memory(" +
+                             dataflowAttr("logical_memory_root_or_view_ref",
+                                          dataflowOwner, secondMemory) +
+                             ") interval(#mapping.memory_whole_interval) "
+                             "target(#mapping.memory_boundary_proxy) {}\n";
+
+  return "module {\n"
+         "  mapping.spatial version<2, 0> tech_mapping(" +
+         identityAttr(identity(25)) + ") dataflow(" +
+         identityAttr(dataflowOwner) + ") fabric(" +
+         identityAttr(identity(34)) + ") {\n" + first + second +
+         "  }\n"
+         "}\n";
+}
+
+std::string memoryBindingCanonicalModule(bool reverseAuthoringOrder) {
+  const loom::ArtifactIdentity dataflowOwner = identity(17);
+  const dataflow::LogicalMemoryRootOrViewRef firstMemory(
+      dataflow::LogicalMemoryRootRef{dataflowOwner,
+                                     dataflow::LogicalMemoryRootId(3)});
+  const dataflow::LogicalMemoryRootOrViewRef secondMemory(
+      dataflow::LogicalMemoryRootRef{dataflowOwner,
+                                     dataflow::LogicalMemoryRootId(4)});
+  const loom::fabric::FabricMemoryServiceRegionRef serviceRegion{
+      loom::fabric::FabricMemoryServiceRef::local(
+          loom::fabric::FabricMemoryOccurrenceRef(11)),
+      2};
+  const std::string first =
+      "    mapping.memory_binding " +
+      std::to_string(reverseAuthoringOrder ? 91 : 0) + " logical_memory(" +
+      dataflowAttr("logical_memory_root_or_view_ref", dataflowOwner,
+                   firstMemory) +
+      ") interval(#mapping.memory_byte_range<offset_bytes = 8, "
+      "size_bytes = 16>) target(#mapping.memory_local_region<service_region "
+      "= " +
+      fabricAttr("fabric_memory_service_region_ref", serviceRegion) +
+      ", physical_offset_bytes = 32>) {}\n";
+  const std::string second = "    mapping.memory_binding " +
+                             std::to_string(reverseAuthoringOrder ? 27 : 1) +
+                             " logical_memory(" +
+                             dataflowAttr("logical_memory_root_or_view_ref",
+                                          dataflowOwner, secondMemory) +
+                             ") interval(#mapping.memory_whole_interval) "
+                             "target(#mapping.memory_boundary_proxy) {}\n";
+  const std::string body =
+      reverseAuthoringOrder ? second + first : first + second;
+  return "module {\n"
+         "  mapping.spatial version<2, 0> tech_mapping(" +
+         identityAttr(identity(25)) + ") dataflow(" +
+         identityAttr(dataflowOwner) + ") fabric(" +
+         identityAttr(identity(34)) + ") {\n" + body +
+         "  }\n"
+         "}\n";
+}
+
+std::string memoryOperationModule(bool localBinding, bool localDispatch,
+                                  bool reverseUses = false,
+                                  bool duplicateUse = false,
+                                  bool emptyUses = false) {
+  const loom::ArtifactIdentity dataflowOwner = identity(17);
+  const dataflow::ActorRef actor{dataflowOwner, dataflow::ActorId(5)};
+  const dataflow::LogicalMemoryRootOrViewRef firstMemory(
+      dataflow::LogicalMemoryRootRef{dataflowOwner,
+                                     dataflow::LogicalMemoryRootId(3)});
+  const dataflow::LogicalMemoryRootOrViewRef secondMemory(
+      dataflow::LogicalMemoryRootRef{dataflowOwner,
+                                     dataflow::LogicalMemoryRootId(4)});
+  const dataflow::RootedGraphLaunchRef firstLaunch{
+      dataflow::RootThreadLaunchRef{dataflowOwner,
+                                    dataflow::RootThreadLaunchId(1)},
+      dataflow::StaticGraphLaunchRef{dataflowOwner,
+                                     dataflow::StaticGraphLaunchId(2)}};
+  const dataflow::RootedGraphLaunchRef secondLaunch{
+      dataflow::RootThreadLaunchRef{dataflowOwner,
+                                    dataflow::RootThreadLaunchId(1)},
+      dataflow::StaticGraphLaunchRef{dataflowOwner,
+                                     dataflow::StaticGraphLaunchId(3)}};
+  const loom::fabric::FabricMemoryOccurrenceRef occurrence(11);
+  const loom::fabric::FabricMemoryOperationPortRef port{occurrence, 0};
+  const loom::fabric::FabricMemoryServiceRef service =
+      loom::fabric::FabricMemoryServiceRef::local(occurrence);
+  const loom::fabric::FabricMemoryServiceRegionRef serviceRegion{service, 2};
+  const loom::fabric::LocalMemoryServiceRef localService(service);
+  const loom::fabric::ManagerEndpointRef manager(
+      loom::fabric::FabricMemoryEndpointRef{
+          loom::fabric::FabricMemoryEndpointOwnerRef::of(occurrence), 0});
+  const std::string target =
+      localBinding
+          ? "#mapping.memory_local_region<service_region = " +
+                fabricAttr("fabric_memory_service_region_ref", serviceRegion) +
+                ", physical_offset_bytes = 0>"
+          : "#mapping.memory_boundary_proxy";
+  const std::string dispatch =
+      localDispatch ? fabricAttr("local_memory_service_ref", localService)
+                    : fabricAttr("manager_endpoint_ref", manager);
+  auto use = [&](const dataflow::RootedGraphLaunchRef &launch,
+                 std::uint64_t binding) {
+    return "        mapping.addressed_memory_use launch(" +
+           dataflowAttr("rooted_graph_launch_ref", dataflowOwner, launch) +
+           ") binding(#mapping.memory_binding_ref<" + std::to_string(binding) +
+           ">) dispatch(" + dispatch + ")\n";
+  };
+  const std::string firstUse = use(firstLaunch, 7);
+  const std::string secondUse = use(secondLaunch, 8);
+  const std::string uses =
+      emptyUses ? ""
+                : (reverseUses ? secondUse + firstUse : firstUse + secondUse) +
+                      (duplicateUse ? firstUse : "");
+
+  return "module {\n"
+         "  mapping.spatial version<2, 0> tech_mapping(" +
+         identityAttr(identity(25)) + ") dataflow(" +
+         identityAttr(dataflowOwner) + ") fabric(" +
+         identityAttr(identity(34)) +
+         ") {\n"
+         "    mapping.memory_engine_binding realization("
+         "#mapping.memory_realization_ref<2>) occurrence(" +
+         fabricAttr("fabric_memory_occurrence_ref", occurrence) +
+         ") {\n"
+         "      mapping.addressed_memory_operation actor(" +
+         dataflowAttr("actor_ref", dataflowOwner, actor) + ") placement(" +
+         fabricAttr("fabric_memory_operation_port_ref", port) + ") {\n" + uses +
+         "      }\n"
+         "    }\n"
+         "    mapping.memory_binding 7 logical_memory(" +
+         dataflowAttr("logical_memory_root_or_view_ref", dataflowOwner,
+                      firstMemory) +
+         ") interval(#mapping.memory_byte_range<offset_bytes = 0, "
+         "size_bytes = 16>) target(" +
+         target +
+         ") {}\n"
+         "    mapping.memory_binding 8 logical_memory(" +
+         dataflowAttr("logical_memory_root_or_view_ref", dataflowOwner,
+                      secondMemory) +
+         ") interval(#mapping.memory_byte_range<offset_bytes = 0, "
+         "size_bytes = 16>) target(" +
+         target +
+         ") {}\n"
+         "  }\n"
+         "}\n";
+}
+
+std::string fenceOperationModule(bool reverseUses, bool duplicateUse,
+                                 bool emptyUses) {
+  const loom::ArtifactIdentity dataflowOwner = identity(17);
+  const dataflow::ActorRef actor{dataflowOwner, dataflow::ActorId(6)};
+  const dataflow::RootedGraphLaunchRef firstLaunch{
+      dataflow::RootThreadLaunchRef{dataflowOwner,
+                                    dataflow::RootThreadLaunchId(1)},
+      dataflow::StaticGraphLaunchRef{dataflowOwner,
+                                     dataflow::StaticGraphLaunchId(2)}};
+  const dataflow::RootedGraphLaunchRef secondLaunch{
+      dataflow::RootThreadLaunchRef{dataflowOwner,
+                                    dataflow::RootThreadLaunchId(1)},
+      dataflow::StaticGraphLaunchRef{dataflowOwner,
+                                     dataflow::StaticGraphLaunchId(3)}};
+  const loom::fabric::FabricMemoryOccurrenceRef occurrence(11);
+  const loom::fabric::FabricMemoryOperationPortRef port{occurrence, 0};
+  const loom::fabric::MemoryConsistencyDomainRef consistency(
+      loom::fabric::HardwareDomainRef(19));
+  auto use = [&](const dataflow::RootedGraphLaunchRef &launch) {
+    return "        mapping.fence_memory_use launch(" +
+           dataflowAttr("rooted_graph_launch_ref", dataflowOwner, launch) +
+           ") consistency(" +
+           fabricAttr("memory_consistency_domain_ref", consistency) + ")\n";
+  };
+  const std::string firstUse = use(firstLaunch);
+  const std::string secondUse = use(secondLaunch);
+  const std::string uses =
+      emptyUses ? ""
+                : (reverseUses ? secondUse + firstUse : firstUse + secondUse) +
+                      (duplicateUse ? firstUse : "");
+
+  return "module {\n"
+         "  mapping.spatial version<2, 0> tech_mapping(" +
+         identityAttr(identity(25)) + ") dataflow(" +
+         identityAttr(dataflowOwner) + ") fabric(" +
+         identityAttr(identity(34)) +
+         ") {\n"
+         "    mapping.memory_engine_binding realization("
+         "#mapping.memory_realization_ref<2>) occurrence(" +
+         fabricAttr("fabric_memory_occurrence_ref", occurrence) +
+         ") {\n"
+         "      mapping.fence_memory_operation actor(" +
+         dataflowAttr("actor_ref", dataflowOwner, actor) + ") placement(" +
+         fabricAttr("fabric_memory_operation_port_ref", port) + ") {\n" + uses +
+         "      }\n"
+         "    }\n"
+         "  }\n"
+         "}\n";
+}
+
 mlir::OwningOpRef<mlir::ModuleOp> parse(mlir::MLIRContext &context,
                                         llvm::StringRef text) {
   return mlir::parseSourceString<mlir::ModuleOp>(text, &context);
@@ -243,12 +466,109 @@ void testRouteTreeCanonicalizationAndShape() {
     fail("RouteTree accepted a duplicate sink obligation");
 }
 
+void testMemoryBindingTargetWire() {
+  mlir::DialectRegistry registry;
+  registry.insert<::mapping::MappingDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+
+  for (bool localRegion : {false, true}) {
+    auto module =
+        parse(context, memoryBindingModule(localRegion, false, false));
+    if (!module || mlir::failed(mlir::verify(*module)))
+      fail(localRegion ? "valid LocalRegion MemoryBinding did not verify"
+                       : "valid BoundaryProxy MemoryBinding did not verify");
+
+    std::string printed;
+    llvm::raw_string_ostream stream(printed);
+    module->print(stream);
+    stream.flush();
+    auto reparsed = parse(context, printed);
+    if (!reparsed || mlir::failed(mlir::verify(*reparsed)))
+      fail("MemoryBinding target did not round trip");
+  }
+
+  if (!rejected(context, memoryBindingModule(true, true, false)))
+    fail("MemoryBinding accepted a zero-sized ByteRange");
+  if (!rejected(context, memoryBindingModule(false, false, true)))
+    fail("SpatialMapping accepted a duplicate MemoryBinding EntityId");
+
+  for (bool local : {false, true}) {
+    auto module = parse(context, memoryOperationModule(local, local));
+    if (!module || mlir::failed(mlir::verify(*module)))
+      fail("valid memory operation dispatch did not verify");
+    if (!rejected(context, memoryOperationModule(local, !local)))
+      fail("memory operation accepted a dispatch/binding target mismatch");
+  }
+  if (!rejected(context,
+                memoryOperationModule(false, false, false, true, false)))
+    fail("memory operation accepted a duplicate rooted use");
+  if (!rejected(context,
+                memoryOperationModule(false, false, false, false, true)))
+    fail("memory operation accepted an empty rooted-use inventory");
+
+  auto authoredUses = parse(context, memoryOperationModule(false, false, true));
+  auto canonicalUses =
+      parse(context, memoryOperationModule(false, false, false));
+  if (!authoredUses || !canonicalUses ||
+      mlir::failed(mlir::verify(*authoredUses)) ||
+      mlir::failed(mlir::verify(*canonicalUses)))
+    fail("rooted memory-use canonicalization fixture did not verify");
+  auto authoredUseRoot = authoredUses->getOps<::mapping::SpatialOp>();
+  auto canonicalUseRoot = canonicalUses->getOps<::mapping::SpatialOp>();
+  auto authoredUseBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *authoredUseRoot.begin()));
+  auto canonicalUseBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *canonicalUseRoot.begin()));
+  if (!authoredUseBytes.bytes().equals(canonicalUseBytes.bytes()))
+    fail("rooted memory-use authoring order changed canonical bytes");
+
+  auto authoredFence = parse(context, fenceOperationModule(true, false, false));
+  auto canonicalFence =
+      parse(context, fenceOperationModule(false, false, false));
+  if (!authoredFence || !canonicalFence ||
+      mlir::failed(mlir::verify(*authoredFence)) ||
+      mlir::failed(mlir::verify(*canonicalFence)))
+    fail("rooted fence-use canonicalization fixture did not verify");
+  auto authoredFenceRoot = authoredFence->getOps<::mapping::SpatialOp>();
+  auto canonicalFenceRoot = canonicalFence->getOps<::mapping::SpatialOp>();
+  auto authoredFenceBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *authoredFenceRoot.begin()));
+  auto canonicalFenceBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *canonicalFenceRoot.begin()));
+  if (!authoredFenceBytes.bytes().equals(canonicalFenceBytes.bytes()))
+    fail("rooted fence-use authoring order changed canonical bytes");
+  if (!rejected(context, fenceOperationModule(false, true, false)))
+    fail("fence operation accepted a duplicate rooted use");
+  if (!rejected(context, fenceOperationModule(false, false, true)))
+    fail("fence operation accepted an empty rooted-use inventory");
+
+  auto authored = parse(context, memoryBindingCanonicalModule(true));
+  auto canonical = parse(context, memoryBindingCanonicalModule(false));
+  if (!authored || !canonical || mlir::failed(mlir::verify(*authored)) ||
+      mlir::failed(mlir::verify(*canonical)))
+    fail("MemoryBinding canonicalization fixture did not verify");
+  auto authoredRoot = authored->getOps<::mapping::SpatialOp>();
+  auto canonicalRoot = canonical->getOps<::mapping::SpatialOp>();
+  auto authoredBytes = take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+      *authoredRoot.begin()));
+  auto canonicalBytes =
+      take(loom::mapping::writeCanonicalSpatialMappingAssembly(
+          *canonicalRoot.begin()));
+  if (!authoredBytes.bytes().equals(canonicalBytes.bytes()))
+    fail("MemoryBinding authoring order or EntityId changed canonical bytes");
+}
+
 } // namespace
 
 int main() {
   testTypedSpatialResourceUse();
   testResourceUseOwnerClosure();
   testRouteTreeCanonicalizationAndShape();
+  testMemoryBindingTargetWire();
   llvm::outs() << "spatial mapping wire tests passed\n";
   return 0;
 }

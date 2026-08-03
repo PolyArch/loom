@@ -127,6 +127,38 @@ std::int64_t integerValue(Operation *operation, llvm::StringRef field) {
   return operation->getAttrOfType<IntegerAttr>(field).getInt();
 }
 
+LogicalResult verifyMemoryDispatchTarget(Operation *operation,
+                                         Attribute dispatch,
+                                         Attribute bindingTarget) {
+  if (auto local = dyn_cast<mapping::LocalMemoryServiceRefAttr>(dispatch)) {
+    auto region = dyn_cast<mapping::MemoryLocalRegionAttr>(bindingTarget);
+    if (!region)
+      return operation->emitOpError(
+          "local dispatch requires a LocalRegion MemoryBinding target");
+    auto decodedService =
+        decodeFabric<::loom::fabric::LocalMemoryServiceRef>(local);
+    auto decodedRegion =
+        decodeFabric<::loom::fabric::FabricMemoryServiceRegionRef>(
+            region.getServiceRegion());
+    if (!decodedService)
+      return operation->emitOpError()
+             << llvm::toString(decodedService.takeError());
+    if (!decodedRegion)
+      return operation->emitOpError()
+             << llvm::toString(decodedRegion.takeError());
+    if (decodedRegion->service != decodedService->underlying())
+      return operation->emitOpError(
+          "local dispatch and LocalRegion name different services");
+    return success();
+  }
+  if (!isa<mapping::ManagerEndpointRefAttr>(dispatch))
+    return operation->emitOpError("has an invalid memory dispatch target");
+  if (!isa<mapping::MemoryBoundaryProxyAttr>(bindingTarget))
+    return operation->emitOpError(
+        "manager dispatch requires a BoundaryProxy MemoryBinding target");
+  return success();
+}
+
 } // namespace
 
 ParseResult mapping::TechOp::parse(OpAsmParser &parser,
@@ -475,6 +507,8 @@ LogicalResult mapping::SpatialOp::verify() {
     return emitOpError("declarative block must not have arguments");
 
   llvm::SmallDenseSet<std::uint64_t, 8> computeBindings;
+  llvm::SmallDenseSet<std::uint64_t, 8> memoryEngineBindings;
+  llvm::DenseMap<std::uint64_t, mapping::MemoryBindingOp> memoryBindings;
   llvm::DenseMap<Attribute, llvm::SmallDenseSet<std::uint64_t, 8>> routeNodes;
   llvm::DenseSet<Attribute> resourceUses;
   llvm::SmallVector<mapping::ResourceUseOp, 8> deferredUses;
@@ -482,6 +516,22 @@ LogicalResult mapping::SpatialOp::verify() {
     if (auto binding = dyn_cast<mapping::ComputeBindingOp>(child)) {
       if (!computeBindings.insert(binding.getRealization().getEntity()).second)
         return binding.emitOpError("duplicates a ComputeBinding key");
+      continue;
+    }
+    if (auto binding = dyn_cast<mapping::MemoryEngineBindingOp>(child)) {
+      if (!memoryEngineBindings.insert(binding.getRealization().getEntity())
+               .second)
+        return binding.emitOpError("duplicates a MemoryEngineBinding key");
+      continue;
+    }
+    if (auto binding = dyn_cast<mapping::MemoryBindingOp>(child)) {
+      const std::int64_t entity = integerValue(binding, "entity_id");
+      if (entity < 0)
+        return binding.emitOpError("entity ID must be nonnegative");
+      if (!memoryBindings
+               .try_emplace(static_cast<std::uint64_t>(entity), binding)
+               .second)
+        return binding.emitOpError("duplicates a MemoryBinding EntityId");
       continue;
     }
     if (auto route = dyn_cast<mapping::RouteTreeOp>(child)) {
@@ -503,12 +553,42 @@ LogicalResult mapping::SpatialOp::verify() {
         "is not an implemented closed SpatialMapping record kind");
   }
 
+  for (auto engine :
+       getBody().front().getOps<mapping::MemoryEngineBindingOp>()) {
+    for (auto operation : engine.getBody()
+                              .front()
+                              .getOps<mapping::AddressedMemoryOperationOp>()) {
+      for (auto use : operation.getBody()
+                          .front()
+                          .getOps<mapping::AddressedMemoryUseOp>()) {
+        auto binding = memoryBindings.find(use.getBinding().getEntity());
+        if (binding == memoryBindings.end())
+          return use.emitOpError("references an absent MemoryBinding target");
+        if (failed(verifyMemoryDispatchTarget(use, use.getDispatchTarget(),
+                                              binding->second.getTarget())))
+          return failure();
+      }
+    }
+  }
+
   for (mapping::ResourceUseOp use : deferredUses) {
     if (auto compute =
             dyn_cast<mapping::ComputeRealizationRefAttr>(use.getOwner())) {
       if (computeBindings.contains(compute.getEntity()))
         continue;
       return use.emitOpError("references an absent ComputeBinding owner");
+    }
+    if (auto engine =
+            dyn_cast<mapping::MemoryRealizationRefAttr>(use.getOwner())) {
+      if (memoryEngineBindings.contains(engine.getEntity()))
+        continue;
+      return use.emitOpError("references an absent MemoryEngineBinding owner");
+    }
+    if (auto binding =
+            dyn_cast<mapping::MemoryBindingRefAttr>(use.getOwner())) {
+      if (memoryBindings.contains(binding.getEntity()))
+        continue;
+      return use.emitOpError("references an absent MemoryBinding owner");
     }
     if (auto route = dyn_cast<mapping::RouteTreeNodeRefAttr>(use.getOwner())) {
       auto nodes = routeNodes.find(route.getLogicalNet());
@@ -531,6 +611,129 @@ LogicalResult mapping::ComputeBindingOp::verify() {
   if (failed(verifyPhysicalRefinements(*this, getRefinements())))
     return failure();
   return success();
+}
+
+LogicalResult mapping::MemoryEngineBindingOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"realization", "occurrence"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  llvm::DenseSet<Attribute> actors;
+  for (Operation &child : getBody().front()) {
+    Attribute actor;
+    if (auto addressed = dyn_cast<mapping::AddressedMemoryOperationOp>(child))
+      actor = addressed.getActor();
+    else if (auto fence = dyn_cast<mapping::FenceMemoryOperationOp>(child))
+      actor = fence.getActor();
+    else
+      return child.emitOpError(
+          "is not a closed MemoryOperationEntry record kind");
+    if (!actors.insert(actor).second)
+      return child.emitOpError("duplicates a memory actor entry");
+  }
+  return success();
+}
+
+LogicalResult mapping::AddressedMemoryOperationOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"actor", "placement"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  llvm::DenseSet<Attribute> launches;
+  for (Operation &child : getBody().front()) {
+    auto use = dyn_cast<mapping::AddressedMemoryUseOp>(child);
+    if (!use)
+      return child.emitOpError("is not an AddressedOperationUse record");
+    if (!launches.insert(use.getLaunch()).second)
+      return use.emitOpError("duplicates a rooted addressed-memory use");
+  }
+  if (launches.empty())
+    return emitOpError("must contain at least one rooted addressed-memory use");
+  return success();
+}
+
+LogicalResult mapping::AddressedMemoryUseOp::verify() {
+  return rejectUnknownAttributes(*this,
+                                 {"launch", "binding", "dispatch_target"});
+}
+
+LogicalResult mapping::FenceMemoryOperationOp::verify() {
+  if (failed(rejectUnknownAttributes(*this, {"actor", "placement"})))
+    return failure();
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+  llvm::DenseSet<Attribute> launches;
+  for (Operation &child : getBody().front()) {
+    auto use = dyn_cast<mapping::FenceMemoryUseOp>(child);
+    if (!use)
+      return child.emitOpError("is not a FenceOperationUse record");
+    if (!launches.insert(use.getLaunch()).second)
+      return use.emitOpError("duplicates a rooted fence use");
+  }
+  if (launches.empty())
+    return emitOpError("must contain at least one rooted fence use");
+  return success();
+}
+
+LogicalResult mapping::FenceMemoryUseOp::verify() {
+  return rejectUnknownAttributes(*this, {"launch", "consistency_target"});
+}
+
+LogicalResult mapping::MemoryBindingOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"entity_id", "logical_memory", "interval", "target"})))
+    return failure();
+  if (integerValue(*this, "entity_id") < 0)
+    return emitOpError("entity ID must be nonnegative");
+  if (getBody().empty() || !llvm::hasSingleElement(getBody()))
+    return emitOpError("must contain exactly one declarative block");
+  if (getBody().front().getNumArguments() != 0)
+    return emitOpError("declarative block must not have arguments");
+
+  auto parent = (*this)->getParentOfType<mapping::SpatialOp>();
+  if (!parent)
+    return emitOpError("must belong to a SpatialMapping root");
+  auto dataflowOwner = identity(parent.getDataflow());
+  if (!dataflowOwner)
+    return emitOpError() << llvm::toString(dataflowOwner.takeError());
+  auto logicalMemory = decodeDataflow<::dataflow::LogicalMemoryRootOrViewRef>(
+      getLogicalMemory(), *dataflowOwner);
+  if (!logicalMemory)
+    return emitOpError() << llvm::toString(logicalMemory.takeError());
+
+  if (auto local = dyn_cast<mapping::MemoryLocalRegionAttr>(getTarget())) {
+    auto region = decodeFabric<::loom::fabric::FabricMemoryServiceRegionRef>(
+        local.getServiceRegion());
+    if (!region)
+      return emitOpError() << llvm::toString(region.takeError());
+    if (region->service.kind() !=
+        ::loom::fabric::FabricMemoryServiceKind::Local)
+      return emitOpError("LocalRegion must name a local memory service");
+  }
+
+  llvm::DenseSet<Attribute> exposures;
+  for (Operation &child : getBody().front()) {
+    auto exposure = dyn_cast<mapping::ExposureEntryOp>(child);
+    if (!exposure)
+      return child.emitOpError("is not a closed ExposureEntry record kind");
+    if (!exposures.insert(exposure.getExposure()).second)
+      return exposure.emitOpError("duplicates a memory exposure key");
+    if (failed(verifyMemoryDispatchTarget(
+            exposure, exposure.getDispatchTarget(), getTarget())))
+      return failure();
+  }
+  return success();
+}
+
+LogicalResult mapping::ExposureEntryOp::verify() {
+  return rejectUnknownAttributes(*this,
+                                 {"exposure", "terminal", "dispatch_target"});
 }
 
 LogicalResult mapping::RouteTreeOp::verify() {
