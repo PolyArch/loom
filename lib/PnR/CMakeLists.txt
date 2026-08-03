@@ -31,6 +31,7 @@ add_mlir_library(LoomPnR
   SpatialPnrTransferIndex.cpp
   SpatialRouteCostState.cpp
   SpatialRouteResourceState.cpp
+  SpatialTagContinuity.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

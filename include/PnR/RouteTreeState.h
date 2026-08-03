@@ -150,6 +150,7 @@ public:
   std::optional<PnrIndex> sourceEndpoint() const;
   std::optional<PnrIndex> sinkEndpoint(PnrIndex obligation) const;
   llvm::ArrayRef<RouteTreeNode> nodeStorage() const { return nodes_; }
+  const FrozenSpatialRoutingGraph &routingGraph() const { return *graph_; }
   std::optional<PnrIndex> findNode(PnrIndex endpoint) const;
   const RouteTreeNode &node(PnrIndex slot) const;
 

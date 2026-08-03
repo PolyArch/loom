@@ -27,6 +27,7 @@
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
+#include "PnR/SpatialTagContinuity.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -420,6 +421,68 @@ buildTemporalFabric(loom::ArtifactStore &store) {
   return design.roots().front();
 }
 
+loom::fabric::FinalizedFabricRoot
+buildBoundaryTemporalFabric(loom::ArtifactStore &store) {
+  using namespace loom::adg;
+
+  const PortType bits4 = take(PortType::bits(4));
+  const PortType bits128 = take(PortType::bits(128));
+  const PortType tagged128 = take(PortType::taggedBits(128, 4));
+  std::vector<PortType> moduleInputs;
+  moduleInputs.reserve(10);
+  for (unsigned input = 0; input != 5; ++input) {
+    moduleInputs.push_back(bits128);
+    moduleInputs.push_back(bits4);
+  }
+  std::vector<PortType> moduleOutputs;
+  moduleOutputs.reserve(8);
+  for (unsigned output = 0; output != 4; ++output) {
+    moduleOutputs.push_back(bits128);
+    moduleOutputs.push_back(bits4);
+  }
+
+  DesignBuilder builder(store);
+  auto spatial = take(builder.createSpatialCore("boundary-temporal",
+                                                moduleInputs, moduleOutputs));
+  std::vector<SpatialValue> taggedInputs;
+  taggedInputs.reserve(5);
+  for (unsigned input = 0; input != 5; ++input) {
+    const std::array<SpatialValue, 2> boundaryInputs = {
+        take(spatial.input(input * 2)), take(spatial.input(input * 2 + 1))};
+    auto outputs = take(spatial.addBoundary(
+        boundaryInputs, BoundarySpec::s2t(bits128, bits4, tagged128)));
+    taggedInputs.push_back(outputs.front());
+  }
+  auto pe = take(spatial.addPe(
+      taggedInputs,
+      PeSpec::temporal(
+          std::vector<PortType>(5, bits128),
+          std::vector<PortType>(4, tagged128),
+          TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
+                               ::fabric::OperandBufferMode::PerInstruction, 2,
+                               std::nullopt})));
+  std::vector<PeValue> peInputs;
+  peInputs.reserve(4);
+  for (unsigned input = 0; input != 4; ++input)
+    peInputs.push_back(take(pe.input(input)));
+  addTokenSyncFu(pe, peInputs, bits128);
+  requireSuccess(pe.close());
+
+  std::vector<SpatialValue> untaggedOutputs;
+  untaggedOutputs.reserve(8);
+  for (unsigned output = 0; output != 4; ++output) {
+    auto split = take(
+        spatial.addBoundary({take(pe.output(output))},
+                            BoundarySpec::t2s(tagged128, {bits128, bits4})));
+    untaggedOutputs.insert(untaggedOutputs.end(), split.begin(), split.end());
+  }
+  requireSuccess(spatial.close(untaggedOutputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("boundary Temporal Fabric did not publish exactly one root");
+  return design.roots().front();
+}
+
 std::string byteList(llvm::ArrayRef<std::uint8_t> bytes) {
   std::string text = "[";
   for (auto [ordinal, byte] : llvm::enumerate(bytes)) {
@@ -579,7 +642,7 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   requireSuccess(move.commit());
 }
 
-void completeCandidateRoundTrip(bool temporal) {
+void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -587,8 +650,9 @@ void completeCandidateRoundTrip(bool temporal) {
   auto dataflowArtifact = buildDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric =
-      temporal ? buildTemporalFabric(store) : buildFabric(store);
+  const auto fabric = boundaryWrapped ? buildBoundaryTemporalFabric(store)
+                      : temporal      ? buildTemporalFabric(store)
+                                      : buildFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -653,6 +717,60 @@ void completeCandidateRoundTrip(bool temporal) {
     candidate = std::move(first.candidate);
   }
   requireSuccess(candidate->verify());
+
+  if (boundaryWrapped) {
+    bool observedBoundaryOrigin = false;
+    bool observedRouteSourceOrigin = false;
+    bool observedUntaggedNode = false;
+    bool observedRemoverStop = false;
+    for (loom::pnr::PnrIndex net = 0;
+         net < problem->transfers().logicalNets().size(); ++net) {
+      const auto projection = take(
+          loom::pnr::deriveSpatialTagContinuity(candidate->routeTree(net)));
+      const auto repeated = take(
+          loom::pnr::deriveSpatialTagContinuity(candidate->routeTree(net)));
+      if (!llvm::equal(projection.segments(), repeated.segments()) ||
+          !llvm::equal(projection.nodeSegments(), repeated.nodeSegments()))
+        fail("tag-continuity projection is not deterministic");
+      const auto &tree = candidate->routeTree(net);
+      if (projection.nodeSegments().size() != tree.nodeStorage().size())
+        fail("tag-continuity projection is not RouteTree-slot dense");
+      for (const auto &segment : projection.segments()) {
+        observedBoundaryOrigin |=
+            segment.originKind ==
+            loom::pnr::SpatialTagContinuityOriginKind::BoundaryPoint;
+        observedRouteSourceOrigin |=
+            segment.originKind ==
+            loom::pnr::SpatialTagContinuityOriginKind::RouteSource;
+      }
+      for (auto [slot, node] : llvm::enumerate(tree.nodeStorage())) {
+        if (!node.isActive())
+          continue;
+        const auto &dataPath =
+            problem->routing().routingEndpoints()[node.endpoint].dataPath;
+        const bool tagged = dataPath.kind == ::fabric::DataPathKind::BitsTag;
+        if (!tagged)
+          observedUntaggedNode = true;
+        if ((projection.nodeSegments()[slot] !=
+             loom::pnr::getInvalidPnrIndex()) != tagged)
+          fail("tag-continuity segment disagrees with route endpoint kind");
+        if (node.parentArc == loom::pnr::getInvalidPnrIndex())
+          continue;
+        const auto &arc = problem->routing().routingArcs()[node.parentArc];
+        const auto point = problem->routing()
+                               .tagContinuity()
+                               .traversalPointOrdinals()[arc.traversal];
+        if (point != loom::pnr::getInvalidPnrIndex() &&
+            problem->routing().tagContinuity().points()[point].kind ==
+                loom::fabric::FabricBoundaryTagContinuityKind::Remover &&
+            projection.nodeSegments()[slot] == loom::pnr::getInvalidPnrIndex())
+          observedRemoverStop = true;
+      }
+    }
+    if (!observedBoundaryOrigin || !observedRouteSourceOrigin ||
+        !observedUntaggedNode || !observedRemoverStop)
+      fail("boundary Temporal route did not exercise start and stop semantics");
+  }
 
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
       *candidate, dataflow, tech.view(), fabric.view(), store));
@@ -1110,6 +1228,7 @@ int main() {
   frozenTagContinuityIndexIsOwnerNormalized();
   completeCandidateRoundTrip(false);
   completeCandidateRoundTrip(true);
+  completeCandidateRoundTrip(true, true);
   completeMemoryCandidateRoundTrip(false);
   completeMemoryCandidateRoundTrip(true);
   llvm::outs() << "spatial mapping artifact tests passed\n";
