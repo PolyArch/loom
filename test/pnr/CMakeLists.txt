@@ -46,3 +46,16 @@ target_link_libraries(loom-pnr-endpoint-router-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-initializer-relation-solver-test
+  InitializerRelationSolverTest.cpp
+)
+
+target_include_directories(loom-pnr-initializer-relation-solver-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/PnR
+)
+
+target_link_libraries(loom-pnr-initializer-relation-solver-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)

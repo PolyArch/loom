@@ -92,6 +92,7 @@ set(LOOM_TEST_DEPENDS
   loom-tech-mapping-joint-legality-test
   loom-tech-mapping-search-test
   loom-pnr-endpoint-router-test
+  loom-pnr-initializer-relation-solver-test
   loom-pnr-incremental-topology-test
   loom-pnr-index-test
   loom-pnr-routing-negotiation-test

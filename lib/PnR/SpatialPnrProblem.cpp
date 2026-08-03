@@ -1,6 +1,7 @@
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/RoutingNegotiation.h"
 
+#include "SpatialBindingRelationModel.h"
 #include "SpatialPnrCapacityIndex.h"
 #include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrPortIndex.h"
@@ -302,6 +303,10 @@ public:
         buildRealizations(dataflow, techMapping, fabric, *constraints);
     if (!realizations)
       return realizations.takeError();
+    auto bindingRelations = detail::SpatialBindingRelationModel::create(
+        *realizations, *constraints);
+    if (!bindingRelations)
+      return bindingRelations.takeError();
     auto transfers = detail::buildFrozenSpatialTransferIndex(techMapping);
     if (!transfers)
       return transfers.takeError();
@@ -340,7 +345,7 @@ public:
         std::move(*constraints), std::move(*realizations),
         std::move(*transfers), std::move(*ports), std::move(*resources),
         std::move(*capacity), std::move(*routing), std::move(*handshake),
-        cacheKey));
+        std::move(*bindingRelations), cacheKey));
   }
 
   static FrozenSpatialPnrCacheKey

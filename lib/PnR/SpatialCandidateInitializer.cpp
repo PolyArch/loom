@@ -1,5 +1,8 @@
 #include "PnR/SpatialCandidateInitializer.h"
 
+#include "InitializerRelationSolver.h"
+#include "SpatialBindingRelationModel.h"
+
 #include "llvm/Support/Error.h"
 
 #include <system_error>
@@ -16,20 +19,6 @@ llvm::Error initializerError(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument));
 }
 
-bool hasUncompiledRelations(const FrozenConstraintIndex &constraints) {
-  for (std::size_t ordinal = 0;
-       ordinal != FrozenConstraintIndex::projectionCount; ++ordinal) {
-    const auto projection =
-        ::mapping::symbolizeSpatialConstraintProjection(ordinal);
-    if (!projection)
-      return true;
-    const FrozenConstraintShard &shard = constraints.shard(*projection);
-    if (!shard.equalityClasses().empty() || !shard.disjointGroups().empty())
-      return true;
-  }
-  return false;
-}
-
 } // namespace
 
 llvm::Expected<SpatialCandidateStateHandle>
@@ -37,9 +26,23 @@ loom::pnr::createCanonicalSpatialCandidate(
     FrozenSpatialPnrProblemHandle problem) {
   if (!problem)
     return initializerError("FrozenSpatialPnrProblem owner is null");
-  if (hasUncompiledRelations(problem->constraints()))
+
+  const detail::SpatialBindingRelationModel &bindingRelations =
+      problem->bindingRelations();
+  if (const auto deferred = bindingRelations.deferredProjection())
     return initializerError(
-        "hard equality or disjointness requires relation propagation");
+        "hard equality or disjointness for projection '" +
+        ::mapping::stringifySpatialConstraintProjection(*deferred) +
+        "' requires its owning decision model");
+
+  detail::InitializerRelationSolver relationSolver(
+      bindingRelations.relations());
+  auto relationChoices = relationSolver.solveCanonical(
+      problem->config()
+          .policy()
+          .search.initializer.assignmentAttemptLimitPerSeed);
+  if (!relationChoices)
+    return relationChoices.takeError();
 
   const FrozenSpatialRealizationIndex &realizations = problem->realizations();
   const FrozenSpatialPortIndex &ports = problem->ports();
@@ -47,25 +50,29 @@ loom::pnr::createCanonicalSpatialCandidate(
 
   std::vector<SpatialComputeBindingSelection> computeBindings;
   computeBindings.reserve(realizations.computeRealizations().size());
-  for (const FrozenSpatialComputeRealization &realization :
-       realizations.computeRealizations()) {
-    if (realization.placementCount == 0)
-      return initializerError("compute realization has an empty domain");
-    const PnrIndex placement = realization.placementOffset;
-    const FrozenSpatialComputePlacement &placementRecord =
-        realizations.computePlacements()[placement];
-    if (placementRecord.contextCount == 0)
-      return initializerError("compute placement has an empty context domain");
-    computeBindings.push_back({placement, placementRecord.contextOffset});
+  for (PnrIndex realization = 0;
+       realization < realizations.computeRealizations().size(); ++realization) {
+    const auto choices = bindingRelations.computeChoices(realization);
+    const PnrIndex selected = relationChoices->choices[realization];
+    if (selected >= choices.size())
+      return initializerError(
+          "relation solver returned a foreign compute choice");
+    computeBindings.push_back(
+        {choices[selected].placement, choices[selected].instructionContext});
   }
 
   std::vector<SpatialMemoryBindingSelection> memoryBindings;
   memoryBindings.reserve(realizations.memoryRealizations().size());
-  for (const FrozenSpatialMemoryRealization &realization :
-       realizations.memoryRealizations()) {
-    if (realization.placementCount == 0)
-      return initializerError("memory realization has an empty domain");
-    memoryBindings.push_back({realization.placementOffset});
+  for (PnrIndex realization = 0;
+       realization < realizations.memoryRealizations().size(); ++realization) {
+    const auto choices = bindingRelations.memoryChoices(realization);
+    const PnrIndex selected =
+        relationChoices
+            ->choices[bindingRelations.computeDecisionCount() + realization];
+    if (selected >= choices.size())
+      return initializerError(
+          "relation solver returned a foreign memory choice");
+    memoryBindings.push_back({choices[selected].placement});
   }
 
   std::vector<PnrIndex> portAttachments;

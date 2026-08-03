@@ -1,5 +1,7 @@
 #include "PnR/SpatialCandidateState.h"
 
+#include "SpatialBindingRelationModel.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
@@ -151,6 +153,8 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   const std::size_t boundaryCount = ports.graphBoundaries().size();
   const std::size_t memoryPlanCount = realizations.memoryActors().size();
   const std::size_t traversalCount = problem.routing().traversals().size();
+  const std::size_t bindingRelationCount =
+      problem.bindingRelations().relations().relations().size();
 
   computeJournalMarks_.assign(computeCount, 0);
   memoryJournalMarks_.assign(memoryCount, 0);
@@ -167,12 +171,14 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   affectedBoundaryMarks_.assign(boundaryCount, 0);
   affectedMemoryPlanMarks_.assign(memoryPlanCount, 0);
   affectedNetMarks_.assign(netCount, 0);
+  affectedBindingRelationMarks_.assign(bindingRelationCount, 0);
   affectedComputes_.reserve(computeCount);
   affectedMemories_.reserve(memoryCount);
   affectedPorts_.reserve(portCount);
   affectedBoundaries_.reserve(boundaryCount);
   affectedMemoryPlans_.reserve(memoryPlanCount);
   affectedNets_.reserve(netCount);
+  affectedBindingRelations_.reserve(bindingRelationCount);
 
   touchedRoutes_.reserve(netCount);
   traversalDeltaMarks_.assign(traversalCount, 0);
@@ -202,10 +208,12 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(affectedMemoryMarks_) + retainedBytes(affectedPortMarks_) +
       retainedBytes(affectedBoundaryMarks_) +
       retainedBytes(affectedMemoryPlanMarks_) +
-      retainedBytes(affectedNetMarks_) + retainedBytes(affectedComputes_) +
-      retainedBytes(affectedMemories_) + retainedBytes(affectedPorts_) +
-      retainedBytes(affectedBoundaries_) + retainedBytes(affectedMemoryPlans_) +
-      retainedBytes(affectedNets_) + retainedBytes(touchedRoutes_) +
+      retainedBytes(affectedNetMarks_) +
+      retainedBytes(affectedBindingRelationMarks_) +
+      retainedBytes(affectedComputes_) + retainedBytes(affectedMemories_) +
+      retainedBytes(affectedPorts_) + retainedBytes(affectedBoundaries_) +
+      retainedBytes(affectedMemoryPlans_) + retainedBytes(affectedNets_) +
+      retainedBytes(affectedBindingRelations_) + retainedBytes(touchedRoutes_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
       retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_);
   return bytes;
@@ -218,7 +226,8 @@ void SpatialCandidateScratch::beginTransaction() {
                 &boundaryJournalMarks_, &memoryPlanJournalMarks_});
   advanceEpoch(affectedEpoch_, {&affectedComputeMarks_, &affectedMemoryMarks_,
                                 &affectedPortMarks_, &affectedBoundaryMarks_,
-                                &affectedMemoryPlanMarks_, &affectedNetMarks_});
+                                &affectedMemoryPlanMarks_, &affectedNetMarks_,
+                                &affectedBindingRelationMarks_});
   advanceEpoch(traversalEpoch_, {&traversalDeltaMarks_});
 }
 
@@ -234,6 +243,7 @@ void SpatialCandidateScratch::resetTransaction() {
   affectedBoundaries_.clear();
   affectedMemoryPlans_.clear();
   affectedNets_.clear();
+  affectedBindingRelations_.clear();
   handshakeTransaction_.reset();
   resourceFullyAppliedRouteCount_ = 0;
   resourcePartiallyAppliedDeltaCount_ = 0;
@@ -264,6 +274,32 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   std::vector<SpatialMemoryBindingSelection> memoryBindings(
       initialization.memoryBindings.begin(),
       initialization.memoryBindings.end());
+  const detail::SpatialBindingRelationModel &bindingRelations =
+      problem->bindingRelations();
+  if (const auto deferred = bindingRelations.deferredProjection())
+    return candidateError(
+        "hard equality or disjointness for projection '" +
+        ::mapping::stringifySpatialConstraintProjection(*deferred) +
+        "' requires its owning decision model");
+  std::vector<PnrIndex> bindingRelationChoices;
+  bindingRelationChoices.reserve(bindingRelations.decisionCount());
+  for (auto [realization, binding] : llvm::enumerate(computeBindings)) {
+    const auto choice = bindingRelations.computeChoiceOrdinal(
+        static_cast<PnrIndex>(realization), binding.placement,
+        binding.instructionContext);
+    if (!choice)
+      return candidateError(
+          "compute binding has no frozen relation-domain choice");
+    bindingRelationChoices.push_back(*choice);
+  }
+  for (auto [realization, binding] : llvm::enumerate(memoryBindings)) {
+    const auto choice = bindingRelations.memoryChoiceOrdinal(
+        static_cast<PnrIndex>(realization), binding.placement);
+    if (!choice)
+      return candidateError(
+          "memory binding has no frozen relation-domain choice");
+    bindingRelationChoices.push_back(*choice);
+  }
   std::vector<PnrIndex> portAttachments(initialization.portAttachments.begin(),
                                         initialization.portAttachments.end());
   std::vector<PnrIndex> graphBoundaryAttachments(
@@ -304,9 +340,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
 
   auto candidate = SpatialCandidateStateHandle(new SpatialCandidateState(
       std::move(problem), std::move(computeBindings), std::move(memoryBindings),
-      std::move(portAttachments), std::move(graphBoundaryAttachments),
-      std::move(memoryOperationPlans), std::move(routeTrees),
-      std::move(*handshake), std::move(*routeResources),
+      std::move(bindingRelationChoices), std::move(portAttachments),
+      std::move(graphBoundaryAttachments), std::move(memoryOperationPlans),
+      std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
       unroutedObligationCount, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
@@ -683,6 +719,8 @@ llvm::Error SpatialCandidateState::verify() const {
           problem_->realizations().computeRealizations().size() ||
       memoryBindings_.size() !=
           problem_->realizations().memoryRealizations().size() ||
+      bindingRelationChoices_.size() !=
+          problem_->bindingRelations().decisionCount() ||
       portAttachments_.size() != problem_->ports().portDemands().size() ||
       graphBoundaryAttachments_.size() !=
           problem_->ports().graphBoundaries().size() ||
@@ -696,6 +734,8 @@ llvm::Error SpatialCandidateState::verify() const {
   for (PnrIndex index = 0; index < memoryBindings_.size(); ++index)
     if (llvm::Error error = validateMemoryBinding(index))
       return error;
+  if (llvm::Error error = verifyBindingRelations())
+    return error;
   for (PnrIndex index = 0; index < portAttachments_.size(); ++index)
     if (llvm::Error error = validatePortAttachment(index))
       return error;
@@ -750,7 +790,9 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
       scratch.memoryPlanJournalMarks_.size() != memoryOperationPlans_.size() ||
       scratch.routeTransactions_.size() != routeTrees_.size() ||
       scratch.traversalDeltaMarks_.size() !=
-          problem_->routing().traversals().size())
+          problem_->routing().traversals().size() ||
+      scratch.affectedBindingRelationMarks_.size() !=
+          problem_->bindingRelations().relations().relations().size())
     return candidateError("scratch was not prepared for this candidate");
 
   scratch.beginTransaction();
@@ -806,7 +848,8 @@ void SpatialMoveTransaction::recordCompute(PnrIndex realization) {
   const auto old = state_->computeBindings_[realization];
   scratch_->decisionDeltas_.push_back(
       {SpatialCandidateScratch::DecisionKind::ComputeBinding, realization,
-       old.placement, old.instructionContext});
+       old.placement, old.instructionContext,
+       state_->bindingRelationChoices_[realization]});
 }
 
 void SpatialMoveTransaction::recordMemory(PnrIndex realization) {
@@ -815,7 +858,10 @@ void SpatialMoveTransaction::recordMemory(PnrIndex realization) {
   scratch_->memoryJournalMarks_[realization] = scratch_->decisionEpoch_;
   scratch_->decisionDeltas_.push_back(
       {SpatialCandidateScratch::DecisionKind::MemoryBinding, realization,
-       state_->memoryBindings_[realization].placement, 0});
+       state_->memoryBindings_[realization].placement, 0,
+       state_->bindingRelationChoices_[state_->problem_->bindingRelations()
+                                           .computeDecisionCount() +
+                                       realization]});
 }
 
 void SpatialMoveTransaction::recordPort(PnrIndex demand) {
@@ -851,6 +897,7 @@ void SpatialMoveTransaction::markCompute(PnrIndex realization) {
     scratch_->affectedComputeMarks_[realization] = scratch_->affectedEpoch_;
     scratch_->affectedComputes_.push_back(realization);
   }
+  markBindingRelations(realization);
 }
 
 void SpatialMoveTransaction::markMemory(PnrIndex realization) {
@@ -858,6 +905,9 @@ void SpatialMoveTransaction::markMemory(PnrIndex realization) {
     scratch_->affectedMemoryMarks_[realization] = scratch_->affectedEpoch_;
     scratch_->affectedMemories_.push_back(realization);
   }
+  markBindingRelations(
+      state_->problem_->bindingRelations().computeDecisionCount() +
+      realization);
   const auto offsets =
       state_->problem_->ports().memoryRealizationDemandOffsets();
   for (PnrIndex demand :
@@ -899,6 +949,18 @@ void SpatialMoveTransaction::markNet(PnrIndex logicalNet) {
     return;
   scratch_->affectedNetMarks_[logicalNet] = scratch_->affectedEpoch_;
   scratch_->affectedNets_.push_back(logicalNet);
+}
+
+void SpatialMoveTransaction::markBindingRelations(PnrIndex decision) {
+  for (PnrIndex relation :
+       state_->problem_->bindingRelations().decisionRelations(decision)) {
+    if (scratch_->affectedBindingRelationMarks_[relation] ==
+        scratch_->affectedEpoch_)
+      continue;
+    scratch_->affectedBindingRelationMarks_[relation] =
+        scratch_->affectedEpoch_;
+    scratch_->affectedBindingRelations_.push_back(relation);
+  }
 }
 
 llvm::Error
@@ -947,6 +1009,11 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
   if (old.placement == placement &&
       old.instructionContext == instructionContext)
     return llvm::Error::success();
+  const auto relationChoice =
+      state_->problem_->bindingRelations().computeChoiceOrdinal(
+          realization, placement, instructionContext);
+  if (!relationChoice)
+    return candidateError("new compute binding has no relation-domain choice");
 
   recordCompute(realization);
   markCompute(realization);
@@ -972,6 +1039,7 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
           state_->capacityOveruse_, "compute capacity overuse"))
     return error;
   state_->computeBindings_[realization] = {placement, instructionContext};
+  state_->bindingRelationChoices_[realization] = *relationChoice;
   return llvm::Error::success();
 }
 
@@ -988,9 +1056,17 @@ llvm::Error SpatialMoveTransaction::setMemoryBinding(PnrIndex realization,
     return candidateError("new memory placement is outside its domain");
   if (state_->memoryBindings_[realization].placement == placement)
     return llvm::Error::success();
+  const auto relationChoice =
+      state_->problem_->bindingRelations().memoryChoiceOrdinal(realization,
+                                                               placement);
+  if (!relationChoice)
+    return candidateError("new memory binding has no relation-domain choice");
   recordMemory(realization);
   markMemory(realization);
   state_->memoryBindings_[realization].placement = placement;
+  state_->bindingRelationChoices_[state_->problem_->bindingRelations()
+                                      .computeDecisionCount() +
+                                  realization] = *relationChoice;
   return llvm::Error::success();
 }
 
@@ -1188,6 +1264,9 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
   for (PnrIndex actor : scratch_->affectedMemoryPlans_)
     if (llvm::Error error = state_->validateMemoryOperationPlan(actor))
       return error;
+  for (PnrIndex relation : scratch_->affectedBindingRelations_)
+    if (llvm::Error error = state_->verifyBindingRelation(relation))
+      return error;
 
   for (PnrIndex logicalNet : scratch_->affectedNets_) {
     const auto &net = state_->problem_->transfers().logicalNets()[logicalNet];
@@ -1276,9 +1355,13 @@ void SpatialMoveTransaction::rollback() noexcept {
     case SpatialCandidateScratch::DecisionKind::ComputeBinding:
       state_->computeBindings_[delta.index] = {delta.oldValue0,
                                                delta.oldValue1};
+      state_->bindingRelationChoices_[delta.index] = delta.oldValue2;
       break;
     case SpatialCandidateScratch::DecisionKind::MemoryBinding:
       state_->memoryBindings_[delta.index].placement = delta.oldValue0;
+      state_->bindingRelationChoices_[state_->problem_->bindingRelations()
+                                          .computeDecisionCount() +
+                                      delta.index] = delta.oldValue2;
       break;
     case SpatialCandidateScratch::DecisionKind::PortAttachment:
       state_->portAttachments_[delta.index] = delta.oldValue0;

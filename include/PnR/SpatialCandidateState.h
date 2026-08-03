@@ -68,6 +68,7 @@ private:
     PnrIndex index = 0;
     PnrIndex oldValue0 = 0;
     PnrIndex oldValue1 = 0;
+    PnrIndex oldValue2 = 0;
   };
 
   void beginTransaction();
@@ -92,12 +93,14 @@ private:
   std::vector<std::uint64_t> affectedBoundaryMarks_;
   std::vector<std::uint64_t> affectedMemoryPlanMarks_;
   std::vector<std::uint64_t> affectedNetMarks_;
+  std::vector<std::uint64_t> affectedBindingRelationMarks_;
   std::vector<PnrIndex> affectedComputes_;
   std::vector<PnrIndex> affectedMemories_;
   std::vector<PnrIndex> affectedPorts_;
   std::vector<PnrIndex> affectedBoundaries_;
   std::vector<PnrIndex> affectedMemoryPlans_;
   std::vector<PnrIndex> affectedNets_;
+  std::vector<PnrIndex> affectedBindingRelations_;
   std::uint64_t affectedEpoch_ = 0;
 
   std::vector<PnrIndex> touchedRoutes_;
@@ -184,6 +187,7 @@ private:
       FrozenSpatialPnrProblemHandle problem,
       std::vector<SpatialComputeBindingSelection> computeBindings,
       std::vector<SpatialMemoryBindingSelection> memoryBindings,
+      std::vector<PnrIndex> bindingRelationChoices,
       std::vector<PnrIndex> portAttachments,
       std::vector<PnrIndex> graphBoundaryAttachments,
       std::vector<PnrIndex> memoryOperationPlans,
@@ -194,6 +198,7 @@ private:
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
+        bindingRelationChoices_(std::move(bindingRelationChoices)),
         portAttachments_(std::move(portAttachments)),
         graphBoundaryAttachments_(std::move(graphBoundaryAttachments)),
         memoryOperationPlans_(std::move(memoryOperationPlans)),
@@ -208,6 +213,8 @@ private:
   llvm::Error validateGraphBoundaryAttachment(PnrIndex boundary) const;
   llvm::Error validateMemoryOperationPlan(PnrIndex actor) const;
   llvm::Error validateLogicalNet(PnrIndex logicalNet) const;
+  llvm::Error verifyBindingRelations() const;
+  llvm::Error verifyBindingRelation(PnrIndex relation) const;
   llvm::Error verifyHandshakeProjection() const;
   llvm::Expected<std::uint64_t> recomputeCapacityOveruse() const;
   PnrIndex terminalEndpoint(FrozenSpatialTerminalBinding binding) const;
@@ -217,6 +224,7 @@ private:
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
   std::vector<SpatialMemoryBindingSelection> memoryBindings_;
+  std::vector<PnrIndex> bindingRelationChoices_;
   std::vector<PnrIndex> portAttachments_;
   std::vector<PnrIndex> graphBoundaryAttachments_;
   std::vector<PnrIndex> memoryOperationPlans_;
@@ -279,6 +287,7 @@ private:
   void markBoundary(PnrIndex boundary);
   void markMemoryPlan(PnrIndex actor);
   void markNet(PnrIndex logicalNet);
+  void markBindingRelations(PnrIndex decision);
   llvm::Error changeFragments(llvm::ArrayRef<PnrIndex> oldFragments,
                               llvm::ArrayRef<PnrIndex> newFragments);
   llvm::Error changeTraversal(std::optional<PnrIndex> oldTraversal,

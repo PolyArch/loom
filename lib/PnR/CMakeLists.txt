@@ -2,13 +2,16 @@ add_mlir_library(LoomPnR
   EndpointRouter.cpp
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
+  InitializerRelationSolver.cpp
   IncrementalTopologicalOrder.cpp
   MappingObjective.cpp
   PnrIndex.cpp
   PnrConfig.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
+  SpatialBindingRelationModel.cpp
   SpatialCandidateInitializer.cpp
+  SpatialCandidateRelations.cpp
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
   SpatialNetRouter.cpp

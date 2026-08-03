@@ -24,6 +24,10 @@
 
 namespace loom::pnr {
 
+namespace detail {
+class SpatialBindingRelationModel;
+}
+
 struct FrozenSpatialComputePlacement final {
   PnrIndex realization = 0;
   ::loom::fabric::FabricFuOccurrenceRef fu;
@@ -673,6 +677,9 @@ public:
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
+  const detail::SpatialBindingRelationModel &bindingRelations() const {
+    return *bindingRelations_;
+  }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
 
 private:
@@ -686,6 +693,8 @@ private:
       FrozenSpatialTransferIndex transfers, FrozenSpatialPortIndex ports,
       FrozenSpatialResourceIndex resources, FrozenSpatialCapacityIndex capacity,
       FrozenSpatialRoutingGraph routing, FrozenSpatialHandshakeIndex handshake,
+      std::shared_ptr<const detail::SpatialBindingRelationModel>
+          bindingRelations,
       FrozenSpatialPnrCacheKey cacheKey)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
@@ -697,7 +706,7 @@ private:
         transfers_(std::move(transfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
-        cacheKey_(cacheKey) {}
+        bindingRelations_(std::move(bindingRelations)), cacheKey_(cacheKey) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -713,6 +722,7 @@ private:
   FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
+  std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   FrozenSpatialPnrCacheKey cacheKey_;
 
   friend class FrozenSpatialPnrProblemBuilder;
