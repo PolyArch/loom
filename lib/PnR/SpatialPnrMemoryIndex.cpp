@@ -44,6 +44,15 @@ constexpr PnrCapacityContext useOffsetContext{frozenArtifact, "memory_actors",
 constexpr PnrCapacityContext useCountContext{
     frozenArtifact, "rooted_memory_uses", "rooted_memory_uses",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext serviceGroupContext{
+    frozenArtifact, "memory_service_use_groups", "memory_service_use_groups",
+    PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext serviceGroupUseOffsetContext{
+    frozenArtifact, "memory_service_use_groups", "rooted_memory_uses",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext serviceGroupUseCountContext{
+    frozenArtifact, "memory_service_group_uses", "rooted_memory_uses",
+    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext exposureOffsetContext{
     frozenArtifact, "logical_memory_bindings", "memory_exposures",
     PnrCapacityMeasure::Offset};
@@ -635,6 +644,43 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
     result.bindingUses_[bindingCursors[*use.logicalBinding]++] = *useOrdinal;
   }
 
+  std::map<std::pair<PnrIndex, PnrIndex>, std::vector<PnrIndex>> serviceGroups;
+  for (auto [useOrdinalValue, use] : llvm::enumerate(result.rootedUses())) {
+    if (!use.logicalBinding)
+      continue;
+    auto useOrdinal = checked(useCountContext, useOrdinalValue);
+    if (!useOrdinal)
+      return useOrdinal.takeError();
+    serviceGroups[{use.actor, *use.logicalBinding}].push_back(*useOrdinal);
+  }
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(serviceGroupContext, serviceGroups.size()))
+    return std::move(error);
+  result.rootedUseServiceGroups_.assign(result.rootedUses().size(),
+                                        getInvalidPnrIndex());
+  result.serviceUseGroups_.reserve(serviceGroups.size());
+  for (auto &[key, uses] : serviceGroups) {
+    auto group = checked(serviceGroupContext, result.serviceUseGroups_.size());
+    if (!group)
+      return group.takeError();
+    auto offset =
+        checked(serviceGroupUseOffsetContext, result.serviceGroupUses_.size());
+    if (!offset)
+      return offset.takeError();
+    auto count = checked(serviceGroupUseCountContext, uses.size());
+    if (!count)
+      return count.takeError();
+    result.serviceUseGroups_.push_back(
+        {key.first, key.second, *offset, *count});
+    for (PnrIndex use : uses) {
+      if (use >= result.rootedUseServiceGroups_.size() ||
+          result.rootedUseServiceGroups_[use] != getInvalidPnrIndex())
+        return invalid("rooted memory use has duplicate service-use owners");
+      result.rootedUseServiceGroups_[use] = *group;
+      result.serviceGroupUses_.push_back(use);
+    }
+  }
+
   result.memoryPlacementDomainOffsets_.reserve(
       realizations.memoryPlacements().size() + 1);
   result.memoryPlacementDomainOffsets_.push_back(0);
@@ -704,6 +750,7 @@ llvm::Error FrozenSpatialMemoryIndexBuilder::verify(
           realizations.memoryActors().size() + 1 ||
       memory.bindingUseOffsets().size() !=
           memory.logicalBindings().size() + 1 ||
+      memory.rootedUseServiceGroups().size() != memory.rootedUses().size() ||
       memory.bindingExposureOffsets().size() !=
           memory.logicalBindings().size() + 1 ||
       memory.memoryPlacementDomainOffsets().size() !=
@@ -761,6 +808,32 @@ llvm::Error FrozenSpatialMemoryIndexBuilder::verify(
           memory.exposures()[exposure].logicalBinding != binding)
         return invalid(
             "logical-memory reverse-exposure projection is inconsistent");
+  }
+  for (auto [groupOrdinal, group] :
+       llvm::enumerate(memory.serviceUseGroups())) {
+    if (group.actor >= realizations.memoryActors().size() ||
+        group.logicalBinding >= memory.logicalBindings().size() ||
+        !rangeFits(group.useOffset, group.useCount,
+                   memory.serviceGroupUses().size()) ||
+        group.useCount == 0)
+      return invalid("memory service-use group is inconsistent");
+    for (PnrIndex use :
+         memory.serviceGroupUses().slice(group.useOffset, group.useCount)) {
+      if (use >= memory.rootedUses().size() ||
+          memory.rootedUses()[use].actor != group.actor ||
+          memory.rootedUses()[use].logicalBinding != group.logicalBinding ||
+          memory.rootedUseServiceGroups()[use] != groupOrdinal)
+        return invalid("memory service-use group reverse projection diverges");
+    }
+  }
+  for (auto [useOrdinal, use] : llvm::enumerate(memory.rootedUses())) {
+    const PnrIndex group = memory.rootedUseServiceGroups()[useOrdinal];
+    if (use.logicalBinding) {
+      if (group >= memory.serviceUseGroups().size())
+        return invalid("addressed memory use has no service-use group");
+    } else if (group != getInvalidPnrIndex()) {
+      return invalid("fence memory use has a service-use group");
+    }
   }
   for (const auto &exposure : memory.exposures())
     if (exposure.logicalBinding >= memory.logicalBindings().size())

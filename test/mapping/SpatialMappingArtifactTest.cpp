@@ -157,7 +157,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   }
   func.func private @host(%index: index, %memory: memref<4xi32>,
                           %exported: memref<4xi32>) {
-    %token = dataflow.thread.launch @worker(%index, %memory, %exported)
+    %token0 = dataflow.thread.launch @worker(%index, %memory, %exported)
+        : (index, memref<4xi32>, memref<4xi32>) -> !dataflow.thread_token
+    %token1 = dataflow.thread.launch @worker(%index, %memory, %exported)
         : (index, memref<4xi32>, memref<4xi32>) -> !dataflow.thread_token
     return
   }
@@ -607,13 +609,22 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
 
   const auto &memoryIndex = problem->memory();
   if (memoryIndex.logicalBindings().size() != 2 ||
-      memoryIndex.rootedUses().size() != 1 ||
-      memoryIndex.exposures().size() != 2 ||
+      memoryIndex.rootedUses().size() != 2 ||
+      memoryIndex.exposures().size() != 4 ||
       memoryIndex.exposureProviders().size() != 1 ||
       memoryIndex.exposureOptions().size() != 1)
     fail("memory transaction fixture lost its bindings or rooted use");
+  if (memoryIndex.serviceUseGroups().size() != 1 ||
+      memoryIndex.serviceUseGroups().front().useCount != 2)
+    fail("same-binding rooted uses were not factorized into one service use");
   const auto originalLogicalBinding = candidate->logicalMemoryBinding(0);
-  const auto originalDispatch = candidate->memoryUseDispatch(0);
+  const auto &serviceGroup = memoryIndex.serviceUseGroups().front();
+  const auto serviceUses = memoryIndex.serviceGroupUses().slice(
+      serviceGroup.useOffset, serviceGroup.useCount);
+  const auto originalDispatch = candidate->memoryUseDispatch(serviceUses[0]);
+  for (loom::pnr::PnrIndex use : serviceUses)
+    if (candidate->memoryUseDispatch(use) != originalDispatch)
+      fail("same-binding rooted uses selected different service dispatches");
   std::optional<loom::pnr::PnrIndex> boundaryTarget;
   for (auto [ordinal, target] : llvm::enumerate(memoryIndex.bindingTargets()))
     if (std::holds_alternative<loom::pnr::FrozenSpatialMemoryBoundaryProxy>(
@@ -652,13 +663,16 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   }
   if (candidate->logicalMemoryBinding(0).target !=
           originalLogicalBinding.target ||
-      candidate->memoryUseDispatch(0) != originalDispatch)
+      llvm::any_of(serviceUses, [&](loom::pnr::PnrIndex use) {
+        return candidate->memoryUseDispatch(use) != originalDispatch;
+      }))
     fail("failed memory transaction did not roll back atomically");
 
   {
     auto move = take(candidate->beginMove(candidateScratch));
     requireSuccess(move.setLogicalMemoryBinding(0, *boundaryTarget, 0));
-    requireSuccess(move.setMemoryUseDispatch(0, *managerDispatch));
+    for (loom::pnr::PnrIndex use : serviceUses)
+      requireSuccess(move.setMemoryUseDispatch(use, *managerDispatch));
     if (!take(move.close()))
       fail("paired BoundaryProxy move closes a selected handshake cycle");
     requireSuccess(move.commit());
@@ -669,20 +683,24 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
     requireSuccess(move.setLogicalMemoryBinding(
         0, originalLogicalBinding.target,
         originalLogicalBinding.physicalOffsetBytes));
-    requireSuccess(move.setMemoryUseDispatch(0, originalDispatch));
+    for (loom::pnr::PnrIndex use : serviceUses)
+      requireSuccess(move.setMemoryUseDispatch(use, originalDispatch));
     if (!take(move.close()))
       fail("restored local memory move closes a selected handshake cycle");
     move.rollback();
   }
   if (candidate->logicalMemoryBinding(0).target != *boundaryTarget ||
-      candidate->memoryUseDispatch(0) != *managerDispatch)
+      llvm::any_of(serviceUses, [&](loom::pnr::PnrIndex use) {
+        return candidate->memoryUseDispatch(use) != *managerDispatch;
+      }))
     fail("memory transaction rollback did not preserve committed state");
   {
     auto move = take(candidate->beginMove(candidateScratch));
     requireSuccess(move.setLogicalMemoryBinding(
         0, originalLogicalBinding.target,
         originalLogicalBinding.physicalOffsetBytes));
-    requireSuccess(move.setMemoryUseDispatch(0, originalDispatch));
+    for (loom::pnr::PnrIndex use : serviceUses)
+      requireSuccess(move.setMemoryUseDispatch(use, originalDispatch));
     if (!take(move.close()))
       fail("restored local memory move closes a selected handshake cycle");
     requireSuccess(move.commit());
@@ -743,7 +761,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   std::size_t exposureCount = 0;
   for (const auto &binding : imported.view().memoryBindings())
     exposureCount += binding.exposures.size();
-  if (exposureCount != 2)
+  if (exposureCount != 4)
     fail("strict SpatialMapping round trip lost the memory exposure");
   const auto &engine = imported.view().memoryEngineBindings().front();
   if (engine.operations.size() != 1 ||
@@ -752,7 +770,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
           engine.operations.front()) ||
       std::get<loom::mapping::SpatialAddressedMemoryOperationView>(
           engine.operations.front())
-              .uses.size() != 1)
+              .uses.size() != 2)
     fail("strict SpatialMapping round trip lost the rooted memory use");
   const auto &operation =
       std::get<loom::mapping::SpatialAddressedMemoryOperationView>(

@@ -136,6 +136,17 @@ struct FrozenSpatialMemoryRootedUse final {
   std::optional<PnrIndex> logicalBinding;
 };
 
+/// All rooted uses that project to one persistent local-service ResourceUse.
+/// The actor event and logical binding are its complete structural key;
+/// repeated root launches remain in the reverse slice but do not duplicate
+/// the static UsePattern contribution.
+struct FrozenSpatialMemoryServiceUseGroup final {
+  PnrIndex actor = 0;
+  PnrIndex logicalBinding = 0;
+  PnrIndex useOffset = 0;
+  PnrIndex useCount = 0;
+};
+
 struct FrozenSpatialMemoryExposure final {
   ::dataflow::MemoryExposureRef exposure;
   PnrIndex logicalBinding = 0;
@@ -199,6 +210,15 @@ public:
     return bindingUseOffsets_;
   }
   llvm::ArrayRef<PnrIndex> bindingUses() const { return bindingUses_; }
+  llvm::ArrayRef<FrozenSpatialMemoryServiceUseGroup> serviceUseGroups() const {
+    return serviceUseGroups_;
+  }
+  llvm::ArrayRef<PnrIndex> serviceGroupUses() const {
+    return serviceGroupUses_;
+  }
+  llvm::ArrayRef<PnrIndex> rootedUseServiceGroups() const {
+    return rootedUseServiceGroups_;
+  }
   llvm::ArrayRef<FrozenSpatialMemoryExposure> exposures() const {
     return exposures_;
   }
@@ -235,6 +255,9 @@ private:
   std::vector<PnrIndex> actorUseOffsets_;
   std::vector<PnrIndex> bindingUseOffsets_;
   std::vector<PnrIndex> bindingUses_;
+  std::vector<FrozenSpatialMemoryServiceUseGroup> serviceUseGroups_;
+  std::vector<PnrIndex> serviceGroupUses_;
+  std::vector<PnrIndex> rootedUseServiceGroups_;
   std::vector<FrozenSpatialMemoryExposure> exposures_;
   std::vector<FrozenSpatialMemoryExposureProvider> exposureProviders_;
   std::vector<FrozenSpatialMemoryExposureOption> exposureOptions_;
@@ -567,6 +590,9 @@ public:
   llvm::ArrayRef<std::uint64_t> memoryDispatchOptionOveruse() const {
     return memoryDispatchOptionOveruse_;
   }
+  llvm::ArrayRef<PnrIndex> memoryDispatchOptionPatterns() const {
+    return memoryDispatchOptionPatterns_;
+  }
 
 private:
   std::vector<FrozenSpatialResourceEvent> events_;
@@ -577,6 +603,7 @@ private:
   std::vector<std::uint64_t> computeInstructionContextOveruse_;
   std::vector<std::uint64_t> memoryOperationPlanOveruse_;
   std::vector<std::uint64_t> memoryDispatchOptionOveruse_;
+  std::vector<PnrIndex> memoryDispatchOptionPatterns_;
 
   friend class FrozenSpatialCapacityIndexBuilder;
 };

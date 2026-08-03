@@ -110,6 +110,7 @@ private:
   std::vector<std::uint64_t> affectedMemoryPlanMarks_;
   std::vector<std::uint64_t> affectedLogicalMemoryMarks_;
   std::vector<std::uint64_t> affectedMemoryDispatchMarks_;
+  std::vector<std::uint64_t> affectedMemoryServiceGroupMarks_;
   std::vector<std::uint64_t> affectedMemoryExposureMarks_;
   std::vector<std::uint64_t> affectedNetMarks_;
   std::vector<std::uint64_t> affectedBindingRelationMarks_;
@@ -120,6 +121,7 @@ private:
   std::vector<PnrIndex> affectedMemoryPlans_;
   std::vector<PnrIndex> affectedLogicalMemories_;
   std::vector<PnrIndex> affectedMemoryDispatches_;
+  std::vector<PnrIndex> affectedMemoryServiceGroups_;
   std::vector<PnrIndex> affectedMemoryExposures_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> affectedBindingRelations_;
@@ -251,6 +253,9 @@ private:
   llvm::Error validateMemoryUseDispatch(PnrIndex use) const;
   llvm::Error validateMemoryExposureSelection(PnrIndex exposure) const;
   llvm::Error verifyMemorySelections() const;
+  llvm::Error rebuildMemoryServiceUsage();
+  llvm::Error changeMemoryServiceUsage(PnrIndex use, PnrIndex oldOption,
+                                       PnrIndex newOption);
   llvm::Error rebuildMemoryExposureUsage();
   void changeMemoryExposureUsage(PnrIndex exposure, PnrIndex oldOption,
                                  PnrIndex newOption);
@@ -272,6 +277,9 @@ private:
   std::vector<PnrIndex> memoryOperationPlans_;
   std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings_;
   std::vector<PnrIndex> memoryUseDispatches_;
+  llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
+      memoryServicePatternRefcounts_;
+  std::vector<PnrIndex> memoryServiceGroupActivePatternCounts_;
   std::vector<PnrIndex> memoryExposureSelections_;
   llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
       memoryExposureProviderRefcounts_;
@@ -344,6 +352,7 @@ private:
   void markMemoryPlan(PnrIndex actor);
   void markLogicalMemory(PnrIndex binding);
   void markMemoryDispatch(PnrIndex use);
+  void markMemoryServiceGroup(PnrIndex group);
   void markMemoryExposure(PnrIndex exposure);
   void markNet(PnrIndex logicalNet);
   void markBindingRelations(PnrIndex decision);

@@ -422,8 +422,25 @@ public:
         capacity.memoryOperationPlanOveruse().size() !=
             handshake.memoryOperationPlans().size() ||
         capacity.memoryDispatchOptionOveruse().size() !=
+            memory.dispatchOptions().size() ||
+        capacity.memoryDispatchOptionPatterns().size() !=
             memory.dispatchOptions().size())
       return invalid("capacity envelope projection is incomplete");
+
+    for (auto [optionOrdinal, option] :
+         llvm::enumerate(memory.dispatchOptions())) {
+      const PnrIndex pattern =
+          capacity.memoryDispatchOptionPatterns()[optionOrdinal];
+      if (!option.serviceUsePattern) {
+        if (pattern != getInvalidPnrIndex())
+          return invalid("manager memory dispatch gained a UsePattern");
+        continue;
+      }
+      if (pattern >= resources.usePatterns().size() ||
+          resources.usePatterns()[pattern].reference !=
+              *option.serviceUsePattern)
+        return invalid("memory dispatch UsePattern projection diverges");
+    }
 
     const auto envelopeOffsets =
         capacity.computeInstructionContextEnvelopeOffsets();

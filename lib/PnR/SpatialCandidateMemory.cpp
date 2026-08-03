@@ -213,6 +213,124 @@ llvm::Error SpatialCandidateState::validateMemoryExposureSelection(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialCandidateState::rebuildMemoryServiceUsage() {
+  const auto &memory = problem_->memory();
+  const auto optionPatterns =
+      problem_->capacity().memoryDispatchOptionPatterns();
+  if (memoryUseDispatches_.size() != memory.rootedUses().size() ||
+      memory.rootedUseServiceGroups().size() != memory.rootedUses().size() ||
+      optionPatterns.size() != memory.dispatchOptions().size())
+    return candidateError("memory service-use dimensions are incomplete");
+
+  memoryServicePatternRefcounts_.clear();
+  memoryServicePatternRefcounts_.reserve(memory.rootedUses().size() * 2);
+  memoryServiceGroupActivePatternCounts_.assign(
+      memory.serviceUseGroups().size(), 0);
+  for (PnrIndex use = 0; use < memoryUseDispatches_.size(); ++use) {
+    const PnrIndex option = memoryUseDispatches_[use];
+    if (option >= optionPatterns.size())
+      return candidateError("memory dispatch option is out of range");
+    const PnrIndex pattern = optionPatterns[option];
+    if (pattern == getInvalidPnrIndex())
+      continue;
+    const PnrIndex group = memory.rootedUseServiceGroups()[use];
+    if (group >= memoryServiceGroupActivePatternCounts_.size())
+      return candidateError(
+          "memory service UsePattern has no owner-derived group");
+    PnrIndex &refcount = memoryServicePatternRefcounts_[{group, pattern}];
+    if (refcount == std::numeric_limits<PnrIndex>::max())
+      return candidateError("memory service UsePattern refcount overflows");
+    if (refcount++ == 0) {
+      PnrIndex &active = memoryServiceGroupActivePatternCounts_[group];
+      if (active == std::numeric_limits<PnrIndex>::max())
+        return candidateError("memory service active-pattern count overflows");
+      ++active;
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialCandidateState::changeMemoryServiceUsage(
+    PnrIndex use, PnrIndex oldOption, PnrIndex newOption) {
+  const auto &memory = problem_->memory();
+  const auto optionPatterns =
+      problem_->capacity().memoryDispatchOptionPatterns();
+  const auto optionOveruse = problem_->capacity().memoryDispatchOptionOveruse();
+  if (use >= memory.rootedUseServiceGroups().size() ||
+      oldOption >= optionPatterns.size() ||
+      newOption >= optionPatterns.size() ||
+      optionOveruse.size() != optionPatterns.size())
+    return candidateError("memory service-use delta is out of range");
+
+  const PnrIndex oldPattern = optionPatterns[oldOption];
+  const PnrIndex newPattern = optionPatterns[newOption];
+  if (oldPattern == newPattern)
+    return llvm::Error::success();
+  const PnrIndex group = memory.rootedUseServiceGroups()[use];
+  if (group == getInvalidPnrIndex()) {
+    if (oldPattern != getInvalidPnrIndex() ||
+        newPattern != getInvalidPnrIndex())
+      return candidateError(
+          "ungrouped memory use selected a service UsePattern");
+    return llvm::Error::success();
+  }
+  if (group >= memoryServiceGroupActivePatternCounts_.size())
+    return candidateError("memory service-use group is out of range");
+
+  PnrIndex oldRefcount = 0;
+  if (oldPattern != getInvalidPnrIndex()) {
+    const auto found = memoryServicePatternRefcounts_.find({group, oldPattern});
+    if (found == memoryServicePatternRefcounts_.end() || found->second == 0)
+      return candidateError("memory service UsePattern refcount is incomplete");
+    oldRefcount = found->second;
+  }
+  PnrIndex newRefcount = 0;
+  if (newPattern != getInvalidPnrIndex()) {
+    const auto found = memoryServicePatternRefcounts_.find({group, newPattern});
+    if (found != memoryServicePatternRefcounts_.end())
+      newRefcount = found->second;
+    if (newRefcount == std::numeric_limits<PnrIndex>::max())
+      return candidateError("memory service UsePattern refcount overflows");
+  }
+
+  const std::uint64_t removed =
+      oldPattern != getInvalidPnrIndex() && oldRefcount == 1
+          ? optionOveruse[oldOption]
+          : 0;
+  const std::uint64_t added =
+      newPattern != getInvalidPnrIndex() && newRefcount == 0
+          ? optionOveruse[newOption]
+          : 0;
+  if (removed > capacityOveruse_)
+    return candidateError(
+        "memory service capacity contribution exceeds its total");
+  const std::uint64_t base = capacityOveruse_ - removed;
+  if (added > std::numeric_limits<std::uint64_t>::max() - base)
+    return candidateError("memory service capacity total overflows u64");
+
+  PnrIndex &active = memoryServiceGroupActivePatternCounts_[group];
+  if (oldPattern != getInvalidPnrIndex() && oldRefcount == 1 && active == 0)
+    return candidateError("memory service active-pattern count is incomplete");
+  if (newPattern != getInvalidPnrIndex() && newRefcount == 0 &&
+      active == std::numeric_limits<PnrIndex>::max())
+    return candidateError("memory service active-pattern count overflows");
+
+  if (oldPattern != getInvalidPnrIndex()) {
+    auto found = memoryServicePatternRefcounts_.find({group, oldPattern});
+    if (--found->second == 0) {
+      memoryServicePatternRefcounts_.erase(found);
+      --active;
+    }
+  }
+  if (newPattern != getInvalidPnrIndex()) {
+    PnrIndex &refcount = memoryServicePatternRefcounts_[{group, newPattern}];
+    if (refcount++ == 0)
+      ++active;
+  }
+  capacityOveruse_ = base + added;
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialCandidateState::rebuildMemoryExposureUsage() {
   const auto &memory = problem_->memory();
   if (memoryExposureSelections_.size() != memory.exposures().size())
@@ -286,8 +404,13 @@ void SpatialCandidateState::changeMemoryExposureUsage(PnrIndex exposure,
 
 llvm::Error SpatialCandidateState::verifyMemorySelections() const {
   const auto &memory = problem_->memory();
+  const auto optionPatterns =
+      problem_->capacity().memoryDispatchOptionPatterns();
   if (logicalMemoryBindings_.size() != memory.logicalBindings().size() ||
       memoryUseDispatches_.size() != memory.rootedUses().size() ||
+      memoryServiceGroupActivePatternCounts_.size() !=
+          memory.serviceUseGroups().size() ||
+      optionPatterns.size() != memory.dispatchOptions().size() ||
       memoryExposureSelections_.size() != memory.exposures().size() ||
       memoryExposureProviderBindingCounts_.size() !=
           memory.exposureProviders().size())
@@ -295,9 +418,42 @@ llvm::Error SpatialCandidateState::verifyMemorySelections() const {
   for (PnrIndex binding = 0; binding < logicalMemoryBindings_.size(); ++binding)
     if (llvm::Error error = validateLogicalMemoryBinding(binding))
       return error;
-  for (PnrIndex use = 0; use < memoryUseDispatches_.size(); ++use)
+  llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
+      expectedServiceRefcounts;
+  expectedServiceRefcounts.reserve(memory.rootedUses().size() * 2);
+  std::vector<PnrIndex> expectedActivePatterns(memory.serviceUseGroups().size(),
+                                               0);
+  for (PnrIndex use = 0; use < memoryUseDispatches_.size(); ++use) {
     if (llvm::Error error = validateMemoryUseDispatch(use))
       return error;
+    const PnrIndex pattern = optionPatterns[memoryUseDispatches_[use]];
+    if (pattern == getInvalidPnrIndex())
+      continue;
+    const PnrIndex group = memory.rootedUseServiceGroups()[use];
+    if (group >= expectedActivePatterns.size())
+      return candidateError(
+          "memory service UsePattern has no owner-derived group");
+    PnrIndex &refcount = expectedServiceRefcounts[{group, pattern}];
+    if (refcount++ == 0)
+      ++expectedActivePatterns[group];
+  }
+  if (llvm::any_of(expectedActivePatterns,
+                   [](PnrIndex count) { return count > 1; }))
+    return candidateError(
+        "one memory service-use group selects multiple UsePatterns");
+  if (expectedActivePatterns != memoryServiceGroupActivePatternCounts_)
+    return candidateError(
+        "memory service active-pattern counts diverge from dispatches");
+  if (expectedServiceRefcounts.size() != memoryServicePatternRefcounts_.size())
+    return candidateError(
+        "memory service UsePattern refcounts have stale entries");
+  for (const auto &entry : expectedServiceRefcounts) {
+    const auto actual = memoryServicePatternRefcounts_.find(entry.first);
+    if (actual == memoryServicePatternRefcounts_.end() ||
+        actual->second != entry.second)
+      return candidateError(
+          "memory service UsePattern refcounts are incomplete");
+  }
   llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex> expectedRefcounts;
   expectedRefcounts.reserve(memory.exposures().size() * 2);
   std::vector<PnrIndex> expectedBindingCounts(memory.exposureProviders().size(),

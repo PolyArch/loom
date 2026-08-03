@@ -405,10 +405,13 @@ public:
 
     result.memoryDispatchOptionOveruse_.reserve(
         memory.dispatchOptions().size());
+    result.memoryDispatchOptionPatterns_.reserve(
+        memory.dispatchOptions().size());
     for (const FrozenSpatialMemoryDispatchOption &option :
          memory.dispatchOptions()) {
       if (!option.serviceUsePattern) {
         result.memoryDispatchOptionOveruse_.push_back(0);
+        result.memoryDispatchOptionPatterns_.push_back(getInvalidPnrIndex());
         continue;
       }
       auto selected = patternOrdinal(patternByRef, *option.serviceUsePattern);
@@ -419,6 +422,7 @@ public:
       if (!overuse)
         return overuse.takeError();
       result.memoryDispatchOptionOveruse_.push_back(*overuse);
+      result.memoryDispatchOptionPatterns_.push_back(*selected);
     }
 
     // A traversal activation group is one owner-normalized physical use. It
