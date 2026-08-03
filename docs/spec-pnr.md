@@ -2225,6 +2225,32 @@ Only `OPTIMAL` and `INFEASIBLE` are proof-bearing statuses. `FEASIBLE` is an
 unproven incumbent, `UNKNOWN` is unproven termination, and `MODEL_INVALID` is
 an adapter `InternalError`.
 
+One repair invocation consumes exactly one `nextU64()` word from its
+restart-local `ExactRepair` stream before its first solver call. Its OR-Tools
+`random_seed` is the nonnegative signed integer formed by the low 31 bits of
+that word. Every optimization and feasibility call in the same invocation
+reuses that seed and consumes no further PRNG words. The complete
+`CpSat_1_0` parameter construction starts from the pinned v9.15 protobuf
+defaults and applies exactly these overrides:
+
+```text
+num_workers = 1
+random_seed = low31(exact_repair_stream_word)
+search_branching = FIXED_SEARCH
+randomize_search = false
+cp_model_presolve = true
+enumerate_all_solutions = false
+use_lns = false
+use_lns_only = false
+log_search_progress = false
+log_to_stdout = false
+```
+
+All other fields retain the defaults of the pinned OR-Tools commit. In
+particular, the adapter sets no solver wall-time, deterministic-time, branch,
+conflict, or incumbent limit. Loom's owner-local solver-call budget and the
+outer execution controls remain the only corresponding limits.
+
 Canonical extraction is one fixed protocol:
 
 1. solve the exact selected repair objective, when present, and require

@@ -320,6 +320,26 @@ void loom::test::exerciseCapacityOveruseCandidate(
   const std::vector<pnr::PnrIndex> legalAttachments =
       attachmentsFor(legal.placement);
   {
+    const std::array<pnr::SpatialMappingAction, 2> malformedBatch{
+        legalAction,
+        pnr::SpatialResourceAllocationAction{pnr::SpatialPortAttachmentAction{
+            static_cast<pnr::PnrIndex>(problem->ports().portDemands().size()),
+            0}},
+    };
+    auto malformedProbe = actionExecutor.probeBatch(*candidate, malformedBatch);
+    if (malformedProbe)
+      fail("partially malformed Spatial ActionBatch produced a probe");
+    const std::string failure = llvm::toString(malformedProbe.takeError());
+    if (!llvm::StringRef(failure).contains(
+            "port Action anchor is out of range"))
+      fail("malformed Spatial ActionBatch returned the wrong failure");
+  }
+  if (candidate->capacityOveruse() != 1)
+    fail("malformed Spatial ActionBatch retained its first Action");
+  for (auto [demand, attachment] : llvm::enumerate(initialAttachments))
+    if (candidate->portAttachment(demand) != attachment)
+      fail("malformed Spatial ActionBatch retained a dependent attachment");
+  {
     const pnr::SpatialMappingAction malformedAction =
         pnr::SpatialRealizationBindingAction{pnr::SpatialComputeBindingAction{
             static_cast<pnr::PnrIndex>(

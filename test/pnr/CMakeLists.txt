@@ -77,3 +77,16 @@ target_link_libraries(loom-pnr-spatial-action-proposal-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-cp-sat-exact-protocol-test
+  CpSatExactProtocolTest.cpp
+)
+
+target_include_directories(loom-pnr-cp-sat-exact-protocol-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/PnR/CpSat
+)
+
+target_link_libraries(loom-pnr-cp-sat-exact-protocol-test PRIVATE
+  LoomPnRCpSat
+  LLVMSupport
+)

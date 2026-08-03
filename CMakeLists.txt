@@ -20,21 +20,6 @@ configure_file(
   "${PROJECT_BINARY_DIR}/include/PnR/BuildConfig.h"
   @ONLY
 )
-find_package(MLIR REQUIRED CONFIG)
-message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-
-# The pinned provider exports monolithic MLIR and LLVM targets alongside its
-# component archives. Select one form consistently so local dialect libraries
-# cannot pull static definitions into tools that also load the same dylibs.
-if(TARGET MLIR AND TARGET LLVM)
-  set(MLIR_LINK_MLIR_DYLIB ON)
-  set(LLVM_LINK_LLVM_DYLIB ON)
-endif()
-
-find_package(Clang REQUIRED CONFIG)
-message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
-
 if(NOT DEFINED ortools_DIR OR ortools_DIR STREQUAL "")
   message(FATAL_ERROR
     "OR-Tools is required; build it with `make or-tools` and configure "
@@ -74,6 +59,21 @@ if(NOT TARGET ortools::ortools)
     "OR-Tools package does not export required target ortools::ortools")
 endif()
 message(STATUS "Using ortoolsConfig.cmake in: ${ortools_DIR}")
+
+find_package(MLIR REQUIRED CONFIG)
+message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+# The pinned provider exports monolithic MLIR and LLVM targets alongside its
+# component archives. Select one form consistently so local dialect libraries
+# cannot pull static definitions into tools that also load the same dylibs.
+if(TARGET MLIR AND TARGET LLVM)
+  set(MLIR_LINK_MLIR_DYLIB ON)
+  set(LLVM_LINK_LLVM_DYLIB ON)
+endif()
+
+find_package(Clang REQUIRED CONFIG)
+message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
 # Optional CIRCT integration. CIRCT is supplied by the shared build under
 # externals/circt (see scripts/make-worktree.py, `make circt`). It is

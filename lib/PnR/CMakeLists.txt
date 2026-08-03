@@ -56,3 +56,5 @@ add_mlir_library(LoomPnR
 target_include_directories(LoomPnR PRIVATE
   ${LOOM_SOURCE_DIR}/lib
 )
+
+add_subdirectory(CpSat)

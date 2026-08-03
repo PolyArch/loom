@@ -477,18 +477,28 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
 llvm::Expected<SpatialActionProbe>
 SpatialActionExecutorScratch::probe(SpatialCandidateState &candidate,
                                     const SpatialMappingAction &action) {
+  return probeBatch(candidate,
+                    llvm::ArrayRef<SpatialMappingAction>(&action, 1));
+}
+
+llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
+    SpatialCandidateState &candidate,
+    llvm::ArrayRef<SpatialMappingAction> actions) {
   if (activeProbe_)
     return executorError("another Action probe is active");
   if (candidate_ != &candidate || !routeCosts_ || !currentObjective_)
     return executorError("executor was not prepared for this candidate");
+  if (llvm::Error error = validateCanonicalSpatialActionBatch(actions))
+    return std::move(error);
   beginDependencyClosure();
 
   auto moveOrError = candidate.beginMove(candidateScratch_);
   if (!moveOrError)
     return moveOrError.takeError();
   SpatialMoveTransaction move = std::move(*moveOrError);
-  if (llvm::Error error = apply(move, candidate, action))
-    return restoreAfterFailure(move, std::move(error));
+  for (const SpatialMappingAction &action : actions)
+    if (llvm::Error error = apply(move, candidate, action))
+      return restoreAfterFailure(move, std::move(error));
 
   if (globalRouting_) {
     const auto &routing = candidate.problem().config().policy().search.routing;

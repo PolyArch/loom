@@ -1,0 +1,1 @@
+# RUN: %loom-pnr-cp-sat-exact-protocol-test

@@ -96,12 +96,42 @@ void policySumMustFitTheBoundedProtocol() {
           "unrepresentable Action weight sum was accepted");
 }
 
+void actionBatchesRequireCanonicalUniqueAnchors() {
+  using namespace loom::pnr;
+  const std::array<SpatialMappingAction, 3> canonical{
+      SpatialRealizationBindingAction{SpatialComputeBindingAction{0, 1, 2}},
+      SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{4}},
+      SpatialResourceAllocationAction{SpatialPortAttachmentAction{3, 10}},
+  };
+  if (llvm::Error error = validateCanonicalSpatialActionBatch(canonical))
+    fail(llvm::toString(std::move(error)));
+
+  const std::array<SpatialMappingAction, 2> reversed{canonical[2],
+                                                     canonical[0]};
+  llvm::Error reversedError = validateCanonicalSpatialActionBatch(reversed);
+  require(reversedError &&
+              llvm::toString(std::move(reversedError)).find("canonical") !=
+                  std::string::npos,
+          "noncanonical ActionBatch was accepted");
+
+  const std::array<SpatialMappingAction, 2> duplicate{
+      SpatialRealizationBindingAction{SpatialComputeBindingAction{0, 1, 2}},
+      SpatialRealizationBindingAction{SpatialComputeBindingAction{0, 3, 4}},
+  };
+  llvm::Error duplicateError = validateCanonicalSpatialActionBatch(duplicate);
+  require(duplicateError &&
+              llvm::toString(std::move(duplicateError)).find("unique") !=
+                  std::string::npos,
+          "duplicate ActionBatch anchor was accepted");
+}
+
 } // namespace
 
 int main() {
   liveKindsAreReducedAndConsumeThreeDraws();
   emptyAndMalformedDomainsDoNotConsumeEntropy();
   policySumMustFitTheBoundedProtocol();
+  actionBatchesRequireCanonicalUniqueAnchors();
   llvm::outs() << "spatial action proposal tests passed\n";
   return 0;
 }

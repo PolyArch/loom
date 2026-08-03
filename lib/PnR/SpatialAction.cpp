@@ -29,6 +29,12 @@ llvm::Error invalid(llvm::StringRef detail) {
       "spatial_action_domain_invalid: %s", detail.str().c_str());
 }
 
+llvm::Error invalidBatch(llvm::StringRef detail) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "spatial_action_batch_invalid: %s", detail.str().c_str());
+}
+
 ActionKey anchorKey(const SpatialRealizationBindingAction &action) {
   return std::visit(
       [](const auto &value) {
@@ -114,6 +120,26 @@ ActionKey choiceKey(const SpatialResourceAllocationAction &action) {
       action);
 }
 
+ActionKey batchAnchorKey(const SpatialMappingAction &action) {
+  return std::visit(
+      [](const auto &category) {
+        ActionKey nested = anchorKey(category);
+        ActionKey result;
+        using Category = std::decay_t<decltype(category)>;
+        if constexpr (std::is_same_v<Category, SpatialRealizationBindingAction>)
+          result.fields[0] = 0;
+        else if constexpr (std::is_same_v<Category,
+                                          SpatialTransportRoutingAction>)
+          result.fields[0] = 1;
+        else
+          result.fields[0] = 2;
+        for (std::size_t index = 0; index + 1 < result.fields.size(); ++index)
+          result.fields[index + 1] = nested.fields[index];
+        return result;
+      },
+      action);
+}
+
 template <typename Action>
 llvm::Error validateKindDomain(llvm::ArrayRef<SpatialActionChoiceRange> anchors,
                                llvm::ArrayRef<Action> choices) {
@@ -163,6 +189,27 @@ struct LiveKindRecord final {
 };
 
 } // namespace
+
+llvm::Error loom::pnr::validateCanonicalSpatialActionBatch(
+    llvm::ArrayRef<SpatialMappingAction> actions) {
+  if (actions.empty())
+    return invalidBatch("ActionBatch is empty");
+
+  ActionKey previous;
+  bool first = true;
+  for (const SpatialMappingAction &action : actions) {
+    const ActionKey current = batchAnchorKey(action);
+    if (!first) {
+      if (current == previous)
+        return invalidBatch("ActionBatch anchors are not unique");
+      if (!(previous < current))
+        return invalidBatch("ActionBatch anchors are not in canonical order");
+    }
+    previous = current;
+    first = false;
+  }
+  return llvm::Error::success();
+}
 
 llvm::Expected<std::optional<SpatialMappingAction>>
 loom::pnr::proposeSpatialAction(const ResolvedPnrActionProposalPolicy &policy,

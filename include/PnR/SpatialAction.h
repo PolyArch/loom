@@ -93,6 +93,11 @@ using SpatialMappingAction =
     std::variant<SpatialRealizationBindingAction, SpatialTransportRoutingAction,
                  SpatialResourceAllocationAction>;
 
+/// Validates one ephemeral ActionBatch in canonical typed-anchor order. A
+/// batch is nonempty and may change each selected-decision anchor at most once.
+llvm::Error validateCanonicalSpatialActionBatch(
+    llvm::ArrayRef<SpatialMappingAction> actions);
+
 struct SpatialActionChoiceRange final {
   PnrIndex choiceOffset;
   PnrIndex choiceCount;

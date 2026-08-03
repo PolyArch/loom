@@ -99,6 +99,9 @@ public:
   llvm::Error prepare(SpatialCandidateState &candidate);
   llvm::Expected<SpatialActionProbe> probe(SpatialCandidateState &candidate,
                                            const SpatialMappingAction &action);
+  llvm::Expected<SpatialActionProbe>
+  probeBatch(SpatialCandidateState &candidate,
+             llvm::ArrayRef<SpatialMappingAction> actions);
 
   const dse::ObjectiveVector &currentObjective() const;
   std::size_t retainedStorageBytes() const;

@@ -324,6 +324,15 @@ different persistent Mapping. A local infeasible repair region proves only
 infeasibility under its fixed boundary; it is not global proof unless the
 region is the complete exact problem.
 
+The adapter uses one worker and one restart-local seed for the entire repair
+invocation. Consuming one ExactRepair word rather than one word per solver call
+keeps the canonical fixing protocol from making later variable choices depend
+on how many earlier values were infeasible. The low 31-bit projection matches
+OR-Tools' signed seed field without implementation-defined narrowing. Solver
+time and search counters remain execution behavior rather than semantic work;
+only Loom's region-decision and solver-call budgets can alter the formal repair
+result.
+
 ## Why Selected Handshake Legality Is Incremental
 
 Every placement, route, refinement, or sharing move may change a small subset
