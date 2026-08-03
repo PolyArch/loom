@@ -971,6 +971,29 @@ void memoryViewExposureService() {
           "each m0 view appears once and includes the chained thread view");
   require(test, invM1 && invM1->size() == 1, "m1 inventory has one view");
 
+  llvm::Expected<std::optional<std::uint64_t>> rootExtent =
+      view.staticMemoryByteExtent(LogicalMemoryRootOrViewRef{rootM0});
+  require(test, rootExtent && *rootExtent && **rootExtent == 40,
+          "static logical memory root did not project its exact byte extent");
+  llvm::Expected<mlir::Type> viewType = view.memoryType(m0v0);
+  require(test,
+          viewType && *viewType == mlir::MemRefType::get(
+                                       {mlir::ShapedType::kDynamic},
+                                       mlir::IntegerType::get(
+                                           viewType->getContext(), 32)),
+          "logical memory view did not preserve its exact result type");
+  llvm::Expected<std::optional<std::uint64_t>> viewExtent =
+      view.staticMemoryByteExtent(m0v0);
+  require(test, viewExtent && *viewExtent && **viewExtent == 40,
+          "root-preserving dynamic cast lost the finite backing extent");
+
+  CanonicalDataflowArtifact foreign =
+      finalize(test, computeGraph("other", 2, 3, "arith.muli", "a", "b"));
+  require(test,
+          isRejected(view.staticMemoryByteExtent(LogicalMemoryRootOrViewRef{
+              LogicalMemoryRootRef{foreign.identity(), rootM0.entity}})),
+          "foreign logical memory reference was accepted by extent lookup");
+
   // Service members via the exact schema; wrong-owner and non-member rejected.
   RootedGraphLaunchRef glLaunch{root, *glSite};
   ActorRef loadRef = actorByName(test, view, "dataflow.load").ref;
@@ -1086,6 +1109,10 @@ module attributes {
           !root.formalArgIndex && root.op &&
               root.op->getName().getStringRef() == "dataflow.memory.service",
           "logical root is not owned by the memory service operation");
+  llvm::Expected<std::optional<std::uint64_t>> extent =
+      view.staticMemoryByteExtent(LogicalMemoryRootOrViewRef{root.ref});
+  require(test, extent && !*extent,
+          "dynamically unbounded memory service acquired a fake extent");
 }
 
 void exceptionalPointerCannotAcquireMemoryService() {

@@ -431,7 +431,7 @@ CanonicalDataflowProgramView::buildView(
       view.memoryRootIdByValue_[rootValue] = carrier.id;
       view.slotOfId_[carrier.id] = view.logicalMemoryRoots_.size();
       view.logicalMemoryRoots_.push_back(
-          {ref, carrier.op, carrier.formalArgIndex});
+          {ref, carrier.op, carrier.formalArgIndex, rootValue.getType()});
       break;
     }
     }

@@ -27,10 +27,12 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -63,6 +65,31 @@ Value viewBase(Operation *op) {
   if (auto cast = dyn_cast<memref::CastOp>(op))
     return cast.getOperand();
   return Value();
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+deriveStaticMemoryByteExtent(Operation *scope, Type type) {
+  auto memory = dyn_cast<MemRefType>(type);
+  if (!memory || !memory.hasStaticShape() || !memory.getLayout().isIdentity() ||
+      memory.getMemorySpace())
+    return std::nullopt;
+
+  llvm::TypeSize elementBytes =
+      mlir::DataLayout::closest(scope).getTypeSize(memory.getElementType());
+  if (elementBytes.isScalable())
+    return std::nullopt;
+
+  std::uint64_t bytes = elementBytes.getFixedValue();
+  for (std::int64_t dimension : memory.getShape()) {
+    std::optional<std::uint64_t> product =
+        llvm::checkedMulUnsigned<std::uint64_t>(
+            bytes, static_cast<std::uint64_t>(dimension));
+    if (!product)
+      return invalid("canonical dataflow: static memory byte extent exceeds "
+                     "the 64-bit wire domain");
+    bytes = *product;
+  }
+  return std::optional<std::uint64_t>(bytes);
 }
 
 // The number of value-typed thread body inputs, excluding channel handles and
@@ -378,7 +405,19 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
   // and every memory-result exposure is total; an unresolved relation fails
   // finalization. Root-launch occurrences never multiply this inventory.
   llvm::SmallVector<unsigned> viewCountByRoot(logicalMemoryRoots_.size(), 0);
-  llvm::SmallVector<std::pair<std::size_t, LogicalMemoryViewRef>> flatViews;
+  struct FlatView final {
+    std::size_t rootSlot = 0;
+    LogicalMemoryViewRef ref;
+    Type type;
+  };
+  llvm::SmallVector<FlatView> flatViews;
+  rootStaticByteExtents_.reserve(logicalMemoryRoots_.size());
+  for (const CanonicalLogicalMemoryRootView &root : logicalMemoryRoots_) {
+    auto extent = deriveStaticMemoryByteExtent(root.op, root.type);
+    if (!extent)
+      return extent.takeError();
+    rootStaticByteExtents_.push_back(*extent);
+  }
   auto addRole = [&](LogicalMemoryRootOrViewRef role) -> unsigned {
     roleTable_.push_back(role);
     return roleTable_.size() - 1;
@@ -389,10 +428,10 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
       return slotOfId_[r->entity.value()];
     return slotOfId_[std::get<LogicalMemoryViewRef>(role).root.entity.value()];
   };
-  auto makeViewRole = [&](std::size_t rootSlot) -> unsigned {
+  auto makeViewRole = [&](std::size_t rootSlot, Type type) -> unsigned {
     unsigned ordinal = viewCountByRoot[rootSlot]++;
     LogicalMemoryViewRef view{logicalMemoryRoots_[rootSlot].ref, ordinal};
-    flatViews.push_back({rootSlot, view});
+    flatViews.push_back({rootSlot, view, type});
     return addRole(LogicalMemoryRootOrViewRef{view});
   };
   auto rootRoleGlobal = [&](Value v, std::uint64_t id) -> unsigned {
@@ -416,7 +455,7 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
         llvm::Expected<unsigned> baseIdx = resolveThreadValue(base);
         if (!baseIdx)
           return baseIdx.takeError();
-        unsigned idx = makeViewRole(rootSlotOf(*baseIdx));
+        unsigned idx = makeViewRole(rootSlotOf(*baseIdx), v.getType());
         roleIndexOf_[v] = idx;
         return idx;
       }
@@ -494,7 +533,7 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
           // sites keep distinct formal-rooted views.
           bool baseGlobal =
               roleIndexOf_.count(base) || memoryRootIdByValue_.count(base);
-          unsigned idx = makeViewRole(rootSlotOf(*baseRole));
+          unsigned idx = makeViewRole(rootSlotOf(*baseRole), m.getType());
           if (baseGlobal)
             roleIndexOf_[m] = idx;
           else
@@ -571,16 +610,16 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
   // Flatten views to per-root contiguous ranges ordered by canonical ordinal.
   viewsByRootSlot_.assign(logicalMemoryRoots_.size(), {0u, 0u});
   std::sort(flatViews.begin(), flatViews.end(),
-            [](const std::pair<std::size_t, LogicalMemoryViewRef> &a,
-               const std::pair<std::size_t, LogicalMemoryViewRef> &b) {
-              return std::make_pair(a.first, a.second.viewOrdinal) <
-                     std::make_pair(b.first, b.second.viewOrdinal);
+            [](const FlatView &a, const FlatView &b) {
+              return std::make_pair(a.rootSlot, a.ref.viewOrdinal) <
+                     std::make_pair(b.rootSlot, b.ref.viewOrdinal);
             });
   for (const auto &entry : flatViews) {
-    if (viewsByRootSlot_[entry.first].second == 0)
-      viewsByRootSlot_[entry.first].first = views_.size();
-    ++viewsByRootSlot_[entry.first].second;
-    views_.push_back(entry.second);
+    if (viewsByRootSlot_[entry.rootSlot].second == 0)
+      viewsByRootSlot_[entry.rootSlot].first = views_.size();
+    ++viewsByRootSlot_[entry.rootSlot].second;
+    views_.push_back(entry.ref);
+    viewTypes_.push_back(entry.type);
   }
   return llvm::Error::success();
 }
@@ -1180,6 +1219,57 @@ CanonicalDataflowProgramView::views(LogicalMemoryRootRef root) const {
     return llvm::ArrayRef<LogicalMemoryViewRef>{};
   return llvm::ArrayRef<LogicalMemoryViewRef>(views_.data() + range.first,
                                               range.second);
+}
+
+llvm::Expected<Type> CanonicalDataflowProgramView::memoryType(
+    const LogicalMemoryRootOrViewRef &memory) const {
+  if (const auto *root = std::get_if<LogicalMemoryRootRef>(&memory)) {
+    auto resolved = resolve(*root);
+    if (!resolved)
+      return resolved.takeError();
+    return resolved->type;
+  }
+
+  const LogicalMemoryViewRef &view = std::get<LogicalMemoryViewRef>(memory);
+  auto rootSlot = requireKind(view.root.artifact, view.root.entity.value(),
+                              CanonicalDataflowEntityKind::LogicalMemoryRoot);
+  if (!rootSlot)
+    return rootSlot.takeError();
+  const auto [begin, count] = viewsByRootSlot_[*rootSlot];
+  if (view.viewOrdinal >= count)
+    return invalid("canonical dataflow: logical memory view ordinal out of "
+                   "range");
+  const std::size_t slot = begin + view.viewOrdinal;
+  if (slot >= views_.size() || views_[slot] != view ||
+      slot >= viewTypes_.size())
+    return invalid("canonical dataflow: logical memory view inventory is "
+                   "inconsistent");
+  return viewTypes_[slot];
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+CanonicalDataflowProgramView::staticMemoryByteExtent(
+    const LogicalMemoryRootOrViewRef &memory) const {
+  const LogicalMemoryRootRef &root =
+      std::holds_alternative<LogicalMemoryRootRef>(memory)
+          ? std::get<LogicalMemoryRootRef>(memory)
+          : std::get<LogicalMemoryViewRef>(memory).root;
+  auto rootSlot = requireKind(root.artifact, root.entity.value(),
+                              CanonicalDataflowEntityKind::LogicalMemoryRoot);
+  if (!rootSlot)
+    return rootSlot.takeError();
+  if (const auto *view = std::get_if<LogicalMemoryViewRef>(&memory)) {
+    const auto [begin, count] = viewsByRootSlot_[*rootSlot];
+    if (view->viewOrdinal >= count ||
+        begin + view->viewOrdinal >= views_.size() ||
+        views_[begin + view->viewOrdinal] != *view)
+      return invalid("canonical dataflow: logical memory view ordinal out of "
+                     "range");
+  }
+  if (*rootSlot >= rootStaticByteExtents_.size())
+    return invalid("canonical dataflow: logical memory extent inventory is "
+                   "inconsistent");
+  return rootStaticByteExtents_[*rootSlot];
 }
 
 llvm::Expected<LogicalMemoryRootOrViewRef>

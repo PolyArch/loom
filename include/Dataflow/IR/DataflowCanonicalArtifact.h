@@ -83,6 +83,10 @@ struct CanonicalLogicalMemoryRootView {
   // Set for an imported thread memory formal: the function-input ordinal, which
   // is also its entry-block-argument index. Absent for an operation-owned root.
   std::optional<unsigned> formalArgIndex;
+  // The exact memory-capability type of the root-defining SSA value. This is a
+  // borrowed projection of the imported canonical program, not another type
+  // catalog.
+  mlir::Type type;
 };
 
 /// A channel consumer with its exact source_map relation payload. The map is
@@ -220,6 +224,18 @@ public:
   llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>>
   views(LogicalMemoryRootRef root) const;
 
+  /// Resolve the exact memory-capability type owned by one logical root or
+  /// root-preserving view. The returned type borrows the imported program.
+  llvm::Expected<mlir::Type>
+  memoryType(const LogicalMemoryRootOrViewRef &memory) const;
+
+  /// Resolve the exact statically derivable backing extent in bytes. Dynamic,
+  /// unranked, or non-identity-layout memories return `std::nullopt`; malformed
+  /// and foreign references are errors. A root-preserving view inherits its
+  /// root's backing extent even when a memref.cast hides static dimensions.
+  llvm::Expected<std::optional<std::uint64_t>>
+  staticMemoryByteExtent(const LogicalMemoryRootOrViewRef &memory) const;
+
   /// Resolve a launch-contextual graph memory result through the graph return
   /// and the exact graph-launch memory-input binding to the upstream logical
   /// root or root-preserving view. A view receives no entity of its own.
@@ -349,6 +365,8 @@ private:
   std::vector<LogicalMemoryRootOrViewRef> roleTable_;
   llvm::DenseMap<mlir::Value, unsigned> roleIndexOf_;
   std::vector<LogicalMemoryViewRef> views_;
+  std::vector<mlir::Type> viewTypes_;
+  std::vector<std::optional<std::uint64_t>> rootStaticByteExtents_;
   std::vector<std::pair<unsigned, unsigned>> viewsByRootSlot_;
   std::vector<llvm::SmallVector<unsigned, 1>> exposureByStaticSlot_;
 };
