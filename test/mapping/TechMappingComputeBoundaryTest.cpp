@@ -110,6 +110,27 @@ void computeBoundaryClosure() {
   loom::test::exerciseTemporalComputeUseProjection(
       dataflowView, finalized.view(), fabricRoot.view(), frozen);
   loom::test::exerciseCanonicalCandidateInitialization(frozen);
+
+  const auto freezeWithRepairLimits = [&](std::uint64_t regionDecisions,
+                                          std::uint64_t solverCalls)
+      -> loom::pnr::FrozenSpatialPnrProblemHandle {
+    loom::ResolvedConfig config =
+        loom::test::buildSpatialPnrTestResolvedConfig();
+    config.dse.spatialPnr.search.exactRepair.maxRegionDecisions =
+        regionDecisions;
+    config.dse.spatialPnr.search.exactRepair.maxSolverCalls = solverCalls;
+    const loom::pnr::ResolvedPnrConfigView view =
+        take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
+    return take(loom::pnr::freezeSpatialPnrProblem(
+        dataflowView, finalized.view(), fabricRoot.view(), view,
+        constraints.view()));
+  };
+  loom::test::exerciseCapacityExactRepairNoMutation(
+      freezeWithRepairLimits(1, 128),
+      loom::pnr::SpatialExactRepairResultKind::RegionTooLarge);
+  loom::test::exerciseCapacityExactRepairNoMutation(
+      freezeWithRepairLimits(256, 1),
+      loom::pnr::SpatialExactRepairResultKind::UnknownBudgetExhausted);
   if (frozen->ports().portDemands().size() != 4 ||
       frozen->ports().graphBoundaries().size() != 4)
     fail("compute freeze omitted actor or graph-boundary demands");

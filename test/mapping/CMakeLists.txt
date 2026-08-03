@@ -44,6 +44,7 @@ target_link_libraries(loom-tech-mapping-artifact-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
   LoomPnR
+  LoomPnRCpSat
   MLIRArithDialect
   MLIRDataflow
   MLIRDLTIDialect
@@ -112,6 +113,7 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
   LoomPnR
+  LoomPnRCpSat
   LoomTechMapping
   MLIRArithDialect
   MLIRDataflow

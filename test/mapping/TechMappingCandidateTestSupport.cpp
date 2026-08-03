@@ -13,6 +13,7 @@
 #include "PnR/SpatialAnnealingSearch.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialObjective.h"
 
 #include "llvm/Support/Error.h"
@@ -264,6 +265,23 @@ void loom::test::exerciseCapacityOveruseCandidate(
                                                         {},
                                                         {},
                                                         {}}));
+  auto repairCandidate =
+      take(pnr::SpatialCandidateState::create(problem, {{*overused},
+                                                        {},
+                                                        initialAttachments,
+                                                        boundaryAttachments,
+                                                        {},
+                                                        {},
+                                                        {},
+                                                        {}}));
+  pnr::SpatialExactRepairScratch exactRepair;
+  const pnr::SpatialExactRepairResult repaired =
+      take(exactRepair.repairCapacityOveruse(*repairCandidate, 0));
+  if (repaired.kind != pnr::SpatialExactRepairResultKind::Repaired ||
+      repaired.regionDecisions == 0 || repaired.solverCalls == 0 ||
+      repaired.actionCount == 0 || repairCandidate->capacityOveruse() != 0)
+    fail("CP-SAT capacity repair did not commit one exact ActionBatch");
+  requireSuccess(repairCandidate->verify());
   const dse::ObjectiveVector overusedObjective =
       take(problem->objectiveProgram().evaluate(*candidate));
   if (candidate->capacityOveruse() != 1 ||
@@ -429,6 +447,66 @@ void loom::test::exerciseCapacityOveruseCandidate(
     fail("capacity rollback changed the committed objective value");
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(legal, true);
+  requireSuccess(candidate->verify());
+}
+
+void loom::test::exerciseCapacityExactRepairNoMutation(
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    pnr::SpatialExactRepairResultKind expected) {
+  const auto &realizations = problem->realizations();
+  if (realizations.computeRealizations().size() != 1 ||
+      !realizations.memoryRealizations().empty())
+    fail("exact-repair fixture does not contain one compute realization");
+  const auto &realization = realizations.computeRealizations().front();
+  std::optional<pnr::SpatialComputeBindingSelection> overused;
+  for (pnr::PnrIndex placement = realization.placementOffset;
+       placement != realization.placementOffset + realization.placementCount;
+       ++placement) {
+    const auto &record = realizations.computePlacements()[placement];
+    for (pnr::PnrIndex context = record.contextOffset;
+         context != record.contextOffset + record.contextCount; ++context)
+      if (problem->capacity().computeInstructionContextOveruse()[context] !=
+          0) {
+        overused = pnr::SpatialComputeBindingSelection{placement, context};
+        break;
+      }
+    if (overused)
+      break;
+  }
+  if (!overused)
+    fail("exact-repair fixture has no CapacityOveruse witness");
+
+  std::vector<pnr::PnrIndex> attachments;
+  attachments.reserve(problem->ports().portDemands().size());
+  for (const auto &demand : problem->ports().portDemands()) {
+    const auto &domain =
+        problem->ports().placementDomains()[demand.placementDomainOffset +
+                                            overused->placement -
+                                            realization.placementOffset];
+    attachments.push_back(domain.attachmentOptionOffset);
+  }
+  std::vector<pnr::PnrIndex> boundaries;
+  boundaries.reserve(problem->ports().graphBoundaries().size());
+  for (const auto &boundary : problem->ports().graphBoundaries())
+    boundaries.push_back(boundary.attachmentOptionOffset);
+
+  auto candidate = take(pnr::SpatialCandidateState::create(
+      problem, {{*overused}, {}, attachments, boundaries, {}, {}, {}, {}}));
+  const std::uint64_t initialOveruse = candidate->capacityOveruse();
+  pnr::SpatialExactRepairScratch repair;
+  const pnr::SpatialExactRepairResult outcome =
+      take(repair.repairCapacityOveruse(*candidate, 0));
+  if (outcome.kind != expected)
+    fail("bounded exact repair returned the wrong non-repaired outcome");
+  if (candidate->capacityOveruse() != initialOveruse)
+    fail("non-repaired exact outcome changed the candidate");
+  if (expected == pnr::SpatialExactRepairResultKind::RegionTooLarge &&
+      outcome.solverCalls != 0)
+    fail("oversized exact region entered CP-SAT");
+  if (expected == pnr::SpatialExactRepairResultKind::UnknownBudgetExhausted &&
+      outcome.solverCalls !=
+          problem->config().policy().search.exactRepair.maxSolverCalls)
+    fail("exact repair did not consume its solver-call budget");
   requireSuccess(candidate->verify());
 }
 
