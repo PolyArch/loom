@@ -18,6 +18,7 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
@@ -511,19 +512,45 @@ void completeCandidateRoundTrip(bool temporal) {
       loom::defaultResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
-  auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
-  loom::pnr::SpatialCandidateScratch candidateScratch;
-  requireSuccess(candidateScratch.prepare(*problem));
-  if (temporal)
+  loom::pnr::SpatialCandidateStateHandle candidate;
+  if (temporal) {
+    candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
+    loom::pnr::SpatialCandidateScratch candidateScratch;
+    requireSuccess(candidateScratch.prepare(*problem));
     selectLegalTemporalBinding(*candidate, candidateScratch);
-  auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
-  loom::pnr::SpatialPathFinderRouterScratch router;
-  requireSuccess(router.prepare(*problem));
-  take(router.routeToClosure(
-      *candidate, candidateScratch, costs,
-      {pnrConfig.policy().search.routing.endpointExpansionLimit,
-       pnrConfig.policy().search.routing.negotiationIterationLimit},
-      {}));
+    auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
+    loom::pnr::SpatialPathFinderRouterScratch router;
+    requireSuccess(router.prepare(*problem));
+    take(router.routeToClosure(
+        *candidate, candidateScratch, costs,
+        {pnrConfig.policy().search.routing.endpointExpansionLimit,
+         pnrConfig.policy().search.routing.negotiationIterationLimit},
+        {}));
+  } else {
+    auto first = take(loom::pnr::createCanonicalPathFinderSpatialSeed(problem));
+    auto second =
+        take(loom::pnr::createCanonicalPathFinderSpatialSeed(problem));
+    if (first.routing.completedIterations !=
+            second.routing.completedIterations ||
+        first.candidate->unroutedObligationCount() != 0 ||
+        second.candidate->unroutedObligationCount() != 0)
+      fail("canonical Spatial routing seed is not closed and deterministic");
+    for (loom::pnr::PnrIndex net = 0;
+         net < problem->transfers().logicalNets().size(); ++net) {
+      const auto &firstTree = first.candidate->routeTree(net);
+      const auto &secondTree = second.candidate->routeTree(net);
+      if (!firstTree.isRouted() || !secondTree.isRouted() ||
+          firstTree.sourceEndpoint() != secondTree.sourceEndpoint() ||
+          !llvm::equal(firstTree.nodeStorage(), secondTree.nodeStorage()))
+        fail("canonical Spatial routing seed changed its RouteTree");
+      for (loom::pnr::PnrIndex sink = 0;
+           sink < problem->transfers().logicalNets()[net].sinkCount; ++sink)
+        if (firstTree.sinkEndpoint(sink) != secondTree.sinkEndpoint(sink))
+          fail("canonical Spatial routing seed changed a sink attachment");
+    }
+    requireSuccess(second.candidate->verify());
+    candidate = std::move(first.candidate);
+  }
   requireSuccess(candidate->verify());
 
   auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
