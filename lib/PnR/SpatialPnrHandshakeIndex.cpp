@@ -54,6 +54,9 @@ constexpr PnrCapacityContext incidenceCountContext{
 constexpr PnrCapacityContext planCountContext{
     frozenArtifact, "memory_handshake_plans", "memory_handshake_plans",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext memoryDomainOffsetContext{
+    frozenArtifact, "memory_handshake_domains", "memory_handshake_domains",
+    PnrCapacityMeasure::Offset};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
@@ -528,8 +531,15 @@ private:
         usePatternOrdinals.try_emplace(refKey(pattern.reference),
                                        static_cast<PnrIndex>(ordinal));
 
+      result_.memoryPlacementDomainOffsets_.reserve(
+          realizations.memoryPlacements().size() + 1);
       for (auto [placementOrdinal, placement] :
            llvm::enumerate(realizations.memoryPlacements())) {
+        auto domainOffset = checked(memoryDomainOffsetContext,
+                                    result_.memoryOperationDomains_.size());
+        if (!domainOffset)
+          return domainOffset.takeError();
+        result_.memoryPlacementDomainOffsets_.push_back(*domainOffset);
         if (placement.realization >= techMapping.memoryRealizations().size())
           return invalid("memory placement realization is out of range");
         const TechMemoryRealizationView &realization =
@@ -620,6 +630,11 @@ private:
                *planOffset, *planCount});
         }
       }
+      auto domainEnd = checked(memoryDomainOffsetContext,
+                               result_.memoryOperationDomains_.size());
+      if (!domainEnd)
+        return domainEnd.takeError();
+      result_.memoryPlacementDomainOffsets_.push_back(*domainEnd);
       return llvm::Error::success();
     }
 
@@ -728,14 +743,37 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
   if (handshake.computePlacementFragmentOffsets().size() !=
       realizations.computePlacements().size() + 1)
     return invalid("compute handshake incidence is incomplete");
-  for (const FrozenSpatialMemoryOperationHandshakeDomain &domain :
-       handshake.memoryOperationDomains()) {
-    if (domain.placement >= realizations.memoryPlacements().size() ||
-        domain.actor >= realizations.memoryActors().size() ||
-        domain.planCount == 0 ||
-        !rangeFits(domain.planOffset, domain.planCount,
-                   handshake.memoryOperationPlans().size()))
-      return invalid("memory handshake plan domain is inconsistent");
+  if (handshake.memoryPlacementDomainOffsets().size() !=
+          realizations.memoryPlacements().size() + 1 ||
+      handshake.memoryPlacementDomainOffsets().empty() ||
+      handshake.memoryPlacementDomainOffsets().front() != 0 ||
+      handshake.memoryPlacementDomainOffsets().back() !=
+          handshake.memoryOperationDomains().size())
+    return invalid("memory-placement handshake CSR is inconsistent");
+  for (auto [placementOrdinal, placement] :
+       llvm::enumerate(realizations.memoryPlacements())) {
+    if (placement.realization >= realizations.memoryRealizations().size())
+      return invalid("memory placement realization is out of range");
+    const FrozenSpatialMemoryRealization &realization =
+        realizations.memoryRealizations()[placement.realization];
+    const PnrIndex begin =
+        handshake.memoryPlacementDomainOffsets()[placementOrdinal];
+    const PnrIndex end =
+        handshake.memoryPlacementDomainOffsets()[placementOrdinal + 1];
+    if (begin > end || end > handshake.memoryOperationDomains().size() ||
+        end - begin != realization.actorCount)
+      return invalid("memory placement does not cover its exact actor domain");
+    for (PnrIndex localActor = 0; localActor < realization.actorCount;
+         ++localActor) {
+      const FrozenSpatialMemoryOperationHandshakeDomain &domain =
+          handshake.memoryOperationDomains()[begin + localActor];
+      if (domain.placement != placementOrdinal ||
+          domain.actor != realization.actorOffset + localActor ||
+          domain.planCount == 0 ||
+          !rangeFits(domain.planOffset, domain.planCount,
+                     handshake.memoryOperationPlans().size()))
+        return invalid("memory handshake plan domain is inconsistent");
+    }
   }
   for (const FrozenSpatialMemoryOperationHandshakePlan &plan :
        handshake.memoryOperationPlans()) {

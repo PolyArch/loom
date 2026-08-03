@@ -657,6 +657,18 @@ void artifactRoundTripAndReferenceValidation() {
   if (handshake.memoryOperationDomains().empty() ||
       handshake.memoryOperationPlans().empty())
     fail("aggregate Spatial freeze omitted memory handshake plan domains");
+  if (handshake.memoryPlacementDomainOffsets().size() !=
+      frozen->realizations().memoryPlacements().size() + 1)
+    fail("aggregate Spatial freeze omitted memory-placement plan incidence");
+  for (auto [placementOrdinal, placement] :
+       llvm::enumerate(frozen->realizations().memoryPlacements())) {
+    const auto &realization =
+        frozen->realizations().memoryRealizations()[placement.realization];
+    const auto offsets = handshake.memoryPlacementDomainOffsets();
+    if (offsets[placementOrdinal + 1] - offsets[placementOrdinal] !=
+        realization.actorCount)
+      fail("memory-placement plan incidence changed its actor domain");
+  }
 
   if (handshake.allTraversalGroups().empty())
     fail("aggregate Spatial freeze omitted atomic traversal activation");

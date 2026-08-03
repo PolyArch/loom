@@ -510,6 +510,9 @@ public:
   memoryOperationDomains() const {
     return memoryOperationDomains_;
   }
+  llvm::ArrayRef<PnrIndex> memoryPlacementDomainOffsets() const {
+    return memoryPlacementDomainOffsets_;
+  }
   llvm::ArrayRef<FrozenSpatialMemoryOperationHandshakePlan>
   memoryOperationPlans() const {
     return memoryOperationPlans_;
@@ -537,6 +540,7 @@ private:
   std::vector<PnrIndex> computePlacementFragments_;
   std::vector<FrozenSpatialMemoryOperationHandshakeDomain>
       memoryOperationDomains_;
+  std::vector<PnrIndex> memoryPlacementDomainOffsets_;
   std::vector<FrozenSpatialMemoryOperationHandshakePlan> memoryOperationPlans_;
   std::vector<PnrIndex> memoryPlanFragments_;
 
