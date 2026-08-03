@@ -186,7 +186,10 @@ public:
   std::uint64_t unroutedObligationCount() const {
     return unroutedObligationCount_;
   }
-  std::uint64_t capacityOveruse() const { return capacityOveruse_; }
+  std::uint64_t atomicCapacityOveruse() const { return atomicCapacityOveruse_; }
+  std::uint64_t routeCapacityOveruse() const {
+    return routeResources_.totalCapacityOveruseRaw();
+  }
   /// Exact selected envelope cache. FrozenSpatialCapacityIndex remains the
   /// sole owner of envelope semantics; these dense views are rebuildable.
   PnrIndex resourceTimeEnvelopeRefcount(PnrIndex envelope) const;
@@ -258,7 +261,8 @@ private:
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
       SpatialTagAssignmentState tagAssignments,
-      std::uint64_t unroutedObligationCount, std::uint64_t capacityOveruse)
+      std::uint64_t unroutedObligationCount,
+      std::uint64_t atomicCapacityOveruse)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
@@ -273,7 +277,7 @@ private:
         routeResources_(std::move(routeResources)),
         tagAssignments_(std::move(tagAssignments)),
         unroutedObligationCount_(unroutedObligationCount),
-        capacityOveruse_(capacityOveruse) {}
+        atomicCapacityOveruse_(atomicCapacityOveruse) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -297,7 +301,7 @@ private:
   llvm::Error verifyBindingRelations() const;
   llvm::Error verifyBindingRelation(PnrIndex relation) const;
   llvm::Error verifyHandshakeProjection() const;
-  llvm::Expected<std::uint64_t> recomputeCapacityOveruse() const;
+  llvm::Expected<std::uint64_t> recomputeAtomicCapacityOveruse() const;
   llvm::Expected<std::vector<PnrIndex>>
   deriveResourceTimeEnvelopeRefcounts() const;
   llvm::Error rebuildResourceTimeEnvelopeSelections();
@@ -339,7 +343,7 @@ private:
   SpatialRouteResourceState routeResources_;
   SpatialTagAssignmentState tagAssignments_;
   std::uint64_t unroutedObligationCount_ = 0;
-  std::uint64_t capacityOveruse_ = 0;
+  std::uint64_t atomicCapacityOveruse_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialActionDomainScratch;
@@ -428,7 +432,7 @@ private:
   bool tagDeltasCollected_ = false;
   bool routeViolationApplied_ = false;
   std::uint64_t initialUnroutedObligationCount_ = 0;
-  std::uint64_t initialCapacityOveruse_ = 0;
+  std::uint64_t initialAtomicCapacityOveruse_ = 0;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

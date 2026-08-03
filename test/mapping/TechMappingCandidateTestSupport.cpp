@@ -279,12 +279,13 @@ void loom::test::exerciseCapacityOveruseCandidate(
       take(exactRepair.repairCapacityOveruse(*repairCandidate, 0));
   if (repaired.kind != pnr::SpatialExactRepairResultKind::Repaired ||
       repaired.regionDecisions == 0 || repaired.solverCalls == 0 ||
-      repaired.actionCount == 0 || repairCandidate->capacityOveruse() != 0)
+      repaired.actionCount == 0 ||
+      repairCandidate->atomicCapacityOveruse() != 0)
     fail("CP-SAT capacity repair did not commit one exact ActionBatch");
   requireSuccess(repairCandidate->verify());
   const dse::ObjectiveVector overusedObjective =
       take(problem->objectiveProgram().evaluate(*candidate));
-  if (candidate->capacityOveruse() != 1 ||
+  if (candidate->atomicCapacityOveruse() != 1 ||
       take(pnr::spatialMappingViolationValue(
           *candidate, ResolvedPnrViolationKind::CapacityOveruse)) != 1)
     fail("shared temporal operand service lost its exact overuse");
@@ -325,7 +326,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
           0, legal.placement, legal.instructionContext}};
   {
     auto probe = take(actionExecutor.probe(*candidate, legalAction));
-    if (candidate->capacityOveruse() != 0)
+    if (candidate->atomicCapacityOveruse() != 0)
       fail("Spatial Action probe did not update the shadow candidate");
     if (candidate->unroutedObligationCount() == 0)
       fail("unreachable binding Action lost its temporary route violation");
@@ -352,7 +353,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
             "port Action anchor is out of range"))
       fail("malformed Spatial ActionBatch returned the wrong failure");
   }
-  if (candidate->capacityOveruse() != 1)
+  if (candidate->atomicCapacityOveruse() != 1)
     fail("malformed Spatial ActionBatch retained its first Action");
   for (auto [demand, attachment] : llvm::enumerate(initialAttachments))
     if (candidate->portAttachment(demand) != attachment)
@@ -371,7 +372,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
             "compute realization is out of range"))
       fail("out-of-range Spatial Action returned the wrong failure");
   }
-  if (candidate->capacityOveruse() != 1)
+  if (candidate->atomicCapacityOveruse() != 1)
     fail("Spatial Action discard did not restore the candidate");
   for (auto [demand, attachment] : llvm::enumerate(initialAttachments))
     if (candidate->portAttachment(demand) != attachment)
@@ -397,7 +398,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
     if (acceptanceStream.nextU64() != referenceStream.nextU64())
       fail("improving Spatial Action consumed acceptance entropy");
   }
-  if (candidate->capacityOveruse() != 0)
+  if (candidate->atomicCapacityOveruse() != 0)
     fail("legal temporal operand allocation retained capacity overuse");
   for (auto [demand, attachment] : llvm::enumerate(legalAttachments))
     if (candidate->portAttachment(demand) != attachment)
@@ -443,7 +444,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
       fail("overused capacity move closed a handshake cycle");
     move.rollback();
   }
-  if (candidate->capacityOveruse() != 0)
+  if (candidate->atomicCapacityOveruse() != 0)
     fail("capacity rollback changed the committed objective value");
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(legal, true);
@@ -492,13 +493,13 @@ void loom::test::exerciseCapacityExactRepairNoMutation(
 
   auto candidate = take(pnr::SpatialCandidateState::create(
       problem, {{*overused}, {}, attachments, boundaries, {}, {}, {}, {}}));
-  const std::uint64_t initialOveruse = candidate->capacityOveruse();
+  const std::uint64_t initialOveruse = candidate->atomicCapacityOveruse();
   pnr::SpatialExactRepairScratch repair;
   const pnr::SpatialExactRepairResult outcome =
       take(repair.repairCapacityOveruse(*candidate, 0));
   if (outcome.kind != expected)
     fail("bounded exact repair returned the wrong non-repaired outcome");
-  if (candidate->capacityOveruse() != initialOveruse)
+  if (candidate->atomicCapacityOveruse() != initialOveruse)
     fail("non-repaired exact outcome changed the candidate");
   if (expected == pnr::SpatialExactRepairResultKind::RegionTooLarge &&
       outcome.solverCalls != 0)
@@ -895,10 +896,11 @@ void loom::test::exerciseCanonicalCandidateInitialization(
         "warm Spatial Action-domain rebuild changed storage or decision count");
 
   const auto vector = take(problem->objectiveProgram().evaluate(*first));
-  if (vector.codes() !=
-      llvm::ArrayRef<std::uint64_t>({first->unroutedObligationCount(),
-                                     first->capacityOveruse(),
-                                     first->totalSelectedTraversalClaim()}))
+  const std::uint64_t capacityOveruse = take(pnr::spatialMappingViolationValue(
+      *first, ResolvedPnrViolationKind::CapacityOveruse));
+  if (vector.codes() != llvm::ArrayRef<std::uint64_t>(
+                            {first->unroutedObligationCount(), capacityOveruse,
+                             first->totalSelectedTraversalClaim()}))
     fail("Spatial objective adapter changed a Mapping-owned value");
 
   auto annealedFirst = take(pnr::createCanonicalSpatialCandidate(problem));

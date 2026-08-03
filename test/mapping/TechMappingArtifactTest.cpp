@@ -1084,6 +1084,19 @@ void artifactRoundTripAndReferenceValidation() {
   }
   if (!observedActiveClaimBit)
     fail("claim-bearing route has no active-claim bit");
+  std::uint64_t expectedRouteCapacityOveruse = 0;
+  for (loom::pnr::PnrIndex capacity = 0;
+       capacity < frozen->resources().capacityDimensions().size(); ++capacity)
+    expectedRouteCapacityOveruse +=
+        spatialCandidate->routeCapacityOveruseRaw(capacity);
+  if (spatialCandidate->routeCapacityOveruse() !=
+          expectedRouteCapacityOveruse ||
+      take(loom::pnr::spatialMappingViolationValue(
+          *spatialCandidate,
+          loom::ResolvedPnrViolationKind::CapacityOveruse)) !=
+          spatialCandidate->atomicCapacityOveruse() +
+              expectedRouteCapacityOveruse)
+    fail("Mapping CapacityOveruse lost atomic or route occupancy");
   const std::uint64_t committedTraversalClaim =
       spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());

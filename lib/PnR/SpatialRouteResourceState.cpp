@@ -79,14 +79,24 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
   std::vector<PnrIndex> claimSelectionCounts(*routeClaimCount, 0);
   std::vector<std::uint64_t> capacityUsageRaw;
   capacityUsageRaw.reserve(problem.resources().capacityDimensions().size());
+  std::uint64_t totalCapacityOveruseRaw = 0;
   for (const FrozenSpatialCapacityDimension &dimension :
-       problem.resources().capacityDimensions())
+       problem.resources().capacityDimensions()) {
     capacityUsageRaw.push_back(dimension.initialOccupancy);
+    const std::uint64_t overuse =
+        dimension.initialOccupancy > dimension.capacity
+            ? dimension.initialOccupancy - dimension.capacity
+            : 0;
+    if (llvm::Error error = checkedAdd(totalCapacityOveruseRaw, overuse,
+                                       "initial raw route capacity overuse"))
+      return std::move(error);
+  }
 
   return SpatialRouteResourceState(
       problem, *logicalNetCount, *routeClaimCount, routeClaimWordCount,
       std::move(netClaimRefcounts), std::move(netClaimActiveBits),
-      std::move(claimSelectionCounts), std::move(capacityUsageRaw));
+      std::move(claimSelectionCounts), std::move(capacityUsageRaw),
+      totalCapacityOveruseRaw);
 }
 
 PnrIndex
@@ -169,6 +179,12 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
                               routeClaimWordCount_ +
                           claim / 64];
   const std::uint64_t activeMask = std::uint64_t{1} << (claim % 64);
+  const std::uint64_t capacity =
+      problem_->resources()
+          .capacityDimensions()[record.capacityDimension]
+          .capacity;
+  const std::uint64_t oldOveruse = usage > capacity ? usage - capacity : 0;
+  std::uint64_t nextUsage = usage;
   if (activate) {
     if (selectionCount == std::numeric_limits<PnrIndex>::max())
       return routeResourceError("claim selection count overflows PnrIndex");
@@ -177,19 +193,33 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
     if (record.qCost > std::numeric_limits<std::uint64_t>::max() -
                            totalSelectedTraversalClaim_)
       return routeResourceError("selected traversal claim cost overflows u64");
-    ++selectionCount;
-    usage += record.amount;
-    totalSelectedTraversalClaim_ += record.qCost;
-    activeWord |= activeMask;
+    nextUsage += record.amount;
   } else {
     if (selectionCount == 0 || usage < record.amount ||
         totalSelectedTraversalClaim_ < record.qCost)
       return routeResourceError("claim deactivation underflows exact state");
+    nextUsage -= record.amount;
+  }
+  if (oldOveruse > totalCapacityOveruseRaw_)
+    return routeResourceError("raw route capacity overuse underflows");
+  std::uint64_t nextTotalOveruse = totalCapacityOveruseRaw_ - oldOveruse;
+  const std::uint64_t newOveruse =
+      nextUsage > capacity ? nextUsage - capacity : 0;
+  if (llvm::Error error = checkedAdd(nextTotalOveruse, newOveruse,
+                                     "raw route capacity overuse"))
+    return error;
+
+  if (activate) {
+    ++selectionCount;
+    totalSelectedTraversalClaim_ += record.qCost;
+    activeWord |= activeMask;
+  } else {
     --selectionCount;
-    usage -= record.amount;
     totalSelectedTraversalClaim_ -= record.qCost;
     activeWord &= ~activeMask;
   }
+  usage = nextUsage;
+  totalCapacityOveruseRaw_ = nextTotalOveruse;
   refcount = next;
   return llvm::Error::success();
 }
@@ -297,10 +327,23 @@ llvm::Error SpatialRouteResourceState::verify(
     }
   }
 
+  std::uint64_t expectedCapacityOveruse = 0;
+  const auto dimensions = problem_->resources().capacityDimensions();
+  for (PnrIndex capacity = 0; capacity < dimensions.size(); ++capacity) {
+    const std::uint64_t overuse =
+        expectedUsage[capacity] > dimensions[capacity].capacity
+            ? expectedUsage[capacity] - dimensions[capacity].capacity
+            : 0;
+    if (llvm::Error error = checkedAdd(expectedCapacityOveruse, overuse,
+                                       "rebuilt raw route capacity overuse"))
+      return error;
+  }
+
   if (netClaimRefcounts_ != expectedRefcounts ||
       netClaimActiveBits_ != expectedActiveBits ||
       claimSelectionCounts_ != expectedSelections ||
       capacityUsageRaw_ != expectedUsage ||
+      totalCapacityOveruseRaw_ != expectedCapacityOveruse ||
       totalSelectedTraversalClaim_ != expectedTotal)
     return routeResourceError(
         "incremental occupancy disagrees with the selected RouteTrees");

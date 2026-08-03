@@ -71,7 +71,7 @@ SpatialExactRepairScratch::repairCapacityOveruse(
       problem.config().policy().search.exactRepair;
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
     return invocationError("CpSat_1_0 is not selected by SearchPolicy");
-  if (candidate.capacityOveruse() == 0)
+  if (candidate.atomicCapacityOveruse() == 0)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
                   "candidate has no CapacityOveruse witness");
 
@@ -326,7 +326,7 @@ SpatialExactRepairScratch::repairCapacityOveruse(
     return result(SpatialExactRepairResultKind::InternalError,
                   *regionDecisionCount, solved->solverCalls, actions_.size(),
                   llvm::toString(std::move(error)));
-  const std::uint64_t initialOveruse = candidate.capacityOveruse();
+  const std::uint64_t initialOveruse = candidate.atomicCapacityOveruse();
   auto probe = actionExecutor_.probeBatch(candidate, actions_);
   if (!probe) {
     std::string detail;
@@ -364,7 +364,7 @@ SpatialExactRepairScratch::repairCapacityOveruse(
           "ActionBatch did not realize the exact capacity assignment");
     }
   }
-  if (candidate.capacityOveruse() >= initialOveruse) {
+  if (candidate.atomicCapacityOveruse() >= initialOveruse) {
     if (llvm::Error error = probe->discard())
       return result(SpatialExactRepairResultKind::InternalError,
                     *regionDecisionCount, solved->solverCalls, actions_.size(),

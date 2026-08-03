@@ -35,6 +35,9 @@ public:
   logicalNetRouteClaimBits(PnrIndex logicalNet) const;
   std::uint64_t capacityUsageRaw(PnrIndex capacityDimension) const;
   std::uint64_t capacityOveruseRaw(PnrIndex capacityDimension) const;
+  std::uint64_t totalCapacityOveruseRaw() const {
+    return totalCapacityOveruseRaw_;
+  }
   std::size_t retainedStorageBytes() const;
 
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routeTrees) const;
@@ -46,14 +49,16 @@ private:
                             std::vector<PnrIndex> netClaimRefcounts,
                             std::vector<std::uint64_t> netClaimActiveBits,
                             std::vector<PnrIndex> claimSelectionCounts,
-                            std::vector<std::uint64_t> capacityUsageRaw)
+                            std::vector<std::uint64_t> capacityUsageRaw,
+                            std::uint64_t totalCapacityOveruseRaw)
       : problem_(&problem), logicalNetCount_(logicalNetCount),
         routeClaimCount_(routeClaimCount),
         routeClaimWordCount_(routeClaimWordCount),
         netClaimRefcounts_(std::move(netClaimRefcounts)),
         netClaimActiveBits_(std::move(netClaimActiveBits)),
         claimSelectionCounts_(std::move(claimSelectionCounts)),
-        capacityUsageRaw_(std::move(capacityUsageRaw)) {}
+        capacityUsageRaw_(std::move(capacityUsageRaw)),
+        totalCapacityOveruseRaw_(totalCapacityOveruseRaw) {}
 
   llvm::Error applyTraversalDelta(PnrIndex logicalNet, PnrIndex traversal,
                                   PnrIndex removed, PnrIndex added);
@@ -71,6 +76,7 @@ private:
   std::vector<std::uint64_t> netClaimActiveBits_;
   std::vector<PnrIndex> claimSelectionCounts_;
   std::vector<std::uint64_t> capacityUsageRaw_;
+  std::uint64_t totalCapacityOveruseRaw_ = 0;
   std::uint64_t totalSelectedTraversalClaim_ = 0;
 
   friend class SpatialMoveTransaction;

@@ -5,6 +5,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <array>
+#include <limits>
 #include <system_error>
 
 using namespace loom;
@@ -79,8 +80,15 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   switch (kind) {
   case ResolvedPnrViolationKind::UnroutedObligation:
     return candidate.unroutedObligationCount();
-  case ResolvedPnrViolationKind::CapacityOveruse:
-    return candidate.capacityOveruse();
+  case ResolvedPnrViolationKind::CapacityOveruse: {
+    const std::uint64_t atomic = candidate.atomicCapacityOveruse();
+    const std::uint64_t route = candidate.routeCapacityOveruse();
+    if (route > std::numeric_limits<std::uint64_t>::max() - atomic)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::value_too_large),
+          "Spatial CapacityOveruse exceeds u64");
+    return atomic + route;
+  }
   case ResolvedPnrViolationKind::TagUnassigned:
     return candidate.tagUnassignedCount();
   case ResolvedPnrViolationKind::TagConflict:

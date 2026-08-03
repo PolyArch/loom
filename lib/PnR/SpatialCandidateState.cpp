@@ -439,10 +439,10 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
           candidate->portAttachments_, candidate->memoryOperationPlans_,
           *candidate->handshake_))
     return std::move(error);
-  auto capacityOveruse = candidate->recomputeCapacityOveruse();
+  auto capacityOveruse = candidate->recomputeAtomicCapacityOveruse();
   if (!capacityOveruse)
     return capacityOveruse.takeError();
-  candidate->capacityOveruse_ = *capacityOveruse;
+  candidate->atomicCapacityOveruse_ = *capacityOveruse;
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -774,7 +774,7 @@ llvm::Error SpatialCandidateState::verifyHandshakeProjection() const {
 }
 
 llvm::Expected<std::uint64_t>
-SpatialCandidateState::recomputeCapacityOveruse() const {
+SpatialCandidateState::recomputeAtomicCapacityOveruse() const {
   const auto compute = problem_->capacity().computeInstructionContextOveruse();
   const auto memory = problem_->capacity().memoryOperationPlanOveruse();
   const auto dispatch = problem_->capacity().memoryDispatchOptionOveruse();
@@ -912,10 +912,10 @@ llvm::Error SpatialCandidateState::verify() const {
   if (unroutedObligationCount_ != expectedUnroutedObligationCount)
     return candidateError(
         "unrouted obligation count diverges from RouteTree state");
-  auto expectedCapacityOveruse = recomputeCapacityOveruse();
+  auto expectedCapacityOveruse = recomputeAtomicCapacityOveruse();
   if (!expectedCapacityOveruse)
     return expectedCapacityOveruse.takeError();
-  if (capacityOveruse_ != *expectedCapacityOveruse)
+  if (atomicCapacityOveruse_ != *expectedCapacityOveruse)
     return candidateError(
         "capacity overuse diverges from selected resource envelopes");
   if (llvm::Error error = verifyResourceTimeEnvelopeSelections())
@@ -968,7 +968,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialCandidateStateHandle state, SpatialCandidateScratch &scratch)
     : state_(std::move(state)), scratch_(&scratch),
       initialUnroutedObligationCount_(state_->unroutedObligationCount_),
-      initialCapacityOveruse_(state_->capacityOveruse_) {
+      initialAtomicCapacityOveruse_(state_->atomicCapacityOveruse_) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -981,7 +981,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       tagDeltasCollected_(other.tagDeltasCollected_),
       routeViolationApplied_(other.routeViolationApplied_),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
-      initialCapacityOveruse_(other.initialCapacityOveruse_) {
+      initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -1278,7 +1278,7 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
       state_->problem_->capacity().computeInstructionContextOveruse();
   if (llvm::Error error = replaceContribution(
           overuse[old.instructionContext], overuse[instructionContext],
-          state_->capacityOveruse_, "compute capacity overuse"))
+          state_->atomicCapacityOveruse_, "compute capacity overuse"))
     return error;
   const auto envelopeOffsets =
       state_->problem_->capacity().computeInstructionContextEnvelopeOffsets();
@@ -1398,7 +1398,7 @@ llvm::Error SpatialMoveTransaction::setMemoryOperationPlan(PnrIndex actor,
   const auto overuse =
       state_->problem_->capacity().memoryOperationPlanOveruse();
   if (llvm::Error error = replaceContribution(overuse[old], overuse[plan],
-                                              state_->capacityOveruse_,
+                                              state_->atomicCapacityOveruse_,
                                               "memory capacity overuse"))
     return error;
   const auto planEnvelopes =
@@ -1779,7 +1779,7 @@ void SpatialMoveTransaction::rollback() noexcept {
     }
     }
   }
-  state_->capacityOveruse_ = initialCapacityOveruse_;
+  state_->atomicCapacityOveruse_ = initialAtomicCapacityOveruse_;
   finish();
 }
 

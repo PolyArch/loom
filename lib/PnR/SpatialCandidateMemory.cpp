@@ -301,10 +301,10 @@ llvm::Error SpatialCandidateState::changeMemoryServiceUsage(
       newPattern != getInvalidPnrIndex() && newRefcount == 0
           ? optionOveruse[newOption]
           : 0;
-  if (removed > capacityOveruse_)
+  if (removed > atomicCapacityOveruse_)
     return candidateError(
         "memory service capacity contribution exceeds its total");
-  const std::uint64_t base = capacityOveruse_ - removed;
+  const std::uint64_t base = atomicCapacityOveruse_ - removed;
   if (added > std::numeric_limits<std::uint64_t>::max() - base)
     return candidateError("memory service capacity total overflows u64");
 
@@ -345,7 +345,7 @@ llvm::Error SpatialCandidateState::changeMemoryServiceUsage(
     if (refcount++ == 0)
       ++active;
   }
-  capacityOveruse_ = base + added;
+  atomicCapacityOveruse_ = base + added;
   return llvm::Error::success();
 }
 
@@ -413,8 +413,8 @@ void SpatialCandidateState::changeMemoryExposureUsage(PnrIndex exposure,
     }
     const std::uint64_t newOveruse =
         bindingCount > capacity ? bindingCount - capacity : 0;
-    assert(capacityOveruse_ >= oldOveruse);
-    capacityOveruse_ = capacityOveruse_ - oldOveruse + newOveruse;
+    assert(atomicCapacityOveruse_ >= oldOveruse);
+    atomicCapacityOveruse_ = atomicCapacityOveruse_ - oldOveruse + newOveruse;
   };
   updateProvider(oldProvider, false);
   updateProvider(newProvider, true);

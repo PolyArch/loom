@@ -1,5 +1,7 @@
 #include "PnR/SpatialMappingMaterializer.h"
 
+#include "PnR/MappingObjective.h"
+
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/IR/UsePatternValue.h"
@@ -815,8 +817,12 @@ finalizeSpatialMappingCandidate(
     return invalid("TechMapping upstream closure is inconsistent");
   if (candidate.unroutedObligationCount() != 0)
     return invalid("candidate still has unrouted sink obligations");
-  if (candidate.capacityOveruse() != 0)
-    return invalid("candidate still exceeds an atomic resource capacity");
+  auto capacityOveruse = spatialMappingViolationValue(
+      candidate, ResolvedPnrViolationKind::CapacityOveruse);
+  if (!capacityOveruse)
+    return capacityOveruse.takeError();
+  if (*capacityOveruse != 0)
+    return invalid("candidate still exceeds a resource capacity");
   if (candidate.tagUnassignedCount() != 0)
     return invalid("candidate still has unassigned Physical Tags");
   if (candidate.tagConflictCount() != 0)
