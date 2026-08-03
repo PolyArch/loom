@@ -26,6 +26,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCanonicalSeed.h"
+#include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
@@ -837,14 +838,16 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     loom::pnr::SpatialCandidateScratch candidateScratch;
     requireSuccess(candidateScratch.prepare(*problem));
     selectLegalTemporalBinding(*candidate, candidateScratch);
-    auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
-    loom::pnr::SpatialPathFinderRouterScratch router;
-    requireSuccess(router.prepare(*problem));
-    take(router.routeToClosure(
-        *candidate, candidateScratch, costs,
-        {pnrConfig.policy().search.routing.endpointExpansionLimit,
-         pnrConfig.policy().search.routing.negotiationIterationLimit},
-        {}));
+    if (forceTagConflict) {
+      auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
+      loom::pnr::SpatialPathFinderRouterScratch router;
+      requireSuccess(router.prepare(*problem));
+      take(router.routeToClosure(
+          *candidate, candidateScratch, costs,
+          {pnrConfig.policy().search.routing.endpointExpansionLimit,
+           pnrConfig.policy().search.routing.negotiationIterationLimit},
+          {}));
+    }
   } else {
     auto first = take(loom::pnr::createCanonicalPathFinderSpatialSeed(problem));
     auto second =
@@ -869,6 +872,29 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
     }
     requireSuccess(second.candidate->verify());
     candidate = std::move(first.candidate);
+  }
+  loom::pnr::SpatialGlobalRoutingClosureScratch globalRoutingClosure;
+  if (forceTagConflict) {
+    const std::uint64_t selectedTraversalClaim =
+        candidate->totalSelectedTraversalClaim();
+    const std::uint64_t unroutedObligations =
+        candidate->unroutedObligationCount();
+    const std::uint64_t tagConflicts = candidate->tagConflictCount();
+    llvm::Error rejectedClosure = globalRoutingClosure.run(*candidate);
+    if (!rejectedClosure)
+      fail("global routing closure accepted conflicting Physical Tags");
+    llvm::consumeError(std::move(rejectedClosure));
+    if (candidate->totalSelectedTraversalClaim() != selectedTraversalClaim ||
+        candidate->unroutedObligationCount() != unroutedObligations ||
+        candidate->tagConflictCount() != tagConflicts)
+      fail("rejected global routing closure changed the candidate");
+  } else {
+    requireSuccess(globalRoutingClosure.run(*candidate));
+    const std::size_t retainedClosureBytes =
+        globalRoutingClosure.retainedStorageBytes();
+    requireSuccess(globalRoutingClosure.run(*candidate));
+    if (globalRoutingClosure.retainedStorageBytes() != retainedClosureBytes)
+      fail("warmed global routing closure grew worker-local storage");
   }
   requireSuccess(candidate->verify());
 
