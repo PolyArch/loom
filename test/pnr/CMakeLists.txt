@@ -37,3 +37,12 @@ target_link_libraries(loom-pnr-incremental-topology-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-endpoint-router-test
+  EndpointRouterTest.cpp
+)
+
+target_link_libraries(loom-pnr-endpoint-router-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)

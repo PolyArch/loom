@@ -1,4 +1,5 @@
 add_mlir_library(LoomPnR
+  EndpointRouter.cpp
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
   IncrementalTopologicalOrder.cpp
