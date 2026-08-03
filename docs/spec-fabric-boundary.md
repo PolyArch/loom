@@ -115,6 +115,12 @@ outputs accept. The one-operand configured-tag `s2t` form and the one-result
 drop-tag `t2s` form use the ordinary one-input/one-output equations
 `out.valid = in.valid` and `in.ready = out.ready`.
 
+Selecting any physical output traversal of an Active boundary selects the
+whole atomic boundary owner. For split `t2s`, the other output handshake is a
+Fabric-owned mechanical consequence; it is not a second software logical net
+and is not inserted as a narrow, sinkless `RouteTree` branch. Mapping's
+selected active handshake graph nevertheless contains both output equations.
+
 For Active `t2t`, `match` is true exactly when the input tag has one configured
 lookup entry:
 
@@ -138,7 +144,7 @@ capacity enter Fabric identity.
 These equations are the Fabric-owned source of the boundary's derived
 combinational handshake arcs. Fabric structural finalization includes them
 only when they are unconditional for the root being finalized. Mapping
-verification includes them exactly when the boundary traversal is selected and
+verification includes them exactly when any boundary traversal is selected and
 rejects any directed cycle in the complete selected graph. Neither gate may
 replace these equations with a caller-supplied graph, simulator iteration
 order, or backend-specific loop breaking.

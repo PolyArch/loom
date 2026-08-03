@@ -186,6 +186,12 @@ transfers only with joint validity and readiness. Tag lookup must cover every
 reachable value uniquely. Designs needing storage or a pipeline use explicit
 resources whose state and timing enter Fabric identity.
 
+Treating the tag output of a split boundary as another software route would
+mix physical correspondence metadata with the software payload and can violate
+that payload's width contract. Selecting one boundary leg therefore activates
+the whole owner; Fabric derives the companion handshake instead of Mapping
+inventing a second logical net.
+
 ## Why FIFO Bypass Remains A Mapping Refinement
 
 A declared FIFO can operate buffered or transparently only when Fabric exposes

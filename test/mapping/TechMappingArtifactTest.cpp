@@ -13,7 +13,6 @@
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
 #include "PnR/EndpointRouter.h"
-#include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
@@ -1286,70 +1285,6 @@ void artifactRoundTripAndReferenceValidation() {
   if (candidateScratch.retainedStorageBytes() != warmedCandidateScratchBytes)
     fail("warmed Spatial move grew worker-local scratch storage");
   requireSuccess(spatialCandidate->verify());
-
-  if (handshake.allTraversalGroups().empty())
-    fail("aggregate Spatial freeze omitted atomic traversal activation");
-  {
-    auto handshakeOwner =
-        std::shared_ptr<const loom::pnr::FrozenSpatialHandshakeIndex>(
-            frozen, &frozen->handshake());
-    auto candidate =
-        take(loom::pnr::HandshakeCandidateState::create(handshakeOwner));
-    loom::pnr::HandshakeCandidateScratch scratch;
-    requireSuccess(scratch.prepare(*handshakeOwner));
-    const auto group = handshake.allTraversalGroups().front();
-    const auto witnesses = handshake.allTraversalGroupWitnesses().slice(
-        group.witnessOffset, group.witnessCount);
-    auto transaction = take(candidate->beginTransaction(scratch));
-    for (auto [ordinal, traversal] : llvm::enumerate(witnesses)) {
-      requireSuccess(transaction.addTraversalUses(traversal, 2));
-      if (candidate->traversalRefcount(traversal) != 2)
-        fail("handshake candidate lost a traversal use count");
-      const bool shouldBeActive = ordinal + 1 == witnesses.size();
-      if ((candidate->fragmentRefcount(group.fragment) != 0) != shouldBeActive)
-        fail("all-traversal fragment ignored its complete witness set");
-    }
-    for (loom::pnr::PnrIndex traversal : witnesses) {
-      requireSuccess(transaction.removeTraversalUses(traversal, 1));
-      if (candidate->traversalRefcount(traversal) != 1 ||
-          !candidate->isTraversalSelected(traversal))
-        fail("partial traversal-use removal changed handshake selection");
-    }
-    transaction.rollback();
-    for (loom::pnr::PnrIndex traversal : witnesses)
-      if (candidate->traversalRefcount(traversal) != 0 ||
-          candidate->isTraversalSelected(traversal))
-        fail("all-traversal rollback retained a selected witness");
-    const loom::pnr::PnrIndex repeatedTraversal = witnesses.front();
-    {
-      auto add = take(candidate->beginTransaction(scratch));
-      requireSuccess(add.addTraversalUses(repeatedTraversal, 2));
-      if (!take(add.close()))
-        fail("repeated traversal use closed a handshake cycle");
-      requireSuccess(add.commit());
-    }
-    {
-      auto removeOne = take(candidate->beginTransaction(scratch));
-      requireSuccess(removeOne.removeTraversalUses(repeatedTraversal, 1));
-      if (!take(removeOne.close()))
-        fail("partial traversal use removal reported a handshake cycle");
-      requireSuccess(removeOne.commit());
-    }
-    if (candidate->traversalRefcount(repeatedTraversal) != 1 ||
-        !candidate->isTraversalSelected(repeatedTraversal))
-      fail("partial committed removal deselected a live traversal");
-    {
-      auto removeLast = take(candidate->beginTransaction(scratch));
-      requireSuccess(removeLast.removeTraversalUses(repeatedTraversal, 1));
-      if (!take(removeLast.close()))
-        fail("final traversal use removal reported a handshake cycle");
-      requireSuccess(removeLast.commit());
-    }
-    if (candidate->traversalRefcount(repeatedTraversal) != 0 ||
-        candidate->isTraversalSelected(repeatedTraversal))
-      fail("final committed removal retained a traversal selection");
-    requireSuccess(candidate->verify());
-  }
 
   if (frozen->transfers().logicalNets().size() !=
           finalized.view().residualLogicalNets().size() ||

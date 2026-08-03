@@ -251,6 +251,60 @@ bool hasPath(const HandshakeOwnerModel &model,
   return false;
 }
 
+void selectedPointConnectionConsumesItsWitness() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto source = parse(test, R"mlir(
+    module {
+      fabric.module @point_connection(
+          %data : !fabric.bits<32>,
+          %tag : !fabric.bits<4>) -> !fabric.bits_tag<32, 4> {
+        %buffered = fabric.fifo %data [max_depth = 2, bypassable = true]
+            : !fabric.bits<32>
+        %tagged = fabric.boundary [s2t] %buffered, %tag
+            : (!fabric.bits<32>, !fabric.bits<4>)
+            -> !fabric.bits_tag<32, 4>
+        fabric.yield %tagged : !fabric.bits_tag<32, 4>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  const auto traversal = llvm::find_if(
+      finalized.view().admittedTraversals(), [](const auto &candidate) {
+        return candidate.kind() == FabricPhysicalTraversalKind::PointConnection;
+      });
+  require(test, traversal != finalized.view().admittedTraversals().end(),
+          "fixture has no point-connection traversal");
+
+  std::vector<HandshakeOwnerModel> models =
+      take(test, loom::fabric::compileHandshakeOwnerModels(finalized.view()));
+  const HandshakeOwnerModel *model = nullptr;
+  for (const HandshakeOwnerModel &candidate : models) {
+    if (candidate.owner().kind() != FabricHandshakeOwnerKind::PointConnection)
+      continue;
+    const auto &payload = std::get<loom::fabric::FabricPointConnectionPayload>(
+        candidate.owner().payload());
+    const auto &selected = std::get<loom::fabric::FabricPointConnectionPayload>(
+        traversal->payload);
+    if (payload.source != selected.source ||
+        payload.destination != selected.destination)
+      continue;
+    model = &candidate;
+    break;
+  }
+  require(test, model != nullptr,
+          "point connection has no exact handshake owner model");
+
+  FabricHandshakeSelection selection;
+  selection.traversals.push_back(*traversal);
+  const ResolvedHandshakeActivation activation =
+      take(test, loom::fabric::resolveSelectedHandshake(*model, selection));
+  require(test, activation.arcOrdinals().size() == 2,
+          "selected point connection lost its direct handshake relation");
+}
+
 void atomicBroadcastProjectionIsLinear(std::uint32_t fanout) {
   const std::string testName =
       ("atomicBroadcastProjectionIsLinear" + std::to_string(fanout));
@@ -494,7 +548,7 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                   "SelectedCombinationalHandshakeCycle");
 }
 
-void atomicBoundaryRequiresItsCompleteLegSet() {
+void atomicBoundarySelectionActivatesWholeOwner() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -534,15 +588,18 @@ void atomicBoundaryRequiresItsCompleteLegSet() {
 
   FabricHandshakeSelection partial;
   partial.traversals.push_back(legs.front());
-  requireRejected(test, loom::fabric::resolveSelectedHandshake(*model, partial),
-                  "incomplete traversal set");
+  ResolvedHandshakeActivation partialActivation =
+      take(test, loom::fabric::resolveSelectedHandshake(*model, partial));
 
   FabricHandshakeSelection complete;
   complete.traversals = legs;
   ResolvedHandshakeActivation activation =
       take(test, loom::fabric::resolveSelectedHandshake(*model, complete));
-  require(test, !activation.arcOrdinals().empty(),
-          "complete boundary selection activated no handshake equations");
+  require(test,
+          !partialActivation.arcOrdinals().empty() &&
+              llvm::equal(partialActivation.arcOrdinals(),
+                          activation.arcOrdinals()),
+          "one selected boundary leg did not activate the whole atomic owner");
 }
 
 void oneToOneBoundariesUseDirectHandshake() {
@@ -1013,12 +1070,13 @@ void fuSelectionUsesExactActorPortCorrespondence() {
 } // namespace
 
 int main() {
+  selectedPointConnectionConsumesItsWitness();
   atomicBroadcastProjectionIsLinear(64);
   atomicBroadcastProjectionIsLinear(256);
   fifoModeOwnsItsExactCombinationalBreak();
   unconditionalReadyCycleIsRejectedBeforePublication();
   selectedGlobalCycleUsesExactTraversalSelection();
-  atomicBoundaryRequiresItsCompleteLegSet();
+  atomicBoundarySelectionActivatesWholeOwner();
   oneToOneBoundariesUseDirectHandshake();
   registerFifoPathsAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();

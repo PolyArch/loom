@@ -841,7 +841,7 @@ compileBoundaryModel(const FabricArtifactView &view,
   } else {
     return invalid("boundary occurrence has an unsupported endpoint shape");
   }
-  builder.addFragment(allTraversalsSelector(witnesses), std::move(arcs));
+  builder.addFragment(anyTraversalSelector(witnesses), std::move(arcs));
   return builder.finish();
 }
 
@@ -1093,6 +1093,11 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
     switch (selector.kind) {
     case detail::HandshakeFragmentSelectorKind::Always:
       selected = true;
+      for (std::size_t selectedOrdinal = 0;
+           selectedOrdinal < selection.traversals.size(); ++selectedOrdinal)
+        if (containsTraversal(selector.traversalWitnesses,
+                              selection.traversals[selectedOrdinal]))
+          selectedTraversalConsumed[selectedOrdinal] = true;
       break;
     case detail::HandshakeFragmentSelectorKind::AnyTraversal:
       for (std::size_t selectedOrdinal = 0;
