@@ -430,6 +430,26 @@ the schedule depend on implementation-owned neighborhood richness. Anchoring
 the count to canonical selected decisions keeps work proportional to problem
 size and stable as search tactics improve.
 
+Initializer dependencies are explicit because treating an unavailable
+occurrence-relative domain as an empty domain would falsely prove
+infeasibility. Realization and graph-boundary roots can be compared directly by
+MRV. Completing that hard-relation root model before activating dependent
+choices prevents a provisional occurrence from exposing an attachment domain
+that relation propagation later removes. Port, memory-plan, dispatch, and
+exposure choices enter the dependent MRV only when their owner references can
+be resolved. This keeps one generic MRV and rollback protocol without inventing
+placeholder choices or a retry loop per decision kind.
+
+Local-memory byte offsets need a finite search representation. Enumerating
+every fitting byte would make a 4 GiB region contribute billions of choices
+even though, under the current containment and non-overlap contract, empty
+gaps carry no meaning. Canonically left-compacting bindings on each selected
+target preserves every feasible target assignment: any non-overlapping set of
+finite intervals can be shifted left in canonical binding order without
+changing target, dispatch, exposure, or capacity facts. The Candidate still
+stores the exact resulting offset, while the initializer avoids turning
+address-space size into search complexity.
+
 The search PRNG and acceptance test use fixed integer protocols because a
 named engine without exact seed framing still permits implementations to
 diverge. Domain-separated SHA-256 gives every seed and purpose an independent,

@@ -47,7 +47,6 @@ public:
   static llvm::Expected<InitializerRelationModel>
   create(std::vector<PnrIndex> decisionChoiceCounts,
          std::vector<InitializerRelationInput> relations);
-
   llvm::ArrayRef<PnrIndex> decisionChoiceOffsets() const {
     return decisionChoiceOffsets_;
   }
@@ -115,7 +114,9 @@ struct InitializerRelationSolveResult final {
 
 class InitializerRelationSolver final {
 public:
-  explicit InitializerRelationSolver(const InitializerRelationModel &model);
+  explicit InitializerRelationSolver(
+      const InitializerRelationModel &model,
+      llvm::ArrayRef<PnrIndex> independentChoiceCounts = {});
 
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonical(std::uint64_t assignmentLimit);
@@ -155,9 +156,6 @@ private:
   llvm::ArrayRef<PnrIndex>
   buildChoiceOrder(PnrIndex decision,
                    DeterministicPnrRandomStream *diversificationStream);
-  PnrIndex selectRemainingChoice(PnrIndex fenwickOffset,
-                                 PnrIndex remainingCount,
-                                 std::uint64_t selectedRank);
   void rollback(std::size_t journalMark);
   PnrIndex soleChoice(PnrIndex decision) const;
   llvm::Expected<InitializerRelationSolveResult>
@@ -165,6 +163,7 @@ private:
         DeterministicPnrRandomStream *diversificationStream);
 
   const InitializerRelationModel *model_ = nullptr;
+  std::vector<PnrIndex> decisionChoiceOffsets_;
   std::vector<std::uint8_t> activeChoices_;
   std::vector<PnrIndex> domainCounts_;
   std::vector<RemovedChoice> removalJournal_;

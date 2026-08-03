@@ -1798,6 +1798,48 @@ initializer work unit. A work-limit stop is incomplete initialization, not
 infeasibility. The configured seed-attempt slots are fixed before execution;
 a failed slot is never replaced by an extra attempt.
 
+The current legal domain is defined only for an active decision. Realization
+binding decisions and graph-boundary attachment decisions are roots. They
+share one MRV relation model, so independent graph boundaries participate in
+the same singleton propagation and choice ordering as hard realization
+relations. This root relation model reaches a complete assignment before any
+dependent decision becomes active. An occurrence-relative `PortDemand` or
+memory operation plan then resolves against its selected owner. An addressed
+memory dispatch or exposure becomes active only after its exact `MemoryBinding`
+target is selected. Inactive decisions are not empty domains and do not consume
+work or PRNG words.
+
+The canonical typed decision-key order is:
+
+```text
+RealizationBinding(Compute before Memory, owner ordinal)
+GraphBoundaryAttachment(boundary ordinal)
+PortAttachment(demand ordinal)
+MemoryOperationPlan(actor ordinal)
+LogicalMemoryBinding(binding ordinal)
+MemoryUseDispatch(rooted-use ordinal)
+MemoryExposure(exposure ordinal)
+```
+
+Owner arrays define each canonical choice order. The one
+`assignment_attempt_limit_per_seed` applies to the complete attempt across the
+root relation model and every subsequently activated decision; entering a new
+owner stage does not reset it. A globally policy-admitted capacity or
+resource-time violation does not remove an otherwise structurally legal
+initializer choice. It remains a selected Candidate violation for the search
+objective and later closure.
+
+Initializer-local physical offsets do not enumerate every byte in a service
+region. Logical memory bindings become active in canonical binding order. For
+each selected local target, the initializer places the binding immediately
+after the already selected canonical-prefix bindings on that target; a
+BoundaryProxy uses offset zero. This left-compacted projection is complete for
+initializer feasibility because the current local-memory contract observes
+only containment and non-overlap, not gaps. It retains `O(bindings * targets)`
+factorized target work rather than a byte-address Cartesian domain. A later
+typed Action may select any other owner-legal offset when an exact selected
+contract makes that distinction observable.
+
 Transport-routing intent has exactly these scopes:
 
 ```text

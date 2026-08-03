@@ -310,10 +310,6 @@ public:
         buildRealizations(dataflow, techMapping, fabric, *constraints);
     if (!realizations)
       return realizations.takeError();
-    auto bindingRelations = detail::SpatialBindingRelationModel::create(
-        *realizations, *constraints);
-    if (!bindingRelations)
-      return bindingRelations.takeError();
     auto memory = FrozenSpatialMemoryIndexBuilder::build(dataflow, techMapping,
                                                          fabric, *realizations);
     if (!memory)
@@ -331,6 +327,10 @@ public:
         dataflow, techMapping, fabric, *realizations, *transfers, *routing);
     if (!ports)
       return ports.takeError();
+    auto bindingRelations = detail::SpatialBindingRelationModel::create(
+        *realizations, *constraints, *ports);
+    if (!bindingRelations)
+      return bindingRelations.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
         dataflow, techMapping, fabric, *realizations, *resources, *routing);
     if (!handshake)

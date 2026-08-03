@@ -130,7 +130,8 @@ llvm::Expected<PnrIndex> relationDecision(
 llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
 SpatialBindingRelationModel::create(
     const FrozenSpatialRealizationIndex &realizations,
-    const FrozenConstraintIndex &constraints) {
+    const FrozenConstraintIndex &constraints,
+    const FrozenSpatialPortIndex &ports) {
   std::vector<PnrIndex> computeChoiceOffsets;
   std::vector<SpatialComputeBindingChoice> computeChoices;
   std::vector<PnrIndex> computeContextChoiceOrdinals(
@@ -327,10 +328,33 @@ SpatialBindingRelationModel::create(
       std::move(decisionChoiceCounts), std::move(relationInputs));
   if (!relations)
     return relations.takeError();
+  std::vector<PnrIndex> graphBoundaryChoiceCounts;
+  graphBoundaryChoiceCounts.reserve(ports.graphBoundaries().size());
+  PnrIndex flattenedInitializerChoiceCount =
+      relations->decisionChoiceOffsets().back();
+  for (const FrozenSpatialGraphBoundary &boundary : ports.graphBoundaries()) {
+    if (boundary.attachmentOptionCount == 0)
+      return llvm::make_error<SpatialPnrFreezeFailure>(
+          SpatialPnrFreezeFailureKind::Invalid,
+          "Spatial graph boundary has an empty attachment domain");
+    if (boundary.attachmentOptionCount >
+        getPnrIndexMax() - flattenedInitializerChoiceCount)
+      return llvm::make_error<SpatialPnrFreezeFailure>(
+          SpatialPnrFreezeFailureKind::Invalid,
+          "Spatial initializer choice domain overflows PnrIndex");
+    flattenedInitializerChoiceCount += boundary.attachmentOptionCount;
+    graphBoundaryChoiceCounts.push_back(boundary.attachmentOptionCount);
+  }
+  if (graphBoundaryChoiceCounts.size() >
+      getPnrIndexMax() - relations->decisionCount())
+    return llvm::make_error<SpatialPnrFreezeFailure>(
+        SpatialPnrFreezeFailureKind::Invalid,
+        "Spatial initializer decision domain overflows PnrIndex");
   return std::shared_ptr<const SpatialBindingRelationModel>(
       new SpatialBindingRelationModel(
-          std::move(*relations), std::move(computeChoiceOffsets),
-          std::move(computeChoices), std::move(computeContextChoiceOrdinals),
+          std::move(*relations), std::move(graphBoundaryChoiceCounts),
+          std::move(computeChoiceOffsets), std::move(computeChoices),
+          std::move(computeContextChoiceOrdinals),
           std::move(memoryChoiceOffsets), std::move(memoryChoices),
           std::move(memoryPlacementChoiceOrdinals), deferredProjection));
 }

@@ -509,6 +509,8 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const pnr::FrozenSpatialPnrProblemHandle &problem) {
   auto first = take(pnr::createCanonicalSpatialCandidate(problem));
   auto second = take(pnr::createCanonicalSpatialCandidate(problem));
+  const auto canonicalAttempt =
+      take(pnr::createSpatialCandidateInitializerAttempt(problem, 0));
   const auto &realizations = problem->realizations();
 
   for (pnr::PnrIndex index = 0;
@@ -516,12 +518,15 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const auto &record = realizations.computeRealizations()[index];
     const auto &binding = first->computeBinding(index);
     const auto &repeat = second->computeBinding(index);
+    const auto &attemptZero = canonicalAttempt.candidate->computeBinding(index);
     if (binding.placement != record.placementOffset ||
         binding.instructionContext !=
             realizations.computePlacements()[record.placementOffset]
                 .contextOffset ||
         binding.placement != repeat.placement ||
-        binding.instructionContext != repeat.instructionContext)
+        binding.instructionContext != repeat.instructionContext ||
+        binding.placement != attemptZero.placement ||
+        binding.instructionContext != attemptZero.instructionContext)
       fail("canonical initializer changed compute choice order");
     const auto envelopeOffsets =
         problem->capacity().computeInstructionContextEnvelopeOffsets();
@@ -537,7 +542,9 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const auto &record = realizations.memoryRealizations()[index];
     if (first->memoryBinding(index).placement != record.placementOffset ||
         first->memoryBinding(index).placement !=
-            second->memoryBinding(index).placement)
+            second->memoryBinding(index).placement ||
+        first->memoryBinding(index).placement !=
+            canonicalAttempt.candidate->memoryBinding(index).placement)
       fail("canonical initializer changed memory choice order");
   }
   for (pnr::PnrIndex demand = 0; demand < problem->ports().portDemands().size();
@@ -557,7 +564,9 @@ void loom::test::exerciseCanonicalCandidateInitialization(
         problem->ports().placementDomains()[record.placementDomainOffset +
                                             placement - ownerOffset];
     if (first->portAttachment(demand) != domain.attachmentOptionOffset ||
-        first->portAttachment(demand) != second->portAttachment(demand))
+        first->portAttachment(demand) != second->portAttachment(demand) ||
+        first->portAttachment(demand) !=
+            canonicalAttempt.candidate->portAttachment(demand))
       fail("canonical initializer changed port attachment order");
   }
   for (pnr::PnrIndex boundary = 0;
@@ -566,7 +575,9 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     if (first->graphBoundaryAttachment(boundary) !=
             record.attachmentOptionOffset ||
         first->graphBoundaryAttachment(boundary) !=
-            second->graphBoundaryAttachment(boundary))
+            second->graphBoundaryAttachment(boundary) ||
+        first->graphBoundaryAttachment(boundary) !=
+            canonicalAttempt.candidate->graphBoundaryAttachment(boundary))
       fail("canonical initializer changed graph-boundary attachment order");
   }
   for (pnr::PnrIndex actor = 0; actor < realizations.memoryActors().size();
@@ -582,7 +593,10 @@ void loom::test::exerciseCanonicalCandidateInitialization(
         problem->handshake()
             .memoryOperationDomains()[domainOffset + localActor];
     if (first->memoryOperationPlan(actor) != domain.planOffset ||
-        first->memoryOperationPlan(actor) != second->memoryOperationPlan(actor))
+        first->memoryOperationPlan(actor) !=
+            second->memoryOperationPlan(actor) ||
+        first->memoryOperationPlan(actor) !=
+            canonicalAttempt.candidate->memoryOperationPlan(actor))
       fail("canonical initializer changed memory plan order");
   }
   for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
@@ -592,6 +606,122 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       fail("candidate initializer hid the explicit global routing action");
   requireSuccess(first->verify());
   requireSuccess(second->verify());
+  requireSuccess(canonicalAttempt.candidate->verify());
+
+  if (canonicalAttempt.assignmentAttempts >
+      problem->config()
+          .policy()
+          .search.initializer.assignmentAttemptLimitPerSeed)
+    fail("Spatial initializer exceeded its assignment work limit");
+
+  bool observedDependentDiversification = false;
+  for (std::uint32_t attempt = 1;
+       attempt < problem->config().policy().search.initializer.seedAttemptCount;
+       ++attempt) {
+    const auto diversified =
+        take(pnr::createSpatialCandidateInitializerAttempt(problem, attempt));
+    const auto replay =
+        take(pnr::createSpatialCandidateInitializerAttempt(problem, attempt));
+    requireSuccess(diversified.candidate->verify());
+    requireSuccess(replay.candidate->verify());
+    if (diversified.assignmentAttempts != replay.assignmentAttempts ||
+        diversified.assignmentAttempts >
+            problem->config()
+                .policy()
+                .search.initializer.assignmentAttemptLimitPerSeed)
+      fail("fixed Spatial initializer slot changed its work accounting");
+
+    for (pnr::PnrIndex realization = 0;
+         realization < realizations.computeRealizations().size();
+         ++realization) {
+      const auto &selected = diversified.candidate->computeBinding(realization);
+      const auto &repeated = replay.candidate->computeBinding(realization);
+      if (selected.placement != repeated.placement ||
+          selected.instructionContext != repeated.instructionContext)
+        fail("fixed Spatial initializer slot changed a compute binding");
+    }
+    for (pnr::PnrIndex realization = 0;
+         realization < realizations.memoryRealizations().size(); ++realization)
+      if (diversified.candidate->memoryBinding(realization).placement !=
+          replay.candidate->memoryBinding(realization).placement)
+        fail("fixed Spatial initializer slot changed a memory binding");
+
+    for (pnr::PnrIndex demand = 0;
+         demand < problem->ports().portDemands().size(); ++demand) {
+      if (diversified.candidate->portAttachment(demand) !=
+          replay.candidate->portAttachment(demand))
+        fail("fixed Spatial initializer slot changed a port attachment");
+      observedDependentDiversification |=
+          diversified.candidate->portAttachment(demand) !=
+          canonicalAttempt.candidate->portAttachment(demand);
+    }
+    for (pnr::PnrIndex boundary = 0;
+         boundary < problem->ports().graphBoundaries().size(); ++boundary) {
+      if (diversified.candidate->graphBoundaryAttachment(boundary) !=
+          replay.candidate->graphBoundaryAttachment(boundary))
+        fail("fixed Spatial initializer slot changed a boundary attachment");
+      observedDependentDiversification |=
+          diversified.candidate->graphBoundaryAttachment(boundary) !=
+          canonicalAttempt.candidate->graphBoundaryAttachment(boundary);
+    }
+    for (pnr::PnrIndex actor = 0; actor < realizations.memoryActors().size();
+         ++actor) {
+      if (diversified.candidate->memoryOperationPlan(actor) !=
+          replay.candidate->memoryOperationPlan(actor))
+        fail("fixed Spatial initializer slot changed a memory plan");
+      observedDependentDiversification |=
+          diversified.candidate->memoryOperationPlan(actor) !=
+          canonicalAttempt.candidate->memoryOperationPlan(actor);
+    }
+    for (pnr::PnrIndex binding = 0;
+         binding < problem->memory().logicalBindings().size(); ++binding) {
+      const auto &selected =
+          diversified.candidate->logicalMemoryBinding(binding);
+      const auto &repeated = replay.candidate->logicalMemoryBinding(binding);
+      if (selected.target != repeated.target ||
+          selected.physicalOffsetBytes != repeated.physicalOffsetBytes)
+        fail("fixed Spatial initializer slot changed a logical-memory binding");
+      observedDependentDiversification |=
+          selected.target !=
+              canonicalAttempt.candidate->logicalMemoryBinding(binding)
+                  .target ||
+          selected.physicalOffsetBytes !=
+              canonicalAttempt.candidate->logicalMemoryBinding(binding)
+                  .physicalOffsetBytes;
+    }
+    for (pnr::PnrIndex use = 0; use < problem->memory().rootedUses().size();
+         ++use) {
+      if (diversified.candidate->memoryUseDispatch(use) !=
+          replay.candidate->memoryUseDispatch(use))
+        fail("fixed Spatial initializer slot changed a memory dispatch");
+      observedDependentDiversification |=
+          diversified.candidate->memoryUseDispatch(use) !=
+          canonicalAttempt.candidate->memoryUseDispatch(use);
+    }
+    for (pnr::PnrIndex exposure = 0;
+         exposure < problem->memory().exposures().size(); ++exposure) {
+      if (diversified.candidate->memoryExposureSelection(exposure) !=
+          replay.candidate->memoryExposureSelection(exposure))
+        fail("fixed Spatial initializer slot changed a memory exposure");
+      observedDependentDiversification |=
+          diversified.candidate->memoryExposureSelection(exposure) !=
+          canonicalAttempt.candidate->memoryExposureSelection(exposure);
+    }
+    for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
+         ++net)
+      if (!diversified.candidate->routeTree(net).isUnrouted() ||
+          !replay.candidate->routeTree(net).isUnrouted())
+        fail("Spatial initializer slot hid its global routing Action");
+  }
+
+  if (!observedDependentDiversification)
+    fail("fixed Spatial initializer slots did not diversify dependent choices");
+
+  auto foreignAttempt = pnr::createSpatialCandidateInitializerAttempt(
+      problem, problem->config().policy().search.initializer.seedAttemptCount);
+  if (foreignAttempt)
+    fail("Spatial initializer accepted an out-of-range fixed slot");
+  llvm::consumeError(foreignAttempt.takeError());
 
   pnr::SpatialActionDomainScratch actionDomain;
   requireSuccess(actionDomain.prepare(*problem));

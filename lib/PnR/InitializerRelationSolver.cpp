@@ -1,5 +1,7 @@
 #include "InitializerRelationSolver.h"
 
+#include "InitializerChoiceOrder.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -158,12 +160,21 @@ llvm::Error InitializerRelationModel::verifyChoices(
 }
 
 InitializerRelationSolver::InitializerRelationSolver(
-    const InitializerRelationModel &model)
-    : model_(&model) {
-  const auto offsets = model.decisionChoiceOffsets();
-  const std::size_t choiceCount = offsets.empty() ? 0 : offsets.back();
+    const InitializerRelationModel &model,
+    llvm::ArrayRef<PnrIndex> independentChoiceCounts)
+    : model_(&model), decisionChoiceOffsets_(model.decisionChoiceOffsets()) {
+  assert(independentChoiceCounts.size() <=
+         getPnrIndexMax() - model.decisionCount());
+  decisionChoiceOffsets_.reserve(decisionChoiceOffsets_.size() +
+                                 independentChoiceCounts.size());
+  PnrIndex choiceCount = decisionChoiceOffsets_.back();
+  for (PnrIndex count : independentChoiceCounts) {
+    assert(count != 0 && count <= getPnrIndexMax() - choiceCount);
+    choiceCount += count;
+    decisionChoiceOffsets_.push_back(choiceCount);
+  }
   activeChoices_.resize(choiceCount);
-  domainCounts_.resize(offsets.empty() ? 0 : offsets.size() - 1);
+  domainCounts_.resize(decisionChoiceOffsets_.size() - 1);
   removalJournal_.reserve(choiceCount);
   relationQueue_.resize(model.relations().size());
   relationPending_.resize(model.relations().size());
@@ -182,9 +193,9 @@ void InitializerRelationSolver::clearQueue() {
 
 void InitializerRelationSolver::reset() {
   std::fill(activeChoices_.begin(), activeChoices_.end(), 1);
-  const auto offsets = model_->decisionChoiceOffsets();
   for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision)
-    domainCounts_[decision] = offsets[decision + 1] - offsets[decision];
+    domainCounts_[decision] =
+        decisionChoiceOffsets_[decision + 1] - decisionChoiceOffsets_[decision];
   removalJournal_.clear();
   clearQueue();
   assignmentAttempts_ = 0;
@@ -203,6 +214,8 @@ void InitializerRelationSolver::enqueueRelation(PnrIndex relation) {
 }
 
 void InitializerRelationSolver::enqueueDecisionRelations(PnrIndex decision) {
+  if (decision >= model_->decisionCount())
+    return;
   const auto offsets = model_->decisionRelationOffsets();
   for (PnrIndex relation : model_->decisionRelations().slice(
            offsets[decision], offsets[decision + 1] - offsets[decision]))
@@ -211,14 +224,12 @@ void InitializerRelationSolver::enqueueDecisionRelations(PnrIndex decision) {
 
 bool InitializerRelationSolver::choiceActive(PnrIndex decision,
                                              PnrIndex localChoice) const {
-  return activeChoices_[model_->decisionChoiceOffsets()[decision] +
-                        localChoice] != 0;
+  return activeChoices_[decisionChoiceOffsets_[decision] + localChoice] != 0;
 }
 
 bool InitializerRelationSolver::removeChoice(PnrIndex decision,
                                              PnrIndex localChoice) {
-  const PnrIndex choice =
-      model_->decisionChoiceOffsets()[decision] + localChoice;
+  const PnrIndex choice = decisionChoiceOffsets_[decision] + localChoice;
   if (!activeChoices_[choice])
     return domainCounts_[decision] != 0;
   activeChoices_[choice] = 0;
@@ -256,10 +267,10 @@ bool InitializerRelationSolver::equalChoiceSupported(
       continue;
 
     bool supported = false;
-    const PnrIndex count = domainCounts_[other] == 0
-                               ? 0
-                               : model_->decisionChoiceOffsets()[other + 1] -
-                                     model_->decisionChoiceOffsets()[other];
+    const PnrIndex count =
+        domainCounts_[other] == 0
+            ? 0
+            : decisionChoiceOffsets_[other + 1] - decisionChoiceOffsets_[other];
     for (PnrIndex choice = 0; choice < count && !supported; ++choice) {
       if (!choiceActive(other, choice))
         continue;
@@ -310,8 +321,8 @@ bool InitializerRelationSolver::disjointChoiceSupported(
       continue;
 
     bool supported = false;
-    const PnrIndex count = model_->decisionChoiceOffsets()[other + 1] -
-                           model_->decisionChoiceOffsets()[other];
+    const PnrIndex count =
+        decisionChoiceOffsets_[other + 1] - decisionChoiceOffsets_[other];
     for (PnrIndex choice = 0; choice < count && !supported; ++choice) {
       if (!choiceActive(other, choice))
         continue;
@@ -389,8 +400,8 @@ bool InitializerRelationSolver::propagate() {
         firstOccurrence &= members[earlier].decision != decision;
       if (!firstOccurrence)
         continue;
-      const PnrIndex count = model_->decisionChoiceOffsets()[decision + 1] -
-                             model_->decisionChoiceOffsets()[decision];
+      const PnrIndex count = decisionChoiceOffsets_[decision + 1] -
+                             decisionChoiceOffsets_[decision];
       for (PnrIndex choice = 0; choice < count; ++choice)
         if (choiceActive(decision, choice) &&
             !relationChoiceSupported(relation, decision, choice) &&
@@ -403,8 +414,8 @@ bool InitializerRelationSolver::propagate() {
 
 PnrIndex InitializerRelationSolver::soleChoice(PnrIndex decision) const {
   assert(domainCounts_[decision] == 1);
-  const PnrIndex count = model_->decisionChoiceOffsets()[decision + 1] -
-                         model_->decisionChoiceOffsets()[decision];
+  const PnrIndex count =
+      decisionChoiceOffsets_[decision + 1] - decisionChoiceOffsets_[decision];
   for (PnrIndex choice = 0; choice < count; ++choice)
     if (choiceActive(decision, choice))
       return choice;
@@ -417,7 +428,7 @@ void InitializerRelationSolver::rollback(std::size_t journalMark) {
     const RemovedChoice removed = removalJournal_.back();
     removalJournal_.pop_back();
     const PnrIndex choice =
-        model_->decisionChoiceOffsets()[removed.decision] + removed.localChoice;
+        decisionChoiceOffsets_[removed.decision] + removed.localChoice;
     assert(!activeChoices_[choice]);
     activeChoices_[choice] = 1;
     ++domainCounts_[removed.decision];
@@ -445,8 +456,8 @@ InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
     return SearchResult::Solved;
   }
 
-  const PnrIndex choiceCount = model_->decisionChoiceOffsets()[selected + 1] -
-                               model_->decisionChoiceOffsets()[selected];
+  const PnrIndex choiceCount =
+      decisionChoiceOffsets_[selected + 1] - decisionChoiceOffsets_[selected];
   const llvm::ArrayRef<PnrIndex> choiceOrder =
       buildChoiceOrder(selected, diversificationStream);
   for (PnrIndex selectedChoice : choiceOrder) {
@@ -468,62 +479,22 @@ InitializerRelationSolver::SearchResult InitializerRelationSolver::search(
   return SearchResult::Contradiction;
 }
 
-PnrIndex InitializerRelationSolver::selectRemainingChoice(
-    PnrIndex fenwickOffset, PnrIndex activeCount, std::uint64_t selectedRank) {
-  PnrIndex step = 1;
-  while (step <= activeCount / 2)
-    step *= 2;
-
-  PnrIndex prefix = 0;
-  for (; step != 0; step /= 2) {
-    const PnrIndex next = prefix + step;
-    if (next > activeCount)
-      continue;
-    const PnrIndex count = choiceFenwick_[fenwickOffset + next - 1];
-    if (count <= selectedRank) {
-      selectedRank -= count;
-      prefix = next;
-    }
-  }
-  assert(prefix < activeCount && "selected rank exceeds active domain");
-
-  for (PnrIndex index = prefix + 1; index <= activeCount;
-       index += index & (0 - index)) {
-    PnrIndex &count = choiceFenwick_[fenwickOffset + index - 1];
-    assert(count != 0 && "selected initializer choice was already removed");
-    --count;
-  }
-  return prefix;
-}
-
 llvm::ArrayRef<PnrIndex> InitializerRelationSolver::buildChoiceOrder(
     PnrIndex decision, DeterministicPnrRandomStream *diversificationStream) {
-  const PnrIndex choiceOffset = model_->decisionChoiceOffsets()[decision];
+  const PnrIndex choiceOffset = decisionChoiceOffsets_[decision];
   const PnrIndex choiceCount =
-      model_->decisionChoiceOffsets()[decision + 1] - choiceOffset;
+      decisionChoiceOffsets_[decision + 1] - choiceOffset;
   PnrIndex activeCount = 0;
   for (PnrIndex choice = 0; choice < choiceCount; ++choice)
     if (choiceActive(decision, choice))
       canonicalActiveChoices_[choiceOffset + activeCount++] = choice;
   assert(activeCount == domainCounts_[decision]);
 
-  if (!diversificationStream) {
-    std::copy_n(canonicalActiveChoices_.begin() + choiceOffset, activeCount,
-                choiceOrder_.begin() + choiceOffset);
-    return llvm::ArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
-  }
-
-  for (PnrIndex local = 1; local <= activeCount; ++local)
-    choiceFenwick_[choiceOffset + local - 1] = local & (0 - local);
-  for (PnrIndex position = 0; position < activeCount; ++position) {
-    const std::uint64_t remaining = activeCount - position;
-    const std::uint64_t rank =
-        llvm::cantFail(diversificationStream->nextBounded(remaining));
-    const PnrIndex selected =
-        selectRemainingChoice(choiceOffset, activeCount, rank);
-    choiceOrder_[choiceOffset + position] =
-        canonicalActiveChoices_[choiceOffset + selected];
-  }
+  llvm::cantFail(buildInitializerChoiceOrder(
+      llvm::ArrayRef(canonicalActiveChoices_).slice(choiceOffset, activeCount),
+      diversificationStream,
+      llvm::MutableArrayRef(choiceOrder_).slice(choiceOffset, activeCount),
+      llvm::MutableArrayRef(choiceFenwick_).slice(choiceOffset, activeCount)));
   return llvm::ArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
 }
 
@@ -562,9 +533,9 @@ llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
 }
 
 std::size_t InitializerRelationSolver::retainedStorageBytes() const {
-  return retainedBytes(activeChoices_) + retainedBytes(domainCounts_) +
-         retainedBytes(removalJournal_) + retainedBytes(relationQueue_) +
-         retainedBytes(relationPending_) +
+  return retainedBytes(decisionChoiceOffsets_) + retainedBytes(activeChoices_) +
+         retainedBytes(domainCounts_) + retainedBytes(removalJournal_) +
+         retainedBytes(relationQueue_) + retainedBytes(relationPending_) +
          retainedBytes(canonicalActiveChoices_) + retainedBytes(choiceOrder_) +
          retainedBytes(choiceFenwick_);
 }

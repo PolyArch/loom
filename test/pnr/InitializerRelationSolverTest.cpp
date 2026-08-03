@@ -158,6 +158,33 @@ void diversifiedSearchUsesExactWithoutReplacementOrder() {
     fail("diversified initializer replay changed its assignment");
 }
 
+void independentRootDecisionsParticipateInMrvOrdering() {
+  InitializerRelationModel bindingModel = makeModel({3}, {});
+  const std::vector<PnrIndex> independentChoiceCounts = {2};
+  InitializerRelationSolver solver(bindingModel, independentChoiceCounts);
+  auto stream = DeterministicPnrRandomStream::create(
+      /*masterSeed=*/91, /*seedIndex=*/2,
+      PnrRandomStreamPurpose::InitializerDiversification);
+  auto expectedStream = DeterministicPnrRandomStream::create(
+      /*masterSeed=*/91, /*seedIndex=*/2,
+      PnrRandomStreamPurpose::InitializerDiversification);
+
+  const PnrIndex independentFirst =
+      static_cast<PnrIndex>(take(expectedStream.nextBounded(2)));
+  take(expectedStream.nextBounded(1));
+  const PnrIndex bindingFirst =
+      static_cast<PnrIndex>(take(expectedStream.nextBounded(3)));
+  take(expectedStream.nextBounded(2));
+  take(expectedStream.nextBounded(1));
+
+  const auto result = take(solver.solveDiversified(
+      /*assignmentLimit=*/2, stream));
+  if (result.choices !=
+          std::vector<PnrIndex>({bindingFirst, independentFirst}) ||
+      result.assignmentAttempts != 2)
+    fail("independent root decision did not participate in exact MRV order");
+}
+
 } // namespace
 
 int main() {
@@ -166,5 +193,6 @@ int main() {
   workLimitDoesNotBecomeInfeasibility();
   sparseDomainsReusePreparedStorage();
   diversifiedSearchUsesExactWithoutReplacementOrder();
+  independentRootDecisionsParticipateInMrvOrdering();
   return 0;
 }

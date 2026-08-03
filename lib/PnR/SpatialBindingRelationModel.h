@@ -28,9 +28,13 @@ class SpatialBindingRelationModel final {
 public:
   static llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
   create(const FrozenSpatialRealizationIndex &realizations,
-         const FrozenConstraintIndex &constraints);
+         const FrozenConstraintIndex &constraints,
+         const FrozenSpatialPortIndex &ports);
 
   const InitializerRelationModel &relations() const { return relations_; }
+  llvm::ArrayRef<PnrIndex> initializerIndependentChoiceCounts() const {
+    return initializerIndependentChoiceCounts_;
+  }
   PnrIndex computeDecisionCount() const {
     return static_cast<PnrIndex>(computeChoiceOffsets_.size() - 1);
   }
@@ -60,6 +64,7 @@ public:
 private:
   SpatialBindingRelationModel(
       InitializerRelationModel relations,
+      std::vector<PnrIndex> initializerIndependentChoiceCounts,
       std::vector<PnrIndex> computeChoiceOffsets,
       std::vector<SpatialComputeBindingChoice> computeChoices,
       std::vector<PnrIndex> computeContextChoiceOrdinals,
@@ -68,6 +73,8 @@ private:
       std::vector<PnrIndex> memoryPlacementChoiceOrdinals,
       std::optional<::mapping::SpatialConstraintProjection> deferredProjection)
       : relations_(std::move(relations)),
+        initializerIndependentChoiceCounts_(
+            std::move(initializerIndependentChoiceCounts)),
         computeChoiceOffsets_(std::move(computeChoiceOffsets)),
         computeChoices_(std::move(computeChoices)),
         computeContextChoiceOrdinals_(std::move(computeContextChoiceOrdinals)),
@@ -78,6 +85,7 @@ private:
         deferredProjection_(deferredProjection) {}
 
   InitializerRelationModel relations_;
+  std::vector<PnrIndex> initializerIndependentChoiceCounts_;
   std::vector<PnrIndex> computeChoiceOffsets_;
   std::vector<SpatialComputeBindingChoice> computeChoices_;
   std::vector<PnrIndex> computeContextChoiceOrdinals_;
