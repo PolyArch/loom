@@ -320,6 +320,12 @@ public:
       return index >= offset && index - offset < count;
     };
 
+    if (realizations.computeActorRealizations().size() !=
+            realizations.computeActors().size() ||
+        realizations.memoryActorRealizations().size() !=
+            realizations.memoryActors().size())
+      return invalid("actor-owner reverse projections are incomplete");
+
     for (auto [ordinal, realization] :
          llvm::enumerate(realizations.computeRealizations())) {
       if (!rangeFits(realization.actorOffset, realization.actorCount,
@@ -328,6 +334,11 @@ public:
                      realizations.computePlacements().size()) ||
           realization.placementCount == 0)
         return invalid("compute realization slices are inconsistent");
+      for (PnrIndex localActor = 0; localActor < realization.actorCount;
+           ++localActor)
+        if (realizations.computeActorRealizations()[realization.actorOffset +
+                                                    localActor] != ordinal)
+          return invalid("compute actor-owner projection is inconsistent");
       for (const FrozenSpatialComputePlacement &placement :
            realizations.computePlacements().slice(realization.placementOffset,
                                                   realization.placementCount)) {
@@ -346,6 +357,11 @@ public:
                      realizations.memoryPlacements().size()) ||
           realization.placementCount == 0)
         return invalid("memory realization slices are inconsistent");
+      for (PnrIndex localActor = 0; localActor < realization.actorCount;
+           ++localActor)
+        if (realizations.memoryActorRealizations()[realization.actorOffset +
+                                                   localActor] != ordinal)
+          return invalid("memory actor-owner projection is inconsistent");
       for (const FrozenSpatialMemoryPlacement &placement :
            realizations.memoryPlacements().slice(realization.placementOffset,
                                                  realization.placementCount))
@@ -594,8 +610,10 @@ private:
               preflightAppend(actorCountContext, result.computeActors_.size(),
                               realization.actors.size()))
         return error;
-      for (const TechComputeActorView &actor : realization.actors)
+      for (const TechComputeActorView &actor : realization.actors) {
         result.computeActors_.push_back(actor.actor);
+        result.computeActorRealizations_.push_back(*realizationIndex);
+      }
       auto actorCount = checked(actorCountContext, realization.actors.size());
       if (!actorCount)
         return actorCount.takeError();
@@ -687,8 +705,10 @@ private:
               preflightAppend(actorCountContext, result.memoryActors_.size(),
                               realization.actors.size()))
         return error;
-      for (const TechMemoryActorView &actor : realization.actors)
+      for (const TechMemoryActorView &actor : realization.actors) {
         result.memoryActors_.push_back({actor.actor, actor.operationPort});
+        result.memoryActorRealizations_.push_back(*realizationIndex);
+      }
       auto actorCount = checked(actorCountContext, realization.actors.size());
       if (!actorCount)
         return actorCount.takeError();

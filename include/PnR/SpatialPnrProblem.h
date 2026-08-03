@@ -68,6 +68,9 @@ public:
   llvm::ArrayRef<::dataflow::ActorRef> computeActors() const {
     return computeActors_;
   }
+  llvm::ArrayRef<PnrIndex> computeActorRealizations() const {
+    return computeActorRealizations_;
+  }
   llvm::ArrayRef<FrozenSpatialComputePlacement> computePlacements() const {
     return computePlacements_;
   }
@@ -81,6 +84,9 @@ public:
   llvm::ArrayRef<FrozenSpatialMemoryActorBinding> memoryActors() const {
     return memoryActors_;
   }
+  llvm::ArrayRef<PnrIndex> memoryActorRealizations() const {
+    return memoryActorRealizations_;
+  }
   llvm::ArrayRef<FrozenSpatialMemoryPlacement> memoryPlacements() const {
     return memoryPlacements_;
   }
@@ -88,11 +94,13 @@ public:
 private:
   std::vector<FrozenSpatialComputeRealization> computeRealizations_;
   std::vector<::dataflow::ActorRef> computeActors_;
+  std::vector<PnrIndex> computeActorRealizations_;
   std::vector<FrozenSpatialComputePlacement> computePlacements_;
   std::vector<::loom::fabric::InstructionContextRef>
       computeInstructionContexts_;
   std::vector<FrozenSpatialMemoryRealization> memoryRealizations_;
   std::vector<FrozenSpatialMemoryActorBinding> memoryActors_;
+  std::vector<PnrIndex> memoryActorRealizations_;
   std::vector<FrozenSpatialMemoryPlacement> memoryPlacements_;
 
   friend class FrozenSpatialPnrProblemBuilder;

@@ -646,6 +646,21 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingEndpoints().empty() ||
       frozen->routing().routingArcs().empty())
     fail("aggregate Spatial freeze omitted realizations or routing topology");
+  if (frozen->realizations().computeActorRealizations().size() !=
+          frozen->realizations().computeActors().size() ||
+      frozen->realizations().memoryActorRealizations().size() !=
+          frozen->realizations().memoryActors().size())
+    fail("aggregate Spatial freeze omitted actor-owner reverse projection");
+  for (auto [actorOrdinal, owner] :
+       llvm::enumerate(frozen->realizations().memoryActorRealizations())) {
+    if (owner >= frozen->realizations().memoryRealizations().size())
+      fail("memory actor-owner reverse projection is out of range");
+    const auto &realization =
+        frozen->realizations().memoryRealizations()[owner];
+    if (actorOrdinal < realization.actorOffset ||
+        actorOrdinal - realization.actorOffset >= realization.actorCount)
+      fail("memory actor-owner reverse projection changed its owner slice");
+  }
   const auto &handshake = frozen->handshake();
   if (handshake.nodeSignals().size() != handshake.nodeCount() ||
       handshake.adjacencyOffsets().size() != handshake.nodeCount() + 1 ||
