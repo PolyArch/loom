@@ -14,11 +14,40 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr {
 
 class SpatialActionExecutorScratch;
+
+enum class SpatialActionTransitionFailureKind : std::uint8_t {
+  IntrinsicInvalid,
+  WorkLimit,
+};
+
+/// A well-formed Action that cannot produce a candidate transition. Search
+/// consumes the proposal slot and continues; malformed Actions and owner
+/// invariant failures use their original errors and terminate the invocation.
+class SpatialActionTransitionFailure final
+    : public llvm::ErrorInfo<SpatialActionTransitionFailure> {
+public:
+  static char ID;
+
+  SpatialActionTransitionFailure(SpatialActionTransitionFailureKind kind,
+                                 std::string message)
+      : kind_(kind), message_(std::move(message)) {}
+
+  SpatialActionTransitionFailureKind kind() const { return kind_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SpatialActionTransitionFailureKind kind_;
+  std::string message_;
+};
 
 struct SpatialActionResolution final {
   bool accepted = false;

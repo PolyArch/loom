@@ -9,6 +9,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <system_error>
 
 using namespace loom;
@@ -79,6 +80,7 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   transportChoices_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
+  movableDecisionCount_ = 0;
   realizationAnchors_.reserve(realizationAnchorCapacity);
   realizationChoices_.reserve(realizationChoiceCapacity);
   transportAnchors_.reserve(*transportChoiceCapacity);
@@ -103,6 +105,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   transportChoices_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
+  movableDecisionCount_ = 0;
 
   const auto currentRelationChoices =
       llvm::ArrayRef(candidate.bindingRelationChoices_);
@@ -126,6 +129,9 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (!checkedCount)
       return checkedCount.takeError();
     realizationAnchors_.push_back({*checkedOffset, *checkedCount});
+    if (movableDecisionCount_ == std::numeric_limits<std::uint64_t>::max())
+      return invalid("movable decision count overflows u64");
+    ++movableDecisionCount_;
     return llvm::Error::success();
   };
   const auto relationChoiceIsLegal = [&](PnrIndex decision,
@@ -191,6 +197,10 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (llvm::Error error =
             appendTransport(SpatialWholeNetRoutingAction{logicalNet}))
       return error;
+  if (preparedProblem_->transfers().logicalNets().size() >
+      std::numeric_limits<std::uint64_t>::max() - movableDecisionCount_)
+    return invalid("movable decision count overflows u64");
+  movableDecisionCount_ += preparedProblem_->transfers().logicalNets().size();
   if (!preparedProblem_->transfers().logicalNets().empty())
     if (llvm::Error error = appendTransport(SpatialGlobalRoutingAction{}))
       return error;
@@ -208,6 +218,9 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (!checkedCount)
       return checkedCount.takeError();
     resourceAnchors_.push_back({*checkedOffset, *checkedCount});
+    if (movableDecisionCount_ == std::numeric_limits<std::uint64_t>::max())
+      return invalid("movable decision count overflows u64");
+    ++movableDecisionCount_;
     return llvm::Error::success();
   };
 

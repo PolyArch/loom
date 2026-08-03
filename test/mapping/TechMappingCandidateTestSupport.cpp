@@ -10,6 +10,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialActionExecutor.h"
+#include "PnR/SpatialAnnealingSearch.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialObjective.h"
@@ -598,6 +599,12 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       actionDomain.retainedStorageBytes();
   requireSuccess(actionDomain.rebuild(*first));
   const pnr::SpatialActionProposalDomain firstDomain = actionDomain.view();
+  const std::uint64_t movableDecisionCount =
+      firstDomain.realizationAnchors.size() +
+      problem->transfers().logicalNets().size() +
+      firstDomain.resourceAnchors.size();
+  if (actionDomain.movableDecisionCount() != movableDecisionCount)
+    fail("Spatial Action domain miscounted movable decisions");
   if (firstDomain.realizationChoices.empty() &&
       firstDomain.transportChoices.empty() &&
       firstDomain.resourceChoices.empty())
@@ -654,8 +661,10 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   if (actionDomain.retainedStorageBytes() != retainedActionDomainBytes)
     fail("Spatial Action domain allocated while rebuilding a candidate");
   requireSuccess(actionDomain.rebuild(*second));
-  if (actionDomain.retainedStorageBytes() != retainedActionDomainBytes)
-    fail("Spatial Action domain grew after its warm rebuild");
+  if (actionDomain.retainedStorageBytes() != retainedActionDomainBytes ||
+      actionDomain.movableDecisionCount() != movableDecisionCount)
+    fail(
+        "warm Spatial Action-domain rebuild changed storage or decision count");
 
   const auto vector = take(problem->objectiveProgram().evaluate(*first));
   if (vector.codes() !=
@@ -663,4 +672,82 @@ void loom::test::exerciseCanonicalCandidateInitialization(
                                      first->capacityOveruse(),
                                      first->totalSelectedTraversalClaim()}))
     fail("Spatial objective adapter changed a Mapping-owned value");
+
+  auto annealedFirst = take(pnr::createCanonicalSpatialCandidate(problem));
+  auto annealedSecond = take(pnr::createCanonicalSpatialCandidate(problem));
+  pnr::SpatialAnnealingSearchScratch firstSearch;
+  pnr::SpatialAnnealingSearchScratch secondSearch;
+  const auto firstStatistics = take(firstSearch.run(*annealedFirst, 0));
+  const auto secondStatistics = take(secondSearch.run(*annealedSecond, 0));
+  if (!(firstStatistics == secondStatistics))
+    fail("Spatial annealing replay changed its search statistics");
+  if (firstStatistics.minimumTemperatureLevelCount != 1 ||
+      firstStatistics.calibrationProposalSlots !=
+          problem->config().policy().search.annealing.calibrationProposalCount)
+    fail("Spatial annealing did not execute its exact fixed schedule");
+
+  const auto requireSameCandidate = [&](const pnr::SpatialCandidateState &lhs,
+                                        const pnr::SpatialCandidateState &rhs) {
+    for (pnr::PnrIndex realization = 0;
+         realization < realizations.computeRealizations().size();
+         ++realization) {
+      const auto &left = lhs.computeBinding(realization);
+      const auto &right = rhs.computeBinding(realization);
+      if (left.placement != right.placement ||
+          left.instructionContext != right.instructionContext)
+        fail("Spatial annealing replay changed a compute binding");
+    }
+    for (pnr::PnrIndex realization = 0;
+         realization < realizations.memoryRealizations().size(); ++realization)
+      if (lhs.memoryBinding(realization).placement !=
+          rhs.memoryBinding(realization).placement)
+        fail("Spatial annealing replay changed a memory binding");
+    for (pnr::PnrIndex demand = 0;
+         demand < problem->ports().portDemands().size(); ++demand)
+      if (lhs.portAttachment(demand) != rhs.portAttachment(demand))
+        fail("Spatial annealing replay changed a port attachment");
+    for (pnr::PnrIndex boundary = 0;
+         boundary < problem->ports().graphBoundaries().size(); ++boundary)
+      if (lhs.graphBoundaryAttachment(boundary) !=
+          rhs.graphBoundaryAttachment(boundary))
+        fail("Spatial annealing replay changed a boundary attachment");
+    for (pnr::PnrIndex actor = 0; actor < realizations.memoryActors().size();
+         ++actor)
+      if (lhs.memoryOperationPlan(actor) != rhs.memoryOperationPlan(actor))
+        fail("Spatial annealing replay changed a memory operation plan");
+    for (pnr::PnrIndex net = 0; net < problem->transfers().logicalNets().size();
+         ++net) {
+      const auto &left = lhs.routeTree(net);
+      const auto &right = rhs.routeTree(net);
+      if (left.sourceEndpoint() != right.sourceEndpoint() ||
+          !llvm::equal(left.nodeStorage(), right.nodeStorage()))
+        fail("Spatial annealing replay changed a RouteTree");
+      for (pnr::PnrIndex sink = 0;
+           sink < problem->transfers().logicalNets()[net].sinkCount; ++sink)
+        if (left.sinkEndpoint(sink) != right.sinkEndpoint(sink))
+          fail("Spatial annealing replay changed a route sink binding");
+    }
+    const auto leftObjective = take(problem->objectiveProgram().evaluate(lhs));
+    const auto rightObjective = take(problem->objectiveProgram().evaluate(rhs));
+    if (leftObjective.codes() != rightObjective.codes())
+      fail("Spatial annealing replay changed its final objective");
+  };
+  requireSuccess(annealedFirst->verify());
+  requireSuccess(annealedSecond->verify());
+  requireSameCandidate(*annealedFirst, *annealedSecond);
+
+  auto annealedReplay = take(pnr::createCanonicalSpatialCandidate(problem));
+  const std::size_t warmStorage = firstSearch.retainedStorageBytes();
+  const auto replayStatistics = take(firstSearch.run(*annealedReplay, 0));
+  if (!(replayStatistics == firstStatistics) ||
+      firstSearch.retainedStorageBytes() != warmStorage)
+    fail("warm Spatial annealing replay changed statistics or storage");
+  requireSameCandidate(*annealedFirst, *annealedReplay);
+
+  auto foreignSeed = firstSearch.run(
+      *annealedReplay,
+      problem->config().policy().search.initializer.seedAttemptCount);
+  if (foreignSeed)
+    fail("Spatial annealing accepted an out-of-range seed ordinal");
+  llvm::consumeError(foreignSeed.takeError());
 }

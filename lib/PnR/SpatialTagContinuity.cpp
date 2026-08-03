@@ -60,7 +60,7 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
           preflightPnrIndexCapacity(nodeCountContext, nodes.size()))
     return error;
   result.segments_.clear();
-  result.nodeSegments_.assign(nodes.size(), getInvalidPnrIndex());
+  result.nodeSegments_.clear();
   result.segmentDomainOffsets_.clear();
   result.segmentDomains_.clear();
   result.domainSegmentOffsets_.clear();
@@ -85,6 +85,8 @@ llvm::Error loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
     result.domainSegmentOffsets_.assign(matchDomains.size() + 1, 0);
     return llvm::Error::success();
   }
+
+  result.nodeSegments_.assign(nodes.size(), getInvalidPnrIndex());
 
   const auto endpoints = routing.routingEndpoints();
   const auto arcs = routing.routingArcs();

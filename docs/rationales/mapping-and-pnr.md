@@ -421,6 +421,15 @@ twice depending on loop shape. Executing exactly one complete level at the
 minimum gives one finite rule without a second temperature-level budget or a
 host-time termination heuristic.
 
+The annealing level length counts movable decision owners rather than Action
+choices or routing neighborhoods. A decision with 100 alternatives should
+receive more varied proposals through its choice domain, not make the whole
+search 100 times longer. Whole-net and local routing scopes likewise describe
+ways to modify the same residual-net decision; counting every scope would make
+the schedule depend on implementation-owned neighborhood richness. Anchoring
+the count to canonical selected decisions keeps work proportional to problem
+size and stable as search tactics improve.
+
 The search PRNG and acceptance test use fixed integer protocols because a
 named engine without exact seed framing still permits implementations to
 diverge. Domain-separated SHA-256 gives every seed and purpose an independent,

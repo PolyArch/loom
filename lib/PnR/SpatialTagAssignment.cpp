@@ -667,19 +667,48 @@ llvm::Error SpatialTagAssignmentState::verify(
     if (!continuity)
       return continuity.takeError();
     const TagNetState &net = storage_->nets[logicalNet];
-    if (!llvm::equal(net.continuity.segments(), continuity->segments()) ||
-        !llvm::equal(net.continuity.nodeSegments(),
-                     continuity->nodeSegments()) ||
-        !llvm::equal(net.continuity.segmentDomainOffsets(),
-                     continuity->segmentDomainOffsets()) ||
-        !llvm::equal(net.continuity.segmentDomains(),
-                     continuity->segmentDomains()) ||
-        !llvm::equal(net.continuity.domainSegmentOffsets(),
-                     continuity->domainSegmentOffsets()) ||
-        !llvm::equal(net.continuity.domainSegments(),
-                     continuity->domainSegments()) ||
-        net.values.size() != continuity->segments().size())
-      return invalid("cached Tag continuity diverges from RouteTree state");
+    const auto diverged = [&](llvm::StringRef field) {
+      return invalid("cached Tag continuity " + field +
+                     " diverges from RouteTree state for logical net " +
+                     llvm::Twine(logicalNet));
+    };
+    if (!llvm::equal(net.continuity.segments(), continuity->segments()))
+      return diverged("segments");
+    if (!llvm::equal(net.continuity.nodeSegments(),
+                     continuity->nodeSegments())) {
+      const auto cached = net.continuity.nodeSegments();
+      const auto derived = continuity->nodeSegments();
+      const std::size_t common = std::min(cached.size(), derived.size());
+      std::size_t first = 0;
+      while (first != common && cached[first] == derived[first])
+        ++first;
+      return invalid("cached Tag continuity node segments diverge from "
+                     "RouteTree state for logical net " +
+                     llvm::Twine(logicalNet) + " at node slot " +
+                     llvm::Twine(first) + " (cached size " +
+                     llvm::Twine(cached.size()) + ", derived size " +
+                     llvm::Twine(derived.size()) + ", cached value " +
+                     (first == cached.size() ? llvm::Twine("absent")
+                                             : llvm::Twine(cached[first])) +
+                     ", derived value " +
+                     (first == derived.size() ? llvm::Twine("absent")
+                                              : llvm::Twine(derived[first])) +
+                     ")");
+    }
+    if (!llvm::equal(net.continuity.segmentDomainOffsets(),
+                     continuity->segmentDomainOffsets()))
+      return diverged("segment-domain offsets");
+    if (!llvm::equal(net.continuity.segmentDomains(),
+                     continuity->segmentDomains()))
+      return diverged("segment domains");
+    if (!llvm::equal(net.continuity.domainSegmentOffsets(),
+                     continuity->domainSegmentOffsets()))
+      return diverged("domain-segment offsets");
+    if (!llvm::equal(net.continuity.domainSegments(),
+                     continuity->domainSegments()))
+      return diverged("domain segments");
+    if (net.values.size() != continuity->segments().size())
+      return diverged("value cardinality");
     const auto restriction = tagConstraints.restrictedDomain(
         SpatialConstraintSubject{logicalNets[logicalNet].producer});
     for (PnrIndex segment = 0; segment < net.values.size(); ++segment) {

@@ -13,6 +13,19 @@
 using namespace loom;
 using namespace loom::pnr;
 
+char SpatialActionTransitionFailure::ID;
+
+void SpatialActionTransitionFailure::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code SpatialActionTransitionFailure::convertToErrorCode() const {
+  return std::make_error_code(
+      kind_ == SpatialActionTransitionFailureKind::WorkLimit
+          ? std::errc::resource_unavailable_try_again
+          : std::errc::invalid_argument);
+}
+
 namespace {
 
 llvm::Error executorError(const llvm::Twine &message) {
@@ -49,6 +62,42 @@ llvm::Expected<bool> classifyRetainableRouteFailure(llvm::Error failure) {
   if (unhandled)
     return std::move(unhandled);
   return retainable;
+}
+
+llvm::Error classifyTransitionFailure(llvm::Error failure) {
+  return llvm::handleErrors(
+      std::move(failure),
+      [&](const EndpointRouteSearchFailure &routeFailure) -> llvm::Error {
+        if (routeFailure.kind() == EndpointRouteSearchFailureKind::Invalid ||
+            routeFailure.kind() ==
+                EndpointRouteSearchFailureKind::ArithmeticOverflow) {
+          std::string message;
+          llvm::raw_string_ostream stream(message);
+          routeFailure.log(stream);
+          return llvm::make_error<EndpointRouteSearchFailure>(
+              routeFailure.kind(), stream.str());
+        }
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        routeFailure.log(stream);
+        return llvm::make_error<SpatialActionTransitionFailure>(
+            routeFailure.kind() == EndpointRouteSearchFailureKind::WorkLimit
+                ? SpatialActionTransitionFailureKind::WorkLimit
+                : SpatialActionTransitionFailureKind::IntrinsicInvalid,
+            stream.str());
+      },
+      [&](const SpatialPathFinderClosureFailure &closureFailure)
+          -> llvm::Error {
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        closureFailure.log(stream);
+        return llvm::make_error<SpatialActionTransitionFailure>(
+            closureFailure.kind() ==
+                    SpatialPathFinderClosureFailure::Kind::NonClosure
+                ? SpatialActionTransitionFailureKind::WorkLimit
+                : SpatialActionTransitionFailureKind::IntrinsicInvalid,
+            stream.str());
+      });
 }
 
 } // namespace
@@ -442,17 +491,17 @@ SpatialActionExecutorScratch::probe(SpatialCandidateState &candidate,
     return restoreAfterFailure(move, std::move(error));
 
   if (globalRouting_) {
-    if (llvm::Error error = routeCosts_->resetFromCandidate())
-      return restoreAfterFailure(move, std::move(error));
     const auto &routing = candidate.problem().config().policy().search.routing;
     auto closure = router_.routeToClosureInMove(
         move, candidate, *routeCosts_,
         {routing.endpointExpansionLimit, routing.negotiationIterationLimit},
         {});
     if (!closure)
-      return restoreAfterFailure(move, closure.takeError());
+      return restoreAfterFailure(
+          move, classifyTransitionFailure(closure.takeError()));
   } else if (llvm::Error error = routeAffectedNets(move, candidate)) {
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move,
+                               classifyTransitionFailure(std::move(error)));
   }
 
   auto closed = move.close();
@@ -460,7 +509,9 @@ SpatialActionExecutorScratch::probe(SpatialCandidateState &candidate,
     return restoreAfterFailure(move, closed.takeError());
   if (!*closed)
     return restoreAfterFailure(
-        move, executorError("Action selected a combinational handshake cycle"));
+        move, llvm::make_error<SpatialActionTransitionFailure>(
+                  SpatialActionTransitionFailureKind::IntrinsicInvalid,
+                  "Spatial Action selected a combinational handshake cycle"));
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
 

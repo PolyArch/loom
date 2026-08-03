@@ -22,6 +22,7 @@
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
+#include "PnR/SpatialTagContinuity.h"
 
 #include "TechMappingArtifactTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
@@ -1485,6 +1486,10 @@ void artifactRoundTripAndReferenceValidation() {
         removedTraversals.front().removed != 1 ||
         removedTraversals.front().added != 0)
       fail("committed RouteTree rip-up lost its traversal delta");
+    const auto preparedContinuity =
+        take(loom::pnr::deriveSpatialTagContinuity(ripUp));
+    if (!preparedContinuity.nodeSegments().empty())
+      fail("prepared unrouted Tag continuity exposed rollback node slots");
     requireSuccess(ripUp.commit());
   }
   if (!routeTree->isUnrouted())

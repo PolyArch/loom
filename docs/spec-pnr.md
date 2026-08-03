@@ -1940,6 +1940,15 @@ proposals_per_level_base
     * movableDecisionCount(FrozenModel, candidate_at_level_start)
 ```
 
+`movableDecisionCount` counts each canonical typed selected-decision anchor
+whose current dynamic Action domain contains at least one legal alternative,
+plus one routing decision for each residual logical net or service leg.
+`SingleSink`, `RootedSubtree`, `WitnessRegion`, and `Global` are neighborhoods
+over those routing decisions and do not add decisions. Choice cardinality does
+not multiply the count. The domain is rebuilt once at level start for this
+count; later proposal-local rebuilds cannot change the already fixed level
+length.
+
 Calibration rolls back its fixed proposal count, sorts positive deltas in
 stable order, and selects index `floor(q * (n - 1))`. It chooses the minimum
 positive integer temperature that reaches the target under the exact

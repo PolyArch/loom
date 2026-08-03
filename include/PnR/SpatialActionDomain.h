@@ -6,6 +6,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace loom::pnr {
@@ -22,6 +23,7 @@ public:
   llvm::Error rebuild(const SpatialCandidateState &candidate);
 
   SpatialActionProposalDomain view() const;
+  std::uint64_t movableDecisionCount() const { return movableDecisionCount_; }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -32,6 +34,7 @@ private:
   std::vector<SpatialActionChoiceRange> resourceAnchors_;
   std::vector<SpatialResourceAllocationAction> resourceChoices_;
   std::vector<PnrIndex> relationChoices_;
+  std::uint64_t movableDecisionCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 
