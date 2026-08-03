@@ -65,9 +65,17 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
   if (static_cast<std::uint64_t>(*cellCount) >
       std::numeric_limits<std::size_t>::max() / sizeof(PnrIndex))
     return routeResourceError("net-claim matrix exceeds native size_t");
+  const std::size_t routeClaimWordCount =
+      (static_cast<std::size_t>(*routeClaimCount) + 63) / 64;
+  if (routeClaimWordCount != 0 &&
+      static_cast<std::size_t>(*logicalNetCount) >
+          std::numeric_limits<std::size_t>::max() / routeClaimWordCount)
+    return routeResourceError("net-claim bitset exceeds native size_t");
 
   std::vector<PnrIndex> netClaimRefcounts(static_cast<std::size_t>(*cellCount),
                                           0);
+  std::vector<std::uint64_t> netClaimActiveBits(
+      static_cast<std::size_t>(*logicalNetCount) * routeClaimWordCount, 0);
   std::vector<PnrIndex> claimSelectionCounts(*routeClaimCount, 0);
   std::vector<std::uint64_t> capacityUsageRaw;
   capacityUsageRaw.reserve(problem.resources().capacityDimensions().size());
@@ -76,7 +84,8 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
     capacityUsageRaw.push_back(dimension.initialOccupancy);
 
   return SpatialRouteResourceState(
-      problem, *logicalNetCount, *routeClaimCount, std::move(netClaimRefcounts),
+      problem, *logicalNetCount, *routeClaimCount, routeClaimWordCount,
+      std::move(netClaimRefcounts), std::move(netClaimActiveBits),
       std::move(claimSelectionCounts), std::move(capacityUsageRaw));
 }
 
@@ -91,6 +100,14 @@ SpatialRouteResourceState::logicalNetRouteClaimRefcount(PnrIndex logicalNet,
                                                         PnrIndex claim) const {
   assert(logicalNet < logicalNetCount_ && claim < routeClaimCount_);
   return netClaimRefcounts_[netClaimCell(logicalNet, claim)];
+}
+
+llvm::ArrayRef<std::uint64_t>
+SpatialRouteResourceState::logicalNetRouteClaimBits(PnrIndex logicalNet) const {
+  assert(logicalNet < logicalNetCount_);
+  return llvm::ArrayRef(netClaimActiveBits_)
+      .slice(static_cast<std::size_t>(logicalNet) * routeClaimWordCount_,
+             routeClaimWordCount_);
 }
 
 std::uint64_t
@@ -111,6 +128,7 @@ std::uint64_t SpatialRouteResourceState::capacityOveruseRaw(
 
 std::size_t SpatialRouteResourceState::retainedStorageBytes() const {
   return retainedBytes(netClaimRefcounts_) +
+         retainedBytes(netClaimActiveBits_) +
          retainedBytes(claimSelectionCounts_) +
          retainedBytes(capacityUsageRaw_);
 }
@@ -146,6 +164,11 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
     return routeResourceError("claim capacity dimension is out of range");
   PnrIndex &selectionCount = claimSelectionCounts_[claim];
   std::uint64_t &usage = capacityUsageRaw_[record.capacityDimension];
+  std::uint64_t &activeWord =
+      netClaimActiveBits_[static_cast<std::size_t>(logicalNet) *
+                              routeClaimWordCount_ +
+                          claim / 64];
+  const std::uint64_t activeMask = std::uint64_t{1} << (claim % 64);
   if (activate) {
     if (selectionCount == std::numeric_limits<PnrIndex>::max())
       return routeResourceError("claim selection count overflows PnrIndex");
@@ -157,6 +180,7 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
     ++selectionCount;
     usage += record.amount;
     totalSelectedTraversalClaim_ += record.qCost;
+    activeWord |= activeMask;
   } else {
     if (selectionCount == 0 || usage < record.amount ||
         totalSelectedTraversalClaim_ < record.qCost)
@@ -164,6 +188,7 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
     --selectionCount;
     usage -= record.amount;
     totalSelectedTraversalClaim_ -= record.qCost;
+    activeWord &= ~activeMask;
   }
   refcount = next;
   return llvm::Error::success();
@@ -206,7 +231,11 @@ llvm::Error SpatialRouteResourceState::verify(
       capacityUsageRaw_.size() !=
           problem_->resources().capacityDimensions().size() ||
       netClaimRefcounts_.size() !=
-          static_cast<std::size_t>(logicalNetCount_) * routeClaimCount_)
+          static_cast<std::size_t>(logicalNetCount_) * routeClaimCount_ ||
+      routeClaimWordCount_ !=
+          (static_cast<std::size_t>(routeClaimCount_) + 63) / 64 ||
+      netClaimActiveBits_.size() !=
+          static_cast<std::size_t>(logicalNetCount_) * routeClaimWordCount_)
     return routeResourceError("state dimensions disagree with the freeze");
 
   std::vector<PnrIndex> expectedRefcounts(netClaimRefcounts_.size(), 0);
@@ -237,6 +266,7 @@ llvm::Error SpatialRouteResourceState::verify(
   }
 
   std::vector<PnrIndex> expectedSelections(routeClaimCount_, 0);
+  std::vector<std::uint64_t> expectedActiveBits(netClaimActiveBits_.size(), 0);
   std::vector<std::uint64_t> expectedUsage;
   expectedUsage.reserve(problem_->resources().capacityDimensions().size());
   for (const FrozenSpatialCapacityDimension &dimension :
@@ -247,6 +277,9 @@ llvm::Error SpatialRouteResourceState::verify(
     for (PnrIndex claim = 0; claim < routeClaimCount_; ++claim) {
       if (expectedRefcounts[netClaimCell(logicalNet, claim)] == 0)
         continue;
+      expectedActiveBits[static_cast<std::size_t>(logicalNet) *
+                             routeClaimWordCount_ +
+                         claim / 64] |= std::uint64_t{1} << (claim % 64);
       if (expectedSelections[claim] == std::numeric_limits<PnrIndex>::max())
         return routeResourceError(
             "rebuilt route claim selection count overflows PnrIndex");
@@ -265,6 +298,7 @@ llvm::Error SpatialRouteResourceState::verify(
   }
 
   if (netClaimRefcounts_ != expectedRefcounts ||
+      netClaimActiveBits_ != expectedActiveBits ||
       claimSelectionCounts_ != expectedSelections ||
       capacityUsageRaw_ != expectedUsage ||
       totalSelectedTraversalClaim_ != expectedTotal)

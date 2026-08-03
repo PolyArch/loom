@@ -26,6 +26,7 @@ using DualStep = std::uint64_t;
 // finite cost indistinguishable from an unreachable arc.
 constexpr RouteCost routeCostInfinity = std::numeric_limits<RouteCost>::max();
 constexpr RouteCost maxFiniteRouteCost = routeCostInfinity - 1;
+constexpr std::uint64_t routeCostScale = std::uint64_t{1} << 32;
 
 class RoutingNegotiationError final
     : public llvm::ErrorInfo<RoutingNegotiationError> {
@@ -63,17 +64,21 @@ llvm::Expected<std::uint64_t> ceilMulDiv(std::uint64_t value,
                                          std::uint64_t numerator,
                                          std::uint64_t denominator);
 
-// PathFinder cost of one normalized claim against the frozen snapshot:
-//   X = max(0, usage + claim - capacity)
-//   Multiplicative: claim * (1 + presentPressure * X) * (1 + historyPressure)
-//   Additive:       claim + presentPressure * X + claim * historyPressure
-// The kernel prices one claimed resource, so the claim must be positive, and
-// present pressure is active in both price kernels, so it must be positive
-// too. History pressure starts at zero and may legitimately be zero.
+llvm::Expected<RouteCost> normalizedRouteClaimCost(std::uint64_t amount,
+                                                   std::uint64_t capacity);
+
+llvm::Expected<RouteCost> normalizedRouteOveruseCost(std::uint64_t usageBefore,
+                                                     std::uint64_t amount,
+                                                     std::uint64_t capacity);
+
+// PathFinder cost of one already normalized claim against the frozen working
+// occupancy. qCost and xCost are the exact Q32 projections produced by the
+// shared normalization functions above. The kernel must not reinterpret raw
+// capacity. qCost and present pressure are positive; xCost and history may be
+// zero.
 llvm::Expected<RouteCost>
-pathFinderResourceCost(ResolvedPathFinderPriceKernel kernel,
-                       std::uint64_t claim, std::uint64_t usage,
-                       std::uint64_t capacity, std::uint64_t presentPressure,
+pathFinderResourceCost(ResolvedPathFinderPriceKernel kernel, RouteCost qCost,
+                       RouteCost xCost, std::uint64_t presentPressure,
                        std::uint64_t historyPressure);
 
 // Checked arc-cost accumulation over the per-resource costs of one traversal.

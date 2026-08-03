@@ -1,4 +1,5 @@
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/RoutingNegotiation.h"
 
 #include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrPortIndex.h"
@@ -237,17 +238,6 @@ routeClaimKey(const FabricTraversalActivationGroupView &activationGroup,
   appendU64Be(bytes, capacityDimension);
   bytes.insert(bytes.end(), owner.begin(), owner.end());
   return byteKey(bytes);
-}
-
-llvm::Expected<std::uint64_t> normalizedRouteClaimCost(std::uint32_t amount,
-                                                       std::uint32_t capacity) {
-  if (amount == 0)
-    return 0;
-  if (capacity == 0)
-    return invalid("a positive route claim names zero capacity");
-  constexpr std::uint64_t scale = std::uint64_t{1} << 32;
-  const std::uint64_t numerator = static_cast<std::uint64_t>(amount) * scale;
-  return (numerator + capacity - 1) / capacity;
 }
 
 llvm::Error
@@ -587,7 +577,8 @@ public:
           resources.capacityDimensions()[claim.capacityDimension];
       auto qCost = normalizedRouteClaimCost(claim.amount, capacity.capacity);
       if (!qCost)
-        return qCost.takeError();
+        return invalid("invalid normalized route claim: " +
+                       llvm::toString(qCost.takeError()));
       if (claim.qCost != *qCost)
         return invalid("route claim Q32 projection is inconsistent");
       auto index = checked(routeClaimIndexContext, ordinal);
@@ -1115,7 +1106,8 @@ private:
           auto qCost =
               normalizedRouteClaimCost(claim.amount, capacity.capacity);
           if (!qCost)
-            return qCost.takeError();
+            return invalid("invalid normalized route claim: " +
+                           llvm::toString(qCost.takeError()));
 
           const std::string key =
               routeClaimKey(use.activationGroup, *capacityDimension);

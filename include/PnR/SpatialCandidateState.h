@@ -158,6 +158,10 @@ public:
                                         PnrIndex claim) const {
     return routeResources_.logicalNetRouteClaimRefcount(logicalNet, claim);
   }
+  llvm::ArrayRef<std::uint64_t>
+  logicalNetRouteClaimBits(PnrIndex logicalNet) const {
+    return routeResources_.logicalNetRouteClaimBits(logicalNet);
+  }
   std::uint64_t routeCapacityUsageRaw(PnrIndex capacityDimension) const {
     return routeResources_.capacityUsageRaw(capacityDimension);
   }

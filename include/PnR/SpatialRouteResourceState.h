@@ -31,6 +31,8 @@ public:
   PnrIndex routeClaimSelectionCount(PnrIndex claim) const;
   PnrIndex logicalNetRouteClaimRefcount(PnrIndex logicalNet,
                                         PnrIndex claim) const;
+  llvm::ArrayRef<std::uint64_t>
+  logicalNetRouteClaimBits(PnrIndex logicalNet) const;
   std::uint64_t capacityUsageRaw(PnrIndex capacityDimension) const;
   std::uint64_t capacityOveruseRaw(PnrIndex capacityDimension) const;
   std::size_t retainedStorageBytes() const;
@@ -40,12 +42,16 @@ public:
 private:
   SpatialRouteResourceState(const FrozenSpatialPnrProblem &problem,
                             PnrIndex logicalNetCount, PnrIndex routeClaimCount,
+                            std::size_t routeClaimWordCount,
                             std::vector<PnrIndex> netClaimRefcounts,
+                            std::vector<std::uint64_t> netClaimActiveBits,
                             std::vector<PnrIndex> claimSelectionCounts,
                             std::vector<std::uint64_t> capacityUsageRaw)
       : problem_(&problem), logicalNetCount_(logicalNetCount),
         routeClaimCount_(routeClaimCount),
+        routeClaimWordCount_(routeClaimWordCount),
         netClaimRefcounts_(std::move(netClaimRefcounts)),
+        netClaimActiveBits_(std::move(netClaimActiveBits)),
         claimSelectionCounts_(std::move(claimSelectionCounts)),
         capacityUsageRaw_(std::move(capacityUsageRaw)) {}
 
@@ -60,7 +66,9 @@ private:
   const FrozenSpatialPnrProblem *problem_ = nullptr;
   PnrIndex logicalNetCount_ = 0;
   PnrIndex routeClaimCount_ = 0;
+  std::size_t routeClaimWordCount_ = 0;
   std::vector<PnrIndex> netClaimRefcounts_;
+  std::vector<std::uint64_t> netClaimActiveBits_;
   std::vector<PnrIndex> claimSelectionCounts_;
   std::vector<std::uint64_t> capacityUsageRaw_;
   std::uint64_t totalSelectedTraversalClaim_ = 0;

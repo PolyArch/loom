@@ -186,21 +186,48 @@ llvm::Expected<std::uint64_t> loom::pnr::ceilMulDiv(std::uint64_t value,
   return static_cast<std::uint64_t>(result);
 }
 
-llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
-    ResolvedPathFinderPriceKernel kernel, std::uint64_t claim,
-    std::uint64_t usage, std::uint64_t capacity, std::uint64_t presentPressure,
-    std::uint64_t historyPressure) {
-  if (llvm::Error error = requireAtLeast(claim, 1, "normalized claim"))
-    return std::move(error);
-  if (llvm::Error error =
-          requireAtLeast(presentPressure, 1, "present_pressure"))
-    return std::move(error);
-  auto projected = checkedAdd(usage, claim, "PathFinder projected usage");
+llvm::Expected<RouteCost>
+loom::pnr::normalizedRouteClaimCost(std::uint64_t amount,
+                                    std::uint64_t capacity) {
+  if (amount == 0)
+    return 0;
+  if (capacity == 0)
+    return invalidPolicy(
+        "normalized route claim has positive amount and zero capacity");
+  auto result = ceilMulDiv(amount, routeCostScale, capacity);
+  if (!result)
+    return result.takeError();
+  return narrowFiniteCost(*result, "normalized route claim cost");
+}
+
+llvm::Expected<RouteCost> loom::pnr::normalizedRouteOveruseCost(
+    std::uint64_t usageBefore, std::uint64_t amount, std::uint64_t capacity) {
+  auto projected =
+      checkedAdd(usageBefore, amount, "PathFinder projected raw usage");
   if (!projected)
     return projected.takeError();
   const std::uint64_t excess =
       *projected > capacity ? *projected - capacity : 0;
-  auto pressureProduct = checkedMultiply(presentPressure, excess,
+  if (excess == 0)
+    return 0;
+  if (capacity == 0)
+    return invalidPolicy(
+        "normalized route overuse has positive amount and zero capacity");
+  auto result = ceilMulDiv(excess, routeCostScale, capacity);
+  if (!result)
+    return result.takeError();
+  return narrowFiniteCost(*result, "normalized route overuse cost");
+}
+
+llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
+    ResolvedPathFinderPriceKernel kernel, RouteCost qCost, RouteCost xCost,
+    std::uint64_t presentPressure, std::uint64_t historyPressure) {
+  if (llvm::Error error = requireAtLeast(qCost, 1, "normalized claim cost"))
+    return std::move(error);
+  if (llvm::Error error =
+          requireAtLeast(presentPressure, 1, "present_pressure"))
+    return std::move(error);
+  auto pressureProduct = checkedMultiply(presentPressure, xCost,
                                          "PathFinder present-pressure product");
   if (!pressureProduct)
     return pressureProduct.takeError();
@@ -215,7 +242,7 @@ llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
         checkedAdd(historyPressure, 1, "PathFinder history factor");
     if (!historyFactor)
       return historyFactor.takeError();
-    auto claimed = checkedMultiply(claim, *pressureFactor,
+    auto claimed = checkedMultiply(qCost, *pressureFactor,
                                    "PathFinder multiplicative claim product");
     if (!claimed)
       return claimed.takeError();
@@ -225,11 +252,11 @@ llvm::Expected<RouteCost> loom::pnr::pathFinderResourceCost(
   }
   case ResolvedPathFinderPriceKernel::Additive: {
     auto historyProduct = checkedMultiply(
-        claim, historyPressure, "PathFinder additive history product");
+        qCost, historyPressure, "PathFinder additive history product");
     if (!historyProduct)
       return historyProduct.takeError();
     auto withPressure =
-        checkedAdd(claim, *pressureProduct, "PathFinder additive pressure sum");
+        checkedAdd(qCost, *pressureProduct, "PathFinder additive pressure sum");
     if (!withPressure)
       return withPressure.takeError();
     return narrowFiniteCost(static_cast<unsigned __int128>(*withPressure) +

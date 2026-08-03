@@ -147,22 +147,21 @@ void routeCostInfinityBoundary() {
       ResolvedPathFinderPriceKernel::Additive;
   requireEqual(
       __func__, "multiplicative largest finite",
-      takeValue(__func__, pathFinderResourceCost(multiplicative, 1, 0, 0,
+      takeValue(__func__, pathFinderResourceCost(multiplicative, 1, 1,
                                                  maxFiniteRouteCost - 1, 0)),
       maxFiniteRouteCost);
   expectFailure(
       __func__, "multiplicative reaches infinity",
-      pathFinderResourceCost(multiplicative, 1, 0, 0, maxFiniteRouteCost, 0),
+      pathFinderResourceCost(multiplicative, 1, 1, maxFiniteRouteCost, 0),
       Kind::ArithmeticOverflow);
   requireEqual(
       __func__, "additive largest finite",
-      takeValue(__func__, pathFinderResourceCost(additive, 1, 0, 0,
+      takeValue(__func__, pathFinderResourceCost(additive, 1, 1,
                                                  maxFiniteRouteCost - 1, 0)),
       maxFiniteRouteCost);
-  expectFailure(
-      __func__, "additive reaches infinity",
-      pathFinderResourceCost(additive, 1, 0, 0, maxFiniteRouteCost, 0),
-      Kind::ArithmeticOverflow);
+  expectFailure(__func__, "additive reaches infinity",
+                pathFinderResourceCost(additive, 1, 1, maxFiniteRouteCost, 0),
+                Kind::ArithmeticOverflow);
 }
 
 // The shared rounding authorities: truncation toward zero and the ceiling
@@ -218,23 +217,30 @@ void pathFinderCostVectors() {
   const ResolvedPathFinderPriceKernel additive =
       ResolvedPathFinderPriceKernel::Additive;
 
-  // q=3, u=4, cap=6, P=2, H=1 gives X=1.
-  requireEqual(__func__, "multiplicative congested claim",
-               takeValue(__func__,
-                         pathFinderResourceCost(multiplicative, 3, 4, 6, 2, 1)),
-               18);
+  requireEqual(__func__, "half-capacity claim",
+               takeValue(__func__, normalizedRouteClaimCost(3, 6)),
+               std::uint64_t{1} << 31);
+  requireEqual(__func__, "rounded normalized overuse",
+               takeValue(__func__, normalizedRouteOveruseCost(4, 3, 6)),
+               715827883);
+
+  // q=3, x=1, P=2, H=1.
+  requireEqual(
+      __func__, "multiplicative congested claim",
+      takeValue(__func__, pathFinderResourceCost(multiplicative, 3, 1, 2, 1)),
+      18);
   requireEqual(
       __func__, "additive congested claim",
-      takeValue(__func__, pathFinderResourceCost(additive, 3, 4, 6, 2, 1)), 8);
+      takeValue(__func__, pathFinderResourceCost(additive, 3, 1, 2, 1)), 8);
 
   // Without congestion both kernels charge the generic lower bound.
-  requireEqual(__func__, "multiplicative uncongested claim",
-               takeValue(__func__, pathFinderResourceCost(multiplicative, 7, 0,
-                                                          10, 3, 0)),
-               7);
+  requireEqual(
+      __func__, "multiplicative uncongested claim",
+      takeValue(__func__, pathFinderResourceCost(multiplicative, 7, 0, 3, 0)),
+      7);
   requireEqual(
       __func__, "additive uncongested claim",
-      takeValue(__func__, pathFinderResourceCost(additive, 7, 0, 10, 3, 0)), 7);
+      takeValue(__func__, pathFinderResourceCost(additive, 7, 0, 3, 0)), 7);
 
   RouteCost arc = 0;
   for (RouteCost term : {18, 8, 7})
@@ -376,21 +382,19 @@ void publicValidationBoundary() {
           directionPolicy(ResolvedDualDirectionKernel::ProjectedSigned), -4,
           99),
       Kind::InvalidPolicy);
-  expectFailure(
-      __func__, "pathfinder absent claim",
-      pathFinderResourceCost(ResolvedPathFinderPriceKernel::Multiplicative, 0,
-                             9, 6, 2, 5),
-      Kind::InvalidPolicy);
+  expectFailure(__func__, "pathfinder absent claim",
+                pathFinderResourceCost(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 0, 1, 2, 5),
+                Kind::InvalidPolicy);
   expectFailure(__func__, "dual arc absent claim", dualArcResourceCost(0, 3),
                 Kind::InvalidPolicy);
 
   // Active policy values reaching a raw kernel are rejected rather than
   // silently degenerating into an identity update.
-  expectFailure(
-      __func__, "zero present pressure",
-      pathFinderResourceCost(ResolvedPathFinderPriceKernel::Multiplicative, 3,
-                             4, 6, 0, 1),
-      Kind::InvalidPolicy);
+  expectFailure(__func__, "zero present pressure",
+                pathFinderResourceCost(
+                    ResolvedPathFinderPriceKernel::Multiplicative, 3, 1, 0, 1),
+                Kind::InvalidPolicy);
   expectFailure(__func__, "zero history increment",
                 pathFinderHistoryUpdate(2, 0, 4), Kind::InvalidPolicy);
   expectFailure(__func__, "zero dual step", dualPriceUpdate(10, 0, 4),

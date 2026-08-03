@@ -137,8 +137,8 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
   const auto *pathFinder = std::get_if<loom::ResolvedPathFinderPolicy>(
       &view.policy().search.routing.negotiation);
   require(pathFinder != nullptr, "default view did not select PathFinder");
-  require(take(loom::pnr::pathFinderResourceCost(pathFinder->priceKernel, 3, 4,
-                                                 6, 2, 1)) == 18,
+  require(take(loom::pnr::pathFinderResourceCost(pathFinder->priceKernel, 3, 1,
+                                                 2, 1)) == 18,
           "routing kernel did not consume the projected price kernel");
   require(take(loom::pnr::ceilMulDiv(
               pathFinder->presentPressureInitial,

@@ -936,6 +936,19 @@ void artifactRoundTripAndReferenceValidation() {
     fail("Spatial move did not commit its RouteTree");
   if (spatialCandidate->totalSelectedTraversalClaim() == 0)
     fail("routed Spatial candidate has no exact traversal-claim objective");
+  bool observedActiveClaimBit = false;
+  const auto activeClaimBits =
+      spatialCandidate->logicalNetRouteClaimBits(*routedNet);
+  for (loom::pnr::PnrIndex claim = 0;
+       claim < frozen->routing().routeClaims().size(); ++claim) {
+    const bool active = (activeClaimBits[claim / 64] >> (claim % 64)) & 1;
+    if (active != (spatialCandidate->logicalNetRouteClaimRefcount(*routedNet,
+                                                                  claim) != 0))
+      fail("route-claim active bit diverges from exact net refcount");
+    observedActiveClaimBit |= active;
+  }
+  if (!observedActiveClaimBit)
+    fail("claim-bearing route has no active-claim bit");
   const std::uint64_t committedTraversalClaim =
       spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());
