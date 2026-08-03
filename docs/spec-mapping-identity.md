@@ -205,6 +205,11 @@ printers, and native arrays must use the confirmed typed structural keys or
 local dense indices; convenience is not grounds for allocating another
 persistent entity.
 
+A Spatial `MemoryBinding` whose target is `BoundaryProxy` uses its existing
+Mapping-local `EntityId` as the proxy identity. There is no `BoundaryProxyId`,
+Fabric proxy entity, endpoint-as-service alias, or System-owned replacement
+identity.
+
 ## Typed Structural Keys
 
 A subordinate object that is uniquely and mechanically recoverable from an

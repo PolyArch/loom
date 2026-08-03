@@ -168,13 +168,18 @@ The verifier checks in dependency order:
   ingress match domain, and legal tag reuse across disjoint domains;
 * one typed target on every MemoryOperationEntry and ExposureEntry, with the
   reconstructed `C_dispatch` contained in Fabric-owned `H_dispatch`;
+* exact agreement between each addressed or exposure target and its
+  MemoryBinding target: local dispatch selects a LocalRegion owned by the
+  same local service, while manager dispatch selects a BoundaryProxy;
 * exact actor-contract compatibility and derivation of one compatible
   MemoryConsistencyDomain for every addressed atomic actor and fence, with
   complete fence-effect coverage and no Mapping-created multi-domain join;
 * compatible volatile and MMIO service-region behavior, including exact
   accepted access, non-trapping SpatialCore execution, and at-most-once
   provider-observable operation semantics;
-* each MemoryBinding's logical interval, physical service region, transform,
+* each MemoryBinding's logical interval and closed target; finite logical and
+  translated physical containment for LocalRegion; absence of local service,
+  region, endpoint, transform, and provider state for BoundaryProxy; and
   partition, replication, and coherence legality;
 * every RouteTree's root, parent traversal continuity, arborescence, explicit
   fanout, no reconvergence, and complete sink coverage;

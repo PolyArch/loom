@@ -43,6 +43,24 @@ local capacity also avoids conflating address representation with storage
 range: Mapping still proves that a local interval fits, while the same engine
 can issue a wider manager address without a second request protocol.
 
+A manager endpoint is a path out of the SpatialCore, not storage. Requiring
+every Spatial MemoryBinding to name a Fabric service region would therefore
+either reject an operation-engine-only memory or falsely promote its manager
+endpoint into a service. The closed LocalRegion-or-BoundaryProxy target keeps
+that distinction explicit. The proxy reuses the MemoryBinding identity because
+the logical interval is the only persistent Spatial fact that SystemMapping
+must extend; assigning another proxy identity would describe no additional
+object. SystemMapping then owns the first real provider-region and address
+selection outside the SpatialCore.
+
+Keeping boundary candidates factorized also matters for PnR. Spatial search
+chooses among local regions or one proxy value per logical interval; it does
+not materialize a product with every possible system provider. System search
+later expands only the selected proxy obligations against compatible
+providers. Dense local ordinals and reverse incidence tables can therefore
+update memory moves without decoding persistent references or scanning the
+system service catalog.
+
 ## Why Service And Operation Ports Are Separate
 
 An addressed memory actor is a software service request with data, address,

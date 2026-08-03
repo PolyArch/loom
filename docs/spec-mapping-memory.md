@@ -55,25 +55,28 @@ The required semantic relations are:
 
 ```text
 MemoryBinding
-  LogicalMemoryView -> PhysicalMemoryServiceRegion
+  LogicalMemoryInterval
+    -> LocalRegion(FabricMemoryServiceRegionRef, physical byte offset)
+     | BoundaryProxy
 
 MemoryEngineBinding + MemoryOperationEntry + optional MemoryBinding
   software memory actor or fence
     -> operation placement + LocalMemoryService or manager dispatch target
-    -> physical memory service region
+    -> local physical service region or Spatial service obligation
 
 ExposureEntry + MemoryBinding
   MemoryExposureRef -> subordinate/provider terminal + dispatch target
-                    -> physical memory service region
+                    -> local physical service region or Spatial service obligation
 ```
 
 These relations do not require three parallel top-level record families.
 Their persistent owners are the existing Mapping records described below.
 
 The relation is sparse and many-to-many. Several logical roots may bind to
-one physical service. One endpoint may carry several bindings. One binding
-may be reachable through several manager or subordinate endpoints. These
-cases do not create duplicate storage identities.
+one physical service. One endpoint may carry several bindings. A boundary
+proxy may be dispatched through a manager or subordinate endpoint without
+turning that endpoint into storage. These cases do not create duplicate
+storage identities.
 
 A logical root spans several independent physical services only through
 explicit disjoint partitioning or through a Fabric-declared replication,
@@ -179,20 +182,47 @@ parallel configured-table authority.
 One `MemoryBinding` is the atomic relation:
 
 ```text
-one LogicalMemoryInterval -> one PhysicalMemoryServiceRegion
+LogicalMemoryInterval =
+    Whole
+  | ByteRange { offset_bytes : u64, size_bytes : positive u64 }
+
+MemoryBindingTarget =
+    LocalRegion {
+      service_region_ref : FabricMemoryServiceRegionRef
+      physical_offset_bytes : u64
+    }
+  | BoundaryProxy
+
+one LogicalMemoryInterval -> one MemoryBindingTarget
 ```
 
-It stores a typed logical memory or view reference, logical interval, typed
-physical service reference, physical region, and only a selected Fabric-owned
-address transform that cannot be derived from the endpoints. It receives a
-Mapping-local identity because several rows may bind the same logical root and
-Access or Exposure children must reference an exact row.
+It stores a typed logical memory or view reference, logical interval, and one
+closed target. It receives a Mapping-local identity because several rows may
+bind the same logical root and Access or Exposure children must reference an
+exact row. The same identity names a BoundaryProxy; Mapping defines no
+separate proxy entity.
+
+A `LocalRegion` target stores one exact Fabric Local Memory Service region and
+one physical byte offset. Its translated logical interval must be finite and
+fully contained by that region. `Whole` derives its extent from the exact
+Dataflow root or view and is legal locally only when that extent is statically
+finite. `ByteRange` uses unsigned byte units, has positive size, and must be
+contained by the exact logical root or view.
+
+A `BoundaryProxy` target states that the interval is not closed by a local
+service in the Spatial Mapping. It stores no Fabric service, service region,
+endpoint, transform, provider, or system address. A dynamically unbounded
+`Whole` interval must use this target unless exact pre-Mapping specialization
+has made the bound finite. SystemMapping later derives the existing
+operation-service obligation from the logical owner and interval and selects
+the system provider region and transform.
 
 Whole-root placement is the degenerate case. Disjoint rows express
 partitioning. Multiple roots may independently bind to one service. Multiple
-manager or subordinate endpoints that reach the same service do not require
-multiple `MemoryBinding` rows unless the logical interval or physical region
-actually differs.
+local endpoints that reach the same local service do not require multiple
+`MemoryBinding` rows unless the logical interval or physical region actually
+differs. Selecting a different manager path does not itself create another
+BoundaryProxy binding because dispatch remains owned by the child entry.
 
 Each `MemoryBinding` owns its `ExposureEntry` children. An Exposure Entry binds
 one exact `MemoryExposureRef` to one selected subordinate/provider terminal,
@@ -201,7 +231,8 @@ its existing Memory Binding, and one closed typed
 belongs to route or service realization; provider-decode rows are derived
 configuration. An exposure provides a capability boundary. It is not a
 `ServiceMemberRef`, creates no Canonical Service leg, and receives no
-independent ID.
+independent ID. A local dispatch target requires a LocalRegion owned by that
+same local service. A manager dispatch target requires a BoundaryProxy.
 
 ### MemoryEngineBinding And MemoryOperationEntry
 
@@ -256,6 +287,12 @@ one provider. These are alternatives in one typed service model, not different
 request protocols. Runtime ABI owns the single
 `SpatialServiceRequest`/`SpatialServiceResponse` boundary used by either
 target.
+
+An addressed operation's target must agree with its referenced MemoryBinding:
+`LocalMemoryServiceRef` selects `LocalRegion` in that exact service, while
+`ManagerEndpointRef` selects `BoundaryProxy`. The endpoint is a request path,
+not a service-region alias. Fence has no MemoryBinding and continues to select
+only its consistency target.
 
 A MemoryOperationEntry does not own a Physical Tag. Each externally supplied
 operand role derives its own input `(physical ingress endpoint, tag)` from the
@@ -469,7 +506,10 @@ Anchor-level tests should cover:
 * shared hybrid operation-port capacity versus separate element and vector
   ports, with rejection of a persisted derived geometry class;
 * local-service and manager-endpoint MemoryOperationEntry targets using the
-  same typed Spatial Service request/response boundary;
+  same typed Spatial Service request/response boundary, with exact
+  LocalRegion-versus-BoundaryProxy agreement;
+* local finite-range containment and dynamically unbounded Whole selection of
+  BoundaryProxy, plus rejection of endpoint-as-service aliases;
 * one atomic operation and one fence resolving to exactly one compatible
   MemoryConsistency domain, plus rejection of a hidden multi-domain fence;
 * one volatile MMIO binding with non-trapping at-most-once provider behavior,

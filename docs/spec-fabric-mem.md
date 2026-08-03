@@ -1419,7 +1419,8 @@ The ownership boundary is:
   fields, occurrence/context selection, and event-relative `ResourceUse`
   including Physical Tags. The concrete internal connection is derived from
   the TechMapping witness and occurrence-to-template relation rather than
-  selected again.
+  selected again. A manager endpoint dispatches a Mapping-owned boundary
+  proxy; it never serves as a Fabric memory service or service-region alias.
 * SystemMapping extends a Spatial boundary proxy to the selected system
   provider through `ServiceRealization` and system `ResourceUse`.
 * `ConfigurationABI` alone owns physical bit/address encoding and the

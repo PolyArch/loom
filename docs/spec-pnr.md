@@ -347,7 +347,7 @@ memory_operation_port:
     -> Set<FabricMemoryOperationPortRef> [singleton]
 
 memory_bound_services:
-  LogicalMemoryRootRef -> Set<FabricMemoryServiceRef> [non-empty]
+  LogicalMemoryRootRef -> Set<FabricMemoryServiceRef> [zero-or-more]
 
 memory_address_region:
   LogicalMemoryRootRef -> Set<PhysicalAddressPoint> [zero-or-more]
@@ -360,8 +360,12 @@ memory_address_region:
 `CanonicalMemoryActorRef` is restricted to a canonical load or store covered
 by a Memory Realization in exact `T`. A zero-hop net may produce empty route
 and route-resource sets; an untagged net may produce no Physical Tag values;
-and a zero-sized memory object may have an empty address region. These are
-declared cardinalities, not absent or unknown projection results.
+and a zero-sized memory object may have an empty address region. A root whose
+selected MemoryBindings are all BoundaryProxy has an empty
+`memory_bound_services` and `memory_address_region` projection. Base
+verification still requires complete MemoryBinding coverage; an empty local
+service projection is therefore not an absent or unknown Mapping fact. These
+are declared cardinalities, not absent or unknown projection results.
 
 There is no generic configuration projection. In particular, no string field
 path, raw control value, arbitrary property bag, or
@@ -1519,6 +1523,13 @@ realize residual legs. Provider decode, dispatch rows, response tracking, and
 semantic `sw_configs` are derived from `D/T/F`, selected bindings, routes,
 resource uses, and physical refinements. Physical image fields are later
 encoded through the exact ConfigurationABI.
+
+For addressed and exposure entries, PnR jointly selects the dispatch target
+and the referenced MemoryBinding target. Local dispatch requires LocalRegion
+in that exact service and participates in local region-capacity and address
+checks. Manager dispatch requires BoundaryProxy and creates no candidate
+system provider variable during Spatial search. System provider and address
+selection remain SystemMapping decisions.
 
 ## Search Policy And Determinism
 

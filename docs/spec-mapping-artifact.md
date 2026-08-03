@@ -325,6 +325,13 @@ collection of operation-entry targets and corresponding ExposureEntry targets
 is the persistent owner of Mapping's selected `C_dispatch`. The verifier
 checks each selection against Fabric-owned `H_dispatch`.
 
+For an addressed entry, the selected dispatch target and referenced
+`MemoryBinding` must agree. A `LocalMemoryServiceRef` requires a
+`LocalRegion` target owned by that exact local service. A
+`ManagerEndpointRef` requires a `BoundaryProxy` target. The manager endpoint
+remains the dispatch path and is never reclassified as a memory service or
+service region.
+
 An Operation Entry does not select an internal connection again. The exact
 concrete connection is derived from the TechMapping internal-edge witness and
 the selected occurrence-to-template relation. Any additional row-local source
@@ -354,23 +361,52 @@ than runtime content-match fields.
 A `MemoryBinding` is one atomic relation:
 
 ```text
-one LogicalMemoryInterval -> one PhysicalMemoryServiceRegion
+LogicalMemoryInterval =
+    Whole
+  | ByteRange { offset_bytes : u64, size_bytes : positive u64 }
+
+MemoryBindingTarget =
+    LocalRegion {
+      service_region_ref : FabricMemoryServiceRegionRef
+      physical_offset_bytes : u64
+    }
+  | BoundaryProxy
+
+one LogicalMemoryInterval -> one MemoryBindingTarget
 ```
 
 It stores one artifact-global Mapping `EntityId`, the typed logical
-memory/view reference, logical interval, typed physical-service reference,
-physical region, and any selected Fabric-owned address transform that cannot
-be derived from the endpoints.
+memory/view reference, logical interval, and exactly one target variant. The
+`EntityId` is also the persistent identity of a `BoundaryProxy`; no separate
+proxy entity or reference kind exists.
+
+`LocalRegion` names one exact region of a Local Memory Service in `F` and one
+unsigned physical byte offset within that region. The logical interval must
+have a finite byte extent, and its entire translated range must fit in the
+selected service region. `Whole` is legal for local placement only when the
+exact Dataflow root or view has a finite statically derivable byte extent.
+
+`BoundaryProxy` states only that the logical interval crosses the SpatialCore
+memory-service boundary. It stores no Fabric service, region, endpoint,
+address transform, provider, or system route. A dynamically unbounded
+`Whole` interval therefore requires `BoundaryProxy` unless an exact
+pre-Mapping specialization has already produced a finite bound. SystemMapping
+derives the existing operation-service obligation from the logical owner and
+interval, then selects its real provider region and address transform.
 
 Multiple disjoint records represent partitioning. Replication, mirroring,
 coherence, or overlapping placement requires an explicit Fabric composite
-service or transform; overlapping rows cannot imply those semantics.
+service or transform; overlapping rows cannot imply those semantics. A
+different manager dispatch path alone does not create another MemoryBinding
+because dispatch remains owned by the addressed or exposure child.
 
 Each MemoryBinding owns `ExposureEntry` children ordered by software boundary
 key. An exposure stores the software memory-output obligation, selected
 subordinate or provider terminal, and one
 `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target. It has no
-independent ID and does not form a top-level ExposureBinding family.
+independent ID and does not form a top-level ExposureBinding family. Its
+target must agree with its owning MemoryBinding by the same LocalRegion versus
+BoundaryProxy rule as an addressed MemoryOperationEntry.
 
 ### RouteTree
 
