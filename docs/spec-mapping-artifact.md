@@ -202,11 +202,12 @@ not a semantic match.
 
 The Operation Engine definition is the selected template owner. No concrete
 memory occurrence, service, or dispatch target exists in TechMapping. Actor
-and logical-root sets are derived from the relation domain and the referenced
-Dataflow actors; a fence-only realization has no logical root. The root does
-not repeat implementation, actor, or root lists. Actors sharing a Memory
-Realization do not make their edges internal; only an exact selected
-internal-edge witness does so.
+sets are derived from the relation domain. TechMapping does not associate an
+addressed graph actor with a logical memory root: that relation is contextual
+to one rooted graph launch and belongs to SpatialMapping. The root does not
+repeat implementation or actor lists. Actors sharing a Memory Realization do
+not make their edges internal; only an exact selected internal-edge witness
+does so.
 
 Selected capability alternatives and internal connections must satisfy the
 Fabric-owned parameterized actor-contract, access, alignment, narrow-access,
@@ -298,14 +299,28 @@ MemoryOperationEntry =
     AddressedOperation {
       actor_ref
       operation_placement
-      MemoryBindingRef
-      dispatch_target : LocalMemoryServiceRef | ManagerEndpointRef
+      uses : nonempty canonical array<AddressedOperationUse>
     }
   | FenceOperation {
       actor_ref
       operation_placement
-      consistency_target : MemoryConsistencyDomainRef | ManagerEndpointRef
+      uses : nonempty canonical array<FenceOperationUse>
     }
+
+AddressedOperationUse = {
+  rooted_graph_launch_ref
+  MemoryBindingRef
+  dispatch_target : LocalMemoryServiceRef | ManagerEndpointRef
+}
+
+FenceOperationUse = {
+  rooted_graph_launch_ref
+  consistency_target : MemoryConsistencyDomainRef | ManagerEndpointRef
+}
+
+MemoryOperationUse =
+    AddressedOperationUse
+  | FenceOperationUse
 ```
 
 The addressed variant covers read, write, RMW, and compare-exchange. Fence has
@@ -320,17 +335,31 @@ MemoryOperationPlacementRef =
 
 The Spatial variant derives its static context from the physical port. The
 Temporal context reference contains that exact port plus a valid
-Fabric-declared resident-context ordinal. The
-collection of operation-entry targets and corresponding ExposureEntry targets
-is the persistent owner of Mapping's selected `C_dispatch`. The verifier
-checks each selection against Fabric-owned `H_dispatch`.
+Fabric-declared resident-context ordinal. Placement is selected exactly once
+for the definition-level `ActorRef`. Each use stores only one
+`RootedGraphLaunchRef`; the parent actor and child launch mechanically form the
+existing Dataflow-owned `ContextualActorRef`. The use inventory must contain
+exactly one row for every rooted launch whose callee graph owns the actor, in
+canonical rooted-launch order, with no missing, duplicate, foreign, or
+wrong-graph row.
 
-For an addressed entry, the selected dispatch target and referenced
+The collection of operation-use targets and corresponding ExposureEntry
+targets is the persistent owner of Mapping's selected `C_dispatch`. The
+verifier checks each selection against Fabric-owned `H_dispatch`.
+
+For an addressed use, the selected dispatch target and referenced
 `MemoryBinding` must agree. A `LocalMemoryServiceRef` requires a
 `LocalRegion` target owned by that exact local service. A
 `ManagerEndpointRef` requires a `BoundaryProxy` target. The manager endpoint
 remains the dispatch path and is never reclassified as a memory service or
 service region.
+
+For an addressed use, Dataflow composition resolves the actor's exact memory
+capability in that rooted launch to one `LogicalMemoryRootOrViewRef`. The
+referenced `MemoryBinding` must name that exact logical memory and contain the
+selected logical interval. Two uses of one actor may therefore share a
+placement while selecting different bindings and dispatch targets. Fence uses
+have no `MemoryBinding`.
 
 An Operation Entry does not select an internal connection again. The exact
 concrete connection is derived from the TechMapping internal-edge witness and
@@ -352,7 +381,7 @@ configuration, or raw `sw_configs`.
 For a Temporal placement, configured row input matches and output writes are
 derived per actor role from the selected TechMapping port correspondence,
 selected internal sources, and Physical Tag assignments on the real tagged
-writers or ingresses. One operation row does not own a common tag. The
+writers or ingresses. One operation entry does not own a common tag. The
 operation kind and capability alternative are configured row state rather
 than runtime content-match fields.
 

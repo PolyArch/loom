@@ -120,8 +120,7 @@ local default when a domain omits or cannot provide a required guarantee.
 
 TechMapping owns each selected Memory Realization:
 
-* exact read, write, RMW, compare-exchange, or fence actor coverage and
-  logical-root association when the actor is addressed;
+* exact read, write, RMW, compare-exchange, or fence actor coverage;
 * one selected `FabricMemoryEngineTemplateRef`, plus exact template-relative
   operation-port and capability-alternative references;
 * actor-to-operation correspondence;
@@ -161,6 +160,11 @@ internal and external obligations. Mapping may select destinations but cannot
 split result and completion publication or weaken its backpressure. Fence
 retirement remains one `done` event after its selected domain operation
 completes.
+
+TechMapping does not own an addressed actor's logical-memory association. An
+`ActorRef` identifies one reusable graph definition, while the exact memory
+root or view is obtained only by composing that actor's memory capability with
+one `RootedGraphLaunchRef`. SpatialMapping owns that contextual association.
 
 ## SpatialMapping Records
 
@@ -241,7 +245,8 @@ selects one concrete `fabric.mem` Operation Engine. The selected occurrence
 must have an Operation Engine and
 `memoryEngineTemplate(occurrence)` must equal the exact template selected by
 the Memory Realization. It owns exactly one `MemoryOperationEntry` for every
-covered canonical memory actor.
+covered canonical memory actor. The entry owns the actor's physical placement
+once and a complete nested use inventory for its rooted launch contexts.
 
 Operation placement uses a closed typed reference:
 
@@ -255,11 +260,26 @@ MemoryOperationPlacementRef =
 `docs/spec-mapping-artifact.md`:
 
 * `AddressedOperation` covers read, write, RMW, and compare-exchange and stores
-  the actor, placement, one `MemoryBinding`, one typed
-  `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target;
-* `FenceOperation` stores the actor, placement, one typed
+  the actor, placement, and a non-empty canonical array of addressed uses;
+* each addressed use stores one `RootedGraphLaunchRef`, one `MemoryBinding`,
+  and one typed `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target;
+* `FenceOperation` stores the actor, placement, and a non-empty canonical array
+  of fence uses;
+* each fence use stores one `RootedGraphLaunchRef` and one typed
   `MemoryConsistencyDomainRef | ManagerEndpointRef` consistency-service
   target, but no `MemoryBinding`.
+
+The parent actor plus a child rooted launch mechanically forms the existing
+Dataflow-owned `ContextualActorRef`; the wire does not persist a competing
+contextual identity. Uses are sorted by canonical `RootedGraphLaunchRef` bytes
+and exactly cover every rooted launch whose callee graph owns the parent
+actor. Missing, duplicate, foreign, stale, or wrong-graph uses are invalid.
+
+For each addressed use, the Dataflow owner resolves the actor's memory
+capability through the exact rooted launch. The referenced `MemoryBinding`
+must name the resulting `LogicalMemoryRootOrViewRef`. This permits two static
+launches of one reusable graph to share one operation placement while binding
+different logical memories. Fence uses have no logical-memory association.
 
 The TechMapping Memory Realization is the sole owner of a selected
 `load.data -> store.data`, `done -> ctrl`, or other Fabric-allowed
@@ -277,7 +297,7 @@ whose external endpoint correspondence or selected internal source is verified
 like any other required operand. The selected internal source is read from the
 TechMapping witness, not duplicated in the operation entry.
 
-The MemoryOperationEntry and ExposureEntry target fields collectively are the
+The MemoryOperationUse and ExposureEntry target fields collectively are the
 only persistent owner of selected `C_dispatch`; there is no parallel dispatch
 relation record. Fabric alone owns eligible `H_dispatch`, and the Mapping
 verifier proves `C_dispatch` is its subset. An addressed target may be the
@@ -288,7 +308,7 @@ request protocols. Runtime ABI owns the single
 `SpatialServiceRequest`/`SpatialServiceResponse` boundary used by either
 target.
 
-An addressed operation's target must agree with its referenced MemoryBinding:
+An addressed use's target must agree with its referenced MemoryBinding:
 `LocalMemoryServiceRef` selects `LocalRegion` in that exact service, while
 `ManagerEndpointRef` selects `BoundaryProxy`. The endpoint is a request path,
 not a service-region alias. Fence has no MemoryBinding and continues to select
@@ -493,6 +513,9 @@ Anchor-level tests should cover:
   plus rejection of unsupported overlap;
 * one MemoryOperationEntry per covered actor, including addressed and fence
   variants, an exact internal edge, and joint load `data + done` retirement;
+* one reusable graph memory actor launched against two logical roots, with one
+  actor placement, two rooted uses, exact binding resolution, and rejection of
+  missing, duplicate, foreign, or wrong-graph use rows;
 * element, contiguous, indexed, masked, and unmasked access compatibility,
   including rejection of an equal-width but semantically incompatible port;
 * routing of complete vector address, data, and mask tokens without lane Tags
@@ -505,7 +528,7 @@ Anchor-level tests should cover:
   shared output endpoints within one operation row;
 * shared hybrid operation-port capacity versus separate element and vector
   ports, with rejection of a persisted derived geometry class;
-* local-service and manager-endpoint MemoryOperationEntry targets using the
+* local-service and manager-endpoint MemoryOperationUse targets using the
   same typed Spatial Service request/response boundary, with exact
   LocalRegion-versus-BoundaryProxy agreement;
 * local finite-range containment and dynamically unbounded Whole selection of
@@ -514,7 +537,7 @@ Anchor-level tests should cover:
   MemoryConsistency domain, plus rejection of a hidden multi-domain fence;
 * one volatile MMIO binding with non-trapping at-most-once provider behavior,
   plus rejection of ordinary storage or provider-visible replay;
-* MemoryOperationEntry and ExposureEntry dispatch ownership plus rejection of
+* MemoryOperationUse and ExposureEntry dispatch ownership plus rejection of
   `C_dispatch` outside Fabric-owned `H_dispatch`;
 * one system-memory request/response plan and one unsplit multicast; and
 * Deployment-owner closure of every selected memory and service dependency,

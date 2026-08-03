@@ -157,8 +157,12 @@ The verifier checks in dependency order:
   endpoints, and internal connections projected mechanically to that
   occurrence;
 * one MemoryOperationEntry per covered memory actor, its exact addressed or
-  fence variant, exact memory placement, derived internal source, required
-  MemoryBinding, typed dispatch or consistency target, and exposure closure;
+  fence variant, exact definition-level memory placement, and derived internal
+  source;
+* one canonical rooted-use row per reachable `ContextualActorRef`, including
+  exact addressed-memory resolution, required MemoryBinding, typed dispatch or
+  consistency target, and rejection of missing, duplicate, foreign, stale, or
+  wrong-graph rows;
 * complete vector address, data, and optional mask endpoint correspondence,
   selected use-pattern compatibility, and absence of any Mapping-invented
   lane/beat decomposition;
@@ -166,7 +170,7 @@ The verifier checks in dependency order:
   supplied role and one output write per externally exposed result role,
   uniqueness of incompatible interpretations within each local physical
   ingress match domain, and legal tag reuse across disjoint domains;
-* one typed target on every MemoryOperationEntry and ExposureEntry, with the
+* one typed target on every MemoryOperationUse and ExposureEntry, with the
   reconstructed `C_dispatch` contained in Fabric-owned `H_dispatch`;
 * exact agreement between each addressed or exposure target and its
   MemoryBinding target: local dispatch selects a LocalRegion owned by the

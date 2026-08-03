@@ -55,6 +55,32 @@ relation matches exactly. This preserves the distinction between semantic
 realization and physical placement without inventing a Mapping-owned memory
 encoding or asking TechMapping to name an occurrence prematurely.
 
+## Why Memory Placement And Rooted Uses Are Factorized
+
+An `ActorRef` belongs to one reusable graph definition. The same graph may be
+launched at several static sites, and each site may bind its memory formal to a
+different logical root. TechMapping can still select one operation-engine
+realization for the actor because its operation semantics and port contract do
+not change. SpatialMapping must likewise select its physical operation
+placement once, but memory binding and dispatch are properties of each rooted
+use.
+
+Cloning the graph per launch was rejected because it makes canonical program
+identity and graph size depend on call-site specialization. Repeating a full
+operation placement per contextual actor was also rejected: it duplicates one
+physical decision and requires reconciliation when the copies disagree.
+Instead, one actor-level MemoryOperationEntry owns placement and nested rooted
+uses own binding and dispatch. The parent actor and child rooted launch derive
+the existing Dataflow `ContextualActorRef`; Mapping adds no identity.
+
+The same factorization is retained in native search state. Actor placement is
+one dense array, while rooted uses occupy contiguous CSR ranges containing
+launch, binding, and dispatch ordinals. Import and cold verification are
+linear in actors plus rooted uses. A placement move visits only that actor's
+use range, and a binding or dispatch move touches one use and its reverse
+incidence. This avoids both graph cloning and a placement-by-launch Cartesian
+domain while preserving every semantically necessary contextual decision.
+
 ## Why Dead Results Derive A Physical Discard
 
 Dataflow owns whether an actor result has consumers. A dead result therefore
