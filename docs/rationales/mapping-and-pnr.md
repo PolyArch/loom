@@ -421,6 +421,20 @@ twice depending on loop shape. Executing exactly one complete level at the
 minimum gives one finite rule without a second temperature-level budget or a
 host-time termination heuristic.
 
+The search PRNG and acceptance test use fixed integer protocols because a
+named engine without exact seed framing still permits implementations to
+diverge. Domain-separated SHA-256 gives every seed and purpose an independent,
+schedule-independent starting state. Fixed-endian state loading and Loom-owned
+rejection sampling remove host-library distribution behavior from replay.
+
+Acceptance likewise uses one checked-in Q64 table rather than runtime `exp`.
+Different libm implementations, floating-point contraction, and rounding modes
+can change a threshold by one and therefore change every later candidate. The
+table is finite because the Q64 threshold eventually becomes zero; its byte
+digest and a few boundary anchors detect accidental regeneration or editing.
+The mathematical exponential explains the intended probability, while the
+integer table remains the one executable truth.
+
 ## Why Tags Are Local Allocation
 
 A Physical Tag distinguishes logical uses that may overlap on the same tagged

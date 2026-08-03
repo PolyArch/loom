@@ -1978,11 +1978,51 @@ from canonically sorted domains. Host entropy, thread identity, scheduling,
 container iteration, and implementation-defined random distributions are
 forbidden.
 
+The `Sha256SeededXoshiro256StarStar_1_0` seed preimage is exactly:
+
+```text
+ASCII("loom.pnr.prng.sha256_seeded_xoshiro256starstar.1.0")
+  || u64be(master_seed)
+  || u64be(seed_index)
+  || u32be(stream_purpose_ordinal)
+```
+
+The fixed ASCII domain separator is 50 bytes and has no terminator. Stream
+purpose ordinals are `InitializerDiversification = 0`, `Calibration = 1`,
+`ActionProposal = 2`, `Acceptance = 3`, and `ExactRepair = 4`. The four
+consecutive 64-bit big-endian words of the SHA-256 digest initialize the
+xoshiro256** state. If all four words are zero, word zero is replaced by
+`0x9e3779b97f4a7c15` and the other words remain zero.
+
+One `nextU64()` result and transition use the published xoshiro256** 1.0
+integer recurrence: result is `rotl(state[1] * 5, 7) * 9`; the state update
+uses `t = state[1] << 17`, the xor sequence `(2 ^= 0, 3 ^= 1, 1 ^= 2,
+0 ^= 3, 2 ^= t)`, and `state[3] = rotl(state[3], 45)`, all modulo `2^64`.
+`nextBounded(n)` requires positive `n`, repeatedly draws `x`, rejects while
+`x < ((0 - n) mod 2^64) mod n`, and otherwise returns `x mod n`. This is the
+only bounded-selection projection; library distributions are not equivalent.
+
 For positive `deltaE`, the acceptance protocol computes
 `ceil(deltaE * 256 / temperature)`, looks up the canonical Q64 exponential
 threshold, and accepts only when the next `u64` is strictly below it.
 Non-positive deltas accept directly. The checked-in table is the protocol;
 runtime `exp` is not.
+
+`ExpNegativeQ64Table_1_0` contains exactly 11,356 nonzero `uint64` entries.
+Entry `i - 1` is the threshold for positive ratio index `i` in
+`[1, 11356]`; every larger index has threshold zero. The intended real-number
+projection is `floor(2^64 * exp(-i / 256))`, but the checked-in integers, not a
+runtime floating-point evaluation, are authoritative. Concatenating entries
+in index order as `u64be` produces 90,848 bytes whose SHA-256 is
+`88a35fea368b5df890aa790239ca681154f69541c3e7dab05cf60dbc3890bfbf`.
+The first threshold is `0xff007fd55ffdde38`, index 256 is
+`0x5e2d58d8b3bcdf1a`, index 11356 is `1`, and index 11357 is zero.
+
+Computing `ceil(deltaE * 256 / temperature)` uses an exact widened product and
+ceiling division with no narrowing overflow. Zero temperature is invalid. A
+ratio above 11356 maps directly to threshold zero; it cannot clamp to a
+nonzero threshold. A non-positive delta consumes no Acceptance-stream word. A
+positive delta consumes exactly one word even when its threshold is zero.
 
 Owner policies allocate logical work slots in canonical order before parallel
 scheduling. A cache hit and a cache miss consume the same slot; a seed or
