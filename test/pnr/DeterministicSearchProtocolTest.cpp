@@ -142,6 +142,77 @@ void acceptanceConsumesOnlyItsSpecifiedWords() {
           "zero temperature was accepted");
 }
 
+loom::ResolvedPnrAnnealingPolicy policy() {
+  return loom::ResolvedPnrAnnealingPolicy{16, {3, 4}, {4, 5}, 1024,
+                                          1,  {1, 2}, 7,      11};
+}
+
+void calibrationUsesExactQuantileAndTarget() {
+  const std::array<loom::dse::ObjectiveWideValue, 3> deltas{
+      loom::dse::ObjectiveWideValue{0, 100},
+      loom::dse::ObjectiveWideValue{0, 1}, loom::dse::ObjectiveWideValue{0, 4}};
+  require(take(loom::pnr::calibrateAnnealingTemperature(policy(), deltas)) ==
+              18,
+          "calibration did not select the exact stable quantile");
+  require(take(loom::pnr::calibrateAnnealingTemperature(policy(), {})) == 1,
+          "empty positive-delta calibration did not use the minimum");
+
+  loom::ResolvedPnrAnnealingPolicy unreachable = policy();
+  unreachable.targetInitialAcceptance = {999, 1000};
+  unreachable.fallbackTemperature = 1;
+  unreachable.minimumTemperature = 32;
+  require(take(loom::pnr::calibrateAnnealingTemperature(unreachable, deltas)) ==
+              unreachable.fallbackTemperature,
+          "unreachable target acceptance did not preserve exact fallback");
+
+  loom::ResolvedPnrAnnealingPolicy clamped = policy();
+  clamped.minimumTemperature = 32;
+  require(take(loom::pnr::calibrateAnnealingTemperature(clamped, deltas)) == 32,
+          "calibrated temperature was not clamped to the minimum");
+}
+
+void proposalCountAndCoolingAreChecked() {
+  const loom::ResolvedPnrAnnealingPolicy annealing = policy();
+  require(take(loom::pnr::annealingProposalsPerLevel(annealing, 5)) == 62,
+          "per-level proposal count changed");
+  loom::ResolvedPnrAnnealingPolicy overflowing = annealing;
+  overflowing.proposalsPerLevelBase = UINT64_MAX;
+  llvm::Expected<std::uint64_t> count =
+      loom::pnr::annealingProposalsPerLevel(overflowing, 1);
+  require(!count && llvm::toString(count.takeError()).find("overflow") !=
+                        std::string::npos,
+          "proposal-count overflow was accepted");
+
+  loom::pnr::AnnealingTemperatureSchedule schedule =
+      take(loom::pnr::AnnealingTemperatureSchedule::create(annealing, 10));
+  std::vector<std::uint64_t> levels;
+  while (true) {
+    levels.push_back(schedule.temperature());
+    if (!schedule.advanceAfterCompletedLevel())
+      break;
+  }
+  require(levels == std::vector<std::uint64_t>({10, 5, 2, 1}),
+          "cooling schedule changed");
+  require(schedule.isFinalLevel(),
+          "schedule did not stop at the minimum temperature");
+
+  loom::ResolvedPnrAnnealingPolicy minimumThree = annealing;
+  minimumThree.minimumTemperature = 3;
+  loom::pnr::AnnealingTemperatureSchedule clamped =
+      take(loom::pnr::AnnealingTemperatureSchedule::create(minimumThree, 2));
+  require(clamped.temperature() == 3 && clamped.isFinalLevel() &&
+              !clamped.advanceAfterCompletedLevel(),
+          "initial temperature below minimum did not produce one final level");
+
+  loom::ResolvedPnrAnnealingPolicy wideCooling = annealing;
+  wideCooling.coolingRatio = {UINT64_MAX - 1, UINT64_MAX};
+  loom::pnr::AnnealingTemperatureSchedule wide = take(
+      loom::pnr::AnnealingTemperatureSchedule::create(wideCooling, UINT64_MAX));
+  require(wide.advanceAfterCompletedLevel() &&
+              wide.temperature() == UINT64_MAX - 1,
+          "wide cooling multiplication did not preserve exact arithmetic");
+}
+
 } // namespace
 
 int main() {
@@ -149,6 +220,8 @@ int main() {
   boundedSelectionUsesCanonicalRejection();
   exponentialThresholdTableIsCanonical();
   acceptanceConsumesOnlyItsSpecifiedWords();
+  calibrationUsesExactQuantileAndTarget();
+  proposalCountAndCoolingAreChecked();
   llvm::outs() << "deterministic search protocol tests passed\n";
   return 0;
 }

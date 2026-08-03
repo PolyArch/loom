@@ -213,6 +213,8 @@ validateResolvedDualStepSchedule(const ResolvedDualStepSchedule &schedule);
 llvm::Error validateResolvedDualSubgradientPolicy(
     const ResolvedDualSubgradientPolicy &policy);
 llvm::Error
+validateResolvedPnrAnnealingPolicy(const ResolvedPnrAnnealingPolicy &policy);
+llvm::Error
 validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
                                 const ResolvedObjectiveCatalogs &catalogs);
 

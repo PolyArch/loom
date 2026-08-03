@@ -318,6 +318,22 @@ llvm::Error validateResolvedDualSubgradientPolicy(
 }
 
 llvm::Error
+validateResolvedPnrAnnealingPolicy(const ResolvedPnrAnnealingPolicy &policy) {
+  if (policy.calibrationProposalCount == 0 || policy.fallbackTemperature == 0 ||
+      policy.minimumTemperature == 0 ||
+      !isReduced(policy.positiveDeltaQuantile) ||
+      !ratioAtMostOne(policy.positiveDeltaQuantile) ||
+      !isReduced(policy.targetInitialAcceptance) ||
+      !ratioStrictlyBetweenZeroAndOne(policy.targetInitialAcceptance) ||
+      !isReduced(policy.coolingRatio) ||
+      !ratioStrictlyBetweenZeroAndOne(policy.coolingRatio) ||
+      (policy.proposalsPerLevelBase == 0 &&
+       policy.proposalsPerMovableDecision == 0))
+    return invalid("annealing policy is not canonical");
+  return llvm::Error::success();
+}
+
+llvm::Error
 validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
                                 const ResolvedObjectiveCatalogs &catalogs) {
   if (llvm::Error error = validateResolvedObjectiveCatalogs(catalogs))
@@ -350,18 +366,9 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
       return error;
   }
 
-  const ResolvedPnrAnnealingPolicy &annealing = policy.search.annealing;
-  if (annealing.calibrationProposalCount == 0 ||
-      annealing.fallbackTemperature == 0 || annealing.minimumTemperature == 0 ||
-      !isReduced(annealing.positiveDeltaQuantile) ||
-      !ratioAtMostOne(annealing.positiveDeltaQuantile) ||
-      !isReduced(annealing.targetInitialAcceptance) ||
-      !ratioStrictlyBetweenZeroAndOne(annealing.targetInitialAcceptance) ||
-      !isReduced(annealing.coolingRatio) ||
-      !ratioStrictlyBetweenZeroAndOne(annealing.coolingRatio) ||
-      (annealing.proposalsPerLevelBase == 0 &&
-       annealing.proposalsPerMovableDecision == 0))
-    return invalid("annealing policy is not canonical");
+  if (llvm::Error error =
+          validateResolvedPnrAnnealingPolicy(policy.search.annealing))
+    return error;
   if (policy.search.focusedClosureProposalLimit == 0)
     return invalid("focused closure work limit must be positive");
 

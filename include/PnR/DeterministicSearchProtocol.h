@@ -48,6 +48,42 @@ acceptAnnealingDelta(dse::ObjectiveSignedDifference delta,
                      std::uint64_t temperature,
                      DeterministicPnrRandomStream &acceptanceStream);
 
+/// Calibrates the smallest integer temperature whose table probability reaches
+/// the configured target for the stable quantile of positive energy deltas.
+llvm::Expected<std::uint64_t> calibrateAnnealingTemperature(
+    const ResolvedPnrAnnealingPolicy &policy,
+    llvm::ArrayRef<dse::ObjectiveWideValue> positiveDeltas);
+
+llvm::Expected<std::uint64_t>
+annealingProposalsPerLevel(const ResolvedPnrAnnealingPolicy &policy,
+                           std::uint64_t movableDecisionCount);
+
+/// Finite cooling schedule with exactly one complete minimum-temperature level.
+class AnnealingTemperatureSchedule final {
+public:
+  static llvm::Expected<AnnealingTemperatureSchedule>
+  create(const ResolvedPnrAnnealingPolicy &policy,
+         std::uint64_t initialTemperature);
+
+  std::uint64_t temperature() const { return temperature_; }
+  bool isFinalLevel() const { return temperature_ == minimumTemperature_; }
+
+  /// Advances after the current level completes. Returns false after the
+  /// minimum-temperature level rather than executing it again.
+  bool advanceAfterCompletedLevel();
+
+private:
+  AnnealingTemperatureSchedule(std::uint64_t minimumTemperature,
+                               ResolvedExactRatio coolingRatio,
+                               std::uint64_t temperature)
+      : minimumTemperature_(minimumTemperature), coolingRatio_(coolingRatio),
+        temperature_(temperature) {}
+
+  std::uint64_t minimumTemperature_;
+  ResolvedExactRatio coolingRatio_;
+  std::uint64_t temperature_;
+};
+
 } // namespace loom::pnr
 
 #endif // LOOM_PNR_DETERMINISTICSEARCHPROTOCOL_H

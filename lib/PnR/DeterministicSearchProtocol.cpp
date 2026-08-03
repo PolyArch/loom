@@ -8,7 +8,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <system_error>
+#include <vector>
 
 using namespace loom;
 using namespace loom::pnr;
@@ -80,6 +83,32 @@ positiveDeltaRatioIndex(dse::ObjectiveWideValue delta,
   return quotient.getZExtValue();
 }
 
+bool thresholdReachesTarget(std::uint64_t threshold,
+                            ResolvedExactRatio target) {
+  llvm::APInt left(128, threshold);
+  left *= llvm::APInt(128, target.denominator);
+  llvm::APInt right(128, target.numerator);
+  right <<= 64;
+  return left.uge(right);
+}
+
+std::optional<std::uint64_t>
+maximumTargetRatioIndex(ResolvedExactRatio target) {
+  const llvm::ArrayRef<std::uint64_t> thresholds = expNegativeQ64Thresholds();
+  std::size_t firstMiss = 0;
+  std::size_t end = thresholds.size();
+  while (firstMiss < end) {
+    const std::size_t middle = firstMiss + (end - firstMiss) / 2;
+    if (thresholdReachesTarget(thresholds[middle], target))
+      firstMiss = middle + 1;
+    else
+      end = middle;
+  }
+  if (firstMiss == 0)
+    return std::nullopt;
+  return static_cast<std::uint64_t>(firstMiss);
+}
+
 } // namespace
 
 DeterministicPnrRandomStream
@@ -138,4 +167,77 @@ llvm::Expected<bool> loom::pnr::acceptAnnealingDelta(
     return ratioIndex.takeError();
   const std::uint64_t threshold = expNegativeQ64Threshold(*ratioIndex);
   return acceptanceStream.nextU64() < threshold;
+}
+
+llvm::Expected<std::uint64_t> loom::pnr::calibrateAnnealingTemperature(
+    const ResolvedPnrAnnealingPolicy &policy,
+    llvm::ArrayRef<dse::ObjectiveWideValue> positiveDeltas) {
+  if (llvm::Error error = validateResolvedPnrAnnealingPolicy(policy))
+    return std::move(error);
+  if (positiveDeltas.empty())
+    return policy.minimumTemperature;
+
+  std::vector<dse::ObjectiveWideValue> sorted(positiveDeltas.begin(),
+                                              positiveDeltas.end());
+  std::stable_sort(sorted.begin(), sorted.end());
+  llvm::APInt quantileProduct(128, policy.positiveDeltaQuantile.numerator);
+  quantileProduct *= llvm::APInt(128, sorted.size() - 1);
+  const std::uint64_t quantileIndex =
+      quantileProduct
+          .udiv(llvm::APInt(128, policy.positiveDeltaQuantile.denominator))
+          .getZExtValue();
+  const dse::ObjectiveWideValue selected = sorted[quantileIndex];
+  const std::optional<std::uint64_t> maximumRatio =
+      maximumTargetRatioIndex(policy.targetInitialAcceptance);
+  if (!maximumRatio || (selected.high == 0 && selected.low == 0))
+    return policy.fallbackTemperature;
+
+  llvm::APInt numerator = wideMagnitude(selected).zext(192);
+  numerator *= llvm::APInt(192, 256);
+  const llvm::APInt denominator(192, *maximumRatio);
+  llvm::APInt temperature = numerator.udiv(denominator);
+  if (!numerator.urem(denominator).isZero())
+    ++temperature;
+  if (temperature.ugt(std::numeric_limits<std::uint64_t>::max()))
+    return policy.fallbackTemperature;
+  return std::max(temperature.getZExtValue(), policy.minimumTemperature);
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::annealingProposalsPerLevel(const ResolvedPnrAnnealingPolicy &policy,
+                                      std::uint64_t movableDecisionCount) {
+  if (llvm::Error error = validateResolvedPnrAnnealingPolicy(policy))
+    return std::move(error);
+  llvm::APInt count(128, policy.proposalsPerMovableDecision);
+  count *= llvm::APInt(128, movableDecisionCount);
+  count += llvm::APInt(128, policy.proposalsPerLevelBase);
+  if (count.ugt(std::numeric_limits<std::uint64_t>::max()))
+    return llvm::createStringError(
+        std::make_error_code(std::errc::value_too_large),
+        "annealing proposal count overflow");
+  return count.getZExtValue();
+}
+
+llvm::Expected<AnnealingTemperatureSchedule>
+AnnealingTemperatureSchedule::create(const ResolvedPnrAnnealingPolicy &policy,
+                                     std::uint64_t initialTemperature) {
+  if (llvm::Error error = validateResolvedPnrAnnealingPolicy(policy))
+    return std::move(error);
+  if (initialTemperature == 0)
+    return llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "initial annealing temperature must be positive");
+  return AnnealingTemperatureSchedule(
+      policy.minimumTemperature, policy.coolingRatio,
+      std::max(initialTemperature, policy.minimumTemperature));
+}
+
+bool AnnealingTemperatureSchedule::advanceAfterCompletedLevel() {
+  if (isFinalLevel())
+    return false;
+  llvm::APInt next(128, temperature_);
+  next *= llvm::APInt(128, coolingRatio_.numerator);
+  next = next.udiv(llvm::APInt(128, coolingRatio_.denominator));
+  temperature_ = std::max(next.getZExtValue(), minimumTemperature_);
+  return true;
 }
