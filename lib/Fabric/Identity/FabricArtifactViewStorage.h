@@ -26,6 +26,9 @@ struct FabricArtifactView::Storage {
   std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricPhysicalTagMatchDomainView> physicalTagMatchDomains;
   std::map<std::vector<std::uint8_t>, FabricOrdinal> tagMatchDomainByEndpoint;
+  std::vector<FabricPhysicalTagAssignmentPointView> physicalTagAssignmentPoints;
+  std::map<std::vector<std::uint8_t>, FabricOrdinal>
+      tagAssignmentPointByEndpoint;
   std::vector<FabricPhysicalTraversalView> physicalTraversalViews;
   std::vector<FabricInventoryOwnerRef> moduleResourceOwners;
   std::vector<FabricFuTemplateRef> fuTemplates;

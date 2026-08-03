@@ -80,7 +80,9 @@ ResourceContractDeclaration declaration() {
            ClaimDeclaration{ClaimKey(1), StateKey(0), CapacityDimensionKey(1),
                             CapacityUnits(1)}},
           {InternalTransactionDeclaration{{ClaimKey(0)}},
-           InternalTransactionDeclaration{{ClaimKey(0), ClaimKey(1)}}}},
+           InternalTransactionDeclaration{{ClaimKey(0), ClaimKey(1)}}},
+          {},
+          {UsePatternValueSchema::physicalTag(9)}},
       UsePatternDeclaration{
           UsePatternKey(1),
           RequesterKey(1),
@@ -91,7 +93,9 @@ ResourceContractDeclaration declaration() {
           TimingContractKey(0),
           {ClaimDeclaration{ClaimKey(0), StateKey(0), CapacityDimensionKey(0),
                             CapacityUnits(1)}},
-          {InternalTransactionDeclaration{{ClaimKey(0)}}}},
+          {InternalTransactionDeclaration{{ClaimKey(0)}}},
+          {},
+          {}},
   };
   result.grantPolicy = GrantPolicyDeclaration(RoundRobinDeclaration{
       {RequesterKey(1), RequesterKey(0)}, RequesterKey(1)});
@@ -173,6 +177,13 @@ RecordLocations locateReferences(llvm::ArrayRef<std::uint8_t> bytes) {
          ++transaction)
       cursor.skipWords(cursor.u32("transaction claim count"),
                        "transaction claims");
+    cursor.skipWords(
+        static_cast<std::uint64_t>(cursor.u32("parameter schema count")) * 2,
+        "parameter schemas");
+    cursor.skipWords(static_cast<std::uint64_t>(
+                         cursor.u32("sharing-assignment schema count")) *
+                         2,
+                     "sharing-assignment schemas");
   }
 
   cursor.u32("requester count");
@@ -259,6 +270,12 @@ void checkCompleteRoundTrip() {
           pattern.timingAndProgress == TimingContractKey(0) &&
           pattern.claims.size() == 2 && pattern.internalTransactionCount == 2,
       "atomic use pattern changed");
+  require("resource pattern value schema",
+          pattern.parameters.empty() &&
+              pattern.sharingAssignments.size() == 1 &&
+              pattern.sharingAssignments.front() ==
+                  UsePatternValueSchema::physicalTag(9),
+          "owner value schema changed");
   require("resource claims",
           pattern.claims[0].state == StateKey(0) &&
               pattern.claims[0].dimension == CapacityDimensionKey(0) &&

@@ -1,10 +1,14 @@
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/PhysicalTagResourceContract.h"
+#include "Fabric/IR/UsePatternValue.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -30,6 +34,12 @@ void require(const char *test, bool condition, const std::string &message) {
 
 ResourceContract takeContract(const char *test,
                               llvm::Expected<ResourceContract> result) {
+  if (!result)
+    fail(test, llvm::toString(result.takeError()));
+  return std::move(*result);
+}
+
+template <typename T> T takeValue(const char *test, llvm::Expected<T> result) {
   if (!result)
     fail(test, llvm::toString(result.takeError()));
   return std::move(*result);
@@ -77,8 +87,8 @@ template <typename T, typename = void>
 struct HasPerClaimRelease : std::false_type {};
 
 template <typename T>
-struct HasPerClaimRelease<
-    T, std::void_t<decltype(std::declval<T>().release)>> : std::true_type {};
+struct HasPerClaimRelease<T, std::void_t<decltype(std::declval<T>().release)>>
+    : std::true_type {};
 
 static_assert(!HasPerClaimRelease<ClaimDeclaration>::value,
               "release belongs to the atomic use pattern, not each claim");
@@ -92,6 +102,13 @@ template <typename Enum> constexpr std::uint32_t rank(Enum value) {
 bool sameClaim(const Claim &lhs, const Claim &rhs) {
   return lhs.state == rhs.state && lhs.dimension == rhs.dimension &&
          lhs.amount == rhs.amount;
+}
+
+bool sameCommit(const std::optional<Commit> &lhs,
+                const std::optional<Commit> &rhs) {
+  return lhs.has_value() == rhs.has_value() &&
+         (!lhs ||
+          (lhs->event == rhs->event && lhs->transition == rhs->transition));
 }
 
 // One buffering resource whose two requesters claim disjoint capacity, so the
@@ -537,15 +554,14 @@ void shortLivedClaimAndDurableCommitAreDistinct() {
                                   operandStore::ServiceDimension::Slot),
                               CapacityUnits(1)}),
           "durable queue contents must not appear in the claim envelope");
-  require(__func__,
-          append.commit.has_value() &&
-              append.commit->transition ==
-                  key<ResourceTransitionKey>(
-                      operandStore::Transition::Append) &&
-              append.commit->event == append.acquire &&
-              append.release ==
-                  key<EventKey>(operandStore::Event::NextBoundary),
-          "the committed transition or its event differs");
+  require(
+      __func__,
+      append.commit.has_value() &&
+          append.commit->transition ==
+              key<ResourceTransitionKey>(operandStore::Transition::Append) &&
+          append.commit->event == append.acquire &&
+          append.release == key<EventKey>(operandStore::Event::NextBoundary),
+      "the committed transition or its event differs");
 
   const UsePattern remove = contract.usePattern(UsePatternKey(1));
   require(__func__,
@@ -600,9 +616,9 @@ void oneEnvelopeHasOneReleaseAndOneClaimPerDimension() {
   const ResourceContract contract = takeContract(
       __func__, ResourceContract::create(memoryEngine::declaration()));
   const UsePattern pattern = contract.usePattern(UsePatternKey(0));
-  require(__func__, pattern.claims.size() == 2 &&
-                        pattern.release ==
-                            key<EventKey>(memoryEngine::Event::Retire),
+  require(__func__,
+          pattern.claims.size() == 2 &&
+              pattern.release == key<EventKey>(memoryEngine::Event::Retire),
           "the enclosing pattern must release its complete claim envelope");
 
   ResourceContractDeclaration declaration = memoryEngine::declaration();
@@ -880,6 +896,115 @@ void inventoryViolationsAreInvariantUnderDeclarationOrder() {
                         });
 }
 
+void physicalTagSharingSchemaOwnsItsCodec() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  declaration.usePatterns[0].sharingAssignments = {
+      UsePatternValueSchema::physicalTag(9)};
+  ResourceContract contract =
+      takeContract(__func__, ResourceContract::create(declaration));
+  const UsePattern pattern = contract.usePattern(UsePatternKey(0));
+  require(__func__, pattern.parameters.empty(),
+          "a Physical Tag sharing slot created a pattern parameter");
+  require(__func__,
+          pattern.sharingAssignments.size() == 1 &&
+              pattern.sharingAssignments.front() ==
+                  UsePatternValueSchema::physicalTag(9),
+          "the validated pattern lost its owner value schema");
+
+  const UsePatternValue value = takeValue(
+      __func__, decodeUsePatternValue(pattern.sharingAssignments.front(),
+                                      std::array<std::uint8_t, 2>{0x01, 0x55}));
+  const auto *tag = std::get_if<PhysicalTagPatternValue>(&value);
+  require(__func__, tag && tag->value == llvm::APInt(9, 0x155),
+          "the owner codec adopted the wrong Physical Tag value");
+  const std::vector<std::uint8_t> encoded = takeValue(
+      __func__,
+      encodeUsePatternValue(pattern.sharingAssignments.front(), value));
+  require(__func__, encoded == std::vector<std::uint8_t>({0x01, 0x55}),
+          "the owner codec did not reproduce canonical bytes");
+
+  declaration.usePatterns[0].sharingAssignments = {
+      UsePatternValueSchema::physicalTag(0)};
+  expectViolation(__func__, "zero-width Physical Tag schema",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::InvalidPatternValueSchema);
+
+  declaration.usePatterns[0].sharingAssignments.clear();
+  declaration.usePatterns[0].parameters = {
+      UsePatternValueSchema::physicalTag(9)};
+  expectViolation(__func__, "Physical Tag parameter schema",
+                  ResourceContract::create(declaration),
+                  ResourceContractViolation::InvalidPatternValueSchema);
+}
+
+void physicalTagAssignmentsExtendOneOwnerContract() {
+  ResourceContract base = takeContract(
+      __func__, ResourceContract::create(crossbar::fixedPriorityDeclaration()));
+  ResourceContract extended =
+      takeContract(__func__, appendPhysicalTagAssignmentPatterns(
+                                 &base, std::array<std::uint32_t, 2>{4, 9}));
+
+  require(__func__, extended.usePatternCount() == base.usePatternCount() + 2,
+          "tag assignments did not append one pattern per endpoint");
+  for (std::uint32_t ordinal = 0; ordinal != base.usePatternCount();
+       ++ordinal) {
+    const UsePattern before = base.usePattern(UsePatternKey(ordinal));
+    const UsePattern after = extended.usePattern(UsePatternKey(ordinal));
+    require(__func__,
+            before.requester == after.requester &&
+                before.eligibility == after.eligibility &&
+                before.acquire == after.acquire &&
+                before.release == after.release &&
+                sameCommit(before.commit, after.commit) &&
+                before.timingAndProgress == after.timingAndProgress &&
+                std::equal(before.claims.begin(), before.claims.end(),
+                           after.claims.begin(), after.claims.end(),
+                           sameClaim) &&
+                before.parameters == after.parameters &&
+                before.sharingAssignments == after.sharingAssignments,
+            "tag assignment changed an existing atomic use pattern");
+  }
+
+  const auto policy = extended.grantPolicy();
+  require(__func__,
+          policy && std::holds_alternative<FixedPriorityView>(*policy),
+          "tag assignment changed the existing arbitration kind");
+  require(__func__,
+          std::get<FixedPriorityView>(*policy).requesterOrder() ==
+              llvm::ArrayRef<RequesterKey>(
+                  {RequesterKey(2), RequesterKey(0), RequesterKey(1)}),
+          "tag assignment changed the existing requester order");
+
+  for (std::uint32_t offset = 0; offset != 2; ++offset) {
+    const UsePattern pattern =
+        extended.usePattern(UsePatternKey(base.usePatternCount() + offset));
+    require(
+        __func__,
+        pattern.claims.empty() && !pattern.commit &&
+            pattern.parameters.empty() &&
+            pattern.sharingAssignments ==
+                llvm::ArrayRef<UsePatternValueSchema>(
+                    {UsePatternValueSchema::physicalTag(offset == 0 ? 4 : 9)}),
+        "tag assignment is not a stateless owner sharing pattern");
+  }
+
+  ResourceContract standalone =
+      takeContract(__func__, appendPhysicalTagAssignmentPatterns(
+                                 nullptr, std::array<std::uint32_t, 1>{7}));
+  const UsePattern pattern = standalone.usePattern(UsePatternKey(0));
+  require(__func__,
+          standalone.stateCount() == 0 && standalone.usePatternCount() == 1 &&
+              standalone.requesterCount() == 1 &&
+              standalone.eligibilityCount() == 1 &&
+              standalone.eventCount() == 1 &&
+              standalone.timingContractCount() == 1 &&
+              !standalone.grantPolicy() && pattern.claims.empty() &&
+              pattern.sharingAssignments ==
+                  llvm::ArrayRef<UsePatternValueSchema>(
+                      {UsePatternValueSchema::physicalTag(7)}),
+          "a standalone tag writer did not receive the minimal contract");
+}
+
 } // namespace
 
 int main() {
@@ -901,5 +1026,7 @@ int main() {
   internalTransactionsRefineOneAcceptedUse();
   violationPrecedenceIsIndependentOfDeclarationOrder();
   inventoryViolationsAreInvariantUnderDeclarationOrder();
+  physicalTagSharingSchemaOwnsItsCodec();
+  physicalTagAssignmentsExtendOneOwnerContract();
   return 0;
 }

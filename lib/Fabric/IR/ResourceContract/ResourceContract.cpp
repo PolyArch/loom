@@ -1,5 +1,6 @@
 #include "Fabric/IR/ResourceContract.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -46,6 +47,28 @@ std::string transactionSite(std::size_t pattern, std::size_t transaction) {
   return ("use pattern " + llvm::Twine(pattern) + " internal transaction " +
           llvm::Twine(transaction))
       .str();
+}
+
+std::string valueSchemaSite(std::size_t pattern, llvm::StringRef field,
+                            std::size_t ordinal) {
+  return ("use pattern " + llvm::Twine(pattern) + " " + field + " " +
+          llvm::Twine(ordinal))
+      .str();
+}
+
+llvm::Error checkValueSchemas(std::size_t pattern, llvm::StringRef field,
+                              llvm::ArrayRef<UsePatternValueSchema> schemas) {
+  for (auto [ordinal, schema] : llvm::enumerate(schemas)) {
+    switch (schema.kind) {
+    case UsePatternValueKind::PhysicalTag:
+      if (schema.bitWidth != 0)
+        continue;
+      break;
+    }
+    return rejected(ResourceContractViolation::InvalidPatternValueSchema,
+                    valueSchemaSite(pattern, field, ordinal));
+  }
+  return llvm::Error::success();
 }
 
 // The one report of a malformed unordered key set: a repeated key outranks a
@@ -338,9 +361,8 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
     if (declared.commit) {
       if (static_cast<std::size_t>(declared.commit->transition.ordinal()) >=
           declaration.resourceTransitions.size())
-        return rejected(
-            ResourceContractViolation::UnknownResourceTransitionKey,
-            patternSite(pattern));
+        return rejected(ResourceContractViolation::UnknownResourceTransitionKey,
+                        patternSite(pattern));
       if (declared.commit->event.ordinal() >= declaration.eventCount)
         return rejected(ResourceContractViolation::UnknownEventKey,
                         patternSite(pattern));
@@ -349,11 +371,18 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
         normalized.timingContractCount())
       return rejected(ResourceContractViolation::UnknownTimingContractKey,
                       patternSite(pattern));
+    if (!declared.parameters.empty())
+      return rejected(ResourceContractViolation::InvalidPatternValueSchema,
+                      valueSchemaSite(pattern, "parameter schema", 0));
+    if (llvm::Error invalid = checkValueSchemas(
+            pattern, "sharing-assignment schema", declared.sharingAssignments))
+      return invalid;
   }
 
-  // The owning timing contract must place acquisition no later than the optional
-  // commit and the commit no later than release, so an accepted use always
-  // reaches its durable transition and then returns its whole claim envelope.
+  // The owning timing contract must place acquisition no later than the
+  // optional commit and the commit no later than release, so an accepted use
+  // always reaches its durable transition and then returns its whole claim
+  // envelope.
   for (std::size_t pattern = 0; pattern < normalized.usePatternCount();
        ++pattern) {
     const UsePatternDeclaration &declared = normalized.usePattern(pattern);
@@ -363,10 +392,9 @@ llvm::Error validate(NormalizedDeclaration &normalized) {
     const std::uint32_t acquire = rank[declared.acquire.ordinal()];
     const std::uint32_t release = rank[declared.release.ordinal()];
     const bool ordered =
-        declared.commit
-            ? acquire <= rank[declared.commit->event.ordinal()] &&
-                  rank[declared.commit->event.ordinal()] <= release
-            : acquire <= release;
+        declared.commit ? acquire <= rank[declared.commit->event.ordinal()] &&
+                              rank[declared.commit->event.ordinal()] <= release
+                        : acquire <= release;
     if (!ordered)
       return rejected(ResourceContractViolation::TimingContractDoesNotOrderUse,
                       patternSite(pattern));
@@ -513,6 +541,8 @@ getResourceContractViolationName(ResourceContractViolation violation) {
     return "unknown_event_key";
   case ResourceContractViolation::UnknownTimingContractKey:
     return "unknown_timing_contract_key";
+  case ResourceContractViolation::InvalidPatternValueSchema:
+    return "invalid_pattern_value_schema";
   case ResourceContractViolation::DuplicateClaimKey:
     return "duplicate_claim_key";
   case ResourceContractViolation::UnknownClaimKey:
@@ -581,15 +611,21 @@ RoundRobinGrant RoundRobinView::grant(RequesterKey cursor,
 UsePattern ResourceContract::usePattern(UsePatternKey key) const {
   assert(key.ordinal() < patterns_.size() && "undeclared use pattern");
   const PatternRecord &record = patterns_[key.ordinal()];
-  return UsePattern{record.requester,
-                    record.eligibility,
-                    record.acquire,
-                    record.release,
-                    record.commit,
-                    record.timingAndProgress,
-                    llvm::ArrayRef<Claim>(claims_).slice(record.claims.first,
-                                                         record.claims.count),
-                    record.internalTransactions.count};
+  return UsePattern{
+      record.requester,
+      record.eligibility,
+      record.acquire,
+      record.release,
+      record.commit,
+      record.timingAndProgress,
+      llvm::ArrayRef<Claim>(claims_).slice(record.claims.first,
+                                           record.claims.count),
+      record.internalTransactions.count,
+      llvm::ArrayRef<UsePatternValueSchema>(valueSchemas_)
+          .slice(record.parameters.first, record.parameters.count),
+      llvm::ArrayRef<UsePatternValueSchema>(valueSchemas_)
+          .slice(record.sharingAssignments.first,
+                 record.sharingAssignments.count)};
 }
 
 llvm::ArrayRef<std::uint32_t>
@@ -619,6 +655,90 @@ std::optional<GrantPolicyView> ResourceContract::grantPolicy() const {
   if (*grantPolicyKind_ == GrantPolicyKind::FixedPriority)
     return GrantPolicyView(FixedPriorityView(requesterOrder_));
   return GrantPolicyView(RoundRobinView(requesterOrder_, resetCursorPosition_));
+}
+
+ResourceContractDeclaration ResourceContract::declaration() const {
+  ResourceContractDeclaration result;
+  result.states.reserve(stateCount());
+  for (std::uint32_t state = 0; state != stateCount(); ++state) {
+    ResourceStateDeclaration declared{StateKey(state), {}};
+    for (const CapacityDimension &dimension :
+         capacityDimensions(StateKey(state)))
+      declared.capacityDimensions.push_back(CapacityDimensionDeclaration{
+          CapacityDimensionKey(
+              static_cast<std::uint32_t>(declared.capacityDimensions.size())),
+          dimension.capacity, dimension.initialOccupancy});
+    result.states.push_back(std::move(declared));
+  }
+
+  result.resourceTransitions.reserve(resourceTransitionCount());
+  for (std::uint32_t transition = 0; transition != resourceTransitionCount();
+       ++transition)
+    result.resourceTransitions.emplace_back(transition);
+
+  result.timingContracts.reserve(timingContractCount());
+  for (std::uint32_t timing = 0; timing != timingContractCount(); ++timing) {
+    const llvm::ArrayRef<std::uint32_t> ranks =
+        eventOrder(TimingContractKey(timing));
+    result.timingContracts.push_back(TimingContractDeclaration{
+        TimingContractKey(timing),
+        std::vector<std::uint32_t>(ranks.begin(), ranks.end())});
+  }
+
+  result.usePatterns.reserve(usePatternCount());
+  for (std::uint32_t ordinal = 0; ordinal != usePatternCount(); ++ordinal) {
+    const UsePattern pattern = usePattern(UsePatternKey(ordinal));
+    UsePatternDeclaration declared{
+        UsePatternKey(ordinal),
+        pattern.requester,
+        pattern.eligibility,
+        pattern.acquire,
+        pattern.release,
+        pattern.commit ? std::optional<CommitDeclaration>(CommitDeclaration{
+                             pattern.commit->event, pattern.commit->transition})
+                       : std::nullopt,
+        pattern.timingAndProgress,
+        {},
+        {},
+        std::vector<UsePatternValueSchema>(pattern.parameters.begin(),
+                                           pattern.parameters.end()),
+        std::vector<UsePatternValueSchema>(pattern.sharingAssignments.begin(),
+                                           pattern.sharingAssignments.end())};
+    declared.claims.reserve(pattern.claims.size());
+    for (const Claim &claim : pattern.claims)
+      declared.claims.push_back(ClaimDeclaration{
+          ClaimKey(static_cast<std::uint32_t>(declared.claims.size())),
+          claim.state, claim.dimension, claim.amount});
+    declared.internalTransactions.reserve(pattern.internalTransactionCount);
+    for (std::uint32_t transaction = 0;
+         transaction != pattern.internalTransactionCount; ++transaction) {
+      const llvm::ArrayRef<ClaimKey> claims =
+          internalTransaction(UsePatternKey(ordinal), transaction);
+      declared.internalTransactions.push_back(
+          {std::vector<ClaimKey>(claims.begin(), claims.end())});
+    }
+    result.usePatterns.push_back(std::move(declared));
+  }
+
+  result.requesters.reserve(requesterCount());
+  for (std::uint32_t requester = 0; requester != requesterCount(); ++requester)
+    result.requesters.emplace_back(requester);
+  result.eligibilityCount = eligibilityCount();
+  result.eventCount = eventCount();
+
+  if (const std::optional<GrantPolicyView> policy = grantPolicy()) {
+    if (const auto *fixed = std::get_if<FixedPriorityView>(&*policy))
+      result.grantPolicy = FixedPriorityDeclaration{std::vector<RequesterKey>(
+          fixed->requesterOrder().begin(), fixed->requesterOrder().end())};
+    else {
+      const auto &roundRobin = std::get<RoundRobinView>(*policy);
+      result.grantPolicy = RoundRobinDeclaration{
+          std::vector<RequesterKey>(roundRobin.requesterCycle().begin(),
+                                    roundRobin.requesterCycle().end()),
+          roundRobin.resetCursor()};
+    }
+  }
+  return result;
 }
 
 llvm::Expected<ResourceContract>
@@ -669,15 +789,27 @@ ResourceContract::create(const ResourceContractDeclaration &declaration) {
         declared.eligibility,
         declared.acquire,
         declared.release,
-        declared.commit ? std::optional<Commit>(Commit{
-                              declared.commit->event,
-                              declared.commit->transition})
-                        : std::nullopt,
+        declared.commit
+            ? std::optional<Commit>(
+                  Commit{declared.commit->event, declared.commit->transition})
+            : std::nullopt,
         declared.timingAndProgress,
         Span{static_cast<std::uint32_t>(contract.claims_.size()),
              static_cast<std::uint32_t>(normalized.claimCount(pattern))},
         Span{static_cast<std::uint32_t>(contract.internalTransactions_.size()),
-             static_cast<std::uint32_t>(declared.internalTransactions.size())}};
+             static_cast<std::uint32_t>(declared.internalTransactions.size())},
+        Span{static_cast<std::uint32_t>(contract.valueSchemas_.size()),
+             static_cast<std::uint32_t>(declared.parameters.size())},
+        Span{static_cast<std::uint32_t>(contract.valueSchemas_.size() +
+                                        declared.parameters.size()),
+             static_cast<std::uint32_t>(declared.sharingAssignments.size())}};
+
+    contract.valueSchemas_.insert(contract.valueSchemas_.end(),
+                                  declared.parameters.begin(),
+                                  declared.parameters.end());
+    contract.valueSchemas_.insert(contract.valueSchemas_.end(),
+                                  declared.sharingAssignments.begin(),
+                                  declared.sharingAssignments.end());
 
     for (std::size_t claim = 0; claim < record.claims.count; ++claim) {
       const ClaimDeclaration &declaredClaim = normalized.claim(pattern, claim);

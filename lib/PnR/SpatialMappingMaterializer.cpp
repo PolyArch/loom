@@ -1,6 +1,8 @@
 #include "PnR/SpatialMappingMaterializer.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/IR/PhysicalTag.h"
+#include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
@@ -10,8 +12,10 @@
 #include "mlir/IR/MLIRContext.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -355,6 +359,19 @@ materializeMemoryEngineBindings(mlir::OpBuilder &builder,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::vector<PnrIndex>>
+canonicalRouteNodeOrdinals(const RouteTreeState &tree) {
+  const auto nodes = tree.nodeStorage();
+  std::vector<PnrIndex> ordinals(nodes.size(), getInvalidPnrIndex());
+  PnrIndex nextOrdinal = 0;
+  for (auto [slot, node] : llvm::enumerate(nodes))
+    if (node.isActive())
+      ordinals[slot] = nextOrdinal++;
+  if (nextOrdinal != tree.activeNodeCount())
+    return invalid("RouteTree active-node count diverges from node storage");
+  return ordinals;
+}
+
 llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
                                  mlir::Location location, mlir::Block &parent,
                                  const SpatialCandidateState &candidate,
@@ -390,15 +407,9 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
   route.getBody().push_back(body);
 
   const auto nodes = tree.nodeStorage();
-  std::vector<PnrIndex> ordinals(nodes.size(), getInvalidPnrIndex());
-  PnrIndex nextOrdinal = 0;
-  for (auto [slot, node] : llvm::enumerate(nodes)) {
-    if (!node.isActive())
-      continue;
-    ordinals[slot] = nextOrdinal++;
-  }
-  if (nextOrdinal != tree.activeNodeCount())
-    return invalid("RouteTree active-node count diverges from node storage");
+  auto ordinals = canonicalRouteNodeOrdinals(tree);
+  if (!ordinals)
+    return ordinals.takeError();
 
   builder.setInsertionPointToEnd(body);
   for (auto [slotValue, node] : llvm::enumerate(nodes)) {
@@ -417,14 +428,14 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
       if (arc.target != node.endpoint || arc.traversal >= traversals.size())
         return invalid("RouteTree node disagrees with its incoming arc");
       auto parentSlot = tree.findNode(arcSources[node.parentArc]);
-      if (!parentSlot || *parentSlot >= ordinals.size() ||
-          ordinals[*parentSlot] == getInvalidPnrIndex())
+      if (!parentSlot || *parentSlot >= ordinals->size() ||
+          (*ordinals)[*parentSlot] == getInvalidPnrIndex())
         return invalid("RouteTree incoming arc has no active parent node");
-      parentOrdinal = builder.getI64IntegerAttr(ordinals[*parentSlot]);
+      parentOrdinal = builder.getI64IntegerAttr((*ordinals)[*parentSlot]);
       traversal = fabricAttr<::mapping::FabricPhysicalTraversalRefAttr>(
           builder.getContext(), traversals[arc.traversal].reference);
     }
-    ::mapping::RouteNodeOp::create(builder, location, ordinals[slot],
+    ::mapping::RouteNodeOp::create(builder, location, (*ordinals)[slot],
                                    parentOrdinal, traversal,
                                    builder.getArrayAttr({}));
   }
@@ -436,8 +447,8 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
     if (*endpoint != candidate.logicalNetSinkEndpoint(netOrdinal, sinkOrdinal))
       return invalid("RouteTree sink diverges from selected terminal binding");
     const auto slot = tree.findNode(*endpoint);
-    if (!slot || *slot >= ordinals.size() ||
-        ordinals[*slot] == getInvalidPnrIndex())
+    if (!slot || *slot >= ordinals->size() ||
+        (*ordinals)[*slot] == getInvalidPnrIndex())
       return invalid("RouteTree sink endpoint is not present in the tree");
     const PnrIndex sinkIndex = net.sinkOffset + sinkOrdinal;
     if (sinkIndex >= sinks.size())
@@ -446,7 +457,8 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
         builder.getContext(), dataflowIdentity, sinks[sinkIndex]);
     if (!sink)
       return sink.takeError();
-    ::mapping::RouteSinkOp::create(builder, location, *sink, ordinals[*slot]);
+    ::mapping::RouteSinkOp::create(builder, location, *sink,
+                                   (*ordinals)[*slot]);
   }
   return llvm::Error::success();
 }
@@ -485,12 +497,51 @@ llvm::Expected<mlir::Attribute> materializeActivityEvent(
       event);
 }
 
-llvm::Error
-materializeResourceUse(mlir::OpBuilder &builder, mlir::Location location,
-                       mlir::Block &body, mlir::Attribute owner,
-                       const ::loom::mapping::SpatialActivityEventRef &event,
-                       const ::loom::fabric::FabricUsePatternRef &pattern,
-                       const ArtifactIdentity &dataflowIdentity) {
+llvm::Expected<mlir::ArrayAttr> materializePatternValues(
+    mlir::MLIRContext *context,
+    llvm::ArrayRef<::fabric::UsePatternValueSchema> schemas,
+    llvm::ArrayRef<::fabric::UsePatternValue> values, llvm::StringRef field) {
+  if (schemas.size() != values.size())
+    return invalid("ResourceUse " + field +
+                   " count disagrees with its Fabric use pattern schema");
+  llvm::SmallVector<mlir::Attribute> attributes;
+  attributes.reserve(values.size());
+  for (auto [schema, value] : llvm::zip_equal(schemas, values)) {
+    auto bytes = ::fabric::encodeUsePatternValue(schema, value);
+    if (!bytes)
+      return invalid("ResourceUse " + field +
+                     " cannot be encoded by its Fabric owner: " +
+                     llvm::toString(bytes.takeError()));
+    attributes.push_back(::mapping::OwnerTypedValueAttr::get(
+        context, denseBytes(context, *bytes)));
+  }
+  return mlir::ArrayAttr::get(context, attributes);
+}
+
+llvm::Error materializeResourceUse(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
+    mlir::Attribute owner,
+    const ::loom::mapping::SpatialActivityEventRef &event,
+    const ::loom::fabric::FabricUsePatternRef &pattern,
+    const ArtifactIdentity &dataflowIdentity,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<::fabric::UsePatternValue> parameters = {},
+    llvm::ArrayRef<::fabric::UsePatternValue> sharingAssignments = {}) {
+  const ::fabric::ResourceContract *contract =
+      fabric.resourceContract(pattern.owner.catalog());
+  if (!contract || pattern.ordinal >= contract->usePatternCount())
+    return invalid("ResourceUse does not resolve an exact Fabric use pattern");
+  const ::fabric::UsePattern declaration =
+      contract->usePattern(::fabric::UsePatternKey(pattern.ordinal));
+  auto parameterAttrs = materializePatternValues(
+      builder.getContext(), declaration.parameters, parameters, "parameters");
+  if (!parameterAttrs)
+    return parameterAttrs.takeError();
+  auto sharingAttrs = materializePatternValues(
+      builder.getContext(), declaration.sharingAssignments, sharingAssignments,
+      "sharing assignments");
+  if (!sharingAttrs)
+    return sharingAttrs.takeError();
   auto encodedEvent =
       materializeActivityEvent(builder.getContext(), dataflowIdentity, event);
   if (!encodedEvent)
@@ -504,20 +555,21 @@ materializeResourceUse(mlir::OpBuilder &builder, mlir::Location location,
       builder, location, owner,
       fabricAttr<::mapping::FabricUsePatternRefAttr>(builder.getContext(),
                                                      pattern),
-      activation, builder.getArrayAttr({}), builder.getArrayAttr({}));
+      activation, *parameterAttrs, *sharingAttrs);
   return llvm::Error::success();
 }
 
 llvm::Error materializeComputeResourceUses(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
     llvm::ArrayRef<::loom::mapping::SpatialComputeUseRequirement> uses,
-    const ArtifactIdentity &dataflowIdentity) {
+    const ArtifactIdentity &dataflowIdentity,
+    const ::loom::fabric::FabricArtifactView &fabric) {
   for (const auto &use : uses)
-    if (llvm::Error error =
-            materializeResourceUse(builder, location, body,
-                                   ::mapping::ComputeRealizationRefAttr::get(
-                                       builder.getContext(), use.realization),
-                                   use.trigger, use.pattern, dataflowIdentity))
+    if (llvm::Error error = materializeResourceUse(
+            builder, location, body,
+            ::mapping::ComputeRealizationRefAttr::get(builder.getContext(),
+                                                      use.realization),
+            use.trigger, use.pattern, dataflowIdentity, fabric))
       return error;
   return llvm::Error::success();
 }
@@ -525,7 +577,8 @@ llvm::Error materializeComputeResourceUses(
 llvm::Error materializeMemoryResourceUses(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
     const SpatialCandidateState &candidate,
-    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
   const auto &problem = candidate.problem();
   const auto &realizations = problem.realizations();
   const auto &memory = problem.memory();
@@ -554,7 +607,7 @@ llvm::Error materializeMemoryResourceUses(
               ::mapping::MemoryRealizationRefAttr::get(
                   builder.getContext(), realization.reference.entity),
               trigger, patterns[plans[plan].usePattern].reference,
-              dataflow.identity()))
+              dataflow.identity(), fabric))
         return error;
 
       const PnrIndex useBegin = memory.actorUseOffsets()[actorOrdinal];
@@ -591,9 +644,151 @@ llvm::Error materializeMemoryResourceUses(
                 builder, location, body,
                 ::mapping::MemoryBindingRefAttr::get(builder.getContext(),
                                                      *use.logicalBinding),
-                trigger, *option.serviceUsePattern, dataflow.identity()))
+                trigger, *option.serviceUsePattern, dataflow.identity(),
+                fabric))
           return error;
       }
+    }
+  }
+  return llvm::Error::success();
+}
+
+struct PhysicalTagUseOrigin final {
+  mlir::Attribute owner;
+  ::loom::fabric::FabricPhysicalTagAssignmentPointView assignmentPoint;
+};
+
+llvm::Expected<PhysicalTagUseOrigin> materializePhysicalTagUseOrigin(
+    mlir::MLIRContext *context, const SpatialCandidateState &candidate,
+    PnrIndex netOrdinal, const SpatialTagContinuitySegment &segment,
+    llvm::ArrayRef<PnrIndex> routeNodeOrdinals,
+    const ArtifactIdentity &dataflowIdentity,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto logicalNets = problem.transfers().logicalNets();
+  const auto sourceBindings = problem.transfers().logicalNetSourceBindings();
+  const auto endpoints = problem.routing().routingEndpoints();
+  const auto arcs = problem.routing().routingArcs();
+  const auto traversalPoints =
+      problem.routing().tagContinuity().traversalPointOrdinals();
+  const auto pointOwners = problem.routing().tagContinuity().points();
+  if (netOrdinal >= logicalNets.size() || netOrdinal >= sourceBindings.size())
+    return invalid("Physical Tag origin names an absent logical net");
+  auto logicalNet = dataflowAttr<::mapping::GraphProducerEndpointRefAttr>(
+      context, dataflowIdentity, logicalNets[netOrdinal].producer);
+  if (!logicalNet)
+    return logicalNet.takeError();
+
+  mlir::Attribute owner;
+  ::loom::fabric::FabricTransportEndpointRef endpoint;
+  auto expectedKind =
+      ::loom::fabric::FabricPhysicalTagAssignmentPointKind::Writer;
+  if (segment.originKind == SpatialTagContinuityOriginKind::RouteSource) {
+    const auto source = candidate.routeTree(netOrdinal).sourceEndpoint();
+    if (!source || segment.origin != *source ||
+        segment.origin >= endpoints.size())
+      return invalid("Physical Tag route-source origin is inconsistent");
+    endpoint = endpoints[segment.origin].reference;
+    const FrozenSpatialTerminalBinding binding = sourceBindings[netOrdinal];
+    if (binding.kind == FrozenSpatialTerminalBindingKind::GraphBoundary) {
+      owner = ::mapping::RouteTreeNodeRefAttr::get(context, *logicalNet, 0);
+      expectedKind =
+          ::loom::fabric::FabricPhysicalTagAssignmentPointKind::Ingress;
+    } else {
+      const auto demands = problem.ports().portDemands();
+      if (binding.index >= demands.size())
+        return invalid("Physical Tag route source has an absent port demand");
+      const FrozenSpatialPortDemand &demand = demands[binding.index];
+      if (demand.logicalNet != netOrdinal)
+        return invalid("Physical Tag route source belongs to another net");
+      if (demand.kind == FrozenSpatialPortDemandKind::Compute) {
+        const auto realizations = problem.realizations().computeRealizations();
+        if (demand.realization >= realizations.size())
+          return invalid(
+              "Physical Tag source has an absent compute realization");
+        owner = ::mapping::ComputeRealizationRefAttr::get(
+            context, realizations[demand.realization].reference.entity);
+      } else {
+        const auto realizations = problem.realizations().memoryRealizations();
+        if (demand.realization >= realizations.size())
+          return invalid(
+              "Physical Tag source has an absent memory realization");
+        owner = ::mapping::MemoryRealizationRefAttr::get(
+            context, realizations[demand.realization].reference.entity);
+      }
+    }
+  } else {
+    if (segment.origin >= pointOwners.size())
+      return invalid("Physical Tag boundary origin is out of range");
+    const RouteTreeState &tree = candidate.routeTree(netOrdinal);
+    const auto nodes = tree.nodeStorage();
+    std::optional<PnrIndex> originSlot;
+    for (auto [slotValue, node] : llvm::enumerate(nodes)) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= arcs.size())
+        return invalid("Physical Tag boundary origin has an absent arc");
+      const FrozenSpatialRoutingArc &arc = arcs[node.parentArc];
+      if (arc.traversal >= traversalPoints.size())
+        return invalid("Physical Tag boundary origin has an absent traversal");
+      if (traversalPoints[arc.traversal] != segment.origin)
+        continue;
+      if (originSlot)
+        return invalid(
+            "Physical Tag boundary origin occurs twice in one route");
+      originSlot = static_cast<PnrIndex>(slotValue);
+    }
+    if (!originSlot || *originSlot >= routeNodeOrdinals.size() ||
+        routeNodeOrdinals[*originSlot] == getInvalidPnrIndex() ||
+        nodes[*originSlot].endpoint >= endpoints.size())
+      return invalid(
+          "Physical Tag boundary origin has no canonical route node");
+    endpoint = endpoints[nodes[*originSlot].endpoint].reference;
+    owner = ::mapping::RouteTreeNodeRefAttr::get(
+        context, *logicalNet, routeNodeOrdinals[*originSlot]);
+  }
+
+  auto assignmentPoint = fabric.physicalTagAssignmentPoint(endpoint);
+  if (!assignmentPoint || assignmentPoint->kind != expectedKind ||
+      assignmentPoint->tagWidthBits != segment.tagWidthBits)
+    return invalid("Physical Tag origin has no exact Fabric assignment point");
+  return PhysicalTagUseOrigin{owner, *assignmentPoint};
+}
+
+llvm::Error materializePhysicalTagResourceUses(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
+    const SpatialCandidateState &candidate,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  const auto logicalNets = candidate.problem().transfers().logicalNets();
+  for (PnrIndex netOrdinal = 0; netOrdinal < logicalNets.size(); ++netOrdinal) {
+    const auto segments = candidate.tagSegments(netOrdinal);
+    const auto values = candidate.tagValues(netOrdinal);
+    if (segments.size() != values.size())
+      return invalid("Physical Tag segments and values have different sizes");
+    auto routeNodeOrdinals =
+        canonicalRouteNodeOrdinals(candidate.routeTree(netOrdinal));
+    if (!routeNodeOrdinals)
+      return routeNodeOrdinals.takeError();
+    for (auto [segment, value] : llvm::zip_equal(segments, values)) {
+      if (!value || !::fabric::isRepresentablePhysicalTagValue(
+                        segment.tagWidthBits, *value))
+        return invalid("Physical Tag segment has no exact assigned value");
+      auto origin = materializePhysicalTagUseOrigin(
+          builder.getContext(), candidate, netOrdinal, segment,
+          *routeNodeOrdinals, dataflow.identity(), fabric);
+      if (!origin)
+        return origin.takeError();
+      const std::array<::fabric::UsePatternValue, 1> assignment = {
+          ::fabric::PhysicalTagPatternValue{
+              value->zextOrTrunc(segment.tagWidthBits)}};
+      if (llvm::Error error = materializeResourceUse(
+              builder, location, body, origin->owner,
+              ::loom::mapping::SpatialActivityEventRef(
+                  logicalNets[netOrdinal].producer),
+              origin->assignmentPoint.pattern, dataflow.identity(), fabric, {},
+              assignment))
+        return error;
     }
   }
   return llvm::Error::success();
@@ -622,6 +817,10 @@ finalizeSpatialMappingCandidate(
     return invalid("candidate still has unrouted sink obligations");
   if (candidate.capacityOveruse() != 0)
     return invalid("candidate still exceeds an atomic resource capacity");
+  if (candidate.tagUnassignedCount() != 0)
+    return invalid("candidate still has unassigned Physical Tags");
+  if (candidate.tagConflictCount() != 0)
+    return invalid("candidate still has conflicting Physical Tags");
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -657,10 +856,13 @@ finalizeSpatialMappingCandidate(
   if (!uses)
     return uses.takeError();
   if (llvm::Error error = materializeComputeResourceUses(
-          builder, location, *body, *uses, dataflow.identity()))
+          builder, location, *body, *uses, dataflow.identity(), fabric))
     return std::move(error);
   if (llvm::Error error = materializeMemoryResourceUses(
-          builder, location, *body, candidate, dataflow))
+          builder, location, *body, candidate, dataflow, fabric))
+    return std::move(error);
+  if (llvm::Error error = materializePhysicalTagResourceUses(
+          builder, location, *body, candidate, dataflow, fabric))
     return std::move(error);
 
   return ::loom::mapping::finalizeSpatialMapping(root, dataflow, techMapping,

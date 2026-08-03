@@ -1,6 +1,7 @@
 #ifndef FABRIC_IR_TEMPORALPERESOURCECONTRACT_H
 #define FABRIC_IR_TEMPORALPERESOURCECONTRACT_H
 
+#include "Fabric/IR/PhysicalTagResourceContract.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -88,13 +89,17 @@ resolveTemporalPeRegisterFifoPattern(const ResourceContract &contract,
         "register FIFO ordinal is outside its owner domain");
   const std::uint64_t registerPatternCount =
       static_cast<std::uint64_t>(registerFifoCount) * 2;
-  if (registerPatternCount > contract.usePatternCount())
+  std::uint32_t basePatternCount = contract.usePatternCount();
+  while (basePatternCount != 0 &&
+         physicalTagAssignmentPatternWidth(
+             contract.usePattern(UsePatternKey(basePatternCount - 1))))
+    --basePatternCount;
+  if (registerPatternCount > basePatternCount)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "register FIFO patterns are absent from the PE contract");
   const std::uint32_t patternOffset =
-      contract.usePatternCount() -
-      static_cast<std::uint32_t>(registerPatternCount);
+      basePatternCount - static_cast<std::uint32_t>(registerPatternCount);
   const std::uint32_t ordinal =
       patternOffset + (write ? 0 : registerFifoCount) + fifo;
   const UsePattern pattern = contract.usePattern(UsePatternKey(ordinal));

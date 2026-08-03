@@ -32,90 +32,6 @@ llvm::Expected<std::uint32_t> checkedAdd(std::uint32_t lhs, std::uint32_t rhs,
   return lhs + rhs;
 }
 
-ResourceContractDeclaration cloneDeclaration(const ResourceContract &source) {
-  ResourceContractDeclaration result;
-  result.states.reserve(source.stateCount());
-  for (std::uint32_t state = 0; state != source.stateCount(); ++state) {
-    ResourceStateDeclaration declaration{StateKey(state), {}};
-    for (auto [dimension, capacity] :
-         llvm::enumerate(source.capacityDimensions(StateKey(state))))
-      declaration.capacityDimensions.push_back(CapacityDimensionDeclaration{
-          CapacityDimensionKey(static_cast<std::uint32_t>(dimension)),
-          capacity.capacity, capacity.initialOccupancy});
-    result.states.push_back(std::move(declaration));
-  }
-
-  result.resourceTransitions.reserve(source.resourceTransitionCount());
-  for (std::uint32_t transition = 0;
-       transition != source.resourceTransitionCount(); ++transition)
-    result.resourceTransitions.emplace_back(transition);
-
-  result.timingContracts.reserve(source.timingContractCount());
-  for (std::uint32_t timing = 0; timing != source.timingContractCount();
-       ++timing)
-    result.timingContracts.push_back(TimingContractDeclaration{
-        TimingContractKey(timing),
-        std::vector<std::uint32_t>(
-            source.eventOrder(TimingContractKey(timing)).begin(),
-            source.eventOrder(TimingContractKey(timing)).end())});
-
-  result.requesters.reserve(source.requesterCount());
-  for (std::uint32_t requester = 0; requester != source.requesterCount();
-       ++requester)
-    result.requesters.emplace_back(requester);
-  result.eligibilityCount = source.eligibilityCount();
-  result.eventCount = source.eventCount();
-
-  result.usePatterns.reserve(source.usePatternCount());
-  for (std::uint32_t ordinal = 0; ordinal != source.usePatternCount();
-       ++ordinal) {
-    const UsePattern pattern = source.usePattern(UsePatternKey(ordinal));
-    UsePatternDeclaration declaration{
-        UsePatternKey(ordinal),
-        pattern.requester,
-        pattern.eligibility,
-        pattern.acquire,
-        pattern.release,
-        pattern.commit ? std::optional<CommitDeclaration>(CommitDeclaration{
-                             pattern.commit->event, pattern.commit->transition})
-                       : std::nullopt,
-        pattern.timingAndProgress,
-        {},
-        {}};
-    declaration.claims.reserve(pattern.claims.size());
-    for (auto [claimOrdinal, claim] : llvm::enumerate(pattern.claims))
-      declaration.claims.push_back(
-          ClaimDeclaration{ClaimKey(static_cast<std::uint32_t>(claimOrdinal)),
-                           claim.state, claim.dimension, claim.amount});
-    declaration.internalTransactions.reserve(pattern.internalTransactionCount);
-    for (std::uint32_t transaction = 0;
-         transaction != pattern.internalTransactionCount; ++transaction) {
-      llvm::ArrayRef<ClaimKey> claims =
-          source.internalTransaction(UsePatternKey(ordinal), transaction);
-      declaration.internalTransactions.push_back(
-          {std::vector<ClaimKey>(claims.begin(), claims.end())});
-    }
-    result.usePatterns.push_back(std::move(declaration));
-  }
-
-  if (std::optional<GrantPolicyView> policy = source.grantPolicy())
-    result.grantPolicy = std::visit(
-        [](const auto &view) -> GrantPolicyDeclaration {
-          using View = std::decay_t<decltype(view)>;
-          if constexpr (std::is_same_v<View, FixedPriorityView>) {
-            return FixedPriorityDeclaration{std::vector<RequesterKey>(
-                view.requesterOrder().begin(), view.requesterOrder().end())};
-          } else {
-            return RoundRobinDeclaration{
-                std::vector<RequesterKey>(view.requesterCycle().begin(),
-                                          view.requesterCycle().end()),
-                view.resetCursor()};
-          }
-        },
-        *policy);
-  return result;
-}
-
 void appendRequesters(GrantPolicyDeclaration &policy,
                       std::uint32_t firstRequester,
                       std::uint32_t requesterCount) {
@@ -153,7 +69,7 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
     return operandBuffer.takeError();
 
   ResourceContractDeclaration combined =
-      cloneDeclaration(operandBuffer->resourceContract());
+      operandBuffer->resourceContract().declaration();
   const std::uint32_t stateOffset =
       operandBuffer->resourceContract().stateCount();
   const std::uint32_t transitionOffset =

@@ -433,6 +433,22 @@ sharing, and overlap. Tagged endpoints may carry several logical nets only
 under that proof. Untagged endpoints remain single-use for overlapping
 transfers.
 
+Persisting one value at each maximal continuity-segment origin is sufficient.
+A PE or memory result creates the tag under its realization owner, a graph
+ingress creates it at the route root, and a boundary writer or rewriter creates
+it at that route node. Every downstream switch match, lookup row, and tagged
+transport endpoint is a mechanical projection of that value until a remover or
+rewriter ends the segment. Persisting those projections would create several
+editable copies of one decision.
+
+The assignment is a separate stateless Fabric UsePattern because adding it to
+an operation, queue, or transfer pattern would duplicate that pattern's claims
+and commit transition in Mapping. The endpoint-owned assignment pattern carries
+only one typed sharing slot, so the existing resource behavior remains intact
+while the value still has an exact owner codec. This also lets strict import
+rebuild local interference directly from routes and reject collisions without
+trusting PnR's removable coloring cache.
+
 ## Why SystemMapping Is Required
 
 Binding threads to AccCores and channels to the system transport is not runtime

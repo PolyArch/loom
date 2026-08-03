@@ -1,7 +1,9 @@
 add_library(LoomFabricResourceContract
   OperationResourceContract.cpp
+  PhysicalTagResourceContract.cpp
   ResourceContract.cpp
   ResourceContractRecord.cpp
+  UsePatternValue.cpp
 )
 
 target_include_directories(LoomFabricResourceContract PUBLIC
@@ -10,4 +12,5 @@ target_include_directories(LoomFabricResourceContract PUBLIC
 
 target_link_libraries(LoomFabricResourceContract PUBLIC
   LLVM
+  LoomFabricPhysicalTag
 )

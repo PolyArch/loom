@@ -1,8 +1,11 @@
 #include "FabricResourceContractFinalization.h"
 
+#include "FabricOperationTransport.h"
+
 #include "Fabric/IR/BoundaryTransfer.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/MemoryCapabilityFinalization.h"
+#include "Fabric/IR/PhysicalTagResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/IR/TemporalSwitchResourceContract.h"
@@ -28,8 +31,8 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 llvm::Expected<std::optional<::fabric::ResourceContract>>
-deriveResourceContract(Operation *operation,
-                       const FabricCanonicalLabeling &labeling) {
+deriveBaseResourceContract(Operation *operation,
+                           const FabricCanonicalLabeling &labeling) {
   if (auto fifo = dyn_cast<::fabric::FifoOp>(operation)) {
     auto contract = ::fabric::createFifoResourceContract(
         static_cast<std::uint32_t>(fifo.getMaxDepth()), fifo.getBypassable());
@@ -116,6 +119,56 @@ deriveResourceContract(Operation *operation,
         derived->resourceContract());
   }
   return std::optional<::fabric::ResourceContract>();
+}
+
+llvm::Expected<std::vector<std::uint32_t>>
+derivePhysicalTagAssignmentWidths(Operation *operation) {
+  const bool isIngressOwner =
+      isa<::fabric::PeOp, ::fabric::MemOp, ::fabric::SwitchOp, ::fabric::FifoOp,
+          ::fabric::BoundaryOp>(operation);
+  if (!isIngressOwner)
+    return std::vector<std::uint32_t>();
+
+  auto types = resolveFabricOperationTransportTypes(operation);
+  if (!types)
+    return types.takeError();
+  std::vector<std::uint32_t> widths;
+  for (Type input : types->inputs)
+    if (auto tagged = dyn_cast<::fabric::BitsTagType>(input))
+      widths.push_back(tagged.getTagWidth());
+
+  bool writesTag = isa<::fabric::BoundaryOp>(operation);
+  if (auto pe = dyn_cast<::fabric::PeOp>(operation))
+    writesTag = pe.getSchedule() == ::fabric::Schedule::Temporal;
+  if (auto memory = dyn_cast<::fabric::MemOp>(operation))
+    if (const ::fabric::MemoryEngineAttr engine =
+            memory.getMemoryContract().getEngine())
+      writesTag = engine.getSchedule() == ::fabric::Schedule::Temporal;
+  if (writesTag)
+    for (Type output : types->outputs)
+      if (auto tagged = dyn_cast<::fabric::BitsTagType>(output))
+        widths.push_back(tagged.getTagWidth());
+  return widths;
+}
+
+llvm::Expected<std::optional<::fabric::ResourceContract>>
+deriveResourceContract(Operation *operation,
+                       const FabricCanonicalLabeling &labeling) {
+  auto base = deriveBaseResourceContract(operation, labeling);
+  if (!base)
+    return base.takeError();
+  auto tagWidths = derivePhysicalTagAssignmentWidths(operation);
+  if (!tagWidths)
+    return tagWidths.takeError();
+  if (tagWidths->empty())
+    return base;
+
+  const ::fabric::ResourceContract *baseContract = *base ? &**base : nullptr;
+  auto extended =
+      ::fabric::appendPhysicalTagAssignmentPatterns(baseContract, *tagWidths);
+  if (!extended)
+    return extended.takeError();
+  return std::optional<::fabric::ResourceContract>(std::move(*extended));
 }
 
 std::vector<std::int8_t> signedBytes(llvm::ArrayRef<std::uint8_t> bytes) {

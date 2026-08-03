@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,6 +46,19 @@ llvm::Error appendCount(std::vector<std::uint8_t> &bytes, std::size_t count,
   if (count > std::numeric_limits<std::uint32_t>::max())
     return invalidRecord(field + " exceeds uint32");
   appendU32(bytes, static_cast<std::uint32_t>(count));
+  return llvm::Error::success();
+}
+
+llvm::Error appendValueSchemas(std::vector<std::uint8_t> &bytes,
+                               llvm::ArrayRef<UsePatternValueSchema> schemas,
+                               llvm::StringRef field) {
+  const std::string countField = (field + " count").str();
+  if (llvm::Error error = appendCount(bytes, schemas.size(), countField))
+    return error;
+  for (const UsePatternValueSchema &schema : schemas) {
+    appendU32(bytes, static_cast<std::uint32_t>(schema.kind));
+    appendU32(bytes, schema.bitWidth);
+  }
   return llvm::Error::success();
 }
 
@@ -122,7 +136,39 @@ llvm::Error appendUsePattern(std::vector<std::uint8_t> &bytes,
     for (ClaimKey claim : selection)
       appendU32(bytes, claim.ordinal());
   }
+  if (llvm::Error error =
+          appendValueSchemas(bytes, pattern.parameters, "parameter schema"))
+    return error;
+  if (llvm::Error error = appendValueSchemas(bytes, pattern.sharingAssignments,
+                                             "sharing-assignment schema"))
+    return error;
   return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<UsePatternValueSchema>>
+readValueSchemas(RecordReader &reader, llvm::StringRef field) {
+  const std::string countField = (field + " count").str();
+  const std::string kindField = (field + " kind").str();
+  const std::string widthField = (field + " bit width").str();
+  std::uint32_t count = 0;
+  if (llvm::Error error = reader.readCount(count, countField, 2))
+    return std::move(error);
+
+  std::vector<UsePatternValueSchema> schemas;
+  schemas.reserve(count);
+  for (std::uint32_t ordinal = 0; ordinal < count; ++ordinal) {
+    std::uint32_t kind = 0;
+    std::uint32_t bitWidth = 0;
+    if (llvm::Error error = reader.readU32(kind, kindField))
+      return std::move(error);
+    if (llvm::Error error = reader.readU32(bitWidth, widthField))
+      return std::move(error);
+    if (kind != static_cast<std::uint32_t>(UsePatternValueKind::PhysicalTag))
+      return invalidRecord("unknown " + field + " kind");
+    schemas.push_back(UsePatternValueSchema{
+        static_cast<UsePatternValueKind>(kind), bitWidth});
+  }
+  return schemas;
 }
 
 llvm::Expected<UsePatternDeclaration>
@@ -182,9 +228,9 @@ readUsePattern(RecordReader &reader, std::uint32_t patternOrdinal) {
       return error;
     if (llvm::Error error = reader.readU32(amount, "claim amount"))
       return error;
-    claims.push_back(ClaimDeclaration{
-        ClaimKey(claim), StateKey(state), CapacityDimensionKey(dimension),
-        CapacityUnits(amount)});
+    claims.push_back(ClaimDeclaration{ClaimKey(claim), StateKey(state),
+                                      CapacityDimensionKey(dimension),
+                                      CapacityUnits(amount)});
   }
 
   std::uint32_t transactionCount = 0;
@@ -212,6 +258,14 @@ readUsePattern(RecordReader &reader, std::uint32_t patternOrdinal) {
         InternalTransactionDeclaration{std::move(selection)});
   }
 
+  auto parameters = readValueSchemas(reader, "parameter schema");
+  if (!parameters)
+    return parameters.takeError();
+  auto sharingAssignments =
+      readValueSchemas(reader, "sharing-assignment schema");
+  if (!sharingAssignments)
+    return sharingAssignments.takeError();
+
   return UsePatternDeclaration{UsePatternKey(patternOrdinal),
                                RequesterKey(requester),
                                EligibilityKey(eligibility),
@@ -220,7 +274,9 @@ readUsePattern(RecordReader &reader, std::uint32_t patternOrdinal) {
                                commit,
                                TimingContractKey(timing),
                                std::move(claims),
-                               std::move(transactions)};
+                               std::move(transactions),
+                               std::move(*parameters),
+                               std::move(*sharingAssignments)};
 }
 
 llvm::Error readGrantPolicy(RecordReader &reader,
@@ -404,7 +460,7 @@ decodeResourceContractRecord(llvm::ArrayRef<std::uint8_t> bytes) {
 
   std::uint32_t patternCount = 0;
   if (llvm::Error error =
-          reader.readCount(patternCount, "use pattern count", 8))
+          reader.readCount(patternCount, "use pattern count", 10))
     return std::move(error);
   declaration.usePatterns.reserve(patternCount);
   for (std::uint32_t pattern = 0; pattern < patternCount; ++pattern) {

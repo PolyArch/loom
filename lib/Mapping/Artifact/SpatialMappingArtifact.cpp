@@ -12,11 +12,13 @@
 #include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
+#include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
 #include "SpatialMappingMemoryImport.h"
+#include "SpatialMappingTagAssignments.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -669,6 +671,67 @@ importEventPoint(::mapping::SpatialEventPointAttr point,
 using RequiredComputeUse = SpatialComputeUseRequirement;
 using RequiredMemoryUse = detail::SpatialMemoryResourceUseRequirement;
 
+llvm::Expected<std::vector<::fabric::UsePatternValue>>
+importPatternValues(ArrayAttr records,
+                    llvm::ArrayRef<::fabric::UsePatternValueSchema> schemas,
+                    llvm::StringRef field) {
+  if (records.size() != schemas.size())
+    return invalid("ResourceUse " + field +
+                   " count disagrees with its Fabric use pattern schema");
+
+  std::vector<::fabric::UsePatternValue> result;
+  result.reserve(records.size());
+  for (auto [record, schema] : llvm::zip_equal(records, schemas)) {
+    auto typed = dyn_cast<::mapping::OwnerTypedValueAttr>(record);
+    if (!typed)
+      return invalid("ResourceUse " + field +
+                     " contains a non-owner-typed value");
+    const std::vector<std::uint8_t> bytes = unsignedBytes(typed.getRecord());
+    auto value = ::fabric::decodeUsePatternValue(schema, bytes);
+    if (!value)
+      return invalid("ResourceUse " + field +
+                     " cannot be decoded by its Fabric owner: " +
+                     llvm::toString(value.takeError()));
+    auto canonical = ::fabric::encodeUsePatternValue(schema, *value);
+    if (!canonical)
+      return invalid("ResourceUse " + field +
+                     " cannot be re-encoded by its Fabric owner: " +
+                     llvm::toString(canonical.takeError()));
+    if (*canonical != bytes)
+      return invalid("ResourceUse " + field +
+                     " is not in its owner codec's canonical form");
+    result.push_back(std::move(*value));
+  }
+  return result;
+}
+
+struct ImportedPatternValues final {
+  std::vector<::fabric::UsePatternValue> parameters;
+  std::vector<::fabric::UsePatternValue> sharingAssignments;
+};
+
+llvm::Expected<ImportedPatternValues>
+importPatternValues(::mapping::ResourceUseOp record,
+                    const ::loom::fabric::FabricArtifactView &fabric,
+                    const ::loom::fabric::FabricUsePatternRef &pattern) {
+  const ::fabric::ResourceContract *contract =
+      fabric.resourceContract(pattern.owner.catalog());
+  if (!contract || pattern.ordinal >= contract->usePatternCount())
+    return invalid("ResourceUse does not resolve an exact Fabric use pattern");
+  const ::fabric::UsePattern declaration =
+      contract->usePattern(::fabric::UsePatternKey(pattern.ordinal));
+  auto parameters = importPatternValues(record.getParameters(),
+                                        declaration.parameters, "parameters");
+  if (!parameters)
+    return parameters.takeError();
+  auto sharing = importPatternValues(record.getSharingAssignments(),
+                                     declaration.sharingAssignments,
+                                     "sharing assignments");
+  if (!sharing)
+    return sharing.takeError();
+  return ImportedPatternValues{std::move(*parameters), std::move(*sharing)};
+}
+
 llvm::Expected<std::string>
 requiredUseKey(const RequiredComputeUse &use,
                const ArtifactIdentity &dataflowIdentity) {
@@ -758,12 +821,39 @@ deriveRequiredMemoryUses(const detail::ImportedSpatialMemoryView &memory,
   return result;
 }
 
-llvm::Expected<SpatialResourceUseView>
-importResourceUse(::mapping::ResourceUseOp record,
-                  const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                  const ::loom::fabric::FabricArtifactView &fabric,
-                  std::map<std::string, RequiredComputeUse> &requiredCompute,
-                  std::map<std::string, RequiredMemoryUse> &requiredMemory) {
+llvm::Expected<SpatialResourceOwnerRef> importSpatialResourceOwner(
+    mlir::Attribute attribute,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  if (auto compute = dyn_cast<::mapping::ComputeRealizationRefAttr>(attribute))
+    return SpatialResourceOwnerRef(
+        SpatialComputeResourceOwnerRef{compute.getEntity()});
+  if (auto engine = dyn_cast<::mapping::MemoryRealizationRefAttr>(attribute))
+    return SpatialResourceOwnerRef(
+        SpatialMemoryEngineResourceOwnerRef{engine.getEntity()});
+  if (auto binding = dyn_cast<::mapping::MemoryBindingRefAttr>(attribute))
+    return SpatialResourceOwnerRef(
+        SpatialMemoryBindingResourceOwnerRef{binding.getEntity()});
+  if (auto route = dyn_cast<::mapping::RouteTreeNodeRefAttr>(attribute)) {
+    auto logicalNet =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            route.getLogicalNet(), dataflow.identity());
+    if (!logicalNet)
+      return logicalNet.takeError();
+    return SpatialResourceOwnerRef(
+        SpatialRouteNodeResourceOwnerRef{*logicalNet, route.getNodeOrdinal()});
+  }
+  return invalid("ResourceUse has an unsupported Spatial owner");
+}
+
+llvm::Expected<SpatialResourceUseView> importResourceUse(
+    ::mapping::ResourceUseOp record,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    std::map<std::string, RequiredComputeUse> &requiredCompute,
+    std::map<std::string, RequiredMemoryUse> &requiredMemory,
+    std::map<std::string, detail::RequiredPhysicalTagUse> &requiredTags,
+    std::map<::loom::fabric::FabricOrdinal, std::set<std::string>>
+        &assignedDomainValues) {
   auto pattern =
       decodeFabric<::loom::fabric::FabricUsePatternRef>(record.getUseSite());
   if (!pattern)
@@ -776,9 +866,45 @@ importResourceUse(::mapping::ResourceUseOp record,
     return trigger.takeError();
   if (trigger->guaranteedOffset || record.getActivation().getRelease())
     return invalid("ResourceUse must use intrinsic event activation");
-  if (!record.getParameters().empty() ||
-      !record.getSharingAssignments().empty())
-    return invalid("ResourceUse owner schemas are empty");
+  auto values = importPatternValues(record, fabric, *pattern);
+  if (!values)
+    return values.takeError();
+  auto importedOwner = importSpatialResourceOwner(record.getOwner(), dataflow);
+  if (!importedOwner)
+    return importedOwner.takeError();
+
+  auto tagKey = detail::physicalTagUseKey(*importedOwner, trigger->event,
+                                          *pattern, dataflow.identity());
+  if (!tagKey)
+    return tagKey.takeError();
+  auto tagUse = requiredTags.find(*tagKey);
+  if (tagUse != requiredTags.end()) {
+    if (!values->parameters.empty() || values->sharingAssignments.size() != 1)
+      return invalid(
+          "Physical Tag ResourceUse has the wrong owner-typed value shape");
+    const auto *tag = std::get_if<::fabric::PhysicalTagPatternValue>(
+        &values->sharingAssignments.front());
+    if (!tag ||
+        tag->value.getBitWidth() != tagUse->second.assignmentPoint.tagWidthBits)
+      return invalid(
+          "Physical Tag ResourceUse value disagrees with its assignment point");
+    auto encoded = ::fabric::encodeUsePatternValue(
+        ::fabric::UsePatternValueSchema::physicalTag(
+            tagUse->second.assignmentPoint.tagWidthBits),
+        values->sharingAssignments.front());
+    if (!encoded)
+      return encoded.takeError();
+    const std::string valueKey = byteKey(*encoded);
+    for (::loom::fabric::FabricOrdinal domain : tagUse->second.matchDomains)
+      if (!assignedDomainValues[domain].insert(valueKey).second)
+        return invalid(
+            "Physical Tag assignments collide in one Fabric match domain");
+    requiredTags.erase(tagUse);
+    return SpatialResourceUseView{
+        std::move(*importedOwner), *pattern,
+        SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+        std::move(values->parameters), std::move(values->sharingAssignments)};
+  }
 
   if (auto compute =
           dyn_cast<::mapping::ComputeRealizationRefAttr>(record.getOwner())) {
@@ -791,24 +917,19 @@ importResourceUse(::mapping::ResourceUseOp record,
       return invalid("ResourceUse is not required by its compute owner");
     requiredCompute.erase(found);
     return SpatialResourceUseView{
-        SpatialComputeResourceOwnerRef{compute.getEntity()},
-        *pattern,
+        SpatialComputeResourceOwnerRef{compute.getEntity()}, *pattern,
         SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
-        {},
-        {}};
+        std::move(values->parameters), std::move(values->sharingAssignments)};
   }
 
   detail::SpatialMemoryResourceOwnerRef memoryOwner =
       SpatialMemoryEngineResourceOwnerRef{};
-  SpatialResourceOwnerRef importedOwner;
   if (auto engine =
           dyn_cast<::mapping::MemoryRealizationRefAttr>(record.getOwner())) {
     memoryOwner = SpatialMemoryEngineResourceOwnerRef{engine.getEntity()};
-    importedOwner = SpatialMemoryEngineResourceOwnerRef{engine.getEntity()};
   } else if (auto binding =
                  dyn_cast<::mapping::MemoryBindingRefAttr>(record.getOwner())) {
     memoryOwner = SpatialMemoryBindingResourceOwnerRef{binding.getEntity()};
-    importedOwner = SpatialMemoryBindingResourceOwnerRef{binding.getEntity()};
   } else {
     return invalid("ResourceUse has an unsupported Spatial owner");
   }
@@ -822,11 +943,9 @@ importResourceUse(::mapping::ResourceUseOp record,
     return invalid("ResourceUse is not admitted by its memory owner");
   requiredMemory.erase(found);
   return SpatialResourceUseView{
-      std::move(importedOwner),
-      *pattern,
+      std::move(*importedOwner), *pattern,
       SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
-      {},
-      {}};
+      std::move(values->parameters), std::move(values->sharingAssignments)};
 }
 
 llvm::Expected<std::optional<::loom::PointerLayout>>
@@ -1012,11 +1131,18 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
       deriveRequiredMemoryUses(*importedMemory, dataflow.identity());
   if (!requiredMemoryUses)
     return requiredMemoryUses.takeError();
+  auto requiredTagUses = detail::deriveRequiredPhysicalTagUses(
+      dataflow, techMapping, fabric, routes);
+  if (!requiredTagUses)
+    return requiredTagUses.takeError();
+  std::map<::loom::fabric::FabricOrdinal, std::set<std::string>>
+      assignedTagDomainValues;
   std::vector<SpatialResourceUseView> uses;
   for (auto record :
        root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
     auto use = importResourceUse(record, dataflow, fabric, *requiredUses,
-                                 *requiredMemoryUses);
+                                 *requiredMemoryUses, *requiredTagUses,
+                                 assignedTagDomainValues);
     if (!use)
       return use.takeError();
     uses.push_back(std::move(*use));
@@ -1025,6 +1151,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     return invalid("SpatialMapping omits a required compute ResourceUse");
   if (!requiredMemoryUses->empty())
     return invalid("SpatialMapping omits a required memory ResourceUse");
+  if (!requiredTagUses->empty())
+    return invalid("SpatialMapping omits a required Physical Tag ResourceUse");
 
   auto handshake = deriveSelectedHandshakeSelection(terminalContext, routes);
   if (!handshake)

@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/IR/MappingOps.h"
 
@@ -437,8 +438,8 @@ struct SpatialResourceUseView final {
   SpatialResourceOwnerRef owner;
   ::loom::fabric::FabricUsePatternRef useSite;
   SpatialRelativeActivationView activation;
-  std::vector<std::vector<std::uint8_t>> parameters;
-  std::vector<std::vector<std::uint8_t>> sharingAssignments;
+  std::vector<::fabric::UsePatternValue> parameters;
+  std::vector<::fabric::UsePatternValue> sharingAssignments;
 };
 
 /// Immutable projection of one independently verified mapping.spatial object.

@@ -70,7 +70,14 @@ UsePatternRecord {
   timing_and_progress : TimingContractKey
   claims : array<ClaimRecord>
   internal_transactions : array<array<ClaimKey>>
+  parameters : array<UsePatternValueSchema>
+  sharing_assignments : array<UsePatternValueSchema>
 }
+
+UsePatternValueSchema =
+    PhysicalTag {
+      bit_width : uint32
+    }
 
 ClaimRecord {
   state : StateKey
@@ -106,6 +113,13 @@ ordinary event-relative `ResourceUse` records; it never merges their contracts.
 Every integer reference is decoded immediately to its distinct typed key class
 and range-checked; no public API exposes an untyped ordinal or a generic
 property path.
+
+Parameter and sharing-assignment schemas are closed positional arrays. Version
+1.0 admits the `PhysicalTag` sharing schema only. Its positive `bit_width`
+selects the production Physical Tag codec; decode, immutable adoption, and
+re-encode equality are mandatory. Unknown kinds, zero widths, a value of the
+wrong kind or width, noncanonical high padding bits, and missing or extra
+values reject. The schema is not an attribute dictionary or extension point.
 
 The canonical record is produced by normalizing the authoring
 `ResourceContractDeclaration` through `ResourceContract::create`. State,
@@ -216,6 +230,30 @@ they preserve the declared external firing, retirement, ordering, and progress
 semantics. They cannot acquire another claim envelope, apply another resource
 transition, or become additional software actors or Mapping uses.
 
+## Physical Tag Assignment Patterns
+
+Every real tagged ingress and every PE, memory, or boundary output that creates
+or rewrites a Physical Tag owns one stateless assignment UsePattern. Assignment
+patterns follow all owner operation, transfer, queue, and service patterns in
+this canonical order:
+
+1. tagged input endpoints in canonical endpoint order; then
+2. real writer output endpoints in canonical endpoint order.
+
+An assignment pattern has the owner's existing requester, eligibility, event,
+and timing relation; it has no claims, commit, internal transactions, or
+parameters, and has exactly one `PhysicalTag(endpoint.tag_width)` sharing
+schema. Appending it cannot change the claims, transitions, arbitration, or
+timing of an existing pattern. An otherwise stateless owner uses the minimum
+one-requester, one-eligibility, one-event, one-timing contract needed to own
+the assignment pattern.
+
+Tagged switch and FIFO outputs that only preserve an incoming tag are not
+writers and own no output assignment pattern. A boundary remover owns an
+ingress assignment position but no output writer position. A finalized Fabric
+view derives the exact endpoint-to-assignment-pattern relation; Mapping cannot
+infer a suffix count or reconstruct it from operation names.
+
 ## Requester Ordering And GrantPolicy
 
 Requester identity is a closed typed structural reference owned by the
@@ -273,6 +311,7 @@ Verification rejects:
 * duplicate or unknown resource-transition keys;
 * noncanonical initial state or overflowing capacity;
 * a use pattern with an undeclared claim or ambiguous release;
+* an unknown, malformed, or noncanonical pattern-value schema;
 * a commit that names an undeclared transition or event;
 * a timing contract that does not order acquire, optional commit, and release;
 * an owner transition that can violate state or capacity invariants;

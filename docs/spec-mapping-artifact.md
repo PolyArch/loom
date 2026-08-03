@@ -543,6 +543,28 @@ writers or ingress points. Instruction contexts remain owned by bindings.
 Static claims mechanically implied by a selected traversal are not duplicated
 as ResourceUse records.
 
+Each maximal tagged continuity segment has exactly one assignment ResourceUse
+at its origin:
+
+* an actor-result route source uses its selected ComputeRealization or
+  MemoryRealization owner;
+* a graph-ingress route source uses the RouteTree root node owner; and
+* a boundary writer or rewriter uses the destination RouteTree node owner.
+
+All three trigger on `Produced { SpatialLogicalNetKey }` and select the exact
+Fabric assignment pattern projected for the origin endpoint. They carry no
+parameters and exactly one Physical Tag sharing value. Transport-only tagged
+nodes, switch rows, lookup tables, and downstream matcher state derive that
+value and do not persist another assignment. A boundary remover terminates the
+incoming segment and creates no output assignment.
+
+Strict import independently reconstructs continuity segments from the exact
+RouteTree and Fabric boundary contracts. It requires every origin once,
+rejects an extra or incorrectly owned assignment, decodes the sharing value
+through the selected Fabric pattern, and rejects equal values for distinct
+segments that intersect one Fabric-owned match domain. Values may be reused
+across disjoint match domains.
+
 For a Temporal PE compute binding, Mapping derives operand-queue uses without
 another scheduler or event catalog. An external actor input enqueues at that
 exact `Consumed { ActorTokenOperandRef }` event. A transition that consumes an

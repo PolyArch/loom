@@ -13,6 +13,7 @@
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -706,6 +707,9 @@ static LogicalResult verifyCanonicalAttributeSet(MemOp op) {
     if ((name == ::fabric::kEntityIdAttrName ||
          name == ::fabric::kMemoryEngineTemplateIdAttrName) &&
         isa<::fabric::EntityIdAttr>(attribute.getValue()))
+      continue;
+    if (name == ::fabric::kResourceContractRecordAttrName &&
+        isa<DenseI8ArrayAttr>(attribute.getValue()))
       continue;
     return op.emitOpError("has non-canonical discardable attribute '")
            << attribute.getName().getValue() << "'";

@@ -129,19 +129,45 @@ struct Claim {
 
 /// The one owner-defined durable state transition an accepted use applies, and
 /// the exact event at which it applies atomically. A transition is not a
-/// capacity claim: the state it produces stays until a later use commits its own
-/// transition, and no later use releases or inherits an earlier claim.
+/// capacity claim: the state it produces stays until a later use commits its
+/// own transition, and no later use releases or inherits an earlier claim.
 struct Commit {
   EventKey event;
   ResourceTransitionKey transition;
 };
 
+/// One position in a Fabric-owned ResourceUse value schema. The kind chooses a
+/// closed production codec; its fields are the codec's exact semantic
+/// parameters rather than an extensible property map.
+enum class UsePatternValueKind : std::uint32_t {
+  PhysicalTag = 0,
+};
+
+struct UsePatternValueSchema {
+  UsePatternValueKind kind = UsePatternValueKind::PhysicalTag;
+  std::uint32_t bitWidth = 0;
+
+  static constexpr UsePatternValueSchema physicalTag(std::uint32_t bitWidth) {
+    return UsePatternValueSchema{UsePatternValueKind::PhysicalTag, bitWidth};
+  }
+
+  friend constexpr bool operator==(const UsePatternValueSchema &lhs,
+                                   const UsePatternValueSchema &rhs) {
+    return lhs.kind == rhs.kind && lhs.bitWidth == rhs.bitWidth;
+  }
+  friend constexpr bool operator!=(const UsePatternValueSchema &lhs,
+                                   const UsePatternValueSchema &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 /// One validated atomic resource use. Every claim is acquired together at
 /// `acquire` and the complete envelope returns together at `release`. When
-/// `commit` is present its transition applies atomically at its own event, which
-/// the owning timing contract orders within `[acquire, release]`. Eligibility
-/// and the timing/progress contract are owner-declared closed keys rather than a
-/// predicate or parameter map. Spans read the owning contract's tables.
+/// `commit` is present its transition applies atomically at its own event,
+/// which the owning timing contract orders within `[acquire, release]`.
+/// Eligibility and the timing/progress contract are owner-declared closed keys
+/// rather than a predicate or parameter map. Spans read the owning contract's
+/// tables.
 struct UsePattern {
   RequesterKey requester;
   EligibilityKey eligibility;
@@ -151,6 +177,8 @@ struct UsePattern {
   TimingContractKey timingAndProgress;
   llvm::ArrayRef<Claim> claims;
   std::uint32_t internalTransactionCount;
+  llvm::ArrayRef<UsePatternValueSchema> parameters;
+  llvm::ArrayRef<UsePatternValueSchema> sharingAssignments;
 };
 
 class ResourceContract;
@@ -230,6 +258,7 @@ enum class ResourceContractViolation : std::uint32_t {
   UnknownEligibilityKey,
   UnknownEventKey,
   TimingContractDoesNotOrderUse,
+  InvalidPatternValueSchema,
   DuplicateClaimKey,
   UnknownClaimKey,
   UndeclaredClaim,
@@ -307,8 +336,8 @@ struct CommitDeclaration {
 /// One declared timing-and-progress contract. `eventRank` is the owner's
 /// relative time of every declared event under this contract, indexed by event
 /// ordinal; equal ranks denote one atomic event. It is the one place the owner
-/// establishes `acquire <= commit <= release`, so no callback, string predicate,
-/// or property bag can order a use instead.
+/// establishes `acquire <= commit <= release`, so no callback, string
+/// predicate, or property bag can order a use instead.
 struct TimingContractDeclaration {
   TimingContractKey key;
   std::vector<std::uint32_t> eventRank;
@@ -325,6 +354,8 @@ struct UsePatternDeclaration {
   TimingContractKey timingAndProgress;
   std::vector<ClaimDeclaration> claims;
   std::vector<InternalTransactionDeclaration> internalTransactions;
+  std::vector<UsePatternValueSchema> parameters = {};
+  std::vector<UsePatternValueSchema> sharingAssignments = {};
 };
 
 struct FixedPriorityDeclaration {
@@ -382,13 +413,14 @@ public:
   ///   8. use pattern requester, eligibility, acquire, release, commit, and
   ///      timing keys;
   ///   9. timing-contract ordering of acquire, optional commit, and release;
-  ///  10. claim key inventory of each pattern;
-  ///  11. claim state and capacity dimension keys;
-  ///  12. one atomic envelope per capacity dimension;
-  ///  13. claim feasibility against the canonical initial state;
-  ///  14. internal transaction claim selection;
-  ///  15. grant policy permutation and reset cursor; and
-  ///  16. agreement between reachable contention and the declared ordering.
+  ///  10. positional parameter and sharing-assignment schemas;
+  ///  11. claim key inventory of each pattern;
+  ///  12. claim state and capacity dimension keys;
+  ///  13. one atomic envelope per capacity dimension;
+  ///  14. claim feasibility against the canonical initial state;
+  ///  15. internal transaction claim selection;
+  ///  16. grant policy permutation and reset cursor; and
+  ///  17. agreement between reachable contention and the declared ordering.
   ///
   /// Every class scans keys in ascending order once its inventory is
   /// validated, and contention is reported at the lowest contended capacity
@@ -400,6 +432,10 @@ public:
   /// position.
   static llvm::Expected<ResourceContract>
   create(const ResourceContractDeclaration &declaration);
+
+  /// Reconstructs the unique key-ordered declaration of this validated
+  /// contract. The result is a derived editing form, not a second authority.
+  ResourceContractDeclaration declaration() const;
 
   std::uint32_t stateCount() const {
     return static_cast<std::uint32_t>(states_.size());
@@ -450,6 +486,8 @@ private:
     TimingContractKey timingAndProgress;
     Span claims;
     Span internalTransactions;
+    Span parameters;
+    Span sharingAssignments;
   };
 
   ResourceContract() = default;
@@ -460,6 +498,7 @@ private:
   std::vector<Claim> claims_;
   std::vector<ClaimKey> transactionClaims_;
   std::vector<Span> internalTransactions_;
+  std::vector<UsePatternValueSchema> valueSchemas_;
   std::vector<PatternRecord> patterns_;
   std::vector<RequesterKey> requesterOrder_;
   std::uint32_t resourceTransitionCount_ = 0;

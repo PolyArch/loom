@@ -534,8 +534,9 @@ def Fabric_MemOp : Fabric_Op<"mem", [
     every physical operation port. `hw_params` remains legacy authoring
     shorthand and cannot coexist with that exact inventory. It owns no
     occurrence, schedule, endpoint classification, or Local Memory Service
-    fact. The registered schema is closed; the operation accepts no
-    discardable attributes.
+    fact. The registered authoring schema is closed. Canonical finalization may
+    add only the typed entity/template IDs and the exact embedded ResourceContract
+    record; all other discardable attributes are rejected.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];

@@ -2,6 +2,7 @@ add_library(LoomMappingArtifact
   MappingAssembly.cpp
   MappingConstraintSet.cpp
   SpatialMappingArtifact.cpp
+  SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp

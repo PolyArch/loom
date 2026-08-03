@@ -15,6 +15,7 @@
 #include "Fabric/IR/MemoryCapabilityDomains.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -545,12 +546,38 @@ void temporalPeTagMatchDomainsAreIngressLocal() {
   const auto owner = loom::fabric::FabricTransportEndpointOwnerRef::of(
       fabric.view().peOccurrences().front());
   std::vector<std::uint64_t> observed;
+  std::uint32_t ingressAssignments = 0;
+  std::uint32_t writerAssignments = 0;
   for (std::uint64_t ordinal = 0;
        ordinal < fabric.view().transportEndpointCount(owner); ++ordinal) {
     const loom::fabric::FabricTransportEndpointRef endpoint{owner, ordinal};
     const auto domain = fabric.view().transportEndpointTagMatchDomain(endpoint);
+    const auto assignment = fabric.view().physicalTagAssignmentPoint(endpoint);
+    if (!assignment)
+      fail("temporal PE tagged endpoint has no assignment pattern");
+    const auto *contract = fabric.view().resourceContract(
+        loom::fabric::FabricInventoryOwnerRef::of(
+            fabric.view().peOccurrences().front()));
+    if (!contract ||
+        assignment->pattern.owner.catalog() !=
+            loom::fabric::FabricInventoryOwnerRef::of(
+                fabric.view().peOccurrences().front()) ||
+        assignment->pattern.ordinal >= contract->usePatternCount())
+      fail("temporal PE assignment pattern has the wrong owner");
+    const auto assignmentPattern = contract->usePattern(
+        ::fabric::UsePatternKey(assignment->pattern.ordinal));
+    if (!assignmentPattern.claims.empty() || assignmentPattern.commit ||
+        !assignmentPattern.parameters.empty() ||
+        assignmentPattern.sharingAssignments !=
+            llvm::ArrayRef<::fabric::UsePatternValueSchema>(
+                {::fabric::UsePatternValueSchema::physicalTag(4)}))
+      fail("temporal PE assignment pattern is not owner-exact");
     if (fabric.view().transportEndpointDirection(endpoint) ==
         loom::fabric::FabricPortDirection::Input) {
+      if (assignment->kind !=
+          loom::fabric::FabricPhysicalTagAssignmentPointKind::Ingress)
+        fail("temporal PE ingress acquired a writer assignment");
+      ++ingressAssignments;
       if (!domain || *domain >= domains.size())
         fail("temporal PE ingress has no tag match domain");
       const auto &record = domains[*domain];
@@ -561,10 +588,17 @@ void temporalPeTagMatchDomainsAreIngressLocal() {
           record.ingress != endpoint || record.tagWidthBits != 4)
         fail("temporal PE ingress tag match domain changed owner or width");
       observed.push_back(*domain);
-    } else if (domain) {
-      fail("temporal PE output became a tag match domain");
+    } else {
+      if (assignment->kind !=
+          loom::fabric::FabricPhysicalTagAssignmentPointKind::Writer)
+        fail("temporal PE output acquired an ingress assignment");
+      ++writerAssignments;
+      if (domain)
+        fail("temporal PE output became a tag match domain");
     }
   }
+  if (ingressAssignments != 5 || writerAssignments != 4)
+    fail("temporal PE assignment-point inventory changed shape");
   llvm::sort(observed);
   if (std::adjacent_find(observed.begin(), observed.end()) != observed.end())
     fail("two temporal PE ingresses share a tag match domain");
@@ -1062,6 +1096,87 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false,
       fail("Temporal SpatialMapping round trip lost queue or operation uses");
   }
 
+  if (boundaryWrapped) {
+    std::size_t expectedAssignments = 0;
+    for (loom::pnr::PnrIndex net = 0;
+         net < problem->transfers().logicalNets().size(); ++net)
+      expectedAssignments += candidate->tagSegments(net).size();
+    std::size_t observedAssignments = 0;
+    for (const auto &use : imported.view().resourceUses())
+      for (const auto &value : use.sharingAssignments) {
+        const auto *tag = std::get_if<fabric::PhysicalTagPatternValue>(&value);
+        if (!tag || tag->value.getBitWidth() != 4)
+          fail("SpatialMapping did not adopt an exact Physical Tag value");
+        ++observedAssignments;
+      }
+    if (observedAssignments != expectedAssignments)
+      fail("SpatialMapping did not persist every continuity origin exactly "
+           "once");
+
+    auto missingTag = parseSpatial(context, finalized.canonicalBytes());
+    if (!missingTag)
+      fail("cannot reparse Physical Tag ResourceUse fixture");
+    auto missingTagRoot = *missingTag->getOps<::mapping::SpatialOp>().begin();
+    std::optional<::mapping::ResourceUseOp> tagUse;
+    for (auto use :
+         missingTagRoot.getBody().front().getOps<::mapping::ResourceUseOp>())
+      if (!use.getSharingAssignments().empty()) {
+        tagUse = use;
+        break;
+      }
+    if (!tagUse)
+      fail("SpatialMapping fixture has no Physical Tag ResourceUse");
+    tagUse->erase();
+    if (!rejected(loom::mapping::finalizeSpatialMapping(missingTagRoot, store)))
+      fail("SpatialMapping finalized without a required Physical Tag "
+           "assignment");
+
+    auto malformedTag = parseSpatial(context, finalized.canonicalBytes());
+    if (!malformedTag)
+      fail("cannot reparse malformed Physical Tag fixture");
+    auto malformedTagRoot =
+        *malformedTag->getOps<::mapping::SpatialOp>().begin();
+    std::optional<::mapping::ResourceUseOp> malformedUse;
+    for (auto use :
+         malformedTagRoot.getBody().front().getOps<::mapping::ResourceUseOp>())
+      if (!use.getSharingAssignments().empty()) {
+        malformedUse = use;
+        break;
+      }
+    if (!malformedUse)
+      fail("SpatialMapping fixture has no Physical Tag value to corrupt");
+    const std::array<std::int8_t, 1> noncanonical = {
+        static_cast<std::int8_t>(0xf0)};
+    auto malformedValue = ::mapping::OwnerTypedValueAttr::get(
+        &context, mlir::DenseI8ArrayAttr::get(&context, noncanonical));
+    malformedUse->setSharingAssignmentsAttr(
+        mlir::ArrayAttr::get(&context, {malformedValue}));
+    if (!rejected(
+            loom::mapping::finalizeSpatialMapping(malformedTagRoot, store)))
+      fail("SpatialMapping accepted a noncanonical Physical Tag value");
+
+    auto collidingTags = parseSpatial(context, finalized.canonicalBytes());
+    if (!collidingTags)
+      fail("cannot reparse colliding Physical Tag fixture");
+    auto collidingTagRoot =
+        *collidingTags->getOps<::mapping::SpatialOp>().begin();
+    const std::array<std::int8_t, 1> zeroTag = {0};
+    auto zeroValue = ::mapping::OwnerTypedValueAttr::get(
+        &context, mlir::DenseI8ArrayAttr::get(&context, zeroTag));
+    std::size_t rewrittenAssignments = 0;
+    for (auto use :
+         collidingTagRoot.getBody().front().getOps<::mapping::ResourceUseOp>())
+      if (!use.getSharingAssignments().empty()) {
+        use.setSharingAssignmentsAttr(
+            mlir::ArrayAttr::get(&context, {zeroValue}));
+        ++rewrittenAssignments;
+      }
+    if (rewrittenAssignments < 2 ||
+        !rejected(
+            loom::mapping::finalizeSpatialMapping(collidingTagRoot, store)))
+      fail("SpatialMapping accepted colliding local Physical Tags");
+  }
+
   auto missingRoute = parseSpatial(context, finalized.canonicalBytes());
   if (!missingRoute)
     fail("cannot parse finalized SpatialMapping fixture");
@@ -1378,16 +1493,17 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   const auto &operation =
       std::get<loom::mapping::SpatialAddressedMemoryOperationView>(
           engine.operations.front());
-  bool hasOperationPortUse = false;
-  bool hasLocalServiceUse = false;
+  std::size_t operationPortUseCount = 0;
+  std::size_t localServiceUseCount = 0;
   for (const auto &use : imported.view().resourceUses()) {
-    hasOperationPortUse |= std::holds_alternative<
+    if (!use.sharingAssignments.empty())
+      continue;
+    operationPortUseCount += std::holds_alternative<
         loom::mapping::SpatialMemoryEngineResourceOwnerRef>(use.owner);
-    hasLocalServiceUse |= std::holds_alternative<
+    localServiceUseCount += std::holds_alternative<
         loom::mapping::SpatialMemoryBindingResourceOwnerRef>(use.owner);
   }
-  if (imported.view().resourceUses().size() != 2 || !hasOperationPortUse ||
-      !hasLocalServiceUse)
+  if (operationPortUseCount != 1 || localServiceUseCount != 1)
     fail("strict SpatialMapping round trip lost a memory ResourceUse");
   if (temporal) {
     const auto *context =

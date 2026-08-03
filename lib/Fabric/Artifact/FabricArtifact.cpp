@@ -22,6 +22,7 @@
 #include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricMemoryEngineTemplate.h"
+#include "FabricOperationTransport.h"
 #include "FabricResourceContractFinalization.h"
 #include "FabricSystemCanonicalLabeling.h"
 #include "FabricSystemValidation.h"
@@ -298,38 +299,10 @@ llvm::Error setTransportEndpoints(detail::FabricNestedOwnerViewData &owner,
 llvm::Error
 setOperationTransportEndpoints(Operation *operation,
                                detail::FabricNestedOwnerViewData &owner) {
-  llvm::SmallVector<Type> inputs;
-  if (auto memory = dyn_cast<::fabric::MemOp>(operation)) {
-    auto type = detail::resolveFabricMemoryFunctionType(memory);
-    if (!type)
-      return type.takeError();
-    for (Type input : type->getInputs())
-      if (!isa<MemRefType>(input))
-        inputs.push_back(input);
-  } else if (auto boundary = dyn_cast<::fabric::BoundaryOp>(operation)) {
-    ArrayRef<Type> inner = boundary.getInnerInputTypes();
-    if (!inner.empty())
-      inputs.append(inner.begin(), inner.end());
-    else
-      for (Value input : operation->getOperands())
-        inputs.push_back(input.getType());
-  } else if (auto sw = dyn_cast<::fabric::SwitchOp>(operation)) {
-    ArrayRef<Type> inner = sw.getInnerInputTypes();
-    if (!inner.empty())
-      inputs.append(inner.begin(), inner.end());
-    else
-      for (Value input : operation->getOperands())
-        inputs.push_back(input.getType());
-  } else {
-    for (Value input : operation->getOperands())
-      inputs.push_back(input.getType());
-  }
-
-  llvm::SmallVector<Type> outputs;
-  for (Type output : operation->getResultTypes())
-    if (!isa<MemRefType>(output))
-      outputs.push_back(output);
-  return setTransportEndpoints(owner, inputs, outputs);
+  auto types = detail::resolveFabricOperationTransportTypes(operation);
+  if (!types)
+    return types.takeError();
+  return setTransportEndpoints(owner, types->inputs, types->outputs);
 }
 
 llvm::Expected<std::optional<std::uint64_t>>
@@ -427,9 +400,8 @@ llvm::Error populateMemoryView(::fabric::MemOp memory,
     owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::MemoryServiceRegion)] = service->regions().size();
     owner.resourceContract = service->resourceContract();
-    entity.localMemoryService =
-        detail::FabricLocalMemoryServiceViewData{std::move(owner),
-                                                 std::move(*service)};
+    entity.localMemoryService = detail::FabricLocalMemoryServiceViewData{
+        std::move(owner), std::move(*service)};
   }
 
   auto derived = detail::deriveFabricMemoryEngineTemplate(memory);

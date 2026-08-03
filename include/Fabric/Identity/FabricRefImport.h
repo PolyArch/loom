@@ -130,6 +130,29 @@ struct FabricPhysicalTagMatchDomainView final {
   }
 };
 
+/// One Fabric-owned position at which Mapping may persist a Physical Tag.
+/// Ingress positions cover a tagged root attachment; writer positions cover a
+/// PE, memory, or boundary that creates or rewrites a tag. The referenced
+/// UsePattern owns the exact sharing-value codec.
+enum class FabricPhysicalTagAssignmentPointKind : std::uint8_t {
+  Ingress,
+  Writer,
+};
+
+struct FabricPhysicalTagAssignmentPointView final {
+  FabricPhysicalTagAssignmentPointKind kind =
+      FabricPhysicalTagAssignmentPointKind::Ingress;
+  FabricTransportEndpointRef endpoint;
+  FabricUsePatternRef pattern;
+  std::uint32_t tagWidthBits = 0;
+
+  friend bool operator==(const FabricPhysicalTagAssignmentPointView &lhs,
+                         const FabricPhysicalTagAssignmentPointView &rhs) {
+    return lhs.kind == rhs.kind && lhs.endpoint == rhs.endpoint &&
+           lhs.pattern == rhs.pattern && lhs.tagWidthBits == rhs.tagWidthBits;
+  }
+};
+
 /// The owner-defined domain that makes statically implied traversal uses one
 /// atomic activation. Most traversals select one exact UsePattern. Temporal
 /// switch broadcast is the sole current exception: every selected egress from
@@ -277,6 +300,14 @@ public:
   physicalTagMatchDomains() const;
   std::optional<FabricOrdinal> transportEndpointTagMatchDomain(
       const FabricTransportEndpointRef &endpoint) const;
+
+  /// Complete canonical Physical Tag assignment-point projection and direct
+  /// endpoint lookup. Tagged transport outputs that only preserve a tag have
+  /// no writer point.
+  llvm::ArrayRef<FabricPhysicalTagAssignmentPointView>
+  physicalTagAssignmentPoints() const;
+  std::optional<FabricPhysicalTagAssignmentPointView>
+  physicalTagAssignmentPoint(const FabricTransportEndpointRef &endpoint) const;
 
   /// Size of the owner's canonical token transport inventory.
   std::uint64_t
