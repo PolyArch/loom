@@ -648,6 +648,46 @@ void artifactRoundTripAndReferenceValidation() {
       frozen->routing().routingEndpoints().empty() ||
       frozen->routing().routingArcs().empty())
     fail("aggregate Spatial freeze omitted realizations or routing topology");
+  if (frozen->routing().routeClaims().empty() ||
+      frozen->routing().traversalClaimKeys().empty())
+    fail("Spatial freeze omitted traversal-implied resource claims");
+  bool observedSharedSwitchIngress = false;
+  for (std::size_t first = 0; first < frozen->routing().traversals().size() &&
+                              !observedSharedSwitchIngress;
+       ++first) {
+    const auto &lhs = frozen->routing().traversals()[first];
+    const auto *lhsSwitch =
+        std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+            &lhs.reference.payload);
+    if (!lhsSwitch || lhs.routeClaimCount == 0)
+      continue;
+    for (std::size_t second = first + 1;
+         second < frozen->routing().traversals().size(); ++second) {
+      const auto &rhs = frozen->routing().traversals()[second];
+      const auto *rhsSwitch =
+          std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+              &rhs.reference.payload);
+      if (!rhsSwitch || rhs.routeClaimCount == 0 ||
+          lhsSwitch->owner != rhsSwitch->owner ||
+          lhsSwitch->input != rhsSwitch->input ||
+          lhsSwitch->output == rhsSwitch->output)
+        continue;
+      const auto lhsClaims = frozen->routing().traversalClaimKeys().slice(
+          lhs.routeClaimOffset, lhs.routeClaimCount);
+      const auto rhsClaims = frozen->routing().traversalClaimKeys().slice(
+          rhs.routeClaimOffset, rhs.routeClaimCount);
+      std::size_t common = 0;
+      for (loom::pnr::PnrIndex lhsClaim : lhsClaims)
+        common += llvm::is_contained(rhsClaims, lhsClaim);
+      if (common != 1)
+        fail("switch broadcast branches did not share exactly one ingress "
+             "claim key");
+      observedSharedSwitchIngress = true;
+      break;
+    }
+  }
+  if (!observedSharedSwitchIngress)
+    fail("Spatial freeze has no temporal-switch broadcast claim anchor");
   if (frozen->realizations().computeActorRealizations().size() !=
           frozen->realizations().computeActors().size() ||
       frozen->realizations().memoryActorRealizations().size() !=
@@ -778,16 +818,72 @@ void artifactRoundTripAndReferenceValidation() {
   loom::pnr::EndpointRouteSearchScratch routeSearch;
   requireSuccess(routeSearch.prepare(
       loom::pnr::endpointRoutingGraphView(frozen->routing())));
-  const auto route = take(
-      routeSearch.search({{&routeSource, 1},
-                          {&routeTarget, 1},
-                          routeCosts,
-                          routeCosts,
-                          spatialCandidate->logicalNetPayloadWidth(*routedNet),
-                          0,
-                          262144}));
-  if (route.forwardArcs.empty())
-    fail("Spatial candidate route anchor selected an empty path");
+  std::optional<std::vector<loom::pnr::PnrIndex>> routedArcs;
+  for (loom::pnr::PnrIndex claimArc = 0;
+       claimArc < frozen->routing().routingArcs().size() && !routedArcs;
+       ++claimArc) {
+    const auto &claimArcRecord = frozen->routing().routingArcs()[claimArc];
+    if (frozen->routing()
+                .traversals()[claimArcRecord.traversal]
+                .routeClaimCount == 0 ||
+        claimArcRecord.payloadCapacityBits <
+            spatialCandidate->logicalNetPayloadWidth(*routedNet))
+      continue;
+    const loom::pnr::PnrIndex claimSource =
+        frozen->routing().arcSources()[claimArc];
+    const loom::pnr::PnrIndex claimTarget = claimArcRecord.target;
+    auto prefix = routeSearch.search(
+        {{&routeSource, 1},
+         {&claimSource, 1},
+         routeCosts,
+         routeCosts,
+         spatialCandidate->logicalNetPayloadWidth(*routedNet),
+         0,
+         262144});
+    if (!prefix) {
+      llvm::consumeError(prefix.takeError());
+      continue;
+    }
+    std::vector<loom::pnr::PnrIndex> candidate(prefix->forwardArcs.begin(),
+                                               prefix->forwardArcs.end());
+    auto suffix = routeSearch.search(
+        {{&claimTarget, 1},
+         {&routeTarget, 1},
+         routeCosts,
+         routeCosts,
+         spatialCandidate->logicalNetPayloadWidth(*routedNet),
+         0,
+         262144});
+    if (!suffix) {
+      llvm::consumeError(suffix.takeError());
+      continue;
+    }
+    candidate.push_back(claimArc);
+    candidate.insert(candidate.end(), suffix->forwardArcs.begin(),
+                     suffix->forwardArcs.end());
+
+    std::vector<std::uint8_t> seen(frozen->routing().routingEndpoints().size(),
+                                   0);
+    loom::pnr::PnrIndex endpoint = routeSource;
+    seen[endpoint] = 1;
+    bool simple = true;
+    for (loom::pnr::PnrIndex arc : candidate) {
+      if (frozen->routing().arcSources()[arc] != endpoint) {
+        simple = false;
+        break;
+      }
+      endpoint = frozen->routing().routingArcs()[arc].target;
+      if (seen[endpoint]) {
+        simple = false;
+        break;
+      }
+      seen[endpoint] = 1;
+    }
+    if (simple && endpoint == routeTarget)
+      routedArcs = std::move(candidate);
+  }
+  if (!routedArcs || routedArcs->empty())
+    fail("Spatial candidate fixture has no simple claim-bearing route");
 
   loom::pnr::SpatialCandidateScratch candidateScratch;
   requireSuccess(candidateScratch.prepare(*frozen));
@@ -795,12 +891,16 @@ void artifactRoundTripAndReferenceValidation() {
   requireSuccess(routeMove.bindRouteSource(*routedNet, routeSource));
   requireSuccess(routeMove.bindRouteSink(*routedNet, 0, routeTarget));
   requireSuccess(
-      routeMove.attachRoutePath(*routedNet, routeSource, route.forwardArcs, 0));
+      routeMove.attachRoutePath(*routedNet, routeSource, *routedArcs, 0));
   if (!take(routeMove.close()))
     fail("valid Spatial route closed a combinational handshake cycle");
   requireSuccess(routeMove.commit());
   if (!spatialCandidate->routeTree(*routedNet).isRouted())
     fail("Spatial move did not commit its RouteTree");
+  if (spatialCandidate->totalSelectedTraversalClaim() == 0)
+    fail("routed Spatial candidate has no exact traversal-claim objective");
+  const std::uint64_t committedTraversalClaim =
+      spatialCandidate->totalSelectedTraversalClaim();
   requireSuccess(spatialCandidate->verify());
 
   auto rollbackMove = take(spatialCandidate->beginMove(candidateScratch));
@@ -810,6 +910,9 @@ void artifactRoundTripAndReferenceValidation() {
   rollbackMove.rollback();
   if (!spatialCandidate->routeTree(*routedNet).isRouted())
     fail("Spatial move rollback discarded the committed RouteTree");
+  if (spatialCandidate->totalSelectedTraversalClaim() !=
+      committedTraversalClaim)
+    fail("Spatial move rollback changed traversal resource accounting");
   requireSuccess(spatialCandidate->verify());
   const std::size_t warmedCandidateScratchBytes =
       candidateScratch.retainedStorageBytes();

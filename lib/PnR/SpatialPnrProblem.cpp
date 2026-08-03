@@ -9,6 +9,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -18,7 +19,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -73,6 +73,17 @@ constexpr PnrCapacityContext traversalResourceStateOffsetContext{
 constexpr PnrCapacityContext traversalResourceStateCountContext{
     frozenArtifact, "traversal_resource_states", "traversal_resource_states",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext routeClaimOffsetContext{
+    frozenArtifact, "traversals", "traversal_claim_keys",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext routeClaimCountContext{
+    frozenArtifact, "traversal_claim_keys", "traversal_claim_keys",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext routeClaimIndexContext{
+    frozenArtifact, "route_claims", "route_claims", PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext routeClaimCapacityContext{
+    frozenArtifact, "route_claims", "capacity_dimensions",
+    PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext arcOffsetContext{
     frozenArtifact, "adjacency", "routing_arcs", PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext arcCountContext{
@@ -80,16 +91,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.2\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.3\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 2;
+constexpr std::uint32_t cacheSchemaMinor = 3;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.2";
+    "loom.spatial_pnr.freeze.2.3";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.2";
+    "loom.spatial_pnr.native_layout.2.3";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -140,6 +151,15 @@ void appendU32Field(std::vector<std::uint8_t> &bytes, CacheField field,
   appendField(bytes, field, encoded);
 }
 
+std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
+  return std::string(reinterpret_cast<const char *>(bytes.data()),
+                     bytes.size());
+}
+
+template <typename Ref> std::string refKey(const Ref &reference) {
+  return byteKey(canonicalFabricBytes(reference));
+}
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
       SpatialPnrFreezeFailureKind::Invalid, message.str());
@@ -186,6 +206,30 @@ restriction(const FrozenConstraintIndex &constraints,
 
 std::uint32_t tagCapacity(const ::fabric::DataPathType &path) {
   return path.kind == ::fabric::DataPathKind::BitsTag ? path.tagWidthBits : 0;
+}
+
+std::string
+routeClaimKey(const FabricTraversalActivationGroupView &activationGroup,
+              PnrIndex capacityDimension) {
+  std::vector<std::uint8_t> bytes;
+  const auto owner = canonicalFabricBytes(activationGroup.owner);
+  bytes.reserve(20 + owner.size());
+  appendU32Be(bytes, static_cast<std::uint32_t>(activationGroup.kind));
+  appendU64Be(bytes, activationGroup.ordinal);
+  appendU64Be(bytes, capacityDimension);
+  bytes.insert(bytes.end(), owner.begin(), owner.end());
+  return byteKey(bytes);
+}
+
+llvm::Expected<std::uint64_t> normalizedRouteClaimCost(std::uint32_t amount,
+                                                       std::uint32_t capacity) {
+  if (amount == 0)
+    return 0;
+  if (capacity == 0)
+    return invalid("a positive route claim names zero capacity");
+  constexpr std::uint64_t scale = std::uint64_t{1} << 32;
+  const std::uint64_t numerator = static_cast<std::uint64_t>(amount) * scale;
+  return (numerator + capacity - 1) / capacity;
 }
 
 llvm::Error
@@ -517,6 +561,27 @@ public:
     }
     if (llvm::find(reverseArcSeen, 0) != reverseArcSeen.end())
       return invalid("routing reverse CSR omitted an arc");
+    llvm::StringMap<PnrIndex> seenRouteClaims;
+    for (auto [ordinal, claim] : llvm::enumerate(routing.routeClaims())) {
+      if (claim.capacityDimension >= resources.capacityDimensions().size())
+        return invalid("route claim capacity dimension is out of range");
+      const FrozenSpatialCapacityDimension &capacity =
+          resources.capacityDimensions()[claim.capacityDimension];
+      auto qCost = normalizedRouteClaimCost(claim.amount, capacity.capacity);
+      if (!qCost)
+        return qCost.takeError();
+      if (claim.qCost != *qCost)
+        return invalid("route claim Q32 projection is inconsistent");
+      auto index = checked(routeClaimIndexContext, ordinal);
+      if (!index)
+        return index.takeError();
+      if (!seenRouteClaims
+               .try_emplace(routeClaimKey(claim.activationGroup,
+                                          claim.capacityDimension),
+                            *index)
+               .second)
+        return invalid("route claim key is duplicated");
+    }
     for (const FrozenSpatialTraversal &traversal : routing.traversals()) {
       const bool endpointlessRegisterFifo =
           traversal.reference.kind() ==
@@ -532,7 +597,9 @@ public:
                      routing.traversalEndpoints().size()) ||
           !rangeFits(traversal.resourceStateOffset,
                      traversal.resourceStateCount,
-                     routing.traversalResourceStates().size()))
+                     routing.traversalResourceStates().size()) ||
+          !rangeFits(traversal.routeClaimOffset, traversal.routeClaimCount,
+                     routing.traversalClaimKeys().size()))
         return invalid("traversal endpoint slices are inconsistent");
       for (PnrIndex endpoint : routing.traversalEndpoints().slice(
                traversal.sourceOffset, traversal.sourceCount))
@@ -546,6 +613,17 @@ public:
                traversal.resourceStateOffset, traversal.resourceStateCount))
         if (state >= resources.resourceStates().size())
           return invalid("traversal resource state is out of range");
+      PnrIndex previousClaim = 0;
+      bool firstClaim = true;
+      for (PnrIndex claim : routing.traversalClaimKeys().slice(
+               traversal.routeClaimOffset, traversal.routeClaimCount)) {
+        if (claim >= routing.routeClaims().size())
+          return invalid("traversal route claim is out of range");
+        if (!firstClaim && claim <= previousClaim)
+          return invalid("traversal route claims are not canonical");
+        firstClaim = false;
+        previousClaim = claim;
+      }
     }
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
             handshake, realizations, resources, routing))
@@ -779,7 +857,7 @@ private:
 
     FrozenSpatialRoutingGraph result;
     result.endpoints_.reserve(endpointRefs.size());
-    std::map<std::vector<std::uint8_t>, PnrIndex> endpointByCanonicalRef;
+    llvm::StringMap<PnrIndex> endpointByCanonicalRef;
     for (auto [ordinal, reference] : llvm::enumerate(endpointRefs)) {
       const auto direction = fabric.transportEndpointDirection(reference);
       const auto dataPath = fabric.transportEndpointDataPath(reference);
@@ -789,22 +867,29 @@ private:
       auto index = checked(endpointCountContext, ordinal);
       if (!index)
         return index.takeError();
-      if (!endpointByCanonicalRef
-               .emplace(canonicalFabricBytes(reference), *index)
-               .second)
+      if (!endpointByCanonicalRef.try_emplace(refKey(reference), *index).second)
         return invalid(
             "the canonical Fabric endpoint inventory has a duplicate");
     }
-    std::map<std::vector<std::uint8_t>, PnrIndex> stateByCanonicalRef;
+    llvm::StringMap<PnrIndex> stateByCanonicalRef;
     for (auto [ordinal, state] : llvm::enumerate(resources.resourceStates())) {
       auto index = checked(traversalResourceStateCountContext, ordinal);
       if (!index)
         return index.takeError();
-      if (!stateByCanonicalRef
-               .emplace(canonicalFabricBytes(state.reference), *index)
+      if (!stateByCanonicalRef.try_emplace(refKey(state.reference), *index)
                .second)
         return invalid("the frozen resource-state inventory has a duplicate");
     }
+    llvm::StringMap<PnrIndex> patternByCanonicalRef;
+    for (auto [ordinal, pattern] : llvm::enumerate(resources.usePatterns())) {
+      auto index = checked(routeClaimIndexContext, ordinal);
+      if (!index)
+        return index.takeError();
+      if (!patternByCanonicalRef.try_emplace(refKey(pattern.reference), *index)
+               .second)
+        return invalid("the frozen use-pattern inventory has a duplicate");
+    }
+    llvm::StringMap<PnrIndex> routeClaimByKey;
 
     struct ArcDraft final {
       PnrIndex source;
@@ -841,8 +926,7 @@ private:
       std::vector<PnrIndex> sources;
       sources.reserve(traversal.sources.size());
       for (const FabricTransportEndpointRef &source : traversal.sources) {
-        const auto index =
-            endpointByCanonicalRef.find(canonicalFabricBytes(source));
+        const auto index = endpointByCanonicalRef.find(refKey(source));
         if (index == endpointByCanonicalRef.end())
           return invalid(
               "a traversal source is absent from the endpoint inventory");
@@ -860,8 +944,7 @@ private:
       destinations.reserve(traversal.destinations.size());
       for (const FabricTransportEndpointRef &destination :
            traversal.destinations) {
-        const auto index =
-            endpointByCanonicalRef.find(canonicalFabricBytes(destination));
+        const auto index = endpointByCanonicalRef.find(refKey(destination));
         if (index == endpointByCanonicalRef.end())
           return invalid(
               "a traversal destination is absent from the endpoint inventory");
@@ -883,8 +966,7 @@ private:
                               traversal.resourceStates.size()))
         return error;
       for (const FabricResourceStateRef &state : traversal.resourceStates) {
-        const auto found =
-            stateByCanonicalRef.find(canonicalFabricBytes(state));
+        const auto found = stateByCanonicalRef.find(refKey(state));
         if (found == stateByCanonicalRef.end())
           return invalid(
               "a traversal state is absent from the resource inventory");
@@ -894,9 +976,95 @@ private:
                                         traversal.resourceStates.size());
       if (!resourceStateCount)
         return resourceStateCount.takeError();
+      auto routeClaimOffset =
+          checked(routeClaimOffsetContext, result.traversalClaimKeys_.size());
+      if (!routeClaimOffset)
+        return routeClaimOffset.takeError();
+      std::vector<PnrIndex> traversalClaimKeys;
+      for (const FabricTraversalUseView &use : traversal.impliedUses) {
+        const auto patternFound =
+            patternByCanonicalRef.find(refKey(use.pattern));
+        if (patternFound == patternByCanonicalRef.end())
+          return invalid(
+              "a traversal use is absent from the resource inventory");
+        const FrozenSpatialUsePattern &pattern =
+            resources.usePatterns()[patternFound->second];
+        if (use.activationGroup.owner != pattern.reference.owner.catalog())
+          return invalid("a traversal activation names a foreign owner");
+        switch (use.activationGroup.kind) {
+        case FabricTraversalActivationGroupKind::UsePattern:
+          if (use.activationGroup.ordinal != pattern.reference.ordinal)
+            return invalid(
+                "a traversal activation disagrees with its use pattern");
+          break;
+        case FabricTraversalActivationGroupKind::SwitchRequester:
+          if (use.activationGroup.ordinal != pattern.requester)
+            return invalid(
+                "a switch traversal activation disagrees with its requester");
+          break;
+        }
+
+        for (const FrozenSpatialResourceClaim &claim : resources.claims().slice(
+                 pattern.claimOffset, pattern.claimCount)) {
+          if (claim.state >= resources.resourceStates().size())
+            return invalid("a traversal claim names an out-of-range state");
+          const FrozenSpatialResourceState &state =
+              resources.resourceStates()[claim.state];
+          if (claim.dimension >= state.capacityCount)
+            return invalid(
+                "a traversal claim names an out-of-range capacity dimension");
+          auto capacityDimension = checkedPnrIndexAdd(
+              routeClaimCapacityContext, state.capacityOffset, claim.dimension);
+          if (!capacityDimension)
+            return capacityDimension.takeError();
+          const FrozenSpatialCapacityDimension &capacity =
+              resources.capacityDimensions()[*capacityDimension];
+          auto qCost =
+              normalizedRouteClaimCost(claim.amount, capacity.capacity);
+          if (!qCost)
+            return qCost.takeError();
+
+          const std::string key =
+              routeClaimKey(use.activationGroup, *capacityDimension);
+          auto found = routeClaimByKey.find(key);
+          if (found == routeClaimByKey.end()) {
+            auto routeClaim =
+                checked(routeClaimIndexContext, result.routeClaims_.size());
+            if (!routeClaim)
+              return routeClaim.takeError();
+            found = routeClaimByKey.try_emplace(key, *routeClaim).first;
+            result.routeClaims_.push_back({use.activationGroup,
+                                           *capacityDimension, claim.amount,
+                                           *qCost});
+          } else {
+            const FrozenSpatialRouteClaim &existing =
+                result.routeClaims_[found->second];
+            if (existing.amount != claim.amount || existing.qCost != *qCost)
+              return invalid(
+                  "one route claim key has inconsistent capacity demand");
+          }
+          traversalClaimKeys.push_back(found->second);
+        }
+      }
+      llvm::sort(traversalClaimKeys);
+      traversalClaimKeys.erase(
+          std::unique(traversalClaimKeys.begin(), traversalClaimKeys.end()),
+          traversalClaimKeys.end());
+      if (llvm::Error error = preflightAppend(routeClaimCountContext,
+                                              result.traversalClaimKeys_.size(),
+                                              traversalClaimKeys.size()))
+        return error;
+      result.traversalClaimKeys_.insert(result.traversalClaimKeys_.end(),
+                                        traversalClaimKeys.begin(),
+                                        traversalClaimKeys.end());
+      auto routeClaimCount =
+          checked(routeClaimCountContext, traversalClaimKeys.size());
+      if (!routeClaimCount)
+        return routeClaimCount.takeError();
       result.traversals_.push_back(
           {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
-           *destinationCount, *resourceStateOffset, *resourceStateCount});
+           *destinationCount, *resourceStateOffset, *resourceStateCount,
+           *routeClaimOffset, *routeClaimCount});
 
       for (PnrIndex source : sources) {
         const auto &sourcePath = result.endpoints_[source].dataPath;

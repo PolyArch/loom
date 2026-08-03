@@ -4,6 +4,7 @@
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialRouteResourceState.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Compiler.h"
@@ -106,6 +107,8 @@ private:
   std::vector<PnrIndex> traversalAdded_;
   std::vector<PnrIndex> touchedTraversals_;
   std::uint64_t traversalEpoch_ = 0;
+  std::size_t resourceFullyAppliedRouteCount_ = 0;
+  std::size_t resourcePartiallyAppliedDeltaCount_ = 0;
 
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
@@ -145,6 +148,22 @@ public:
   std::uint32_t logicalNetPayloadWidth(PnrIndex logicalNet) const;
   const RouteTreeState &routeTree(PnrIndex logicalNet) const;
   const HandshakeCandidateState &handshake() const { return *handshake_; }
+  std::uint64_t totalSelectedTraversalClaim() const {
+    return routeResources_.totalSelectedTraversalClaim();
+  }
+  PnrIndex routeClaimSelectionCount(PnrIndex claim) const {
+    return routeResources_.routeClaimSelectionCount(claim);
+  }
+  PnrIndex logicalNetRouteClaimRefcount(PnrIndex logicalNet,
+                                        PnrIndex claim) const {
+    return routeResources_.logicalNetRouteClaimRefcount(logicalNet, claim);
+  }
+  std::uint64_t routeCapacityUsageRaw(PnrIndex capacityDimension) const {
+    return routeResources_.capacityUsageRaw(capacityDimension);
+  }
+  std::uint64_t routeCapacityOveruseRaw(PnrIndex capacityDimension) const {
+    return routeResources_.capacityOveruseRaw(capacityDimension);
+  }
 
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>
@@ -161,14 +180,16 @@ private:
       std::vector<PnrIndex> graphBoundaryAttachments,
       std::vector<PnrIndex> memoryOperationPlans,
       std::vector<RouteTreeStateHandle> routeTrees,
-      HandshakeCandidateStateHandle handshake)
+      HandshakeCandidateStateHandle handshake,
+      SpatialRouteResourceState routeResources)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
         portAttachments_(std::move(portAttachments)),
         graphBoundaryAttachments_(std::move(graphBoundaryAttachments)),
         memoryOperationPlans_(std::move(memoryOperationPlans)),
-        routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)) {}
+        routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
+        routeResources_(std::move(routeResources)) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -189,6 +210,7 @@ private:
   std::vector<PnrIndex> memoryOperationPlans_;
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
+  SpatialRouteResourceState routeResources_;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialMoveTransaction;
@@ -248,6 +270,8 @@ private:
   llvm::Error changeTraversal(std::optional<PnrIndex> oldTraversal,
                               std::optional<PnrIndex> newTraversal);
   llvm::Error collectRouteTraversalDeltas();
+  void rollbackAppliedRouteResources() noexcept;
+  void acceptAppliedRouteResources() noexcept;
   llvm::Error validateAffectedState() const;
   void finish();
 
@@ -255,6 +279,7 @@ private:
   SpatialCandidateScratch *scratch_ = nullptr;
   bool closed_ = false;
   bool cycle_ = false;
+  bool routeDeltasCollected_ = false;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

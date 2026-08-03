@@ -381,6 +381,18 @@ struct FrozenSpatialTraversal final {
   PnrIndex destinationCount = 0;
   PnrIndex resourceStateOffset = 0;
   PnrIndex resourceStateCount = 0;
+  PnrIndex routeClaimOffset = 0;
+  PnrIndex routeClaimCount = 0;
+};
+
+/// One dense, route-selected claim key. The activation group is retained only
+/// for cold verification and diagnostics. Candidate hot paths use the ordinal
+/// of this record and never compare persistent Fabric references.
+struct FrozenSpatialRouteClaim final {
+  ::loom::fabric::FabricTraversalActivationGroupView activationGroup;
+  PnrIndex capacityDimension = 0;
+  std::uint32_t amount = 0;
+  std::uint64_t qCost = 0;
 };
 
 struct FrozenSpatialRoutingArc final {
@@ -404,6 +416,12 @@ public:
   llvm::ArrayRef<PnrIndex> traversalResourceStates() const {
     return traversalResourceStates_;
   }
+  llvm::ArrayRef<FrozenSpatialRouteClaim> routeClaims() const {
+    return routeClaims_;
+  }
+  llvm::ArrayRef<PnrIndex> traversalClaimKeys() const {
+    return traversalClaimKeys_;
+  }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
@@ -421,6 +439,8 @@ private:
   std::vector<FrozenSpatialTraversal> traversals_;
   std::vector<PnrIndex> traversalEndpoints_;
   std::vector<PnrIndex> traversalResourceStates_;
+  std::vector<FrozenSpatialRouteClaim> routeClaims_;
+  std::vector<PnrIndex> traversalClaimKeys_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<PnrIndex> reverseAdjacencyOffsets_;
   std::vector<PnrIndex> reverseArcOrdinals_;

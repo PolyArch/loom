@@ -224,6 +224,8 @@ void SpatialCandidateScratch::resetTransaction() {
   affectedMemoryPlans_.clear();
   affectedNets_.clear();
   handshakeTransaction_.reset();
+  resourceFullyAppliedRouteCount_ = 0;
+  resourcePartiallyAppliedDeltaCount_ = 0;
 }
 
 llvm::Expected<SpatialCandidateStateHandle>
@@ -277,12 +279,15 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       return routeTree.takeError();
     routeTrees.push_back(std::move(*routeTree));
   }
+  auto routeResources = SpatialRouteResourceState::create(*problem);
+  if (!routeResources)
+    return routeResources.takeError();
 
   auto candidate = SpatialCandidateStateHandle(new SpatialCandidateState(
       std::move(problem), std::move(computeBindings), std::move(memoryBindings),
       std::move(portAttachments), std::move(graphBoundaryAttachments),
       std::move(memoryOperationPlans), std::move(routeTrees),
-      std::move(*handshake)));
+      std::move(*handshake), std::move(*routeResources)));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
       return std::move(error);
@@ -654,6 +659,8 @@ llvm::Error SpatialCandidateState::verify() const {
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index)
     if (llvm::Error error = validateLogicalNet(index))
       return error;
+  if (llvm::Error error = routeResources_.verify(routeTrees_))
+    return error;
   return verifyHandshakeProjection();
 }
 
@@ -696,7 +703,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
 SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialMoveTransaction &&other) noexcept
     : state_(std::move(other.state_)), scratch_(other.scratch_),
-      closed_(other.closed_), cycle_(other.cycle_) {
+      closed_(other.closed_), cycle_(other.cycle_),
+      routeDeltasCollected_(other.routeDeltasCollected_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -1121,56 +1129,6 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
   return llvm::Error::success();
 }
 
-llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
-  for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
-    auto deltas = scratch_->routeTransactions_[logicalNet]->prepare();
-    if (!deltas)
-      return deltas.takeError();
-    for (const RouteTreeTraversalDelta &delta : *deltas) {
-      const PnrIndex traversal = delta.traversal;
-      if (traversal >= scratch_->traversalDeltaMarks_.size())
-        return candidateError("route selected an out-of-range traversal");
-      if (scratch_->traversalDeltaMarks_[traversal] !=
-          scratch_->traversalEpoch_) {
-        scratch_->traversalDeltaMarks_[traversal] = scratch_->traversalEpoch_;
-        scratch_->traversalRemoved_[traversal] = 0;
-        scratch_->traversalAdded_[traversal] = 0;
-        scratch_->touchedTraversals_.push_back(traversal);
-      }
-      if (llvm::Error error =
-              increment(scratch_->traversalRemoved_[traversal], delta.removed,
-                        "route traversal removal"))
-        return error;
-      if (llvm::Error error =
-              increment(scratch_->traversalAdded_[traversal], delta.added,
-                        "route traversal addition"))
-        return error;
-    }
-  }
-
-  llvm::sort(scratch_->touchedTraversals_);
-  for (PnrIndex traversal : scratch_->touchedTraversals_) {
-    PnrIndex &removed = scratch_->traversalRemoved_[traversal];
-    PnrIndex &added = scratch_->traversalAdded_[traversal];
-    const PnrIndex cancelled = std::min(removed, added);
-    removed -= cancelled;
-    added -= cancelled;
-    if (removed != 0)
-      if (llvm::Error error =
-              scratch_->handshakeTransaction_->removeTraversalUses(traversal,
-                                                                   removed))
-        return error;
-  }
-  for (PnrIndex traversal : scratch_->touchedTraversals_) {
-    const PnrIndex added = scratch_->traversalAdded_[traversal];
-    if (added != 0)
-      if (llvm::Error error = scratch_->handshakeTransaction_->addTraversalUses(
-              traversal, added))
-        return error;
-  }
-  return llvm::Error::success();
-}
-
 llvm::Expected<bool> SpatialMoveTransaction::close() {
   if (!scratch_)
     return candidateError("move is no longer active");
@@ -1210,6 +1168,7 @@ llvm::Error SpatialMoveTransaction::commit() {
   if (llvm::Error error = scratch_->handshakeTransaction_->commit())
     return candidateError("closed handshake commit failed: " +
                           llvm::toString(std::move(error)));
+  acceptAppliedRouteResources();
   finish();
   return llvm::Error::success();
 }
@@ -1217,6 +1176,7 @@ llvm::Error SpatialMoveTransaction::commit() {
 void SpatialMoveTransaction::rollback() noexcept {
   if (!scratch_)
     return;
+  rollbackAppliedRouteResources();
   for (PnrIndex logicalNet : llvm::reverse(scratch_->touchedRoutes_))
     if (scratch_->routeTransactions_[logicalNet])
       scratch_->routeTransactions_[logicalNet]->rollback();

@@ -7,12 +7,14 @@ add_mlir_library(LoomPnR
   PnrConfig.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
+  SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
   SpatialPnrResourceIndex.cpp
   SpatialPnrTransferIndex.cpp
+  SpatialRouteResourceState.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR
