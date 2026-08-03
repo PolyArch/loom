@@ -112,6 +112,7 @@ set(LOOM_TEST_DEPENDS
   loom-spatial-mapping-artifact-test
   loom-spatial-mapping-wire-test
   loom-pnr-endpoint-router-test
+  loom-pnr-deterministic-search-protocol-test
   loom-pnr-initializer-relation-solver-test
   loom-pnr-incremental-topology-test
   loom-pnr-index-test

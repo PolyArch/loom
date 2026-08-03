@@ -1,5 +1,7 @@
 add_mlir_library(LoomPnR
+  DeterministicSearchProtocol.cpp
   EndpointRouter.cpp
+  ExpNegativeQ64Table.cpp
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
   InitializerRelationSolver.cpp

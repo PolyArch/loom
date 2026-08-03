@@ -59,3 +59,12 @@ target_link_libraries(loom-pnr-initializer-relation-solver-test PRIVATE
   LoomPnR
   LLVMSupport
 )
+
+add_executable(loom-pnr-deterministic-search-protocol-test
+  DeterministicSearchProtocolTest.cpp
+)
+
+target_link_libraries(loom-pnr-deterministic-search-protocol-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)
