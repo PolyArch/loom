@@ -27,6 +27,7 @@
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/SpatialRouteCostState.h"
+#include "PnR/SpatialTagAssignment.h"
 #include "PnR/SpatialTagContinuity.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -815,6 +816,72 @@ void completeCandidateRoundTrip(bool temporal, bool boundaryWrapped = false) {
     candidate = std::move(first.candidate);
   }
   requireSuccess(candidate->verify());
+
+  std::vector<const loom::pnr::RouteTreeState *> selectedRoutes;
+  selectedRoutes.reserve(problem->transfers().logicalNets().size());
+  for (loom::pnr::PnrIndex net = 0;
+       net < problem->transfers().logicalNets().size(); ++net)
+    selectedRoutes.push_back(&candidate->routeTree(net));
+  const auto tagAssignments =
+      take(loom::pnr::deriveCanonicalSpatialTagAssignments(*problem,
+                                                           selectedRoutes));
+  const auto repeatedTagAssignments =
+      take(loom::pnr::deriveCanonicalSpatialTagAssignments(*problem,
+                                                           selectedRoutes));
+  if (tagAssignments.segments() != repeatedTagAssignments.segments() ||
+      tagAssignments.values() != repeatedTagAssignments.values() ||
+      tagAssignments.segmentDomains() !=
+          repeatedTagAssignments.segmentDomains() ||
+      tagAssignments.unassignedCount() != 0 ||
+      tagAssignments.conflictCount() != 0)
+    fail("canonical Physical Tag assignment is incomplete or unstable");
+  for (auto [segment, value] :
+       llvm::zip_equal(tagAssignments.segments(), tagAssignments.values())) {
+    if (!value)
+      fail("routed Physical Tag segment has no canonical value");
+    const auto encoded =
+        take(fabric::encodePhysicalTagValue(segment.tagWidthBits, *value));
+    if (take(fabric::decodePhysicalTagValue(segment.tagWidthBits, encoded)) !=
+        value->zextOrTrunc(segment.tagWidthBits))
+      fail("candidate Physical Tag disagrees with the Fabric owner codec");
+  }
+
+  bool observedSharedLocalDomain = false;
+  for (loom::pnr::PnrIndex domain = 0;
+       domain < problem->routing().tagContinuity().matchDomains().size();
+       ++domain) {
+    const auto members = tagAssignments.domainSegments(domain);
+    observedSharedLocalDomain |= members.size() > 1;
+    for (auto [position, lhs] : llvm::enumerate(members))
+      for (loom::pnr::PnrIndex rhs : llvm::drop_begin(members, position + 1))
+        if (tagAssignments.values()[lhs] == tagAssignments.values()[rhs])
+          fail("one local Physical Tag match domain contains a collision");
+  }
+  if (boundaryWrapped && !observedSharedLocalDomain)
+    fail("Temporal route fixture did not exercise local tag interference");
+
+  bool observedDisjointDomainReuse = false;
+  const auto segmentDomainOffsets = tagAssignments.segmentDomainOffsets();
+  const auto segmentDomains = tagAssignments.segmentDomains();
+  for (loom::pnr::PnrIndex lhs = 0; lhs < tagAssignments.segments().size();
+       ++lhs)
+    for (loom::pnr::PnrIndex rhs = lhs + 1;
+         rhs < tagAssignments.segments().size(); ++rhs) {
+      if (tagAssignments.values()[lhs] != tagAssignments.values()[rhs])
+        continue;
+      const auto lhsDomains = segmentDomains.slice(
+          segmentDomainOffsets[lhs],
+          segmentDomainOffsets[lhs + 1] - segmentDomainOffsets[lhs]);
+      const auto rhsDomains = segmentDomains.slice(
+          segmentDomainOffsets[rhs],
+          segmentDomainOffsets[rhs + 1] - segmentDomainOffsets[rhs]);
+      observedDisjointDomainReuse |=
+          llvm::none_of(lhsDomains, [&](loom::pnr::PnrIndex domain) {
+            return llvm::is_contained(rhsDomains, domain);
+          });
+    }
+  if (boundaryWrapped && !observedDisjointDomainReuse)
+    fail("Physical Tags were made globally unique across disjoint domains");
 
   if (boundaryWrapped) {
     bool observedBoundaryOrigin = false;

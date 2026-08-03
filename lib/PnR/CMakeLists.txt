@@ -31,6 +31,7 @@ add_mlir_library(LoomPnR
   SpatialPnrTransferIndex.cpp
   SpatialRouteCostState.cpp
   SpatialRouteResourceState.cpp
+  SpatialTagAssignment.cpp
   SpatialTagContinuity.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -38,6 +39,7 @@ add_mlir_library(LoomPnR
 
   LINK_LIBS PUBLIC
   LoomFabricIdentity
+  LoomFabricPhysicalTag
   LoomFabricTemporalOperandBuffer
   LoomDSEObjective
   LoomMappingArtifact

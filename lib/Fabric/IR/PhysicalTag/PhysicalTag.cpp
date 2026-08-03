@@ -68,8 +68,9 @@ fabric::decodePhysicalTagValue(std::uint32_t tagWidthBits,
   }
 
   llvm::APInt result(tagWidthBits, 0);
+  const unsigned shift = std::min<std::uint32_t>(8, tagWidthBits);
   for (std::uint8_t byte : bytes) {
-    result <<= 8;
+    result <<= shift;
     result |= llvm::APInt(tagWidthBits, byte);
   }
   return result;

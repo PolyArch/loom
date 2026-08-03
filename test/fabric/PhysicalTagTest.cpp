@@ -43,6 +43,8 @@ void roundTripsExactOwnerWidth() {
       take(fabric::encodePhysicalTagValue(4, llvm::APInt(4, 10)));
   if (!llvm::equal(nibble, std::array<std::uint8_t, 1>{0x0a}))
     fail("sub-byte tag encoding changed");
+  if (take(fabric::decodePhysicalTagValue(4, nibble)) != llvm::APInt(4, 10))
+    fail("sub-byte tag value did not round trip");
 }
 
 void rejectsNoncanonicalOrUnrepresentableValues() {
