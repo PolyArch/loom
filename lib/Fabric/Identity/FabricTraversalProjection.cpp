@@ -1,8 +1,10 @@
 #include "FabricTraversalProjection.h"
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/BoundaryTransfer.h"
 #include "Fabric/IR/FifoResourceContract.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
+#include "Fabric/IR/TemporalSwitchResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -65,6 +67,29 @@ llvm::Error appendPatternStates(const FabricArtifactView &view,
   for (const ::fabric::Claim &claim :
        contract->usePattern(::fabric::UsePatternKey(pattern.ordinal)).claims)
     states.push_back(resourceState(owner, claim.state.ordinal()));
+  return llvm::Error::success();
+}
+
+FabricTraversalActivationGroupView
+patternActivation(const FabricUsePatternRef &pattern) {
+  return {FabricTraversalActivationGroupKind::UsePattern,
+          pattern.owner.catalog(), pattern.ordinal};
+}
+
+FabricTraversalActivationGroupView
+switchActivation(FabricSwitchOccurrenceRef owner, FabricOrdinal input) {
+  return {FabricTraversalActivationGroupKind::SwitchRequester,
+          FabricInventoryOwnerRef::of(owner), input};
+}
+
+llvm::Error appendImpliedUse(const FabricArtifactView &view,
+                             const FabricUsePatternRef &pattern,
+                             FabricTraversalActivationGroupView activation,
+                             FabricPhysicalTraversalView &traversal) {
+  if (llvm::Error error =
+          appendPatternStates(view, pattern, traversal.resourceStates))
+    return error;
+  traversal.impliedUses.push_back({pattern, std::move(activation)});
   return llvm::Error::success();
 }
 
@@ -176,6 +201,17 @@ projectFabricTraversal(const FabricArtifactView &view,
     if (!state)
       return state.takeError();
     result.resourceStates.push_back(resourceState(owner, state->ordinal()));
+    auto pattern = ::fabric::resolveTemporalPeRegisterFifoPattern(
+        *contract, static_cast<std::uint32_t>(registerFifoCount),
+        static_cast<std::uint32_t>(payload.registerFifo),
+        payload.role == FabricRegisterFifoPathRole::Write);
+    if (!pattern)
+      return pattern.takeError();
+    const FabricUsePatternRef patternRef{FabricUsePatternOwnerRef(owner),
+                                         pattern->ordinal()};
+    if (llvm::Error error = appendImpliedUse(
+            view, patternRef, patternActivation(patternRef), result))
+      return std::move(error);
     break;
   }
   case FabricPhysicalTraversalKind::SwitchTraversal: {
@@ -198,6 +234,10 @@ projectFabricTraversal(const FabricArtifactView &view,
             view.resourceContract(resourceOwner)) {
       const std::uint64_t inputCount =
           view.inventorySize(resourceOwner, FabricInventoryKind::SwitchInput);
+      if (inputCount > std::numeric_limits<std::uint32_t>::max() ||
+          payload.input > std::numeric_limits<std::uint32_t>::max() ||
+          payload.output > std::numeric_limits<std::uint32_t>::max())
+        return invalid("switch traversal domain exceeds u32");
       const std::uint64_t outputState = inputCount + payload.output;
       if (payload.input >= contract->stateCount() ||
           outputState >= contract->stateCount())
@@ -206,6 +246,18 @@ projectFabricTraversal(const FabricArtifactView &view,
           resourceState(resourceOwner, payload.input));
       result.resourceStates.push_back(
           resourceState(resourceOwner, outputState));
+      auto pattern = ::fabric::resolveTemporalSwitchTraversalPattern(
+          *contract, static_cast<std::uint32_t>(inputCount),
+          static_cast<std::uint32_t>(payload.input),
+          static_cast<std::uint32_t>(payload.output));
+      if (!pattern)
+        return pattern.takeError();
+      const FabricUsePatternRef patternRef{
+          FabricUsePatternOwnerRef(resourceOwner), pattern->ordinal()};
+      if (llvm::Error error = appendImpliedUse(
+              view, patternRef, switchActivation(payload.owner, payload.input),
+              result))
+        return std::move(error);
     }
     break;
   }
@@ -234,6 +286,17 @@ projectFabricTraversal(const FabricArtifactView &view,
     if (!contract || state >= contract->stateCount())
       return invalid("FIFO traversal resource state is out of range");
     result.resourceStates.push_back(resourceState(resourceOwner, state));
+    if (payload.mode == FabricFifoTraversalMode::Bypass) {
+      const auto pattern =
+          ::fabric::fifoUsePattern(::fabric::FifoUsePattern::BypassTransfer);
+      if (pattern.ordinal() >= contract->usePatternCount())
+        return invalid("FIFO bypass traversal has no use pattern");
+      const FabricUsePatternRef patternRef{
+          FabricUsePatternOwnerRef(resourceOwner), pattern.ordinal()};
+      if (llvm::Error error = appendImpliedUse(
+              view, patternRef, patternActivation(patternRef), result))
+        return std::move(error);
+    }
     break;
   }
   case FabricPhysicalTraversalKind::BoundaryTraversal: {
@@ -247,6 +310,19 @@ projectFabricTraversal(const FabricArtifactView &view,
     if (!destination)
       return destination.takeError();
     result.destinations.push_back(*destination);
+    const FabricInventoryOwnerRef resourceOwner =
+        FabricInventoryOwnerRef::of(payload.owner);
+    const ::fabric::ResourceContract *contract =
+        view.resourceContract(resourceOwner);
+    if (!contract || ::fabric::boundaryTransferPattern.ordinal() >=
+                         contract->usePatternCount())
+      return invalid("boundary traversal has no atomic use pattern");
+    const FabricUsePatternRef patternRef{
+        FabricUsePatternOwnerRef(resourceOwner),
+        ::fabric::boundaryTransferPattern.ordinal()};
+    if (llvm::Error error = appendImpliedUse(
+            view, patternRef, patternActivation(patternRef), result))
+      return std::move(error);
     break;
   }
   case FabricPhysicalTraversalKind::SystemTransferPatternLeg: {
@@ -262,8 +338,9 @@ projectFabricTraversal(const FabricArtifactView &view,
           "system transfer-pattern traversal has no endpoint relation");
     result.sources.push_back(pattern->ingress());
     result.destinations.push_back(pattern->egresses()[payload.egress]);
-    if (llvm::Error error = appendPatternStates(view, pattern->usePattern(),
-                                                result.resourceStates))
+    if (llvm::Error error =
+            appendImpliedUse(view, pattern->usePattern(),
+                             patternActivation(pattern->usePattern()), result))
       return std::move(error);
     break;
   }

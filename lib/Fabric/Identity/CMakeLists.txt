@@ -20,4 +20,5 @@ target_link_libraries(LoomFabricIdentity PUBLIC
   LoomCommon
   LoomFabricImplementationFamily
   LoomFabricResourceContract
+  LoomFabricTemporalSwitchResourceContract
 )

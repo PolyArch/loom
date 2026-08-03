@@ -867,6 +867,10 @@ void spatialSwitchConnectivityBecomesTraversals() {
   require(test, temporalFinalized.view().moduleResourceOwners().size() == 1,
           "temporal switch resource owner was not canonicalized");
   unsigned temporalTraversalCount = 0;
+  std::optional<loom::fabric::FabricTraversalActivationGroupView>
+      inputZeroActivation;
+  std::optional<loom::fabric::FabricTraversalActivationGroupView>
+      inputOneActivation;
   for (const auto &traversal : temporalFinalized.view().physicalTraversals()) {
     if (traversal.reference.kind() !=
         loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal)
@@ -874,9 +878,42 @@ void spatialSwitchConnectivityBecomesTraversals() {
     ++temporalTraversalCount;
     require(test, traversal.resourceStates.size() == 2,
             "temporal switch traversal lost ingress or egress state");
+    require(test, traversal.impliedUses.size() == 1,
+            "temporal switch traversal lost its atomic use pattern");
+    const auto &payload = std::get<loom::fabric::FabricSwitchTraversalPayload>(
+        traversal.reference.payload);
+    const auto &use = traversal.impliedUses.front();
+    require(test,
+            use.activationGroup.kind ==
+                    loom::fabric::FabricTraversalActivationGroupKind::
+                        SwitchRequester &&
+                use.activationGroup.owner ==
+                    loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
+                use.activationGroup.ordinal == payload.input,
+            "temporal switch traversal changed its requester activation");
+    const ::fabric::ResourceContract *contract =
+        temporalFinalized.view().resourceContract(use.pattern.owner.catalog());
+    require(test, contract && use.pattern.ordinal < contract->usePatternCount(),
+            "temporal switch traversal selected a foreign use pattern");
+    const ::fabric::UsePattern pattern =
+        contract->usePattern(::fabric::UsePatternKey(
+            static_cast<std::uint32_t>(use.pattern.ordinal)));
+    require(test, pattern.claims.size() == 2,
+            "temporal switch use is not one ingress-egress claim envelope");
+    auto &activation =
+        payload.input == 0 ? inputZeroActivation : inputOneActivation;
+    if (!activation)
+      activation = use.activationGroup;
+    else
+      require(test, *activation == use.activationGroup,
+              "broadcast branches did not share one activation group");
   }
   require(test, temporalTraversalCount == 4,
           "temporal switch connectivity changed its traversal domain");
+  require(test,
+          inputZeroActivation && inputOneActivation &&
+              *inputZeroActivation != *inputOneActivation,
+          "independent switch requesters were merged into one activation");
 }
 
 void fuCapabilityTemplatesComeFromThePhysicalGraph() {

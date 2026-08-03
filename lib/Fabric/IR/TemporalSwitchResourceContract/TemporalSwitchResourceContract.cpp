@@ -184,3 +184,38 @@ TemporalSwitchResourceContract::traversalPattern(std::uint32_t input,
   return UsePatternKey(begin +
                        static_cast<std::uint32_t>(std::distance(first, found)));
 }
+
+llvm::Expected<UsePatternKey> fabric::resolveTemporalSwitchTraversalPattern(
+    const ResourceContract &contract, std::uint32_t inputCount,
+    std::uint32_t input, std::uint32_t output) {
+  if (input >= inputCount)
+    return invalid("traversal input is outside the switch domain");
+  if (output > std::numeric_limits<std::uint32_t>::max() - inputCount)
+    return invalid("traversal output state exceeds u32");
+  const StateKey inputState(input);
+  const StateKey outputState(inputCount + output);
+  std::optional<UsePatternKey> resolved;
+  for (std::uint32_t ordinal = 0; ordinal != contract.usePatternCount();
+       ++ordinal) {
+    const UsePattern pattern = contract.usePattern(UsePatternKey(ordinal));
+    if (pattern.requester != RequesterKey(input) || pattern.claims.size() != 2)
+      continue;
+    bool hasInput = false;
+    bool hasOutput = false;
+    bool exact = true;
+    for (const Claim &claim : pattern.claims) {
+      exact &=
+          claim.dimension == serviceSlot && claim.amount == CapacityUnits(1);
+      hasInput |= claim.state == inputState;
+      hasOutput |= claim.state == outputState;
+    }
+    if (!exact || !hasInput || !hasOutput)
+      continue;
+    if (resolved)
+      return invalid("traversal resolves to multiple switch use patterns");
+    resolved = UsePatternKey(ordinal);
+  }
+  if (!resolved)
+    return invalid("traversal has no switch use pattern");
+  return *resolved;
+}

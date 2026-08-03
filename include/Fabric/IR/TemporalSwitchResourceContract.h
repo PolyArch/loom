@@ -87,6 +87,14 @@ private:
 llvm::Expected<TemporalSwitchResourceContract>
 deriveTemporalSwitchResourceContract(SwitchOp operation);
 
+/// Resolves the unique use pattern of one traversal from an imported canonical
+/// temporal-switch ResourceContract. This is the cold owner projection used by
+/// sealed Fabric views; consumers must not reconstruct the pattern ordinal from
+/// connectivity order.
+llvm::Expected<UsePatternKey> resolveTemporalSwitchTraversalPattern(
+    const ResourceContract &contract, std::uint32_t inputCount,
+    std::uint32_t input, std::uint32_t output);
+
 } // namespace fabric
 
 #endif // FABRIC_IR_TEMPORALSWITCHRESOURCECONTRACT_H

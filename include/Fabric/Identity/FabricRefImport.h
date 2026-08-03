@@ -84,14 +84,51 @@ struct ResolvedFabricOpCapabilityView {
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 };
 
+/// The owner-defined domain that makes statically implied traversal uses one
+/// atomic activation. Most traversals select one exact UsePattern. Temporal
+/// switch broadcast is the sole current exception: every selected egress from
+/// one ingress requester belongs to the same atomic activation even though
+/// each physical traversal has its own pattern. This key is a sealed,
+/// rebuildable view value and has no persistent identity or wire encoding.
+enum class FabricTraversalActivationGroupKind : std::uint32_t {
+  UsePattern,
+  SwitchRequester,
+};
+
+struct FabricTraversalActivationGroupView final {
+  FabricTraversalActivationGroupKind kind =
+      FabricTraversalActivationGroupKind::UsePattern;
+  FabricInventoryOwnerRef owner;
+  FabricOrdinal ordinal = 0;
+
+  friend bool operator==(const FabricTraversalActivationGroupView &lhs,
+                         const FabricTraversalActivationGroupView &rhs) {
+    return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
+           lhs.ordinal == rhs.ordinal;
+  }
+  friend bool operator!=(const FabricTraversalActivationGroupView &lhs,
+                         const FabricTraversalActivationGroupView &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct FabricTraversalUseView final {
+  FabricUsePatternRef pattern;
+  FabricTraversalActivationGroupView activationGroup;
+};
+
 /// The exact endpoint relation of one admitted physical traversal. The
 /// traversal reference remains the persistent identity; endpoint ranges are a
-/// sealed, rebuildable projection of the same Fabric owner.
+/// sealed, rebuildable projection of the same Fabric owner. `impliedUses`
+/// contains only atomic uses selected mechanically by the traversal itself.
+/// Event-relative alternatives, including buffered FIFO enqueue, dequeue, and
+/// simultaneous use, remain selected by Mapping ResourceUse and are absent.
 struct FabricPhysicalTraversalView final {
   FabricPhysicalTraversalRef reference;
   std::vector<FabricTransportEndpointRef> sources;
   std::vector<FabricTransportEndpointRef> destinations;
   std::vector<FabricResourceStateRef> resourceStates;
+  std::vector<FabricTraversalUseView> impliedUses;
 };
 
 /// One connected token-plane Module signature endpoint and the exact

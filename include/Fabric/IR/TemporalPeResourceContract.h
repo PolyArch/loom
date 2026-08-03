@@ -72,6 +72,40 @@ resolveTemporalPeRegisterFifoState(const ResourceContract &contract,
   return StateKey(contract.stateCount() - registerFifoCount + fifo);
 }
 
+/// Resolves the role-selected register-FIFO use from the same canonical
+/// combined temporal-PE contract. Operand-buffer patterns precede the two
+/// register-FIFO role ranges; the imported contract remains their sole owner.
+inline llvm::Expected<UsePatternKey>
+resolveTemporalPeRegisterFifoPattern(const ResourceContract &contract,
+                                     std::uint32_t registerFifoCount,
+                                     std::uint32_t fifo, bool write) {
+  if (fifo >= registerFifoCount)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "register FIFO ordinal is outside its owner domain");
+  const std::uint64_t registerPatternCount =
+      static_cast<std::uint64_t>(registerFifoCount) * 2;
+  if (registerPatternCount > contract.usePatternCount())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "register FIFO patterns are absent from the PE contract");
+  const std::uint32_t patternOffset =
+      contract.usePatternCount() -
+      static_cast<std::uint32_t>(registerPatternCount);
+  const std::uint32_t ordinal =
+      patternOffset + (write ? 0 : registerFifoCount) + fifo;
+  const UsePattern pattern = contract.usePattern(UsePatternKey(ordinal));
+  auto state =
+      resolveTemporalPeRegisterFifoState(contract, registerFifoCount, fifo);
+  if (!state)
+    return state.takeError();
+  if (pattern.claims.size() != 1 || pattern.claims.front().state != *state)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "register FIFO pattern disagrees with its canonical state");
+  return UsePatternKey(ordinal);
+}
+
 } // namespace fabric
 
 #endif // FABRIC_IR_TEMPORALPERESOURCECONTRACT_H
