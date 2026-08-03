@@ -48,6 +48,7 @@ struct SpatialCandidateInitialization final {
 
 class SpatialCandidateState;
 class SpatialCandidateScratch;
+class SpatialActionDomainScratch;
 class SpatialMoveTransaction;
 
 using SpatialCandidateStateHandle = std::shared_ptr<SpatialCandidateState>;
@@ -340,6 +341,7 @@ private:
   std::uint64_t capacityOveruse_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
+  friend class SpatialActionDomainScratch;
   friend class SpatialMoveTransaction;
 };
 

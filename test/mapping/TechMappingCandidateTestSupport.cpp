@@ -8,6 +8,7 @@
 #include "Fabric/IR/TemporalPeResourceContract.h"
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
+#include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialObjective.h"
@@ -16,11 +17,13 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -518,6 +521,71 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       fail("candidate initializer hid the explicit global routing action");
   requireSuccess(first->verify());
   requireSuccess(second->verify());
+
+  pnr::SpatialActionDomainScratch actionDomain;
+  requireSuccess(actionDomain.prepare(*problem));
+  const std::size_t retainedActionDomainBytes =
+      actionDomain.retainedStorageBytes();
+  requireSuccess(actionDomain.rebuild(*first));
+  const pnr::SpatialActionProposalDomain firstDomain = actionDomain.view();
+  if (firstDomain.realizationChoices.empty() &&
+      firstDomain.transportChoices.empty() &&
+      firstDomain.resourceChoices.empty())
+    fail("canonical candidate has no dynamic Spatial Action");
+  pnr::DeterministicPnrRandomStream proposalStream =
+      pnr::DeterministicPnrRandomStream::create(
+          UINT64_C(0x0123456789abcdef), 0,
+          pnr::PnrRandomStreamPurpose::ActionProposal);
+  if (!take(pnr::proposeSpatialAction(ResolvedPnrActionProposalPolicy{1, 1, 1},
+                                      firstDomain, proposalStream)))
+    fail("nonempty dynamic domain produced no Spatial Action");
+  for (const pnr::SpatialRealizationBindingAction &action :
+       firstDomain.realizationChoices) {
+    std::visit(
+        [&](const auto &choice) {
+          using T = std::decay_t<decltype(choice)>;
+          if constexpr (std::is_same_v<T, pnr::SpatialComputeBindingAction>) {
+            const auto &current = first->computeBinding(choice.realization);
+            if (current.placement == choice.placement &&
+                current.instructionContext == choice.instructionContext)
+              fail("compute Action retained the current binding");
+          } else {
+            if (first->memoryBinding(choice.realization).placement ==
+                choice.placement)
+              fail("memory Action retained the current binding");
+          }
+        },
+        action);
+  }
+  for (const pnr::SpatialResourceAllocationAction &action :
+       firstDomain.resourceChoices) {
+    std::visit(
+        [&](const auto &choice) {
+          using T = std::decay_t<decltype(choice)>;
+          if constexpr (std::is_same_v<T, pnr::SpatialPortAttachmentAction>) {
+            if (first->portAttachment(choice.demand) == choice.attachmentOption)
+              fail("port Action retained the current attachment");
+          } else if constexpr (std::is_same_v<
+                                   T,
+                                   pnr::SpatialGraphBoundaryAttachmentAction>) {
+            if (first->graphBoundaryAttachment(choice.boundary) ==
+                choice.attachmentOption)
+              fail("graph-boundary Action retained the current attachment");
+          } else if constexpr (std::is_same_v<
+                                   T, pnr::SpatialMemoryOperationPlanAction>) {
+            if (first->memoryOperationPlan(choice.actor) == choice.plan)
+              fail("memory-plan Action retained the current plan");
+          } else {
+            fail("dynamic domain exposed an unimplemented resource Action");
+          }
+        },
+        action);
+  }
+  if (actionDomain.retainedStorageBytes() != retainedActionDomainBytes)
+    fail("Spatial Action domain allocated while rebuilding a candidate");
+  requireSuccess(actionDomain.rebuild(*second));
+  if (actionDomain.retainedStorageBytes() != retainedActionDomainBytes)
+    fail("Spatial Action domain grew after its warm rebuild");
 
   const auto vector = take(problem->objectiveProgram().evaluate(*first));
   if (vector.codes() !=
