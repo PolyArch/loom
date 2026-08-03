@@ -28,12 +28,19 @@ struct SpatialMemoryBindingSelection final {
   PnrIndex placement = getInvalidPnrIndex();
 };
 
+struct SpatialLogicalMemoryBindingSelection final {
+  PnrIndex target = getInvalidPnrIndex();
+  std::uint64_t physicalOffsetBytes = 0;
+};
+
 struct SpatialCandidateInitialization final {
   llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings;
   llvm::ArrayRef<SpatialMemoryBindingSelection> memoryBindings;
   llvm::ArrayRef<PnrIndex> portAttachments;
   llvm::ArrayRef<PnrIndex> graphBoundaryAttachments;
   llvm::ArrayRef<PnrIndex> memoryOperationPlans;
+  llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings;
+  llvm::ArrayRef<PnrIndex> memoryUseDispatches;
 };
 
 class SpatialCandidateState;
@@ -61,6 +68,8 @@ private:
     PortAttachment,
     GraphBoundaryAttachment,
     MemoryOperationPlan,
+    LogicalMemoryBinding,
+    MemoryUseDispatch,
   };
 
   struct DecisionDelta final {
@@ -69,6 +78,7 @@ private:
     PnrIndex oldValue0 = 0;
     PnrIndex oldValue1 = 0;
     PnrIndex oldValue2 = 0;
+    std::uint64_t oldWideValue = 0;
   };
 
   void beginTransaction();
@@ -84,6 +94,8 @@ private:
   std::vector<std::uint64_t> portJournalMarks_;
   std::vector<std::uint64_t> boundaryJournalMarks_;
   std::vector<std::uint64_t> memoryPlanJournalMarks_;
+  std::vector<std::uint64_t> logicalMemoryJournalMarks_;
+  std::vector<std::uint64_t> memoryDispatchJournalMarks_;
   std::vector<DecisionDelta> decisionDeltas_;
   std::uint64_t decisionEpoch_ = 0;
 
@@ -92,6 +104,8 @@ private:
   std::vector<std::uint64_t> affectedPortMarks_;
   std::vector<std::uint64_t> affectedBoundaryMarks_;
   std::vector<std::uint64_t> affectedMemoryPlanMarks_;
+  std::vector<std::uint64_t> affectedLogicalMemoryMarks_;
+  std::vector<std::uint64_t> affectedMemoryDispatchMarks_;
   std::vector<std::uint64_t> affectedNetMarks_;
   std::vector<std::uint64_t> affectedBindingRelationMarks_;
   std::vector<PnrIndex> affectedComputes_;
@@ -99,6 +113,8 @@ private:
   std::vector<PnrIndex> affectedPorts_;
   std::vector<PnrIndex> affectedBoundaries_;
   std::vector<PnrIndex> affectedMemoryPlans_;
+  std::vector<PnrIndex> affectedLogicalMemories_;
+  std::vector<PnrIndex> affectedMemoryDispatches_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> affectedBindingRelations_;
   std::uint64_t affectedEpoch_ = 0;
@@ -144,6 +160,9 @@ public:
   PnrIndex portAttachment(PnrIndex demand) const;
   PnrIndex graphBoundaryAttachment(PnrIndex boundary) const;
   PnrIndex memoryOperationPlan(PnrIndex actor) const;
+  const SpatialLogicalMemoryBindingSelection &
+  logicalMemoryBinding(PnrIndex binding) const;
+  PnrIndex memoryUseDispatch(PnrIndex use) const;
 
   PnrIndex logicalNetSourceEndpoint(PnrIndex logicalNet) const;
   PnrIndex logicalNetSinkEndpoint(PnrIndex logicalNet,
@@ -191,6 +210,8 @@ private:
       std::vector<PnrIndex> portAttachments,
       std::vector<PnrIndex> graphBoundaryAttachments,
       std::vector<PnrIndex> memoryOperationPlans,
+      std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings,
+      std::vector<PnrIndex> memoryUseDispatches,
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
@@ -202,6 +223,8 @@ private:
         portAttachments_(std::move(portAttachments)),
         graphBoundaryAttachments_(std::move(graphBoundaryAttachments)),
         memoryOperationPlans_(std::move(memoryOperationPlans)),
+        logicalMemoryBindings_(std::move(logicalMemoryBindings)),
+        memoryUseDispatches_(std::move(memoryUseDispatches)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
         routeResources_(std::move(routeResources)),
         unroutedObligationCount_(unroutedObligationCount),
@@ -212,6 +235,12 @@ private:
   llvm::Error validatePortAttachment(PnrIndex demand) const;
   llvm::Error validateGraphBoundaryAttachment(PnrIndex boundary) const;
   llvm::Error validateMemoryOperationPlan(PnrIndex actor) const;
+  llvm::Error validateLogicalMemoryBinding(PnrIndex binding) const;
+  llvm::Error validateLogicalMemoryBindingOverlap(PnrIndex binding) const;
+  llvm::Expected<const FrozenSpatialMemoryDispatchDomain *>
+  memoryDispatchDomain(PnrIndex use) const;
+  llvm::Error validateMemoryUseDispatch(PnrIndex use) const;
+  llvm::Error verifyMemorySelections() const;
   llvm::Error validateLogicalNet(PnrIndex logicalNet) const;
   llvm::Error verifyBindingRelations() const;
   llvm::Error verifyBindingRelation(PnrIndex relation) const;
@@ -228,6 +257,8 @@ private:
   std::vector<PnrIndex> portAttachments_;
   std::vector<PnrIndex> graphBoundaryAttachments_;
   std::vector<PnrIndex> memoryOperationPlans_;
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings_;
+  std::vector<PnrIndex> memoryUseDispatches_;
   std::vector<RouteTreeStateHandle> routeTrees_;
   HandshakeCandidateStateHandle handshake_;
   SpatialRouteResourceState routeResources_;
@@ -253,6 +284,9 @@ public:
   llvm::Error setGraphBoundaryAttachment(PnrIndex boundary,
                                          PnrIndex attachmentOption);
   llvm::Error setMemoryOperationPlan(PnrIndex actor, PnrIndex plan);
+  llvm::Error setLogicalMemoryBinding(PnrIndex binding, PnrIndex target,
+                                      std::uint64_t physicalOffsetBytes);
+  llvm::Error setMemoryUseDispatch(PnrIndex use, PnrIndex dispatchOption);
 
   llvm::Error bindRouteSource(PnrIndex logicalNet, PnrIndex endpoint);
   llvm::Error bindRouteSink(PnrIndex logicalNet, PnrIndex sinkObligation,
@@ -281,11 +315,15 @@ private:
   void recordPort(PnrIndex demand);
   void recordBoundary(PnrIndex boundary);
   void recordMemoryPlan(PnrIndex actor);
+  void recordLogicalMemory(PnrIndex binding);
+  void recordMemoryDispatch(PnrIndex use);
   void markCompute(PnrIndex realization);
   void markMemory(PnrIndex realization);
   void markPort(PnrIndex demand);
   void markBoundary(PnrIndex boundary);
   void markMemoryPlan(PnrIndex actor);
+  void markLogicalMemory(PnrIndex binding);
+  void markMemoryDispatch(PnrIndex use);
   void markNet(PnrIndex logicalNet);
   void markBindingRelations(PnrIndex decision);
   llvm::Error changeFragments(llvm::ArrayRef<PnrIndex> oldFragments,

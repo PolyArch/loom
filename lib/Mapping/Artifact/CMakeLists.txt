@@ -2,9 +2,11 @@ add_library(LoomMappingArtifact
   MappingAssembly.cpp
   MappingConstraintSet.cpp
   SpatialMappingArtifact.cpp
+  SpatialMappingMemoryImport.cpp
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp
+  TechMappingMemoryProjection.cpp
 )
 
 target_include_directories(LoomMappingArtifact PUBLIC

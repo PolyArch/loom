@@ -471,6 +471,24 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
         graphBodyViews[g.getOperation()].push_back(op->getResult(0));
 
   exposureByStaticSlot_.assign(staticGraphLaunches_.size(), {});
+  addressedMemoryRangeByStaticSlot_.assign(staticGraphLaunches_.size(), {});
+
+  // Group addressed actors once by their owning graph. Canonical actor slots
+  // provide the deterministic order used by every launch-site range.
+  std::vector<llvm::SmallVector<unsigned, 2>> addressedActorsByGraphSlot(
+      graphs_.size());
+  for (unsigned actorSlot = 0; actorSlot < actors_.size(); ++actorSlot) {
+    if (actors_[actorSlot].kind != CanonicalDataflowActorKind::Memory ||
+        isa<FenceOp>(actors_[actorSlot].op))
+      continue;
+    auto access =
+        semantics::getCanonicalMemoryAccessView(actors_[actorSlot].op);
+    if (!access)
+      return access.takeError();
+    const std::size_t graphSlot =
+        slotOfId_[actors_[actorSlot].graph.entity.value()];
+    addressedActorsByGraphSlot[graphSlot].push_back(actorSlot);
+  }
   for (unsigned s = 0; s < staticGraphLaunches_.size(); ++s) {
     auto ret = cast<GraphReturnOp>(
         cast<GraphOp>(
@@ -553,6 +571,27 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
       for (Value v : it->second)
         if (llvm::Expected<unsigned> idx = resolveInContext(v); !idx)
           return idx.takeError();
+
+    const std::size_t graphSlot =
+        slotOfId_[staticGraphLaunches_[s].callee.entity.value()];
+    const unsigned addressedBegin = addressedMemoryActorSlots_.size();
+    for (unsigned actorSlot : addressedActorsByGraphSlot[graphSlot]) {
+      auto access =
+          semantics::getCanonicalMemoryAccessView(actors_[actorSlot].op);
+      if (!access)
+        return access.takeError();
+      llvm::Expected<unsigned> role =
+          resolveInContext(access->memoryCapability());
+      if (!role)
+        return role.takeError();
+      addressedMemoryActorSlots_.push_back(actorSlot);
+      addressedMemoryRoleIndices_.push_back(*role);
+    }
+    addressedMemoryRangeByStaticSlot_[s] = {
+        addressedBegin,
+        static_cast<unsigned>(addressedMemoryActorSlots_.size()) -
+            addressedBegin};
+
     auto ret = cast<GraphReturnOp>(graph.getBody().front().getTerminator());
     llvm::ArrayRef<int32_t> outSeg = graph.getResultSegmentSizes();
     unsigned resultBase =
@@ -1302,6 +1341,33 @@ CanonicalDataflowProgramView::validate(ContextualActorRef ref) const {
     return invalid("canonical dataflow: contextual actor does not belong to "
                    "the launched graph");
   return llvm::Error::success();
+}
+
+llvm::Expected<LogicalMemoryRootOrViewRef>
+CanonicalDataflowProgramView::resolveAddressedMemory(
+    ContextualActorRef ref) const {
+  if (llvm::Error error = validate(ref))
+    return std::move(error);
+  auto actorSlot = requireKind(ref.actor.artifact, ref.actor.entity.value(),
+                               CanonicalDataflowEntityKind::Actor);
+  if (!actorSlot)
+    return actorSlot.takeError();
+  auto staticSlot = requireKind(ref.launch.staticGraphLaunch.artifact,
+                                ref.launch.staticGraphLaunch.entity.value(),
+                                CanonicalDataflowEntityKind::StaticGraphLaunch);
+  if (!staticSlot)
+    return staticSlot.takeError();
+
+  const auto [begin, count] = addressedMemoryRangeByStaticSlot_[*staticSlot];
+  const auto first = addressedMemoryActorSlots_.begin() + begin;
+  const auto last = first + count;
+  const auto found =
+      std::lower_bound(first, last, static_cast<unsigned>(*actorSlot));
+  if (found == last || *found != *actorSlot)
+    return invalid("canonical dataflow: contextual actor is not an "
+                   "addressed memory actor");
+  const unsigned offset = static_cast<unsigned>(found - first);
+  return roleTable_[addressedMemoryRoleIndices_[begin + offset]];
 }
 
 llvm::Expected<FenceActorFamilyRef>

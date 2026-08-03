@@ -1,5 +1,6 @@
 #include "PnR/SpatialMappingMaterializer.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -13,8 +14,11 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 #include <type_traits>
+#include <variant>
 #include <vector>
 
 namespace loom::pnr {
@@ -101,6 +105,214 @@ materializeComputeBindings(mlir::OpBuilder &builder, mlir::Location location,
         {}});
   }
   return bindings;
+}
+
+llvm::Expected<mlir::Attribute> materializeMemoryBindingTarget(
+    mlir::MLIRContext *context,
+    const FrozenSpatialMemoryBindingTargetOption &target,
+    const SpatialLogicalMemoryBindingSelection &selection) {
+  if (const auto *region =
+          std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
+              &target.target))
+    return mlir::Attribute(::mapping::MemoryLocalRegionAttr::get(
+        context,
+        fabricAttr<::mapping::FabricMemoryServiceRegionRefAttr>(context,
+                                                                *region),
+        selection.physicalOffsetBytes));
+  if (selection.physicalOffsetBytes != 0)
+    return invalid("BoundaryProxy carries a physical byte offset");
+  return mlir::Attribute(::mapping::MemoryBoundaryProxyAttr::get(context));
+}
+
+llvm::Error
+materializeMemoryBindings(mlir::OpBuilder &builder, mlir::Location location,
+                          mlir::Block &body,
+                          const SpatialCandidateState &candidate,
+                          const ArtifactIdentity &dataflowIdentity) {
+  const auto &memory = candidate.problem().memory();
+  for (PnrIndex bindingOrdinal = 0;
+       bindingOrdinal < memory.logicalBindings().size(); ++bindingOrdinal) {
+    const auto &logical = memory.logicalBindings()[bindingOrdinal];
+    const auto &selection = candidate.logicalMemoryBinding(bindingOrdinal);
+    if (selection.target >= memory.bindingTargets().size())
+      return invalid("logical memory binding target is out of range");
+    auto logicalAttr = dataflowAttr<::mapping::LogicalMemoryRootOrViewRefAttr>(
+        builder.getContext(), dataflowIdentity, logical.logicalMemory);
+    if (!logicalAttr)
+      return logicalAttr.takeError();
+    auto target = materializeMemoryBindingTarget(
+        builder.getContext(), memory.bindingTargets()[selection.target],
+        selection);
+    if (!target)
+      return target.takeError();
+
+    builder.setInsertionPointToEnd(&body);
+    auto record = ::mapping::MemoryBindingOp::create(
+        builder, location, static_cast<std::uint64_t>(bindingOrdinal),
+        *logicalAttr,
+        ::mapping::MemoryWholeIntervalAttr::get(builder.getContext()), *target);
+    record.getBody().push_back(new mlir::Block());
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<mlir::Attribute> materializeMemoryPlacement(
+    mlir::MLIRContext *context,
+    ::loom::fabric::FabricMemoryOccurrenceRef occurrence,
+    const FrozenSpatialMemoryActorBinding &actor,
+    const FrozenSpatialMemoryOperationHandshakePlan &plan) {
+  const ::loom::fabric::FabricMemoryOperationPortRef port{
+      occurrence, actor.operationPort.ordinal};
+  if (plan.residentContext)
+    return mlir::Attribute(
+        fabricAttr<::mapping::FabricMemoryOperationContextRefAttr>(
+            context, ::loom::fabric::FabricMemoryOperationContextRef{
+                         port, *plan.residentContext}));
+  return mlir::Attribute(
+      fabricAttr<::mapping::FabricMemoryOperationPortRefAttr>(context, port));
+}
+
+llvm::Expected<mlir::Attribute>
+materializeAddressedDispatch(mlir::MLIRContext *context,
+                             const FrozenSpatialMemoryDispatchTarget &target) {
+  if (const auto *local =
+          std::get_if<::loom::fabric::LocalMemoryServiceRef>(&target))
+    return mlir::Attribute(
+        fabricAttr<::mapping::LocalMemoryServiceRefAttr>(context, *local));
+  if (const auto *manager =
+          std::get_if<::loom::fabric::ManagerEndpointRef>(&target))
+    return mlir::Attribute(
+        fabricAttr<::mapping::ManagerEndpointRefAttr>(context, *manager));
+  return invalid("addressed memory use selects a consistency-domain target");
+}
+
+llvm::Expected<mlir::Attribute>
+materializeFenceDispatch(mlir::MLIRContext *context,
+                         const FrozenSpatialMemoryDispatchTarget &target) {
+  if (const auto *domain =
+          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target))
+    return mlir::Attribute(
+        fabricAttr<::mapping::MemoryConsistencyDomainRefAttr>(context,
+                                                              *domain));
+  if (const auto *manager =
+          std::get_if<::loom::fabric::ManagerEndpointRef>(&target))
+    return mlir::Attribute(
+        fabricAttr<::mapping::ManagerEndpointRefAttr>(context, *manager));
+  return invalid("fence use selects an addressed local-service target");
+}
+
+llvm::Error
+materializeMemoryEngineBindings(mlir::OpBuilder &builder,
+                                mlir::Location location, mlir::Block &body,
+                                const SpatialCandidateState &candidate,
+                                const ArtifactIdentity &dataflowIdentity) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &realizations = problem.realizations();
+  const auto &memory = problem.memory();
+  const auto plans = problem.handshake().memoryOperationPlans();
+  for (PnrIndex realizationOrdinal = 0;
+       realizationOrdinal < realizations.memoryRealizations().size();
+       ++realizationOrdinal) {
+    const auto &realization =
+        realizations.memoryRealizations()[realizationOrdinal];
+    const PnrIndex placementOrdinal =
+        candidate.memoryBinding(realizationOrdinal).placement;
+    if (placementOrdinal >= realizations.memoryPlacements().size())
+      return invalid("memory realization selects an absent occurrence");
+    const auto &placement = realizations.memoryPlacements()[placementOrdinal];
+    if (placement.realization != realizationOrdinal)
+      return invalid("memory occurrence belongs to another realization");
+
+    builder.setInsertionPointToEnd(&body);
+    auto engine = ::mapping::MemoryEngineBindingOp::create(
+        builder, location,
+        ::mapping::MemoryRealizationRefAttr::get(builder.getContext(),
+                                                 realization.reference.entity),
+        fabricAttr<::mapping::FabricMemoryOccurrenceRefAttr>(
+            builder.getContext(), placement.memory));
+    auto *engineBody = new mlir::Block();
+    engine.getBody().push_back(engineBody);
+
+    for (PnrIndex localActor = 0; localActor < realization.actorCount;
+         ++localActor) {
+      const PnrIndex actorOrdinal = realization.actorOffset + localActor;
+      if (actorOrdinal >= realizations.memoryActors().size())
+        return invalid("memory realization actor slice is out of range");
+      const auto &actor = realizations.memoryActors()[actorOrdinal];
+      const PnrIndex planOrdinal = candidate.memoryOperationPlan(actorOrdinal);
+      if (planOrdinal >= plans.size())
+        return invalid("memory actor selects an absent operation plan");
+      auto actorAttr = dataflowAttr<::mapping::ActorRefAttr>(
+          builder.getContext(), dataflowIdentity, actor.actor);
+      if (!actorAttr)
+        return actorAttr.takeError();
+      auto operationPlacement = materializeMemoryPlacement(
+          builder.getContext(), placement.memory, actor, plans[planOrdinal]);
+      if (!operationPlacement)
+        return operationPlacement.takeError();
+      if (actorOrdinal + 1 >= memory.actorUseOffsets().size())
+        return invalid("memory actor has no rooted-use slice");
+      const PnrIndex useBegin = memory.actorUseOffsets()[actorOrdinal];
+      const PnrIndex useEnd = memory.actorUseOffsets()[actorOrdinal + 1];
+      if (useBegin >= useEnd || useEnd > memory.rootedUses().size())
+        return invalid("memory actor has an incomplete rooted-use inventory");
+      const bool addressed =
+          memory.rootedUses()[useBegin].logicalBinding.has_value();
+      for (PnrIndex useOrdinal = useBegin; useOrdinal < useEnd; ++useOrdinal)
+        if (memory.rootedUses()[useOrdinal].logicalBinding.has_value() !=
+            addressed)
+          return invalid("one memory actor mixes addressed and fence uses");
+
+      builder.setInsertionPointToEnd(engineBody);
+      mlir::Block *operationBody = nullptr;
+      if (addressed) {
+        auto operation = ::mapping::AddressedMemoryOperationOp::create(
+            builder, location, *actorAttr, *operationPlacement);
+        operationBody = new mlir::Block();
+        operation.getBody().push_back(operationBody);
+      } else {
+        auto operation = ::mapping::FenceMemoryOperationOp::create(
+            builder, location, *actorAttr, *operationPlacement);
+        operationBody = new mlir::Block();
+        operation.getBody().push_back(operationBody);
+      }
+
+      builder.setInsertionPointToEnd(operationBody);
+      for (PnrIndex useOrdinal = useBegin; useOrdinal < useEnd; ++useOrdinal) {
+        const auto &use = memory.rootedUses()[useOrdinal];
+        const PnrIndex dispatchOrdinal =
+            candidate.memoryUseDispatch(useOrdinal);
+        if (dispatchOrdinal >= memory.dispatchOptions().size())
+          return invalid("rooted memory use selects an absent dispatch");
+        auto launch = dataflowAttr<::mapping::RootedGraphLaunchRefAttr>(
+            builder.getContext(), dataflowIdentity, use.launch);
+        if (!launch)
+          return launch.takeError();
+        const auto &dispatch = memory.dispatchOptions()[dispatchOrdinal].target;
+        if (addressed) {
+          if (!use.logicalBinding)
+            return invalid("addressed memory use has no logical binding");
+          auto target =
+              materializeAddressedDispatch(builder.getContext(), dispatch);
+          if (!target)
+            return target.takeError();
+          ::mapping::AddressedMemoryUseOp::create(
+              builder, location, *launch,
+              ::mapping::MemoryBindingRefAttr::get(builder.getContext(),
+                                                   *use.logicalBinding),
+              *target);
+        } else {
+          auto target =
+              materializeFenceDispatch(builder.getContext(), dispatch);
+          if (!target)
+            return target.takeError();
+          ::mapping::FenceMemoryUseOp::create(builder, location, *launch,
+                                              *target);
+        }
+      }
+    }
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
@@ -199,56 +411,170 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
   return llvm::Error::success();
 }
 
-llvm::Error materializeResourceUses(
+llvm::Expected<mlir::Attribute> materializeActivityEvent(
+    mlir::MLIRContext *context, const ArtifactIdentity &dataflowIdentity,
+    const ::loom::mapping::SpatialActivityEventRef &event) {
+  return std::visit(
+      [&](const auto &trigger) -> llvm::Expected<mlir::Attribute> {
+        using Trigger = std::decay_t<decltype(trigger)>;
+        if constexpr (std::is_same_v<
+                          Trigger,
+                          ::loom::mapping::SpatialActorTransitionEventRef>) {
+          auto actor = dataflowAttr<::mapping::ActorRefAttr>(
+              context, dataflowIdentity, trigger.actor);
+          if (!actor)
+            return actor.takeError();
+          return ::mapping::ActorTransitionEventAttr::get(context, *actor,
+                                                          trigger.transition);
+        } else if constexpr (
+            std::is_same_v<Trigger,
+                           ::dataflow::CanonicalGraphProducerEndpointRef>) {
+          auto producer = dataflowAttr<::mapping::GraphProducerEndpointRefAttr>(
+              context, dataflowIdentity, trigger);
+          if (!producer)
+            return producer.takeError();
+          return mlir::Attribute(*producer);
+        } else {
+          auto consumer = dataflowAttr<::mapping::GraphConsumerEndpointRefAttr>(
+              context, dataflowIdentity, trigger);
+          if (!consumer)
+            return consumer.takeError();
+          return mlir::Attribute(*consumer);
+        }
+      },
+      event);
+}
+
+llvm::Error
+materializeResourceUse(mlir::OpBuilder &builder, mlir::Location location,
+                       mlir::Block &body, mlir::Attribute owner,
+                       const ::loom::mapping::SpatialActivityEventRef &event,
+                       const ::loom::fabric::FabricUsePatternRef &pattern,
+                       const ArtifactIdentity &dataflowIdentity) {
+  auto encodedEvent =
+      materializeActivityEvent(builder.getContext(), dataflowIdentity, event);
+  if (!encodedEvent)
+    return encodedEvent.takeError();
+  auto trigger = ::mapping::SpatialEventPointAttr::get(
+      builder.getContext(), *encodedEvent, ::mapping::OwnerTypedValueAttr());
+  auto activation = ::mapping::SpatialRelativeActivationAttr::get(
+      builder.getContext(), trigger, ::mapping::SpatialEventPointAttr());
+  builder.setInsertionPointToEnd(&body);
+  ::mapping::ResourceUseOp::create(
+      builder, location, owner,
+      fabricAttr<::mapping::FabricUsePatternRefAttr>(builder.getContext(),
+                                                     pattern),
+      activation, builder.getArrayAttr({}), builder.getArrayAttr({}));
+  return llvm::Error::success();
+}
+
+llvm::Error materializeComputeResourceUses(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
     llvm::ArrayRef<::loom::mapping::SpatialComputeUseRequirement> uses,
     const ArtifactIdentity &dataflowIdentity) {
-  builder.setInsertionPointToEnd(&body);
-  for (const auto &use : uses) {
-    auto event = std::visit(
-        [&](const auto &trigger) -> llvm::Expected<mlir::Attribute> {
-          using Trigger = std::decay_t<decltype(trigger)>;
-          if constexpr (std::is_same_v<
-                            Trigger,
-                            ::loom::mapping::SpatialActorTransitionEventRef>) {
-            auto actor = dataflowAttr<::mapping::ActorRefAttr>(
-                builder.getContext(), dataflowIdentity, trigger.actor);
-            if (!actor)
-              return actor.takeError();
-            return ::mapping::ActorTransitionEventAttr::get(
-                builder.getContext(), *actor, trigger.transition);
-          } else if constexpr (
-              std::is_same_v<Trigger,
-                             ::dataflow::CanonicalGraphProducerEndpointRef>) {
-            auto producer =
-                dataflowAttr<::mapping::GraphProducerEndpointRefAttr>(
-                    builder.getContext(), dataflowIdentity, trigger);
-            if (!producer)
-              return producer.takeError();
-            return mlir::Attribute(*producer);
-          } else {
-            auto consumer =
-                dataflowAttr<::mapping::GraphConsumerEndpointRefAttr>(
-                    builder.getContext(), dataflowIdentity, trigger);
-            if (!consumer)
-              return consumer.takeError();
-            return mlir::Attribute(*consumer);
-          }
-        },
-        use.trigger);
-    if (!event)
-      return event.takeError();
-    auto trigger = ::mapping::SpatialEventPointAttr::get(
-        builder.getContext(), *event, ::mapping::OwnerTypedValueAttr());
-    auto activation = ::mapping::SpatialRelativeActivationAttr::get(
-        builder.getContext(), trigger, ::mapping::SpatialEventPointAttr());
-    ::mapping::ResourceUseOp::create(
-        builder, location,
-        ::mapping::ComputeRealizationRefAttr::get(builder.getContext(),
-                                                  use.realization),
-        fabricAttr<::mapping::FabricUsePatternRefAttr>(builder.getContext(),
-                                                       use.pattern),
-        activation, builder.getArrayAttr({}), builder.getArrayAttr({}));
+  for (const auto &use : uses)
+    if (llvm::Error error =
+            materializeResourceUse(builder, location, body,
+                                   ::mapping::ComputeRealizationRefAttr::get(
+                                       builder.getContext(), use.realization),
+                                   use.trigger, use.pattern, dataflowIdentity))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::uint32_t>
+memoryIssueTransition(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                      ::dataflow::ActorRef actor) {
+  auto resolved = dataflow.resolve(actor);
+  if (!resolved)
+    return resolved.takeError();
+  auto projection =
+      ::dataflow::projectRegisteredActorSchemaProjection(resolved->op);
+  if (!projection)
+    return projection.takeError();
+  auto transitions = ::dataflow::semantics::projectActorHandshakeCases(
+      projection->schema, resolved->op->getNumOperands(),
+      resolved->op->getNumResults());
+  if (!transitions)
+    return transitions.takeError();
+  if (transitions->size() != 1 || transitions->front().ordinal != 0)
+    return invalid("memory actor has no unique issue transition");
+  return transitions->front().ordinal;
+}
+
+llvm::Error materializeMemoryResourceUses(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Block &body,
+    const SpatialCandidateState &candidate,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  const auto &problem = candidate.problem();
+  const auto &realizations = problem.realizations();
+  const auto &memory = problem.memory();
+  const auto plans = problem.handshake().memoryOperationPlans();
+  const auto patterns = problem.resources().usePatterns();
+  std::map<std::string, ::loom::fabric::FabricUsePatternRef> serviceUses;
+
+  for (const auto &realization : realizations.memoryRealizations()) {
+    for (PnrIndex localActor = 0; localActor < realization.actorCount;
+         ++localActor) {
+      const PnrIndex actorOrdinal = realization.actorOffset + localActor;
+      if (actorOrdinal >= realizations.memoryActors().size())
+        return invalid("memory ResourceUse actor is out of range");
+      const auto &actor = realizations.memoryActors()[actorOrdinal];
+      auto transition = memoryIssueTransition(dataflow, actor.actor);
+      if (!transition)
+        return transition.takeError();
+      const ::loom::mapping::SpatialActivityEventRef trigger =
+          ::loom::mapping::SpatialActorTransitionEventRef{actor.actor,
+                                                          *transition};
+      const PnrIndex plan = candidate.memoryOperationPlan(actorOrdinal);
+      if (plan >= plans.size() || plans[plan].usePattern >= patterns.size())
+        return invalid("memory ResourceUse operation plan is out of range");
+      if (llvm::Error error = materializeResourceUse(
+              builder, location, body,
+              ::mapping::MemoryRealizationRefAttr::get(
+                  builder.getContext(), realization.reference.entity),
+              trigger, patterns[plans[plan].usePattern].reference,
+              dataflow.identity()))
+        return error;
+
+      const PnrIndex useBegin = memory.actorUseOffsets()[actorOrdinal];
+      const PnrIndex useEnd = memory.actorUseOffsets()[actorOrdinal + 1];
+      for (PnrIndex useOrdinal = useBegin; useOrdinal < useEnd; ++useOrdinal) {
+        const PnrIndex dispatch = candidate.memoryUseDispatch(useOrdinal);
+        if (dispatch >= memory.dispatchOptions().size())
+          return invalid("memory ResourceUse dispatch is out of range");
+        const auto &option = memory.dispatchOptions()[dispatch];
+        if (!option.serviceUsePattern)
+          continue;
+        const auto &use = memory.rootedUses()[useOrdinal];
+        if (!use.logicalBinding)
+          return invalid("local service ResourceUse has no MemoryBinding");
+        auto actorBytes = ::dataflow::encodeDataflowReference(
+            dataflow.identity(), actor.actor);
+        if (!actorBytes)
+          return actorBytes.takeError();
+        std::string key;
+        for (unsigned byte = 0; byte < 8; ++byte)
+          key.push_back(
+              static_cast<char>(*use.logicalBinding >> (8 * (7 - byte))));
+        key.append(reinterpret_cast<const char *>(actorBytes->data()),
+                   actorBytes->size());
+        auto [found, inserted] =
+            serviceUses.try_emplace(key, *option.serviceUsePattern);
+        if (!inserted) {
+          if (found->second != *option.serviceUsePattern)
+            return invalid("one memory service activation selects multiple "
+                           "UsePatterns");
+          continue;
+        }
+        if (llvm::Error error = materializeResourceUse(
+                builder, location, body,
+                ::mapping::MemoryBindingRefAttr::get(builder.getContext(),
+                                                     *use.logicalBinding),
+                trigger, *option.serviceUsePattern, dataflow.identity()))
+          return error;
+      }
+    }
   }
   return llvm::Error::success();
 }
@@ -276,9 +602,6 @@ finalizeSpatialMappingCandidate(
     return invalid("candidate still has unrouted sink obligations");
   if (candidate.capacityOveruse() != 0)
     return invalid("candidate still exceeds an atomic resource capacity");
-  if (!problem.realizations().memoryRealizations().empty())
-    return invalid("Spatial memory binding materialization is unavailable");
-
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -298,6 +621,12 @@ finalizeSpatialMappingCandidate(
       materializeComputeBindings(builder, location, *body, candidate);
   if (!bindings)
     return bindings.takeError();
+  if (llvm::Error error = materializeMemoryBindings(
+          builder, location, *body, candidate, dataflow.identity()))
+    return std::move(error);
+  if (llvm::Error error = materializeMemoryEngineBindings(
+          builder, location, *body, candidate, dataflow.identity()))
+    return std::move(error);
   const auto logicalNets = problem.transfers().logicalNets();
   for (PnrIndex net = 0; net < logicalNets.size(); ++net)
     if (llvm::Error error = materializeRouteTree(
@@ -307,8 +636,11 @@ finalizeSpatialMappingCandidate(
       dataflow, techMapping, fabric, *bindings);
   if (!uses)
     return uses.takeError();
-  if (llvm::Error error = materializeResourceUses(builder, location, *body,
-                                                  *uses, dataflow.identity()))
+  if (llvm::Error error = materializeComputeResourceUses(
+          builder, location, *body, *uses, dataflow.identity()))
+    return std::move(error);
+  if (llvm::Error error = materializeMemoryResourceUses(
+          builder, location, *body, candidate, dataflow))
     return std::move(error);
 
   return ::loom::mapping::finalizeSpatialMapping(root, dataflow, techMapping,

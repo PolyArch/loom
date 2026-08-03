@@ -574,47 +574,63 @@ private:
               checked(planCountContext, result_.memoryOperationPlans_.size());
           if (!planOffset)
             return planOffset.takeError();
-          for (::fabric::UsePatternKey pattern :
-               alternative->admissibleUsePatterns) {
-            const FabricUsePatternRef usePattern{
-                FabricUsePatternOwnerRef(FabricInventoryOwnerRef::of(port)),
-                pattern.ordinal()};
-            FabricMemoryHandshakePlacement operationPlacement = port;
-            if (*schedule == ::fabric::Schedule::Temporal) {
-              if (fabric.memoryResidentContextCount(placement.memory) == 0)
-                return invalid("Temporal memory has no resident context");
-              operationPlacement = FabricMemoryOperationContextRef{port, 0};
-            }
-            auto selected = makeMemoryHandshakeSelection(
-                fabric, operationPlacement, capability, usePattern, *maskForm);
-            if (!selected)
-              return selected.takeError();
-            FabricHandshakeSelection exact;
-            exact.memoryOperations.push_back(std::move(*selected));
-            auto activation = resolveSelectedHandshake(models_[*model], exact);
-            if (!activation)
-              return activation.takeError();
+          const std::uint64_t contextCount =
+              *schedule == ::fabric::Schedule::Temporal
+                  ? fabric.memoryResidentContextCount(placement.memory)
+                  : 1;
+          if (contextCount == 0)
+            return invalid("Temporal memory has no resident context");
+          for (std::uint64_t contextOrdinal = 0; contextOrdinal < contextCount;
+               ++contextOrdinal) {
+            const std::optional<std::uint64_t> residentContext =
+                *schedule == ::fabric::Schedule::Temporal
+                    ? std::optional<std::uint64_t>(contextOrdinal)
+                    : std::nullopt;
+            const FabricMemoryHandshakePlacement operationPlacement =
+                residentContext ? FabricMemoryHandshakePlacement(
+                                      FabricMemoryOperationContextRef{
+                                          port, *residentContext})
+                                : FabricMemoryHandshakePlacement(port);
+            for (::fabric::UsePatternKey pattern :
+                 alternative->admissibleUsePatterns) {
+              const FabricUsePatternRef usePattern{
+                  FabricUsePatternOwnerRef(FabricInventoryOwnerRef::of(port)),
+                  pattern.ordinal()};
+              auto selected = makeMemoryHandshakeSelection(
+                  fabric, operationPlacement, capability, usePattern,
+                  *maskForm);
+              if (!selected)
+                return selected.takeError();
+              FabricHandshakeSelection exact;
+              exact.memoryOperations.push_back(std::move(*selected));
+              auto activation =
+                  resolveSelectedHandshake(models_[*model], exact);
+              if (!activation)
+                return activation.takeError();
 
-            auto usePatternOrdinal =
-                usePatternOrdinals.find(refKey(usePattern));
-            if (usePatternOrdinal == usePatternOrdinals.end())
-              return invalid("memory handshake plan has no frozen use pattern");
-            auto fragmentOffset = checked(incidenceCountContext,
-                                          result_.memoryPlanFragments_.size());
-            if (!fragmentOffset)
-              return fragmentOffset.takeError();
-            std::vector<PnrIndex> fragments;
-            appendResolvedFragments(*model, activation->fragmentOrdinals(),
-                                    fragments);
-            auto fragmentCount =
-                checked(incidenceCountContext, fragments.size());
-            if (!fragmentCount)
-              return fragmentCount.takeError();
-            result_.memoryPlanFragments_.insert(
-                result_.memoryPlanFragments_.end(), fragments.begin(),
-                fragments.end());
-            result_.memoryOperationPlans_.push_back(
-                {usePatternOrdinal->second, *fragmentOffset, *fragmentCount});
+              auto usePatternOrdinal =
+                  usePatternOrdinals.find(refKey(usePattern));
+              if (usePatternOrdinal == usePatternOrdinals.end())
+                return invalid(
+                    "memory handshake plan has no frozen use pattern");
+              auto fragmentOffset = checked(
+                  incidenceCountContext, result_.memoryPlanFragments_.size());
+              if (!fragmentOffset)
+                return fragmentOffset.takeError();
+              std::vector<PnrIndex> fragments;
+              appendResolvedFragments(*model, activation->fragmentOrdinals(),
+                                      fragments);
+              auto fragmentCount =
+                  checked(incidenceCountContext, fragments.size());
+              if (!fragmentCount)
+                return fragmentCount.takeError();
+              result_.memoryPlanFragments_.insert(
+                  result_.memoryPlanFragments_.end(), fragments.begin(),
+                  fragments.end());
+              result_.memoryOperationPlans_.push_back(
+                  {usePatternOrdinal->second, residentContext, *fragmentOffset,
+                   *fragmentCount});
+            }
           }
           const std::size_t planCountValue =
               result_.memoryOperationPlans_.size() - *planOffset;

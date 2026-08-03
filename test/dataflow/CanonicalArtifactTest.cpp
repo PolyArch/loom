@@ -867,8 +867,9 @@ module attributes {
     %rc, %dc = dataflow.graph.launch @gc deps(%d0) values() stream_inputs() memories(%tc) stream_outputs() : (none, memref<*xi32>) -> (memref<*xi32>, none)
     %addr = arith.constant 0 : index
     %v, %dl = dataflow.graph.launch @gl deps(%d1) values(%addr) stream_inputs() memories(%m0) stream_outputs() : (none, index, memref<10xi32>) -> (i32, none)
-    dataflow.graph.wait %dc, %dl : none, none
-    dataflow.thread.yield %dc, %dl : none, none
+    %v2, %dl2 = dataflow.graph.launch @gl deps(%dl) values(%addr) stream_inputs() memories(%m1) stream_outputs() : (none, index, memref<10xi32>) -> (i32, none)
+    dataflow.graph.wait %dc, %dl2 : none, none
+    dataflow.thread.yield %dc, %dl2 : none, none
   }
   func.func private @host(%m0: memref<10xi32>, %m1: memref<10xi32>) {
     %t = dataflow.thread.launch @t(%m0, %m1) : (memref<10xi32>, memref<10xi32>) -> !dataflow.thread_token
@@ -907,19 +908,20 @@ void memoryViewExposureService() {
 
   // Identify sites by their ABI shape, not private graph spellings. Private
   // symbols are deliberately normalized by canonical finalization.
-  std::optional<StaticGraphLaunchRef> gvOf[2], glSite, gcSite;
+  std::optional<StaticGraphLaunchRef> gvOf[2], glSite[2], gcSite;
   for (const CanonicalStaticGraphLaunchView &sg : view.staticGraphLaunches()) {
     auto launch = llvm::cast<GraphLaunchOp>(sg.op);
     if (launch.getMemoryResults().size() == 2)
       gvOf[llvm::cast<mlir::BlockArgument>(launch.getMemoryInputs()[0])
                .getArgNumber()] = sg.ref;
     else if (launch.getValueResults().size() == 1)
-      glSite = sg.ref;
+      glSite[llvm::cast<mlir::BlockArgument>(launch.getMemoryInputs()[0])
+                 .getArgNumber()] = sg.ref;
     else if (launch.getMemoryResults().size() == 1)
       gcSite = sg.ref;
   }
-  require(test, gvOf[0] && gvOf[1] && glSite && gcSite,
-          "the four static launches are identified");
+  require(test, gvOf[0] && gvOf[1] && glSite[0] && glSite[1] && gcSite,
+          "the five static launches are identified");
   auto expose = [&](StaticGraphLaunchRef s,
                     unsigned r) -> LogicalMemoryRootOrViewRef {
     llvm::Expected<LogicalMemoryRootOrViewRef> e =
@@ -955,7 +957,7 @@ void memoryViewExposureService() {
           "the @gc exposure is a thread-view under m0, distinct from the @gv "
           "view");
   // m0's inventory holds three views (the @gv graph view, the thread cast, and
-  // the non-exposed @gl cast), each exactly once; m1 holds only its @gv view.
+  // the non-exposed @gl cast), while m1 has its @gv and @gl views.
   llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM0 =
       view.views(rootM0);
   llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM1 =
@@ -969,7 +971,8 @@ void memoryViewExposureService() {
           ord.size() == 3 &&
               ord.count(std::get<LogicalMemoryViewRef>(gc).viewOrdinal) == 1,
           "each m0 view appears once and includes the chained thread view");
-  require(test, invM1 && invM1->size() == 1, "m1 inventory has one view");
+  require(test, invM1 && invM1->size() == 2,
+          "m1 inventory has the @gv and @gl views");
 
   llvm::Expected<std::optional<std::uint64_t>> rootExtent =
       view.staticMemoryByteExtent(LogicalMemoryRootOrViewRef{rootM0});
@@ -995,7 +998,7 @@ void memoryViewExposureService() {
           "foreign logical memory reference was accepted by extent lookup");
 
   // Service members via the exact schema; wrong-owner and non-member rejected.
-  RootedGraphLaunchRef glLaunch{root, *glSite};
+  RootedGraphLaunchRef glLaunch{root, *glSite[0]};
   ActorRef loadRef = actorByName(test, view, "dataflow.load").ref;
   ActorRef addRef = actorByName(test, view, "arith.addi").ref;
   llvm::Expected<ServiceMemberRef> member =
@@ -1005,6 +1008,16 @@ void memoryViewExposureService() {
                    llvm::toString(member.takeError()));
   require(test, std::holds_alternative<AddressedMemoryActorMemberRef>(*member),
           "an addressed memory actor is an addressed-memory service member");
+  llvm::Expected<LogicalMemoryRootOrViewRef> loadM0 =
+      view.resolveAddressedMemory(
+          ContextualActorRef{RootedGraphLaunchRef{root, *glSite[0]}, loadRef});
+  llvm::Expected<LogicalMemoryRootOrViewRef> loadM1 =
+      view.resolveAddressedMemory(
+          ContextualActorRef{RootedGraphLaunchRef{root, *glSite[1]}, loadRef});
+  require(test,
+          loadM0 && loadM1 && *loadM0 != *loadM1 && rootOf(*loadM0) == rootM0 &&
+              rootOf(*loadM1) == rootM1,
+          "one reusable addressed actor resolves each launch-site memory");
   require(
       test,
       isRejected(view.serviceMemberFor(ContextualActorRef{glLaunch, addRef})),

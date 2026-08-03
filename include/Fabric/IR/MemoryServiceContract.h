@@ -100,6 +100,14 @@ public:
     return declaration_.capabilities;
   }
 
+  /// Returns the canonical capability ordinals admitting one exact actor and
+  /// access. An empty result is ordinary Mapping infeasibility; callers never
+  /// reconstruct the actor/access relation from physical facts.
+  llvm::Expected<std::vector<std::uint64_t>> matchingCapabilities(
+      const dataflow::CanonicalActorSchemaProjection &actor,
+      const std::optional<dataflow::semantics::CanonicalMemoryAccessView>
+          &access) const;
+
 private:
   explicit MemoryServiceContractRecord(
       MemoryServiceContractDeclaration declaration)

@@ -1,4 +1,6 @@
 #include "ADG/Builder.h"
+#include "ADG/Builtin.h"
+#include "ADG/MemoryLibrary.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "Common/ArtifactStore.h"
@@ -115,6 +117,38 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
+dataflow::CanonicalDataflowArtifact
+buildMemoryDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @load(
+      %start: none, %index: index, %memory: memref<4xi32>) -> i32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value, %done = dataflow.load %memory[%index] %start : memref<4xi32>
+    dataflow.graph.return values(%value : i32) streams() memories()
+        complete(%done : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %index: index, %memory: memref<4xi32>) ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @load deps(%ctrl) values(%index)
+        stream_inputs() memories(%memory) stream_outputs()
+        : (none, index, memref<4xi32>) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%index: index, %memory: memref<4xi32>) {
+    %token = dataflow.thread.launch @worker(%index, %memory)
+        : (index, memref<4xi32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse memory Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
 void addTokenSyncFu(loom::adg::PeBuilder &pe,
                     llvm::ArrayRef<loom::adg::PeValue> inputs,
                     const loom::adg::PortType &type) {
@@ -170,6 +204,32 @@ loom::fabric::FinalizedFabricRoot buildFabric(loom::ArtifactStore &store) {
   return design.roots().front();
 }
 
+loom::fabric::FinalizedFabricRoot buildMemoryFabric(loom::ArtifactStore &store,
+                                                    bool temporal) {
+  loom::adg::LocalMemoryParameters parameters;
+  parameters.capacityBytes = 4096;
+  parameters.managerEndpoint = true;
+  if (temporal)
+    parameters.temporal = loom::adg::TemporalMemoryParameters{4, 2};
+  auto memory = take(loom::adg::makeGeneral64LocalMemory(parameters));
+  const std::vector<loom::adg::PortType> inputs(memory.inputTypes().begin(),
+                                                memory.inputTypes().end());
+  const std::vector<loom::adg::PortType> outputs(memory.outputTypes().begin(),
+                                                 memory.outputTypes().end());
+  loom::adg::DesignBuilder builder(store);
+  auto spatial = take(builder.createSpatialCore("memory", inputs, outputs));
+  std::vector<loom::adg::SpatialValue> values;
+  values.reserve(inputs.size());
+  for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
+    values.push_back(take(spatial.input(ordinal)));
+  auto memoryOutputs = take(spatial.addMemory(values, memory));
+  requireSuccess(spatial.close(memoryOutputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("memory SpatialCore did not publish exactly one root");
+  return design.roots().front();
+}
+
 loom::fabric::FinalizedFabricRoot
 buildTemporalFabric(loom::ArtifactStore &store) {
   auto design = loom::test::buildTemporalCapacityFabric(store);
@@ -221,48 +281,9 @@ parseSpatial(mlir::MLIRContext &context,
   return mlir::parseSourceString<mlir::ModuleOp>(text, &context);
 }
 
-void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
-                                loom::pnr::SpatialCandidateScratch &scratch) {
+void selectReachableGraphBoundaries(loom::pnr::SpatialCandidateState &candidate,
+                                    loom::pnr::SpatialMoveTransaction &move) {
   const auto &problem = candidate.problem();
-  const auto realizations = problem.realizations().computeRealizations();
-  if (realizations.size() != 1)
-    fail("Temporal SpatialMapping fixture does not have one realization");
-  const auto &realization = realizations.front();
-  std::optional<loom::pnr::SpatialComputeBindingSelection> legal;
-  for (loom::pnr::PnrIndex placement = realization.placementOffset;
-       placement != realization.placementOffset + realization.placementCount;
-       ++placement) {
-    const auto &record = problem.realizations().computePlacements()[placement];
-    for (loom::pnr::PnrIndex context = record.contextOffset;
-         context != record.contextOffset + record.contextCount; ++context)
-      if (problem.capacity().computeInstructionContextOveruse()[context] == 0) {
-        legal = loom::pnr::SpatialComputeBindingSelection{placement, context};
-        break;
-      }
-    if (legal)
-      break;
-  }
-  if (!legal)
-    fail("Temporal SpatialMapping fixture has no legal compute binding");
-  if (candidate.computeBinding(0).placement == legal->placement &&
-      candidate.computeBinding(0).instructionContext ==
-          legal->instructionContext)
-    return;
-
-  auto move = take(candidate.beginMove(scratch));
-  requireSuccess(
-      move.setComputeBinding(0, legal->placement, legal->instructionContext));
-  for (auto [demandOrdinal, demand] :
-       llvm::enumerate(problem.ports().portDemands())) {
-    const auto &domain =
-        problem.ports()
-            .placementDomains()[demand.placementDomainOffset +
-                                legal->placement - realization.placementOffset];
-    requireSuccess(
-        move.setPortAttachment(static_cast<loom::pnr::PnrIndex>(demandOrdinal),
-                               domain.attachmentOptionOffset));
-  }
-
   const auto reachable = [&](loom::pnr::PnrIndex source,
                              loom::pnr::PnrIndex destination) {
     const auto &routing = problem.routing();
@@ -325,8 +346,52 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
       break;
     }
     if (!selected)
-      fail("Temporal graph boundary has no reachable attachment");
+      fail("graph boundary has no reachable attachment");
   }
+}
+
+void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
+                                loom::pnr::SpatialCandidateScratch &scratch) {
+  const auto &problem = candidate.problem();
+  const auto realizations = problem.realizations().computeRealizations();
+  if (realizations.size() != 1)
+    fail("Temporal SpatialMapping fixture does not have one realization");
+  const auto &realization = realizations.front();
+  std::optional<loom::pnr::SpatialComputeBindingSelection> legal;
+  for (loom::pnr::PnrIndex placement = realization.placementOffset;
+       placement != realization.placementOffset + realization.placementCount;
+       ++placement) {
+    const auto &record = problem.realizations().computePlacements()[placement];
+    for (loom::pnr::PnrIndex context = record.contextOffset;
+         context != record.contextOffset + record.contextCount; ++context)
+      if (problem.capacity().computeInstructionContextOveruse()[context] == 0) {
+        legal = loom::pnr::SpatialComputeBindingSelection{placement, context};
+        break;
+      }
+    if (legal)
+      break;
+  }
+  if (!legal)
+    fail("Temporal SpatialMapping fixture has no legal compute binding");
+  if (candidate.computeBinding(0).placement == legal->placement &&
+      candidate.computeBinding(0).instructionContext ==
+          legal->instructionContext)
+    return;
+
+  auto move = take(candidate.beginMove(scratch));
+  requireSuccess(
+      move.setComputeBinding(0, legal->placement, legal->instructionContext));
+  for (auto [demandOrdinal, demand] :
+       llvm::enumerate(problem.ports().portDemands())) {
+    const auto &domain =
+        problem.ports()
+            .placementDomains()[demand.placementDomainOffset +
+                                legal->placement - realization.placementOffset];
+    requireSuccess(
+        move.setPortAttachment(static_cast<loom::pnr::PnrIndex>(demandOrdinal),
+                               domain.attachmentOptionOffset));
+  }
+  selectReachableGraphBoundaries(candidate, move);
   if (!take(move.close()))
     fail("legal Temporal binding closes a selected handshake cycle");
   requireSuccess(move.commit());
@@ -422,11 +487,254 @@ void completeCandidateRoundTrip(bool temporal) {
     fail("SpatialMapping finalized without a required ResourceUse");
 }
 
+void completeMemoryCandidateRoundTrip(bool temporal) {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+
+  auto dataflowArtifact = buildMemoryDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildMemoryFabric(store, temporal);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto techConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  auto generated = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), techConfig, store});
+  auto *candidates =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&generated);
+  if (!candidates || candidates->candidates.size() != 1)
+    fail("memory TechMapping fixture did not produce one candidate");
+  const auto tech = take(
+      loom::mapping::importTechMapping(candidates->candidates.front(), store));
+  if (tech.view().memoryRealizations().size() != 1)
+    fail("memory TechMapping fixture did not select one realization");
+
+  const auto constraints =
+      buildConstraints(context, dataflow, tech.view(), fabric.view(), store);
+  const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
+      loom::defaultResolvedConfig()));
+  auto problem = take(loom::pnr::freezeSpatialPnrProblem(
+      dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
+  auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
+  loom::pnr::SpatialCandidateScratch candidateScratch;
+  requireSuccess(candidateScratch.prepare(*problem));
+
+  const auto &memoryIndex = problem->memory();
+  if (memoryIndex.logicalBindings().size() != 1 ||
+      memoryIndex.rootedUses().size() != 1)
+    fail("memory transaction fixture does not have one binding and use");
+  const auto originalLogicalBinding = candidate->logicalMemoryBinding(0);
+  const auto originalDispatch = candidate->memoryUseDispatch(0);
+  std::optional<loom::pnr::PnrIndex> boundaryTarget;
+  for (auto [ordinal, target] : llvm::enumerate(memoryIndex.bindingTargets()))
+    if (std::holds_alternative<loom::pnr::FrozenSpatialMemoryBoundaryProxy>(
+            target.target))
+      boundaryTarget = static_cast<loom::pnr::PnrIndex>(ordinal);
+  if (!boundaryTarget)
+    fail("memory transaction fixture has no BoundaryProxy target");
+
+  const auto &rootedUse = memoryIndex.rootedUses().front();
+  const auto selectedDispatchPlacement = candidate->memoryBinding(0).placement;
+  const auto dispatchDomain =
+      llvm::find_if(memoryIndex.dispatchDomains(), [&](const auto &domain) {
+        return domain.placement == selectedDispatchPlacement &&
+               domain.actor == rootedUse.actor;
+      });
+  if (dispatchDomain == memoryIndex.dispatchDomains().end())
+    fail("memory transaction fixture has no selected dispatch domain");
+  std::optional<loom::pnr::PnrIndex> managerDispatch;
+  for (loom::pnr::PnrIndex option = dispatchDomain->optionOffset;
+       option != dispatchDomain->optionOffset + dispatchDomain->optionCount;
+       ++option)
+    if (std::holds_alternative<loom::fabric::ManagerEndpointRef>(
+            memoryIndex.dispatchOptions()[option].target))
+      managerDispatch = option;
+  if (!managerDispatch)
+    fail("memory transaction fixture has no manager dispatch");
+
+  {
+    auto move = take(candidate->beginMove(candidateScratch));
+    requireSuccess(move.setLogicalMemoryBinding(0, *boundaryTarget, 0));
+    auto closed = move.close();
+    if (closed)
+      fail("unpaired BoundaryProxy binding passed transaction validation");
+    llvm::consumeError(closed.takeError());
+    move.rollback();
+  }
+  if (candidate->logicalMemoryBinding(0).target !=
+          originalLogicalBinding.target ||
+      candidate->memoryUseDispatch(0) != originalDispatch)
+    fail("failed memory transaction did not roll back atomically");
+
+  {
+    auto move = take(candidate->beginMove(candidateScratch));
+    requireSuccess(move.setLogicalMemoryBinding(0, *boundaryTarget, 0));
+    requireSuccess(move.setMemoryUseDispatch(0, *managerDispatch));
+    if (!take(move.close()))
+      fail("paired BoundaryProxy move closes a selected handshake cycle");
+    requireSuccess(move.commit());
+  }
+  requireSuccess(candidate->verify());
+  {
+    auto move = take(candidate->beginMove(candidateScratch));
+    requireSuccess(move.setLogicalMemoryBinding(
+        0, originalLogicalBinding.target,
+        originalLogicalBinding.physicalOffsetBytes));
+    requireSuccess(move.setMemoryUseDispatch(0, originalDispatch));
+    if (!take(move.close()))
+      fail("restored local memory move closes a selected handshake cycle");
+    move.rollback();
+  }
+  if (candidate->logicalMemoryBinding(0).target != *boundaryTarget ||
+      candidate->memoryUseDispatch(0) != *managerDispatch)
+    fail("memory transaction rollback did not preserve committed state");
+  {
+    auto move = take(candidate->beginMove(candidateScratch));
+    requireSuccess(move.setLogicalMemoryBinding(
+        0, originalLogicalBinding.target,
+        originalLogicalBinding.physicalOffsetBytes));
+    requireSuccess(move.setMemoryUseDispatch(0, originalDispatch));
+    if (!take(move.close()))
+      fail("restored local memory move closes a selected handshake cycle");
+    requireSuccess(move.commit());
+  }
+  {
+    auto move = take(candidate->beginMove(candidateScratch));
+    selectReachableGraphBoundaries(*candidate, move);
+    if (!take(move.close()))
+      fail("reachable memory boundaries close a selected handshake cycle");
+    requireSuccess(move.commit());
+  }
+  auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
+  loom::pnr::SpatialPathFinderRouterScratch router;
+  requireSuccess(router.prepare(*problem));
+  bool closed = false;
+  const auto &memoryRealization =
+      problem->realizations().memoryRealizations().front();
+  const auto selectedPlacement = candidate->memoryBinding(0).placement;
+  const auto domainOffset =
+      problem->handshake().memoryPlacementDomainOffsets()[selectedPlacement];
+  const auto &domain =
+      problem->handshake().memoryOperationDomains()[domainOffset];
+  for (loom::pnr::PnrIndex plan = domain.planOffset;
+       plan != domain.planOffset + domain.planCount; ++plan) {
+    const auto &planRecord = problem->handshake().memoryOperationPlans()[plan];
+    if (temporal && planRecord.residentContext != 1)
+      continue;
+    auto move = take(candidate->beginMove(candidateScratch));
+    requireSuccess(
+        move.setMemoryOperationPlan(memoryRealization.actorOffset, plan));
+    if (!take(move.close())) {
+      move.rollback();
+      continue;
+    }
+    requireSuccess(move.commit());
+    auto routed = router.routeToClosure(
+        *candidate, candidateScratch, costs,
+        {pnrConfig.policy().search.routing.endpointExpansionLimit,
+         pnrConfig.policy().search.routing.negotiationIterationLimit},
+        {});
+    if (routed) {
+      closed = true;
+      break;
+    }
+    llvm::consumeError(routed.takeError());
+  }
+  if (!closed)
+    fail("memory SpatialMapping fixture has no closed operation plan");
+  requireSuccess(candidate->verify());
+
+  auto finalized = take(loom::pnr::finalizeSpatialMappingCandidate(
+      *candidate, dataflow, tech.view(), fabric.view(), store));
+  auto imported =
+      take(loom::mapping::importSpatialMapping(finalized.reference(), store));
+  if (imported.view().memoryEngineBindings().size() != 1 ||
+      imported.view().memoryBindings().size() != 1)
+    fail("strict SpatialMapping round trip lost memory bindings");
+  const auto &engine = imported.view().memoryEngineBindings().front();
+  if (engine.operations.size() != 1 ||
+      !std::holds_alternative<
+          loom::mapping::SpatialAddressedMemoryOperationView>(
+          engine.operations.front()) ||
+      std::get<loom::mapping::SpatialAddressedMemoryOperationView>(
+          engine.operations.front())
+              .uses.size() != 1)
+    fail("strict SpatialMapping round trip lost the rooted memory use");
+  const auto &operation =
+      std::get<loom::mapping::SpatialAddressedMemoryOperationView>(
+          engine.operations.front());
+  bool hasOperationPortUse = false;
+  bool hasLocalServiceUse = false;
+  for (const auto &use : imported.view().resourceUses()) {
+    hasOperationPortUse |= std::holds_alternative<
+        loom::mapping::SpatialMemoryEngineResourceOwnerRef>(use.owner);
+    hasLocalServiceUse |= std::holds_alternative<
+        loom::mapping::SpatialMemoryBindingResourceOwnerRef>(use.owner);
+  }
+  if (imported.view().resourceUses().size() != 2 || !hasOperationPortUse ||
+      !hasLocalServiceUse)
+    fail("strict SpatialMapping round trip lost a memory ResourceUse");
+  if (temporal) {
+    const auto *context =
+        std::get_if<loom::fabric::FabricMemoryOperationContextRef>(
+            &operation.placement);
+    if (!context || context->ordinal != 1)
+      fail("Temporal memory placement lost its selected resident context");
+  } else if (!std::holds_alternative<
+                 loom::fabric::FabricMemoryOperationPortRef>(
+                 operation.placement)) {
+    fail("Spatial memory placement gained a resident context");
+  }
+
+  auto missingUse = parseSpatial(context, finalized.canonicalBytes());
+  if (!missingUse)
+    fail("cannot reparse memory ResourceUse fixture");
+  auto missingUseRoot = *missingUse->getOps<::mapping::SpatialOp>().begin();
+  auto resourceUses =
+      missingUseRoot.getBody().front().getOps<::mapping::ResourceUseOp>();
+  if (resourceUses.empty())
+    fail("memory SpatialMapping fixture has no ResourceUse to remove");
+  (*resourceUses.begin()).erase();
+  if (!rejected(loom::mapping::finalizeSpatialMapping(missingUseRoot, store)))
+    fail("SpatialMapping finalized without a required memory ResourceUse");
+
+  if (!temporal) {
+    auto overlap = parseSpatial(context, finalized.canonicalBytes());
+    if (!overlap)
+      fail("cannot reparse memory SpatialMapping fixture");
+    auto root = *overlap->getOps<::mapping::SpatialOp>().begin();
+    auto records = root.getBody().front().getOps<::mapping::MemoryBindingOp>();
+    auto original = *records.begin();
+    mlir::OpBuilder builder(&context);
+    builder.setInsertionPoint(original);
+    auto first = ::mapping::MemoryBindingOp::create(
+        builder, original.getLoc(), UINT64_C(0), original.getLogicalMemory(),
+        ::mapping::MemoryByteRangeAttr::get(&context, 0, 8),
+        original.getTarget());
+    first.getBody().push_back(new mlir::Block());
+    auto second = ::mapping::MemoryBindingOp::create(
+        builder, original.getLoc(), UINT64_C(1), original.getLogicalMemory(),
+        ::mapping::MemoryByteRangeAttr::get(&context, 8, 8),
+        original.getTarget());
+    second.getBody().push_back(new mlir::Block());
+    original.erase();
+    if (!rejected(loom::mapping::finalizeSpatialMapping(root, store)))
+      fail("SpatialMapping accepted overlapping local physical intervals");
+  }
+}
+
 } // namespace
 
 int main() {
   completeCandidateRoundTrip(false);
   completeCandidateRoundTrip(true);
+  completeMemoryCandidateRoundTrip(false);
+  completeMemoryCandidateRoundTrip(true);
   llvm::outs() << "spatial mapping artifact tests passed\n";
   return 0;
 }

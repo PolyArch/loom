@@ -110,6 +110,19 @@ llvm::Error verifyTechMemoryRealizationClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricArtifactView &fabric);
 
+/// Resolves one externally routed Dataflow terminal through the exact
+/// Canonical Service role ordering retained by a Tech memory actor row.
+llvm::Expected<::loom::fabric::FabricMemoryEngineTemplateEndpointRef>
+resolveTechMemoryActorTerminal(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMemoryActorView &actor,
+    const ::dataflow::ActorTokenOperandRef &terminal);
+llvm::Expected<::loom::fabric::FabricMemoryEngineTemplateEndpointRef>
+resolveTechMemoryActorTerminal(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMemoryActorView &actor,
+    const ::dataflow::ActorTokenResultRef &terminal);
+
 /// Canonical prospective persistent-payload keys used by Mapping-local
 /// identity assignment and TechMapping seed enumeration. These encoders are
 /// the sole owner of row ordering; callers must not duplicate their formula.
@@ -238,6 +251,85 @@ struct SpatialComputeBindingView final {
   std::vector<SpatialPhysicalRefinementView> refinements;
 };
 
+struct SpatialMemoryWholeIntervalView final {};
+
+struct SpatialMemoryByteRangeView final {
+  std::uint64_t offsetBytes = 0;
+  std::uint64_t sizeBytes = 0;
+};
+
+using SpatialMemoryIntervalView =
+    std::variant<SpatialMemoryWholeIntervalView, SpatialMemoryByteRangeView>;
+
+struct SpatialMemoryLocalRegionView final {
+  ::loom::fabric::FabricMemoryServiceRegionRef serviceRegion;
+  std::uint64_t physicalOffsetBytes = 0;
+};
+
+struct SpatialMemoryBoundaryProxyView final {};
+
+using SpatialMemoryBindingTargetView =
+    std::variant<SpatialMemoryLocalRegionView, SpatialMemoryBoundaryProxyView>;
+
+using SpatialMemoryOperationPlacementView =
+    std::variant<::loom::fabric::FabricMemoryOperationPortRef,
+                 ::loom::fabric::FabricMemoryOperationContextRef>;
+
+using SpatialMemoryDispatchTargetView =
+    std::variant<::loom::fabric::LocalMemoryServiceRef,
+                 ::loom::fabric::ManagerEndpointRef>;
+
+using SpatialMemoryConsistencyTargetView =
+    std::variant<::loom::fabric::MemoryConsistencyDomainRef,
+                 ::loom::fabric::ManagerEndpointRef>;
+
+struct SpatialAddressedMemoryUseView final {
+  ::dataflow::RootedGraphLaunchRef launch;
+  std::uint64_t binding = 0;
+  SpatialMemoryDispatchTargetView dispatch;
+};
+
+struct SpatialFenceMemoryUseView final {
+  ::dataflow::RootedGraphLaunchRef launch;
+  SpatialMemoryConsistencyTargetView consistency;
+};
+
+struct SpatialAddressedMemoryOperationView final {
+  ::dataflow::ActorRef actor;
+  SpatialMemoryOperationPlacementView placement;
+  std::vector<SpatialAddressedMemoryUseView> uses;
+};
+
+struct SpatialFenceMemoryOperationView final {
+  ::dataflow::ActorRef actor;
+  SpatialMemoryOperationPlacementView placement;
+  std::vector<SpatialFenceMemoryUseView> uses;
+};
+
+using SpatialMemoryOperationView =
+    std::variant<SpatialAddressedMemoryOperationView,
+                 SpatialFenceMemoryOperationView>;
+
+struct SpatialMemoryEngineBindingView final {
+  std::uint64_t realization = 0;
+  ::loom::fabric::FabricMemoryOccurrenceRef occurrence;
+  std::vector<SpatialMemoryOperationView> operations;
+};
+
+struct SpatialExposureEntryView final {
+  ::dataflow::MemoryExposureRef exposure;
+  ::loom::fabric::SubordinateEndpointRef terminal;
+  SpatialMemoryDispatchTargetView dispatch;
+};
+
+struct SpatialMemoryBindingView final {
+  std::uint64_t entityId = 0;
+  ::dataflow::LogicalMemoryRootOrViewRef logicalMemory;
+  SpatialMemoryIntervalView interval;
+  SpatialMemoryBindingTargetView target;
+  std::vector<SpatialExposureEntryView> exposures;
+};
+
 struct SpatialActorTransitionEventRef final {
   ::dataflow::ActorRef actor;
   std::uint32_t transition = 0;
@@ -362,6 +454,12 @@ public:
   llvm::ArrayRef<SpatialComputeBindingView> computeBindings() const {
     return computeBindings_;
   }
+  llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngineBindings() const {
+    return memoryEngineBindings_;
+  }
+  llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings() const {
+    return memoryBindings_;
+  }
   llvm::ArrayRef<SpatialRouteTreeView> routeTrees() const {
     return routeTrees_;
   }
@@ -370,18 +468,21 @@ public:
   }
 
 private:
-  SpatialMappingView(ArtifactIdentity identity,
-                     ArtifactIdentity techMappingIdentity,
-                     ArtifactIdentity dataflowIdentity,
-                     ArtifactIdentity fabricIdentity,
-                     std::vector<SpatialComputeBindingView> computeBindings,
-                     std::vector<SpatialRouteTreeView> routeTrees,
-                     std::vector<SpatialResourceUseView> resourceUses)
+  SpatialMappingView(
+      ArtifactIdentity identity, ArtifactIdentity techMappingIdentity,
+      ArtifactIdentity dataflowIdentity, ArtifactIdentity fabricIdentity,
+      std::vector<SpatialComputeBindingView> computeBindings,
+      std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings,
+      std::vector<SpatialMemoryBindingView> memoryBindings,
+      std::vector<SpatialRouteTreeView> routeTrees,
+      std::vector<SpatialResourceUseView> resourceUses)
       : identity_(std::move(identity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
         computeBindings_(std::move(computeBindings)),
+        memoryEngineBindings_(std::move(memoryEngineBindings)),
+        memoryBindings_(std::move(memoryBindings)),
         routeTrees_(std::move(routeTrees)),
         resourceUses_(std::move(resourceUses)) {}
 
@@ -390,6 +491,8 @@ private:
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity fabricIdentity_;
   std::vector<SpatialComputeBindingView> computeBindings_;
+  std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings_;
+  std::vector<SpatialMemoryBindingView> memoryBindings_;
   std::vector<SpatialRouteTreeView> routeTrees_;
   std::vector<SpatialResourceUseView> resourceUses_;
 };

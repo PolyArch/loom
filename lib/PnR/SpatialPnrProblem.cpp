@@ -4,6 +4,7 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialPnrCapacityIndex.h"
 #include "SpatialPnrHandshakeIndex.h"
+#include "SpatialPnrMemoryIndex.h"
 #include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
@@ -116,16 +117,16 @@ constexpr PnrCapacityContext arcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.6\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.7\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 6;
+constexpr std::uint32_t cacheSchemaMinor = 7;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.6";
+    "loom.spatial_pnr.freeze.2.7";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.5";
+    "loom.spatial_pnr.native_layout.2.6";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -308,6 +309,10 @@ public:
         *realizations, *constraints);
     if (!bindingRelations)
       return bindingRelations.takeError();
+    auto memory = FrozenSpatialMemoryIndexBuilder::build(dataflow, techMapping,
+                                                         fabric, *realizations);
+    if (!memory)
+      return memory.takeError();
     auto transfers = detail::buildFrozenSpatialTransferIndex(techMapping);
     if (!transfers)
       return transfers.takeError();
@@ -326,13 +331,13 @@ public:
     if (!handshake)
       return handshake.takeError();
     auto capacity = detail::buildFrozenSpatialCapacityIndex(
-        dataflow, techMapping, fabric, *realizations, *resources, *routing,
-        *handshake);
+        dataflow, techMapping, fabric, *realizations, *memory, *resources,
+        *routing, *handshake);
     if (!capacity)
       return capacity.takeError();
     if (llvm::Error error =
-            verifyAggregate(*realizations, *transfers, *ports, *resources,
-                            *capacity, *routing, *handshake))
+            verifyAggregate(*realizations, *memory, *transfers, *ports,
+                            *resources, *capacity, *routing, *handshake))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -343,7 +348,7 @@ public:
     return FrozenSpatialPnrProblemHandle(new FrozenSpatialPnrProblem(
         dataflow.identity(), techMapping.identity(), fabric.identity(),
         constraintSet.identity(), config, std::move(workBudget),
-        std::move(*constraints), std::move(*realizations),
+        std::move(*constraints), std::move(*realizations), std::move(*memory),
         std::move(*transfers), std::move(*ports), std::move(*resources),
         std::move(*capacity), std::move(*routing), std::move(*handshake),
         std::move(*bindingRelations), cacheKey));
@@ -384,6 +389,7 @@ public:
 
   static llvm::Error
   verifyAggregate(const FrozenSpatialRealizationIndex &realizations,
+                  const FrozenSpatialMemoryIndex &memory,
                   const FrozenSpatialTransferIndex &transfers,
                   const FrozenSpatialPortIndex &ports,
                   const FrozenSpatialResourceIndex &resources,
@@ -406,12 +412,17 @@ public:
         realizations.memoryActorRealizations().size() !=
             realizations.memoryActors().size())
       return invalid("actor-owner reverse projections are incomplete");
+    if (llvm::Error error =
+            FrozenSpatialMemoryIndexBuilder::verify(memory, realizations))
+      return error;
     if (capacity.computeInstructionContextOveruse().size() !=
             realizations.computeInstructionContexts().size() ||
         capacity.computeInstructionContextEnvelopeOffsets().size() !=
             realizations.computeInstructionContexts().size() + 1 ||
         capacity.memoryOperationPlanOveruse().size() !=
-            handshake.memoryOperationPlans().size())
+            handshake.memoryOperationPlans().size() ||
+        capacity.memoryDispatchOptionOveruse().size() !=
+            memory.dispatchOptions().size())
       return invalid("capacity envelope projection is incomplete");
 
     const auto envelopeOffsets =
@@ -1005,7 +1016,8 @@ private:
                               realization.actors.size()))
         return error;
       for (const TechMemoryActorView &actor : realization.actors) {
-        result.memoryActors_.push_back({actor.actor, actor.operationPort});
+        result.memoryActors_.push_back(
+            {actor.actor, actor.operationPort, actor.capability});
         result.memoryActorRealizations_.push_back(*realizationIndex);
       }
       auto actorCount = checked(actorCountContext, realization.actors.size());

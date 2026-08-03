@@ -12,6 +12,7 @@ llvm::Expected<FrozenSpatialCapacityIndex> buildFrozenSpatialCapacityIndex(
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     const FrozenSpatialRealizationIndex &realizations,
+    const FrozenSpatialMemoryIndex &memory,
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing,
     const FrozenSpatialHandshakeIndex &handshake);

@@ -259,41 +259,12 @@ llvm::Expected<FabricMemoryEngineTemplateEndpointRef>
 memoryTemplateTerminal(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                        const TechMemoryActorView &binding,
                        const FrozenSpatialActorTerminalRef &terminal) {
-  auto actor = dataflow.resolve(binding.actor);
-  if (!actor)
-    return actor.takeError();
-  auto service = ::dataflow::semantics::CanonicalService::forActor(actor->op);
-  if (!service)
-    return service.takeError();
-
-  if (const auto *operand =
-          std::get_if<::dataflow::ActorTokenOperandRef>(&terminal)) {
-    for (unsigned ordinal = 0; ordinal < service->arguments().size();
-         ++ordinal) {
-      auto value = service->argumentValue(actor->op, ordinal);
-      if (!value)
-        return value.takeError();
-      if ((*value)->getOperandNumber() == operand->ordinal) {
-        if (ordinal >= binding.operandPorts.size())
-          return invalid("memory PortDemand operand map is incomplete");
-        return binding.operandPorts[ordinal];
-      }
-    }
-    return invalid("memory PortDemand names a non-service actor operand");
-  }
-
-  const auto &result = std::get<::dataflow::ActorTokenResultRef>(terminal);
-  for (unsigned ordinal = 0; ordinal < service->results().size(); ++ordinal) {
-    auto value = service->resultValue(actor->op, ordinal);
-    if (!value)
-      return value.takeError();
-    if (value->getResultNumber() == result.ordinal) {
-      if (ordinal >= binding.resultPorts.size())
-        return invalid("memory PortDemand result map is incomplete");
-      return binding.resultPorts[ordinal];
-    }
-  }
-  return invalid("memory PortDemand names a non-service actor result");
+  return std::visit(
+      [&](const auto &typed) {
+        return ::loom::mapping::resolveTechMemoryActorTerminal(dataflow,
+                                                               binding, typed);
+      },
+      terminal);
 }
 
 FabricPortDirection directionOf(const FrozenSpatialActorTerminalRef &terminal) {

@@ -53,6 +53,7 @@ struct FrozenSpatialMemoryPlacement final {
 struct FrozenSpatialMemoryActorBinding final {
   ::dataflow::ActorRef actor;
   ::loom::fabric::FabricMemoryEngineTemplateOperationPortRef operationPort;
+  ::loom::fabric::FabricMemoryEngineTemplateCapabilityAlternativeRef capability;
 };
 
 struct FrozenSpatialMemoryRealization final {
@@ -109,6 +110,100 @@ private:
 
   friend class FrozenSpatialPnrProblemBuilder;
   friend class FrozenSpatialPortIndexBuilder;
+};
+
+struct FrozenSpatialMemoryBoundaryProxy final {};
+
+using FrozenSpatialMemoryBindingTarget =
+    std::variant<::loom::fabric::FabricMemoryServiceRegionRef,
+                 FrozenSpatialMemoryBoundaryProxy>;
+
+/// One globally factorized target. Logical memories select these targets by
+/// dense ordinal; they are not multiplied by actors, launches, or placements.
+struct FrozenSpatialMemoryBindingTargetOption final {
+  FrozenSpatialMemoryBindingTarget target;
+  std::uint64_t sizeBytes = 0;
+};
+
+struct FrozenSpatialLogicalMemoryBinding final {
+  ::dataflow::LogicalMemoryRootOrViewRef logicalMemory;
+  std::optional<std::uint64_t> staticExtentBytes;
+};
+
+struct FrozenSpatialMemoryRootedUse final {
+  ::dataflow::RootedGraphLaunchRef launch;
+  PnrIndex actor = 0;
+  std::optional<PnrIndex> logicalBinding;
+};
+
+using FrozenSpatialMemoryDispatchTarget =
+    std::variant<::loom::fabric::LocalMemoryServiceRef,
+                 ::loom::fabric::ManagerEndpointRef,
+                 ::loom::fabric::MemoryConsistencyDomainRef>;
+
+/// One dispatch choice admitted by the exact occurrence capability. Local
+/// addressed dispatches retain the service-region ordinals admitted by the
+/// matching service capability in a shared CSR range.
+struct FrozenSpatialMemoryDispatchOption final {
+  FrozenSpatialMemoryDispatchTarget target;
+  std::optional<::loom::fabric::FabricUsePatternRef> serviceUsePattern;
+  PnrIndex serviceRegionOffset = 0;
+  PnrIndex serviceRegionCount = 0;
+};
+
+struct FrozenSpatialMemoryDispatchDomain final {
+  PnrIndex placement = 0;
+  PnrIndex actor = 0;
+  PnrIndex optionOffset = 0;
+  PnrIndex optionCount = 0;
+};
+
+/// Dense, immutable projection of definition-level memory actors and their
+/// rooted uses. The hot search state stores only ordinals into these SoA/CSR
+/// tables, while Dataflow and Fabric remain the semantic owners.
+class FrozenSpatialMemoryIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialLogicalMemoryBinding> logicalBindings() const {
+    return logicalBindings_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryBindingTargetOption>
+  bindingTargets() const {
+    return bindingTargets_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryRootedUse> rootedUses() const {
+    return rootedUses_;
+  }
+  llvm::ArrayRef<PnrIndex> actorUseOffsets() const { return actorUseOffsets_; }
+  llvm::ArrayRef<PnrIndex> bindingUseOffsets() const {
+    return bindingUseOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> bindingUses() const { return bindingUses_; }
+  llvm::ArrayRef<FrozenSpatialMemoryDispatchDomain> dispatchDomains() const {
+    return dispatchDomains_;
+  }
+  llvm::ArrayRef<PnrIndex> memoryPlacementDomainOffsets() const {
+    return memoryPlacementDomainOffsets_;
+  }
+  llvm::ArrayRef<FrozenSpatialMemoryDispatchOption> dispatchOptions() const {
+    return dispatchOptions_;
+  }
+  llvm::ArrayRef<std::uint64_t> dispatchServiceRegionOrdinals() const {
+    return dispatchServiceRegionOrdinals_;
+  }
+
+private:
+  std::vector<FrozenSpatialLogicalMemoryBinding> logicalBindings_;
+  std::vector<FrozenSpatialMemoryBindingTargetOption> bindingTargets_;
+  std::vector<FrozenSpatialMemoryRootedUse> rootedUses_;
+  std::vector<PnrIndex> actorUseOffsets_;
+  std::vector<PnrIndex> bindingUseOffsets_;
+  std::vector<PnrIndex> bindingUses_;
+  std::vector<FrozenSpatialMemoryDispatchDomain> dispatchDomains_;
+  std::vector<PnrIndex> memoryPlacementDomainOffsets_;
+  std::vector<FrozenSpatialMemoryDispatchOption> dispatchOptions_;
+  std::vector<std::uint64_t> dispatchServiceRegionOrdinals_;
+
+  friend class FrozenSpatialMemoryIndexBuilder;
 };
 
 enum class FrozenSpatialPortDemandKind : std::uint32_t {
@@ -427,6 +522,9 @@ public:
   llvm::ArrayRef<std::uint64_t> memoryOperationPlanOveruse() const {
     return memoryOperationPlanOveruse_;
   }
+  llvm::ArrayRef<std::uint64_t> memoryDispatchOptionOveruse() const {
+    return memoryDispatchOptionOveruse_;
+  }
 
 private:
   std::vector<FrozenSpatialResourceEvent> events_;
@@ -436,6 +534,7 @@ private:
   std::vector<PnrIndex> computeInstructionContextEnvelopeOffsets_;
   std::vector<std::uint64_t> computeInstructionContextOveruse_;
   std::vector<std::uint64_t> memoryOperationPlanOveruse_;
+  std::vector<std::uint64_t> memoryDispatchOptionOveruse_;
 
   friend class FrozenSpatialCapacityIndexBuilder;
 };
@@ -574,6 +673,7 @@ struct FrozenSpatialMemoryOperationHandshakeDomain final {
 
 struct FrozenSpatialMemoryOperationHandshakePlan final {
   PnrIndex usePattern = 0;
+  std::optional<std::uint64_t> residentContext;
   PnrIndex fragmentOffset = 0;
   PnrIndex fragmentCount = 0;
 };
@@ -720,6 +820,7 @@ public:
   const FrozenSpatialRealizationIndex &realizations() const {
     return realizations_;
   }
+  const FrozenSpatialMemoryIndex &memory() const { return memory_; }
   const FrozenSpatialTransferIndex &transfers() const { return transfers_; }
   const FrozenSpatialPortIndex &ports() const { return ports_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
@@ -739,9 +840,10 @@ private:
       std::vector<DeterministicWorkBudgetEntry> workBudget,
       FrozenConstraintIndex constraints,
       FrozenSpatialRealizationIndex realizations,
-      FrozenSpatialTransferIndex transfers, FrozenSpatialPortIndex ports,
-      FrozenSpatialResourceIndex resources, FrozenSpatialCapacityIndex capacity,
-      FrozenSpatialRoutingGraph routing, FrozenSpatialHandshakeIndex handshake,
+      FrozenSpatialMemoryIndex memory, FrozenSpatialTransferIndex transfers,
+      FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
+      FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
+      FrozenSpatialHandshakeIndex handshake,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
       FrozenSpatialPnrCacheKey cacheKey)
@@ -751,7 +853,7 @@ private:
         constraintSetIdentity_(std::move(constraintSetIdentity)),
         config_(std::move(config)), workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
-        realizations_(std::move(realizations)),
+        realizations_(std::move(realizations)), memory_(std::move(memory)),
         transfers_(std::move(transfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
@@ -765,6 +867,7 @@ private:
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   FrozenConstraintIndex constraints_;
   FrozenSpatialRealizationIndex realizations_;
+  FrozenSpatialMemoryIndex memory_;
   FrozenSpatialTransferIndex transfers_;
   FrozenSpatialPortIndex ports_;
   FrozenSpatialResourceIndex resources_;

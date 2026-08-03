@@ -77,6 +77,11 @@ public:
 
   MemoryAccessOperation operation() const { return accessOperation; }
 
+  /// The actor-owned memory capability operand. This value is excluded from
+  /// Canonical Service token roles, but remains the single source from which
+  /// Dataflow composes a launch-contextual logical memory.
+  mlir::Value memoryCapability() const { return actorMemory; }
+
   MemoryAddressForm addressForm() const { return accessGeometry.addressForm; }
 
   /// The one shared geometry analysis of this access.
@@ -148,12 +153,12 @@ private:
   };
 
   CanonicalMemoryAccessView(CanonicalActorSchemaProjection sourceActor,
-                            MemoryAccessOperation operation,
+                            MemoryAccessOperation operation, mlir::Value memory,
                             const MemoryAccessType &geometry,
                             const MemoryActorContract &contract,
                             mlir::Type maskType, const DerivedGeometry &derived)
       : sourceActor(std::move(sourceActor)), accessOperation(operation),
-        accessGeometry(geometry), actorContract(contract),
+        actorMemory(memory), accessGeometry(geometry), actorContract(contract),
         actorMaskType(maskType), derived(derived) {}
 
   friend llvm::Expected<CanonicalMemoryAccessView>
@@ -164,6 +169,7 @@ private:
 
   CanonicalActorSchemaProjection sourceActor;
   MemoryAccessOperation accessOperation;
+  mlir::Value actorMemory;
   MemoryAccessType accessGeometry;
   MemoryActorContract actorContract;
   mlir::Type actorMaskType;

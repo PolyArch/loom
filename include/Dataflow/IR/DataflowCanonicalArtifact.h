@@ -246,6 +246,13 @@ public:
   /// calls.
   llvm::Error validate(ContextualActorRef ref) const;
 
+  /// Resolve an addressed actor's memory capability through its exact rooted
+  /// graph launch. The result is the Dataflow-owned logical root or
+  /// root-preserving view selected at that static launch site. The root launch
+  /// validates ownership but never multiplies the static composition table.
+  llvm::Expected<LogicalMemoryRootOrViewRef>
+  resolveAddressedMemory(ContextualActorRef ref) const;
+
   /// Validate an actor as a `dataflow.fence` family reference.
   llvm::Expected<FenceActorFamilyRef> asFenceFamily(ActorRef ref) const;
 
@@ -369,6 +376,13 @@ private:
   std::vector<std::optional<std::uint64_t>> rootStaticByteExtents_;
   std::vector<std::pair<unsigned, unsigned>> viewsByRootSlot_;
   std::vector<llvm::SmallVector<unsigned, 1>> exposureByStaticSlot_;
+
+  // Addressed actor memory composition, factorized by static graph-launch
+  // site. Each site owns one sorted actor-slot range and parallel role-index
+  // range. Root launches validate context but do not duplicate this table.
+  std::vector<std::pair<unsigned, unsigned>> addressedMemoryRangeByStaticSlot_;
+  std::vector<unsigned> addressedMemoryActorSlots_;
+  std::vector<unsigned> addressedMemoryRoleIndices_;
 };
 
 //===----------------------------------------------------------------------===//

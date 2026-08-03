@@ -372,6 +372,28 @@ MemoryServiceContractRecord::fromCanonical(
   return normalizedRecord;
 }
 
+llvm::Expected<std::vector<std::uint64_t>>
+MemoryServiceContractRecord::matchingCapabilities(
+    const dataflow::CanonicalActorSchemaProjection &actor,
+    const std::optional<dataflow::semantics::CanonicalMemoryAccessView> &access)
+    const {
+  std::vector<std::uint64_t> result;
+  for (auto [ordinal, capability] :
+       llvm::enumerate(declaration_.capabilities)) {
+    if (!capability.actorContractDomain.contains(actor))
+      continue;
+    if (access) {
+      if (!capability.accessDomain ||
+          !capability.accessDomain->contains(*access))
+        continue;
+    } else if (capability.accessDomain) {
+      continue;
+    }
+    result.push_back(ordinal);
+  }
+  return result;
+}
+
 llvm::Error
 validateLocalMemoryServiceCapacity(const MemoryServiceContractRecord &record,
                                    std::uint64_t capacityBytes) {

@@ -11,6 +11,7 @@ add_mlir_library(LoomPnR
   RoutingNegotiation.cpp
   SpatialBindingRelationModel.cpp
   SpatialCandidateInitializer.cpp
+  SpatialCandidateMemory.cpp
   SpatialCandidateRelations.cpp
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
@@ -19,6 +20,7 @@ add_mlir_library(LoomPnR
   SpatialPnrCapacityIndex.cpp
   SpatialPathFinderRouter.cpp
   SpatialPnrHandshakeIndex.cpp
+  SpatialPnrMemoryIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
   SpatialPnrResourceIndex.cpp

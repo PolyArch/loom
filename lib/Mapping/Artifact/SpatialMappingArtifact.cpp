@@ -16,6 +16,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
+#include "SpatialMappingMemoryImport.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -266,30 +267,68 @@ struct TerminalProjectionContext final {
   const TechMappingView &techMapping;
   const ::loom::fabric::FabricArtifactView &fabric;
   llvm::ArrayRef<SpatialComputeBindingView> computeBindings;
+  llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryBindings;
 };
 
+using ActorTerminalAttachments =
+    std::variant<std::vector<::loom::fabric::FabricFuPortAttachmentView>,
+                 ::loom::fabric::FabricTransportEndpointRef>;
+
 template <typename ActorTerminal>
-llvm::Expected<std::vector<::loom::fabric::FabricFuPortAttachmentView>>
-computeTerminalAttachments(const TerminalProjectionContext &context,
-                           const ActorTerminal &terminal) {
-  const TechComputeRealizationView *owner = nullptr;
+llvm::Expected<ActorTerminalAttachments>
+actorTerminalAttachments(const TerminalProjectionContext &context,
+                         const ActorTerminal &terminal) {
+  const TechComputeRealizationView *computeOwner = nullptr;
   for (const auto &realization : context.techMapping.computeRealizations()) {
     if (llvm::any_of(realization.actors, [&](const auto &actor) {
           return actor.actor == terminal.actor;
         })) {
-      if (owner)
+      if (computeOwner)
         return invalid("actor belongs to multiple Compute Realizations");
-      owner = &realization;
+      computeOwner = &realization;
     }
   }
-  if (!owner)
-    return invalid("route terminal actor has no Compute Realization");
+  const TechMemoryRealizationView *memoryOwner = nullptr;
+  const TechMemoryActorView *memoryActor = nullptr;
+  for (const auto &realization : context.techMapping.memoryRealizations()) {
+    for (const auto &actor : realization.actors) {
+      if (actor.actor != terminal.actor)
+        continue;
+      if (memoryOwner)
+        return invalid("actor belongs to multiple Memory Realizations");
+      memoryOwner = &realization;
+      memoryActor = &actor;
+    }
+  }
+  if (computeOwner && memoryOwner)
+    return invalid("actor belongs to compute and memory realizations");
+  if (!computeOwner && !memoryOwner)
+    return invalid("route terminal actor has no Tech realization");
+
   const auto direction =
       std::is_same_v<ActorTerminal, ::dataflow::ActorTokenOperandRef>
           ? ::loom::fabric::FabricPortDirection::Input
           : ::loom::fabric::FabricPortDirection::Output;
+  if (memoryOwner) {
+    auto endpoint = resolveTechMemoryActorTerminal(context.dataflow,
+                                                   *memoryActor, terminal);
+    if (!endpoint)
+      return endpoint.takeError();
+    auto binding = llvm::find_if(context.memoryBindings, [&](const auto &row) {
+      return row.realization == memoryOwner->entityId;
+    });
+    if (binding == context.memoryBindings.end())
+      return invalid("route terminal owner has no MemoryEngineBinding");
+    return ActorTerminalAttachments(
+        std::in_place_type<::loom::fabric::FabricTransportEndpointRef>,
+        ::loom::fabric::FabricTransportEndpointRef{
+            ::loom::fabric::FabricTransportEndpointOwnerRef::of(
+                binding->occurrence),
+            endpoint->ordinal});
+  }
+
   const TechComputeBoundaryView *boundary = nullptr;
-  for (const auto &candidate : owner->boundaries) {
+  for (const auto &candidate : computeOwner->boundaries) {
     if (candidate.actor == terminal.actor && candidate.direction == direction &&
         candidate.portOrdinal == terminal.ordinal) {
       if (boundary)
@@ -300,7 +339,7 @@ computeTerminalAttachments(const TerminalProjectionContext &context,
   if (!boundary)
     return invalid("route terminal has no Tech boundary witness");
   const SpatialComputeBindingView *binding =
-      findComputeBinding(context.computeBindings, owner->entityId);
+      findComputeBinding(context.computeBindings, computeOwner->entityId);
   if (!binding)
     return invalid("route terminal owner has no ComputeBinding");
   const auto attachments = context.fabric.fuOccurrencePortAttachments(
@@ -308,7 +347,9 @@ computeTerminalAttachments(const TerminalProjectionContext &context,
                                                 boundary->fabricPort.ordinal});
   if (attachments.empty())
     return invalid("ComputeBinding terminal has no local attachment");
-  return std::vector<::loom::fabric::FabricFuPortAttachmentView>(
+  return ActorTerminalAttachments(
+      std::in_place_type<
+          std::vector<::loom::fabric::FabricFuPortAttachmentView>>,
       attachments.begin(), attachments.end());
 }
 
@@ -320,39 +361,55 @@ terminalDomain(const TerminalProjectionContext &context,
   if (!width)
     return width.takeError();
   std::vector<::loom::fabric::FabricTransportEndpointRef> result;
+  const auto appendActorDomain =
+      [&](const auto &actor,
+          ::loom::fabric::FabricPortDirection direction) -> llvm::Error {
+    auto attachments = actorTerminalAttachments(context, actor);
+    if (!attachments)
+      return attachments.takeError();
+    return std::visit(
+        [&](const auto &selected) -> llvm::Error {
+          using Selection = std::decay_t<decltype(selected)>;
+          if constexpr (std::is_same_v<
+                            Selection,
+                            std::vector<
+                                ::loom::fabric::FabricFuPortAttachmentView>>) {
+            for (const auto &attachment : selected) {
+              auto path =
+                  context.fabric.transportEndpointDataPath(attachment.endpoint);
+              if (context.fabric.transportEndpointDirection(
+                      attachment.endpoint) == direction &&
+                  path && path->payloadWidthBits >= *width)
+                result.push_back(attachment.endpoint);
+            }
+          } else {
+            auto path = context.fabric.transportEndpointDataPath(selected);
+            if (context.fabric.transportEndpointDirection(selected) ==
+                    direction &&
+                path && path->payloadWidthBits >= *width)
+              result.push_back(selected);
+          }
+          return llvm::Error::success();
+        },
+        *attachments);
+  };
   bool graphBoundary = true;
   if constexpr (std::is_same_v<Endpoint,
                                ::dataflow::CanonicalGraphProducerEndpointRef>) {
     if (const auto *actor =
             std::get_if<::dataflow::ActorTokenResultRef>(&endpoint)) {
       graphBoundary = false;
-      auto attachments = computeTerminalAttachments(context, *actor);
-      if (!attachments)
-        return attachments.takeError();
-      for (const auto &attachment : *attachments) {
-        auto path =
-            context.fabric.transportEndpointDataPath(attachment.endpoint);
-        if (context.fabric.transportEndpointDirection(attachment.endpoint) ==
-                ::loom::fabric::FabricPortDirection::Output &&
-            path && path->payloadWidthBits >= *width)
-          result.push_back(attachment.endpoint);
-      }
+      if (llvm::Error error = appendActorDomain(
+              *actor, ::loom::fabric::FabricPortDirection::Output))
+        return std::move(error);
     }
   } else {
     if (const auto *actor =
             std::get_if<::dataflow::ActorTokenOperandRef>(&endpoint)) {
       graphBoundary = false;
-      auto attachments = computeTerminalAttachments(context, *actor);
-      if (!attachments)
-        return attachments.takeError();
-      for (const auto &attachment : *attachments) {
-        auto path =
-            context.fabric.transportEndpointDataPath(attachment.endpoint);
-        if (context.fabric.transportEndpointDirection(attachment.endpoint) ==
-                ::loom::fabric::FabricPortDirection::Input &&
-            path && path->payloadWidthBits >= *width)
-          result.push_back(attachment.endpoint);
-      }
+      if (llvm::Error error = appendActorDomain(
+              *actor, ::loom::fabric::FabricPortDirection::Input))
+        return std::move(error);
     }
   }
   if (graphBoundary) {
@@ -386,35 +443,47 @@ llvm::Expected<std::optional<::loom::fabric::FabricPhysicalTraversalRef>>
 selectedLocalTraversal(
     const TerminalProjectionContext &context, const Endpoint &terminal,
     const ::loom::fabric::FabricTransportEndpointRef &selected) {
+  const auto actorTraversal = [&](const auto &actor)
+      -> llvm::Expected<
+          std::optional<::loom::fabric::FabricPhysicalTraversalRef>> {
+    auto attachments = actorTerminalAttachments(context, actor);
+    if (!attachments)
+      return attachments.takeError();
+    return std::visit(
+        [&](const auto &domain)
+            -> llvm::Expected<
+                std::optional<::loom::fabric::FabricPhysicalTraversalRef>> {
+          using Domain = std::decay_t<decltype(domain)>;
+          if constexpr (std::is_same_v<
+                            Domain,
+                            std::vector<
+                                ::loom::fabric::FabricFuPortAttachmentView>>) {
+            auto found = llvm::find_if(domain, [&](const auto &attachment) {
+              return attachment.endpoint == selected;
+            });
+            if (found == domain.end())
+              return invalid(
+                  "selected actor terminal has no local traversal witness");
+            return std::optional<::loom::fabric::FabricPhysicalTraversalRef>(
+                found->localTraversal);
+          } else {
+            if (domain != selected)
+              return invalid(
+                  "selected memory terminal differs from its exact endpoint");
+            return std::optional<::loom::fabric::FabricPhysicalTraversalRef>();
+          }
+        },
+        *attachments);
+  };
   if constexpr (std::is_same_v<Endpoint,
                                ::dataflow::CanonicalGraphProducerEndpointRef>) {
     if (const auto *actor =
-            std::get_if<::dataflow::ActorTokenResultRef>(&terminal)) {
-      auto attachments = computeTerminalAttachments(context, *actor);
-      if (!attachments)
-        return attachments.takeError();
-      auto found = llvm::find_if(*attachments, [&](const auto &attachment) {
-        return attachment.endpoint == selected;
-      });
-      if (found == attachments->end())
-        return invalid("selected producer has no local traversal witness");
-      return std::optional<::loom::fabric::FabricPhysicalTraversalRef>(
-          found->localTraversal);
-    }
+            std::get_if<::dataflow::ActorTokenResultRef>(&terminal))
+      return actorTraversal(*actor);
   } else {
     if (const auto *actor =
-            std::get_if<::dataflow::ActorTokenOperandRef>(&terminal)) {
-      auto attachments = computeTerminalAttachments(context, *actor);
-      if (!attachments)
-        return attachments.takeError();
-      auto found = llvm::find_if(*attachments, [&](const auto &attachment) {
-        return attachment.endpoint == selected;
-      });
-      if (found == attachments->end())
-        return invalid("selected consumer has no local traversal witness");
-      return std::optional<::loom::fabric::FabricPhysicalTraversalRef>(
-          found->localTraversal);
-    }
+            std::get_if<::dataflow::ActorTokenOperandRef>(&terminal))
+      return actorTraversal(*actor);
   }
   return std::optional<::loom::fabric::FabricPhysicalTraversalRef>();
 }
@@ -598,6 +667,7 @@ importEventPoint(::mapping::SpatialEventPointAttr point,
 }
 
 using RequiredComputeUse = SpatialComputeUseRequirement;
+using RequiredMemoryUse = detail::SpatialMemoryResourceUseRequirement;
 
 llvm::Expected<std::string>
 requiredUseKey(const RequiredComputeUse &use,
@@ -642,15 +712,58 @@ deriveRequiredComputeUses(
   return result;
 }
 
+llvm::Expected<std::string>
+requiredMemoryUseKey(const RequiredMemoryUse &use,
+                     const ArtifactIdentity &dataflowIdentity) {
+  std::string result;
+  std::visit(
+      [&](const auto &owner) {
+        using Owner = std::decay_t<decltype(owner)>;
+        std::uint64_t value = 0;
+        if constexpr (std::is_same_v<Owner,
+                                     SpatialMemoryEngineResourceOwnerRef>) {
+          result.push_back(0);
+          value = owner.realization;
+        } else {
+          result.push_back(1);
+          value = owner.binding;
+        }
+        for (unsigned byte = 0; byte < 8; ++byte)
+          result.push_back(static_cast<char>(value >> (8 * (7 - byte))));
+      },
+      use.owner);
+  auto encodedEvent =
+      encodeSpatialActivityEventKey(dataflowIdentity, use.trigger);
+  if (!encodedEvent)
+    return encodedEvent.takeError();
+  for (unsigned byte = 0; byte < 8; ++byte)
+    result.push_back(
+        static_cast<char>(encodedEvent->size() >> (8 * (7 - byte))));
+  result.append(reinterpret_cast<const char *>(encodedEvent->data()),
+                encodedEvent->size());
+  return result;
+}
+
+llvm::Expected<std::map<std::string, RequiredMemoryUse>>
+deriveRequiredMemoryUses(const detail::ImportedSpatialMemoryView &memory,
+                         const ArtifactIdentity &dataflowIdentity) {
+  std::map<std::string, RequiredMemoryUse> result;
+  for (const auto &use : memory.requiredResourceUses) {
+    auto key = requiredMemoryUseKey(use, dataflowIdentity);
+    if (!key)
+      return key.takeError();
+    if (!result.emplace(std::move(*key), use).second)
+      return invalid("memory owner derives a duplicate ResourceUse");
+  }
+  return result;
+}
+
 llvm::Expected<SpatialResourceUseView>
 importResourceUse(::mapping::ResourceUseOp record,
                   const ::dataflow::CanonicalDataflowProgramView &dataflow,
                   const ::loom::fabric::FabricArtifactView &fabric,
-                  std::map<std::string, RequiredComputeUse> &required) {
-  auto compute =
-      dyn_cast<::mapping::ComputeRealizationRefAttr>(record.getOwner());
-  if (!compute)
-    return invalid("non-compute ResourceUse projection is unavailable");
+                  std::map<std::string, RequiredComputeUse> &requiredCompute,
+                  std::map<std::string, RequiredMemoryUse> &requiredMemory) {
   auto pattern =
       decodeFabric<::loom::fabric::FabricUsePatternRef>(record.getUseSite());
   if (!pattern)
@@ -662,20 +775,54 @@ importResourceUse(::mapping::ResourceUseOp record,
   if (!trigger)
     return trigger.takeError();
   if (trigger->guaranteedOffset || record.getActivation().getRelease())
-    return invalid("compute ResourceUse must use intrinsic event activation");
+    return invalid("ResourceUse must use intrinsic event activation");
   if (!record.getParameters().empty() ||
       !record.getSharingAssignments().empty())
-    return invalid("compute ResourceUse owner schemas are empty");
-  RequiredComputeUse keyValue{compute.getEntity(), trigger->event, *pattern};
-  auto key = requiredUseKey(keyValue, dataflow.identity());
+    return invalid("ResourceUse owner schemas are empty");
+
+  if (auto compute =
+          dyn_cast<::mapping::ComputeRealizationRefAttr>(record.getOwner())) {
+    RequiredComputeUse keyValue{compute.getEntity(), trigger->event, *pattern};
+    auto key = requiredUseKey(keyValue, dataflow.identity());
+    if (!key)
+      return key.takeError();
+    auto found = requiredCompute.find(*key);
+    if (found == requiredCompute.end())
+      return invalid("ResourceUse is not required by its compute owner");
+    requiredCompute.erase(found);
+    return SpatialResourceUseView{
+        SpatialComputeResourceOwnerRef{compute.getEntity()},
+        *pattern,
+        SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
+        {},
+        {}};
+  }
+
+  detail::SpatialMemoryResourceOwnerRef memoryOwner =
+      SpatialMemoryEngineResourceOwnerRef{};
+  SpatialResourceOwnerRef importedOwner;
+  if (auto engine =
+          dyn_cast<::mapping::MemoryRealizationRefAttr>(record.getOwner())) {
+    memoryOwner = SpatialMemoryEngineResourceOwnerRef{engine.getEntity()};
+    importedOwner = SpatialMemoryEngineResourceOwnerRef{engine.getEntity()};
+  } else if (auto binding =
+                 dyn_cast<::mapping::MemoryBindingRefAttr>(record.getOwner())) {
+    memoryOwner = SpatialMemoryBindingResourceOwnerRef{binding.getEntity()};
+    importedOwner = SpatialMemoryBindingResourceOwnerRef{binding.getEntity()};
+  } else {
+    return invalid("ResourceUse has an unsupported Spatial owner");
+  }
+  RequiredMemoryUse keyValue{std::move(memoryOwner), trigger->event, {}};
+  auto key = requiredMemoryUseKey(keyValue, dataflow.identity());
   if (!key)
     return key.takeError();
-  auto found = required.find(*key);
-  if (found == required.end())
-    return invalid("ResourceUse is not required by its compute owner");
-  required.erase(found);
+  auto found = requiredMemory.find(*key);
+  if (found == requiredMemory.end() ||
+      !llvm::is_contained(found->second.admissiblePatterns, *pattern))
+    return invalid("ResourceUse is not admitted by its memory owner");
+  requiredMemory.erase(found);
   return SpatialResourceUseView{
-      SpatialComputeResourceOwnerRef{compute.getEntity()},
+      std::move(importedOwner),
       *pattern,
       SpatialRelativeActivationView{std::move(*trigger), std::nullopt},
       {},
@@ -775,6 +922,8 @@ struct ImportedSpatialView final {
   ArtifactIdentity dataflowIdentity;
   ArtifactIdentity fabricIdentity;
   std::vector<SpatialComputeBindingView> computeBindings;
+  std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings;
+  std::vector<SpatialMemoryBindingView> memoryBindings;
   std::vector<SpatialRouteTreeView> routeTrees;
   std::vector<SpatialResourceUseView> resourceUses;
 };
@@ -802,9 +951,6 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
       techMapping.fabricIdentity() != fabric.identity())
     return invalid(
         "TechMapping upstream closure disagrees with SpatialMapping");
-  if (!techMapping.memoryRealizations().empty())
-    return invalid("Spatial memory binding wire is unavailable");
-
   std::vector<SpatialComputeBindingView> computeBindings;
   std::set<std::uint64_t> boundComputes;
   for (auto record :
@@ -819,8 +965,14 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   if (computeBindings.size() != techMapping.computeRealizations().size())
     return invalid("SpatialMapping omits a Tech compute realization");
 
+  auto importedMemory =
+      detail::importSpatialMemoryView(root, dataflow, techMapping, fabric);
+  if (!importedMemory)
+    return importedMemory.takeError();
+
   TerminalProjectionContext terminalContext{dataflow, techMapping, fabric,
-                                            computeBindings};
+                                            computeBindings,
+                                            importedMemory->engineBindings};
   std::map<std::string, const TechResidualLogicalNetView *> residual;
   for (const auto &net : techMapping.residualLogicalNets()) {
     auto encoded =
@@ -856,16 +1008,23 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
       deriveRequiredComputeUses(dataflow, techMapping, fabric, computeBindings);
   if (!requiredUses)
     return requiredUses.takeError();
+  auto requiredMemoryUses =
+      deriveRequiredMemoryUses(*importedMemory, dataflow.identity());
+  if (!requiredMemoryUses)
+    return requiredMemoryUses.takeError();
   std::vector<SpatialResourceUseView> uses;
   for (auto record :
        root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
-    auto use = importResourceUse(record, dataflow, fabric, *requiredUses);
+    auto use = importResourceUse(record, dataflow, fabric, *requiredUses,
+                                 *requiredMemoryUses);
     if (!use)
       return use.takeError();
     uses.push_back(std::move(*use));
   }
   if (!requiredUses->empty())
     return invalid("SpatialMapping omits a required compute ResourceUse");
+  if (!requiredMemoryUses->empty())
+    return invalid("SpatialMapping omits a required memory ResourceUse");
 
   auto handshake = deriveSelectedHandshakeSelection(terminalContext, routes);
   if (!handshake)
@@ -875,9 +1034,14 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
               fabric, *handshake))
     return std::move(error);
 
-  return ImportedSpatialView{*techIdentity,     *dataflowIdentity,
-                             *fabricIdentity,   std::move(computeBindings),
-                             std::move(routes), std::move(uses)};
+  return ImportedSpatialView{*techIdentity,
+                             *dataflowIdentity,
+                             *fabricIdentity,
+                             std::move(computeBindings),
+                             std::move(importedMemory->engineBindings),
+                             std::move(importedMemory->memoryBindings),
+                             std::move(routes),
+                             std::move(uses)};
 }
 
 struct PreparedSpatialMapping final {
@@ -1174,7 +1338,9 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       mappingIdentity, std::move(imported->techMappingIdentity),
       std::move(imported->dataflowIdentity),
       std::move(imported->fabricIdentity), std::move(imported->computeBindings),
-      std::move(imported->routeTrees), std::move(imported->resourceUses));
+      std::move(imported->memoryEngineBindings),
+      std::move(imported->memoryBindings), std::move(imported->routeTrees),
+      std::move(imported->resourceUses));
 }
 
 llvm::Expected<FinalizedSpatialMapping>

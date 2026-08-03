@@ -5,8 +5,12 @@
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loom::pnr;
@@ -17,6 +21,76 @@ llvm::Error initializerError(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
       ("invalid Spatial candidate initialization: " + message).str(),
       std::make_error_code(std::errc::invalid_argument));
+}
+
+const FrozenSpatialMemoryDispatchDomain *
+dispatchDomain(const FrozenSpatialPnrProblem &problem,
+               llvm::ArrayRef<SpatialMemoryBindingSelection> memoryBindings,
+               const FrozenSpatialMemoryRootedUse &use) {
+  const auto &realizations = problem.realizations();
+  if (use.actor >= realizations.memoryActors().size())
+    return nullptr;
+  const PnrIndex realization =
+      realizations.memoryActorRealizations()[use.actor];
+  if (realization >= memoryBindings.size())
+    return nullptr;
+  const auto &owner = realizations.memoryRealizations()[realization];
+  if (use.actor < owner.actorOffset ||
+      use.actor - owner.actorOffset >= owner.actorCount)
+    return nullptr;
+  const PnrIndex placement = memoryBindings[realization].placement;
+  const auto offsets = problem.memory().memoryPlacementDomainOffsets();
+  if (placement + 1 >= offsets.size())
+    return nullptr;
+  const PnrIndex domain = offsets[placement] + use.actor - owner.actorOffset;
+  if (domain >= offsets[placement + 1] ||
+      domain >= problem.memory().dispatchDomains().size())
+    return nullptr;
+  return &problem.memory().dispatchDomains()[domain];
+}
+
+bool admitsRegion(const FrozenSpatialMemoryIndex &memory,
+                  const FrozenSpatialMemoryDispatchOption &option,
+                  std::uint64_t ordinal) {
+  const auto regions = memory.dispatchServiceRegionOrdinals().slice(
+      option.serviceRegionOffset, option.serviceRegionCount);
+  return std::binary_search(regions.begin(), regions.end(), ordinal);
+}
+
+std::optional<PnrIndex>
+matchingDispatch(const FrozenSpatialPnrProblem &problem,
+                 llvm::ArrayRef<SpatialMemoryBindingSelection> memoryBindings,
+                 const FrozenSpatialMemoryRootedUse &use,
+                 const FrozenSpatialMemoryBindingTargetOption *bindingTarget) {
+  const auto *domain = dispatchDomain(problem, memoryBindings, use);
+  if (!domain)
+    return std::nullopt;
+  const auto &memory = problem.memory();
+  for (PnrIndex optionOrdinal = domain->optionOffset;
+       optionOrdinal != domain->optionOffset + domain->optionCount;
+       ++optionOrdinal) {
+    const auto &option = memory.dispatchOptions()[optionOrdinal];
+    if (!bindingTarget) {
+      if (!std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(
+              option.target))
+        return optionOrdinal;
+      continue;
+    }
+    if (const auto *region =
+            std::get_if<::loom::fabric::FabricMemoryServiceRegionRef>(
+                &bindingTarget->target)) {
+      const auto *local =
+          std::get_if<::loom::fabric::LocalMemoryServiceRef>(&option.target);
+      if (local && local->underlying() == region->service &&
+          admitsRegion(memory, option, region->ordinal))
+        return optionOrdinal;
+      continue;
+    }
+    if (std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
+            option.target))
+      return optionOrdinal;
+  }
+  return std::nullopt;
 }
 
 } // namespace
@@ -128,7 +202,76 @@ loom::pnr::createCanonicalSpatialCandidate(
     }
   }
 
+  const FrozenSpatialMemoryIndex &memory = problem->memory();
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings(
+      memory.logicalBindings().size());
+  std::vector<PnrIndex> memoryUseDispatches(memory.rootedUses().size(),
+                                            getInvalidPnrIndex());
+  std::vector<std::uint64_t> targetNextOffset(memory.bindingTargets().size(),
+                                              0);
+  for (PnrIndex binding = 0; binding < memory.logicalBindings().size();
+       ++binding) {
+    const auto extent = memory.logicalBindings()[binding].staticExtentBytes;
+    const auto uses =
+        memory.bindingUses().slice(memory.bindingUseOffsets()[binding],
+                                   memory.bindingUseOffsets()[binding + 1] -
+                                       memory.bindingUseOffsets()[binding]);
+    if (uses.empty())
+      return initializerError("logical memory binding has no rooted use");
+    bool selected = false;
+    for (PnrIndex targetOrdinal = 0;
+         targetOrdinal < memory.bindingTargets().size(); ++targetOrdinal) {
+      const auto &target = memory.bindingTargets()[targetOrdinal];
+      const bool local =
+          std::holds_alternative<::loom::fabric::FabricMemoryServiceRegionRef>(
+              target.target);
+      if (local &&
+          (!extent || targetNextOffset[targetOrdinal] > target.sizeBytes ||
+           *extent > target.sizeBytes - targetNextOffset[targetOrdinal]))
+        continue;
+      std::vector<std::pair<PnrIndex, PnrIndex>> dispatches;
+      dispatches.reserve(uses.size());
+      bool complete = true;
+      for (PnrIndex useOrdinal : uses) {
+        auto dispatch = matchingDispatch(
+            *problem, memoryBindings, memory.rootedUses()[useOrdinal], &target);
+        if (!dispatch) {
+          complete = false;
+          break;
+        }
+        dispatches.emplace_back(useOrdinal, *dispatch);
+      }
+      if (!complete)
+        continue;
+      logicalMemoryBindings[binding] = {
+          targetOrdinal, local ? targetNextOffset[targetOrdinal] : 0};
+      for (const auto &[useOrdinal, dispatch] : dispatches)
+        memoryUseDispatches[useOrdinal] = dispatch;
+      if (local)
+        targetNextOffset[targetOrdinal] += *extent;
+      selected = true;
+      break;
+    }
+    if (!selected)
+      return initializerError(
+          "logical memory has no jointly compatible binding and dispatch");
+  }
+
+  for (PnrIndex useOrdinal = 0; useOrdinal < memory.rootedUses().size();
+       ++useOrdinal) {
+    if (memoryUseDispatches[useOrdinal] != getInvalidPnrIndex())
+      continue;
+    const auto &use = memory.rootedUses()[useOrdinal];
+    if (use.logicalBinding)
+      return initializerError("addressed memory use was not assigned");
+    auto dispatch = matchingDispatch(*problem, memoryBindings, use, nullptr);
+    if (!dispatch)
+      return initializerError("fence use has no consistency dispatch");
+    memoryUseDispatches[useOrdinal] = *dispatch;
+  }
+
   return SpatialCandidateState::create(
       std::move(problem), {computeBindings, memoryBindings, portAttachments,
-                           graphBoundaryAttachments, memoryOperationPlans});
+                           graphBoundaryAttachments, memoryOperationPlans,
+                           logicalMemoryBindings, memoryUseDispatches});
 }

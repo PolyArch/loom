@@ -152,6 +152,9 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   const std::size_t portCount = ports.portDemands().size();
   const std::size_t boundaryCount = ports.graphBoundaries().size();
   const std::size_t memoryPlanCount = realizations.memoryActors().size();
+  const std::size_t logicalMemoryCount =
+      problem.memory().logicalBindings().size();
+  const std::size_t memoryDispatchCount = problem.memory().rootedUses().size();
   const std::size_t traversalCount = problem.routing().traversals().size();
   const std::size_t bindingRelationCount =
       problem.bindingRelations().relations().relations().size();
@@ -161,15 +164,20 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   portJournalMarks_.assign(portCount, 0);
   boundaryJournalMarks_.assign(boundaryCount, 0);
   memoryPlanJournalMarks_.assign(memoryPlanCount, 0);
+  logicalMemoryJournalMarks_.assign(logicalMemoryCount, 0);
+  memoryDispatchJournalMarks_.assign(memoryDispatchCount, 0);
   decisionDeltas_.clear();
   decisionDeltas_.reserve(computeCount + memoryCount + portCount +
-                          boundaryCount + memoryPlanCount);
+                          boundaryCount + memoryPlanCount + logicalMemoryCount +
+                          memoryDispatchCount);
 
   affectedComputeMarks_.assign(computeCount, 0);
   affectedMemoryMarks_.assign(memoryCount, 0);
   affectedPortMarks_.assign(portCount, 0);
   affectedBoundaryMarks_.assign(boundaryCount, 0);
   affectedMemoryPlanMarks_.assign(memoryPlanCount, 0);
+  affectedLogicalMemoryMarks_.assign(logicalMemoryCount, 0);
+  affectedMemoryDispatchMarks_.assign(memoryDispatchCount, 0);
   affectedNetMarks_.assign(netCount, 0);
   affectedBindingRelationMarks_.assign(bindingRelationCount, 0);
   affectedComputes_.reserve(computeCount);
@@ -177,6 +185,8 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   affectedPorts_.reserve(portCount);
   affectedBoundaries_.reserve(boundaryCount);
   affectedMemoryPlans_.reserve(memoryPlanCount);
+  affectedLogicalMemories_.reserve(logicalMemoryCount);
+  affectedMemoryDispatches_.reserve(memoryDispatchCount);
   affectedNets_.reserve(netCount);
   affectedBindingRelations_.reserve(bindingRelationCount);
 
@@ -203,16 +213,22 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
   bytes +=
       retainedBytes(computeJournalMarks_) + retainedBytes(memoryJournalMarks_) +
       retainedBytes(portJournalMarks_) + retainedBytes(boundaryJournalMarks_) +
-      retainedBytes(memoryPlanJournalMarks_) + retainedBytes(decisionDeltas_) +
-      retainedBytes(affectedComputeMarks_) +
+      retainedBytes(memoryPlanJournalMarks_) +
+      retainedBytes(logicalMemoryJournalMarks_) +
+      retainedBytes(memoryDispatchJournalMarks_) +
+      retainedBytes(decisionDeltas_) + retainedBytes(affectedComputeMarks_) +
       retainedBytes(affectedMemoryMarks_) + retainedBytes(affectedPortMarks_) +
       retainedBytes(affectedBoundaryMarks_) +
       retainedBytes(affectedMemoryPlanMarks_) +
+      retainedBytes(affectedLogicalMemoryMarks_) +
+      retainedBytes(affectedMemoryDispatchMarks_) +
       retainedBytes(affectedNetMarks_) +
       retainedBytes(affectedBindingRelationMarks_) +
       retainedBytes(affectedComputes_) + retainedBytes(affectedMemories_) +
       retainedBytes(affectedPorts_) + retainedBytes(affectedBoundaries_) +
       retainedBytes(affectedMemoryPlans_) + retainedBytes(affectedNets_) +
+      retainedBytes(affectedLogicalMemories_) +
+      retainedBytes(affectedMemoryDispatches_) +
       retainedBytes(affectedBindingRelations_) + retainedBytes(touchedRoutes_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
       retainedBytes(traversalAdded_) + retainedBytes(touchedTraversals_);
@@ -223,11 +239,14 @@ void SpatialCandidateScratch::beginTransaction() {
   resetTransaction();
   advanceEpoch(decisionEpoch_,
                {&computeJournalMarks_, &memoryJournalMarks_, &portJournalMarks_,
-                &boundaryJournalMarks_, &memoryPlanJournalMarks_});
-  advanceEpoch(affectedEpoch_, {&affectedComputeMarks_, &affectedMemoryMarks_,
-                                &affectedPortMarks_, &affectedBoundaryMarks_,
-                                &affectedMemoryPlanMarks_, &affectedNetMarks_,
-                                &affectedBindingRelationMarks_});
+                &boundaryJournalMarks_, &memoryPlanJournalMarks_,
+                &logicalMemoryJournalMarks_, &memoryDispatchJournalMarks_});
+  advanceEpoch(affectedEpoch_,
+               {&affectedComputeMarks_, &affectedMemoryMarks_,
+                &affectedPortMarks_, &affectedBoundaryMarks_,
+                &affectedMemoryPlanMarks_, &affectedLogicalMemoryMarks_,
+                &affectedMemoryDispatchMarks_, &affectedNetMarks_,
+                &affectedBindingRelationMarks_});
   advanceEpoch(traversalEpoch_, {&traversalDeltaMarks_});
 }
 
@@ -242,6 +261,8 @@ void SpatialCandidateScratch::resetTransaction() {
   affectedPorts_.clear();
   affectedBoundaries_.clear();
   affectedMemoryPlans_.clear();
+  affectedLogicalMemories_.clear();
+  affectedMemoryDispatches_.clear();
   affectedNets_.clear();
   affectedBindingRelations_.clear();
   handshakeTransaction_.reset();
@@ -264,7 +285,11 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       initialization.graphBoundaryAttachments.size() !=
           ports.graphBoundaries().size() ||
       initialization.memoryOperationPlans.size() !=
-          realizations.memoryActors().size())
+          realizations.memoryActors().size() ||
+      initialization.logicalMemoryBindings.size() !=
+          problem->memory().logicalBindings().size() ||
+      initialization.memoryUseDispatches.size() !=
+          problem->memory().rootedUses().size())
     return candidateError(
         "initialization dimensions do not match the frozen problem");
 
@@ -308,6 +333,12 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   std::vector<PnrIndex> memoryOperationPlans(
       initialization.memoryOperationPlans.begin(),
       initialization.memoryOperationPlans.end());
+  std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings(
+      initialization.logicalMemoryBindings.begin(),
+      initialization.logicalMemoryBindings.end());
+  std::vector<PnrIndex> memoryUseDispatches(
+      initialization.memoryUseDispatches.begin(),
+      initialization.memoryUseDispatches.end());
 
   auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
       problem, &problem->handshake());
@@ -342,6 +373,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(problem), std::move(computeBindings), std::move(memoryBindings),
       std::move(bindingRelationChoices), std::move(portAttachments),
       std::move(graphBoundaryAttachments), std::move(memoryOperationPlans),
+      std::move(logicalMemoryBindings), std::move(memoryUseDispatches),
       std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
       unroutedObligationCount, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
@@ -361,6 +393,8 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
        ++index)
     if (llvm::Error error = candidate->validateMemoryOperationPlan(index))
       return std::move(error);
+  if (llvm::Error error = candidate->verifyMemorySelections())
+    return std::move(error);
   for (PnrIndex index = 0; index < candidate->routeTrees_.size(); ++index)
     if (llvm::Error error = candidate->validateLogicalNet(index))
       return std::move(error);
@@ -404,6 +438,17 @@ SpatialCandidateState::graphBoundaryAttachment(PnrIndex boundary) const {
 PnrIndex SpatialCandidateState::memoryOperationPlan(PnrIndex actor) const {
   assert(actor < memoryOperationPlans_.size());
   return memoryOperationPlans_[actor];
+}
+
+const SpatialLogicalMemoryBindingSelection &
+SpatialCandidateState::logicalMemoryBinding(PnrIndex binding) const {
+  assert(binding < logicalMemoryBindings_.size());
+  return logicalMemoryBindings_[binding];
+}
+
+PnrIndex SpatialCandidateState::memoryUseDispatch(PnrIndex use) const {
+  assert(use < memoryUseDispatches_.size());
+  return memoryUseDispatches_[use];
 }
 
 llvm::Error
@@ -690,6 +735,7 @@ llvm::Expected<std::uint64_t>
 SpatialCandidateState::recomputeCapacityOveruse() const {
   const auto compute = problem_->capacity().computeInstructionContextOveruse();
   const auto memory = problem_->capacity().memoryOperationPlanOveruse();
+  const auto dispatch = problem_->capacity().memoryDispatchOptionOveruse();
   std::uint64_t total = 0;
   for (const SpatialComputeBindingSelection &binding : computeBindings_) {
     if (binding.instructionContext >= compute.size())
@@ -707,6 +753,14 @@ SpatialCandidateState::recomputeCapacityOveruse() const {
     if (memory[plan] > std::numeric_limits<std::uint64_t>::max() - total)
       return candidateError("capacity overuse total overflows u64");
     total += memory[plan];
+  }
+  for (PnrIndex option : memoryUseDispatches_) {
+    if (option >= dispatch.size())
+      return candidateError(
+          "memory dispatch has no capacity-envelope projection");
+    if (dispatch[option] > std::numeric_limits<std::uint64_t>::max() - total)
+      return candidateError("capacity overuse total overflows u64");
+    total += dispatch[option];
   }
   return total;
 }
@@ -726,6 +780,9 @@ llvm::Error SpatialCandidateState::verify() const {
           problem_->ports().graphBoundaries().size() ||
       memoryOperationPlans_.size() !=
           problem_->realizations().memoryActors().size() ||
+      logicalMemoryBindings_.size() !=
+          problem_->memory().logicalBindings().size() ||
+      memoryUseDispatches_.size() != problem_->memory().rootedUses().size() ||
       routeTrees_.size() != problem_->transfers().logicalNets().size())
     return candidateError("candidate shape does not match its frozen problem");
   for (PnrIndex index = 0; index < computeBindings_.size(); ++index)
@@ -745,6 +802,8 @@ llvm::Error SpatialCandidateState::verify() const {
   for (PnrIndex index = 0; index < memoryOperationPlans_.size(); ++index)
     if (llvm::Error error = validateMemoryOperationPlan(index))
       return error;
+  if (llvm::Error error = verifyMemorySelections())
+    return error;
   for (PnrIndex index = 0; index < routeTrees_.size(); ++index)
     if (llvm::Error error = validateLogicalNet(index))
       return error;
@@ -788,6 +847,10 @@ SpatialCandidateState::beginMove(SpatialCandidateScratch &scratch) & {
       scratch.boundaryJournalMarks_.size() !=
           graphBoundaryAttachments_.size() ||
       scratch.memoryPlanJournalMarks_.size() != memoryOperationPlans_.size() ||
+      scratch.logicalMemoryJournalMarks_.size() !=
+          logicalMemoryBindings_.size() ||
+      scratch.memoryDispatchJournalMarks_.size() !=
+          memoryUseDispatches_.size() ||
       scratch.routeTransactions_.size() != routeTrees_.size() ||
       scratch.traversalDeltaMarks_.size() !=
           problem_->routing().traversals().size() ||
@@ -891,6 +954,25 @@ void SpatialMoveTransaction::recordMemoryPlan(PnrIndex actor) {
        state_->memoryOperationPlans_[actor], 0});
 }
 
+void SpatialMoveTransaction::recordLogicalMemory(PnrIndex binding) {
+  if (scratch_->logicalMemoryJournalMarks_[binding] == scratch_->decisionEpoch_)
+    return;
+  scratch_->logicalMemoryJournalMarks_[binding] = scratch_->decisionEpoch_;
+  const auto old = state_->logicalMemoryBindings_[binding];
+  scratch_->decisionDeltas_.push_back(
+      {SpatialCandidateScratch::DecisionKind::LogicalMemoryBinding, binding,
+       old.target, 0, 0, old.physicalOffsetBytes});
+}
+
+void SpatialMoveTransaction::recordMemoryDispatch(PnrIndex use) {
+  if (scratch_->memoryDispatchJournalMarks_[use] == scratch_->decisionEpoch_)
+    return;
+  scratch_->memoryDispatchJournalMarks_[use] = scratch_->decisionEpoch_;
+  scratch_->decisionDeltas_.push_back(
+      {SpatialCandidateScratch::DecisionKind::MemoryUseDispatch, use,
+       state_->memoryUseDispatches_[use], 0});
+}
+
 void SpatialMoveTransaction::markCompute(PnrIndex realization) {
   if (scratch_->affectedComputeMarks_[realization] !=
       scratch_->affectedEpoch_) {
@@ -917,8 +999,14 @@ void SpatialMoveTransaction::markMemory(PnrIndex realization) {
     markPort(demand);
   const auto &record =
       state_->problem_->realizations().memoryRealizations()[realization];
-  for (PnrIndex local = 0; local < record.actorCount; ++local)
-    markMemoryPlan(record.actorOffset + local);
+  const auto &memory = state_->problem_->memory();
+  for (PnrIndex local = 0; local < record.actorCount; ++local) {
+    const PnrIndex actor = record.actorOffset + local;
+    markMemoryPlan(actor);
+    for (PnrIndex use = memory.actorUseOffsets()[actor];
+         use != memory.actorUseOffsets()[actor + 1]; ++use)
+      markMemoryDispatch(use);
+  }
 }
 
 void SpatialMoveTransaction::markPort(PnrIndex demand) {
@@ -942,6 +1030,27 @@ void SpatialMoveTransaction::markMemoryPlan(PnrIndex actor) {
     return;
   scratch_->affectedMemoryPlanMarks_[actor] = scratch_->affectedEpoch_;
   scratch_->affectedMemoryPlans_.push_back(actor);
+}
+
+void SpatialMoveTransaction::markLogicalMemory(PnrIndex binding) {
+  if (scratch_->affectedLogicalMemoryMarks_[binding] !=
+      scratch_->affectedEpoch_) {
+    scratch_->affectedLogicalMemoryMarks_[binding] = scratch_->affectedEpoch_;
+    scratch_->affectedLogicalMemories_.push_back(binding);
+  }
+  const auto &memory = state_->problem_->memory();
+  for (PnrIndex use :
+       memory.bindingUses().slice(memory.bindingUseOffsets()[binding],
+                                  memory.bindingUseOffsets()[binding + 1] -
+                                      memory.bindingUseOffsets()[binding]))
+    markMemoryDispatch(use);
+}
+
+void SpatialMoveTransaction::markMemoryDispatch(PnrIndex use) {
+  if (scratch_->affectedMemoryDispatchMarks_[use] == scratch_->affectedEpoch_)
+    return;
+  scratch_->affectedMemoryDispatchMarks_[use] = scratch_->affectedEpoch_;
+  scratch_->affectedMemoryDispatches_.push_back(use);
 }
 
 void SpatialMoveTransaction::markNet(PnrIndex logicalNet) {
@@ -1153,6 +1262,66 @@ llvm::Error SpatialMoveTransaction::setMemoryOperationPlan(PnrIndex actor,
   return llvm::Error::success();
 }
 
+llvm::Error SpatialMoveTransaction::setLogicalMemoryBinding(
+    PnrIndex binding, PnrIndex target, std::uint64_t physicalOffsetBytes) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (binding >= state_->logicalMemoryBindings_.size() ||
+      target >= state_->problem_->memory().bindingTargets().size())
+    return candidateError("new logical memory binding is out of range");
+
+  const SpatialLogicalMemoryBindingSelection replacement{target,
+                                                         physicalOffsetBytes};
+  const auto old = state_->logicalMemoryBindings_[binding];
+  if (old.target == replacement.target &&
+      old.physicalOffsetBytes == replacement.physicalOffsetBytes)
+    return llvm::Error::success();
+
+  state_->logicalMemoryBindings_[binding] = replacement;
+  if (llvm::Error error = state_->validateLogicalMemoryBinding(binding)) {
+    state_->logicalMemoryBindings_[binding] = old;
+    return error;
+  }
+  state_->logicalMemoryBindings_[binding] = old;
+
+  recordLogicalMemory(binding);
+  markLogicalMemory(binding);
+  state_->logicalMemoryBindings_[binding] = replacement;
+  return llvm::Error::success();
+}
+
+llvm::Error
+SpatialMoveTransaction::setMemoryUseDispatch(PnrIndex use,
+                                             PnrIndex dispatchOption) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (use >= state_->memoryUseDispatches_.size() ||
+      dispatchOption >= state_->problem_->memory().dispatchOptions().size())
+    return candidateError("new memory dispatch is out of range");
+  auto domain = state_->memoryDispatchDomain(use);
+  if (!domain)
+    return domain.takeError();
+  if (!rangeContains((*domain)->optionOffset, (*domain)->optionCount,
+                     dispatchOption))
+    return candidateError("new memory dispatch is outside its domain");
+
+  const PnrIndex old = state_->memoryUseDispatches_[use];
+  if (old == dispatchOption)
+    return llvm::Error::success();
+  recordMemoryDispatch(use);
+  markMemoryDispatch(use);
+  const auto overuse =
+      state_->problem_->capacity().memoryDispatchOptionOveruse();
+  if (old >= overuse.size() || dispatchOption >= overuse.size())
+    return candidateError("memory dispatch has no capacity projection");
+  if (llvm::Error error = replaceContribution(
+          overuse[old], overuse[dispatchOption], state_->capacityOveruse_,
+          "memory dispatch capacity overuse"))
+    return error;
+  state_->memoryUseDispatches_[use] = dispatchOption;
+  return llvm::Error::success();
+}
+
 llvm::Expected<RouteTreeTransaction *>
 SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
   if (llvm::Error error = ensureCollecting())
@@ -1264,6 +1433,16 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
   for (PnrIndex actor : scratch_->affectedMemoryPlans_)
     if (llvm::Error error = state_->validateMemoryOperationPlan(actor))
       return error;
+  for (PnrIndex binding : scratch_->affectedLogicalMemories_) {
+    if (llvm::Error error = state_->validateLogicalMemoryBinding(binding))
+      return error;
+    if (llvm::Error error =
+            state_->validateLogicalMemoryBindingOverlap(binding))
+      return error;
+  }
+  for (PnrIndex use : scratch_->affectedMemoryDispatches_)
+    if (llvm::Error error = state_->validateMemoryUseDispatch(use))
+      return error;
   for (PnrIndex relation : scratch_->affectedBindingRelations_)
     if (llvm::Error error = state_->verifyBindingRelation(relation))
       return error;
@@ -1371,6 +1550,13 @@ void SpatialMoveTransaction::rollback() noexcept {
       break;
     case SpatialCandidateScratch::DecisionKind::MemoryOperationPlan:
       state_->memoryOperationPlans_[delta.index] = delta.oldValue0;
+      break;
+    case SpatialCandidateScratch::DecisionKind::LogicalMemoryBinding:
+      state_->logicalMemoryBindings_[delta.index] = {delta.oldValue0,
+                                                     delta.oldWideValue};
+      break;
+    case SpatialCandidateScratch::DecisionKind::MemoryUseDispatch:
+      state_->memoryUseDispatches_[delta.index] = delta.oldValue0;
       break;
     }
   }

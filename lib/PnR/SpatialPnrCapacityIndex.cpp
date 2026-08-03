@@ -240,6 +240,7 @@ public:
   build(const dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
         const FrozenSpatialRealizationIndex &realizations,
+        const FrozenSpatialMemoryIndex &memory,
         const FrozenSpatialResourceIndex &resources,
         const FrozenSpatialRoutingGraph &routing,
         const FrozenSpatialHandshakeIndex &handshake) {
@@ -402,6 +403,24 @@ public:
       result.memoryOperationPlanOveruse_.push_back(*overuse);
     }
 
+    result.memoryDispatchOptionOveruse_.reserve(
+        memory.dispatchOptions().size());
+    for (const FrozenSpatialMemoryDispatchOption &option :
+         memory.dispatchOptions()) {
+      if (!option.serviceUsePattern) {
+        result.memoryDispatchOptionOveruse_.push_back(0);
+        continue;
+      }
+      auto selected = patternOrdinal(patternByRef, *option.serviceUsePattern);
+      if (!selected)
+        return selected.takeError();
+      const PnrIndex patterns[] = {*selected};
+      auto overuse = atomicEnvelopeOveruse(resources, patterns);
+      if (!overuse)
+        return overuse.takeError();
+      result.memoryDispatchOptionOveruse_.push_back(*overuse);
+    }
+
     // A traversal activation group is one owner-normalized physical use. It
     // must be individually feasible, while contention between independent
     // message events remains negotiated routing or ResourceTimeOverbooking.
@@ -425,10 +444,11 @@ loom::pnr::detail::buildFrozenSpatialCapacityIndex(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const FrozenSpatialRealizationIndex &realizations,
+    const FrozenSpatialMemoryIndex &memory,
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing,
     const FrozenSpatialHandshakeIndex &handshake) {
-  return FrozenSpatialCapacityIndexBuilder::build(dataflow, techMapping, fabric,
-                                                  realizations, resources,
-                                                  routing, handshake);
+  return FrozenSpatialCapacityIndexBuilder::build(
+      dataflow, techMapping, fabric, realizations, memory, resources, routing,
+      handshake);
 }

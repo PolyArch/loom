@@ -439,7 +439,8 @@ dataflow::semantics::getCanonicalMemoryAccessView(Operation *op) {
   }
 
   return CanonicalMemoryAccessView(
-      std::move(*projection), actor->operation, *geometry, *contract, maskType,
+      std::move(*projection), actor->operation, actor->memory, *geometry,
+      *contract, maskType,
       CanonicalMemoryAccessView::DerivedGeometry{
           laneCount, addressCount, *elementBits, dataBits, *addressLaneBits,
           addressBits, maskType ? laneCount : 0});

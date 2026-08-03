@@ -17,6 +17,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/RouteTreeState.h"
+#include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialNetRouter.h"
 #include "PnR/SpatialPathFinderRouter.h"
@@ -155,6 +156,18 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     %value, %done = dataflow.load %memory[%index] %start : memref<4xi32>
     dataflow.graph.return values(%value, %value : i32, i32) streams() memories()
         complete(%done : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %index: index, %memory: memref<4xi32>) ctrl (%ctrl: none) {
+    %first, %second, %done = dataflow.graph.launch @load_only deps(%ctrl)
+        values(%index) stream_inputs() memories(%memory) stream_outputs()
+        : (none, index, memref<4xi32>) -> (i32, i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%index: index, %memory: memref<4xi32>) {
+    %token = dataflow.thread.launch @worker(%index, %memory)
+        : (index, memref<4xi32>) -> !dataflow.thread_token
+    return
   }
 }
 )mlir",
@@ -838,18 +851,40 @@ void artifactRoundTripAndReferenceValidation() {
     }
   }
 
+  auto canonicalCandidate =
+      take(loom::pnr::createCanonicalSpatialCandidate(frozen));
+  std::vector<loom::pnr::SpatialLogicalMemoryBindingSelection>
+      logicalMemoryBindings;
+  logicalMemoryBindings.reserve(frozen->memory().logicalBindings().size());
+  for (loom::pnr::PnrIndex binding = 0;
+       binding < frozen->memory().logicalBindings().size(); ++binding)
+    logicalMemoryBindings.push_back(
+        canonicalCandidate->logicalMemoryBinding(binding));
+  std::vector<loom::pnr::PnrIndex> memoryUseDispatches;
+  memoryUseDispatches.reserve(frozen->memory().rootedUses().size());
+  for (loom::pnr::PnrIndex use = 0; use < frozen->memory().rootedUses().size();
+       ++use)
+    memoryUseDispatches.push_back(canonicalCandidate->memoryUseDispatch(use));
+  for (loom::pnr::PnrIndex realization = 0; realization < memoryBindings.size();
+       ++realization)
+    if (canonicalCandidate->memoryBinding(realization).placement !=
+        memoryBindings[realization].placement)
+      fail("manual candidate fixture diverged from canonical memory placement");
+
   if (!computeBindings.empty()) {
     auto malformedBindings = computeBindings;
     malformedBindings.front().placement = loom::pnr::getInvalidPnrIndex();
     if (!rejected(loom::pnr::SpatialCandidateState::create(
             frozen, {malformedBindings, memoryBindings, portAttachments,
-                     boundaryAttachments, memoryPlans})))
+                     boundaryAttachments, memoryPlans, logicalMemoryBindings,
+                     memoryUseDispatches})))
       fail("Spatial candidate accepted a foreign compute placement");
   }
 
   auto spatialCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen, {computeBindings, memoryBindings, portAttachments,
-               boundaryAttachments, memoryPlans}));
+      frozen,
+      {computeBindings, memoryBindings, portAttachments, boundaryAttachments,
+       memoryPlans, logicalMemoryBindings, memoryUseDispatches}));
   requireSuccess(spatialCandidate->verify());
   std::uint64_t initialUnroutedObligations = 0;
   for (const auto &net : frozen->transfers().logicalNets())
@@ -1073,8 +1108,9 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder route-cost overlay did not restore raw occupancy");
 
   auto routedCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen, {computeBindings, memoryBindings, portAttachments,
-               boundaryAttachments, memoryPlans}));
+      frozen,
+      {computeBindings, memoryBindings, portAttachments, boundaryAttachments,
+       memoryPlans, logicalMemoryBindings, memoryUseDispatches}));
   loom::pnr::SpatialCandidateScratch routedCandidateScratch;
   requireSuccess(routedCandidateScratch.prepare(*frozen));
   auto routedCostState =
