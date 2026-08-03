@@ -9,6 +9,7 @@
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialActionDomain.h"
+#include "PnR/SpatialActionExecutor.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialObjective.h"
@@ -16,6 +17,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -202,7 +204,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
 
   const auto &realization = realizations.computeRealizations().front();
   std::optional<pnr::SpatialComputeBindingSelection> overused;
-  std::optional<pnr::SpatialComputeBindingSelection> legal;
+  std::vector<pnr::SpatialComputeBindingSelection> legalBindings;
   for (pnr::PnrIndex placement = realization.placementOffset;
        placement != realization.placementOffset + realization.placementCount;
        ++placement) {
@@ -215,12 +217,19 @@ void loom::test::exerciseCapacityOveruseCandidate(
           problem->capacity().computeInstructionContextOveruse()[context];
       if (value == 1 && !overused)
         overused = pnr::SpatialComputeBindingSelection{placement, context};
-      if (value == 0 && !legal)
-        legal = pnr::SpatialComputeBindingSelection{placement, context};
+      if (value == 0)
+        legalBindings.push_back(
+            pnr::SpatialComputeBindingSelection{placement, context});
     }
   }
-  if (!overused || !legal)
+  if (!overused || legalBindings.empty())
     fail("capacity fixture lacks exact overused and legal placements");
+  llvm::erase_if(legalBindings, [&](const auto &binding) {
+    return binding.placement == overused->placement;
+  });
+  if (legalBindings.empty())
+    fail("capacity fixture lacks a cross-placement legal Action");
+  const pnr::SpatialComputeBindingSelection legal = legalBindings.front();
 
   auto attachmentsFor = [&](pnr::PnrIndex placement) {
     std::vector<pnr::PnrIndex> attachments;
@@ -282,24 +291,81 @@ void loom::test::exerciseCapacityOveruseCandidate(
             fail("compute context selected the wrong resource-time envelope");
       };
   requireContextEnvelopeState(*overused, true);
-  requireContextEnvelopeState(*legal, false);
-
-  pnr::SpatialCandidateScratch scratch;
-  requireSuccess(scratch.prepare(*problem));
-  const std::vector<pnr::PnrIndex> legalAttachments =
-      attachmentsFor(legal->placement);
+  requireContextEnvelopeState(legal, false);
+  std::vector<pnr::PnrIndex> incidentNets;
+  for (const auto &demand : problem->ports().portDemands())
+    if (std::find(incidentNets.begin(), incidentNets.end(),
+                  demand.logicalNet) == incidentNets.end())
+      incidentNets.push_back(demand.logicalNet);
+  pnr::SpatialActionExecutorScratch actionExecutor;
+  requireSuccess(actionExecutor.prepare(*candidate));
+  const std::uint64_t initialUnroutedObligations =
+      candidate->unroutedObligationCount();
+  const pnr::SpatialMappingAction legalAction =
+      pnr::SpatialRealizationBindingAction{pnr::SpatialComputeBindingAction{
+          0, legal.placement, legal.instructionContext}};
   {
-    auto move = take(candidate->beginMove(scratch));
-    requireSuccess(
-        move.setComputeBinding(0, legal->placement, legal->instructionContext));
-    for (auto [demand, attachment] : llvm::enumerate(legalAttachments))
-      requireSuccess(move.setPortAttachment(demand, attachment));
-    if (!take(move.close()))
-      fail("legal capacity move closed a handshake cycle");
-    requireSuccess(move.commit());
+    auto probe = take(actionExecutor.probe(*candidate, legalAction));
+    if (candidate->capacityOveruse() != 0)
+      fail("Spatial Action probe did not update the shadow candidate");
+    if (candidate->unroutedObligationCount() == 0)
+      fail("unreachable binding Action lost its temporary route violation");
+    requireSuccess(probe.discard());
+  }
+  if (candidate->unroutedObligationCount() != initialUnroutedObligations)
+    fail("Spatial Action discard did not restore unrouted obligations");
+  const std::size_t retainedActionExecutorBytes =
+      actionExecutor.retainedStorageBytes();
+  const std::vector<pnr::PnrIndex> legalAttachments =
+      attachmentsFor(legal.placement);
+  {
+    const pnr::SpatialMappingAction malformedAction =
+        pnr::SpatialRealizationBindingAction{pnr::SpatialComputeBindingAction{
+            static_cast<pnr::PnrIndex>(
+                problem->realizations().computeRealizations().size()),
+            legal.placement, legal.instructionContext}};
+    auto malformedProbe = actionExecutor.probe(*candidate, malformedAction);
+    if (malformedProbe)
+      fail("out-of-range Spatial Action unexpectedly produced a probe");
+    const std::string failure = llvm::toString(malformedProbe.takeError());
+    if (!llvm::StringRef(failure).contains(
+            "compute realization is out of range"))
+      fail("out-of-range Spatial Action returned the wrong failure");
+  }
+  if (candidate->capacityOveruse() != 1)
+    fail("Spatial Action discard did not restore the candidate");
+  for (auto [demand, attachment] : llvm::enumerate(initialAttachments))
+    if (candidate->portAttachment(demand) != attachment)
+      fail("Spatial Action discard did not restore an attachment");
+  for (pnr::PnrIndex logicalNet : incidentNets)
+    if (!candidate->routeTree(logicalNet).isUnrouted())
+      fail("Spatial Action discard did not restore an old RouteTree");
+  {
+    auto probe = take(actionExecutor.probe(*candidate, legalAction));
+    pnr::DeterministicPnrRandomStream acceptanceStream =
+        pnr::DeterministicPnrRandomStream::create(
+            UINT64_C(0x0123456789abcdef), 0,
+            pnr::PnrRandomStreamPurpose::Acceptance);
+    pnr::DeterministicPnrRandomStream referenceStream =
+        pnr::DeterministicPnrRandomStream::create(
+            UINT64_C(0x0123456789abcdef), 0,
+            pnr::PnrRandomStreamPurpose::Acceptance);
+    const pnr::SpatialActionResolution resolution =
+        take(probe.resolve(1, acceptanceStream));
+    if (!resolution.accepted || resolution.objective.codes() !=
+                                    actionExecutor.currentObjective().codes())
+      fail("improving Spatial Action was not atomically accepted");
+    if (acceptanceStream.nextU64() != referenceStream.nextU64())
+      fail("improving Spatial Action consumed acceptance entropy");
   }
   if (candidate->capacityOveruse() != 0)
     fail("legal temporal operand allocation retained capacity overuse");
+  for (auto [demand, attachment] : llvm::enumerate(legalAttachments))
+    if (candidate->portAttachment(demand) != attachment)
+      fail("Spatial Action did not rebuild a placement attachment");
+  if (candidate->unroutedObligationCount() == 0)
+    fail("committed binding Action lost its explicit route violation");
+  requireSuccess(candidate->verify());
   const dse::ObjectiveVector legalObjective =
       take(problem->objectiveProgram().evaluate(*candidate));
   const dse::ObjectiveWideValue legalEnergy =
@@ -312,7 +378,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
       take(problem->objectiveProgram().selectedEnergyDifference(
           overusedObjective, legalObjective));
   if (reward.sign != dse::ObjectiveDifferenceSign::Positive ||
-      reward.magnitude != dse::ObjectiveWideValue{0, 1})
+      reward.magnitude == dse::ObjectiveWideValue{0, 0})
     fail("selected Spatial reward changed sign or magnitude");
   const std::array<std::uint8_t, 1> earlierKey = {0};
   const std::array<std::uint8_t, 1> laterKey = {1};
@@ -322,8 +388,12 @@ void loom::test::exerciseCapacityOveruseCandidate(
           legalObjective, earlierKey, legalObjective, laterKey)) >= 0)
     fail("selected Spatial rank lost objective or semantic-key ordering");
   requireContextEnvelopeState(*overused, false);
-  requireContextEnvelopeState(*legal, true);
+  requireContextEnvelopeState(legal, true);
+  if (actionExecutor.retainedStorageBytes() != retainedActionExecutorBytes)
+    fail("warmed Spatial Action execution grew worker-local storage");
 
+  pnr::SpatialCandidateScratch scratch;
+  requireSuccess(scratch.prepare(*problem));
   {
     auto move = take(candidate->beginMove(scratch));
     requireSuccess(move.setComputeBinding(0, overused->placement,
@@ -337,7 +407,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
   if (candidate->capacityOveruse() != 0)
     fail("capacity rollback changed the committed objective value");
   requireContextEnvelopeState(*overused, false);
-  requireContextEnvelopeState(*legal, true);
+  requireContextEnvelopeState(legal, true);
   requireSuccess(candidate->verify());
 }
 

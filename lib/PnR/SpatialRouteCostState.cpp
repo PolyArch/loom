@@ -458,6 +458,40 @@ llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
   return llvm::Error::success();
 }
 
+llvm::Error SpatialRouteCostState::synchronizeCandidateTraversals(
+    llvm::ArrayRef<PnrIndex> traversals) {
+  if (selectedLogicalNet_)
+    return routeCostStateError(
+        "cannot synchronize while a logical net is selected");
+  if (traversals.empty())
+    return llvm::Error::success();
+
+  beginUpdate();
+  const FrozenSpatialRoutingGraph &routing = problem_->routing();
+  for (PnrIndex traversal : traversals) {
+    if (traversal >= routing.traversals().size())
+      return routeCostStateError("synchronized traversal is out of range");
+    const FrozenSpatialTraversal &record = routing.traversals()[traversal];
+    for (PnrIndex claim : routing.traversalClaimKeys().slice(
+             record.routeClaimOffset, record.routeClaimCount)) {
+      if (claim >= routing.routeClaims().size())
+        return routeCostStateError(
+            "synchronized traversal claim is out of range");
+      const PnrIndex capacity = routing.routeClaims()[claim].capacityDimension;
+      if (capacity >= workingCapacityUsageRaw_.size())
+        return routeCostStateError(
+            "synchronized route capacity is out of range");
+      if (capacityUpdateEpochs_[capacity] == updateEpoch_)
+        continue;
+      capacityUpdateEpochs_[capacity] = updateEpoch_;
+      stagedCapacityUsageRaw_[capacity] =
+          candidate_->routeCapacityUsageRaw(capacity);
+      affectedCapacities_.push_back(capacity);
+    }
+  }
+  return finishUpdate();
+}
+
 llvm::Error SpatialRouteCostState::resetFromCandidate() {
   if (llvm::Error error = candidate_->verify())
     return error;

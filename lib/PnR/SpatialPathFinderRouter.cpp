@@ -189,6 +189,37 @@ SpatialPathFinderRouterScratch::routeToClosure(
     SpatialCandidateState &candidate, SpatialCandidateScratch &candidateScratch,
     SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
+  if (llvm::Error error = costs.resetFromCandidate())
+    return std::move(error);
+  auto moveOrError = candidate.beginMove(candidateScratch);
+  if (!moveOrError)
+    return moveOrError.takeError();
+  SpatialMoveTransaction move = std::move(*moveOrError);
+
+  auto result = routeToClosureInMove(move, candidate, costs, limits,
+                                     evaluationPriorities);
+  if (!result)
+    return rollbackIteration(move, costs, result.takeError());
+  auto closed = move.close();
+  if (!closed)
+    return rollbackIteration(move, costs, closed.takeError());
+  if (!*closed)
+    return rollbackIteration(
+        move, costs,
+        llvm::make_error<SpatialPathFinderClosureFailure>(
+            SpatialPathFinderClosureFailure::Kind::
+                SelectedCombinationalHandshakeCycle,
+            "Spatial PathFinder selected a combinational handshake cycle"));
+  if (llvm::Error error = move.commit())
+    return error;
+  return result;
+}
+
+llvm::Expected<SpatialPathFinderClosureResult>
+SpatialPathFinderRouterScratch::routeToClosureInMove(
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+    SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
+    llvm::ArrayRef<RouteCost> evaluationPriorities) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
@@ -199,8 +230,8 @@ SpatialPathFinderRouterScratch::routeToClosure(
       evaluationPriorities.size() !=
           candidate.problem().transfers().logicalNets().size())
     return pathFinderError("evaluation-priority vector has the wrong width");
-  if (llvm::Error error = costs.resetFromCandidate())
-    return std::move(error);
+  if (costs.selectedLogicalNet())
+    return pathFinderError("route costs already have a selected logical net");
 
   const auto allRouted = [&candidate] {
     for (PnrIndex logicalNet = 0;
@@ -213,61 +244,53 @@ SpatialPathFinderRouterScratch::routeToClosure(
   if (allRouted() && !costs.hasCapacityOveruse())
     return SpatialPathFinderClosureResult{};
 
-  auto moveOrError = candidate.beginMove(candidateScratch);
-  if (!moveOrError)
-    return moveOrError.takeError();
-  SpatialMoveTransaction move = std::move(*moveOrError);
-
   for (std::uint64_t iteration = 0; iteration < limits.iterationLimit;
        ++iteration) {
     if (llvm::Error error =
             buildCanonicalNetOrder(candidate, costs, evaluationPriorities))
-      return rollbackIteration(move, costs, std::move(error));
+      return std::move(error);
 
     for (const NetOrderEntry &entry : netOrder_) {
       auto projection = projectLogicalNet(candidate, costs, entry.logicalNet);
       if (!projection)
-        return rollbackIteration(move, costs, projection.takeError());
+        return projection.takeError();
       if (llvm::Error error =
               costs.selectLogicalNet(entry.logicalNet, activeClaimBits_))
-        return rollbackIteration(move, costs, std::move(error));
+        return std::move(error);
       auto route =
           netRouter_.routeWholeNet(move, candidate, costs, entry.logicalNet,
                                    limits.endpointExpansionLimit);
       if (!route)
-        return rollbackIteration(move, costs, route.takeError());
+        return route.takeError();
       if (llvm::Error error = costs.acceptSelectedLogicalNet())
-        return rollbackIteration(move, costs, std::move(error));
+        return std::move(error);
     }
 
     const std::uint64_t completedIterations = iteration + 1;
-    if (!costs.hasCapacityOveruse()) {
-      auto closed = move.close();
-      if (!closed)
-        return rollbackIteration(move, costs, closed.takeError());
-      if (!*closed)
-        return rollbackIteration(
-            move, costs,
-            llvm::make_error<SpatialPathFinderClosureFailure>(
-                SpatialPathFinderClosureFailure::Kind::
-                    SelectedCombinationalHandshakeCycle,
-                "Spatial PathFinder selected a combinational handshake cycle"));
-      if (llvm::Error error = move.commit())
-        return error;
+    if (!costs.hasCapacityOveruse())
       return SpatialPathFinderClosureResult{completedIterations};
-    }
 
     if (completedIterations == limits.iterationLimit)
-      return rollbackIteration(
-          move, costs,
-          llvm::make_error<SpatialPathFinderClosureFailure>(
-              SpatialPathFinderClosureFailure::Kind::NonClosure,
-              "Spatial PathFinder exhausted its iteration limit before "
-              "capacity closure"));
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          SpatialPathFinderClosureFailure::Kind::NonClosure,
+          "Spatial PathFinder exhausted its iteration limit before capacity "
+          "closure");
     if (llvm::Error error = costs.advancePathFinderIteration())
-      return rollbackIteration(move, costs, std::move(error));
+      return std::move(error);
   }
   llvm_unreachable("positive iteration limit executes or returns");
+}
+
+llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeWholeNetInMove(
+    SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+    SpatialRouteCostState &costs, PnrIndex logicalNet,
+    std::uint64_t endpointExpansionLimit) {
+  if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
+    return pathFinderError("scratch is not prepared for the candidate freeze");
+  if (!costs.isBoundTo(candidate))
+    return pathFinderError("route costs are bound to another candidate");
+  return netRouter_.routeWholeNet(move, candidate, costs, logicalNet,
+                                  endpointExpansionLimit);
 }
 
 std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {

@@ -1670,6 +1670,13 @@ llvm::ArrayRef<PnrIndex> SpatialMoveTransaction::cycleWitness() const {
   return scratch_->handshakeTransaction_->cycleWitness();
 }
 
+llvm::ArrayRef<PnrIndex>
+SpatialMoveTransaction::touchedRouteTraversals() const {
+  if (!scratch_ || !closed_)
+    return {};
+  return scratch_->touchedTraversals_;
+}
+
 llvm::Error SpatialMoveTransaction::commit() {
   if (!scratch_)
     return candidateError("move is no longer active");

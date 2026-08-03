@@ -32,6 +32,8 @@ public:
   llvm::Error
   updateSelectedLogicalNetClaims(llvm::ArrayRef<std::uint64_t> claimBits);
   llvm::Error acceptSelectedLogicalNet();
+  llvm::Error
+  synchronizeCandidateTraversals(llvm::ArrayRef<PnrIndex> traversals);
   llvm::Error resetFromCandidate();
   llvm::Error advancePathFinderIteration();
 

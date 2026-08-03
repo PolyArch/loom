@@ -70,6 +70,19 @@ public:
                  SpatialPathFinderRoutingLimits limits,
                  llvm::ArrayRef<RouteCost> evaluationPriorities);
 
+  /// Applies global negotiation inside an already active Mapping move. The
+  /// caller owns close, objective evaluation, and commit or rollback.
+  llvm::Expected<SpatialPathFinderClosureResult> routeToClosureInMove(
+      SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
+      llvm::ArrayRef<RouteCost> evaluationPriorities);
+
+  llvm::Expected<RouteCost>
+  routeWholeNetInMove(SpatialMoveTransaction &move,
+                      const SpatialCandidateState &candidate,
+                      SpatialRouteCostState &costs, PnrIndex logicalNet,
+                      std::uint64_t endpointExpansionLimit);
+
   std::size_t retainedStorageBytes() const;
 
 private:

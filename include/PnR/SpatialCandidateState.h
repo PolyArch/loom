@@ -49,6 +49,7 @@ struct SpatialCandidateInitialization final {
 class SpatialCandidateState;
 class SpatialCandidateScratch;
 class SpatialActionDomainScratch;
+class SpatialActionExecutorScratch;
 class SpatialMoveTransaction;
 
 using SpatialCandidateStateHandle = std::shared_ptr<SpatialCandidateState>;
@@ -342,6 +343,7 @@ private:
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialActionDomainScratch;
+  friend class SpatialActionExecutorScratch;
   friend class SpatialMoveTransaction;
 };
 
@@ -379,6 +381,7 @@ public:
 
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
+  llvm::ArrayRef<PnrIndex> touchedRouteTraversals() const;
   llvm::Error commit();
   void rollback() noexcept;
 
