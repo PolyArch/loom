@@ -72,6 +72,19 @@ bool isPerfectAdjacentNest(mlir::scf::ForOp outer, mlir::scf::ForOp &inner) {
          isDefinedOutside(inner.getStep(), outer);
 }
 
+bool hasInvariantNestedLoopBounds(mlir::scf::ForOp outer) {
+  mlir::WalkResult result = outer.walk([&](mlir::scf::ForOp nested) {
+    if (nested == outer)
+      return mlir::WalkResult::advance();
+    if (!isDefinedOutside(nested.getLowerBound(), outer) ||
+        !isDefinedOutside(nested.getUpperBound(), outer) ||
+        !isDefinedOutside(nested.getStep(), outer))
+      return mlir::WalkResult::interrupt();
+    return mlir::WalkResult::advance();
+  });
+  return !result.wasInterrupted();
+}
+
 struct ActorMultiplicity final {
   mlir::Operation *representative = nullptr;
   std::uint64_t count = 0;
@@ -199,6 +212,14 @@ llvm::Error applyInterchange(mlir::scf::ForOp outer) {
   return llvm::Error::success();
 }
 
+llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
+  if (factor <= 1 || !loop.getInitArgs().empty())
+    return invalid("unroll-and-jam factor or loop shape is not canonical");
+  if (mlir::failed(mlir::loopUnrollJamByFactor(loop, factor)))
+    return invalid("SCF unroll-and-jam rejected the selected decision");
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<std::vector<StructuredScheduleDecision>>
@@ -243,9 +264,22 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
     mlir::scf::ForOp inner;
     if (isPerfectAdjacentNest(loop, inner) &&
         raising::hasProvenIndependentIterations(loop) &&
-        raising::hasProvenIndependentIterations(inner))
+        raising::hasProvenIndependentIterations(inner)) {
       decisions.push_back(
           {entity.reference, StructuredScheduleDecisionKind::Interchange, 0});
+      if (tripCount && *tripCount > 1 && hasInvariantNestedLoopBounds(loop)) {
+        auto capacity = aggregateUnrollCapacity(loop, capabilityIndex);
+        if (!capacity)
+          return capacity.takeError();
+        for (std::uint64_t factor : properDivisors(*tripCount)) {
+          if (factor > *capacity)
+            break;
+          decisions.push_back({entity.reference,
+                               StructuredScheduleDecisionKind::UnrollAndJam,
+                               factor});
+        }
+      }
+    }
   }
   return decisions;
 }
@@ -272,6 +306,10 @@ materializeStructuredScheduleDecision(
     if (decision.factor != 0)
       return invalid("interchange decision carries a factor");
     if (llvm::Error error = applyInterchange(loop))
+      return std::move(error);
+    break;
+  case StructuredScheduleDecisionKind::UnrollAndJam:
+    if (llvm::Error error = applyUnrollAndJam(loop, decision.factor))
       return std::move(error);
     break;
   }

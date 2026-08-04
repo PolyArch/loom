@@ -84,6 +84,13 @@ std::uint64_t tripCount(mlir::scf::ForOp loop) {
   return count->getZExtValue();
 }
 
+std::optional<std::uint64_t> optionalTripCount(mlir::scf::ForOp loop) {
+  std::optional<llvm::APInt> count = loop.getStaticTripCount();
+  if (!count || count->getActiveBits() > 64)
+    return std::nullopt;
+  return count->getZExtValue();
+}
+
 std::optional<std::pair<std::uint64_t, std::uint64_t>>
 outerInnerTrips(const loom::frontend::StructuredProgramCandidate &candidate,
                 llvm::StringRef functionName) {
@@ -116,6 +123,36 @@ storeCount(const loom::frontend::StructuredProgramCandidate &candidate,
   std::size_t count = 0;
   function.walk([&](mlir::memref::StoreOp) { ++count; });
   return count;
+}
+
+bool hasUnrollAndJamShape(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef functionName) {
+  mlir::func::FuncOp function =
+      candidate.module().lookupSymbol<mlir::func::FuncOp>(functionName);
+  if (!function)
+    fail("candidate lost function " + functionName.str());
+  mlir::scf::ForOp outer;
+  for (mlir::Operation &operation : function.getBody().front()) {
+    outer = llvm::dyn_cast<mlir::scf::ForOp>(&operation);
+    if (outer)
+      break;
+  }
+  if (!outer || optionalTripCount(outer) != 4)
+    return false;
+
+  llvm::SmallVector<mlir::scf::ForOp> directInnerLoops;
+  for (mlir::Operation &operation : outer.getBody()->without_terminator())
+    if (auto inner = llvm::dyn_cast<mlir::scf::ForOp>(&operation))
+      directInnerLoops.push_back(inner);
+  if (directInnerLoops.size() != 1 ||
+      optionalTripCount(directInnerLoops.front()) != 4)
+    return false;
+
+  std::size_t stores = 0;
+  directInnerLoops.front().getRegion().walk(
+      [&](mlir::memref::StoreOp) { ++stores; });
+  return stores == 2;
 }
 
 std::uint64_t
@@ -241,6 +278,15 @@ module attributes {dlti.dl_spec = #layout} {
   if (!sawInterchange)
     fail("proven-independent nested loops produced no interchange child");
 
+  bool sawUnrollAndJam = false;
+  for (const loom::ArtifactRootReference &reference : safeOutputs) {
+    auto candidate =
+        take(loom::frontend::importStructuredProgram(reference, store));
+    sawUnrollAndJam |= hasUnrollAndJamShape(candidate, "kernel");
+  }
+  if (!sawUnrollAndJam)
+    fail("proven-independent nested loops produced no unroll-and-jam child");
+
   auto dependent = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 module attributes {dlti.dl_spec = #layout} {
@@ -268,6 +314,8 @@ module attributes {dlti.dl_spec = #layout} {
         std::optional<std::pair<std::uint64_t, std::uint64_t>>(std::in_place, 4,
                                                                8))
       fail("loop-carried dependence produced an interchange child");
+    if (hasUnrollAndJamShape(candidate, "kernel"))
+      fail("loop-carried dependence produced an unroll-and-jam child");
   }
 
   auto unroll = parseProgram(R"mlir(

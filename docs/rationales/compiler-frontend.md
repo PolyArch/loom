@@ -157,6 +157,14 @@ The compiler generates immutable candidates, uses typed analyses for legality,
 and asks the central Evaluation/DSE framework to compare legal alternatives,
 optionally against an exact Fabric target.
 
+Unroll-and-jam is atomic only because the upstream transform changes outer
+replication and inner-loop fusion as one semantics-preserving operation. Loom
+does not represent it as `unroll` plus a persistent `jam` switch: the latter
+would be a second schedule authority and could describe combinations that were
+never materialized. The child Structured Program itself shows whether inner
+control is shared, while exact dependence and Fabric-capacity projections bound
+which children may be generated.
+
 LLVM bulk-memory intrinsics are expanded to exact structured loop semantics
 before ownership selection. This exposes direction, bounds, volatile behavior,
 and tail handling where vector width, chunking, staging, and unroll decisions

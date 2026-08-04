@@ -15,6 +15,7 @@ enum class StructuredScheduleDecisionKind : std::uint32_t {
   Tile = 0,
   Unroll = 1,
   Interchange = 2,
+  UnrollAndJam = 3,
 };
 
 /// One atomic schedule decision over an exact parent-local loop. A zero factor

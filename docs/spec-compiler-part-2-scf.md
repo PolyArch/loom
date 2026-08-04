@@ -592,11 +592,11 @@ Configuration View.
 
 Loop scopes are `scf.for` operations in the parent's canonical Structured
 operation order. The first `scope_expansion_limit` loop scopes form the finite
-Generate domain; later loops are outside that invocation domain. Static tile
-and unroll factors are the sorted proper divisors of the exact static trip
-count. Factor one is a no-op and the full trip count is not emitted by this
-generator. Dynamic, non-host-representable, prime, and unit trip counts have no
-tile or unroll decision in schema 1.0; other generator families or later
+Generate domain; later loops are outside that invocation domain. Static tile,
+unroll, and unroll-and-jam factors are the sorted proper divisors of the exact
+static trip count. Factor one is a no-op and the full trip count is not emitted
+by this generator. Dynamic, non-host-representable, prime, and unit trip counts
+have no such factor decision in schema 1.0; other generator families or later
 invocations may still transform their enclosing structure.
 
 Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
@@ -610,10 +610,17 @@ Interchange is one adjacent swap of a perfect two-loop nest. Both loops must
 have no loop-carried results, inner bounds and step must be invariant to the
 outer loop, and the common dependence/effect analysis must prove independent
 iterations for both dimensions. Unknown dependence rejects the decision.
-Arbitrary permutations are composed through immutable lineage rather than
-enumerated factorially. Tile and unroll use the pinned upstream SCF utilities;
-interchange preserves the exact loop bounds, comparison convention,
-attributes, body, and induction-variable uses while exchanging dimensions.
+Unroll-and-jam uses the same perfect-nest and independence proof, additionally
+requires every nested loop bound and step to be invariant to the selected
+outer loop, and obeys the same exact aggregate Fabric-capacity bound as
+ordinary unroll. It is one atomic decision implemented by the pinned upstream
+SCF utility; the shared inner control and replicated body are materialized in
+the child IR and no jam flag is persisted. Arbitrary permutations and compound
+non-atomic schedules are composed through immutable lineage rather than
+enumerated factorially. Tile, unroll, and unroll-and-jam use the pinned upstream
+SCF utilities; interchange preserves the exact loop bounds, comparison
+convention, attributes, body, and induction-variable uses while exchanging
+dimensions.
 
 Each generated decision resolves its parent-local `StructuredEntityRef`,
 clones the complete parent, applies one transform, verifies the result, and
