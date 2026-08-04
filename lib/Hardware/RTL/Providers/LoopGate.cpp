@@ -211,13 +211,22 @@ materializePortableLoopGate(FabricOperationProviderRequest request) {
         llvm::SmallVector<mlir::Value, 2> phaseValidCases;
         llvm::SmallVector<mlir::Value, 2> valueValidCases;
         for (const MaterializedCase &candidate : cases) {
-          mlir::Value valid = circt::comb::AndOp::create(
-              bodyBuilder, location, candidate.selected,
-              candidate.allInputsValid);
-          if (candidate.descriptor.emitPhase)
-            phaseValidCases.push_back(valid);
-          if (candidate.descriptor.forwardedInput)
-            valueValidCases.push_back(valid);
+          if (candidate.descriptor.emitPhase) {
+            llvm::SmallVector<mlir::Value, 3> validTerms{
+                candidate.selected, candidate.allInputsValid};
+            if (candidate.descriptor.forwardedInput)
+              validTerms.push_back(outputReady[1]);
+            phaseValidCases.push_back(
+                andAll(bodyBuilder, location, validTerms));
+          }
+          if (candidate.descriptor.forwardedInput) {
+            llvm::SmallVector<mlir::Value, 3> validTerms{
+                candidate.selected, candidate.allInputsValid};
+            if (candidate.descriptor.emitPhase)
+              validTerms.push_back(outputReady[0]);
+            valueValidCases.push_back(
+                andAll(bodyBuilder, location, validTerms));
+          }
         }
         accessor.setOutput("valid_output_0",
                            orAll(bodyBuilder, location, phaseValidCases));

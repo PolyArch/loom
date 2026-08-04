@@ -333,8 +333,10 @@ module testbench;
       ready_output_1 = control[0];
       phase = data_input_0[0];
       both_valid = valid_input_0 && valid_input_1;
-      expected_phase_valid = both_valid && state_current;
-      expected_value_valid = both_valid && phase;
+      expected_phase_valid =
+          both_valid && state_current && (!phase || ready_output_1);
+      expected_value_valid =
+          both_valid && phase && (!state_current || ready_output_0);
       if (!state_current && !phase)
         output_capacity = 1'b1;
       else if (!state_current && phase)
@@ -357,6 +359,10 @@ module testbench;
         $fatal(1, "gate emitted the wrong phase payload");
       if (valid_output_1 && data_output_1 !== data_input_1[7:0])
         $fatal(1, "gate did not preserve the low value bits");
+      if (state_current && phase && both_valid &&
+          ((valid_output_0 && ready_output_0) !==
+           (valid_output_1 && ready_output_1)))
+        $fatal(1, "gate partially published an atomic result pair");
     end
     $finish;
   end
@@ -408,13 +414,21 @@ module testbench;
       #1;
       if (ready_input_0 !== (valid_input_1 && output_capacity) ||
           ready_input_1 !== (valid_input_0 && output_capacity) ||
-          valid_output_0 !== (both_valid && state_current) ||
-          valid_output_1 !== (both_valid && data_input_0) ||
+          valid_output_0 !==
+              (both_valid && state_current &&
+               (!data_input_0 || ready_output_1)) ||
+          valid_output_1 !==
+              (both_valid && data_input_0 &&
+               (!state_current || ready_output_0)) ||
           state_write !== expected_fire ||
           state_next !== (expected_fire ? data_input_0 : state_current))
         $fatal(1, "zero-payload gate changed handshake semantics");
       if (valid_output_0 && data_output_0 !== data_input_0)
         $fatal(1, "zero-payload gate emitted the wrong phase");
+      if (state_current && data_input_0 && both_valid &&
+          ((valid_output_0 && ready_output_0) !==
+           (valid_output_1 && ready_output_1)))
+        $fatal(1, "zero-payload gate partially published a result pair");
     end
     $finish;
   end
