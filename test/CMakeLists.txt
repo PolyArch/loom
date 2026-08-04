@@ -48,6 +48,7 @@ set(LOOM_TEST_DEPENDS
   loom-adg
   loom-cc
   loom-lower
+  loom-payload
   loom-raise
   loom-raise-opt
   loom-accelerator-final-link-test
@@ -107,6 +108,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-memory-operation-port-test
   loom-fabric-memory-role-bindings-test
   loom-fabric-memory-consistency-contract-test
+  loom-fabric-physical-tag-test
   loom-fabric-persistent-ref-test
   loom-fabric-resource-contract-record-test
   loom-fabric-resource-contract-test
@@ -135,6 +137,7 @@ set(LOOM_TEST_DEPENDS
   loom-spatial-mapping-artifact-test
   loom-spatial-mapping-wire-test
   loom-pnr-endpoint-router-test
+  loom-pnr-config-test
   loom-pnr-deterministic-search-protocol-test
   loom-pnr-initializer-relation-solver-test
   loom-pnr-incremental-topology-test
@@ -161,7 +164,9 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-simulation-wire-test
   loom-simulator-spatial-trace-test
   loom-simulator-spatial-observation-comparison-test
+  loom-simulator-spatial-store-test
   loom-simulator-structured-program-native-execution-test
+  loom-simulator-structured-program-wire-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
   loom-tblgen
