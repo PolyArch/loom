@@ -24,6 +24,19 @@ llvm::Error invalid(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
+void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
+                   std::optional<SpatialEventCoordinate> &selected) {
+  if (candidate &&
+      (!selected || compareSpatialEventCoordinates(*candidate, *selected) < 0))
+    selected = std::move(candidate);
+}
+
+bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
+          const SpatialEventCoordinate &coordinate) {
+  return candidate &&
+         compareSpatialEventCoordinates(*candidate, coordinate) == 0;
+}
+
 using RefBytes = std::vector<std::uint8_t>;
 
 template <typename Ref>
@@ -58,7 +71,7 @@ resolveObservation(const PreparedGraphExecution &execution,
 struct BindingBuilder final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
-  bool requiresPhysicalTransport = false;
+  bool requiresTraversalTransport = false;
 };
 
 struct PhysicalUseSlice final {
@@ -101,22 +114,25 @@ ingressArgumentOrdinal(const ::dataflow::GraphIngressTokenRef &ingress,
 } // namespace
 
 CgraTransportRuntime::CgraTransportRuntime(
-    SimulatorState &state, std::vector<TransferBinding> bindings,
+    const CgraFrozenExecutionPlan &plan, SimulatorState &state,
+    CgraPhysicalActionRuntime &physical, std::vector<TransferBinding> bindings,
     std::vector<SinkBinding> sinks, std::vector<std::uint64_t> physicalUses,
     llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
         actorSourceBindings,
     llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings)
-    : state_(&state), bindings_(std::move(bindings)), sinks_(std::move(sinks)),
+    : plan_(&plan), state_(&state), physical_(&physical),
+      bindings_(std::move(bindings)), sinks_(std::move(sinks)),
       physicalUses_(std::move(physicalUses)),
       actorSourceBindings_(std::move(actorSourceBindings)),
       ingressSourceBindings_(std::move(ingressSourceBindings)),
-      blocked_(bindings_.size()) {}
+      blocked_(bindings_.size()),
+      nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
 llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-    SimulatorState &state) {
+    SimulatorState &state, CgraPhysicalActionRuntime &physical) {
   auto resolvedGraph = dataflow.resolve(graph);
   if (!resolvedGraph)
     return resolvedGraph.takeError();
@@ -211,16 +227,16 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       return selected.storageKind != CgraTraversalStorageKind::None ||
              selected.impliedUseCount != 0;
     };
-    position->second.requiresPhysicalTransport |=
+    position->second.requiresTraversalTransport |=
         requiresPhysical(route.localTraversalOrdinal);
     for (const auto &node : llvm::ArrayRef(plan.transport.routeNodes)
                                 .slice(route.nodeOffset, route.nodeCount))
-      position->second.requiresPhysicalTransport |=
+      position->second.requiresTraversalTransport |=
           requiresPhysical(node.incomingTraversalOrdinal);
     for (const auto &sink : llvm::ArrayRef(plan.transport.routeSinks)
                                 .slice(route.sinkOffset, route.sinkCount)) {
       if (requiresPhysical(sink.localTraversalOrdinal))
-        position->second.requiresPhysicalTransport = true;
+        position->second.requiresTraversalTransport = true;
       position->second.sinks.push_back(sink.sink);
     }
   }
@@ -250,10 +266,10 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                           plan.transport.endpointPhysicalUses.begin() +
                               slice.offset + slice.count);
       producedUseCount = slice.count;
-      builder.requiresPhysicalTransport = true;
     }
     std::set<RefBytes> uniqueSinks;
     const std::uint64_t sinkOffset = sinks.size();
+    std::uint64_t consumedPhysicalUseCount = 0;
     for (const auto &sink : builder.sinks) {
       auto sinkKey = dataflowBytes(dataflow, sink);
       if (!sinkKey)
@@ -271,8 +287,11 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                             plan.transport.endpointPhysicalUses.begin() +
                                 slice.offset + slice.count);
         consumedUseCount = slice.count;
-        builder.requiresPhysicalTransport = true;
       }
+      if (consumedUseCount >
+          std::numeric_limits<std::uint32_t>::max() - consumedPhysicalUseCount)
+        return invalid("CGRA consumed physical-use count exceeds u32");
+      consumedPhysicalUseCount += consumedUseCount;
       if (const auto *operand =
               std::get_if<::dataflow::ActorTokenOperandRef>(&sink)) {
         auto actor = dataflow.resolve(operand->actor);
@@ -304,7 +323,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     bindings.push_back({builder.producer, sinkOffset,
                         static_cast<std::uint32_t>(builder.sinks.size()),
                         producedUseOffset, producedUseCount,
-                        builder.requiresPhysicalTransport, false});
+                        static_cast<std::uint32_t>(consumedPhysicalUseCount),
+                        builder.requiresTraversalTransport, false});
     if (const auto *producer =
             std::get_if<::dataflow::ActorTokenResultRef>(&builder.producer)) {
       auto actor = actorPlanByEntity.find(producer->actor.entity.value());
@@ -324,9 +344,10 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         return invalid("CGRA transport ingress has duplicate bindings");
     }
   }
-  return CgraTransportRuntime(
-      state, std::move(bindings), std::move(sinks), std::move(physicalUses),
-      std::move(actorSourceBindings), std::move(ingressSourceBindings));
+  return CgraTransportRuntime(plan, state, physical, std::move(bindings),
+                              std::move(sinks), std::move(physicalUses),
+                              std::move(actorSourceBindings),
+                              std::move(ingressSourceBindings));
 }
 
 std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
@@ -349,6 +370,165 @@ std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
   return slot;
 }
 
+llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+CgraTransportRuntime::requestActions(
+    llvm::ArrayRef<PendingActionTransfer> transfers, ActionStage stage,
+    const SpatialEventCoordinate &coordinate) {
+  llvm::SmallVector<CgraPhysicalActionRequest, 8> requests;
+  llvm::SmallVector<ActionOwner, 8> owners;
+  llvm::DenseMap<std::uint64_t, std::uint64_t> increments;
+
+  const CgraPhysicalUseClientKind expectedClient =
+      stage == ActionStage::Produced
+          ? CgraPhysicalUseClientKind::ProducedTransport
+          : CgraPhysicalUseClientKind::ConsumedTransport;
+  const auto appendAction = [&](std::uint64_t transferSlot,
+                                std::uint64_t action) -> llvm::Error {
+    if (action >= nextActionOccurrence_.size() ||
+        action >= plan_->physicalUseClients.size() ||
+        plan_->physicalUseClients[action] != expectedClient)
+      return invalid("CGRA transport action has an inconsistent client");
+    const std::uint64_t increment = increments.lookup(action);
+    const std::uint64_t next = nextActionOccurrence_[action];
+    if (increment == std::numeric_limits<std::uint64_t>::max() ||
+        next >= std::numeric_limits<std::uint64_t>::max() - increment)
+      return llvm::createStringError(
+          std::errc::value_too_large,
+          "CGRA transport action occurrence ordinal overflows u64");
+    requests.push_back({action, next + increment});
+    owners.push_back({transferSlot, stage, ActionLifecycleState::Requested});
+    increments[action] = increment + 1;
+    return llvm::Error::success();
+  };
+
+  for (const PendingActionTransfer &transfer : transfers) {
+    if (transfer.bindingOrdinal >= bindings_.size())
+      return invalid("CGRA transport action names an unknown binding");
+    const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+    if (stage == ActionStage::Produced) {
+      for (std::uint64_t action :
+           llvm::ArrayRef(physicalUses_)
+               .slice(binding.physicalUseOffset, binding.physicalUseCount))
+        if (llvm::Error error = appendAction(transfer.transferSlot, action))
+          return error;
+      continue;
+    }
+    for (const SinkBinding &sink :
+         llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount))
+      for (std::uint64_t action :
+           llvm::ArrayRef(physicalUses_)
+               .slice(sink.physicalUseOffset, sink.physicalUseCount))
+        if (llvm::Error error = appendAction(transfer.transferSlot, action))
+          return error;
+  }
+
+  if (requests.empty())
+    return std::vector<CgraPhysicalLifecycleEvent>{};
+  auto requested = physical_->requestBatch(requests, coordinate);
+  if (!requested)
+    return requested.takeError();
+
+  for (const auto &[action, increment] : increments)
+    nextActionOccurrence_[action] += increment;
+  for (auto [request, owner] : llvm::zip(requests, owners)) {
+    const bool inserted =
+        actionOwners_
+            .try_emplace(std::make_pair(request.actionOrdinal,
+                                        request.occurrenceOrdinal),
+                         owner)
+            .second;
+    assert(inserted && "preflighted transport action must be unique");
+  }
+  return requested;
+}
+
+llvm::Error CgraTransportRuntime::scheduleArrival(
+    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
+  if (slot >= inFlight_.size() || !inFlight_[slot].active)
+    return invalid("CGRA transport arrival names an inactive token");
+  InFlight &inFlight = inFlight_[slot];
+  if (inFlight.arrivalScheduled || inFlight.consumedRequested)
+    return invalid("CGRA transport arrival was scheduled twice");
+  arrivalEvents_.schedule(
+      {{coordinate, inFlight.bindingOrdinal, inFlight.occurrenceOrdinal, 0},
+       slot});
+  inFlight.arrivalScheduled = true;
+  return llvm::Error::success();
+}
+
+llvm::Error CgraTransportRuntime::schedulePublication(
+    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
+  if (slot >= inFlight_.size() || !inFlight_[slot].active)
+    return invalid("CGRA transport publication names an inactive token");
+  InFlight &inFlight = inFlight_[slot];
+  if (inFlight.publicationScheduled || inFlight.published)
+    return invalid("CGRA transport publication was scheduled twice");
+  scheduleAt(slot, coordinate);
+  inFlight.publicationScheduled = true;
+  return llvm::Error::success();
+}
+
+llvm::Error CgraTransportRuntime::acceptTransfers(
+    const SpatialEventCoordinate &coordinate,
+    llvm::ArrayRef<PendingTransfer> transfers) {
+  if (transfers.empty())
+    return llvm::Error::success();
+  auto arrival = nextSpatialDelta(coordinate);
+  if (!arrival)
+    return arrival.takeError();
+  if (transfers.size() >
+      std::numeric_limits<std::uint64_t>::max() - inFlight_.size())
+    return invalid("CGRA in-flight transport slot count exceeds u64");
+
+  llvm::SmallVector<std::uint64_t, 4> prospectiveSlots;
+  prospectiveSlots.reserve(transfers.size());
+  const std::size_t reused = std::min(transfers.size(), freeSlots_.size());
+  for (std::size_t index = 0; index != reused; ++index)
+    prospectiveSlots.push_back(freeSlots_[freeSlots_.size() - 1 - index]);
+  for (std::size_t index = reused; index != transfers.size(); ++index)
+    prospectiveSlots.push_back(inFlight_.size() + index - reused);
+
+  llvm::SmallVector<PendingActionTransfer, 4> producedTransfers;
+  producedTransfers.reserve(transfers.size());
+  for (auto [transfer, slot] : llvm::zip(transfers, prospectiveSlots)) {
+    if (!transfer.token || transfer.bindingOrdinal >= bindings_.size())
+      return invalid("CGRA transport received a malformed source emission");
+    const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+    if (binding.requiresTraversalTransport)
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "CGRA selected transfer requires traversal resource coordination");
+    producedTransfers.push_back({slot, transfer.bindingOrdinal});
+  }
+
+  auto requested =
+      requestActions(producedTransfers, ActionStage::Produced, coordinate);
+  if (!requested)
+    return requested.takeError();
+
+  llvm::SmallVector<std::uint64_t, 4> slots;
+  slots.reserve(transfers.size());
+  for (auto [transfer, expectedSlot] : llvm::zip(transfers, prospectiveSlots)) {
+    const std::uint64_t slot =
+        allocate(transfer.bindingOrdinal, transfer.occurrenceOrdinal,
+                 std::move(*transfer.token));
+    assert(slot == expectedSlot && "transport slot projection changed");
+    slots.push_back(slot);
+  }
+  for (const CgraPhysicalLifecycleEvent &event : *requested)
+    requestedEvents_.schedule(
+        {{event.coordinate, event.actionOrdinal, event.occurrenceOrdinal,
+          event.ownerEventOrdinal},
+         0});
+  for (std::uint64_t slot : slots) {
+    const TransferBinding &binding = bindings_[inFlight_[slot].bindingOrdinal];
+    if (binding.physicalUseCount == 0)
+      if (llvm::Error error = scheduleArrival(slot, *arrival))
+        return error;
+  }
+  return llvm::Error::success();
+}
+
 void CgraTransportRuntime::scheduleAt(
     std::uint64_t slot, const SpatialEventCoordinate &publicationCoordinate) {
   assert(slot < inFlight_.size() && inFlight_[slot].active &&
@@ -364,14 +544,10 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
     llvm::MutableArrayRef<CgraComputeActorEmission> emissions) {
   if (emissions.empty())
     return llvm::Error::success();
-  auto publication = nextSpatialDelta(coordinate);
-  if (!publication)
-    return publication.takeError();
-
-  llvm::SmallVector<std::uint64_t, 4> bindingOrdinals;
+  llvm::SmallVector<PendingTransfer, 4> transfers;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
-  bindingOrdinals.reserve(emissions.size());
-  for (const CgraComputeActorEmission &emission : emissions) {
+  transfers.reserve(emissions.size());
+  for (CgraComputeActorEmission &emission : emissions) {
     auto binding = actorSourceBindings_.find(
         {emission.actorPlanOrdinal, emission.resultOrdinal});
     if (binding == actorSourceBindings_.end())
@@ -379,22 +555,10 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
     if (bindings_[binding->second].active ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA actor emission batch reuses an in-flight source");
-    if (bindings_[binding->second].requiresPhysicalTransport)
-      return llvm::createStringError(
-          std::errc::not_supported,
-          "CGRA selected transfer requires physical resource coordination");
-    bindingOrdinals.push_back(binding->second);
+    transfers.push_back(
+        {binding->second, emission.occurrenceOrdinal, &emission.token});
   }
-
-  llvm::SmallVector<std::uint64_t, 4> slots;
-  slots.reserve(emissions.size());
-  for (auto [emission, binding] : llvm::zip(emissions, bindingOrdinals)) {
-    slots.push_back(allocate(binding, emission.occurrenceOrdinal,
-                             std::move(emission.token)));
-  }
-  for (std::uint64_t slot : slots)
-    scheduleAt(slot, *publication);
-  return llvm::Error::success();
+  return acceptTransfers(coordinate, transfers);
 }
 
 llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
@@ -402,34 +566,200 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
     llvm::MutableArrayRef<GraphIngressEmission> emissions) {
   if (emissions.empty())
     return llvm::Error::success();
-  auto publication = nextSpatialDelta(coordinate);
-  if (!publication)
-    return publication.takeError();
-
-  llvm::SmallVector<std::uint64_t, 4> bindingOrdinals;
+  llvm::SmallVector<PendingTransfer, 4> transfers;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
-  bindingOrdinals.reserve(emissions.size());
-  for (const GraphIngressEmission &emission : emissions) {
+  transfers.reserve(emissions.size());
+  for (GraphIngressEmission &emission : emissions) {
     auto binding = ingressSourceBindings_.find(emission.argumentOrdinal);
     if (binding == ingressSourceBindings_.end())
       return invalid("CGRA graph ingress has no selected transfer binding");
     if (bindings_[binding->second].active ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA graph ingress batch reuses an in-flight source");
-    if (bindings_[binding->second].requiresPhysicalTransport)
-      return llvm::createStringError(
-          std::errc::not_supported,
-          "CGRA selected ingress requires physical resource coordination");
-    bindingOrdinals.push_back(binding->second);
+    transfers.push_back(
+        {binding->second, emission.occurrenceOrdinal, &emission.token});
+  }
+  return acceptTransfers(coordinate, transfers);
+}
+
+llvm::Error CgraTransportRuntime::acceptPhysicalEvents(
+    const CgraPhysicalLifecycleFrame &physicalFrame) {
+  struct CountDelta final {
+    std::uint32_t producedPermitted = 0;
+    std::uint32_t producedRetired = 0;
+    std::uint32_t consumedPermitted = 0;
+    std::uint32_t consumedRetired = 0;
+  };
+  using ActionKey = std::pair<std::uint64_t, std::uint64_t>;
+  llvm::DenseMap<ActionKey, ActionLifecycleState> projectedStates;
+  llvm::DenseMap<std::uint64_t, CountDelta> countDeltas;
+
+  for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
+    if (compareSpatialEventCoordinates(event.coordinate,
+                                       physicalFrame.coordinate) != 0)
+      return invalid("CGRA physical frame contains another coordinate");
+    if (event.kind == CgraPhysicalLifecycleKind::Requested)
+      return invalid("CGRA physical runtime repeated a request event");
+    if (event.actionOrdinal >= plan_->physicalUseClients.size() ||
+        event.actionOrdinal >= plan_->physicalUseTimings.size())
+      return invalid("CGRA physical lifecycle names an unknown action");
+    const CgraPhysicalUseClientKind client =
+        plan_->physicalUseClients[event.actionOrdinal];
+    if (client == CgraPhysicalUseClientKind::ComputeTransition ||
+        client == CgraPhysicalUseClientKind::MemoryTransition)
+      continue;
+
+    const ActionKey key{event.actionOrdinal, event.occurrenceOrdinal};
+    auto indexed = actionOwners_.find(key);
+    if (indexed == actionOwners_.end())
+      return invalid("CGRA physical lifecycle has no transport owner");
+    const ActionOwner &owner = indexed->second;
+    if (owner.transferSlot >= inFlight_.size() ||
+        !inFlight_[owner.transferSlot].active)
+      return invalid("CGRA physical lifecycle names an inactive transfer");
+    const bool produced = owner.stage == ActionStage::Produced;
+    if ((produced && client != CgraPhysicalUseClientKind::ProducedTransport) ||
+        (!produced && client != CgraPhysicalUseClientKind::ConsumedTransport))
+      return invalid("CGRA physical lifecycle disagrees with transport stage");
+
+    auto projected = projectedStates.find(key);
+    ActionLifecycleState state =
+        projected == projectedStates.end() ? owner.state : projected->second;
+    const bool requiresCommit =
+        plan_->physicalUseTimings[event.actionOrdinal].commitRank.has_value();
+    bool permitted = false;
+    bool retired = false;
+    switch (event.kind) {
+    case CgraPhysicalLifecycleKind::Requested:
+      llvm_unreachable("request lifecycle rejected above");
+    case CgraPhysicalLifecycleKind::Granted:
+      if (state != ActionLifecycleState::Requested)
+        return invalid("CGRA transport action was granted twice");
+      state = requiresCommit ? ActionLifecycleState::Granted
+                             : ActionLifecycleState::Permitted;
+      permitted = !requiresCommit;
+      break;
+    case CgraPhysicalLifecycleKind::Committed:
+      if (!requiresCommit || state != ActionLifecycleState::Granted)
+        return invalid("CGRA transport action commit is inconsistent");
+      state = ActionLifecycleState::Permitted;
+      permitted = true;
+      break;
+    case CgraPhysicalLifecycleKind::Retired:
+      if (state != ActionLifecycleState::Permitted)
+        return invalid("CGRA transport action retired before permission");
+      state = ActionLifecycleState::Retired;
+      retired = true;
+      break;
+    }
+    projectedStates[key] = state;
+    CountDelta &delta = countDeltas[owner.transferSlot];
+    std::uint32_t &permittedDelta =
+        produced ? delta.producedPermitted : delta.consumedPermitted;
+    std::uint32_t &retiredDelta =
+        produced ? delta.producedRetired : delta.consumedRetired;
+    if (permitted &&
+        permittedDelta == std::numeric_limits<std::uint32_t>::max())
+      return invalid("CGRA transport permit count exceeds u32");
+    if (retired && retiredDelta == std::numeric_limits<std::uint32_t>::max())
+      return invalid("CGRA transport retire count exceeds u32");
+    permittedDelta += permitted;
+    retiredDelta += retired;
   }
 
-  llvm::SmallVector<std::uint64_t, 4> slots;
-  slots.reserve(emissions.size());
-  for (auto [emission, binding] : llvm::zip(emissions, bindingOrdinals))
-    slots.push_back(allocate(binding, emission.occurrenceOrdinal,
-                             std::move(emission.token)));
-  for (std::uint64_t slot : slots)
-    scheduleAt(slot, *publication);
+  bool needsNextDelta = false;
+  for (const auto &[slot, delta] : countDeltas) {
+    InFlight &inFlight = inFlight_[slot];
+    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    if (inFlight.producedPermitted > binding.physicalUseCount ||
+        inFlight.producedRetired > binding.physicalUseCount ||
+        inFlight.consumedPermitted > binding.consumedPhysicalUseCount ||
+        inFlight.consumedRetired > binding.consumedPhysicalUseCount ||
+        delta.producedPermitted >
+            binding.physicalUseCount - inFlight.producedPermitted ||
+        delta.producedRetired >
+            binding.physicalUseCount - inFlight.producedRetired ||
+        delta.consumedPermitted >
+            binding.consumedPhysicalUseCount - inFlight.consumedPermitted ||
+        delta.consumedRetired >
+            binding.consumedPhysicalUseCount - inFlight.consumedRetired)
+      return invalid("CGRA transport lifecycle count exceeds selected uses");
+    if (delta.consumedPermitted != 0 && !inFlight.consumedRequested)
+      return invalid("CGRA consumed action preceded transfer arrival");
+    needsNextDelta |=
+        (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+         inFlight.producedPermitted + delta.producedPermitted ==
+             binding.physicalUseCount) ||
+        (!inFlight.publicationScheduled && !inFlight.published &&
+         inFlight.consumedRequested &&
+         inFlight.consumedPermitted + delta.consumedPermitted ==
+             binding.consumedPhysicalUseCount);
+  }
+  std::optional<SpatialEventCoordinate> next;
+  if (needsNextDelta) {
+    auto coordinate = nextSpatialDelta(physicalFrame.coordinate);
+    if (!coordinate)
+      return coordinate.takeError();
+    next = std::move(*coordinate);
+  }
+
+  for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
+    if (event.actionOrdinal >= plan_->physicalUseClients.size())
+      continue;
+    const CgraPhysicalUseClientKind client =
+        plan_->physicalUseClients[event.actionOrdinal];
+    if (client == CgraPhysicalUseClientKind::ComputeTransition ||
+        client == CgraPhysicalUseClientKind::MemoryTransition)
+      continue;
+    const ActionKey key{event.actionOrdinal, event.occurrenceOrdinal};
+    auto indexed = actionOwners_.find(key);
+    assert(indexed != actionOwners_.end() &&
+           "validated transport action owner disappeared");
+    ActionOwner &owner = indexed->second;
+    InFlight &inFlight = inFlight_[owner.transferSlot];
+    const bool produced = owner.stage == ActionStage::Produced;
+    const bool requiresCommit =
+        plan_->physicalUseTimings[event.actionOrdinal].commitRank.has_value();
+    switch (event.kind) {
+    case CgraPhysicalLifecycleKind::Requested:
+      llvm_unreachable("request lifecycle rejected above");
+    case CgraPhysicalLifecycleKind::Granted:
+      owner.state = requiresCommit ? ActionLifecycleState::Granted
+                                   : ActionLifecycleState::Permitted;
+      if (!requiresCommit)
+        ++(produced ? inFlight.producedPermitted : inFlight.consumedPermitted);
+      break;
+    case CgraPhysicalLifecycleKind::Committed:
+      owner.state = ActionLifecycleState::Permitted;
+      ++(produced ? inFlight.producedPermitted : inFlight.consumedPermitted);
+      break;
+    case CgraPhysicalLifecycleKind::Retired:
+      ++(produced ? inFlight.producedRetired : inFlight.consumedRetired);
+      actionOwners_.erase(indexed);
+      break;
+    }
+  }
+  for (const auto &[slot, delta] : countDeltas) {
+    (void)delta;
+    InFlight &inFlight = inFlight_[slot];
+    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    if (!inFlight.arrivalScheduled && !inFlight.consumedRequested &&
+        inFlight.producedPermitted == binding.physicalUseCount) {
+      if (!next)
+        return invalid("CGRA transport arrival lost its next delta");
+      if (llvm::Error error = scheduleArrival(slot, *next))
+        return error;
+    }
+    if (!inFlight.publicationScheduled && !inFlight.published &&
+        inFlight.consumedRequested &&
+        inFlight.consumedPermitted == binding.consumedPhysicalUseCount) {
+      if (!next)
+        return invalid("CGRA transport publication lost its next delta");
+      if (llvm::Error error = schedulePublication(slot, *next))
+        return error;
+    }
+    maybeRelease(slot);
+  }
   return llvm::Error::success();
 }
 
@@ -463,7 +793,17 @@ void CgraTransportRuntime::publish(std::uint64_t slot,
   }
   frame.publications.push_back({binding.producer, inFlight.occurrenceOrdinal,
                                 std::move(inFlight.token)});
-  release(slot);
+  inFlight.published = true;
+  maybeRelease(slot);
+}
+
+void CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
+  InFlight &inFlight = inFlight_[slot];
+  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  if (inFlight.published &&
+      inFlight.producedRetired == binding.physicalUseCount &&
+      inFlight.consumedRetired == binding.consumedPhysicalUseCount)
+    release(slot);
 }
 
 void CgraTransportRuntime::release(std::uint64_t slot) {
@@ -476,28 +816,97 @@ void CgraTransportRuntime::release(std::uint64_t slot) {
 
 llvm::Expected<std::optional<CgraTransportFrame>>
 CgraTransportRuntime::advance() {
-  auto eventFrame = events_.popNextFrame();
-  if (!eventFrame)
-    return eventFrame.takeError();
-  if (!*eventFrame)
+  const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
+  if (!coordinate)
     return std::optional<CgraTransportFrame>{};
-  CgraTransportFrame frame{(**eventFrame).coordinate, {}, {}};
-  for (const CgraScheduledEvent &event : (**eventFrame).events) {
-    if (event.payload >= inFlight_.size() || !inFlight_[event.payload].active)
-      return invalid("CGRA transport event names an inactive token");
-    InFlight &inFlight = inFlight_[event.payload];
-    if (inFlight.bindingOrdinal != event.order.structuralActionOrdinal ||
-        inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
-      return invalid("CGRA transport event key disagrees with its token");
-    TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
-    if (!canPublish(binding)) {
-      blocked_.set(inFlight.bindingOrdinal);
-      frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
-      continue;
-    }
-    publish(event.payload, frame);
+
+  CgraTransportFrame frame{*coordinate, {}, {}, {}};
+  if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
+    auto requested = requestedEvents_.popNextFrame();
+    if (!requested)
+      return requested.takeError();
+    for (const CgraScheduledEvent &event : (**requested).events)
+      frame.physicalEvents.push_back(
+          {CgraPhysicalLifecycleKind::Requested,
+           event.order.structuralActionOrdinal, event.order.occurrenceOrdinal,
+           event.order.ownerEventOrdinal, event.order.coordinate});
   }
+
+  if (isAt(arrivalEvents_.nextCoordinate(), *coordinate)) {
+    auto arrivals = arrivalEvents_.popNextFrame();
+    if (!arrivals)
+      return arrivals.takeError();
+    llvm::SmallVector<PendingActionTransfer, 4> transfers;
+    llvm::SmallVector<std::uint64_t, 4> slots;
+    transfers.reserve((**arrivals).events.size());
+    slots.reserve((**arrivals).events.size());
+    for (const CgraScheduledEvent &event : (**arrivals).events) {
+      if (event.payload >= inFlight_.size() || !inFlight_[event.payload].active)
+        return invalid("CGRA transport arrival names an inactive token");
+      InFlight &inFlight = inFlight_[event.payload];
+      if (!inFlight.arrivalScheduled || inFlight.consumedRequested ||
+          inFlight.bindingOrdinal != event.order.structuralActionOrdinal ||
+          inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
+        return invalid("CGRA transport arrival key is inconsistent");
+      transfers.push_back({event.payload, inFlight.bindingOrdinal});
+      slots.push_back(event.payload);
+    }
+    auto requested = requestActions(transfers, ActionStage::Consumed,
+                                    (**arrivals).coordinate);
+    if (!requested)
+      return requested.takeError();
+    frame.physicalEvents.insert(frame.physicalEvents.end(), requested->begin(),
+                                requested->end());
+    for (std::uint64_t slot : slots) {
+      InFlight &inFlight = inFlight_[slot];
+      inFlight.arrivalScheduled = false;
+      inFlight.consumedRequested = true;
+      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      if (binding.consumedPhysicalUseCount == 0)
+        if (llvm::Error error = schedulePublication(slot, *coordinate))
+          return error;
+    }
+  }
+
+  if (isAt(events_.nextCoordinate(), *coordinate)) {
+    auto publications = events_.popNextFrame();
+    if (!publications)
+      return publications.takeError();
+    for (const CgraScheduledEvent &event : (**publications).events) {
+      if (event.payload >= inFlight_.size() || !inFlight_[event.payload].active)
+        return invalid("CGRA transport event names an inactive token");
+      InFlight &inFlight = inFlight_[event.payload];
+      if (!inFlight.publicationScheduled ||
+          inFlight.bindingOrdinal != event.order.structuralActionOrdinal ||
+          inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
+        return invalid("CGRA transport event key disagrees with its token");
+      inFlight.publicationScheduled = false;
+      TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      if (!canPublish(binding)) {
+        blocked_.set(inFlight.bindingOrdinal);
+        frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
+        continue;
+      }
+      publish(event.payload, frame);
+    }
+  }
+  llvm::sort(frame.physicalEvents, [](const CgraPhysicalLifecycleEvent &lhs,
+                                      const CgraPhysicalLifecycleEvent &rhs) {
+    return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal,
+                    lhs.ownerEventOrdinal, lhs.kind) <
+           std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal,
+                    rhs.ownerEventOrdinal, rhs.kind);
+  });
   return std::optional<CgraTransportFrame>(std::move(frame));
+}
+
+std::optional<SpatialEventCoordinate>
+CgraTransportRuntime::nextCoordinate() const {
+  std::optional<SpatialEventCoordinate> coordinate;
+  selectEarlier(requestedEvents_.nextCoordinate(), coordinate);
+  selectEarlier(arrivalEvents_.nextCoordinate(), coordinate);
+  selectEarlier(events_.nextCoordinate(), coordinate);
+  return coordinate;
 }
 
 llvm::Error
@@ -517,7 +926,8 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
     if (!slot)
       return invalid("CGRA blocked transfer has no in-flight token");
     blocked_.reset(binding);
-    scheduleAt(*slot, *publication);
+    if (llvm::Error error = schedulePublication(*slot, *publication))
+      return error;
   }
   return llvm::Error::success();
 }

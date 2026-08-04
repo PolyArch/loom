@@ -179,6 +179,12 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
   const fabric::ResourceContract contract = resourceContract();
   CgraFrozenExecutionPlan plan =
       selectedPlan(*add, semanticActor(*prepared, add->op), contract);
+  const std::uint64_t transportAction = plan.physicalUseTimings.size();
+  plan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::ProducedTransport);
+  plan.resources.selectedUses.push_back({});
+  plan.physicalUseTimings.push_back(
+      {transportAction, 0, std::nullopt, 0, 0, 0, std::nullopt});
 
   SimulatorState state;
   state.graphScope = graph.getOperation();
@@ -194,13 +200,19 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
 
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  (void)take(physical.request(transportAction, 0, coordinate(0)));
   auto runtime = take(CgraComputeRuntime::create(plan, view, add->graph,
                                                  *prepared, state, physical));
   auto frame = take(runtime.start(coordinate(0)));
   require(frame && hasPhysical(*frame, CgraPhysicalLifecycleKind::Requested) &&
               hasPhysical(*frame, CgraPhysicalLifecycleKind::Granted) &&
+              llvm::any_of(
+                  frame->physicalEvents,
+                  [transportAction](const CgraPhysicalLifecycleEvent &event) {
+                    return event.actionOrdinal == transportAction;
+                  }) &&
               frame->actorEvents.empty(),
-          "initial readiness did not request and grant the selected use");
+          "shared physical runtime did not preserve each client lifecycle");
 
   frame = take(runtime.advance());
   require(frame &&

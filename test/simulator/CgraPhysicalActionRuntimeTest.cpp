@@ -90,11 +90,22 @@ void contentionProducesExactLifecycleAndStall() {
   auto runtime = take(
       loom::sim::detail::CgraPhysicalActionRuntime::create(resources, uses));
 
-  const auto firstRequest = take(runtime.request(0, 0, coordinate(5)));
-  const auto secondRequest = take(runtime.request(1, 0, coordinate(5)));
-  if (firstRequest.kind !=
+  const loom::sim::detail::CgraPhysicalActionRequest duplicateRequests[] = {
+      {0, 7}, {0, 7}};
+  auto duplicate = runtime.requestBatch(duplicateRequests, coordinate(4));
+  if (duplicate)
+    fail("duplicate request batch was accepted");
+  llvm::consumeError(duplicate.takeError());
+  if (runtime.hasPendingActions() || runtime.nextCoordinate())
+    fail("rejected request batch changed physical runtime state");
+
+  const loom::sim::detail::CgraPhysicalActionRequest requests[] = {{0, 0},
+                                                                   {1, 0}};
+  const auto requested = take(runtime.requestBatch(requests, coordinate(5)));
+  if (requested.size() != 2 ||
+      requested[0].kind !=
           loom::sim::detail::CgraPhysicalLifecycleKind::Requested ||
-      secondRequest.kind !=
+      requested[1].kind !=
           loom::sim::detail::CgraPhysicalLifecycleKind::Requested)
     fail("request did not expose the physical lifecycle origin");
 

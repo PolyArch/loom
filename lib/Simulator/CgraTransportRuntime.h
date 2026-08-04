@@ -21,6 +21,7 @@ struct CgraTokenPublication final {
 
 struct CgraTransportFrame final {
   SpatialEventCoordinate coordinate;
+  std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
   std::vector<CgraTokenPublication> publications;
   std::vector<std::uint64_t> blockedTransfers;
 };
@@ -34,7 +35,7 @@ public:
   create(const CgraFrozenExecutionPlan &plan,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
-         SimulatorState &state);
+         SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
   llvm::Error acceptActorEmissions(
       const SpatialEventCoordinate &coordinate,
@@ -44,11 +45,19 @@ public:
       const SpatialEventCoordinate &coordinate,
       llvm::MutableArrayRef<GraphIngressEmission> emissions);
 
+  llvm::Error
+  acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+
   llvm::Expected<std::optional<CgraTransportFrame>> advance();
 
   llvm::Error retryBlocked(const SpatialEventCoordinate &coordinate);
 
-  bool hasPendingEvents() const { return !events_.empty(); }
+  std::optional<SpatialEventCoordinate> nextCoordinate() const;
+
+  bool hasPendingEvents() const {
+    return !arrivalEvents_.empty() || !events_.empty() ||
+           !requestedEvents_.empty();
+  }
   bool hasBlockedTransfers() const { return blocked_.any(); }
 
 private:
@@ -68,7 +77,8 @@ private:
     std::uint32_t sinkCount = 0;
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
-    bool requiresPhysicalTransport = false;
+    std::uint32_t consumedPhysicalUseCount = 0;
+    bool requiresTraversalTransport = false;
     bool active = false;
   };
 
@@ -77,24 +87,72 @@ private:
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
     Token token;
+    bool arrivalScheduled = false;
+    bool publicationScheduled = false;
+    bool published = false;
+    bool consumedRequested = false;
+    std::uint32_t producedPermitted = 0;
+    std::uint32_t producedRetired = 0;
+    std::uint32_t consumedPermitted = 0;
+    std::uint32_t consumedRetired = 0;
+  };
+
+  enum class ActionStage : std::uint8_t { Produced, Consumed };
+
+  enum class ActionLifecycleState : std::uint8_t {
+    Requested,
+    Granted,
+    Permitted,
+    Retired,
+  };
+
+  struct ActionOwner final {
+    std::uint64_t transferSlot = 0;
+    ActionStage stage = ActionStage::Produced;
+    ActionLifecycleState state = ActionLifecycleState::Requested;
+  };
+
+  struct PendingTransfer final {
+    std::uint64_t bindingOrdinal = 0;
+    std::uint64_t occurrenceOrdinal = 0;
+    Token *token = nullptr;
+  };
+
+  struct PendingActionTransfer final {
+    std::uint64_t transferSlot = 0;
+    std::uint64_t bindingOrdinal = 0;
   };
 
   CgraTransportRuntime(
-      SimulatorState &state, std::vector<TransferBinding> bindings,
-      std::vector<SinkBinding> sinks, std::vector<std::uint64_t> physicalUses,
+      const CgraFrozenExecutionPlan &plan, SimulatorState &state,
+      CgraPhysicalActionRuntime &physical,
+      std::vector<TransferBinding> bindings, std::vector<SinkBinding> sinks,
+      std::vector<std::uint64_t> physicalUses,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorSourceBindings,
       llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
 
   std::uint64_t allocate(std::uint64_t bindingOrdinal,
                          std::uint64_t occurrenceOrdinal, Token token);
+  llvm::Error acceptTransfers(const SpatialEventCoordinate &coordinate,
+                              llvm::ArrayRef<PendingTransfer> transfers);
+  llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+  requestActions(llvm::ArrayRef<PendingActionTransfer> transfers,
+                 ActionStage stage, const SpatialEventCoordinate &coordinate);
+  llvm::Error scheduleArrival(std::uint64_t slot,
+                              const SpatialEventCoordinate &coordinate);
+  llvm::Error schedulePublication(std::uint64_t slot,
+                                  const SpatialEventCoordinate &coordinate);
+  void maybeRelease(std::uint64_t slot);
   void scheduleAt(std::uint64_t slot,
                   const SpatialEventCoordinate &publicationCoordinate);
   bool canPublish(const TransferBinding &binding) const;
   void publish(std::uint64_t slot, CgraTransportFrame &frame);
   void release(std::uint64_t slot);
 
+  const CgraFrozenExecutionPlan *plan_ = nullptr;
   SimulatorState *state_ = nullptr;
+  CgraPhysicalActionRuntime *physical_ = nullptr;
   std::vector<TransferBinding> bindings_;
   std::vector<SinkBinding> sinks_;
   std::vector<std::uint64_t> physicalUses_;
@@ -102,9 +160,14 @@ private:
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   CgraEventQueue events_;
+  CgraEventQueue arrivalEvents_;
+  CgraEventQueue requestedEvents_;
   std::vector<InFlight> inFlight_;
   std::vector<std::uint64_t> freeSlots_;
   llvm::SmallBitVector blocked_;
+  std::vector<std::uint64_t> nextActionOccurrence_;
+  llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>
+      actionOwners_;
 };
 
 } // namespace loom::sim::detail

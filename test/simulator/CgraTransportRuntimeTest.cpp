@@ -113,8 +113,10 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   SimulatorState state;
   state.graphScope = graph.getOperation();
   initializeRunState(state, *prepared);
-  auto runtime = take(
-      CgraTransportRuntime::create(plan, view, add->graph, *prepared, state));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto runtime = take(CgraTransportRuntime::create(plan, view, add->graph,
+                                                   *prepared, state, physical));
   llvm::SmallVector<GraphIngressEmission, 2> ingress;
   state.graphIngressCapture = &ingress;
   seedBlockArgument(
@@ -173,24 +175,74 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               channelQueue(state, sync->op->getOpOperand(1)).front(),
               mlir::IntegerType::get(&context(), 32))) == llvm::APInt(32, 16),
       "FU-local transfer did not publish one exact consumer token");
+  channelQueue(state, sync->op->getOpOperand(1)).pop_front();
 
   CgraFrozenExecutionPlan physicalPlan = plan;
   physicalPlan.physicalUseClients.push_back(
       CgraPhysicalUseClientKind::ProducedTransport);
+  physicalPlan.physicalUseClients.push_back(
+      CgraPhysicalUseClientKind::ConsumedTransport);
+  physicalPlan.resources.selectedUses.push_back({});
+  physicalPlan.resources.selectedUses.push_back({});
+  physicalPlan.physicalUseTimings.push_back(
+      {0, 0, std::nullopt, 1, 0, 1, std::nullopt});
+  physicalPlan.physicalUseTimings.push_back(
+      {1, 0, std::nullopt, 1, 0, 1, std::nullopt});
   physicalPlan.transport.endpointPhysicalUses.push_back(0);
+  physicalPlan.transport.endpointPhysicalUses.push_back(1);
   physicalPlan.transport.producedUses.push_back(
       {{dataflow::ActorTokenResultRef{add->ref, 0}}, 0, 1});
-  auto physicalRuntime = take(CgraTransportRuntime::create(
-      physicalPlan, view, add->graph, *prepared, state));
+  physicalPlan.transport.consumedUses.push_back(
+      {{dataflow::ActorTokenOperandRef{sync->ref, 1}}, 1, 1});
+  auto selectedPhysical = take(CgraPhysicalActionRuntime::create(
+      physicalPlan.resources, physicalPlan.physicalUseTimings));
+  auto selectedTransport = take(CgraTransportRuntime::create(
+      physicalPlan, view, add->graph, *prepared, state, selectedPhysical));
   emissions.clear();
   emissions.push_back(
       {0, 1, 0, 0,
        take(tokenFromBitPattern(llvm::APInt(32, 17),
                                 mlir::IntegerType::get(&context(), 32)))});
-  rejected = physicalRuntime.acceptActorEmissions(coordinate(4), emissions);
-  require(static_cast<bool>(rejected),
-          "selected Produced ResourceUse bypassed physical coordination");
-  llvm::consumeError(std::move(rejected));
+  if (llvm::Error error =
+          selectedTransport.acceptActorEmissions(coordinate(4), emissions))
+    fail(llvm::toString(std::move(error)));
+  auto requested = take(selectedTransport.advance());
+  require(requested && requested->physicalEvents.size() == 1 &&
+              requested->physicalEvents.front().kind ==
+                  CgraPhysicalLifecycleKind::Requested &&
+              requested->publications.empty(),
+          "selected Produced use did not block publication at request");
+  auto granted = take(selectedPhysical.advance());
+  require(granted && granted->events.size() == 1 &&
+              granted->events.front().kind ==
+                  CgraPhysicalLifecycleKind::Granted,
+          "selected Produced use did not grant");
+  if (llvm::Error error = selectedTransport.acceptPhysicalEvents(*granted))
+    fail(llvm::toString(std::move(error)));
+  auto consumedRequest = take(selectedTransport.advance());
+  require(consumedRequest && consumedRequest->physicalEvents.size() == 1 &&
+              consumedRequest->physicalEvents.front().kind ==
+                  CgraPhysicalLifecycleKind::Requested &&
+              consumedRequest->physicalEvents.front().actionOrdinal == 1 &&
+              consumedRequest->publications.empty() &&
+              loom::sim::compareSpatialEventCoordinates(
+                  consumedRequest->coordinate, coordinate(4, 1)) == 0,
+          "selected Consumed use did not gate sink publication");
+  auto consumedGrant = take(selectedPhysical.advance());
+  require(consumedGrant && consumedGrant->events.size() == 1 &&
+              consumedGrant->events.front().kind ==
+                  CgraPhysicalLifecycleKind::Granted &&
+              consumedGrant->events.front().actionOrdinal == 1,
+          "selected Consumed use did not grant");
+  if (llvm::Error error =
+          selectedTransport.acceptPhysicalEvents(*consumedGrant))
+    fail(llvm::toString(std::move(error)));
+  auto selectedPublication = take(selectedTransport.advance());
+  require(selectedPublication &&
+              selectedPublication->publications.size() == 1 &&
+              loom::sim::compareSpatialEventCoordinates(
+                  selectedPublication->coordinate, coordinate(4, 2)) == 0,
+          "selected endpoint uses did not gate token publication");
 }
 
 } // namespace

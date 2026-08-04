@@ -235,6 +235,14 @@ llvm::Error CgraComputeRuntime::processPhysicalEvent(
     llvm::SmallVectorImpl<std::uint64_t> &affectedFirings) {
   if (event.kind == CgraPhysicalLifecycleKind::Requested)
     return invalid("CGRA physical runtime repeated a request event");
+  if (event.actionOrdinal >= plan_->physicalUseClients.size() ||
+      event.actionOrdinal >= plan_->physicalUseTimings.size())
+    return invalid("CGRA physical lifecycle names an unknown action");
+  if (plan_->physicalUseClients[event.actionOrdinal] !=
+      CgraPhysicalUseClientKind::ComputeTransition) {
+    frame.physicalEvents.push_back(event);
+    return llvm::Error::success();
+  }
   auto indexed =
       actionToFiring_.find({event.actionOrdinal, event.occurrenceOrdinal});
   if (indexed == actionToFiring_.end())

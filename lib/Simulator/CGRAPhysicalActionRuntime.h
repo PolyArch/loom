@@ -48,6 +48,11 @@ struct CgraPhysicalLifecycleFrame final {
   std::vector<CgraPhysicalLifecycleEvent> events;
 };
 
+struct CgraPhysicalActionRequest final {
+  std::uint64_t actionOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+};
+
 /// Execution-local lifecycle of selected physical ResourceUses. Resource
 /// capacity and arbitration remain in CgraResourceRuntime; this layer only
 /// applies owner-relative timing, retries blocked requests at reference-clock
@@ -68,6 +73,10 @@ public:
   llvm::Expected<CgraPhysicalLifecycleEvent>
   request(std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal,
           SpatialEventCoordinate coordinate);
+
+  llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
+  requestBatch(llvm::ArrayRef<CgraPhysicalActionRequest> requests,
+               SpatialEventCoordinate coordinate);
 
   /// Advances through one exact coordinate. A frame can contain no visible
   /// event when every acquisition attempt at that coordinate remains blocked.
