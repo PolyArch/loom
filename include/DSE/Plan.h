@@ -23,14 +23,19 @@ struct GeneratePlanNodeDefinition final {
   ComponentViewDigest configDigest;
 };
 
+enum class PromotePurpose : std::uint32_t {
+  CandidateSelection = 0,
+  ModelRelease = 1,
+};
+
 struct PromotePlanNodeDefinition final {
   PromotionAcquisitionDescriptorRef acquisition;
   std::vector<PlanInputBinding> inputBindings;
   std::vector<std::uint8_t> canonicalConfigBytes;
   ComponentViewDigest configDigest;
-  QualityGatePolicy qualityGate;
+  QualityGatePolicyRef qualityGate;
   CandidateSelectionPolicy selection;
-  ResolvedObjectiveCatalogs objectiveCatalogs;
+  PromotePurpose purpose = PromotePurpose::CandidateSelection;
 };
 
 using DsePlanNodeDefinition =
@@ -76,33 +81,30 @@ public:
     return canonicalConfigBytes_;
   }
   const ComponentViewDigest &configDigest() const { return configDigest_; }
-  const QualityGatePolicy &qualityGate() const { return qualityGate_; }
+  QualityGatePolicyRef qualityGateRef() const { return qualityGate_; }
   const CandidateSelectionPolicy &selection() const { return selection_; }
-  const ObjectiveProgram *objectiveProgram() const {
-    return objectiveProgram_ ? &*objectiveProgram_ : nullptr;
-  }
+  PromotePurpose purpose() const { return purpose_; }
 
 private:
   ResolvedPromotePlanNode(PromotionAcquisitionDescriptorRef acquisition,
                           std::vector<PlanInputBinding> inputBindings,
                           std::vector<std::uint8_t> canonicalConfigBytes,
                           ComponentViewDigest configDigest,
-                          QualityGatePolicy qualityGate,
+                          QualityGatePolicyRef qualityGate,
                           CandidateSelectionPolicy selection,
-                          std::optional<ObjectiveProgram> objectiveProgram)
+                          PromotePurpose purpose)
       : acquisition_(acquisition), inputBindings_(std::move(inputBindings)),
         canonicalConfigBytes_(std::move(canonicalConfigBytes)),
         configDigest_(configDigest), qualityGate_(std::move(qualityGate)),
-        selection_(std::move(selection)),
-        objectiveProgram_(std::move(objectiveProgram)) {}
+        selection_(std::move(selection)), purpose_(purpose) {}
 
   PromotionAcquisitionDescriptorRef acquisition_;
   std::vector<PlanInputBinding> inputBindings_;
   std::vector<std::uint8_t> canonicalConfigBytes_;
   ComponentViewDigest configDigest_;
-  QualityGatePolicy qualityGate_;
+  QualityGatePolicyRef qualityGate_;
   CandidateSelectionPolicy selection_;
-  std::optional<ObjectiveProgram> objectiveProgram_;
+  PromotePurpose purpose_;
 
   friend class ResolvedDsePlan;
 };
@@ -114,21 +116,35 @@ using ResolvedDsePlanNode =
 class ResolvedDsePlan final {
 public:
   static llvm::Expected<ResolvedDsePlan>
-  get(std::vector<DsePlanNodeDefinition> nodes);
+  get(llvm::ArrayRef<DsePlanNodeDefinition> nodes,
+      const ResolvedObjectiveCatalogs &objectiveCatalogs,
+      llvm::ArrayRef<QualityGatePolicy> qualityGates);
 
   llvm::ArrayRef<ResolvedDsePlanNode> nodes() const { return nodes_; }
   const PlanValueDescriptor *resolve(PlanOutputRef output) const;
+  const QualityGatePolicy *resolve(QualityGatePolicyRef gate) const;
+  llvm::ArrayRef<QualityGatePolicy> qualityGatePolicies() const {
+    return qualityGates_;
+  }
+  const ObjectiveProgram *objectiveProgram() const {
+    return objectiveProgram_ ? &*objectiveProgram_ : nullptr;
+  }
 
 private:
   ResolvedDsePlan(std::vector<ResolvedDsePlanNode> nodes,
                   std::vector<std::uint64_t> outputOffsets,
-                  std::vector<PlanValueDescriptor> outputs)
+                  std::vector<PlanValueDescriptor> outputs,
+                  std::vector<QualityGatePolicy> qualityGates,
+                  std::optional<ObjectiveProgram> objectiveProgram)
       : nodes_(std::move(nodes)), outputOffsets_(std::move(outputOffsets)),
-        outputs_(std::move(outputs)) {}
+        outputs_(std::move(outputs)), qualityGates_(std::move(qualityGates)),
+        objectiveProgram_(std::move(objectiveProgram)) {}
 
   std::vector<ResolvedDsePlanNode> nodes_;
   std::vector<std::uint64_t> outputOffsets_;
   std::vector<PlanValueDescriptor> outputs_;
+  std::vector<QualityGatePolicy> qualityGates_;
+  std::optional<ObjectiveProgram> objectiveProgram_;
 };
 
 class CompletedDsePlanExecution final {

@@ -14,6 +14,10 @@ add_executable(loom-dse-evidence-obligation-test
   EvidenceObligationTest.cpp
 )
 
+add_executable(loom-dse-resolved-config-view-test
+  ResolvedConfigViewTest.cpp
+)
+
 add_executable(loom-dse-promotion-test
   PromotionTest.cpp
 )
@@ -34,6 +38,11 @@ target_link_libraries(loom-dse-plan-test PRIVATE
 )
 
 target_link_libraries(loom-dse-evidence-obligation-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-resolved-config-view-test PRIVATE
   LoomDSE
   LLVMSupport
 )

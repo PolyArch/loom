@@ -114,21 +114,20 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<ObjectiveProgram>>
-resolveObjectiveProgram(const PromotePlanNodeDefinition &definition) {
-  if (std::holds_alternative<AllPassingSelection>(definition.selection))
-    return std::optional<ObjectiveProgram>{};
-  auto program = ObjectiveProgram::get(definition.objectiveCatalogs);
+llvm::Error validateSelection(const CandidateSelectionPolicy &selection,
+                              const ObjectiveProgram *program) {
+  if (std::holds_alternative<AllPassingSelection>(selection))
+    return llvm::Error::success();
   if (!program)
-    return program.takeError();
-  if (const auto *topK = std::get_if<TopKSelection>(&definition.selection)) {
+    return invalid("objective program is unavailable for ranked selection");
+  if (const auto *topK = std::get_if<TopKSelection>(&selection)) {
     if (topK->k == 0)
       return invalid("TopK requires positive k");
     if (topK->totalOrdering >= program->totalOrderingCount())
       return invalid("TopK total ordering reference is out of range");
   } else {
     const auto &dimensions =
-        std::get<ParetoSelection>(definition.selection).objectiveDimensions;
+        std::get<ParetoSelection>(selection).objectiveDimensions;
     if (dimensions.empty() || !llvm::is_sorted(dimensions) ||
         std::adjacent_find(dimensions.begin(), dimensions.end()) !=
             dimensions.end())
@@ -136,7 +135,7 @@ resolveObjectiveProgram(const PromotePlanNodeDefinition &definition) {
     if (dimensions.back() >= program->dimensionCount())
       return invalid("Pareto dimension reference is out of range");
   }
-  return std::optional<ObjectiveProgram>{std::move(*program)};
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -175,7 +174,9 @@ llvm::Expected<std::vector<ArtifactRootReference>> resolveRuntimeInput(
 } // namespace
 
 llvm::Expected<ResolvedDsePlan>
-ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
+ResolvedDsePlan::get(llvm::ArrayRef<DsePlanNodeDefinition> definitions,
+                     const ResolvedObjectiveCatalogs &objectiveCatalogs,
+                     llvm::ArrayRef<QualityGatePolicy> qualityGates) {
   std::vector<ResolvedDsePlanNode> nodes;
   std::vector<std::uint64_t> outputOffsets;
   std::vector<PlanValueDescriptor> outputs;
@@ -183,8 +184,23 @@ ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
   outputOffsets.reserve(definitions.size() + 1);
   outputOffsets.push_back(0);
 
+  const bool needsObjectives =
+      llvm::any_of(definitions, [](const DsePlanNodeDefinition &definition) {
+        const auto *promote =
+            std::get_if<PromotePlanNodeDefinition>(&definition);
+        return promote &&
+               !std::holds_alternative<AllPassingSelection>(promote->selection);
+      });
+  std::optional<ObjectiveProgram> objectiveProgram;
+  if (needsObjectives) {
+    auto compiled = ObjectiveProgram::get(objectiveCatalogs);
+    if (!compiled)
+      return compiled.takeError();
+    objectiveProgram = std::move(*compiled);
+  }
+
   for (std::size_t nodeIndex = 0; nodeIndex < definitions.size(); ++nodeIndex) {
-    if (auto *definition =
+    if (const auto *definition =
             std::get_if<GeneratePlanNodeDefinition>(&definitions[nodeIndex])) {
       const CandidateGeneratorDescriptor *descriptor =
           definition->descriptor.descriptor();
@@ -202,9 +218,10 @@ ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
           return value.takeError();
         expected.push_back(*value);
       }
+      std::vector<PlanInputBinding> inputBindings = definition->inputBindings;
       if (llvm::Error error =
-              resolveInputBindings(definition->inputBindings, expected,
-                                   nodeIndex, nodes, outputOffsets, outputs))
+              resolveInputBindings(inputBindings, expected, nodeIndex, nodes,
+                                   outputOffsets, outputs))
         return std::move(error);
       if (descriptor->outputSlots.size() >
           std::numeric_limits<std::uint64_t>::max() - outputs.size())
@@ -218,13 +235,12 @@ ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
       }
       outputOffsets.push_back(outputs.size());
       nodes.emplace_back(ResolvedGeneratePlanNode(
-          definition->descriptor, std::move(definition->inputBindings),
-          std::move(definition->canonicalConfigBytes),
-          definition->configDigest));
+          definition->descriptor, std::move(inputBindings),
+          definition->canonicalConfigBytes, definition->configDigest));
       continue;
     }
 
-    auto &definition =
+    const auto &definition =
         std::get<PromotePlanNodeDefinition>(definitions[nodeIndex]);
     const PromotionAcquisitionDescriptor *descriptor =
         definition.acquisition.descriptor();
@@ -242,13 +258,19 @@ ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
         return value.takeError();
       expected.push_back(*value);
     }
-    if (llvm::Error error =
-            resolveInputBindings(definition.inputBindings, expected, nodeIndex,
-                                 nodes, outputOffsets, outputs))
+    std::vector<PlanInputBinding> inputBindings = definition.inputBindings;
+    if (llvm::Error error = resolveInputBindings(
+            inputBindings, expected, nodeIndex, nodes, outputOffsets, outputs))
       return std::move(error);
-    auto objectiveProgram = resolveObjectiveProgram(definition);
-    if (!objectiveProgram)
-      return objectiveProgram.takeError();
+    if (definition.qualityGate.ordinal() >= qualityGates.size())
+      return invalid("Promote quality gate reference is out of range");
+    if (static_cast<std::uint32_t>(definition.purpose) >
+        static_cast<std::uint32_t>(PromotePurpose::ModelRelease))
+      return invalid("Promote purpose is unknown");
+    if (llvm::Error error =
+            validateSelection(definition.selection,
+                              objectiveProgram ? &*objectiveProgram : nullptr))
+      return std::move(error);
     const PromotionAcquisitionInputSlotDescriptor *candidateSlot =
         descriptor->findInputSlot(descriptor->candidateInputSlot);
     if (!candidateSlot || !candidateSlot->schema)
@@ -262,13 +284,13 @@ ResolvedDsePlan::get(std::vector<DsePlanNodeDefinition> definitions) {
                        PlanValueCardinality::FiniteSet});
     outputOffsets.push_back(outputs.size());
     nodes.emplace_back(ResolvedPromotePlanNode(
-        definition.acquisition, std::move(definition.inputBindings),
-        std::move(definition.canonicalConfigBytes), definition.configDigest,
-        std::move(definition.qualityGate), std::move(definition.selection),
-        std::move(*objectiveProgram)));
+        definition.acquisition, std::move(inputBindings),
+        definition.canonicalConfigBytes, definition.configDigest,
+        definition.qualityGate, definition.selection, definition.purpose));
   }
   return ResolvedDsePlan(std::move(nodes), std::move(outputOffsets),
-                         std::move(outputs));
+                         std::move(outputs), qualityGates.vec(),
+                         std::move(objectiveProgram));
 }
 
 const PlanValueDescriptor *
@@ -280,6 +302,13 @@ ResolvedDsePlan::resolve(PlanOutputRef output) const {
   if (output.outputSlotOrdinal >= end - begin)
     return nullptr;
   return &outputs_[begin + output.outputSlotOrdinal];
+}
+
+const QualityGatePolicy *
+ResolvedDsePlan::resolve(QualityGatePolicyRef gate) const {
+  if (gate.ordinal() >= qualityGates_.size())
+    return nullptr;
+  return &qualityGates_[gate.ordinal()];
 }
 
 llvm::ArrayRef<ArtifactRootReference>
@@ -397,8 +426,8 @@ executeDsePlan(const ResolvedDsePlan &plan, const ArtifactStore &store) {
       return candidateSet.takeError();
     auto promotion = promoteCandidates(
         *candidateSet, descriptor->candidateRole, completed.evidence,
-        promote.qualityGate(), promote.selection(), promote.objectiveProgram(),
-        store);
+        *plan.resolve(promote.qualityGateRef()), promote.selection(),
+        plan.objectiveProgram(), store);
     if (!promotion)
       return promotion.takeError();
     if (auto *incomplete = std::get_if<IncompleteSelection>(&*promotion))

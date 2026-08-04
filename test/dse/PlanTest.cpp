@@ -143,16 +143,15 @@ GeneratePlanNodeDefinition makeNode(CandidateGeneratorDescriptorRef descriptor,
 PromotePlanNodeDefinition
 makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
                 PlanInputBinding input, const ComponentViewDigest &digest,
-                CandidateSelectionPolicy selection,
-                ResolvedObjectiveCatalogs objectiveCatalogs = {}) {
+                CandidateSelectionPolicy selection) {
   return PromotePlanNodeDefinition{
       descriptor,
       {std::move(input)},
       {0x01},
       digest,
-      take(QualityGatePolicy::get({})),
+      QualityGatePolicyRef(0),
       std::move(selection),
-      std::move(objectiveCatalogs),
+      PromotePurpose::CandidateSelection,
   };
 }
 
@@ -216,6 +215,9 @@ void exerciseOrderedTypedUseDef() {
   const ComponentViewDigest digest = take(computeComponentViewDigest(
       configSchema, std::array<std::uint8_t, 1>{0x01}));
   const ArtifactRootReference source = makeReference(sourceSchema, 0x11);
+  const ResolvedObjectiveCatalogs objectiveCatalogs{};
+  const std::vector<QualityGatePolicy> qualityGates = {
+      take(QualityGatePolicy::get({}))};
 
   std::vector<DsePlanNodeDefinition> nodes;
   nodes.push_back(makeNode(sourceGenerator.reference(),
@@ -223,7 +225,8 @@ void exerciseOrderedTypedUseDef() {
   nodes.push_back(makePromoteNode(objectiveAcquisition.reference(),
                                   PlanOutputRef{0, 0}, digest,
                                   AllPassingSelection{}));
-  ResolvedDsePlan plan = take(ResolvedDsePlan::get(std::move(nodes)));
+  ResolvedDsePlan plan =
+      take(ResolvedDsePlan::get(nodes, objectiveCatalogs, qualityGates));
   const auto &generate = std::get<ResolvedGeneratePlanNode>(plan.nodes()[0]);
   const auto &promote = std::get<ResolvedPromotePlanNode>(plan.nodes()[1]);
   if (plan.nodes().size() != 2 || generate.inputBindings().size() != 1 ||
@@ -263,11 +266,13 @@ void exerciseOrderedTypedUseDef() {
       !completed->resolve(PlanOutputRef{1, 1}).empty())
     fail("mixed execution did not canonicalize and select its candidates");
 
-  ResolvedDsePlan unavailablePlan = take(ResolvedDsePlan::get({
+  const std::vector<DsePlanNodeDefinition> unavailableNodes = {
       makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
                digest),
       makeNode(unavailableGenerator.reference(), {PlanOutputRef{0, 0}}, digest),
-  }));
+  };
+  ResolvedDsePlan unavailablePlan = take(
+      ResolvedDsePlan::get(unavailableNodes, objectiveCatalogs, qualityGates));
   DsePlanExecutionOutcome unavailable =
       take(executeDsePlan(unavailablePlan, store));
   const auto *incomplete =
@@ -281,12 +286,14 @@ void exerciseOrderedTypedUseDef() {
       incomplete->completedPrefix.resolve(PlanOutputRef{0, 0}).size() != 2)
     fail("missing Generate provider did not produce typed Incomplete");
 
-  ResolvedDsePlan unavailablePromotion = take(ResolvedDsePlan::get({
+  const std::vector<DsePlanNodeDefinition> unavailablePromotionNodes = {
       makeNode(sourceGenerator.reference(), {ExactPlanArtifacts{{source}}},
                digest),
       makePromoteNode(unavailableAcquisition.reference(), PlanOutputRef{0, 0},
                       digest, AllPassingSelection{}),
-  }));
+  };
+  ResolvedDsePlan unavailablePromotion = take(ResolvedDsePlan::get(
+      unavailablePromotionNodes, objectiveCatalogs, qualityGates));
   DsePlanExecutionOutcome unavailablePromotionOutcome =
       take(executeDsePlan(unavailablePromotion, store));
   const auto *promotionIncomplete =
@@ -305,7 +312,8 @@ void exerciseOrderedTypedUseDef() {
   std::vector<DsePlanNodeDefinition> forward;
   forward.push_back(
       makeNode(transformGenerator.reference(), {PlanOutputRef{1, 0}}, digest));
-  auto rejectedForward = ResolvedDsePlan::get(std::move(forward));
+  auto rejectedForward =
+      ResolvedDsePlan::get(forward, objectiveCatalogs, qualityGates);
   if (rejectedForward)
     fail("plan accepted a forward use-def edge");
   requireErrorContains(rejectedForward.takeError(), "earlier node");
@@ -314,7 +322,8 @@ void exerciseOrderedTypedUseDef() {
   foreign.push_back(makeNode(
       sourceGenerator.reference(),
       {ExactPlanArtifacts{{makeReference(candidateSchema, 0x22)}}}, digest));
-  auto rejectedForeign = ResolvedDsePlan::get(std::move(foreign));
+  auto rejectedForeign =
+      ResolvedDsePlan::get(foreign, objectiveCatalogs, qualityGates);
   if (rejectedForeign)
     fail("plan accepted a foreign static artifact schema");
   requireErrorContains(rejectedForeign.takeError(), "artifact schema");

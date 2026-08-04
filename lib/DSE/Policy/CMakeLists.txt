@@ -29,6 +29,7 @@ add_library(LoomDSEPolicy
   ../Plan.cpp
   ../Promotion.cpp
   ../PromotionAcquisition.cpp
+  ../ResolvedConfigView.cpp
 )
 
 target_include_directories(LoomDSEPolicy PUBLIC

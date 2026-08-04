@@ -67,6 +67,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-service-schema-test
   loom-dse-candidate-generator-test
   loom-dse-evidence-obligation-test
+  loom-dse-resolved-config-view-test
   loom-dse-plan-test
   loom-dse-objective-test
   loom-dse-promotion-test

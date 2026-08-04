@@ -22,6 +22,26 @@ class ArtifactStore;
 
 namespace loom::dse {
 
+class QualityGatePolicyRef final {
+public:
+  explicit constexpr QualityGatePolicyRef(std::uint32_t ordinal)
+      : ordinal_(ordinal) {}
+
+  constexpr std::uint32_t ordinal() const { return ordinal_; }
+
+  friend constexpr bool operator==(QualityGatePolicyRef lhs,
+                                   QualityGatePolicyRef rhs) {
+    return lhs.ordinal_ == rhs.ordinal_;
+  }
+  friend constexpr bool operator!=(QualityGatePolicyRef lhs,
+                                   QualityGatePolicyRef rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  std::uint32_t ordinal_;
+};
+
 enum class MetricGateComparator : std::uint8_t { LT, LE, EQ, NE, GE, GT };
 
 enum class RequiredFindingState : std::uint8_t { Present, Absent };
