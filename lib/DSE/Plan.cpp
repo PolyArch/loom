@@ -12,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -663,6 +664,41 @@ CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
   if (output.outputSlotOrdinal >= end - begin)
     return {};
   return outputs_[begin + output.outputSlotOrdinal];
+}
+
+llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
+  return std::visit(
+      [](const auto &value) -> llvm::StringRef {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, CandidateGeneratorIncompleteReason>) {
+          switch (value) {
+          case CandidateGeneratorIncompleteReason::ProofNotEstablished:
+            return "candidate_proof_not_established";
+          case CandidateGeneratorIncompleteReason::SemanticLimitReached:
+            return "candidate_semantic_limit_reached";
+          case CandidateGeneratorIncompleteReason::ProviderUnavailable:
+            return "candidate_provider_unavailable";
+          case CandidateGeneratorIncompleteReason::Unsupported:
+            return "candidate_generation_unsupported";
+          }
+        } else if constexpr (std::is_same_v<
+                                 T, PromotionAcquisitionIncompleteReason>) {
+          switch (value) {
+          case PromotionAcquisitionIncompleteReason::ProviderUnavailable:
+            return "evidence_provider_unavailable";
+          case PromotionAcquisitionIncompleteReason::SemanticWorkLimit:
+            return "evidence_semantic_work_limit";
+          case PromotionAcquisitionIncompleteReason::ObjectiveUnavailable:
+            return "evidence_objective_unavailable";
+          case PromotionAcquisitionIncompleteReason::Unsupported:
+            return "evidence_unsupported";
+          }
+        } else {
+          return dse::toString(value);
+        }
+        llvm_unreachable("unknown DSE plan incomplete reason");
+      },
+      reason);
 }
 
 llvm::Expected<DsePlanExecutionOutcome>

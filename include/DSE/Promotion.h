@@ -151,14 +151,6 @@ llvm::Expected<std::vector<ArtifactRootReference>> applyCandidateSelection(
     const CandidateSelectionPolicy &selection,
     const ObjectiveProgram *objectiveProgram);
 
-enum class ObjectiveDirection : std::uint8_t { Minimize, Maximize };
-
-struct PointMetricTopKSelection final {
-  evaluation::MetricRequestOrdinal metricRequest;
-  ObjectiveDirection direction;
-  std::uint64_t k;
-};
-
 struct PromotionEvidence final {
   PromotionEvidence(evaluation::EvaluationRequest request,
                     evaluation::EvaluationEvidence evidence,
@@ -233,27 +225,6 @@ promoteCandidates(const CandidateSet &candidateSet,
                   const CandidateSelectionPolicy &selection,
                   const ObjectiveProgram *objectiveProgram,
                   const ArtifactStore &artifactStore);
-
-/// Applies one exact TopK selection over a point-valued Metric result. Each
-/// Evidence association is derived from Evidence -> Request -> candidateRole;
-/// callers cannot supply a parallel candidate-to-Evidence map.
-llvm::Expected<PromotionOutcome>
-promoteMetricTopK(const CandidateSet &candidateSet,
-                  evaluation::CaseSubjectRoleRef candidateRole,
-                  llvm::ArrayRef<PromotionEvidence> evidence,
-                  const PointMetricTopKSelection &selection,
-                  const ArtifactStore &artifactStore);
-
-/// Applies the same exact TopK gate, but admits only candidates whose selected
-/// metric is strictly better than the exact stored-program baseline. If none
-/// improves on the baseline, the baseline is the sole selected fallback.
-llvm::Expected<PromotionOutcome>
-promoteMetricTopKAgainstBaseline(const CandidateSet &candidateSet,
-                                 evaluation::CaseSubjectRoleRef candidateRole,
-                                 const ArtifactRootReference &baseline,
-                                 llvm::ArrayRef<PromotionEvidence> evidence,
-                                 const PointMetricTopKSelection &selection,
-                                 const ArtifactStore &artifactStore);
 
 } // namespace loom::dse
 

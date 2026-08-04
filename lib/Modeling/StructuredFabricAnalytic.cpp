@@ -732,6 +732,11 @@ CaseSubjectRoleRef structuredFabricAnalyticCandidateRole() {
 
 CaseSubjectRoleRef structuredFabricAnalyticFabricRole() { return kFabricRole; }
 
+llvm::Expected<std::int64_t>
+structuredFabricAnalyticMetricQuantumBase10Exponent(MetricKind metric) {
+  return detail::lowConfidenceMetricQuantumBase10Exponent(metric);
+}
+
 llvm::Expected<StructuredFabricAnalyticRequestContext>
 prepareStructuredFabricAnalyticInvocation(
     llvm::ArrayRef<ArtifactRootReference> structuredPrograms,

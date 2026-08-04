@@ -573,7 +573,7 @@ void verifyStagedOwnershipEvidence(
     fail("ownership Evidence has an unexpected obligation shape");
   }
 
-  if (counts[source].cost != 1 || counts[source].functional != 1 ||
+  if (counts[source].cost != 1 || counts[source].functional != 0 ||
       counts[selectedCandidate].cost != 1 ||
       counts[selectedCandidate].functional != 1)
     fail("ownership DSE acquired expensive functional Evidence before the "
@@ -719,9 +719,12 @@ void runEvaluationAnchor() {
   std::vector<loom::ArtifactRootReference> expectedGenerated = {
       baselineRef, spatialRef, warmRef};
   llvm::sort(expectedGenerated, loom::artifactRootReferenceLess);
-  if (!completedGeneration || completedGeneration->outputBindings.size() != 1 ||
-      completedGeneration->outputBindings.front().artifacts !=
-          expectedGenerated)
+  std::vector<loom::ArtifactRootReference> expectedAccelerators = {spatialRef,
+                                                                   warmRef};
+  llvm::sort(expectedAccelerators, loom::artifactRootReferenceLess);
+  if (!completedGeneration || completedGeneration->outputBindings.size() != 2 ||
+      completedGeneration->outputBindings[0].artifacts != expectedGenerated ||
+      completedGeneration->outputBindings[1].artifacts != expectedAccelerators)
     fail("central ownership generator changed the exact candidate set");
 
   auto foreignGeneratorConfig =
@@ -1129,22 +1132,6 @@ void runEvaluationAnchor() {
           loom::dse::IncompleteSelectionReason::NonComparableEvidence)
     fail("NotApplicable quality Evidence did not make Promotion incomplete");
 
-  auto coldCandidateSet = take(loom::dse::CandidateSet::get(
-      loom::frontend::structuredProgramArtifactSchema, {baselineRef, coldRef}));
-  auto coldPromotion = take(loom::dse::promoteMetricTopKAgainstBaseline(
-      coldCandidateSet, loom::evaluation::CaseSubjectRoleRef(0), baselineRef,
-      {{baseline.request, baseline.evidence},
-       {coldEvaluation.request, coldEvaluation.evidence}},
-      {loom::evaluation::MetricRequestOrdinal(0),
-       loom::dse::ObjectiveDirection::Minimize, 1},
-      store));
-  const auto *coldSelection =
-      std::get_if<loom::dse::CompletedSelection>(&coldPromotion);
-  if (!coldSelection ||
-      coldSelection->selected !=
-          std::vector<loom::ArtifactRootReference>{baselineRef})
-    fail("an unexecuted candidate satisfied the accelerator benefit gate");
-
   for (loom::evaluation::MetricKind metric :
        {loom::evaluation::MetricKind::LimitingClockFrequency,
         loom::evaluation::MetricKind::TotalArea,
@@ -1165,40 +1152,10 @@ void runEvaluationAnchor() {
   if (baselineDynamic.coefficient() != 0 || spatialDynamic.coefficient() <= 0)
     fail("dynamic power did not follow Spatial workload activity");
 
-  auto candidates = take(loom::dse::CandidateSet::get(
-      loom::frontend::structuredProgramArtifactSchema,
-      {baselineRef, spatialRef}));
-  auto incomplete = take(loom::dse::promoteMetricTopK(
-      candidates, loom::evaluation::CaseSubjectRoleRef(0),
-      {{baseline.request, baseline.evidence}},
-      {loom::evaluation::MetricRequestOrdinal(0),
-       loom::dse::ObjectiveDirection::Minimize, 1},
-      store));
-  const auto *missing =
-      std::get_if<loom::dse::IncompleteSelection>(&incomplete);
-  if (!missing ||
-      missing->reason != loom::dse::IncompleteSelectionReason::MissingEvidence)
-    fail("central DSE treated missing Evidence as a ranking value");
-
-  std::vector<loom::dse::PromotionEvidence> evidence;
-  evidence.push_back({std::move(spatialEvaluation.request),
-                      std::move(spatialEvaluation.evidence)});
-  evidence.push_back(
-      {std::move(baseline.request), std::move(baseline.evidence)});
-  auto promoted = take(loom::dse::promoteMetricTopK(
-      candidates, loom::evaluation::CaseSubjectRoleRef(0), evidence,
-      {loom::evaluation::MetricRequestOrdinal(0),
-       loom::dse::ObjectiveDirection::Minimize, 1},
-      store));
-  const auto *selection = std::get_if<loom::dse::CompletedSelection>(&promoted);
-  if (!selection || selection->selected.size() != 1 ||
-      selection->selected.front() != spatialRef)
-    fail("central DSE TopK did not promote the best exact candidate");
-
   loom::dse::PreMappingExplorationOptions exploration{
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
-        loom::dse::ObjectiveDirection::Minimize, 1}}};
+        loom::ResolvedObjectiveDirection::Minimize, 1}}};
   auto exploredSource = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front()));
   auto explored = take(loom::dse::exploreStructuredCompilationToPreMapping(

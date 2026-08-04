@@ -277,7 +277,7 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
   loom::dse::PreMappingExplorationOptions options{
       {{},
        {loom::evaluation::MetricRequestOrdinal(0),
-        loom::dse::ObjectiveDirection::Minimize, 1},
+        loom::ResolvedObjectiveDirection::Minimize, 1},
        workers}};
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   if (scopeExpansionLimit)

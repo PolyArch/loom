@@ -50,10 +50,14 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
          PlanValueCardinality::ExactlyOne},
     }};
 
-constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
-    {{CandidateGeneratorOutputSlotRef(0), "structured_program",
-      PlanValueRole::CandidateSet, &frontend::structuredProgramArtifactSchema,
-      PlanValueCardinality::NonEmptySet}}};
+constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 2> outputSlots = {{
+    {CandidateGeneratorOutputSlotRef(0), "structured_program",
+     PlanValueRole::CandidateSet, &frontend::structuredProgramArtifactSchema,
+     PlanValueCardinality::NonEmptySet},
+    {CandidateGeneratorOutputSlotRef(1), "accelerator_candidate",
+     PlanValueRole::CandidateSet, &frontend::structuredProgramArtifactSchema,
+     PlanValueCardinality::FiniteSet},
+}};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 2> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "scope_expansion"},
@@ -247,12 +251,21 @@ llvm::Expected<CandidateGeneratorInvocationOutcome> invokeOwnershipProvider(
       simulationInputs->runtimeInput, *fabric, options, store);
   if (!generated)
     return generated.takeError();
+  std::vector<ArtifactRootReference> allCandidates(
+      generated->candidates.candidates().begin(),
+      generated->candidates.candidates().end());
+  std::vector<ArtifactRootReference> acceleratorCandidates;
+  acceleratorCandidates.reserve(allCandidates.size());
+  for (const ArtifactRootReference &candidate : allCandidates)
+    if (candidate != structured)
+      acceleratorCandidates.push_back(candidate);
+  if (acceleratorCandidates.size() + 1 != allCandidates.size())
+    return invalid("generated candidate set lost its exact source input");
   return CandidateGeneratorInvocationOutcome{
       CompletedCandidateGeneratorInvocation{{
-          {CandidateGeneratorOutputSlotRef(0),
-           std::vector<ArtifactRootReference>(
-               generated->candidates.candidates().begin(),
-               generated->candidates.candidates().end())},
+          {CandidateGeneratorOutputSlotRef(0), std::move(allCandidates)},
+          {CandidateGeneratorOutputSlotRef(1),
+           std::move(acceleratorCandidates)},
       }}};
 }
 

@@ -60,6 +60,9 @@ struct LowConfidenceMetricSet final {
   llvm::Expected<MetricResult> result(MetricKind metric) const;
 };
 
+llvm::Expected<std::int64_t>
+lowConfidenceMetricQuantumBase10Exponent(MetricKind metric);
+
 llvm::Expected<CaseArtifactResolution> resolveSingleSubjectFabricCase(
     const ArtifactRootReference &subject, const ArtifactRootReference &fabric,
     const ArtifactStore &artifactStore,

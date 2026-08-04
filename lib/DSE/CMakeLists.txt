@@ -1,5 +1,4 @@
 add_library(LoomDSE
-  PreMappingExploration.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
   StructuredOwnershipInvocation.cpp

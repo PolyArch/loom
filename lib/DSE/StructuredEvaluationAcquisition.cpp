@@ -39,7 +39,7 @@ constexpr std::array<PromotionAcquisitionInputSlotDescriptor, InputSlotCount>
         {PromotionAcquisitionInputSlotRef(CandidateInput), "candidates",
          PlanValueRole::CandidateSet,
          &frontend::structuredProgramArtifactSchema,
-         PlanValueCardinality::NonEmptySet},
+         PlanValueCardinality::FiniteSet},
         {PromotionAcquisitionInputSlotRef(FabricInput), "fabric",
          PlanValueRole::CandidateSet, &fabric::fabricArtifactSchema,
          PlanValueCardinality::ExactlyOne},

@@ -27,9 +27,15 @@ enum class StructuredOwnershipSelectionMode : std::uint8_t {
   SemanticConformance,
 };
 
+struct StructuredOwnershipTopKSelection final {
+  evaluation::MetricRequestOrdinal metricRequest;
+  ResolvedObjectiveDirection direction;
+  std::uint64_t k;
+};
+
 struct StructuredOwnershipExplorationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
-  PointMetricTopKSelection selection;
+  StructuredOwnershipTopKSelection selection;
   std::uint32_t candidateWorkerCount = 1;
   sim::SourceBackedDfgValidationLimits functionalReplayLimits{
       100000, 1000000, 256ULL * 1024ULL * 1024ULL};
@@ -116,16 +122,6 @@ struct SelectedStructuredOwnershipCandidate final {
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 
-struct CompletedStructuredOwnershipSelection final {
-  std::vector<SelectedStructuredOwnershipCandidate> selected;
-  std::vector<ArtifactRootReference> satisfiedEvidence;
-  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
-};
-
-using StructuredOwnershipExplorationOutcome =
-    std::variant<CompletedStructuredOwnershipSelection,
-                 CompletedNoFeasibleCandidate, IncompleteSelection>;
-
 /// Generates and publishes one finite canonical ownership candidate set. It
 /// performs no metric acquisition, quality gate, or candidate promotion.
 llvm::Expected<CompletedStructuredOwnershipGeneration>
@@ -135,20 +131,6 @@ generateStructuredOwnershipCandidates(
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric,
     const StructuredOwnershipGenerationOptions &options,
-    const ArtifactStore &artifactStore,
-    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-        sourceProvenance = {});
-
-/// Executes one finite Ownership Generate/Evaluate/Promote composition. Every
-/// generated child is independently materialized from the immutable parent;
-/// expected semantic or exact-Fabric rejection prunes only that child.
-llvm::Expected<StructuredOwnershipExplorationOutcome>
-generateAndPromoteStructuredOwnership(
-    const frontend::StructuredProgramCandidate &parent,
-    const sim::CanonicalSimulationWorkload &workload,
-    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
-    const StructuredOwnershipExplorationOptions &options,
     const ArtifactStore &artifactStore,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance = {});

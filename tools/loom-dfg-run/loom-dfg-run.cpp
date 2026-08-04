@@ -57,11 +57,10 @@ llvm::cl::opt<std::string>
                       llvm::cl::desc("ArtifactStore directory"),
                       llvm::cl::value_desc("path"), llvm::cl::Required);
 
-llvm::cl::opt<std::string>
-    accelerationProfile(
-        "loom-accel-profile",
-        llvm::cl::desc("builtin acceleration preset or configuration path"),
-        llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> accelerationProfile(
+    "loom-accel-profile",
+    llvm::cl::desc("builtin acceleration preset or configuration path"),
+    llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string> outputPath("output",
                                       llvm::cl::desc("comparison report JSON"),
@@ -246,7 +245,7 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   loom::dse::PreMappingExplorationOptions exploration{
       {compilation.lowering,
        {loom::evaluation::MetricRequestOrdinal(0),
-        loom::dse::ObjectiveDirection::Minimize, 1},
+        loom::ResolvedObjectiveDirection::Minimize, 1},
        candidateJobs}};
   exploration.ownership.selectionMode =
       loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
@@ -265,13 +264,14 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   if (!outcome)
     return outcome.takeError();
   if (const auto *incomplete =
-          std::get_if<loom::dse::IncompleteSelection>(&*outcome)) {
+          std::get_if<loom::dse::IncompletePreMappingExploration>(&*outcome)) {
     std::string message;
     llvm::raw_string_ostream stream(message);
     stream << "central DSE did not complete: reason="
-           << loom::dse::toString(incomplete->reason) << ", candidate="
-           << loom::formatArtifactIdentityHex(incomplete->candidate.artifact)
-           << ", retained_evidence=" << incomplete->retainedEvidence.size();
+           << loom::dse::toString(incomplete->reason);
+    if (incomplete->planNodeOrdinal)
+      stream << ", plan_node=" << *incomplete->planNodeOrdinal;
+    stream << ", retained_evidence=" << incomplete->retainedEvidence.size();
     return unsupported(stream.str());
   }
   if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(*outcome))

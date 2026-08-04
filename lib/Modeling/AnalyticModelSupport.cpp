@@ -2,8 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
-#include "Config/ResolvedConfig.h"
 #include "Common/VectorWidth.h"
+#include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
@@ -532,17 +532,42 @@ llvm::Expected<CaseArtifactResolution> resolveSingleSubjectFabricCase(
 
 llvm::Expected<MetricResult>
 LowConfidenceMetricSet::result(MetricKind metric) const {
+  auto exponent = lowConfidenceMetricQuantumBase10Exponent(metric);
+  if (!exponent)
+    return exponent.takeError();
   switch (metric) {
   case MetricKind::Runtime:
-    return decimalMetric(runtimePicoseconds, -12, "Runtime estimate");
+    return decimalMetric(runtimePicoseconds, *exponent, "Runtime estimate");
   case MetricKind::LimitingClockFrequency:
-    return decimalMetric(limitingClockFrequencyHertz, 0, "frequency estimate");
+    return decimalMetric(limitingClockFrequencyHertz, *exponent,
+                         "frequency estimate");
   case MetricKind::TotalArea:
-    return decimalMetric(totalAreaSquareMicrometers, -12, "area estimate");
+    return decimalMetric(totalAreaSquareMicrometers, *exponent,
+                         "area estimate");
   case MetricKind::DynamicPower:
-    return decimalMetric(dynamicPowerMicrowatts, -6, "dynamic-power estimate");
+    return decimalMetric(dynamicPowerMicrowatts, *exponent,
+                         "dynamic-power estimate");
   case MetricKind::LeakagePower:
-    return decimalMetric(leakagePowerMicrowatts, -6, "leakage-power estimate");
+    return decimalMetric(leakagePowerMicrowatts, *exponent,
+                         "leakage-power estimate");
+  case MetricKind::CycleCount:
+  case MetricKind::ClockPeriod:
+    llvm_unreachable("unsupported metric passed quantum validation");
+  }
+  llvm_unreachable("unknown MetricKind");
+}
+
+llvm::Expected<std::int64_t>
+lowConfidenceMetricQuantumBase10Exponent(MetricKind metric) {
+  switch (metric) {
+  case MetricKind::Runtime:
+  case MetricKind::TotalArea:
+    return -12;
+  case MetricKind::LimitingClockFrequency:
+    return 0;
+  case MetricKind::DynamicPower:
+  case MetricKind::LeakagePower:
+    return -6;
   case MetricKind::CycleCount:
   case MetricKind::ClockPeriod:
     return llvm::createStringError(

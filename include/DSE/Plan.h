@@ -177,6 +177,8 @@ using DsePlanIncompleteReason =
                  PromotionAcquisitionIncompleteReason,
                  IncompleteSelectionReason>;
 
+llvm::StringRef toString(const DsePlanIncompleteReason &reason);
+
 struct IncompleteDsePlanExecution final {
   std::uint64_t nodeOrdinal = 0;
   DsePlanIncompleteReason reason;

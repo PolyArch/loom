@@ -77,11 +77,10 @@ namespace {
                       ::llvm::cl::desc("existing ArtifactStore directory"),
                       ::llvm::cl::value_desc("path"), ::llvm::cl::Required);
 
-::llvm::cl::opt<std::string>
-    accelerationProfile(
-        "loom-accel-profile",
-        ::llvm::cl::desc("builtin acceleration preset or configuration path"),
-        ::llvm::cl::value_desc("preset-or-path"), ::llvm::cl::init(""));
+::llvm::cl::opt<std::string> accelerationProfile(
+    "loom-accel-profile",
+    ::llvm::cl::desc("builtin acceleration preset or configuration path"),
+    ::llvm::cl::value_desc("preset-or-path"), ::llvm::cl::init(""));
 
 ::llvm::cl::opt<std::string>
     countsFilename("counts",
@@ -384,7 +383,7 @@ int main(int argc, char **argv) {
     loom::dse::PreMappingExplorationOptions exploration{
         {compilationOptions.lowering,
          {loom::evaluation::MetricRequestOrdinal(0),
-          loom::dse::ObjectiveDirection::Minimize, 1},
+          loom::ResolvedObjectiveDirection::Minimize, 1},
          candidateJobs}};
     exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
@@ -393,13 +392,17 @@ int main(int argc, char **argv) {
     if (!outcome)
       return reportError(outcome.takeError());
     if (const auto *incomplete =
-            std::get_if<loom::dse::IncompleteSelection>(&*outcome))
+            std::get_if<loom::dse::IncompletePreMappingExploration>(
+                &*outcome)) {
+      const std::string location =
+          incomplete->planNodeOrdinal
+              ? " at plan node " + std::to_string(*incomplete->planNodeOrdinal)
+              : " before plan execution";
       return reportError(::llvm::createStringError(
-          ::llvm::inconvertibleErrorCode(),
-          "central DSE is incomplete for candidate %s: %s",
-          loom::formatArtifactIdentityHex(incomplete->candidate.artifact)
-              .c_str(),
+          ::llvm::inconvertibleErrorCode(), "central DSE is incomplete%s: %s",
+          location.c_str(),
           loom::dse::toString(incomplete->reason).str().c_str()));
+    }
     if (std::holds_alternative<loom::dse::CompletedNoFeasibleCandidate>(
             *outcome))
       return reportError(::llvm::createStringError(

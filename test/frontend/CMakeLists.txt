@@ -121,6 +121,7 @@ target_link_libraries(loom-structured-ownership-accounting-test PRIVATE
   LoomADGBuilder
   LoomCommon
   LoomDSE
+  LoomDSECompilerGenerator
   LoomFrontendCompilation
   LoomNativeSimulationOracle
   LoomSimulator

@@ -1,6 +1,7 @@
 #ifndef LOOM_DSE_PREMAPPINGEXPLORATION_H
 #define LOOM_DSE_PREMAPPINGEXPLORATION_H
 
+#include "DSE/Plan.h"
 #include "DSE/StructuredOwnership.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
@@ -27,9 +28,15 @@ struct CompletedPreMappingSelection final {
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
 };
 
+struct IncompletePreMappingExploration final {
+  std::optional<std::uint64_t> planNodeOrdinal;
+  DsePlanIncompleteReason reason;
+  std::vector<ArtifactRootReference> retainedEvidence;
+};
+
 using PreMappingExplorationOutcome =
     std::variant<CompletedPreMappingSelection, CompletedNoFeasibleCandidate,
-                 IncompleteSelection>;
+                 IncompletePreMappingExploration>;
 
 llvm::Expected<PreMappingExplorationOutcome>
 exploreStructuredCompilationToPreMapping(

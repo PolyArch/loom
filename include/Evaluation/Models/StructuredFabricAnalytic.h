@@ -91,6 +91,12 @@ EvaluationModelDescriptorRef structuredFabricAnalyticModelDescriptorRef();
 CaseSubjectRoleRef structuredFabricAnalyticCandidateRole();
 CaseSubjectRoleRef structuredFabricAnalyticFabricRole();
 
+/// Exact decimal quantum used by this model for one supported MetricKind.
+/// DSE objective normalization consumes this projection rather than copying
+/// model-private unit scaling.
+llvm::Expected<std::int64_t>
+structuredFabricAnalyticMetricQuantumBase10Exponent(MetricKind metric);
+
 /// Resolves the already published candidates, immutable workload, runtime
 /// input, and Fabric closure shared by one finite central DSE candidate set.
 /// Every candidate remains identified only by its exact ArtifactRootReference.

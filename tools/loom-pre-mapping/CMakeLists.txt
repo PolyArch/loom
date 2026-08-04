@@ -18,6 +18,7 @@ target_link_libraries(loom-pre-mapping PRIVATE
   LoomADGBuilder
   LoomCommon
   LoomDSE
+  LoomDSECompilerGenerator
   LoomFrontendCompilation
 )
 
