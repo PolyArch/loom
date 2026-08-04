@@ -610,6 +610,15 @@ Interchange is one adjacent swap of a perfect two-loop nest. Both loops must
 have no loop-carried results, inner bounds and step must be invariant to the
 outer loop, and the common dependence/effect analysis must prove independent
 iterations for both dimensions. Unknown dependence rejects the decision.
+Parallelize is one factorless conversion of an `scf.for` without loop-carried
+results into `scf.forall`. It uses that same common dependence/effect owner and
+requires the loop bounds and step to be invariant at the resulting parallel
+scope. Unknown aliasing, calls with unresolved effects, volatile or atomic
+effects without an exact supported relation, or an unproved cross-iteration
+dependence reject the decision. The child stores the logical parallel domain
+in ordinary SCF; it carries no physical coordinate, AccCore binding, placement,
+or routing fact. A later ownership decision may retain that domain inside one
+Spatial graph or materialize it as a logical `dataflow.thread` domain.
 Unroll-and-jam uses the same perfect-nest and independence proof, additionally
 requires every nested loop bound and step to be invariant to the selected
 outer loop, and obeys the same exact aggregate Fabric-capacity bound as
@@ -816,9 +825,31 @@ of the address projections owned by the Canonical Dataflow specification. A
 generation may enumerate widths admitted by the exact Fabric, but neither the
 lowerer nor ambient process configuration selects one. A source integer wider
 than the selected width is narrowed only when its complete signed value domain
-is proven to fit. A `PointerAddressed` candidate instead retains the exact LLVM
-pointer type, GEP index path, no-wrap semantics, and module DataLayout-derived
-pointer format. It does not acquire a synthetic canonical index width.
+is proven to fit. An explicit module `index` width fixes the only admissible
+`RootRelative` width; it does not select that address form or suppress the
+independent `PointerAddressed` candidate. A `PointerAddressed` candidate instead
+retains the exact LLVM pointer type, GEP index path, no-wrap semantics, and
+module DataLayout-derived pointer format. It does not acquire a synthetic
+canonical index width.
+When a parallel candidate retains this `PointerAddressed` form, overlap
+validation compares exact DataLayout byte-address expressions at the pointer
+address-space index width. It does not truncate those expressions to a
+`RootRelative` canonical index width. Unresolved roots, mixed pointer-index
+widths for one root, non-affine lane expressions, or byte ranges whose
+disjointness is unknown reject the parallel candidate. Only a `RootRelative`
+candidate must prove that its element-index expression is representable in its
+selected canonical index width.
+
+The Structured candidate materializes a selected `RootRelative` LLVM memory
+access with the identity-critical unit marker `loom.root_relative_address` on
+that exact `llvm.load` or `llvm.store`. No other carrier or payload is valid.
+The graph-memory owner consumes the marker, derives the exact capability root
+and element-index expression, emits an index-addressed Dataflow memory actor,
+and removes the original pointer-address computation. A `PointerAddressed`
+selection has no such marker and retains its typed pointer expression. The
+marker participates in Structured Program identity and is forbidden in a
+finalized Canonical Dataflow Program; it is not Mapping metadata or a second
+address-form authority.
 
 A proven constant-stride pointer induction may be materialized as one
 loop-invariant base capability plus a fixed-width integer element-offset

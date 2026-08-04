@@ -201,6 +201,48 @@ getLLVMStoreByteSize(const llvm::DataLayout &layout,
   return bytes.getFixedValue();
 }
 
+struct ResolvedPointerRoot {
+  mlir::Value root;
+  mlir::Operation *scope = nullptr;
+  std::optional<llvm::DataLayout> llvmDataLayout;
+  std::uint64_t indexBitWidth = 0;
+  llvm::SmallVector<mlir::LLVM::GEPOp, 4> gepsLeafToRoot;
+};
+
+std::optional<ResolvedPointerRoot> resolvePointerRoot(mlir::Value pointer) {
+  llvm::SmallVector<mlir::LLVM::GEPOp, 4> gepsLeafToRoot;
+  mlir::Value root = pointer;
+  while (auto gep = root.getDefiningOp<mlir::LLVM::GEPOp>()) {
+    gepsLeafToRoot.push_back(gep);
+    root = gep.getBase();
+  }
+  auto rootType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(root.getType());
+  if (!rootType)
+    return std::nullopt;
+
+  mlir::Operation *scope = pointer.getDefiningOp();
+  if (!scope) {
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer);
+    scope = argument ? argument.getOwner()->getParentOp() : nullptr;
+  }
+  if (!scope)
+    return std::nullopt;
+
+  std::optional<llvm::DataLayout> llvmDataLayout =
+      getModuleLLVMDataLayout(scope);
+  std::optional<std::uint64_t> indexBitWidth;
+  if (llvmDataLayout)
+    indexBitWidth =
+        llvmDataLayout->getIndexSizeInBits(rootType.getAddressSpace());
+  else
+    indexBitWidth =
+        mlir::DataLayout::closest(scope).getTypeIndexBitwidth(root.getType());
+  if (!indexBitWidth || *indexBitWidth == 0 || *indexBitWidth > 64)
+    return std::nullopt;
+  return ResolvedPointerRoot{root, scope, std::move(llvmDataLayout),
+                             *indexBitWidth, std::move(gepsLeafToRoot)};
+}
+
 std::optional<unsigned> getIntegralIndexBitWidth(const mlir::DataLayout &layout,
                                                  mlir::Type type) {
   if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type)) {
@@ -271,49 +313,31 @@ resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
       exactSignedDivideShift};
 }
 
-std::optional<ResolvedLinearMemoryAddress>
-resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
-                           unsigned canonicalIndexBits) {
-  if (canonicalIndexBits == 0 ||
-      canonicalIndexBits > mlir::IntegerType::kMaxWidth)
+static std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddressImpl(mlir::Value pointer, mlir::Type accessType,
+                               std::optional<unsigned> canonicalIndexBits) {
+  auto pointerRoot = resolvePointerRoot(pointer);
+  if (!pointerRoot)
     return std::nullopt;
-  llvm::SmallVector<mlir::LLVM::GEPOp, 4> leafToRoot;
-  mlir::Value root = pointer;
-  while (auto current = root.getDefiningOp<mlir::LLVM::GEPOp>()) {
-    leafToRoot.push_back(current);
-    root = current.getBase();
-  }
-  auto rootType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(root.getType());
-  if (!rootType)
+  const unsigned arithmeticBits =
+      canonicalIndexBits ? *canonicalIndexBits : pointerRoot->indexBitWidth;
+  if (arithmeticBits == 0 || arithmeticBits > mlir::IntegerType::kMaxWidth)
     return std::nullopt;
-
+  llvm::SmallVector<mlir::LLVM::GEPOp, 4> leafToRoot =
+      std::move(pointerRoot->gepsLeafToRoot);
+  mlir::Value root = pointerRoot->root;
   // The chain is discharged only when all pointer uses lower to logical
   // memory accesses. On an LLVM-defined execution every no-wrap condition
   // already holds; violating one poisons the source address and its consuming
   // load or store has undefined behavior. The linear address is therefore the
   // exact defined-domain projection regardless of the chain's flag spelling.
 
-  mlir::Operation *scope = pointer.getDefiningOp();
-  if (!scope) {
-    auto argument = llvm::dyn_cast<mlir::BlockArgument>(pointer);
-    scope = argument ? argument.getOwner()->getParentOp() : nullptr;
-  }
-  if (!scope)
-    return std::nullopt;
+  mlir::Operation *scope = pointerRoot->scope;
   mlir::DataLayout dataLayout = mlir::DataLayout::closest(scope);
-  std::optional<llvm::DataLayout> llvmDataLayout =
-      getModuleLLVMDataLayout(scope);
+  std::optional<llvm::DataLayout> &llvmDataLayout = pointerRoot->llvmDataLayout;
   llvm::LLVMContext llvmContext;
   mlir::LLVM::TypeToLLVMIRTranslator translator(llvmContext);
-
-  std::optional<std::uint64_t> pointerIndexBits;
-  if (llvmDataLayout)
-    pointerIndexBits =
-        llvmDataLayout->getIndexSizeInBits(rootType.getAddressSpace());
-  else
-    pointerIndexBits = dataLayout.getTypeIndexBitwidth(root.getType());
-  if (!pointerIndexBits || *pointerIndexBits == 0 || *pointerIndexBits > 64)
-    return std::nullopt;
+  const std::uint64_t pointerIndexBits = pointerRoot->indexBitWidth;
 
   auto getAllocBytes = [&](mlir::Type type) {
     if (llvmDataLayout)
@@ -333,7 +357,7 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
       *accessBytes > maxSigned || !llvm::isPowerOf2_64(*elementBytes))
     return std::nullopt;
   unsigned elementShift = llvm::Log2_64(*elementBytes);
-  if (elementShift >= *pointerIndexBits)
+  if (elementShift >= pointerIndexBits)
     return std::nullopt;
 
   ResolvedLinearMemoryAddress result;
@@ -392,9 +416,9 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
         continue;
       }
       if (!strideBytes || *strideBytes > maxSigned ||
-          !llvm::isIntN(*pointerIndexBits,
+          !llvm::isIntN(pointerIndexBits,
                         static_cast<std::int64_t>(*strideBytes)) ||
-          !llvm::isIntN(canonicalIndexBits,
+          !llvm::isIntN(arithmeticBits,
                         static_cast<std::int64_t>(*strideBytes)))
         return std::nullopt;
 
@@ -411,20 +435,23 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
         } else {
           indexBits = getIntegralIndexBitWidth(dataLayout, index.getType());
         }
-        if (!indexBits || *indexBits > canonicalIndexBits)
+        if (!indexBits || *indexBits > arithmeticBits)
           return std::nullopt;
         result.indexType =
-            mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
-        if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
-          return std::nullopt;
-        std::optional<ExactElementStrideScale> elementScale =
-            resolveExactElementStrideScale(index, *strideBytes, *elementBytes);
-        if (!elementScale)
-          return std::nullopt;
+            mlir::IntegerType::get(pointer.getContext(), arithmeticBits);
         result.terms.push_back(
             {index, static_cast<std::int64_t>(*strideBytes)});
-        result.elementTerms.push_back(
-            {index, elementScale->scale, elementScale->exactSignedDivideShift});
+        if (canonicalIndexBits) {
+          if (llvm::isa<mlir::IndexType>(index.getType()) && *elementBytes != 1)
+            return std::nullopt;
+          std::optional<ExactElementStrideScale> elementScale =
+              resolveExactElementStrideScale(index, *strideBytes,
+                                             *elementBytes);
+          if (!elementScale)
+            return std::nullopt;
+          result.elementTerms.push_back({index, elementScale->scale,
+                                         elementScale->exactSignedDivideShift});
+        }
         continue;
       }
 
@@ -438,20 +465,36 @@ resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
       return std::nullopt;
   }
 
-  if (constantByteOffset % static_cast<std::int64_t>(*elementBytes) != 0 ||
-      !llvm::isIntN(*pointerIndexBits, constantByteOffset) ||
-      !llvm::isIntN(canonicalIndexBits, constantByteOffset))
+  const bool elementAligned =
+      constantByteOffset % static_cast<std::int64_t>(*elementBytes) == 0;
+  if ((canonicalIndexBits && !elementAligned) ||
+      !llvm::isIntN(pointerIndexBits, constantByteOffset) ||
+      !llvm::isIntN(arithmeticBits, constantByteOffset))
     return std::nullopt;
 
   if (!result.indexType)
     result.indexType =
-        mlir::IntegerType::get(pointer.getContext(), canonicalIndexBits);
+        mlir::IntegerType::get(pointer.getContext(), arithmeticBits);
   result.byteBias = constantByteOffset;
-  result.elementBias =
-      constantByteOffset / static_cast<std::int64_t>(*elementBytes);
+  if (elementAligned)
+    result.elementBias =
+        constantByteOffset / static_cast<std::int64_t>(*elementBytes);
+  result.addressBitWidth = arithmeticBits;
   for (mlir::LLVM::GEPOp gep : leafToRoot)
     result.gepsLeafToRoot.push_back(gep.getOperation());
   return result;
+}
+
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
+                           unsigned canonicalIndexBits) {
+  return resolveLinearMemoryAddressImpl(pointer, accessType,
+                                        canonicalIndexBits);
+}
+
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType) {
+  return resolveLinearMemoryAddressImpl(pointer, accessType, std::nullopt);
 }
 
 std::optional<ResolvedLinearMemoryAddress>

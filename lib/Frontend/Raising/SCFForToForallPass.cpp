@@ -809,6 +809,12 @@ bool hasProvenIndependentIterations(::mlir::scf::ForOp loop) {
   return ::mlir::succeeded(checkBodyParallel(loop));
 }
 
+::mlir::LogicalResult
+materializeIndependentLoopAsForall(::mlir::scf::ForOp loop) {
+  ::mlir::PatternRewriter rewriter(loop.getContext());
+  return ForToForall(loop.getContext()).matchAndRewrite(loop, rewriter);
+}
+
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass() {
   return std::make_unique<SCFForToForallPass>();
 }

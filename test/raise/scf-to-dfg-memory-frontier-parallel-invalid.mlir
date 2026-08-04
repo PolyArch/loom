@@ -2,6 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/forged.mlir 2>&1 | FileCheck %s --check-prefix=FORGED
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/overlap.mlir 2>&1 | FileCheck %s --check-prefix=OVERLAP
+// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/pointer-overlap.mlir 2>&1 | FileCheck %s --check-prefix=POINTER-OVERLAP
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/unsupported-actor.mlir 2>&1 | FileCheck %s --check-prefix=ACTOR
 
 // FORGED: error: loom-lower-graph-memory: parallel SCF carries unsupported author metadata
@@ -59,6 +60,34 @@ dataflow.graph private @overlapping_parallel(
     scf.reduce
   }
   dataflow.graph.return %start : none
+}
+
+//--- pointer-overlap.mlir
+
+// POINTER-OVERLAP: error: loom-lower-graph-memory: parallel lanes have overlapping plain memory byte ranges
+// POINTER-OVERLAP-LABEL: dataflow.graph private @overlapping_pointer_parallel
+// POINTER-OVERLAP: llvm.store
+// POINTER-OVERLAP-NOT: dataflow.store
+module attributes {
+  llvm.data_layout = "e-p:64:64",
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+  dataflow.graph private @overlapping_pointer_parallel(
+      %ctrl: none, %pointer: !llvm.ptr) -> ()
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %zero = arith.constant 0 : i64
+    %value = arith.constant 7 : i32
+    scf.forall (%lane) = (%c0) to (%c2) step (%c1) {
+      %address = llvm.getelementptr inbounds %pointer[%zero]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      llvm.store %value, %address : i32, !llvm.ptr
+    }
+    dataflow.graph.return %ctrl : none
+  }
 }
 
 //--- unsupported-actor.mlir

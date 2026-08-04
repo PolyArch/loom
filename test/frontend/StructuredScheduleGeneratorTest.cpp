@@ -105,7 +105,7 @@ outerInnerTrips(const loom::frontend::StructuredProgramCandidate &candidate,
       break;
   }
   if (!outer)
-    fail("candidate lost the top-level loop");
+    return std::nullopt;
   auto inner = llvm::dyn_cast<mlir::scf::ForOp>(&outer.getBody()->front());
   if (!inner)
     return std::nullopt;
@@ -122,6 +122,18 @@ storeCount(const loom::frontend::StructuredProgramCandidate &candidate,
     fail("candidate lost function " + functionName.str());
   std::size_t count = 0;
   function.walk([&](mlir::memref::StoreOp) { ++count; });
+  return count;
+}
+
+std::size_t
+forallCount(const loom::frontend::StructuredProgramCandidate &candidate,
+            llvm::StringRef functionName) {
+  mlir::func::FuncOp function =
+      candidate.module().lookupSymbol<mlir::func::FuncOp>(functionName);
+  if (!function)
+    fail("candidate lost function " + functionName.str());
+  std::size_t count = 0;
+  function.walk([&](mlir::scf::ForallOp) { ++count; });
   return count;
 }
 
@@ -287,6 +299,15 @@ module attributes {dlti.dl_spec = #layout} {
   if (!sawUnrollAndJam)
     fail("proven-independent nested loops produced no unroll-and-jam child");
 
+  bool sawParallel = false;
+  for (const loom::ArtifactRootReference &reference : safeOutputs) {
+    auto candidate =
+        take(loom::frontend::importStructuredProgram(reference, store));
+    sawParallel |= forallCount(candidate, "kernel") != 0;
+  }
+  if (!sawParallel)
+    fail("proven-independent loop produced no parallel child");
+
   auto dependent = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 module attributes {dlti.dl_spec = #layout} {
@@ -316,6 +337,8 @@ module attributes {dlti.dl_spec = #layout} {
       fail("loop-carried dependence produced an interchange child");
     if (hasUnrollAndJamShape(candidate, "kernel"))
       fail("loop-carried dependence produced an unroll-and-jam child");
+    if (forallCount(candidate, "kernel") != 0)
+      fail("loop-carried dependence produced a parallel child");
   }
 
   auto unroll = parseProgram(R"mlir(

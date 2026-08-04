@@ -280,6 +280,10 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
         }
       }
     }
+    if (loop.getInitArgs().empty() &&
+        raising::hasProvenIndependentIterations(loop))
+      decisions.push_back(
+          {entity.reference, StructuredScheduleDecisionKind::Parallelize, 0});
   }
   return decisions;
 }
@@ -311,6 +315,12 @@ materializeStructuredScheduleDecision(
   case StructuredScheduleDecisionKind::UnrollAndJam:
     if (llvm::Error error = applyUnrollAndJam(loop, decision.factor))
       return std::move(error);
+    break;
+  case StructuredScheduleDecisionKind::Parallelize:
+    if (decision.factor != 0)
+      return invalid("parallelize decision carries a factor");
+    if (mlir::failed(raising::materializeIndependentLoopAsForall(loop)))
+      return invalid("SCF parallelization rejected the selected decision");
     break;
   }
   if (mlir::failed(mlir::verify(**clone)))

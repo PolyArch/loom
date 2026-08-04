@@ -136,6 +136,12 @@ std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 /// parallelization transform. Unknown facts return false.
 bool hasProvenIndependentIterations(::mlir::scf::ForOp loop);
 
+/// Materializes the same exact conservative parallelization recognized by
+/// hasProvenIndependentIterations as one scf.for-to-scf.forall rewrite.
+/// Failure leaves the loop unchanged.
+::mlir::LogicalResult
+materializeIndependentLoopAsForall(::mlir::scf::ForOp loop);
+
 // Register all raising passes with the global pass registry. Lets
 // `mlir-opt` style drivers expose them via --loom-llvm-cf-to-cf,
 // --loom-lift-cf-to-scf, --loom-llvm-arith-to-arith.

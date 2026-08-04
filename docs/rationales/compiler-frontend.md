@@ -365,6 +365,15 @@ actor has enough aggregate occurrences. Letting that child enter Evaluation
 would turn a known exact-Fabric hard negative into `Unsupported` Evidence and
 make the entire promotion incomplete.
 
+Parallelization reuses one conservative legality and materialization owner.
+Having the pass pipeline and the Schedule generator maintain separate alias or
+effect rules would allow one path to create a child that the other path rejects.
+The generated child therefore contains an ordinary `scf.forall`, which is the
+only schedule fact needed at this point. Physical coordinates and bindings are
+deliberately absent: preserving graph-local parallelism or distributing the
+logical domain across thread launches is an ownership and later Mapping choice,
+not another hidden parallelization hint.
+
 The Schedule generator therefore applies two complementary checks owned by the
 same Fabric capability projection: cheap aggregate pruning before cloning, and
 complete actor admission after the transformed child is mechanically lowered.
@@ -403,6 +412,29 @@ Dataflow pointer type would likewise restate LLVM's DataLayout and provenance
 authority. The two closed graph forms are therefore memref capability plus
 index, or the original typed LLVM pointer plus an exact memory-service
 capability.
+
+Those two forms also require different arithmetic proofs. A root-relative
+element index is meaningful only in its selected canonical index width. An
+LLVM pointer GEP is already a byte-address computation whose arithmetic width
+is owned by the module DataLayout for that address space. Rechecking the latter
+at an unrelated canonical `index` width can reject a valid 64-bit pointer lane
+merely because the candidate selected 32-bit memref indices. Parallel overlap
+checking therefore compares exact pointer byte ranges at the DataLayout width,
+while root-relative checking alone proves canonical element-index
+representability. This keeps both representations strict without creating a
+third address authority. For the same reason, a module-owned fixed `index`
+width narrows only the root-relative candidate domain. Treating it as an
+implicit address-form selection would erase a valid pointer-addressed
+candidate and turn DataLayout into a second DSE policy owner.
+
+The temporary root-relative marker exists because the selected projection must
+survive immutable Structured publication until graph memory lowering, while an
+LLVM pointer type alone denotes the opposite `PointerAddressed` form. Keeping
+the choice only in invocation state would make equal Structured identities
+lower differently. Persisting it in Canonical Dataflow would duplicate the
+address type's closed `MemoryAddressForm`. An identity-bearing marker on the
+exact source access, consumed while replacing that access, is therefore the
+smallest complete bridge between the two owners.
 
 ## Why Dataflow Has Its Own Optimization Lineage
 

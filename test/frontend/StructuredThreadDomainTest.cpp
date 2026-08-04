@@ -544,6 +544,64 @@ module attributes {
   return take(loom::frontend::finalizeStructuredProgram(module.get()));
 }
 
+loom::frontend::StructuredProgramCandidate makeExplicitIndexSource() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
+                  mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+  llvm.func @kernel(%base: !llvm.ptr) {
+    %extent = arith.constant 4 : index
+    scf.forall (%i) in (%extent) {
+      %i64 = arith.index_cast %i : index to i64
+      %ptr = llvm.getelementptr inbounds %base[%i64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %value = arith.constant 1 : i32
+      llvm.store %value, %ptr : i32, !llvm.ptr
+      scf.forall.in_parallel {}
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the explicit-index fixture");
+  module->getOperation()->setAttr(
+      "llvm.target_triple",
+      mlir::StringAttr::get(&context, "riscv64-unknown-unknown-elf"));
+  module->getOperation()->setAttr(
+      "llvm.data_layout", mlir::StringAttr::get(&context, nativeDataLayout()));
+  return take(loom::frontend::finalizeStructuredProgram(module.get()));
+}
+
+void requireExplicitIndexAddressDomain() {
+  using Shape = loom::frontend::ForallOwnershipShape;
+  auto source = makeExplicitIndexSource();
+  auto domain = take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
+      source, findForall(source)));
+
+  unsigned rootRelative = 0;
+  unsigned pointerAddressed = 0;
+  for (const auto &decision : domain) {
+    if (decision.forallOwnershipShape != Shape::LogicalThreadDomain)
+      continue;
+    if (decision.rootRelativeIndexWidth() == 32)
+      ++rootRelative;
+    else if (decision.rootRelativeIndexWidth())
+      fail("explicit index width admitted a conflicting root-relative width");
+    if (decision.isPointerAddressed())
+      ++pointerAddressed;
+  }
+  if (rootRelative != 1 || pointerAddressed != 1)
+    fail("explicit index width did not preserve both address projections");
+}
+
 void requireIndexWidthRejection(
     const loom::fabric::FinalizedFabricRoot &fabric) {
   using Shape = loom::frontend::ForallOwnershipShape;
@@ -985,9 +1043,7 @@ void requireScaledByteAddressBoundary(
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {
-  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
-} {
+module {
   llvm.func @kernel(%base: !llvm.ptr) {
     %extent = arith.constant 5 : index
     scf.forall (%i) in (%extent) {
@@ -1011,8 +1067,8 @@ module attributes {
   module->getOperation()->setAttr(
       "llvm.data_layout", mlir::StringAttr::get(&context, nativeDataLayout()));
   auto source = take(loom::frontend::finalizeStructuredProgram(module.get()));
-  auto rejected = loom::frontend::prepareSpatialOwnershipSelection(
-      source, {findForall(source)}, findThreadDecision(source, std::nullopt));
+  auto rejected = loom::frontend::materializeSpatialOwnershipDecision(
+      source, {findForall(source)}, findThreadDecision(source, 32), fabric);
   if (rejected)
     fail("scaled byte address overflow was accepted by a narrow index ABI");
   if (llvm::toString(rejected.takeError())
@@ -1020,9 +1076,7 @@ module attributes {
     fail("scaled byte address overflow used the wrong candidate rejection");
 
   auto acceptedModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {
-  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
-} {
+module {
   llvm.func @kernel(%base: !llvm.ptr) {
     %extent = arith.constant 5 : index
     scf.forall (%i) in (%extent) {
@@ -1049,9 +1103,10 @@ module attributes {
       take(loom::frontend::finalizeStructuredProgram(acceptedModule.get()));
   auto candidate = take(loom::frontend::materializeSpatialOwnershipDecision(
       acceptedSource, {findForall(acceptedSource)},
-      findThreadDecision(acceptedSource, std::nullopt), fabric));
+      findThreadDecision(acceptedSource, 32), fabric));
 
-  bool sawExactElementAddress = false;
+  bool sawRootRelativeStore = false;
+  bool sawResidualGep = false;
   candidate.canonicalDataflow.module().walk([&](mlir::Operation *operation) {
     for (mlir::Type type : operation->getResultTypes()) {
       auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
@@ -1059,19 +1114,13 @@ module attributes {
         fail("scaled element address introduced an over-wide graph actor");
     }
     auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
-    if (!gep)
-      return;
-    auto array = llvm::dyn_cast<mlir::LLVM::LLVMArrayType>(gep.getElemType());
-    if (!array || array.getNumElements() != 1073741824 ||
-        !array.getElementType().isInteger(8))
-      return;
-    if (gep.getDynamicIndices().size() != 1 ||
-        !gep.getDynamicIndices().front().getType().isInteger(32))
-      fail("scaled element address changed its exact index type");
-    sawExactElementAddress = true;
+    sawResidualGep |= static_cast<bool>(gep);
+    if (auto store = llvm::dyn_cast<dataflow::StoreOp>(operation))
+      sawRootRelativeStore |=
+          llvm::isa<mlir::IndexType>(store.getAddr().getType());
   });
-  if (!sawExactElementAddress)
-    fail("scaled element address did not preserve the exact typed GEP");
+  if (!sawRootRelativeStore || sawResidualGep)
+    fail("root-relative selection did not materialize capability-plus-index");
 }
 
 } // namespace
@@ -1087,6 +1136,7 @@ int main() {
       store, loom::adg::BuiltinTargetPreset::Small));
   loom::frontend::StructuredProgramCandidate source = makeSource();
   requireThreadDomainChoice(source, design.roots().front());
+  requireExplicitIndexAddressDomain();
   requireIndexWidthRejection(design.roots().front());
   requireWidenedCoordinateRecovery(design.roots().front());
   requireNarrowIndexCastAliasRejection();

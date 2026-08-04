@@ -16,10 +16,12 @@ enum class StructuredScheduleDecisionKind : std::uint32_t {
   Unroll = 1,
   Interchange = 2,
   UnrollAndJam = 3,
+  Parallelize = 4,
 };
 
 /// One atomic schedule decision over an exact parent-local loop. A zero factor
-/// is canonical only for Interchange; Tile and Unroll carry a positive factor.
+/// is canonical for decisions without a factor; replication decisions carry a
+/// positive factor.
 struct StructuredScheduleDecision final {
   StructuredEntityRef loop;
   StructuredScheduleDecisionKind kind;

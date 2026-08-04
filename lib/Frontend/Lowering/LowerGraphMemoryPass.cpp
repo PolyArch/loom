@@ -1,10 +1,11 @@
 // Tokenize residual `llvm.load` / `llvm.store` ops inside construction-local
-// `dataflow.graph` bodies into `dataflow.load` / `dataflow.store`. The LLVM
-// pointer remains value-plane data and retains its complete typed pointer
-// arithmetic. One graph memory input names the object-scoped service selected
-// by the pointer root; the enclosing thread materializes that service
-// explicitly before graph launch.
+// `dataflow.graph` bodies into `dataflow.load` / `dataflow.store`. A selected
+// root-relative access becomes capability-plus-index and loses its pointer
+// arithmetic; an unmarked access retains the exact typed pointer expression.
+// One graph memory input names the object-scoped service selected by the
+// address root; the enclosing thread materializes that service before launch.
 
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 #include "Frontend/Lowering/Passes.h"
 
 #include "GraphMemoryLowering.h"
@@ -16,6 +17,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -385,6 +387,7 @@ struct CanonicalMemoryPort {
 struct RewriteCtx {
   ::dataflow::GraphOp graph;
   ::mlir::Value ctrl;
+  unsigned indexBits = 0;
   ::llvm::DenseMap<ImportedViewKey, ::mlir::Value, ImportedViewKeyInfo>
       importedViews;
 };
@@ -410,6 +413,70 @@ void ensurePointerValueServices(RewriteCtx &ctx) {
 
 // Attempt to rewrite a single load or store. Returns true if a
 // rewrite happened.
+::mlir::FailureOr<::mlir::Value>
+materializeRootRelativeAddress(::mlir::Operation *access, ::mlir::Value pointer,
+                               ::mlir::Type accessType,
+                               ::mlir::OpBuilder &builder, unsigned indexBits) {
+  auto resolved = ::loom::lowering::resolveLinearMemoryAddress(
+      pointer, accessType, indexBits);
+  if (!resolved || resolved->terms.size() != resolved->elementTerms.size()) {
+    access->emitError(
+        "loom-lower-graph-memory: selected root-relative address has no "
+        "exact canonical-index projection");
+    return ::mlir::failure();
+  }
+
+  ::mlir::Location loc = access->getLoc();
+  auto integerType = builder.getIntegerType(indexBits);
+  auto integerConstant = [&](std::int64_t value) -> ::mlir::Value {
+    return ::mlir::arith::ConstantOp::create(
+        builder, loc, integerType, builder.getIntegerAttr(integerType, value));
+  };
+  auto toCanonicalInteger = [&](::mlir::Value value) -> ::mlir::Value {
+    if (::llvm::isa<::mlir::IndexType>(value.getType()))
+      return ::mlir::arith::IndexCastOp::create(builder, loc, integerType,
+                                                value);
+    auto sourceType = ::llvm::dyn_cast<::mlir::IntegerType>(value.getType());
+    if (!sourceType || !sourceType.isSignless() ||
+        sourceType.getWidth() > indexBits)
+      return {};
+    if (sourceType.getWidth() < indexBits)
+      return ::mlir::arith::ExtSIOp::create(builder, loc, integerType, value);
+    return value;
+  };
+
+  ::mlir::Value result = integerConstant(resolved->elementBias);
+  for (auto [byteTerm, elementTerm] :
+       ::llvm::zip_equal(resolved->terms, resolved->elementTerms)) {
+    (void)byteTerm;
+    ::mlir::Value term = toCanonicalInteger(elementTerm.index);
+    if (!term) {
+      access->emitError(
+          "loom-lower-graph-memory: root-relative address term exceeds the "
+          "canonical index width");
+      return ::mlir::failure();
+    }
+    if (elementTerm.exactSignedDivideShift != 0) {
+      ::mlir::Value shift = integerConstant(elementTerm.exactSignedDivideShift);
+      auto divide = ::mlir::arith::ShRSIOp::create(builder, loc, term, shift);
+      divide.setIsExact(true);
+      term = divide;
+    }
+    if (elementTerm.scale != 1) {
+      ::mlir::Value scale = integerConstant(elementTerm.scale);
+      auto multiply = ::mlir::arith::MulIOp::create(builder, loc, term, scale);
+      multiply.setOverflowFlags(::mlir::arith::IntegerOverflowFlags::nsw);
+      term = multiply;
+    }
+    auto add = ::mlir::arith::AddIOp::create(builder, loc, result, term);
+    add.setOverflowFlags(::mlir::arith::IntegerOverflowFlags::nsw);
+    result = add;
+  }
+  return ::mlir::arith::IndexCastOp::create(builder, loc,
+                                            builder.getIndexType(), result)
+      .getResult();
+}
+
 bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
                    RewriteCtx &ctx) {
   ::mlir::Value ptrArg;
@@ -439,6 +506,21 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
   ::mlir::Location loc = op->getLoc();
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(op);
+  ::mlir::Value address = ptrArg;
+  ::mlir::Attribute rootRelative =
+      op->getAttr(::loom::rootRelativeAddressAttrName);
+  if (rootRelative) {
+    if (!::llvm::isa<::mlir::UnitAttr>(rootRelative)) {
+      op->emitError("loom-lower-graph-memory: root-relative address marker is "
+                    "malformed");
+      return false;
+    }
+    auto projected = materializeRootRelativeAddress(op, ptrArg, elemTy, builder,
+                                                    ctx.indexBits);
+    if (::mlir::failed(projected))
+      return false;
+    address = *projected;
+  }
   ::mlir::Value mem =
       getImportedMemrefView(ctx.graph, ctx.importedViews, root, *storage, loc);
   if (!mem)
@@ -447,13 +529,13 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
     auto newLoad = ::dataflow::LoadOp::create(
         builder, loc, /*data=*/elemTy, /*done=*/builder.getNoneType(),
-        /*mem=*/mem, /*addr=*/ptrArg, /*ctrl=*/ctx.ctrl);
+        /*mem=*/mem, /*addr=*/address, /*ctrl=*/ctx.ctrl);
     load.getResult().replaceAllUsesWith(newLoad.getData());
   } else {
     auto store = ::llvm::cast<::mlir::LLVM::StoreOp>(op);
     ::dataflow::StoreOp::create(
         builder, loc, /*done=*/builder.getNoneType(), /*mem=*/mem,
-        /*addr=*/ptrArg, /*data=*/store.getValue(), /*ctrl=*/ctx.ctrl);
+        /*addr=*/address, /*data=*/store.getValue(), /*ctrl=*/ctx.ctrl);
   }
   op->erase();
   return true;
@@ -571,6 +653,11 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
   RewriteCtx ctx;
   ctx.graph = graph;
   ctx.ctrl = ctrl;
+  auto indexBits = getGraphIndexBits(graph);
+  if (!indexBits)
+    return graph.emitError(
+        "loom-lower-graph-memory: graph has no canonical index width");
+  ctx.indexBits = *indexBits;
 
   (void)sinkBranchSelectedLoads(graph, builder);
 

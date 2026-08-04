@@ -43,12 +43,20 @@ struct ResolvedLinearMemoryAddress {
   unsigned byteToElementShift = 0;
   std::uint64_t elementAllocByteCount = 0;
   std::uint64_t accessByteCount = 0;
+  unsigned addressBitWidth = 0;
   llvm::SmallVector<mlir::Operation *, 4> gepsLeafToRoot;
 };
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
                            unsigned canonicalIndexBits);
+
+/// Resolves one typed LLVM GEP chain as an exact DataLayout byte address.
+/// Unlike the RootRelative overload above, this projection derives its
+/// arithmetic width from the pointer address space and does not require a
+/// synthetic canonical element-index representation.
+std::optional<ResolvedLinearMemoryAddress>
+resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType);
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,

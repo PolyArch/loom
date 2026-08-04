@@ -23,11 +23,16 @@ bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
                                   mlir::OpFoldResult step,
                                   unsigned targetWidth);
 
+/// Returns the exact fixed index width already owned by the module DataLayout,
+/// if present. This constrains a root-relative projection but does not select
+/// root-relative addressing over exact pointer addressing.
+std::optional<unsigned>
+getExplicitFixedAddressIndexWidth(mlir::ModuleOp module);
+
 /// Whether this exact scope still needs a candidate-owned fixed index-width
 /// decision. Constant-only addresses do not create such a decision unless
 /// they form a proven pointer induction that must become integer loop state.
-bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
-                                           mlir::Operation *selectedOperation);
+bool requiresCanonicalAddressIndexDecision(mlir::Operation *selectedOperation);
 
 /// Explains why structured control in this exact scope cannot be normalized to
 /// invariant memory capabilities plus integer state by the production address

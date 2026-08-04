@@ -1465,12 +1465,15 @@ enumerateSpatialOwnershipDecisionDomain(
 
   llvm::SmallVector<std::optional<SpatialAddressProjection>, 3>
       addressProjections;
-  if (detail::requiresCanonicalAddressIndexDecision(parent.module(),
-                                                    operation)) {
+  if (detail::requiresCanonicalAddressIndexDecision(operation)) {
+    std::optional<unsigned> fixedWidth =
+        detail::getExplicitFixedAddressIndexWidth(parent.module());
     for (::fabric::ResolvedIndexWidth width :
-         ::fabric::resolvedIndexWidthDomain)
-      addressProjections.push_back(RootRelativeAddressProjection{
-          ::fabric::getResolvedIndexBitWidth(width)});
+         ::fabric::resolvedIndexWidthDomain) {
+      const unsigned bitWidth = ::fabric::getResolvedIndexBitWidth(width);
+      if (!fixedWidth || *fixedWidth == bitWidth)
+        addressProjections.push_back(RootRelativeAddressProjection{bitWidth});
+    }
     addressProjections.push_back(PointerAddressedAddressProjection{});
   } else {
     addressProjections.push_back(std::nullopt);

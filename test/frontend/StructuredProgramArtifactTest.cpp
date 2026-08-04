@@ -1,4 +1,5 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -200,6 +201,42 @@ module {
           "a semantic operation change did not change candidate identity");
 }
 
+void addressProjectionChangesIdentity() {
+  const char *test = __func__;
+  const char *source = R"mlir(
+module {
+  llvm.func @entry(%pointer: !llvm.ptr) {
+    %value = llvm.mlir.constant(7 : i32) : i32
+    llvm.store %value, %pointer : i32, !llvm.ptr
+    llvm.return
+  }
+}
+)mlir";
+  auto pointerModule = parse(test, source);
+  auto rootRelativeModule = parse(test, source);
+  rootRelativeModule->walk([](mlir::LLVM::StoreOp store) {
+    store->setAttr(loom::rootRelativeAddressAttrName,
+                   mlir::UnitAttr::get(store.getContext()));
+  });
+  StructuredProgramCandidate pointer = take(
+      test, loom::frontend::finalizeStructuredProgram(pointerModule.get()));
+  StructuredProgramCandidate rootRelative =
+      take(test,
+           loom::frontend::finalizeStructuredProgram(rootRelativeModule.get()));
+  require(test, pointer.identity() != rootRelative.identity(),
+          "address projection marker did not change candidate identity");
+
+  auto malformed = parse(test, source);
+  malformed->walk([](mlir::LLVM::LLVMFuncOp function) {
+    function->setAttr(loom::rootRelativeAddressAttrName,
+                      mlir::UnitAttr::get(function.getContext()));
+  });
+  auto rejected = loom::frontend::finalizeStructuredProgram(malformed.get());
+  require(test, !rejected,
+          "root-relative address marker was accepted on a non-memory op");
+  llvm::consumeError(rejected.takeError());
+}
+
 void referencesAreParentAndKindChecked() {
   const char *test = __func__;
   StructuredProgramCandidate first = finalize(test, R"mlir(
@@ -329,6 +366,7 @@ int main() {
   loopDebugLocationsDoNotChangeIdentity();
   finalizationProjectsSourceProvenanceOutsideIdentity();
   semanticOperationChangesIdentity();
+  addressProjectionChangesIdentity();
   referencesAreParentAndKindChecked();
   importedCandidateReencodesExactly();
   graphFreeInstructionCoreProgramPublishesDataflowArtifact();

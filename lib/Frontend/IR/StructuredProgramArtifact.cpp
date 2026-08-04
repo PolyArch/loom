@@ -8,6 +8,7 @@
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/Block.h"
@@ -102,6 +103,12 @@ bool isTransientAttribute(StringRef name) {
          name == "loom.visual_metadata" || name == "graph_name";
 }
 
+bool isRootRelativeAddressMarker(Operation *op, NamedAttribute attribute) {
+  return attribute.getName().getValue() == loom::rootRelativeAddressAttrName &&
+         isa<UnitAttr>(attribute.getValue()) &&
+         isa<LLVM::LoadOp, LLVM::StoreOp>(op);
+}
+
 void removeLoopDebugLocations(ModuleOp module) {
   AttrTypeReplacer replacer;
   replacer.addReplacement([](LLVM::LoopAnnotationAttr annotation)
@@ -134,6 +141,14 @@ llvm::Error removeTransients(ModuleOp module) {
       if (isTransientAttribute(name)) {
         erase.push_back(attribute.getName());
         continue;
+      }
+      if (name == loom::rootRelativeAddressAttrName) {
+        if (isRootRelativeAddressMarker(op, attribute))
+          continue;
+        result =
+            invalid(llvm::Twine("malformed root-relative address marker on ") +
+                    op->getName().getStringRef());
+        return WalkResult::interrupt();
       }
       if (name.starts_with("loom.")) {
         result = invalid(llvm::Twine("unresolved Loom-specific attribute '") +
@@ -251,7 +266,8 @@ operationIntrinsic(Operation *op, SmallVectorImpl<SymbolRefAttr> &symbols,
       StringRef name = entry.getName().getValue();
       if (name == symbolName && redacted)
         continue;
-      if (registeredOnly && !registered.contains(name))
+      if (registeredOnly && !registered.contains(name) &&
+          name != loom::rootRelativeAddressAttrName)
         continue;
       stream << name << '=';
       serializeAttribute(stream, entry.getValue(), symbols, asmState);

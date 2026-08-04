@@ -1,6 +1,7 @@
 #include "StructuredAddressIndexNarrowing.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1460,9 +1461,13 @@ bool provesThreadDomainExtentFits(mlir::OpFoldResult lower,
   return maximumExtent <= targetRange->maximum;
 }
 
-bool requiresCanonicalAddressIndexDecision(mlir::ModuleOp module,
-                                           mlir::Operation *selectedOperation) {
-  if (!selectedOperation || explicitFixedIndexWidth(module))
+std::optional<unsigned>
+getExplicitFixedAddressIndexWidth(mlir::ModuleOp module) {
+  return explicitFixedIndexWidth(module);
+}
+
+bool requiresCanonicalAddressIndexDecision(mlir::Operation *selectedOperation) {
+  if (!selectedOperation)
     return false;
   auto pointerLoops = collectPointerInductionLoops(selectedOperation);
   return containsDynamicAddressIndex(selectedOperation) ||
@@ -1524,7 +1529,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     return invalid("requires a selected structured operation");
   std::optional<unsigned> effectiveWidth = canonicalIndexWidth;
   if (!canonicalIndexWidth) {
-    if (requiresCanonicalAddressIndexDecision(module, selectedOperation))
+    if (requiresCanonicalAddressIndexDecision(selectedOperation))
       return invalid("requires an explicit canonical index width for LLVM "
                      "GEP operands");
     effectiveWidth = explicitFixedIndexWidth(module);
@@ -1618,6 +1623,13 @@ materializeAddressIndexContract(mlir::ModuleOp module,
   if (llvm::Error error =
           rewritePointerSelections(selectedOperation, *effectiveWidth))
     return std::move(error);
+
+  selectedOperation->walk([&](mlir::Operation *operation) {
+    if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(operation))
+      return;
+    operation->setAttr(loom::rootRelativeAddressAttrName,
+                       mlir::UnitAttr::get(module.getContext()));
+  });
   if (mlir::failed(mlir::verify(module)))
     return invalid("produced an invalid pointer-induction normalization");
   return selectedOperation;

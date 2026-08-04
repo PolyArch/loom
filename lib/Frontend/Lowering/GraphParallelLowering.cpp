@@ -5,6 +5,7 @@
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -640,6 +641,7 @@ struct ByteAccessExpression {
   std::int64_t byteBias = 0;
   std::int64_t elementBias = 0;
   std::uint64_t accessByteCount = 0;
+  bool rootRelative = false;
   bool exactCanonicalElementProjection = false;
 };
 
@@ -684,21 +686,6 @@ bool sameByteAddressSymbols(const ByteSymbolProjection &lhs,
   return true;
 }
 
-::llvm::APInt evaluateByteAddress(const ByteAccessExpression &address,
-                                  ::llvm::ArrayRef<int64_t> point,
-                                  unsigned width) {
-  ::llvm::APInt result(width, static_cast<std::uint64_t>(address.byteBias),
-                       /*isSigned=*/true);
-  for (const ByteAddressTermExpression &term : address.terms) {
-    ::llvm::APInt index =
-        evaluateLaneConstant(term.index, point).sextOrTrunc(width);
-    ::llvm::APInt stride(width, static_cast<std::uint64_t>(term.byteStride),
-                         /*isSigned=*/true);
-    result += index * stride;
-  }
-  return result;
-}
-
 bool hasExactCanonicalElementProjection(
     const ResolvedLinearMemoryAddress &address) {
   if (address.elementTerms.empty()) {
@@ -738,9 +725,24 @@ bool hasRepresentableCanonicalElementArithmetic(
   return result.isSignedIntN(canonicalWidth);
 }
 
+::llvm::APInt evaluateByteAddress(const ByteAccessExpression &address,
+                                  ::llvm::ArrayRef<int64_t> point,
+                                  unsigned width) {
+  ::llvm::APInt result(width, static_cast<std::uint64_t>(address.byteBias),
+                       /*isSigned=*/true);
+  for (const ByteAddressTermExpression &term : address.terms) {
+    ::llvm::APInt index =
+        evaluateLaneConstant(term.index, point).sextOrTrunc(width);
+    ::llvm::APInt stride(width, static_cast<std::uint64_t>(term.byteStride),
+                         /*isSigned=*/true);
+    result += index * stride;
+  }
+  return result;
+}
+
 bool hasDynamicByteLaneSeparation(const ByteAccessExpression &address,
                                   unsigned laneCount, unsigned width) {
-  if (laneCount != 1 || !address.exactCanonicalElementProjection)
+  if (laneCount != 1)
     return false;
   ::llvm::APInt stride(width, 0);
   for (const ByteAddressTermExpression &term : address.terms) {
@@ -834,9 +836,6 @@ struct ParallelCheckInfo {
     auto vars = forall.getInductionVars();
     inductionVars.append(vars.begin(), vars.end());
   }
-  LinearAddressBuilder expressions(info.op, inductionVars, *indexBits,
-                                   provenParallelOps);
-
   for (auto &[root, rootAccesses] : accessesByRoot) {
     (void)root;
     bool rootWrites =
@@ -868,21 +867,46 @@ struct ParallelCheckInfo {
         return info.op->emitError(
             "loom-lower-graph-memory: parallel memory root mixes LLVM byte "
             "addresses with non-LLVM indices");
-      if (*indexBits > (mlir::IntegerType::kMaxWidth - 1) / 2)
-        return info.op->emitError(
-            "loom-lower-graph-memory: parallel byte-address comparison width "
-            "is invalid");
-      const unsigned comparisonWidth = *indexBits * 2 + 1;
-      ::llvm::SmallVector<ByteAccessExpression, 8> byteAddresses;
-      byteAddresses.reserve(rootAccesses.size());
+      ::llvm::SmallVector<ResolvedLinearMemoryAddress, 8> resolvedAddresses;
+      resolvedAddresses.reserve(rootAccesses.size());
+      ::llvm::SmallVector<bool, 8> rootRelativeAddresses;
+      rootRelativeAddresses.reserve(rootAccesses.size());
+      unsigned addressBitWidth = 0;
       for (const ParallelMemoryAccess *access : rootAccesses) {
-        auto resolved = resolveLinearMemoryAddress(
-            access->memory, access->llvmAccessType, *indexBits);
+        ::mlir::Attribute marker =
+            access->op->getAttr(::loom::rootRelativeAddressAttrName);
+        if (marker && !::llvm::isa<::mlir::UnitAttr>(marker))
+          return access->op->emitError(
+              "loom-lower-graph-memory: root-relative address marker is "
+              "malformed");
+        const bool rootRelative = static_cast<bool>(marker);
+        auto resolved =
+            rootRelative
+                ? resolveLinearMemoryAddress(access->memory,
+                                             access->llvmAccessType, *indexBits)
+                : resolveLinearPointerAddress(access->memory,
+                                              access->llvmAccessType);
         if (!resolved)
           return access->op->emitError(
               "loom-lower-graph-memory: LLVM memory access has no exact "
               "DataLayout byte-address projection");
-        auto resolvedRoot = roots.resolve(resolved->root);
+        addressBitWidth = std::max(addressBitWidth, resolved->addressBitWidth);
+        rootRelativeAddresses.push_back(rootRelative);
+        resolvedAddresses.push_back(std::move(*resolved));
+      }
+      if (addressBitWidth == 0 ||
+          addressBitWidth > (mlir::IntegerType::kMaxWidth - 1) / 2)
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel byte-address comparison width "
+            "is invalid");
+      const unsigned comparisonWidth = addressBitWidth * 2 + 1;
+      LinearAddressBuilder expressions(info.op, inductionVars, addressBitWidth,
+                                       provenParallelOps);
+      ::llvm::SmallVector<ByteAccessExpression, 8> byteAddresses;
+      byteAddresses.reserve(rootAccesses.size());
+      for (auto [access, resolved, rootRelative] : ::llvm::zip_equal(
+               rootAccesses, resolvedAddresses, rootRelativeAddresses)) {
+        auto resolvedRoot = roots.resolve(resolved.root);
         if (!resolvedRoot || *resolvedRoot != root)
           return access->op->emitError(
               "loom-lower-graph-memory: LLVM byte-address projection changed "
@@ -890,22 +914,33 @@ struct ParallelCheckInfo {
 
         ByteAccessExpression address;
         address.access = access;
-        address.byteBias = resolved->byteBias;
-        address.elementBias = resolved->elementBias;
-        address.accessByteCount = resolved->accessByteCount;
+        address.byteBias = resolved.byteBias;
+        address.elementBias = resolved.elementBias;
+        address.accessByteCount = resolved.accessByteCount;
+        address.rootRelative = rootRelative;
         address.exactCanonicalElementProjection =
-            hasExactCanonicalElementProjection(*resolved);
-        address.terms.reserve(resolved->terms.size());
-        for (auto [byteTerm, elementTerm] :
-             ::llvm::zip_equal(resolved->terms, resolved->elementTerms)) {
+            rootRelative && hasExactCanonicalElementProjection(resolved);
+        address.terms.reserve(resolved.terms.size());
+        for (auto item : ::llvm::enumerate(resolved.terms)) {
+          const LinearByteTerm &byteTerm = item.value();
           auto expression = expressions.build(byteTerm.index);
           if (!expression)
             return access->op->emitError(
                 "loom-lower-graph-memory: LLVM byte address has no affine "
                 "lane projection");
+          std::int64_t elementScale = 0;
+          unsigned exactSignedDivideShift = 0;
+          if (rootRelative) {
+            if (item.index() >= resolved.elementTerms.size())
+              return access->op->emitError(
+                  "loom-lower-graph-memory: root-relative address has no "
+                  "exact element projection");
+            elementScale = resolved.elementTerms[item.index()].scale;
+            exactSignedDivideShift =
+                resolved.elementTerms[item.index()].exactSignedDivideShift;
+          }
           address.terms.push_back({std::move(*expression), byteTerm.byteStride,
-                                   elementTerm.scale,
-                                   elementTerm.exactSignedDivideShift});
+                                   elementScale, exactSignedDivideShift});
         }
         byteAddresses.push_back(std::move(address));
       }
@@ -913,7 +948,8 @@ struct ParallelCheckInfo {
       if (!info.domain) {
         if (::llvm::any_of(byteAddresses,
                            [](const ByteAccessExpression &value) {
-                             return !value.exactCanonicalElementProjection;
+                             return value.rootRelative &&
+                                    !value.exactCanonicalElementProjection;
                            }))
           return info.op->emitError(
               "loom-lower-graph-memory: dynamic LLVM element address has no "
@@ -944,12 +980,11 @@ struct ParallelCheckInfo {
       }
       if (!referenceSymbols->empty() &&
           ::llvm::any_of(byteAddresses, [](const ByteAccessExpression &value) {
-            return !value.exactCanonicalElementProjection;
+            return value.rootRelative && !value.exactCanonicalElementProjection;
           }))
         return info.op->emitError(
             "loom-lower-graph-memory: symbolic LLVM element address has no "
             "exact canonical-index projection");
-
       ::llvm::SmallVector<ByteInterval, 16> intervals;
       std::uint64_t lane = 0;
       bool unrepresentableElementIndex = false;
@@ -959,7 +994,8 @@ struct ParallelCheckInfo {
             for (const ByteAccessExpression &address : byteAddresses) {
               ::llvm::APInt begin =
                   evaluateByteAddress(address, coordinates, comparisonWidth);
-              if (!address.exactCanonicalElementProjection &&
+              if (address.rootRelative &&
+                  !address.exactCanonicalElementProjection &&
                   !hasRepresentableCanonicalElementArithmetic(
                       address, coordinates, comparisonWidth, *indexBits)) {
                 unrepresentableElementIndex = true;
@@ -1016,6 +1052,9 @@ struct ParallelCheckInfo {
 
     if (!rootWrites || rootAtomic)
       continue;
+
+    LinearAddressBuilder expressions(info.op, inductionVars, *indexBits,
+                                     provenParallelOps);
 
     struct AccessExpressions {
       const ParallelMemoryAccess *access;
