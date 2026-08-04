@@ -4,6 +4,7 @@ add_library(LoomHardwareRTL
   OperationLeaf.cpp
   Providers/FixedVectorIntegerAddSub.cpp
   Providers/FixedVectorPackUnpack.cpp
+  Providers/IntegerLogic.cpp
   Providers/LoopCarry.cpp
   Providers/LoopGate.cpp
   Providers/LoopInvariant.cpp

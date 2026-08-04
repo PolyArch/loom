@@ -104,6 +104,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-portable-integer-logic-test
+    PortableIntegerLogicTest.cpp
+  )
+
+  target_link_libraries(loom-portable-integer-logic-test PRIVATE
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-portable-fixed-vector-pack-unpack-test
     PortableFixedVectorPackUnpackTest.cpp
   )

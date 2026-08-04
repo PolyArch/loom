@@ -182,6 +182,7 @@ if(LOOM_HAVE_CIRCT)
     loom-operation-leaf-state-layout-test
     loom-portable-fixed-vector-integer-add-sub-test
     loom-portable-fixed-vector-pack-unpack-test
+    loom-portable-integer-logic-test
     loom-portable-loop-carry-test
     loom-portable-loop-gate-test
     loom-portable-loop-invariant-test
