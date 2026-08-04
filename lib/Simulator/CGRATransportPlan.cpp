@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -66,14 +67,34 @@ void collect(
     selected.try_emplace(bytes(*reference), *reference);
 }
 
-llvm::Expected<std::pair<CgraTraversalStorageKind, std::uint32_t>>
+struct StorageKey final {
+  std::uint32_t kind = 0;
+  RefBytes owner;
+  std::uint64_t ordinal = 0;
+
+  bool operator<(const StorageKey &other) const {
+    return std::tie(kind, owner, ordinal) <
+           std::tie(other.kind, other.owner, other.ordinal);
+  }
+};
+
+struct StorageProjection final {
+  CgraTraversalStorageKind accessKind = CgraTraversalStorageKind::None;
+  std::uint32_t capacity = 0;
+  StorageKey key;
+  ::loom::fabric::FabricUsePatternRef enqueuePattern;
+  ::loom::fabric::FabricUsePatternRef dequeuePattern;
+  std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;
+};
+
+llvm::Expected<std::optional<StorageProjection>>
 storageContract(const ::loom::fabric::FabricArtifactView &fabric,
                 const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
   if (const auto *fifo =
           std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
               &reference.payload)) {
     if (fifo->mode == ::loom::fabric::FabricFifoTraversalMode::Bypass)
-      return std::make_pair(CgraTraversalStorageKind::None, 0U);
+      return std::optional<StorageProjection>{};
     const auto owner = ::loom::fabric::FabricInventoryOwnerRef::of(fifo->owner);
     const ::fabric::ResourceContract *contract = fabric.resourceContract(owner);
     if (!contract || static_cast<std::uint32_t>(
@@ -87,8 +108,22 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
         static_cast<std::uint32_t>(::fabric::FifoBufferedCapacity::QueueSlot);
     if (queue >= dimensions.size() || dimensions[queue].capacity.value() == 0)
       return invalid("selected buffered FIFO has no positive queue capacity");
-    return std::make_pair(CgraTraversalStorageKind::BufferedFifo,
-                          dimensions[queue].capacity.value());
+    const auto patternOwner = ::loom::fabric::FabricUsePatternOwnerRef(owner);
+    StorageProjection result;
+    result.accessKind = CgraTraversalStorageKind::BufferedFifo;
+    result.capacity = dimensions[queue].capacity.value();
+    result.key = {0, ::loom::fabric::canonicalFabricBytes(owner), 0};
+    result.enqueuePattern = {
+        patternOwner,
+        ::fabric::fifoUsePattern(::fabric::FifoUsePattern::Enqueue).ordinal()};
+    result.dequeuePattern = {
+        patternOwner,
+        ::fabric::fifoUsePattern(::fabric::FifoUsePattern::Dequeue).ordinal()};
+    result.simultaneousPattern = ::loom::fabric::FabricUsePatternRef{
+        patternOwner, ::fabric::fifoUsePattern(
+                          ::fabric::FifoUsePattern::SimultaneousDequeueEnqueue)
+                          .ordinal()};
+    return std::optional<StorageProjection>(std::move(result));
   }
   if (const auto *registerFifo =
           std::get_if<::loom::fabric::FabricPeRegisterFifoPayload>(
@@ -113,9 +148,27 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
         registerFifo->role == ::loom::fabric::FabricRegisterFifoPathRole::Write
             ? CgraTraversalStorageKind::RegisterFifoWrite
             : CgraTraversalStorageKind::RegisterFifoRead;
-    return std::make_pair(kind, dimensions.front().capacity.value());
+    auto enqueue = ::fabric::resolveTemporalPeRegisterFifoPattern(
+        *contract, static_cast<std::uint32_t>(count),
+        static_cast<std::uint32_t>(registerFifo->registerFifo), true);
+    if (!enqueue)
+      return enqueue.takeError();
+    auto dequeue = ::fabric::resolveTemporalPeRegisterFifoPattern(
+        *contract, static_cast<std::uint32_t>(count),
+        static_cast<std::uint32_t>(registerFifo->registerFifo), false);
+    if (!dequeue)
+      return dequeue.takeError();
+    const auto patternOwner = ::loom::fabric::FabricUsePatternOwnerRef(owner);
+    StorageProjection result;
+    result.accessKind = kind;
+    result.capacity = dimensions.front().capacity.value();
+    result.key = {1, ::loom::fabric::canonicalFabricBytes(owner),
+                  registerFifo->registerFifo};
+    result.enqueuePattern = {patternOwner, enqueue->ordinal()};
+    result.dequeuePattern = {patternOwner, dequeue->ordinal()};
+    return std::optional<StorageProjection>(std::move(result));
   }
-  return std::make_pair(CgraTraversalStorageKind::None, 0U);
+  return std::optional<StorageProjection>{};
 }
 
 } // namespace
@@ -198,6 +251,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     }
   }
   std::map<RefBytes, std::uint64_t> selectedOrdinals;
+  std::map<StorageKey, std::uint64_t> storageOrdinals;
   result.traversals.reserve(selected.size());
   for (const auto &[key, reference] : selected) {
     auto found = physical.find(key);
@@ -206,6 +260,31 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     auto storage = storageContract(fabric, reference);
     if (!storage)
       return storage.takeError();
+    CgraTraversalStorageKind storageKind = CgraTraversalStorageKind::None;
+    std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
+    if (*storage) {
+      storageKind = (*storage)->accessKind;
+      auto [position, inserted] = storageOrdinals.try_emplace(
+          (*storage)->key, result.traversalStorages.size());
+      storageOrdinal = position->second;
+      if (inserted) {
+        result.traversalStorages.push_back(
+            {storageKind, (*storage)->capacity, (*storage)->enqueuePattern,
+             (*storage)->dequeuePattern, (*storage)->simultaneousPattern});
+      } else {
+        CgraTraversalStoragePlan &existing =
+            result.traversalStorages[storageOrdinal];
+        const bool bothRegister =
+            existing.kind != CgraTraversalStorageKind::BufferedFifo &&
+            storageKind != CgraTraversalStorageKind::BufferedFifo;
+        if ((!bothRegister && existing.kind != storageKind) ||
+            existing.capacity != (*storage)->capacity ||
+            existing.enqueuePattern != (*storage)->enqueuePattern ||
+            existing.dequeuePattern != (*storage)->dequeuePattern ||
+            existing.simultaneousPattern != (*storage)->simultaneousPattern)
+          return invalid("selected traversals disagree on storage contract");
+      }
+    }
     const std::uint64_t useOffset = result.traversalUses.size();
     if (found->second->impliedUses.size() >
         std::numeric_limits<std::uint32_t>::max())
@@ -216,8 +295,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const std::uint64_t ordinal = result.traversals.size();
     selectedOrdinals.emplace(key, ordinal);
     result.traversals.push_back(
-        {reference, reference.kind(), storage->first, storage->second,
-         useOffset,
+        {reference, reference.kind(), storageKind, storageOrdinal, useOffset,
          static_cast<std::uint32_t>(found->second->impliedUses.size())});
   }
 

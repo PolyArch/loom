@@ -22,6 +22,10 @@ add_executable(loom-simulator-cgra-transport-runtime-test
   CgraTransportRuntimeTest.cpp
 )
 
+add_executable(loom-simulator-cgra-transport-storage-runtime-test
+  CgraTransportStorageRuntimeTest.cpp
+)
+
 add_executable(loom-simulator-cgra-graph-activation-test
   CgraGraphActivationRuntimeTest.cpp
 )
@@ -55,6 +59,10 @@ target_include_directories(loom-simulator-cgra-transport-runtime-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )
 
+target_include_directories(loom-simulator-cgra-transport-storage-runtime-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
 target_include_directories(loom-simulator-cgra-graph-activation-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )
@@ -76,6 +84,11 @@ target_link_libraries(loom-simulator-cgra-transport-runtime-test PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-simulator-cgra-transport-storage-runtime-test PRIVATE
+  LoomSimulator
   LLVMSupport
 )
 

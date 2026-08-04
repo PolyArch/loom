@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_CGRATRANSPORTRUNTIME_H
 
 #include "CgraComputeRuntime.h"
+#include "CgraTransportStorageRuntime.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -9,6 +10,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::sim::detail {
@@ -61,9 +63,9 @@ public:
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
 
   bool hasPendingEvents() const {
-    return !traversalEvents_.empty() || !arrivalEvents_.empty() ||
-           !events_.empty() || !requestedEvents_.empty() ||
-           activeTransferCount_ != 0;
+    return !traversalEvents_.empty() || !storageEvents_.empty() ||
+           !arrivalEvents_.empty() || !events_.empty() ||
+           !requestedEvents_.empty() || activeTransferCount_ != 0;
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
 
@@ -89,12 +91,20 @@ private:
     std::uint32_t traversalTerminalCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
     std::optional<std::uint64_t> actorPlanOrdinal;
-    bool requiresStorageTransport = false;
     bool active = false;
   };
 
+  enum class TraversalNodeKind : std::uint8_t {
+    PhysicalAction,
+    BufferedStorage,
+    RegisterStorageWrite,
+    RegisterStorageRead,
+  };
+
   struct TraversalNodeBinding final {
-    std::uint64_t physicalUseOrdinal = 0;
+    TraversalNodeKind kind = TraversalNodeKind::PhysicalAction;
+    std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t successorOffset = 0;
     std::uint32_t successorCount = 0;
     std::uint32_t predecessorCount = 0;
@@ -119,7 +129,19 @@ private:
     std::uint32_t consumedRetired = 0;
   };
 
-  enum class ActionStage : std::uint8_t { Produced, Traversal, Consumed };
+  enum class ActionStage : std::uint8_t {
+    Produced,
+    Traversal,
+    Storage,
+    Consumed,
+  };
+
+  enum class StorageOperation : std::uint8_t {
+    None,
+    Enqueue,
+    Dequeue,
+    Simultaneous,
+  };
 
   enum class ActionLifecycleState : std::uint8_t {
     Requested,
@@ -130,8 +152,12 @@ private:
 
   struct ActionOwner final {
     std::uint64_t transferSlot = 0;
+    std::uint64_t secondaryTransferSlot = invalidCgraTransportOrdinal;
     std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t secondaryTraversalNodeOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
     ActionStage stage = ActionStage::Produced;
+    StorageOperation storageOperation = StorageOperation::None;
     ActionLifecycleState state = ActionLifecycleState::Requested;
   };
 
@@ -151,7 +177,22 @@ private:
     Idle,
     Scheduled,
     Requested,
+    WaitingStorage,
+    Queued,
     Permitted,
+  };
+
+  struct StorageBinding final {
+    explicit StorageBinding(CgraTransportStorageRuntime state)
+        : queue(std::move(state)) {}
+
+    CgraTransportStorageRuntime queue;
+    std::uint64_t enqueueAction = invalidCgraTransportOrdinal;
+    std::uint64_t dequeueAction = invalidCgraTransportOrdinal;
+    std::uint64_t simultaneousAction = invalidCgraTransportOrdinal;
+    std::vector<std::uint64_t> pendingEnqueueNodes;
+    bool eventScheduled = false;
+    bool actionPending = false;
   };
 
   CgraTransportRuntime(
@@ -161,6 +202,7 @@ private:
       std::vector<std::uint64_t> physicalUses,
       std::vector<TraversalNodeBinding> traversalNodes,
       std::vector<std::uint64_t> traversalSuccessors,
+      std::vector<StorageBinding> storages,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorSourceBindings,
       llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
@@ -177,6 +219,8 @@ private:
   llvm::Expected<bool>
   scheduleReadyTraversals(std::uint64_t slot,
                           const SpatialEventCoordinate &coordinate);
+  llvm::Error scheduleStorage(std::uint64_t storageOrdinal,
+                              const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
@@ -194,6 +238,7 @@ private:
   std::vector<std::uint64_t> physicalUses_;
   std::vector<TraversalNodeBinding> traversalNodes_;
   std::vector<std::uint64_t> traversalSuccessors_;
+  std::vector<StorageBinding> storages_;
   std::vector<std::uint32_t> traversalRemainingPredecessors_;
   std::vector<TraversalNodeState> traversalNodeStates_;
   std::vector<std::uint64_t> traversalNodeTransferSlots_;
@@ -202,6 +247,7 @@ private:
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   CgraEventQueue events_;
   CgraEventQueue traversalEvents_;
+  CgraEventQueue storageEvents_;
   CgraEventQueue arrivalEvents_;
   CgraEventQueue requestedEvents_;
   std::vector<InFlight> inFlight_;

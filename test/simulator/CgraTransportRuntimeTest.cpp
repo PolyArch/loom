@@ -313,6 +313,112 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               loom::sim::compareSpatialEventCoordinates(
                   selectedPublication->coordinate, coordinate(4, 4)) == 0,
           "selected endpoint uses did not gate token publication");
+
+  CgraFrozenExecutionPlan bufferedPlan = plan;
+  bufferedPlan.transport.localTransfers.pop_back();
+  bufferedPlan.transport.localTransferSinks.pop_back();
+  bufferedPlan.transport.traversals.resize(1);
+  bufferedPlan.transport.traversals.front().kind =
+      loom::fabric::FabricPhysicalTraversalKind::FifoTraversal;
+  bufferedPlan.transport.traversals.front().storageKind =
+      CgraTraversalStorageKind::BufferedFifo;
+  bufferedPlan.transport.traversals.front().storageOrdinal = 0;
+  bufferedPlan.transport.traversalStorages.push_back({});
+  auto &storage = bufferedPlan.transport.traversalStorages.front();
+  storage.kind = CgraTraversalStorageKind::BufferedFifo;
+  storage.capacity = 1;
+  storage.enqueuePhysicalUseOrdinal = 0;
+  storage.dequeuePhysicalUseOrdinal = 1;
+  storage.simultaneousPhysicalUseOrdinal = 2;
+  bufferedPlan.transport.routeNodes.push_back(
+      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+  bufferedPlan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{sync->ref, 1}},
+       0,
+       invalidCgraTransportOrdinal});
+  bufferedPlan.transport.routes.push_back(
+      {{dataflow::ActorTokenResultRef{add->ref, 0}},
+       add->graph,
+       0,
+       0,
+       1,
+       0,
+       1});
+  for (std::uint64_t action = 0; action != 3; ++action) {
+    bufferedPlan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::TraversalTransport);
+    bufferedPlan.resources.selectedUses.push_back({});
+    bufferedPlan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
+  }
+  auto bufferedPhysical = take(CgraPhysicalActionRuntime::create(
+      bufferedPlan.resources, bufferedPlan.physicalUseTimings));
+  auto bufferedTransport = take(CgraTransportRuntime::create(
+      bufferedPlan, view, add->graph, *prepared, state, bufferedPhysical));
+
+  channelQueue(state, sync->op->getOpOperand(1)).clear();
+  channelQueue(state, sync->op->getOpOperand(1))
+      .push_back(take(tokenFromBitPattern(
+          llvm::APInt(32, 1), mlir::IntegerType::get(&context(), 32))));
+  emissions.clear();
+  emissions.push_back(
+      {0, 2, 0, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 23),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          bufferedTransport.acceptActorEmissions(coordinate(10), emissions))
+    fail(llvm::toString(std::move(error)));
+
+  bool sawEnqueue = false;
+  bool sawBlocked = false;
+  bool sawDequeue = false;
+  bool sawPublication = false;
+  for (unsigned iteration = 0; iteration != 32 && !sawPublication;
+       ++iteration) {
+    const auto transportCoordinate = bufferedTransport.nextCoordinate();
+    const auto physicalCoordinate = bufferedPhysical.nextCoordinate();
+    const bool advancePhysical =
+        physicalCoordinate &&
+        (!transportCoordinate ||
+         loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
+                                                   *transportCoordinate) <= 0);
+    if (advancePhysical) {
+      auto frame = take(bufferedPhysical.advance());
+      require(frame.has_value(), "buffered physical event disappeared");
+      auto completions = take(bufferedTransport.acceptPhysicalEvents(*frame));
+      (void)completions;
+      continue;
+    }
+    require(transportCoordinate.has_value(),
+            "buffered transfer became quiescent before publication");
+    auto frame = take(bufferedTransport.advance());
+    require(frame.has_value(), "buffered transport event disappeared");
+    for (const CgraPhysicalLifecycleEvent &event : frame->physicalEvents) {
+      sawEnqueue |= event.kind == CgraPhysicalLifecycleKind::Requested &&
+                    event.actionOrdinal == 0;
+      sawDequeue |= event.kind == CgraPhysicalLifecycleKind::Requested &&
+                    event.actionOrdinal == 1;
+    }
+    if (!frame->blockedTransfers.empty() && !sawBlocked) {
+      require(sawEnqueue && !sawDequeue && frame->publications.empty(),
+              "buffered FIFO bypassed its occupied downstream");
+      sawBlocked = true;
+      channelQueue(state, sync->op->getOpOperand(1)).pop_front();
+      if (llvm::Error error = bufferedTransport.retryBlocked(frame->coordinate))
+        fail(llvm::toString(std::move(error)));
+    }
+    if (!frame->publications.empty()) {
+      require(sawDequeue && frame->publications.size() == 1,
+              "buffered token published without selected dequeue");
+      sawPublication = true;
+    }
+  }
+  require(sawEnqueue && sawBlocked && sawDequeue && sawPublication &&
+              channelQueue(state, sync->op->getOpOperand(1)).size() == 1 &&
+              take(tokenBitPattern(
+                  channelQueue(state, sync->op->getOpOperand(1)).front(),
+                  mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 23),
+          "buffered traversal did not preserve delayed token delivery");
 }
 
 } // namespace

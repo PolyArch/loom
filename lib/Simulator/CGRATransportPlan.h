@@ -42,9 +42,20 @@ struct CgraSelectedTraversalPlan final {
   ::loom::fabric::FabricPhysicalTraversalRef reference;
   ::loom::fabric::FabricPhysicalTraversalKind kind;
   CgraTraversalStorageKind storageKind = CgraTraversalStorageKind::None;
-  std::uint32_t storageCapacity = 0;
+  std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t impliedUseOffset = 0;
   std::uint32_t impliedUseCount = 0;
+};
+
+struct CgraTraversalStoragePlan final {
+  CgraTraversalStorageKind kind = CgraTraversalStorageKind::None;
+  std::uint32_t capacity = 0;
+  ::loom::fabric::FabricUsePatternRef enqueuePattern;
+  ::loom::fabric::FabricUsePatternRef dequeuePattern;
+  std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;
+  std::uint64_t enqueuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t dequeuePhysicalUseOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t simultaneousPhysicalUseOrdinal = invalidCgraTransportOrdinal;
 };
 
 struct CgraRouteNodePlan final {
@@ -97,6 +108,7 @@ struct CgraConsumedPhysicalUsePlan final {
 struct CgraTransportPlan final {
   std::vector<CgraSelectedTraversalPlan> traversals;
   std::vector<CgraTraversalUsePlan> traversalUses;
+  std::vector<CgraTraversalStoragePlan> traversalStorages;
   std::vector<CgraRoutePlan> routes;
   std::vector<CgraRouteNodePlan> routeNodes;
   std::vector<CgraRouteSinkPlan> routeSinks;

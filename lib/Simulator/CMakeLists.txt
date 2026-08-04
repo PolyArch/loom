@@ -5,6 +5,7 @@ add_mlir_library(LoomSimulator
   CGRAEventQueue.cpp
   CGRAExecutionPlan.cpp
   CGRATransportPlan.cpp
+  CgraTransportStorageRuntime.cpp
   CgraTransportRuntime.cpp
   CGRAPhysicalActionRuntime.cpp
   CGRAResourceRuntime.cpp

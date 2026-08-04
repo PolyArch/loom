@@ -526,6 +526,52 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
     for (std::uint64_t ordinal : useOrdinals)
       result.transport.traversalUses[ordinal].physicalUseOrdinal = *action;
   }
+  std::map<std::vector<std::uint8_t>, std::uint64_t> traversalPatternActions;
+  for (const CgraTraversalUsePlan &use : result.transport.traversalUses) {
+    if (use.physicalUseOrdinal == invalidCgraTransportOrdinal)
+      return invalid("CGRA traversal UsePattern has no physical action");
+    auto [position, inserted] = traversalPatternActions.try_emplace(
+        ::loom::fabric::canonicalFabricBytes(use.pattern),
+        use.physicalUseOrdinal);
+    if (!inserted && position->second != use.physicalUseOrdinal)
+      return invalid("CGRA traversal UsePattern has multiple physical actions");
+  }
+  const auto storageAction =
+      [&](const ::loom::fabric::FabricUsePatternRef &pattern)
+      -> llvm::Expected<std::uint64_t> {
+    auto found = traversalPatternActions.find(
+        ::loom::fabric::canonicalFabricBytes(pattern));
+    if (found != traversalPatternActions.end())
+      return found->second;
+    auto action = appendPhysicalActivation(
+        llvm::ArrayRef<::loom::fabric::FabricUsePatternRef>(&pattern, 1),
+        CgraPhysicalUseClientKind::TraversalTransport, fabric, ownerOrdinals,
+        result, selectedPatterns, activations, selectedOwners);
+    if (!action)
+      return action.takeError();
+    traversalPatternActions.emplace(
+        ::loom::fabric::canonicalFabricBytes(pattern), *action);
+    if (llvm::Error error = add(1, result.summary.traversalPhysicalUseCount,
+                                "traversal storage physical use"))
+      return std::move(error);
+    return *action;
+  };
+  for (CgraTraversalStoragePlan &storage : result.transport.traversalStorages) {
+    auto enqueue = storageAction(storage.enqueuePattern);
+    if (!enqueue)
+      return enqueue.takeError();
+    auto dequeue = storageAction(storage.dequeuePattern);
+    if (!dequeue)
+      return dequeue.takeError();
+    storage.enqueuePhysicalUseOrdinal = *enqueue;
+    storage.dequeuePhysicalUseOrdinal = *dequeue;
+    if (storage.simultaneousPattern) {
+      auto simultaneous = storageAction(*storage.simultaneousPattern);
+      if (!simultaneous)
+        return simultaneous.takeError();
+      storage.simultaneousPhysicalUseOrdinal = *simultaneous;
+    }
+  }
   auto resources = freezeCgraResourceRuntimePlan(ownerContracts,
                                                  selectedPatterns, activations);
   if (!resources)

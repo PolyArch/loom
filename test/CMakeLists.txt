@@ -127,6 +127,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-cgra-graph-activation-test
   loom-simulator-cgra-physical-action-test
   loom-simulator-cgra-resource-runtime-test
+  loom-simulator-cgra-transport-storage-runtime-test
   loom-simulator-cgra-transport-runtime-test
   loom-simulator-dfg-actor-transition-probe-test
   loom-simulator-dynamic-work-test
