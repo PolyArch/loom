@@ -54,6 +54,7 @@ public:
   const ArtifactRootReference &fabric() const { return fabric_; }
   const ArtifactRootReference &workload() const { return workload_; }
   const ArtifactRootReference &runtimeInput() const { return runtimeInput_; }
+  const CaseArtifactResolution &caseResolution() const { return resolution_; }
 
 private:
   StructuredFabricAnalyticRequestContext(
@@ -85,6 +86,10 @@ private:
 /// Registers the exact low-fidelity StructuredProgram/Fabric analytic model.
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredFabricAnalyticModel();
+
+EvaluationModelDescriptorRef structuredFabricAnalyticModelDescriptorRef();
+CaseSubjectRoleRef structuredFabricAnalyticCandidateRole();
+CaseSubjectRoleRef structuredFabricAnalyticFabricRole();
 
 /// Resolves the already published candidates, immutable workload, runtime
 /// input, and Fabric closure shared by one finite central DSE candidate set.

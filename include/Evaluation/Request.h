@@ -106,6 +106,17 @@ private:
   std::vector<EvaluationCondition> conditions_;
 };
 
+/// Registry-relative ordering keys shared by EvaluationRequest and every
+/// owner that persists request shapes. The keys encode typed query ordinals,
+/// scope identities, and canonical conditions; textual encodings are not an
+/// ordering authority.
+std::vector<std::uint8_t>
+canonicalMetricRequestKey(const MetricQuery &query,
+                          llvm::ArrayRef<EvaluationCondition> conditions);
+std::vector<std::uint8_t>
+canonicalFindingRequestKey(const FindingQuery &query,
+                           llvm::ArrayRef<EvaluationCondition> conditions);
+
 /// The exact `evaluation.request.1.0` typed root. Its case signature and model
 /// descriptor are resolved through model_binding and are not copied fields.
 class EvaluationRequest {

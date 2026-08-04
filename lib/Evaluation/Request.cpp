@@ -54,26 +54,13 @@ void appendConditions(std::vector<std::uint8_t> &preimage,
     appendFramedBytes(preimage, conditionPayloadKey(condition));
 }
 
-std::vector<std::uint8_t> metricRequestKey(const MetricRequest &request) {
-  std::vector<std::uint8_t> key;
-  appendU32Be(key, static_cast<std::uint32_t>(request.query().metric));
-  appendFramedBytes(key, canonicalScopeKey(request.query().scope));
-  appendConditions(key, request.conditions());
-  return key;
-}
-
-std::vector<std::uint8_t> findingRequestKey(const FindingRequest &request) {
-  std::vector<std::uint8_t> key = canonicalFindingQueryKey(request.query());
-  appendConditions(key, request.conditions());
-  return key;
-}
-
 llvm::Expected<std::vector<MetricRequest>>
 canonicalizeMetricRequests(llvm::ArrayRef<MetricRequest> requests) {
   std::vector<MetricRequest> canonical(requests.begin(), requests.end());
   std::sort(canonical.begin(), canonical.end(),
             [](const MetricRequest &lhs, const MetricRequest &rhs) {
-              return metricRequestKey(lhs) < metricRequestKey(rhs);
+              return canonicalMetricRequestKey(lhs.query(), lhs.conditions()) <
+                     canonicalMetricRequestKey(rhs.query(), rhs.conditions());
             });
   for (std::size_t index = 1; index < canonical.size(); ++index)
     if (canonical[index - 1] == canonical[index])
@@ -86,7 +73,8 @@ canonicalizeFindingRequests(llvm::ArrayRef<FindingRequest> requests) {
   std::vector<FindingRequest> canonical(requests.begin(), requests.end());
   std::sort(canonical.begin(), canonical.end(),
             [](const FindingRequest &lhs, const FindingRequest &rhs) {
-              return findingRequestKey(lhs) < findingRequestKey(rhs);
+              return canonicalFindingRequestKey(lhs.query(), lhs.conditions()) <
+                     canonicalFindingRequestKey(rhs.query(), rhs.conditions());
             });
   for (std::size_t index = 1; index < canonical.size(); ++index)
     if (canonical[index - 1] == canonical[index])
@@ -112,9 +100,8 @@ void appendSubjectBindings(std::vector<std::uint8_t> &bytes,
   }
 }
 
-void appendTargetDependencies(
-    std::vector<ArtifactRootReference> &dependencies,
-    const SubjectTargetRef &target) {
+void appendTargetDependencies(std::vector<ArtifactRootReference> &dependencies,
+                              const SubjectTargetRef &target) {
   dependencies.push_back(target.anchorSubjectArtifact);
   dependencies.push_back(target.targetArtifact());
 }
@@ -138,7 +125,8 @@ void appendConditionDependencies(
 std::vector<ArtifactRootReference>
 evaluationRequestDirectDependencies(const EvaluationRequest &request) {
   std::vector<ArtifactRootReference> dependencies;
-  for (const CaseRoleBinding &binding : request.subjectBindings().roleBindings())
+  for (const CaseRoleBinding &binding :
+       request.subjectBindings().roleBindings())
     dependencies.insert(dependencies.end(), binding.subjects.begin(),
                         binding.subjects.end());
   if (request.workload())
@@ -164,9 +152,8 @@ evaluationRequestDirectDependencies(const EvaluationRequest &request) {
   }
   std::sort(dependencies.begin(), dependencies.end(),
             artifactRootReferenceLess);
-  dependencies.erase(
-      std::unique(dependencies.begin(), dependencies.end()),
-      dependencies.end());
+  dependencies.erase(std::unique(dependencies.begin(), dependencies.end()),
+                     dependencies.end());
   return dependencies;
 }
 
@@ -196,13 +183,32 @@ llvm::Error rejectAliasedClockDomains(const EvaluationRequest &request) {
     const auto &schedule =
         std::get<RelativeClockScheduleCondition>(condition.payload);
     if (schedule.referenceClock.target == schedule.dependentClock.target)
-      return evaluationError("relative clock schedule binds one clock domain as "
-                             "both the reference and the dependent clock");
+      return evaluationError(
+          "relative clock schedule binds one clock domain as "
+          "both the reference and the dependent clock");
   }
   return llvm::Error::success();
 }
 
 } // namespace
+
+std::vector<std::uint8_t>
+canonicalMetricRequestKey(const MetricQuery &query,
+                          llvm::ArrayRef<EvaluationCondition> conditions) {
+  std::vector<std::uint8_t> key;
+  appendU32Be(key, static_cast<std::uint32_t>(query.metric));
+  appendFramedBytes(key, canonicalScopeKey(query.scope));
+  appendConditions(key, conditions);
+  return key;
+}
+
+std::vector<std::uint8_t>
+canonicalFindingRequestKey(const FindingQuery &query,
+                           llvm::ArrayRef<EvaluationCondition> conditions) {
+  std::vector<std::uint8_t> key = canonicalFindingQueryKey(query);
+  appendConditions(key, conditions);
+  return key;
+}
 
 const ArtifactSchemaDescriptor EvaluationRequest::artifactSchema{
     "evaluation.request", {1, 0}};
@@ -475,8 +481,8 @@ importEvaluationRequest(const ArtifactRootReference &reference,
   auto request = parseEvaluationRequest(json, resolution, artifactStore);
   if (!request)
     return request.takeError();
-  if (llvm::Error error = validateEvaluationRequestDirectDependencies(
-          *request, artifactStore))
+  if (llvm::Error error =
+          validateEvaluationRequestDirectDependencies(*request, artifactStore))
     return std::move(error);
   if (evaluationRequestIdentity(*request) != reference.artifact)
     return evaluationError("stale EvaluationRequest reference identity");
@@ -502,7 +508,8 @@ EvaluationCaseKey metricCaseKey(const EvaluationCase &evaluationCase,
   std::vector<std::uint8_t> preimage;
   appendFramedString(preimage, metricCaseKeyDomain);
   preimage.insert(preimage.end(), base.bytes().begin(), base.bytes().end());
-  appendFramedBytes(preimage, metricRequestKey(request));
+  appendFramedBytes(preimage, canonicalMetricRequestKey(request.query(),
+                                                        request.conditions()));
   return EvaluationCaseKey(llvm::SHA256::hash(preimage));
 }
 

@@ -215,8 +215,9 @@ resolveCases(const ResolvedPromotionAcquisitionBinding &,
     auto contextBytes = store.get(context);
     if (!contextBytes)
       return contextBytes.takeError();
-    resolved.push_back({0, take(CaseArtifactResolution::get(
-                               {{task.candidate, {}}, {context, {}}}))});
+    resolved.push_back({0, std::make_shared<const CaseArtifactResolution>(
+                               take(CaseArtifactResolution::get(
+                                   {{task.candidate, {}}, {context, {}}})))});
   }
   return PromotionAcquisitionResolutionOutcome{
       CompletedPromotionAcquisitionResolution{std::move(resolved)}};

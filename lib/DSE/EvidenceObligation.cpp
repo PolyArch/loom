@@ -245,20 +245,14 @@ llvm::Error validateOptionalCaseReference(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::string>
+std::vector<std::uint8_t>
 metricRequestKey(const MetricRequestTemplate &request) {
-  auto query = serializeMetricQuery(request.query);
-  if (!query)
-    return query.takeError();
-  return *query + "\n" + serializeEvaluationConditions(request.conditions);
+  return canonicalMetricRequestKey(request.query, request.conditions);
 }
 
-llvm::Expected<std::string>
+std::vector<std::uint8_t>
 findingRequestKey(const FindingRequestTemplate &request) {
-  auto query = serializeFindingQuery(request.query);
-  if (!query)
-    return query.takeError();
-  return *query + "\n" + serializeEvaluationConditions(request.conditions);
+  return canonicalFindingRequestKey(request.query, request.conditions);
 }
 
 llvm::Error validateParts(TemplateParts &parts) {
@@ -353,28 +347,20 @@ llvm::Error validateParts(TemplateParts &parts) {
       return invalid("model descriptor rejects a finding query");
   }
 
-  std::vector<std::string> metricKeys;
+  std::vector<std::vector<std::uint8_t>> metricKeys;
   metricKeys.reserve(parts.metricRequests.size());
-  for (const MetricRequestTemplate &request : parts.metricRequests) {
-    auto key = metricRequestKey(request);
-    if (!key)
-      return key.takeError();
-    metricKeys.push_back(std::move(*key));
-  }
+  for (const MetricRequestTemplate &request : parts.metricRequests)
+    metricKeys.push_back(metricRequestKey(request));
   if (!llvm::is_sorted(metricKeys))
     return invalid("metric requests are not in canonical order");
   for (std::size_t index = 1; index < metricKeys.size(); ++index)
     if (metricKeys[index - 1] == metricKeys[index])
       return invalid("duplicate metric request");
 
-  std::vector<std::string> findingKeys;
+  std::vector<std::vector<std::uint8_t>> findingKeys;
   findingKeys.reserve(parts.findingRequests.size());
-  for (const FindingRequestTemplate &request : parts.findingRequests) {
-    auto key = findingRequestKey(request);
-    if (!key)
-      return key.takeError();
-    findingKeys.push_back(std::move(*key));
-  }
+  for (const FindingRequestTemplate &request : parts.findingRequests)
+    findingKeys.push_back(findingRequestKey(request));
   if (!llvm::is_sorted(findingKeys))
     return invalid("finding requests are not in canonical order");
   for (std::size_t index = 1; index < findingKeys.size(); ++index)

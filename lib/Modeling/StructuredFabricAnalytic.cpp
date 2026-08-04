@@ -722,6 +722,16 @@ llvm::Error registerStructuredFabricAnalyticModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
+EvaluationModelDescriptorRef structuredFabricAnalyticModelDescriptorRef() {
+  return kModelDescriptor.reference();
+}
+
+CaseSubjectRoleRef structuredFabricAnalyticCandidateRole() {
+  return kStructuredProgramRole;
+}
+
+CaseSubjectRoleRef structuredFabricAnalyticFabricRole() { return kFabricRole; }
+
 llvm::Expected<StructuredFabricAnalyticRequestContext>
 prepareStructuredFabricAnalyticInvocation(
     llvm::ArrayRef<ArtifactRootReference> structuredPrograms,

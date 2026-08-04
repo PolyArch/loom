@@ -3,6 +3,8 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/PreMappingExploration.h"
 #include "DSE/Promotion.h"
+#include "DSE/ResolvedConfigView.h"
+#include "DSE/StructuredEvaluationAcquisition.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
@@ -752,6 +754,56 @@ void runEvaluationAnchor() {
       loom::evaluation::evaluationRequestReference(
           reusedSpatialEvaluation.request))
     fail("invocation-local analytic resolution changed Request identity");
+
+  auto analyticObligation =
+      take(loom::dse::prepareStructuredFabricAnalyticEvidenceObligationTemplate(
+          baselineRef, design.roots().front().reference(),
+          inputs.workloadReference, inputs.runtimeInputReference,
+          loom::defaultResolvedConfig(), store));
+  auto acquisitionConfig =
+      take(loom::dse::projectResolvedStructuredEvaluationAcquisitionConfigView(
+          {loom::dse::EvidenceObligationTemplateRef(0)}));
+  loom::ResolvedConfig centralConfig = loom::defaultResolvedConfig();
+  centralConfig.dse.modelAuthorizations = {
+      {analyticObligation.modelBinding().descriptorRef()}};
+  centralConfig.dse.evidenceObligationTemplates = {analyticObligation};
+  centralConfig.dse.qualityGatePolicies = {
+      take(loom::dse::QualityGatePolicy::get({}))};
+  centralConfig.dse.planNodes = {loom::dse::PromotePlanNodeDefinition{
+      loom::dse::structuredEvaluationPromotionAcquisitionDescriptor()
+          .reference(),
+      {loom::dse::ExactPlanArtifacts{{baselineRef, spatialRef}},
+       loom::dse::ExactPlanArtifacts{{design.roots().front().reference()}},
+       loom::dse::ExactPlanArtifacts{{inputs.workloadReference}},
+       loom::dse::ExactPlanArtifacts{{inputs.runtimeInputReference}}},
+      acquisitionConfig.canonicalViewBytes().vec(),
+      acquisitionConfig.digest(),
+      loom::dse::QualityGatePolicyRef(0),
+      loom::dse::AllPassingSelection{},
+      loom::dse::PromotePurpose::CandidateSelection}};
+  auto centralView =
+      take(loom::dse::projectResolvedDseConfigView(centralConfig));
+  auto centralOutcome = take(loom::dse::executeDsePlan(centralView, store));
+  const auto *centralCompleted =
+      std::get_if<loom::dse::CompletedDsePlanExecution>(&centralOutcome);
+  if (!centralCompleted || centralCompleted->resolve({0, 0}).size() != 2 ||
+      centralCompleted->resolve({0, 1}).size() != 2)
+    fail("Structured acquisition did not produce total central Evidence");
+  for (const loom::ArtifactRootReference &evidenceRef :
+       centralCompleted->resolve({0, 1})) {
+    auto evidence = take(loom::evaluation::importEvaluationEvidence(
+        evidenceRef, analyticInvocation.caseResolution(), store));
+    auto request = take(loom::evaluation::importEvaluationRequest(
+        evidence.requestRef(), analyticInvocation.caseResolution(), store));
+    const auto candidateSubjects = request.subjectBindings().subjects(
+        loom::evaluation::CaseSubjectRoleRef(0));
+    const auto fabricSubjects = request.subjectBindings().subjects(
+        loom::evaluation::CaseSubjectRoleRef(1));
+    if (request.metricRequests().size() != 5 || candidateSubjects.size() != 1 ||
+        fabricSubjects.size() != 1 ||
+        fabricSubjects.front() != design.roots().front().reference())
+      fail("Structured acquisition changed the exact analytic Request");
+  }
   auto coldSpatialEvidence = take(loom::evaluation::evaluateRequest(
       strictSpatialEvaluation.request, strictSpatialEvaluation.resolution,
       store));

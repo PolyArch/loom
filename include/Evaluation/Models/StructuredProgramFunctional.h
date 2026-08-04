@@ -56,6 +56,9 @@ struct StructuredProgramFunctionalReplayInvocation final {
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredProgramFunctionalModel();
 
+EvaluationModelDescriptorRef structuredProgramFunctionalModelDescriptorRef();
+CaseSubjectRoleRef structuredProgramFunctionalCandidateRole();
+
 /// Execute and cache the exact source-backed DFG replay for one finalized
 /// ownership candidate. Repeated priming for the same candidate/workload pair
 /// must produce an identical result.

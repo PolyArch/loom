@@ -10,6 +10,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -191,7 +192,9 @@ struct PromotionEvidenceAcquisitionTask final {
 
 struct ResolvedPromotionEvidenceAcquisitionTask final {
   std::uint64_t replicateIndex;
-  evaluation::CaseArtifactResolution resolution;
+  /// Read-only invocation-local closure. Providers may share one exact
+  /// resolution across every task whose case inputs are identical.
+  std::shared_ptr<const evaluation::CaseArtifactResolution> resolution;
 };
 
 struct CompletedPromotionAcquisitionResolution final {

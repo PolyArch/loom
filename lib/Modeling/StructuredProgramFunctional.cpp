@@ -432,6 +432,14 @@ llvm::Error registerStructuredProgramFunctionalModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
+EvaluationModelDescriptorRef structuredProgramFunctionalModelDescriptorRef() {
+  return kModelDescriptor.reference();
+}
+
+CaseSubjectRoleRef structuredProgramFunctionalCandidateRole() {
+  return kCandidateRole;
+}
+
 llvm::Error primeStructuredProgramFunctionalReplay(
     const ArtifactRootReference &candidateReference,
     const StructuredProgramFunctionalReplayInvocation &invocation,

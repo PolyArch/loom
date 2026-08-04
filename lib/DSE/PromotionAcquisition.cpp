@@ -334,9 +334,11 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
   for (std::size_t index = 0; index < tasks.size(); ++index) {
     const PromotionEvidenceAcquisitionTask &task = tasks[index];
     ResolvedPromotionEvidenceAcquisitionTask &resolved = completed.tasks[index];
+    if (!resolved.resolution)
+      return invalid("provider returned an absent case resolution");
     auto request = instantiateEvidenceObligation(
         *task.obligation, task.candidate, task.inputBindings,
-        resolved.replicateIndex, resolved.resolution, store);
+        resolved.replicateIndex, *resolved.resolution, store);
     if (!request)
       return request.takeError();
     auto requestReference =
@@ -344,7 +346,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     if (!requestReference)
       return requestReference.takeError();
     auto result =
-        evaluation::evaluateRequest(*request, resolved.resolution, store);
+        evaluation::evaluateRequest(*request, *resolved.resolution, store);
     if (!result)
       return result.takeError();
     evidence.emplace_back(std::move(*request), std::move(*result),
