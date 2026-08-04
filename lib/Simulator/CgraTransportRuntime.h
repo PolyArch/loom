@@ -18,6 +18,7 @@ namespace loom::sim::detail {
 struct CgraTokenPublication final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   std::uint64_t occurrenceOrdinal = 0;
+  std::uint64_t producerSequenceOrdinal = 0;
   Token token;
 };
 
@@ -56,6 +57,9 @@ public:
   llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
 
+  llvm::Expected<CgraPhysicalTraceBinding>
+  physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
+
   llvm::Expected<std::optional<CgraTransportFrame>> advance();
 
   llvm::Error retryBlocked(const SpatialEventCoordinate &coordinate);
@@ -92,6 +96,7 @@ private:
     std::uint32_t traversalTerminalCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
     std::optional<std::uint64_t> semanticActorOrdinal;
+    std::uint64_t nextProducerSequenceOrdinal = 0;
     bool active = false;
   };
 
@@ -107,6 +112,8 @@ private:
     std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t targetTraversalOffset = 0;
+    std::uint32_t targetTraversalCount = 0;
     std::uint64_t successorOffset = 0;
     std::uint32_t successorCount = 0;
     std::uint32_t predecessorCount = 0;
@@ -117,6 +124,7 @@ private:
     bool active = false;
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
+    std::uint64_t producerSequenceOrdinal = 0;
     Token token;
     bool arrivalScheduled = false;
     bool publicationScheduled = false;
@@ -161,6 +169,7 @@ private:
     ActionStage stage = ActionStage::Produced;
     StorageOperation storageOperation = StorageOperation::None;
     ActionLifecycleState state = ActionLifecycleState::Requested;
+    std::uint64_t localActionOrdinal = 0;
   };
 
   struct PendingTransfer final {
@@ -218,6 +227,7 @@ private:
       std::vector<TransferBinding> bindings, std::vector<SinkBinding> sinks,
       std::vector<std::uint64_t> physicalUses,
       std::vector<TraversalNodeBinding> traversalNodes,
+      std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
       std::vector<std::uint64_t> traversalSuccessors,
       std::vector<StorageBinding> storages,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
@@ -225,7 +235,8 @@ private:
       llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
 
   std::uint64_t allocate(std::uint64_t bindingOrdinal,
-                         std::uint64_t occurrenceOrdinal, Token token);
+                         std::uint64_t occurrenceOrdinal,
+                         std::uint64_t producerSequenceOrdinal, Token token);
   llvm::Error acceptTransfers(const SpatialEventCoordinate &coordinate,
                               llvm::ArrayRef<PendingTransfer> transfers);
   llvm::Expected<std::vector<CgraPhysicalLifecycleEvent>>
@@ -254,6 +265,7 @@ private:
   std::vector<SinkBinding> sinks_;
   std::vector<std::uint64_t> physicalUses_;
   std::vector<TraversalNodeBinding> traversalNodes_;
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets_;
   std::vector<std::uint64_t> traversalSuccessors_;
   std::vector<StorageBinding> storages_;
   std::vector<StorageFrameCommit> storageFrameCommits_;

@@ -37,7 +37,8 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
-    const PreparedGraphExecution &execution, SimulatorState &state) {
+    const PreparedGraphExecution &execution, SimulatorState &state,
+    bool captureMicroarchitecture) {
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings);
   if (!physicalRuntime)
@@ -57,10 +58,11 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
   if (!transportRuntime)
     return transportRuntime.takeError();
   return CgraGraphActivationRuntime(
-      state, std::move(physical),
+      plan, state, std::move(physical),
       std::make_unique<CgraComputeRuntime>(std::move(*computeRuntime)),
       std::make_unique<CgraMemoryRuntime>(std::move(*memoryRuntime)),
-      std::make_unique<CgraTransportRuntime>(std::move(*transportRuntime)));
+      std::make_unique<CgraTransportRuntime>(std::move(*transportRuntime)),
+      captureMicroarchitecture);
 }
 
 llvm::Error CgraGraphActivationRuntime::start(
@@ -91,7 +93,8 @@ bool CgraGraphActivationRuntime::hasPendingEvents() const {
   return compute_->hasPendingEvents() || compute_->hasActiveActors() ||
          memory_->hasPendingEvents() || memory_->hasActiveActors() ||
          transport_->hasPendingEvents() || transport_->hasBlockedTransfers() ||
-         physical_->hasPendingActions() || !firingByOccurrence_.empty();
+         physical_->hasPendingActions() || !firingByOccurrence_.empty() ||
+         !physicalTraceBindings_.empty();
 }
 
 std::uint64_t CgraGraphActivationRuntime::pendingActorFiringCount() const {
@@ -204,6 +207,9 @@ llvm::Error CgraGraphActivationRuntime::consumeTransportCompletions(
 
 llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
     CgraComputeLifecycleFrame frame, CgraGraphActivationFrame &result) {
+  if (llvm::Error error =
+          registerPhysicalRequests(frame.physicalEvents, result))
+    return error;
   result.physicalEvents.insert(result.physicalEvents.end(),
                                frame.physicalEvents.begin(),
                                frame.physicalEvents.end());
@@ -250,9 +256,16 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
 
 llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
     CgraMemoryLifecycleFrame frame, CgraGraphActivationFrame &result) {
+  if (llvm::Error error =
+          registerPhysicalRequests(frame.physicalEvents, result))
+    return error;
   result.physicalEvents.insert(result.physicalEvents.end(),
                                frame.physicalEvents.begin(),
                                frame.physicalEvents.end());
+  result.memoryLinearizations.insert(
+      result.memoryLinearizations.end(),
+      std::make_move_iterator(frame.memoryLinearizations.begin()),
+      std::make_move_iterator(frame.memoryLinearizations.end()));
   for (const CgraActorLifecycleEvent &event : frame.actorEvents) {
     if (event.kind != CgraActorLifecycleKind::Committed)
       return invalid("CGRA memory runtime emitted actor retirement");
@@ -282,6 +295,9 @@ llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
 
 llvm::Error CgraGraphActivationRuntime::consumeTransportFrame(
     CgraTransportFrame frame, CgraGraphActivationFrame &result) {
+  if (llvm::Error error =
+          registerPhysicalRequests(frame.physicalEvents, result))
+    return error;
   result.physicalEvents.insert(result.physicalEvents.end(),
                                frame.physicalEvents.begin(),
                                frame.physicalEvents.end());
@@ -291,6 +307,69 @@ llvm::Error CgraGraphActivationRuntime::consumeTransportFrame(
       std::make_move_iterator(frame.publications.end()));
   return consumeTransportCompletions(frame.completions, frame.coordinate,
                                      result);
+}
+
+llvm::Error CgraGraphActivationRuntime::registerPhysicalRequests(
+    llvm::ArrayRef<CgraPhysicalLifecycleEvent> events,
+    CgraGraphActivationFrame &result) {
+  if (!captureMicroarchitecture_)
+    return llvm::Error::success();
+  for (const CgraPhysicalLifecycleEvent &event : events) {
+    if (event.kind != CgraPhysicalLifecycleKind::Requested)
+      continue;
+    if (event.actionOrdinal >= plan_->physicalUseClients.size())
+      return invalid("CGRA trace request names an unknown physical action");
+    auto resolveBinding = [&]() -> llvm::Expected<CgraPhysicalTraceBinding> {
+      switch (plan_->physicalUseClients[event.actionOrdinal]) {
+      case CgraPhysicalUseClientKind::ComputeTransition:
+        return compute_->physicalTraceBinding(event);
+      case CgraPhysicalUseClientKind::MemoryTransition:
+        return memory_->physicalTraceBinding(event);
+      case CgraPhysicalUseClientKind::ProducedTransport:
+      case CgraPhysicalUseClientKind::ConsumedTransport:
+      case CgraPhysicalUseClientKind::TraversalTransport:
+        return transport_->physicalTraceBinding(event);
+      }
+      llvm_unreachable("closed CGRA physical client kind");
+    };
+    auto binding = resolveBinding();
+    if (!binding)
+      return binding.takeError();
+    const auto key =
+        std::make_pair(event.actionOrdinal, event.occurrenceOrdinal);
+    if (!physicalTraceBindings_.try_emplace(key, *binding).second)
+      return invalid("CGRA trace registered one physical request twice");
+    result.physicalTraceEvents.push_back(
+        PhysicalRequestedTraceEvent{binding->occurrence, binding->target});
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error CgraGraphActivationRuntime::projectPhysicalLifecycle(
+    llvm::ArrayRef<CgraPhysicalLifecycleEvent> events,
+    CgraGraphActivationFrame &result) {
+  if (!captureMicroarchitecture_)
+    return llvm::Error::success();
+  for (const CgraPhysicalLifecycleEvent &event : events) {
+    if (event.kind == CgraPhysicalLifecycleKind::Requested)
+      return invalid("CGRA physical runtime repeated a trace request");
+    if (event.kind == CgraPhysicalLifecycleKind::Committed)
+      continue;
+    const auto key =
+        std::make_pair(event.actionOrdinal, event.occurrenceOrdinal);
+    auto binding = physicalTraceBindings_.find(key);
+    if (binding == physicalTraceBindings_.end())
+      return invalid("CGRA physical trace lifecycle has no request owner");
+    if (event.kind == CgraPhysicalLifecycleKind::Granted) {
+      result.physicalTraceEvents.push_back(
+          PhysicalGrantedTraceEvent{binding->second.occurrence});
+      continue;
+    }
+    result.physicalTraceEvents.push_back(
+        PhysicalRetiredTraceEvent{binding->second.occurrence});
+    physicalTraceBindings_.erase(binding);
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error CgraGraphActivationRuntime::schedulePublishedCandidates(
@@ -314,7 +393,7 @@ CgraGraphActivationRuntime::advance() {
   const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
   if (!coordinate)
     return std::optional<CgraGraphActivationFrame>{};
-  CgraGraphActivationFrame result{*coordinate, {}, {}, {}};
+  CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}};
 
   while (true) {
     bool progressed = false;
@@ -357,6 +436,9 @@ CgraGraphActivationRuntime::advance() {
       result.physicalEvents.insert(result.physicalEvents.end(),
                                    (**physicalFrame).events.begin(),
                                    (**physicalFrame).events.end());
+      if (llvm::Error error =
+              projectPhysicalLifecycle((**physicalFrame).events, result))
+        return std::move(error);
       auto computeFrame = compute_->acceptPhysicalEvents(**physicalFrame);
       if (!computeFrame)
         return computeFrame.takeError();

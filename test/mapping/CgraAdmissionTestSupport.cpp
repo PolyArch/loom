@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -31,6 +32,36 @@ bool rejected(llvm::Expected<loom::sim::PreparedCgraExecution> value) {
   if (value)
     return false;
   llvm::consumeError(value.takeError());
+  return true;
+}
+
+struct TraceEventPoint final {
+  loom::sim::SpatialEventCoordinate coordinate;
+  std::vector<std::uint8_t> key;
+};
+
+std::vector<TraceEventPoint>
+projectTrace(const loom::sim::SpatialDiagnosticTrace &trace,
+             loom::sim::TraceCaptureLevel level) {
+  std::vector<TraceEventPoint> result;
+  for (const loom::sim::SpatialTraceFrame &frame : trace.frames)
+    for (const loom::sim::SpatialTraceEvent &event : frame.events)
+      if (loom::sim::minimumTraceCaptureLevel(event) <= level)
+        result.push_back(
+            {frame.coordinate,
+             take(loom::sim::canonicalSpatialTraceEventKey(event))});
+  return result;
+}
+
+bool sameTraceProjection(llvm::ArrayRef<TraceEventPoint> lhs,
+                         llvm::ArrayRef<TraceEventPoint> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [left, right] : llvm::zip(lhs, rhs))
+    if (loom::sim::compareSpatialEventCoordinates(left.coordinate,
+                                                  right.coordinate) != 0 ||
+        left.key != right.key)
+      return false;
   return true;
 }
 
@@ -86,8 +117,8 @@ void loom::test::exerciseCgraAdmission(
   if (graph != view.graphs().front().ref)
     fail("CGRA admission resolved a different graph");
 
-  auto session =
-      take(sim::startCgraExecutionSession(prepared, workload, runtime));
+  auto session = take(sim::startCgraExecutionSession(
+      prepared, workload, runtime, sim::TraceCaptureLevel::Semantic));
   while (session.state() == sim::SpatialExecutionSessionState::Runnable)
     take(session.advance(/*maxEventFrames=*/1));
   if (session.state() != sim::SpatialExecutionSessionState::Retired)
@@ -109,6 +140,79 @@ void loom::test::exerciseCgraAdmission(
       published->value.lanes.front().state != sim::SemanticState::Defined ||
       published->value.lanes.front().bits != llvm::APInt(32, 7))
     fail("CGRA session projected the wrong functional value");
+  const auto &trace = session.diagnosticTrace();
+  if (!trace || trace->level != sim::TraceCaptureLevel::Semantic ||
+      trace->frames.empty())
+    fail("CGRA session did not retain the requested semantic trace");
+  std::uint64_t committed = 0;
+  std::uint64_t retiredActors = 0;
+  std::uint64_t publishedTokens = 0;
+  for (const sim::SpatialTraceFrame &frame : trace->frames)
+    for (const sim::SpatialTraceEvent &event : frame.events) {
+      committed += std::holds_alternative<sim::ActorCommittedTraceEvent>(event);
+      retiredActors +=
+          std::holds_alternative<sim::ActorRetiredTraceEvent>(event);
+      publishedTokens +=
+          std::holds_alternative<sim::TokenPublishedTraceEvent>(event);
+      if (sim::minimumTraceCaptureLevel(event) >
+          sim::TraceCaptureLevel::Semantic)
+        fail("semantic trace retained a microarchitecture event");
+    }
+  if (committed != retired.counters.actorCommitCount ||
+      retiredActors != retired.counters.actorRetirementCount ||
+      publishedTokens != retired.counters.tokenPublicationCount)
+    fail("CGRA semantic trace is not lifecycle-complete");
+
+  auto microarchitectureSession = take(sim::startCgraExecutionSession(
+      prepared, workload, runtime, sim::TraceCaptureLevel::Microarchitecture));
+  while (microarchitectureSession.state() ==
+         sim::SpatialExecutionSessionState::Runnable)
+    take(microarchitectureSession.advance(/*maxEventFrames=*/1));
+  if (microarchitectureSession.state() !=
+      sim::SpatialExecutionSessionState::Retired)
+    fail("CGRA microarchitecture trace execution did not retire");
+  auto microarchitectureRetired =
+      take(microarchitectureSession.takeRetiredSimulation());
+  const auto &microarchitectureTrace =
+      microarchitectureSession.diagnosticTrace();
+  if (!microarchitectureTrace || microarchitectureTrace->level !=
+                                     sim::TraceCaptureLevel::Microarchitecture)
+    fail("CGRA session did not retain the requested microarchitecture trace");
+  std::uint64_t requested = 0;
+  std::uint64_t granted = 0;
+  std::uint64_t retiredPhysical = 0;
+  for (const sim::SpatialTraceFrame &frame : microarchitectureTrace->frames)
+    for (const sim::SpatialTraceEvent &event : frame.events) {
+      requested +=
+          std::holds_alternative<sim::PhysicalRequestedTraceEvent>(event);
+      granted += std::holds_alternative<sim::PhysicalGrantedTraceEvent>(event);
+      retiredPhysical +=
+          std::holds_alternative<sim::PhysicalRetiredTraceEvent>(event);
+    }
+  if (requested != microarchitectureRetired.counters.physicalRequestCount ||
+      granted != microarchitectureRetired.counters.physicalGrantCount ||
+      retiredPhysical !=
+          microarchitectureRetired.counters.physicalRetirementCount)
+    fail("CGRA microarchitecture trace is not physical-lifecycle complete");
+  if (!sameTraceProjection(
+          projectTrace(*trace, sim::TraceCaptureLevel::Semantic),
+          projectTrace(*microarchitectureTrace,
+                       sim::TraceCaptureLevel::Semantic)))
+    fail("CGRA microarchitecture trace does not include the semantic trace");
+
+  auto firingSession = take(sim::startCgraExecutionSession(
+      prepared, workload, runtime, sim::TraceCaptureLevel::Firing));
+  while (firingSession.state() == sim::SpatialExecutionSessionState::Runnable)
+    take(firingSession.advance(/*maxEventFrames=*/1));
+  if (firingSession.state() != sim::SpatialExecutionSessionState::Retired)
+    fail("CGRA firing trace execution did not retire");
+  (void)take(firingSession.takeRetiredSimulation());
+  const auto &firingTrace = firingSession.diagnosticTrace();
+  if (!firingTrace ||
+      !sameTraceProjection(
+          projectTrace(*firingTrace, sim::TraceCaptureLevel::Firing),
+          projectTrace(*trace, sim::TraceCaptureLevel::Firing)))
+    fail("CGRA semantic trace does not include the firing trace");
 
   auto limited = take(sim::simulateCgraWorkload(prepared, workload, runtime,
                                                 /*maxEventFrames=*/1));

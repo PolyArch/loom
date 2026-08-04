@@ -41,15 +41,95 @@ struct CgraExecutionSession::Impl final {
   std::optional<SpatialEventCoordinate> graphRetirement;
   std::optional<SpatialEventCoordinate> lastCoordinate;
   std::optional<CgraClosedWaitSetDiagnostic> closedWait;
+  std::optional<SpatialDiagnosticTrace> trace;
   bool resultTaken = false;
 
   Impl(const PreparedCgraExecution::Impl &prepared,
        const CanonicalSimulationWorkload &workload,
        const CanonicalSimulationRuntimeInput &runtimeInput,
        const detail::PreparedCgraGraph &graphExecution,
-       detail::ResolvedLaunchContext context)
+       detail::ResolvedLaunchContext context,
+       std::optional<TraceCaptureLevel> traceLevel)
       : prepared(&prepared), workload(&workload), runtimeInput(&runtimeInput),
-        graphExecution(&graphExecution), context(std::move(context)) {}
+        graphExecution(&graphExecution), context(std::move(context)) {
+    if (traceLevel)
+      trace.emplace(SpatialDiagnosticTrace{*traceLevel, {}});
+  }
+
+  llvm::Expected<ActorTransitionOccurrenceRef>
+  transitionOccurrence(const detail::CgraActorLifecycleEvent &event) const {
+    if (event.semanticActorOrdinal >= graphExecution->actors.size())
+      return invalid("CGRA trace actor ordinal is out of range");
+    return ActorTransitionOccurrenceRef{
+        GraphInvocationOccurrenceRef{0},
+        graphExecution->actors[event.semanticActorOrdinal],
+        event.occurrenceOrdinal};
+  }
+
+  llvm::Expected<TokenOccurrenceRef>
+  tokenOccurrence(const detail::CgraTokenPublication &publication) const {
+    if (const auto *ingress = std::get_if<::dataflow::GraphIngressTokenRef>(
+            &publication.producer)) {
+      if (publication.occurrenceOrdinal != publication.producerSequenceOrdinal)
+        return invalid("CGRA graph-ingress trace sequence is not dense");
+      return TokenOccurrenceRef{GraphIngressTokenOccurrenceRef{
+          GraphInvocationOccurrenceRef{0}, *ingress,
+          publication.producerSequenceOrdinal}};
+    }
+    const auto &result =
+        std::get<::dataflow::ActorTokenResultRef>(publication.producer);
+    return TokenOccurrenceRef{ActorResultTokenOccurrenceRef{
+        ActorTransitionOccurrenceRef{GraphInvocationOccurrenceRef{0},
+                                     result.actor,
+                                     publication.occurrenceOrdinal},
+        result.ordinal, publication.producerSequenceOrdinal}};
+  }
+
+  llvm::Error captureFrame(const detail::CgraGraphActivationFrame &frame) {
+    if (!trace)
+      return llvm::Error::success();
+    SpatialTraceFrame projected{frame.coordinate, {}};
+    projected.events.reserve(
+        frame.actorEvents.size() + frame.publications.size() +
+        frame.memoryLinearizations.size() + frame.physicalTraceEvents.size());
+    for (const detail::CgraActorLifecycleEvent &event : frame.actorEvents) {
+      auto transition = transitionOccurrence(event);
+      if (!transition)
+        return transition.takeError();
+      if (event.kind == detail::CgraActorLifecycleKind::Committed)
+        projected.events.push_back(ActorCommittedTraceEvent{*transition});
+      else
+        projected.events.push_back(ActorRetiredTraceEvent{*transition});
+    }
+    if (trace->level >= TraceCaptureLevel::Semantic) {
+      projected.events.insert(projected.events.end(),
+                              frame.memoryLinearizations.begin(),
+                              frame.memoryLinearizations.end());
+      for (const detail::CgraTokenPublication &publication :
+           frame.publications) {
+        auto occurrence = tokenOccurrence(publication);
+        if (!occurrence)
+          return occurrence.takeError();
+        auto type = prepared->dataflowView.tokenType(publication.producer);
+        if (!type)
+          return type.takeError();
+        auto value = detail::canonicalValueSequenceFromTokens(
+            llvm::ArrayRef(publication.token), *type,
+            context.graphOp.getOperation());
+        if (!value)
+          return value.takeError();
+        projected.events.push_back(TokenPublishedTraceEvent{
+            std::move(*occurrence), std::move(*value)});
+      }
+    }
+    if (trace->level >= TraceCaptureLevel::Microarchitecture)
+      projected.events.insert(projected.events.end(),
+                              frame.physicalTraceEvents.begin(),
+                              frame.physicalTraceEvents.end());
+    if (projected.events.empty())
+      return llvm::Error::success();
+    return appendSpatialTraceFrame(*trace, std::move(projected));
+  }
 
   llvm::Error observeGraphRetirement(const SpatialEventCoordinate &coordinate) {
     if (graphRetirement ||
@@ -112,6 +192,12 @@ CgraExecutionSession::closedWaitSet() const {
   return impl_ ? impl_->closedWait : empty;
 }
 
+const std::optional<SpatialDiagnosticTrace> &
+CgraExecutionSession::diagnosticTrace() const {
+  static const std::optional<SpatialDiagnosticTrace> empty;
+  return impl_ ? impl_->trace : empty;
+}
+
 llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
     std::uint64_t maxEventFrames,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
@@ -153,6 +239,8 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         ++impl_->counters.actorRetirementCount;
     }
     impl_->counters.tokenPublicationCount += (**frame).publications.size();
+    impl_->counters.memoryLinearizationCount +=
+        (**frame).memoryLinearizations.size();
     for (const detail::CgraPhysicalLifecycleEvent &event :
          (**frame).physicalEvents) {
       switch (event.kind) {
@@ -168,6 +256,10 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         ++impl_->counters.physicalRetirementCount;
         break;
       }
+    }
+    if (llvm::Error error = impl_->captureFrame(**frame)) {
+      impl_->lifecycle = SpatialExecutionSessionState::Failed;
+      return std::move(error);
     }
     if (llvm::Error error =
             impl_->observeGraphRetirement((**frame).coordinate)) {
@@ -214,7 +306,8 @@ CgraExecutionSession::takeRetiredSimulation() {
 llvm::Expected<CgraExecutionSession>
 startCgraExecutionSession(const PreparedCgraExecution &prepared,
                           const CanonicalSimulationWorkload &workload,
-                          const CanonicalSimulationRuntimeInput &runtimeInput) {
+                          const CanonicalSimulationRuntimeInput &runtimeInput,
+                          std::optional<TraceCaptureLevel> traceLevel) {
   if (!prepared.impl_)
     return invalid("prepared CGRA execution is empty");
   const SpatialSimulationWorkload *spatial = workload.spatial();
@@ -242,7 +335,7 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
 
   auto impl = std::make_unique<CgraExecutionSession::Impl>(
       *prepared.impl_, workload, runtimeInput, *graphExecution,
-      std::move(*context));
+      std::move(*context), traceLevel);
 
   llvm::SmallVector<detail::GraphIngressEmission, 4> ingress;
   impl->dynamicState.graphIngressCapture = &ingress;
@@ -257,8 +350,8 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
 
   auto runtime = detail::CgraGraphActivationRuntime::create(
       prepared.impl_->executionPlan, prepared.impl_->dataflowView,
-      spatial->launchRef, *graph, graphExecution->execution,
-      impl->dynamicState);
+      spatial->launchRef, *graph, graphExecution->execution, impl->dynamicState,
+      traceLevel == TraceCaptureLevel::Microarchitecture);
   if (!runtime)
     return runtime.takeError();
   impl->runtime.emplace(std::move(*runtime));

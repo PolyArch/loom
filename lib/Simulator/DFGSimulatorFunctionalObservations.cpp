@@ -267,6 +267,15 @@ llvm::Expected<MemoryObservationPayload> projectMemoryObservation(
 
 } // namespace
 
+llvm::Expected<CanonicalValueSequence>
+canonicalValueSequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
+                                 mlir::Operation *scope) {
+  auto shape = laneShapeOf(type, scope);
+  if (!shape)
+    return shape.takeError();
+  return sequenceFromTokens(tokens, type, *shape, scope);
+}
+
 llvm::Expected<SpatialFunctionalObservations>
 projectRetiredFunctionalObservations(
     dataflow::GraphOp graph, SimulatorState &state,

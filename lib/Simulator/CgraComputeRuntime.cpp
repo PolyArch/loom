@@ -121,7 +121,8 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
         std::numeric_limits<std::uint64_t>::max())
       return invalid("CGRA compute actor has duplicate runtime bindings");
     bindingBySemanticActor[semantic->second] = bindingOrdinal;
-    bindings.push_back(ActorBinding{semantic->second, &semanticPlan, caseOffset,
+    bindings.push_back(ActorBinding{semantic->second, actor.actor,
+                                    &semanticPlan, caseOffset,
                                     actor.transitionCount, 0, false, false, 0});
   }
   return CgraComputeRuntime(plan, state, std::move(bindings),
@@ -191,7 +192,7 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
     llvm::ArrayRef<std::uint64_t> actions(plan_->actorTransitionPhysicalUses);
     actions = actions.slice(transition.physicalUseOffset,
                             transition.physicalUseCount);
-    for (std::uint64_t actionOrdinal : actions) {
+    for (auto [localActionOrdinal, actionOrdinal] : llvm::enumerate(actions)) {
       if (nextActionOccurrence_[actionOrdinal] ==
           std::numeric_limits<std::uint64_t>::max())
         return llvm::createStringError(
@@ -203,7 +204,9 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
       if (!requested)
         return requested.takeError();
       const auto key = std::make_pair(actionOrdinal, occurrence);
-      if (!actionToFiring_.try_emplace(key, FiringActionIndex{*firingSlot})
+      if (!actionToFiring_
+               .try_emplace(key,
+                            FiringActionIndex{*firingSlot, localActionOrdinal})
                .second)
         return invalid("CGRA physical action occurrence is duplicated");
       requestedEvents_.schedule(CgraScheduledEvent{
@@ -221,6 +224,34 @@ llvm::Error CgraComputeRuntime::start(SpatialEventCoordinate coordinate) {
   started_ = true;
   readyCandidates_.set();
   return scheduleReady(std::move(coordinate));
+}
+
+llvm::Expected<CgraPhysicalTraceBinding>
+CgraComputeRuntime::physicalTraceBinding(
+    const CgraPhysicalLifecycleEvent &event) const {
+  if (event.actionOrdinal >= plan_->physicalUseClients.size() ||
+      plan_->physicalUseClients[event.actionOrdinal] !=
+          CgraPhysicalUseClientKind::ComputeTransition)
+    return invalid("CGRA trace compute action has another client");
+  auto indexed =
+      actionToFiring_.find({event.actionOrdinal, event.occurrenceOrdinal});
+  if (indexed == actionToFiring_.end())
+    return invalid("CGRA trace compute action has no active firing");
+  const FiringActionIndex index = indexed->second;
+  if (index.firingSlot >= firings_.size() || !firings_[index.firingSlot].active)
+    return invalid("CGRA trace compute action names an inactive firing");
+  const Firing &firing = firings_[index.firingSlot];
+  const ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  auto target = projectPhysicalUseTarget(*plan_, event.actionOrdinal);
+  if (!target)
+    return target.takeError();
+  return CgraPhysicalTraceBinding{
+      PhysicalActionOccurrenceRef{
+          TransitionPhysicalActionParent{ActorTransitionOccurrenceRef{
+              GraphInvocationOccurrenceRef{0}, binding.actor,
+              firing.actorOccurrenceOrdinal}},
+          index.localActionOrdinal},
+      std::move(*target)};
 }
 
 llvm::Error CgraComputeRuntime::acceptReadyCandidates(

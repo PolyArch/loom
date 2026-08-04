@@ -19,6 +19,8 @@ struct CgraGraphActivationFrame final {
   std::vector<CgraPhysicalLifecycleEvent> physicalEvents;
   std::vector<CgraActorLifecycleEvent> actorEvents;
   std::vector<CgraTokenPublication> publications;
+  std::vector<MemoryLinearizedTraceEvent> memoryLinearizations;
+  std::vector<SpatialTraceEvent> physicalTraceEvents;
 };
 
 /// One execution-local coordinator for a mapped graph activation. It alone
@@ -30,7 +32,8 @@ public:
   create(const CgraFrozenExecutionPlan &plan,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
-         const PreparedGraphExecution &execution, SimulatorState &state);
+         const PreparedGraphExecution &execution, SimulatorState &state,
+         bool captureMicroarchitecture);
 
   llvm::Error start(SpatialEventCoordinate coordinate,
                     llvm::MutableArrayRef<GraphIngressEmission> ingress);
@@ -55,14 +58,16 @@ private:
   };
 
   CgraGraphActivationRuntime(
-      SimulatorState &state,
+      const CgraFrozenExecutionPlan &plan, SimulatorState &state,
       std::unique_ptr<CgraPhysicalActionRuntime> physical,
       std::unique_ptr<CgraComputeRuntime> compute,
       std::unique_ptr<CgraMemoryRuntime> memory,
-      std::unique_ptr<CgraTransportRuntime> transport)
-      : state_(&state), physical_(std::move(physical)),
+      std::unique_ptr<CgraTransportRuntime> transport,
+      bool captureMicroarchitecture)
+      : plan_(&plan), state_(&state), physical_(std::move(physical)),
         compute_(std::move(compute)), memory_(std::move(memory)),
-        transport_(std::move(transport)) {}
+        transport_(std::move(transport)),
+        captureMicroarchitecture_(captureMicroarchitecture) {}
 
   llvm::Error consumeComputeFrame(CgraComputeLifecycleFrame frame,
                                   CgraGraphActivationFrame &result);
@@ -86,7 +91,14 @@ private:
   void releaseFiring(std::uint64_t firingSlot);
   llvm::Error
   schedulePublishedCandidates(const SpatialEventCoordinate &coordinate);
+  llvm::Error
+  registerPhysicalRequests(llvm::ArrayRef<CgraPhysicalLifecycleEvent> events,
+                           CgraGraphActivationFrame &result);
+  llvm::Error
+  projectPhysicalLifecycle(llvm::ArrayRef<CgraPhysicalLifecycleEvent> events,
+                           CgraGraphActivationFrame &result);
 
+  const CgraFrozenExecutionPlan *plan_ = nullptr;
   SimulatorState *state_ = nullptr;
   std::unique_ptr<CgraPhysicalActionRuntime> physical_;
   std::unique_ptr<CgraComputeRuntime> compute_;
@@ -96,6 +108,10 @@ private:
   std::vector<std::uint64_t> freeFiringSlots_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t>
       firingByOccurrence_;
+  llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>,
+                 CgraPhysicalTraceBinding>
+      physicalTraceBindings_;
+  bool captureMicroarchitecture_ = false;
   bool started_ = false;
 };
 

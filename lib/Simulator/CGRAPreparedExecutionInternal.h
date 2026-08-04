@@ -17,6 +17,7 @@ namespace loom::sim::detail {
 struct PreparedCgraGraph final {
   ::dataflow::GraphRef graph;
   PreparedGraphExecution execution;
+  std::vector<::dataflow::ActorRef> actors;
 };
 
 } // namespace loom::sim::detail

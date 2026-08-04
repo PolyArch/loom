@@ -18,9 +18,9 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 } // namespace
 
-std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
-                                             std::uint64_t occurrenceOrdinal,
-                                             Token token) {
+std::uint64_t CgraTransportRuntime::allocate(
+    std::uint64_t bindingOrdinal, std::uint64_t occurrenceOrdinal,
+    std::uint64_t producerSequenceOrdinal, Token token) {
   assert(bindingOrdinal < bindings_.size() &&
          !bindings_[bindingOrdinal].active &&
          "CGRA transport allocation requires a validated source");
@@ -34,8 +34,8 @@ std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
     slot = freeSlots_.back();
     freeSlots_.pop_back();
   }
-  inFlight_[slot] =
-      InFlight{true, bindingOrdinal, occurrenceOrdinal, std::move(token)};
+  inFlight_[slot] = InFlight{true, bindingOrdinal, occurrenceOrdinal,
+                             producerSequenceOrdinal, std::move(token)};
   TransferBinding &binding = bindings_[bindingOrdinal];
   for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
        nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
@@ -73,6 +73,7 @@ CgraTransportRuntime::requestActions(
   }
   const auto appendAction = [&](std::uint64_t transferSlot,
                                 std::uint64_t traversalNodeOrdinal,
+                                std::uint64_t localActionOrdinal,
                                 std::uint64_t action) -> llvm::Error {
     if (action >= nextActionOccurrence_.size() ||
         action >= plan_->physicalUseClients.size() ||
@@ -91,6 +92,7 @@ CgraTransportRuntime::requestActions(
     owner.traversalNodeOrdinal = traversalNodeOrdinal;
     owner.stage = stage;
     owner.state = ActionLifecycleState::Requested;
+    owner.localActionOrdinal = localActionOrdinal;
     owners.push_back(owner);
     increments[action] = increment + 1;
     return llvm::Error::success();
@@ -101,11 +103,12 @@ CgraTransportRuntime::requestActions(
       return invalid("CGRA transport action names an unknown binding");
     const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
     if (stage == ActionStage::Produced) {
-      for (std::uint64_t action :
-           llvm::ArrayRef(physicalUses_)
-               .slice(binding.physicalUseOffset, binding.physicalUseCount))
-        if (llvm::Error error = appendAction(
-                transfer.transferSlot, invalidCgraTransportOrdinal, action))
+      for (auto [localActionOrdinal, action] : llvm::enumerate(
+               llvm::ArrayRef(physicalUses_)
+                   .slice(binding.physicalUseOffset, binding.physicalUseCount)))
+        if (llvm::Error error =
+                appendAction(transfer.transferSlot, invalidCgraTransportOrdinal,
+                             localActionOrdinal, action))
           return error;
       continue;
     }
@@ -116,18 +119,25 @@ CgraTransportRuntime::requestActions(
         return invalid("CGRA traversal action names another transfer DAG");
       const std::uint64_t action =
           traversalNodes_[transfer.traversalNodeOrdinal].physicalUseOrdinal;
-      if (llvm::Error error = appendAction(
-              transfer.transferSlot, transfer.traversalNodeOrdinal, action))
+      const std::uint64_t localActionOrdinal = binding.physicalUseCount +
+                                               transfer.traversalNodeOrdinal -
+                                               binding.traversalNodeOffset;
+      if (llvm::Error error =
+              appendAction(transfer.transferSlot, transfer.traversalNodeOrdinal,
+                           localActionOrdinal, action))
         return error;
       continue;
     }
+    std::uint64_t localActionOrdinal =
+        binding.physicalUseCount + binding.traversalNodeCount;
     for (const SinkBinding &sink :
          llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount))
       for (std::uint64_t action :
            llvm::ArrayRef(physicalUses_)
                .slice(sink.physicalUseOffset, sink.physicalUseCount))
-        if (llvm::Error error = appendAction(
-                transfer.transferSlot, invalidCgraTransportOrdinal, action))
+        if (llvm::Error error =
+                appendAction(transfer.transferSlot, invalidCgraTransportOrdinal,
+                             localActionOrdinal++, action))
           return error;
   }
 
@@ -167,7 +177,9 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
     return invalid("CGRA active transport count exceeds u64");
 
   llvm::SmallVector<std::uint64_t, 4> prospectiveSlots;
+  llvm::SmallVector<std::uint64_t, 4> producerSequences;
   prospectiveSlots.reserve(transfers.size());
+  producerSequences.reserve(transfers.size());
   const std::size_t reused = std::min(transfers.size(), freeSlots_.size());
   for (std::size_t index = 0; index != reused; ++index)
     prospectiveSlots.push_back(freeSlots_[freeSlots_.size() - 1 - index]);
@@ -179,6 +191,17 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
   for (auto [transfer, slot] : llvm::zip(transfers, prospectiveSlots)) {
     if (!transfer.token || transfer.bindingOrdinal >= bindings_.size())
       return invalid("CGRA transport received a malformed source emission");
+    const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+    if (binding.nextProducerSequenceOrdinal ==
+        std::numeric_limits<std::uint64_t>::max())
+      return llvm::createStringError(
+          std::errc::value_too_large,
+          "CGRA producer sequence ordinal overflows u64");
+    if (std::holds_alternative<::dataflow::GraphIngressTokenRef>(
+            binding.producer) &&
+        transfer.occurrenceOrdinal != binding.nextProducerSequenceOrdinal)
+      return invalid("CGRA graph-ingress producer sequence is not dense");
+    producerSequences.push_back(binding.nextProducerSequenceOrdinal);
     producedTransfers.push_back({slot, transfer.bindingOrdinal});
   }
 
@@ -189,11 +212,13 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
 
   llvm::SmallVector<std::uint64_t, 4> slots;
   slots.reserve(transfers.size());
-  for (auto [transfer, expectedSlot] : llvm::zip(transfers, prospectiveSlots)) {
+  for (auto [transfer, expectedSlot, producerSequence] :
+       llvm::zip(transfers, prospectiveSlots, producerSequences)) {
     const std::uint64_t slot =
         allocate(transfer.bindingOrdinal, transfer.occurrenceOrdinal,
-                 std::move(*transfer.token));
+                 producerSequence, std::move(*transfer.token));
     assert(slot == expectedSlot && "transport slot projection changed");
+    ++bindings_[transfer.bindingOrdinal].nextProducerSequenceOrdinal;
     slots.push_back(slot);
   }
   for (const CgraPhysicalLifecycleEvent &event : *requested)

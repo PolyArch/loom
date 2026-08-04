@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_CGRACOMPUTERUNTIME_H
 
 #include "CGRAExecutionPlan.h"
+#include "CgraPhysicalTraceProjection.h"
 #include "DFGSimulatorInternal.h"
 
 #include "Simulator/CGRA/EventQueue.h"
@@ -75,6 +76,9 @@ public:
   llvm::Expected<CgraComputeLifecycleFrame>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
 
+  llvm::Expected<CgraPhysicalTraceBinding>
+  physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
+
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
                           SpatialEventCoordinate coordinate);
@@ -95,6 +99,7 @@ public:
 private:
   struct ActorBinding final {
     std::uint64_t semanticActorOrdinal = 0;
+    ::dataflow::ActorRef actor;
     const ActorExecutionPlan *semantic = nullptr;
     std::uint64_t transitionIndexOffset = 0;
     std::uint32_t transitionCount = 0;
@@ -118,6 +123,7 @@ private:
 
   struct FiringActionIndex final {
     std::uint64_t firingSlot = 0;
+    std::uint64_t localActionOrdinal = 0;
   };
 
   CgraComputeRuntime(const CgraFrozenExecutionPlan &plan, SimulatorState &state,

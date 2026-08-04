@@ -260,10 +260,10 @@ CgraMemoryRuntime::allocateFiring(std::uint64_t bindingOrdinal,
   return slot;
 }
 
-llvm::Expected<CgraPhysicalLifecycleEvent>
-CgraMemoryRuntime::requestAction(std::uint64_t firingSlot,
-                                 std::uint64_t actionOrdinal, bool operation,
-                                 const SpatialEventCoordinate &coordinate) {
+llvm::Expected<CgraPhysicalLifecycleEvent> CgraMemoryRuntime::requestAction(
+    std::uint64_t firingSlot, std::uint64_t actionOrdinal,
+    std::uint64_t localActionOrdinal, bool operation,
+    const SpatialEventCoordinate &coordinate) {
   if (actionOrdinal >= nextActionOccurrence_.size())
     return invalid("CGRA memory request names an unknown physical action");
   if (nextActionOccurrence_[actionOrdinal] ==
@@ -278,7 +278,7 @@ CgraMemoryRuntime::requestAction(std::uint64_t firingSlot,
   ++nextActionOccurrence_[actionOrdinal];
   if (!actionToFiring_
            .try_emplace({actionOrdinal, occurrence},
-                        ActionIndex{firingSlot, operation})
+                        ActionIndex{firingSlot, localActionOrdinal, operation})
            .second)
     return invalid("CGRA memory action occurrence is duplicated");
   return std::move(*requested);
@@ -318,7 +318,7 @@ CgraMemoryRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
       return firingSlot.takeError();
     auto requested = requestAction(
         *firingSlot, binding.physical->operationPhysicalUseOrdinal,
-        /*operation=*/true, coordinate);
+        /*localActionOrdinal=*/0, /*operation=*/true, coordinate);
     if (!requested)
       return requested.takeError();
     requestedEvents_.schedule(
@@ -375,6 +375,7 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
       *binding.rootedUse->localServicePhysicalUseOrdinal;
   for (std::uint32_t child = 0; child != firing.activeChildCount; ++child) {
     auto requested = requestAction(firingSlot, serviceAction,
+                                   /*localActionOrdinal=*/1 + child,
                                    /*operation=*/false, coordinate);
     if (!requested)
       return requested.takeError();
@@ -383,6 +384,34 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
   if (firing.activeChildCount == 0)
     return linearize(firingSlot, frame);
   return llvm::Error::success();
+}
+
+llvm::Expected<CgraPhysicalTraceBinding>
+CgraMemoryRuntime::physicalTraceBinding(
+    const CgraPhysicalLifecycleEvent &event) const {
+  if (event.actionOrdinal >= plan_->physicalUseClients.size() ||
+      plan_->physicalUseClients[event.actionOrdinal] !=
+          CgraPhysicalUseClientKind::MemoryTransition)
+    return invalid("CGRA trace memory action has another client");
+  auto indexed =
+      actionToFiring_.find({event.actionOrdinal, event.occurrenceOrdinal});
+  if (indexed == actionToFiring_.end())
+    return invalid("CGRA trace memory action has no active firing");
+  const ActionIndex index = indexed->second;
+  if (index.firingSlot >= firings_.size() || !firings_[index.firingSlot].active)
+    return invalid("CGRA trace memory action names an inactive firing");
+  const Firing &firing = firings_[index.firingSlot];
+  const ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  auto target = projectPhysicalUseTarget(*plan_, event.actionOrdinal);
+  if (!target)
+    return target.takeError();
+  return CgraPhysicalTraceBinding{
+      PhysicalActionOccurrenceRef{
+          TransitionPhysicalActionParent{ActorTransitionOccurrenceRef{
+              GraphInvocationOccurrenceRef{0}, binding.physical->actor,
+              firing.actorOccurrenceOrdinal}},
+          index.localActionOrdinal},
+      std::move(*target)};
 }
 
 llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
@@ -451,6 +480,15 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
         {binding.semanticActorOrdinal, firing.actorOccurrenceOrdinal, 0,
          emission.resultOrdinal, std::move(emission.token)});
   recordEvent(*state_, binding.semantic->projection.schema);
+  if (!firing.ready->activeLanes.isZero()) {
+    frame.memoryLinearizations.push_back(MemoryLinearizedTraceEvent{
+        MemoryActionOccurrenceRef{
+            ActorTransitionOccurrenceRef{GraphInvocationOccurrenceRef{0},
+                                         binding.physical->actor,
+                                         firing.actorOccurrenceOrdinal},
+            ActorWideMemoryActionRef{}},
+        std::nullopt, std::nullopt, std::nullopt});
+  }
   firing.linearized = true;
   return llvm::Error::success();
 }
@@ -531,7 +569,7 @@ CgraMemoryRuntime::acceptPhysicalEvents(
     const CgraPhysicalLifecycleFrame &physicalFrame) {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
-  CgraMemoryLifecycleFrame result{physicalFrame.coordinate, {}, {}, {}, {}};
+  CgraMemoryLifecycleFrame result{physicalFrame.coordinate, {}, {}, {}, {}, {}};
   for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
     if (compareSpatialEventCoordinates(event.coordinate,
                                        physicalFrame.coordinate) != 0)
@@ -574,7 +612,7 @@ CgraMemoryRuntime::advance() {
     return requested.takeError();
   if (!*requested)
     return std::optional<CgraMemoryLifecycleFrame>{};
-  CgraMemoryLifecycleFrame frame{(**requested).coordinate, {}, {}, {}, {}};
+  CgraMemoryLifecycleFrame frame{(**requested).coordinate, {}, {}, {}, {}, {}};
   for (const CgraScheduledEvent &event : (**requested).events)
     frame.physicalEvents.push_back(
         {CgraPhysicalLifecycleKind::Requested,

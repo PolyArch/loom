@@ -3,6 +3,8 @@
 
 #include "CgraComputeRuntime.h"
 
+#include "Simulator/SpatialTrace.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/Error.h"
@@ -21,6 +23,7 @@ struct CgraMemoryLifecycleFrame final {
   std::vector<CgraActorLifecycleEvent> actorEvents;
   std::vector<CgraActorEmission> actorEmissions;
   std::vector<CgraActorPhysicalCompletion> physicalCompletions;
+  std::vector<MemoryLinearizedTraceEvent> memoryLinearizations;
 };
 
 /// Dynamic execution of mapped Dataflow load/store actors. Canonical Dataflow
@@ -44,6 +47,9 @@ public:
 
   llvm::Expected<CgraMemoryLifecycleFrame>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+
+  llvm::Expected<CgraPhysicalTraceBinding>
+  physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
@@ -98,6 +104,7 @@ private:
 
   struct ActionIndex final {
     std::uint64_t firingSlot = 0;
+    std::uint64_t localActionOrdinal = 0;
     bool operation = false;
   };
 
@@ -116,7 +123,8 @@ private:
                                                std::optional<Token> storeData);
   llvm::Expected<CgraPhysicalLifecycleEvent>
   requestAction(std::uint64_t firingSlot, std::uint64_t actionOrdinal,
-                bool operation, const SpatialEventCoordinate &coordinate);
+                std::uint64_t localActionOrdinal, bool operation,
+                const SpatialEventCoordinate &coordinate);
   llvm::Error processPhysicalEvent(const CgraPhysicalLifecycleEvent &event,
                                    CgraMemoryLifecycleFrame &frame);
   llvm::Error commitIssue(std::uint64_t firingSlot,

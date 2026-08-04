@@ -4,6 +4,7 @@
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialExecutionSession.h"
+#include "Simulator/SpatialTrace.h"
 
 #include "llvm/Support/Error.h"
 
@@ -19,6 +20,7 @@ struct CgraSimulationCounters final {
   std::uint64_t actorCommitCount = 0;
   std::uint64_t actorRetirementCount = 0;
   std::uint64_t tokenPublicationCount = 0;
+  std::uint64_t memoryLinearizationCount = 0;
   std::uint64_t physicalRequestCount = 0;
   std::uint64_t physicalGrantCount = 0;
   std::uint64_t physicalRetirementCount = 0;
@@ -59,6 +61,7 @@ public:
   SpatialExecutionSessionState state() const;
   const CgraSimulationCounters &counters() const;
   const std::optional<CgraClosedWaitSetDiagnostic> &closedWaitSet() const;
+  const std::optional<SpatialDiagnosticTrace> &diagnosticTrace() const;
 
   llvm::Expected<SpatialExecutionSessionState> advance(
       std::uint64_t maxEventFrames,
@@ -76,7 +79,8 @@ private:
   friend llvm::Expected<CgraExecutionSession>
   startCgraExecutionSession(const PreparedCgraExecution &,
                             const CanonicalSimulationWorkload &,
-                            const CanonicalSimulationRuntimeInput &);
+                            const CanonicalSimulationRuntimeInput &,
+                            std::optional<TraceCaptureLevel>);
   friend llvm::Expected<CgraSimulationOutcome>
   simulateCgraWorkload(const PreparedCgraExecution &,
                        const CanonicalSimulationWorkload &,
@@ -84,10 +88,11 @@ private:
                        std::optional<std::chrono::steady_clock::time_point>);
 };
 
-llvm::Expected<CgraExecutionSession>
-startCgraExecutionSession(const PreparedCgraExecution &prepared,
-                          const CanonicalSimulationWorkload &workload,
-                          const CanonicalSimulationRuntimeInput &runtimeInput);
+llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+    const PreparedCgraExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    std::optional<TraceCaptureLevel> traceLevel = std::nullopt);
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraExecution &prepared,

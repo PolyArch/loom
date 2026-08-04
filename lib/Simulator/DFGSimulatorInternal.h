@@ -1310,6 +1310,10 @@ projectRetiredFunctionalObservations(
     const ResolvedLaunchContext &context,
     const dataflow::CanonicalDataflowProgramView &program);
 
+llvm::Expected<CanonicalValueSequence>
+canonicalValueSequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
+                                 mlir::Operation *scope);
+
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
                                                        mlir::Type type,
                                                        unsigned indexBitWidth);

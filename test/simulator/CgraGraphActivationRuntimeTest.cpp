@@ -288,7 +288,8 @@ void graphActivationCoordinatesComputeAndTransport() {
   state.graphIngressCapture = nullptr;
 
   auto runtime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, add->graph, *prepared, state));
+      plan, view, launch, add->graph, *prepared, state,
+      /*captureMicroarchitecture=*/false));
   if (llvm::Error error = runtime.start(coordinate(0), ingress))
     fail(llvm::toString(std::move(error)));
 
@@ -464,7 +465,8 @@ void graphActivationExecutesSelectedLocalMemory() {
       loom::fabric::ManagerEndpointRef(loom::fabric::FabricMemoryEndpointRef{
           loom::fabric::FabricMemoryEndpointOwnerRef::of(occurrence), 0});
   auto unsupportedRuntime = CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, state);
+      plan, view, launch, load->graph, *prepared, state,
+      /*captureMicroarchitecture=*/false);
   require(!unsupportedRuntime,
           "manager memory target unexpectedly acquired a CGRA provider");
   require(llvm::errorToErrorCode(unsupportedRuntime.takeError()) ==
@@ -473,10 +475,12 @@ void graphActivationExecutesSelectedLocalMemory() {
   plan.memory.rootedUses.front().target = service;
 
   auto runtime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, state));
+      plan, view, launch, load->graph, *prepared, state,
+      /*captureMicroarchitecture=*/false));
   if (llvm::Error error = runtime.start(coordinate(0), ingress))
     fail(llvm::toString(std::move(error)));
   std::uint64_t memoryPhysicalEvents = 0;
+  std::uint64_t memoryLinearizations = 0;
   for (unsigned iteration = 0; iteration != 96 && runtime.hasPendingEvents();
        ++iteration) {
     auto frame = take(runtime.advance());
@@ -485,10 +489,13 @@ void graphActivationExecutesSelectedLocalMemory() {
       if (event.actionOrdinal == operationAction ||
           event.actionOrdinal == serviceAction)
         ++memoryPhysicalEvents;
+    memoryLinearizations += frame->memoryLinearizations.size();
   }
   require(!runtime.hasPendingEvents(), "memory graph did not quiesce");
   require(memoryPhysicalEvents == 6,
           "memory graph did not execute both selected physical actions");
+  require(memoryLinearizations == 1,
+          "memory graph did not expose its primitive linearization");
   auto output =
       state.observedOutputs.find(graph.getBody().front().back().getOperand(0));
   require(output != state.observedOutputs.end() && output->second.size() == 1 &&

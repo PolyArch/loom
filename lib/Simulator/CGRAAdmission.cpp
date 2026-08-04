@@ -11,6 +11,8 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include "llvm/ADT/DenseMap.h"
+
 #include <cstdint>
 #include <system_error>
 #include <utility>
@@ -103,9 +105,21 @@ prepareCgraExecution(const ArtifactRootReference &dataflowReference,
       return llvm::createStringError(std::errc::not_supported, "%s",
                                      diagnostic.c_str());
     }
-    graphs.push_back(
-        {graphRef,
-         std::move(std::get<detail::PreparedGraphExecution>(*prepared))});
+    detail::PreparedGraphExecution execution =
+        std::move(std::get<detail::PreparedGraphExecution>(*prepared));
+    llvm::DenseMap<mlir::Operation *, ::dataflow::ActorRef> references;
+    references.reserve(dataflowView->actors().size());
+    for (const ::dataflow::CanonicalActorView &actor : dataflowView->actors())
+      references.try_emplace(actor.op, actor.ref);
+    std::vector<::dataflow::ActorRef> actors;
+    actors.reserve(execution.actorPlans.size());
+    for (const detail::ActorExecutionPlan &actor : execution.actorPlans) {
+      auto found = references.find(actor.operation);
+      if (found == references.end())
+        return invalid("prepared CGRA actor has no canonical reference");
+      actors.push_back(found->second);
+    }
+    graphs.push_back({graphRef, std::move(execution), std::move(actors)});
   }
 
   return PreparedCgraExecution(std::make_unique<PreparedCgraExecution::Impl>(

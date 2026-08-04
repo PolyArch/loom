@@ -4,12 +4,14 @@ add_mlir_library(LoomSimulator
   CgraComputeRuntime.cpp
   CgraGraphActivationRuntime.cpp
   CgraMemoryRuntime.cpp
+  CgraPhysicalTraceProjection.cpp
   CGRAEventQueue.cpp
   CGRAExecutionPlan.cpp
   CGRAMemoryPlan.cpp
   CGRATransportPlan.cpp
   CgraTransportIngressRuntime.cpp
   CgraTransportStorageRuntime.cpp
+  CgraTransportTrace.cpp
   CgraTransportRuntime.cpp
   CGRAPhysicalActionRuntime.cpp
   CGRAResourceRuntime.cpp
@@ -38,6 +40,7 @@ add_mlir_library(LoomSimulator
   SimulationInputCapture.cpp
   SimulationPointerCapture.cpp
   SimulationRuntimeInput.cpp
+  SpatialTrace.cpp
   SimulationWireSupport.cpp
   SimulationWorkload.cpp
   StructuredProgramSimulationRuntimeInput.cpp

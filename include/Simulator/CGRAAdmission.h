@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace loom {
 class ArtifactStore;
@@ -17,6 +18,7 @@ class ArtifactStore;
 namespace loom::sim {
 
 class CgraExecutionSession;
+enum class TraceCaptureLevel : std::uint32_t;
 
 struct CgraExecutionPlanSummary final {
   std::uint64_t mappedGraphCount = 0;
@@ -76,7 +78,8 @@ private:
   friend llvm::Expected<CgraExecutionSession>
   startCgraExecutionSession(const PreparedCgraExecution &,
                             const CanonicalSimulationWorkload &,
-                            const CanonicalSimulationRuntimeInput &);
+                            const CanonicalSimulationRuntimeInput &,
+                            std::optional<TraceCaptureLevel>);
 };
 
 /// Strictly imports and couples one Canonical Dataflow, Fabric, TechMapping,
