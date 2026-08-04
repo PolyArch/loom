@@ -1159,6 +1159,17 @@ bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema);
 void flushPendingTokens(SimulatorState &state);
 void initializeRunState(SimulatorState &state,
                         const PreparedGraphExecution &execution);
+llvm::Expected<std::shared_ptr<MemoryValue>>
+materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
+                  mlir::Type elementType);
+llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
+                                       SimulatorState &state);
+llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state);
+llvm::Error initializeTypedGraphExecutionState(
+    SimulatorState &state, const PreparedGraphExecution &execution,
+    dataflow::GraphOp graph, const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context);
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument argument,
                        const Token &token);
 std::int64_t integerToken(const Token &token);
