@@ -10,8 +10,11 @@
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+
+#include "SpatialMemoryConstraintTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -32,6 +35,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -73,9 +77,10 @@ private:
 
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
-  registry.insert<::dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
+  registry.insert<::dataflow::DataflowDialect, ::mapping::MappingDialect,
+                  mlir::arith::ArithDialect, mlir::DLTIDialect,
+                  mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
+                  mlir::memref::MemRefDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -276,6 +281,23 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
         : memref<4xi32>
     dataflow.graph.return values() streams() memories()
         complete(%store_done : none)
+  }
+  dataflow.thread private @memory_worker
+      domain(#dataflow.thread_domain<dense>)(
+          %load_index: index, %store_index: index, %memory: memref<4xi32>)
+      ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @load_then_store deps(%ctrl)
+        values(%load_index, %store_index) stream_inputs() memories(%memory)
+        stream_outputs()
+        : (none, index, index, memref<4xi32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  func.func private @memory_host(
+      %load_index: index, %store_index: index, %memory: memref<4xi32>) {
+    %token = dataflow.thread.launch @memory_worker(
+        %load_index, %store_index, %memory)
+        : (index, index, memref<4xi32>) -> !dataflow.thread_token
+    return
   }
 }
 )mlir",
@@ -944,6 +966,8 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
       continue;
     const auto &realization = candidate.view().memoryRealizations().front();
     if (realization.actors.size() == 2) {
+      loom::test::exerciseSpatialMemoryOperationPortRelations(
+          context, dataflow, candidate.view(), fabric.view(), store);
       foundGrouped = true;
       break;
     }

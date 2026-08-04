@@ -19,6 +19,7 @@ add_executable(loom-tech-mapping-config-test
 
 add_executable(loom-tech-mapping-generator-test
   TechMappingGeneratorTest.cpp
+  SpatialMemoryConstraintTestSupport.cpp
 )
 
 add_executable(loom-tech-mapping-search-test
@@ -74,6 +75,7 @@ target_link_libraries(loom-tech-mapping-config-test PRIVATE
 target_link_libraries(loom-tech-mapping-generator-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
+  LoomPnR
   LoomTechMapping
   MLIRArithDialect
   MLIRDataflow

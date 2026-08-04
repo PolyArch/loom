@@ -47,6 +47,7 @@ bool isComputeProjection(Projection projection) {
 bool isBindingProjection(Projection projection) {
   return isComputeProjection(projection) ||
          projection == Projection::MemoryPlacement ||
+         projection == Projection::MemoryOperationPort ||
          projection == Projection::SpatialTransferAttachment;
 }
 
@@ -112,6 +113,28 @@ memoryProjectionKey(const FrozenSpatialRealizationIndex &realizations,
       realizations.memoryPlacements()[choice.placement].memory);
 }
 
+ProjectionKey memoryOperationPortProjectionKey(
+    const FrozenSpatialRealizationIndex &realizations,
+    const SpatialMemoryBindingChoice &choice, std::uint64_t portOrdinal) {
+  return canonicalFabricBytes(FabricMemoryOperationPortRef{
+      realizations.memoryPlacements()[choice.placement].memory, portOrdinal});
+}
+
+llvm::Expected<ProjectionKey> actorKey(const ArtifactIdentity &dataflowIdentity,
+                                       const dataflow::ActorRef &actor) {
+  auto bytes = dataflow::encodeDataflowReference(dataflowIdentity, actor);
+  if (!bytes)
+    return invalid(Projection::MemoryOperationPort,
+                   "cannot encode the memory actor: " +
+                       llvm::toString(bytes.takeError()));
+  return std::move(*bytes);
+}
+
+struct MemoryOperationPortDecision final {
+  PnrIndex decision = 0;
+  std::uint64_t portOrdinal = 0;
+};
+
 llvm::Expected<ProjectionKey>
 transferTerminalKey(const ArtifactIdentity &dataflowIdentity,
                     const SpatialConstraintTransferTerminal &terminal) {
@@ -166,6 +189,8 @@ llvm::Expected<PnrIndex> relationDecision(
     Projection projection, const SpatialConstraintSubject &subject,
     const llvm::DenseMap<std::uint64_t, PnrIndex> &computeDecisions,
     const llvm::DenseMap<std::uint64_t, PnrIndex> &memoryDecisions,
+    const std::map<ProjectionKey, MemoryOperationPortDecision>
+        &memoryOperationPortDecisions,
     const std::map<ProjectionKey, PnrIndex> &attachmentDecisions,
     const ArtifactIdentity &dataflowIdentity) {
   if (isComputeProjection(projection)) {
@@ -188,6 +213,22 @@ llvm::Expected<PnrIndex> relationDecision(
       return invalid(projection,
                      "memory projection names a foreign realization");
     return found->second;
+  }
+  if (projection == Projection::MemoryOperationPort) {
+    const auto *actor = std::get_if<dataflow::ActorRef>(&subject);
+    if (!actor)
+      return invalid(projection,
+                     "memory operation-port projection has a non-actor "
+                     "subject");
+    auto key = actorKey(dataflowIdentity, *actor);
+    if (!key)
+      return key.takeError();
+    const auto found = memoryOperationPortDecisions.find(*key);
+    if (found == memoryOperationPortDecisions.end())
+      return invalid(projection,
+                     "memory operation-port projection names a foreign "
+                     "memory actor");
+    return found->second.decision;
   }
   if (projection == Projection::SpatialTransferAttachment) {
     const auto *terminal =
@@ -509,6 +550,33 @@ SpatialBindingRelationModel::create(
       return invalid(Projection::MemoryPlacement,
                      "memory realization reference is not unique");
   }
+  std::map<ProjectionKey, MemoryOperationPortDecision>
+      memoryOperationPortDecisions;
+  if (realizations.memoryActors().size() !=
+      realizations.memoryActorRealizations().size())
+    return invalid(Projection::MemoryOperationPort,
+                   "memory actor ownership projection is incomplete");
+  for (auto [actorOrdinal, actor] :
+       llvm::enumerate(realizations.memoryActors())) {
+    const PnrIndex realization =
+        realizations.memoryActorRealizations()[actorOrdinal];
+    if (realization >= memoryDecisionCount)
+      return invalid(Projection::MemoryOperationPort,
+                     "memory actor names a foreign realization");
+    auto key = actorKey(dataflowIdentity, actor.actor);
+    if (!key)
+      return key.takeError();
+    const bool inserted =
+        memoryOperationPortDecisions
+            .try_emplace(
+                std::move(*key),
+                MemoryOperationPortDecision{memoryDecisionOffset + realization,
+                                            actor.operationPort.ordinal})
+            .second;
+    if (!inserted)
+      return invalid(Projection::MemoryOperationPort,
+                     "memory actor reference is not unique");
+  }
 
   std::vector<InitializerRelationInput> relationInputs;
   std::vector<std::uint8_t> constraintRelations;
@@ -550,7 +618,8 @@ SpatialBindingRelationModel::create(
                            "relation contains an out-of-range subject");
           auto decision = relationDecision(
               *projection, shard.subjects()[subjectOrdinal], computeDecisions,
-              memoryDecisions, attachmentDecisions, dataflowIdentity);
+              memoryDecisions, memoryOperationPortDecisions,
+              attachmentDecisions, dataflowIdentity);
           if (!decision)
             return decision.takeError();
 
@@ -576,6 +645,25 @@ SpatialBindingRelationModel::create(
             keys.reserve(choices.size());
             for (const SpatialMemoryBindingChoice &choice : choices)
               keys.push_back(memoryProjectionKey(realizations, choice));
+          } else if (*projection == Projection::MemoryOperationPort) {
+            const auto *actor = std::get_if<dataflow::ActorRef>(
+                &shard.subjects()[subjectOrdinal]);
+            assert(actor && "validated memory operation-port subject");
+            auto key = actorKey(dataflowIdentity, *actor);
+            if (!key)
+              return key.takeError();
+            const auto owner = memoryOperationPortDecisions.find(*key);
+            assert(owner != memoryOperationPortDecisions.end());
+            const PnrIndex realization = *decision - memoryDecisionOffset;
+            const auto choices =
+                llvm::ArrayRef(memoryChoices)
+                    .slice(memoryChoiceOffsets[realization],
+                           memoryChoiceOffsets[realization + 1] -
+                               memoryChoiceOffsets[realization]);
+            keys.reserve(choices.size());
+            for (const SpatialMemoryBindingChoice &choice : choices)
+              keys.push_back(memoryOperationPortProjectionKey(
+                  realizations, choice, owner->second.portOrdinal));
           } else {
             llvm::ArrayRef<PnrIndex> choices;
             if (*decision < graphBoundaryDecisionOffset) {
