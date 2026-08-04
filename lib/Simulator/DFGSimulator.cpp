@@ -678,10 +678,15 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
 
 void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
                        const Token &token) {
+  const std::uint64_t occurrence = state.seededTokenCounts[arg]++;
+  state.observedOutputs[arg].push_back(token);
+  if (state.graphIngressCapture) {
+    state.graphIngressCapture->push_back(
+        GraphIngressEmission{arg.getArgNumber(), occurrence, token});
+    return;
+  }
   for (mlir::OpOperand &use : arg.getUses())
     channelQueue(state, use).push_back(token);
-  state.observedOutputs[arg].push_back(token);
-  ++state.seededTokenCounts[arg];
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

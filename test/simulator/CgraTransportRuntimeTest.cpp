@@ -98,7 +98,15 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   CgraFrozenExecutionPlan plan;
   plan.computeActors.push_back({add->ref, add->graph, {}, {}, 0, 0});
   plan.transport.localTransfers.push_back(
-      {{dataflow::ActorTokenResultRef{add->ref, 0}}, add->graph, 0, 1});
+      {{dataflow::GraphIngressTokenRef{
+           dataflow::GraphValueInputTokenRef{add->graph, 0}}},
+       add->graph,
+       0,
+       1});
+  plan.transport.localTransferSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{add->ref, 0}}});
+  plan.transport.localTransfers.push_back(
+      {{dataflow::ActorTokenResultRef{add->ref, 0}}, add->graph, 1, 1});
   plan.transport.localTransferSinks.push_back(
       {{dataflow::ActorTokenOperandRef{sync->ref, 1}}});
 
@@ -107,6 +115,26 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   initializeRunState(state, *prepared);
   auto runtime = take(
       CgraTransportRuntime::create(plan, view, add->graph, *prepared, state));
+  llvm::SmallVector<GraphIngressEmission, 2> ingress;
+  state.graphIngressCapture = &ingress;
+  seedBlockArgument(
+      state, graph.getBody().front().getArgument(1),
+      take(tokenFromBitPattern(llvm::APInt(32, 7),
+                               mlir::IntegerType::get(&context(), 32))));
+  state.graphIngressCapture = nullptr;
+  require(channelQueue(state, add->op->getOpOperand(0)).empty(),
+          "CGRA input seeding bypassed selected transport");
+  if (llvm::Error error =
+          runtime.acceptGraphIngressEmissions(coordinate(1), ingress))
+    fail(llvm::toString(std::move(error)));
+  auto ingressFrame = take(runtime.advance());
+  require(ingressFrame &&
+              loom::sim::compareSpatialEventCoordinates(
+                  ingressFrame->coordinate, coordinate(1, 1)) == 0 &&
+              ingressFrame->publications.size() == 1 &&
+              channelQueue(state, add->op->getOpOperand(0)).size() == 1,
+          "graph ingress did not traverse its selected local transfer");
+
   llvm::SmallVector<CgraComputeActorEmission, 1> emissions;
   emissions.push_back(
       {0, 0, 0, 0,

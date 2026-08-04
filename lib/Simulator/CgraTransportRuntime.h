@@ -40,6 +40,10 @@ public:
       const SpatialEventCoordinate &coordinate,
       llvm::MutableArrayRef<CgraComputeActorEmission> emissions);
 
+  llvm::Error acceptGraphIngressEmissions(
+      const SpatialEventCoordinate &coordinate,
+      llvm::MutableArrayRef<GraphIngressEmission> emissions);
+
   llvm::Expected<std::optional<CgraTransportFrame>> advance();
 
   llvm::Error retryBlocked(const SpatialEventCoordinate &coordinate);
@@ -75,7 +79,8 @@ private:
       SimulatorState &state, std::vector<TransferBinding> bindings,
       std::vector<SinkBinding> sinks,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-          sourceBindings);
+          actorSourceBindings,
+      llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
 
   std::uint64_t allocate(std::uint64_t bindingOrdinal,
                          std::uint64_t occurrenceOrdinal, Token token);
@@ -89,7 +94,8 @@ private:
   std::vector<TransferBinding> bindings_;
   std::vector<SinkBinding> sinks_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-      sourceBindings_;
+      actorSourceBindings_;
+  llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
   CgraEventQueue events_;
   std::vector<InFlight> inFlight_;
   std::vector<std::uint64_t> freeSlots_;

@@ -713,6 +713,15 @@ struct ActorResultEmission final {
   Token token;
 };
 
+/// One graph-input token decoded by the shared typed input owner before an
+/// execution model selects its transport. DFG execution seeds consumer queues
+/// directly; CGRA execution captures the ordered ingress sequence here.
+struct GraphIngressEmission final {
+  unsigned argumentOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+  Token token;
+};
+
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
 struct LoopState {
@@ -1006,6 +1015,7 @@ struct SimulatorState {
   llvm::SmallVector<ChannelOrdinal, 16> pendingChannelOrdinals;
   const ActorExecutionPlan *currentActorPlan = nullptr;
   llvm::SmallVectorImpl<ActorResultEmission> *actorEmissionCapture = nullptr;
+  llvm::SmallVectorImpl<GraphIngressEmission> *graphIngressCapture = nullptr;
   // Values whose complete publication sequence is an explicit graph
   // observation. Internal SSA token history is represented by the edge
   // queues alone and is not retained as an implicit trace.

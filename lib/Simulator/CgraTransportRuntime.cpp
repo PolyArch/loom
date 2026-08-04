@@ -1,5 +1,6 @@
 #include "CgraTransportRuntime.h"
 
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -60,21 +61,62 @@ struct BindingBuilder final {
   bool requiresPhysicalTransport = false;
 };
 
+llvm::Expected<unsigned>
+ingressArgumentOrdinal(const ::dataflow::GraphIngressTokenRef &ingress,
+                       ::dataflow::GraphRef graphRef,
+                       ::dataflow::GraphOp graph) {
+  return std::visit(
+      [&](const auto &typed) -> llvm::Expected<unsigned> {
+        using Endpoint = std::decay_t<decltype(typed)>;
+        if (typed.graph != graphRef)
+          return invalid("CGRA transport ingress belongs to another graph");
+        std::uint64_t ordinal = 0;
+        if constexpr (std::is_same_v<Endpoint,
+                                     ::dataflow::GraphStartTokenRef>) {
+          ordinal = 0;
+        } else if constexpr (std::is_same_v<
+                                 Endpoint,
+                                 ::dataflow::GraphValueInputTokenRef>) {
+          ordinal = 1 + typed.ordinal;
+        } else {
+          const auto segments = graph.getInputSegmentSizes();
+          if (segments.empty() || segments.front() < 0)
+            return invalid("CGRA transport graph input segments are invalid");
+          ordinal =
+              1 + static_cast<std::uint64_t>(segments.front()) + typed.ordinal;
+        }
+        if (ordinal > std::numeric_limits<unsigned>::max() ||
+            ordinal >= graph.getBody().front().getNumArguments())
+          return invalid("CGRA transport ingress argument is out of range");
+        return static_cast<unsigned>(ordinal);
+      },
+      ingress);
+}
+
 } // namespace
 
 CgraTransportRuntime::CgraTransportRuntime(
     SimulatorState &state, std::vector<TransferBinding> bindings,
     std::vector<SinkBinding> sinks,
     llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-        sourceBindings)
+        actorSourceBindings,
+    llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings)
     : state_(&state), bindings_(std::move(bindings)), sinks_(std::move(sinks)),
-      sourceBindings_(std::move(sourceBindings)), blocked_(bindings_.size()) {}
+      actorSourceBindings_(std::move(actorSourceBindings)),
+      ingressSourceBindings_(std::move(ingressSourceBindings)),
+      blocked_(bindings_.size()) {}
 
 llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
     SimulatorState &state) {
+  auto resolvedGraph = dataflow.resolve(graph);
+  if (!resolvedGraph)
+    return resolvedGraph.takeError();
+  auto graphOp = mlir::dyn_cast<::dataflow::GraphOp>(resolvedGraph->op);
+  if (!graphOp)
+    return invalid("CGRA transport graph reference is not a graph");
   std::map<RefBytes, BindingBuilder> builders;
   const auto addSink = [&](const auto &transfer,
                            const auto &sink) -> llvm::Error {
@@ -147,7 +189,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   std::vector<TransferBinding> bindings;
   std::vector<SinkBinding> sinks;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-      sourceBindings;
+      actorSourceBindings;
+  llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings;
   bindings.reserve(builders.size());
   for (auto &[key, builder] : builders) {
     (void)key;
@@ -190,14 +233,23 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       auto actor = actorPlanByEntity.find(producer->actor.entity.value());
       if (actor == actorPlanByEntity.end())
         return invalid("CGRA transport producer has no compute actor binding");
-      if (!sourceBindings
+      if (!actorSourceBindings
                .try_emplace({actor->second, producer->ordinal}, bindingOrdinal)
                .second)
         return invalid("CGRA transport producer has duplicate bindings");
+    } else {
+      auto argument = ingressArgumentOrdinal(
+          std::get<::dataflow::GraphIngressTokenRef>(builder.producer), graph,
+          graphOp);
+      if (!argument)
+        return argument.takeError();
+      if (!ingressSourceBindings.try_emplace(*argument, bindingOrdinal).second)
+        return invalid("CGRA transport ingress has duplicate bindings");
     }
   }
   return CgraTransportRuntime(state, std::move(bindings), std::move(sinks),
-                              std::move(sourceBindings));
+                              std::move(actorSourceBindings),
+                              std::move(ingressSourceBindings));
 }
 
 std::uint64_t CgraTransportRuntime::allocate(std::uint64_t bindingOrdinal,
@@ -243,9 +295,9 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
   bindingOrdinals.reserve(emissions.size());
   for (const CgraComputeActorEmission &emission : emissions) {
-    auto binding = sourceBindings_.find(
+    auto binding = actorSourceBindings_.find(
         {emission.actorPlanOrdinal, emission.resultOrdinal});
-    if (binding == sourceBindings_.end())
+    if (binding == actorSourceBindings_.end())
       return invalid("CGRA actor emission has no selected transfer binding");
     if (bindings_[binding->second].active ||
         !uniqueBindings.insert(binding->second).second)
@@ -263,6 +315,42 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
     slots.push_back(allocate(binding, emission.occurrenceOrdinal,
                              std::move(emission.token)));
   }
+  for (std::uint64_t slot : slots)
+    scheduleAt(slot, *publication);
+  return llvm::Error::success();
+}
+
+llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
+    const SpatialEventCoordinate &coordinate,
+    llvm::MutableArrayRef<GraphIngressEmission> emissions) {
+  if (emissions.empty())
+    return llvm::Error::success();
+  auto publication = nextSpatialDelta(coordinate);
+  if (!publication)
+    return publication.takeError();
+
+  llvm::SmallVector<std::uint64_t, 4> bindingOrdinals;
+  llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
+  bindingOrdinals.reserve(emissions.size());
+  for (const GraphIngressEmission &emission : emissions) {
+    auto binding = ingressSourceBindings_.find(emission.argumentOrdinal);
+    if (binding == ingressSourceBindings_.end())
+      return invalid("CGRA graph ingress has no selected transfer binding");
+    if (bindings_[binding->second].active ||
+        !uniqueBindings.insert(binding->second).second)
+      return invalid("CGRA graph ingress batch reuses an in-flight source");
+    if (bindings_[binding->second].requiresPhysicalTransport)
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "CGRA selected ingress requires physical resource coordination");
+    bindingOrdinals.push_back(binding->second);
+  }
+
+  llvm::SmallVector<std::uint64_t, 4> slots;
+  slots.reserve(emissions.size());
+  for (auto [emission, binding] : llvm::zip(emissions, bindingOrdinals))
+    slots.push_back(allocate(binding, emission.occurrenceOrdinal,
+                             std::move(emission.token)));
   for (std::uint64_t slot : slots)
     scheduleAt(slot, *publication);
   return llvm::Error::success();
