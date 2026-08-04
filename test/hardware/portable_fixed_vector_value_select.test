@@ -1,0 +1,27 @@
+# REQUIRES: circt
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-portable-fixed-vector-value-select-test %t
+# RUN: FileCheck %s --check-prefix=RTL < %t/fixed_vector_value_select.sv
+# RUN: FileCheck %s --check-prefix=TB < %t/testbench.sv
+# RUN: FileCheck %s --check-prefix=YOSYS < %t/portable_fixed_vector_value_select.ys
+
+# RTL: module fixed_vector_value_select
+# RTL: input [129:0] data_input_0
+# RTL: data_input_1,
+# RTL: data_input_2,
+# RTL: input [2:0] config_0
+# RTL: output [129:0] data_output_0
+# RTL: data_input_0[0]
+# RTL: data_input_0[15]
+# RTL-NOT: data_input_0[16]
+
+# TB: module testbench
+# TB: eight-bit lane selection or low-bit transport failed
+# TB: sixteen-bit lane selection or low-bit transport failed
+# TB: thirty-two-bit lane selection or low-bit transport failed
+# TB: unassigned code did not preserve inactive behavior
+
+# YOSYS: hierarchy -check -top fixed_vector_value_select
+# YOSYS: check -assert
+# YOSYS: synth -top fixed_vector_value_select
+# YOSYS: check -assert
