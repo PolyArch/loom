@@ -123,6 +123,31 @@ void actionBatchesRequireCanonicalUniqueAnchors() {
               llvm::toString(std::move(duplicateError)).find("unique") !=
                   std::string::npos,
           "duplicate ActionBatch anchor was accepted");
+
+  const std::array<SpatialMappingAction, 2> duplicateNet{
+      SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{4}},
+      SpatialTransportRoutingAction{SpatialSingleSinkRoutingAction{4, 1}},
+  };
+  llvm::Error duplicateNetError =
+      validateCanonicalSpatialActionBatch(duplicateNet);
+  require(duplicateNetError &&
+              llvm::toString(std::move(duplicateNetError)).find("unique") !=
+                  std::string::npos,
+          "two routing neighborhoods changed the same net decision");
+}
+
+void routingNeighborhoodsShareOneChoiceRange() {
+  using namespace loom::pnr;
+  const std::array<SpatialActionChoiceRange, 1> anchors{{{0, 3}}};
+  const std::array<SpatialTransportRoutingAction, 3> choices{
+      SpatialWholeNetRoutingAction{2}, SpatialSingleSinkRoutingAction{2, 0},
+      SpatialRootedSubtreeRoutingAction{2, 7}};
+  DeterministicPnrRandomStream stream = actionStream();
+  const auto proposal =
+      take(proposeSpatialAction(loom::ResolvedPnrActionProposalPolicy{0, 1, 0},
+                                {{}, {}, anchors, choices, {}, {}}, stream));
+  require(proposal.has_value(),
+          "canonical local routing choice range produced no Action");
 }
 
 } // namespace
@@ -132,6 +157,7 @@ int main() {
   emptyAndMalformedDomainsDoNotConsumeEntropy();
   policySumMustFitTheBoundedProtocol();
   actionBatchesRequireCanonicalUniqueAnchors();
+  routingNeighborhoodsShareOneChoiceRange();
   llvm::outs() << "spatial action proposal tests passed\n";
   return 0;
 }

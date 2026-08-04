@@ -82,6 +82,14 @@ public:
                       const SpatialCandidateState &candidate,
                       SpatialRouteCostState &costs, PnrIndex logicalNet,
                       std::uint64_t endpointExpansionLimit);
+  llvm::Expected<RouteCost> routeSingleSinkInMove(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet,
+      PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit);
+  llvm::Expected<RouteCost> routeRootedSubtreeInMove(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
+      std::uint64_t endpointExpansionLimit);
 
   llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error finishConstraintNet(PnrIndex logicalNet);

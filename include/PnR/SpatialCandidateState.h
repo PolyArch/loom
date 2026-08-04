@@ -245,6 +245,13 @@ public:
   std::uint64_t tagConflictCount() const {
     return tagAssignments_.conflictCount();
   }
+  std::uint64_t tagDomainConflictCount(PnrIndex domain) const {
+    return tagAssignments_.domainConflictCount(domain);
+  }
+  bool tagDomainValueConflicts(PnrIndex domain,
+                               const llvm::APInt &value) const {
+    return tagAssignments_.domainValueConflicts(domain, value);
+  }
 
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>

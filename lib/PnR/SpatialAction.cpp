@@ -63,22 +63,34 @@ ActionKey anchorKey(const SpatialTransportRoutingAction &action) {
   return std::visit(
       [](const auto &value) {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, SpatialWholeNetRoutingAction>)
+        if constexpr (std::is_same_v<T, SpatialWholeNetRoutingAction> ||
+                      std::is_same_v<T, SpatialSingleSinkRoutingAction> ||
+                      std::is_same_v<T, SpatialRootedSubtreeRoutingAction>)
           return ActionKey{{0, value.logicalNet}};
-        else if constexpr (std::is_same_v<T, SpatialSingleSinkRoutingAction>)
-          return ActionKey{{1, value.logicalNet, value.sinkObligation}};
-        else if constexpr (std::is_same_v<T, SpatialRootedSubtreeRoutingAction>)
-          return ActionKey{{2, value.logicalNet, value.rootEndpoint}};
         else if constexpr (std::is_same_v<T, SpatialWitnessRegionRoutingAction>)
-          return ActionKey{{3, static_cast<std::uint32_t>(value.witnessKind),
+          return ActionKey{{1, static_cast<std::uint32_t>(value.witnessKind),
                             value.witnessOrdinal}};
         else
-          return ActionKey{{4}};
+          return ActionKey{{2}};
       },
       action);
 }
 
-ActionKey choiceKey(const SpatialTransportRoutingAction &) { return {}; }
+ActionKey choiceKey(const SpatialTransportRoutingAction &action) {
+  return std::visit(
+      [](const auto &value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, SpatialWholeNetRoutingAction>)
+          return ActionKey{{0}};
+        else if constexpr (std::is_same_v<T, SpatialSingleSinkRoutingAction>)
+          return ActionKey{{1, value.sinkObligation}};
+        else if constexpr (std::is_same_v<T, SpatialRootedSubtreeRoutingAction>)
+          return ActionKey{{2, value.rootEndpoint}};
+        else
+          return ActionKey{};
+      },
+      action);
+}
 
 ActionKey anchorKey(const SpatialResourceAllocationAction &action) {
   return std::visit(

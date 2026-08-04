@@ -775,6 +775,24 @@ std::uint64_t SpatialTagAssignmentState::conflictCount() const {
   return storage_->conflictCount;
 }
 
+std::uint64_t
+SpatialTagAssignmentState::domainConflictCount(PnrIndex domain) const {
+  assert(domain < storage_->occupancy.size());
+  std::uint64_t conflicts = 0;
+  for (const auto &entry : storage_->occupancy[domain]) {
+    assert(entry.second != 0);
+    conflicts += entry.second - 1;
+  }
+  assert(conflicts <= storage_->conflictCount);
+  return conflicts;
+}
+
+bool SpatialTagAssignmentState::domainValueConflicts(
+    PnrIndex domain, const llvm::APInt &value) const {
+  assert(domain < storage_->occupancy.size());
+  return storage_->occupancy[domain].lookup(value) > 1;
+}
+
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
     llvm::ArrayRef<RouteTreeStateHandle> routes,
     llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,

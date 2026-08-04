@@ -304,6 +304,31 @@ llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeWholeNetInMove(
                                   endpointExpansionLimit);
 }
 
+llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeSingleSinkInMove(
+    SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+    SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex sinkObligation,
+    std::uint64_t endpointExpansionLimit) {
+  if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
+    return pathFinderError("scratch is not prepared for the candidate freeze");
+  if (!costs.isBoundTo(candidate))
+    return pathFinderError("route costs are bound to another candidate");
+  return netRouter_.routeSingleSink(move, candidate, costs, logicalNet,
+                                    sinkObligation, endpointExpansionLimit);
+}
+
+llvm::Expected<RouteCost>
+SpatialPathFinderRouterScratch::routeRootedSubtreeInMove(
+    SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+    SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
+    std::uint64_t endpointExpansionLimit) {
+  if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
+    return pathFinderError("scratch is not prepared for the candidate freeze");
+  if (!costs.isBoundTo(candidate))
+    return pathFinderError("route costs are bound to another candidate");
+  return netRouter_.routeRootedSubtree(move, candidate, costs, logicalNet,
+                                       rootEndpoint, endpointExpansionLimit);
+}
+
 llvm::Error SpatialPathFinderRouterScratch::beginConstraintSweep(
     llvm::ArrayRef<PnrIndex> logicalNets) {
   return netRouter_.beginConstraintSweep(logicalNets);

@@ -114,6 +114,8 @@ public:
                                           PnrIndex segment) const;
   std::uint64_t unassignedCount() const;
   std::uint64_t conflictCount() const;
+  std::uint64_t domainConflictCount(PnrIndex domain) const;
+  bool domainValueConflicts(PnrIndex domain, const llvm::APInt &value) const;
 
 private:
   explicit SpatialTagAssignmentState(

@@ -219,6 +219,8 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   changedBindingRoots_.reserve(bindings.realizationDecisionCount());
   currentObjective_.emplace(std::move(*objective));
   netMarks_.assign(candidate.problem().transfers().logicalNets().size(), 0);
+  pendingRouteKinds_.resize(netMarks_.size());
+  pendingRouteAnchors_.resize(netMarks_.size());
   affectedNets_.clear();
   affectedNets_.reserve(netMarks_.size());
   routeCostTraversals_.clear();
@@ -265,18 +267,129 @@ void SpatialActionExecutorScratch::markExplicitAttachment(PnrIndex decision) {
 }
 
 llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
+  if (globalRouting_)
+    return executorError("Global routing overlaps a local dependency closure");
   if (logicalNet >= netMarks_.size())
     return executorError("Action dependency net is out of range");
   for (PnrIndex member :
        candidate_->problem().routeConstraints().equalityClosure(logicalNet)) {
     if (member >= netMarks_.size())
       return executorError("route equality closure net is out of range");
-    if (netMarks_[member] == netEpoch_)
+    if (netMarks_[member] == netEpoch_) {
+      pendingRouteKinds_[member] = PendingRouteKind::WholeNet;
+      pendingRouteAnchors_[member] = getInvalidPnrIndex();
       continue;
+    }
     netMarks_[member] = netEpoch_;
+    pendingRouteKinds_[member] = PendingRouteKind::WholeNet;
+    pendingRouteAnchors_[member] = getInvalidPnrIndex();
     affectedNets_.push_back(member);
   }
   return llvm::Error::success();
+}
+
+llvm::Error SpatialActionExecutorScratch::markLocalNet(PnrIndex logicalNet,
+                                                       PendingRouteKind kind,
+                                                       PnrIndex localAnchor) {
+  if (logicalNet >= netMarks_.size())
+    return executorError("local routing net is out of range");
+  if (netMarks_[logicalNet] == netEpoch_)
+    return executorError("local routing scope overlaps another dependency");
+  if (llvm::Error error = markNet(logicalNet))
+    return error;
+  pendingRouteKinds_[logicalNet] = kind;
+  pendingRouteAnchors_[logicalNet] = localAnchor;
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
+    SpatialWitnessRegionRoutingAction action) {
+  const FrozenSpatialPnrProblem &problem = candidate_->problem();
+  const auto &transfers = problem.transfers();
+  switch (action.witnessKind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+      if (!rangeContains(net.sinkOffset, net.sinkCount, action.witnessOrdinal))
+        continue;
+      if (candidate_->routeTree(logicalNet).isRouted())
+        return executorError("unrouted witness is no longer live");
+      return markNet(logicalNet);
+    }
+    return executorError("unrouted witness ordinal is out of range");
+  case ResolvedPnrViolationKind::CapacityOveruse: {
+    const PnrIndex capacity = action.witnessOrdinal;
+    const auto &routing = problem.routing();
+    if (capacity >= problem.resources().capacityDimensions().size() ||
+        candidate_->routeCapacityOveruseRaw(capacity) == 0)
+      return executorError("route-capacity witness is no longer live");
+    const auto claims = routing.capacityRouteClaims().slice(
+        routing.capacityRouteClaimOffsets()[capacity],
+        routing.capacityRouteClaimOffsets()[capacity + 1] -
+            routing.capacityRouteClaimOffsets()[capacity]);
+    bool marked = false;
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      if (!llvm::any_of(claims, [&](PnrIndex claim) {
+            return candidate_->logicalNetRouteClaimRefcount(logicalNet,
+                                                            claim) != 0;
+          }))
+        continue;
+      if (llvm::Error error = markNet(logicalNet))
+        return error;
+      marked = true;
+    }
+    if (!marked)
+      return executorError("route-capacity witness has no selected net");
+    return llvm::Error::success();
+  }
+  case ResolvedPnrViolationKind::TagUnassigned: {
+    PnrIndex ordinal = 0;
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet)
+      for (const auto &value : candidate_->tagValues(logicalNet)) {
+        if (ordinal == action.witnessOrdinal) {
+          if (value)
+            return executorError("unassigned-tag witness is no longer live");
+          return markNet(logicalNet);
+        }
+        if (ordinal == getInvalidPnrIndex() - PnrIndex{1})
+          return executorError("tag witness ordinal overflows PnrIndex");
+        ++ordinal;
+      }
+    return executorError("unassigned-tag witness ordinal is out of range");
+  }
+  case ResolvedPnrViolationKind::TagConflict: {
+    const PnrIndex domain = action.witnessOrdinal;
+    if (domain >= problem.routing().tagContinuity().matchDomains().size() ||
+        candidate_->tagDomainConflictCount(domain) == 0)
+      return executorError("tag-conflict witness is no longer live");
+    bool marked = false;
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      const auto values = candidate_->tagValues(logicalNet);
+      for (PnrIndex segment = 0; segment < values.size(); ++segment) {
+        if (!values[segment] ||
+            !llvm::is_contained(
+                candidate_->tagSegmentDomains(logicalNet, segment), domain) ||
+            !candidate_->tagDomainValueConflicts(domain, *values[segment]))
+          continue;
+        if (llvm::Error error = markNet(logicalNet))
+          return error;
+        marked = true;
+        break;
+      }
+    }
+    if (!marked)
+      return executorError("tag-conflict witness has no selected net");
+    return llvm::Error::success();
+  }
+  case ResolvedPnrViolationKind::HardProgressViolation:
+    return executorError(
+        "HardProgressViolation has no transport-routing dependency closure");
+  }
+  llvm_unreachable("unknown Spatial violation kind");
 }
 
 llvm::Error SpatialActionExecutorScratch::applyComputeBinding(
@@ -406,13 +519,28 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                 if constexpr (std::is_same_v<Choice,
                                              SpatialWholeNetRoutingAction>)
                   return markNet(choice.logicalNet);
+                else if constexpr (std::is_same_v<
+                                       Choice, SpatialSingleSinkRoutingAction>)
+                  return markLocalNet(choice.logicalNet,
+                                      PendingRouteKind::SingleSink,
+                                      choice.sinkObligation);
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialRootedSubtreeRoutingAction>)
+                  return markLocalNet(choice.logicalNet,
+                                      PendingRouteKind::RootedSubtree,
+                                      choice.rootEndpoint);
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialWitnessRegionRoutingAction>)
+                  return markWitnessRegion(choice);
                 else if constexpr (std::is_same_v<Choice,
                                                   SpatialGlobalRoutingAction>) {
+                  if (!affectedNets_.empty() || globalRouting_)
+                    return executorError(
+                        "Global routing overlaps another routing scope");
                   globalRouting_ = true;
                   return llvm::Error::success();
-                } else {
-                  return executorError(
-                      "routing scope has no production executor");
                 }
               },
               category);
@@ -570,10 +698,25 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
   for (PnrIndex logicalNet : affectedNets_) {
     if (llvm::Error error = routeCosts_->selectLogicalNet(logicalNet))
       return error;
-    auto route = router_.routeWholeNetInMove(move, candidate, *routeCosts_,
-                                             logicalNet, endpointLimit);
+    llvm::Expected<RouteCost> route = [&]() -> llvm::Expected<RouteCost> {
+      switch (pendingRouteKinds_[logicalNet]) {
+      case PendingRouteKind::WholeNet:
+        return router_.routeWholeNetInMove(move, candidate, *routeCosts_,
+                                           logicalNet, endpointLimit);
+      case PendingRouteKind::SingleSink:
+        return router_.routeSingleSinkInMove(
+            move, candidate, *routeCosts_, logicalNet,
+            pendingRouteAnchors_[logicalNet], endpointLimit);
+      case PendingRouteKind::RootedSubtree:
+        return router_.routeRootedSubtreeInMove(
+            move, candidate, *routeCosts_, logicalNet,
+            pendingRouteAnchors_[logicalNet], endpointLimit);
+      }
+      llvm_unreachable("unknown pending routing scope");
+    }();
     if (!route) {
-      if (!admitsUnrouted)
+      if (!admitsUnrouted ||
+          pendingRouteKinds_[logicalNet] != PendingRouteKind::WholeNet)
         return route.takeError();
       auto retainable = classifyRetainableRouteFailure(route.takeError());
       if (!retainable)
@@ -674,6 +817,8 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          router_.retainedStorageBytes() +
          (routeCosts_ ? routeCosts_->retainedStorageBytes() : 0) +
          retainedBytes(netMarks_) + retainedBytes(affectedNets_) +
+         retainedBytes(pendingRouteKinds_) +
+         retainedBytes(pendingRouteAnchors_) +
          retainedBytes(routeCostTraversals_) +
          retainedBytes(fixedRelationChoices_) +
          retainedBytes(relationDecisionMarks_) +

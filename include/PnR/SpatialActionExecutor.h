@@ -115,6 +115,12 @@ public:
   std::size_t retainedStorageBytes() const;
 
 private:
+  enum class PendingRouteKind : std::uint8_t {
+    WholeNet,
+    SingleSink,
+    RootedSubtree,
+  };
+
   llvm::Error apply(SpatialMoveTransaction &move,
                     SpatialCandidateState &candidate,
                     const SpatialMappingAction &action);
@@ -131,6 +137,9 @@ private:
   void markChangedBindingRoot(PnrIndex decision);
   void markExplicitAttachment(PnrIndex decision);
   llvm::Error markNet(PnrIndex logicalNet);
+  llvm::Error markLocalNet(PnrIndex logicalNet, PendingRouteKind kind,
+                           PnrIndex localAnchor);
+  llvm::Error markWitnessRegion(SpatialWitnessRegionRoutingAction action);
   void beginDependencyClosure();
   llvm::Error restoreAfterFailure(SpatialMoveTransaction &move,
                                   llvm::Error failure);
@@ -140,6 +149,8 @@ private:
   std::optional<SpatialRouteCostState> routeCosts_;
   std::optional<dse::ObjectiveVector> currentObjective_;
   std::vector<std::uint64_t> netMarks_;
+  std::vector<PendingRouteKind> pendingRouteKinds_;
+  std::vector<PnrIndex> pendingRouteAnchors_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;

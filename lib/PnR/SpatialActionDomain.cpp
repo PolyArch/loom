@@ -50,12 +50,69 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   const std::size_t realizationAnchorCapacity =
       relations.realizationDecisionCount();
   const std::size_t logicalNetCount = problem.transfers().logicalNets().size();
+  const std::size_t sinkCount = problem.transfers().logicalNetSinks().size();
+  const std::size_t endpointCount = problem.routing().routingEndpoints().size();
+  const PnrCapacityContext transportCapacity{"SpatialActionDomain",
+                                             "transportChoices", "Action",
+                                             PnrCapacityMeasure::Count};
+  auto netEndpointCapacity = checkedPnrIndexMultiply(
+      transportCapacity, logicalNetCount, endpointCount);
+  if (!netEndpointCapacity)
+    return netEndpointCapacity.takeError();
   auto transportChoiceCapacity =
-      checkedPnrIndexAdd({"SpatialActionDomain", "transportChoices", "Action",
-                          PnrCapacityMeasure::Count},
-                         logicalNetCount, logicalNetCount == 0 ? 0 : 1);
+      checkedPnrIndexAdd(transportCapacity, logicalNetCount, sinkCount);
   if (!transportChoiceCapacity)
     return transportChoiceCapacity.takeError();
+  transportChoiceCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportChoiceCapacity, *netEndpointCapacity);
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  transportChoiceCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportChoiceCapacity, sinkCount);
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  transportChoiceCapacity =
+      checkedPnrIndexAdd(transportCapacity, *transportChoiceCapacity,
+                         problem.resources().capacityDimensions().size());
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  transportChoiceCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportChoiceCapacity, *netEndpointCapacity);
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  transportChoiceCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportChoiceCapacity,
+      problem.routing().tagContinuity().matchDomains().size());
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  transportChoiceCapacity =
+      checkedPnrIndexAdd(transportCapacity, *transportChoiceCapacity,
+                         logicalNetCount == 0 ? 0 : 1);
+  if (!transportChoiceCapacity)
+    return transportChoiceCapacity.takeError();
+  auto transportAnchorCapacity =
+      checkedPnrIndexAdd(transportCapacity, logicalNetCount, sinkCount);
+  if (!transportAnchorCapacity)
+    return transportAnchorCapacity.takeError();
+  transportAnchorCapacity =
+      checkedPnrIndexAdd(transportCapacity, *transportAnchorCapacity,
+                         problem.resources().capacityDimensions().size());
+  if (!transportAnchorCapacity)
+    return transportAnchorCapacity.takeError();
+  transportAnchorCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportAnchorCapacity, *netEndpointCapacity);
+  if (!transportAnchorCapacity)
+    return transportAnchorCapacity.takeError();
+  transportAnchorCapacity = checkedPnrIndexAdd(
+      transportCapacity, *transportAnchorCapacity,
+      problem.routing().tagContinuity().matchDomains().size());
+  if (!transportAnchorCapacity)
+    return transportAnchorCapacity.takeError();
+  transportAnchorCapacity =
+      checkedPnrIndexAdd(transportCapacity, *transportAnchorCapacity,
+                         logicalNetCount == 0 ? 0 : 1);
+  if (!transportAnchorCapacity)
+    return transportAnchorCapacity.takeError();
   auto resourceChoiceCapacity =
       checkedPnrIndexAdd({"SpatialActionDomain", "resourceChoices", "Action",
                           PnrCapacityMeasure::Count},
@@ -81,13 +138,15 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   realizationChoices_.clear();
   transportAnchors_.clear();
   transportChoices_.clear();
+  routeRootEndpoints_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   movableDecisionCount_ = 0;
   realizationAnchors_.reserve(realizationAnchorCapacity);
   realizationChoices_.reserve(realizationChoiceCapacity);
-  transportAnchors_.reserve(*transportChoiceCapacity);
+  transportAnchors_.reserve(*transportAnchorCapacity);
   transportChoices_.reserve(*transportChoiceCapacity);
+  routeRootEndpoints_.reserve(endpointCount);
   resourceAnchors_.reserve(*resourceAnchorCapacity);
   resourceChoices_.reserve(*resourceChoiceCapacity);
   relationChoices_.resize(relations.decisionCount());
@@ -106,6 +165,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   realizationChoices_.clear();
   transportAnchors_.clear();
   transportChoices_.clear();
+  routeRootEndpoints_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   movableDecisionCount_ = 0;
@@ -186,29 +246,107 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       return error;
   }
 
-  const auto appendTransport =
-      [&](SpatialTransportRoutingAction action) -> llvm::Error {
-    auto offset = actionIndex(transportChoices_.size(), "transportChoices",
-                              PnrCapacityMeasure::Offset);
-    if (!offset)
-      return offset.takeError();
-    transportChoices_.push_back(std::move(action));
-    transportAnchors_.push_back({*offset, 1});
+  const auto appendTransportRange = [&](std::size_t offset) -> llvm::Error {
+    if (transportChoices_.size() == offset)
+      return llvm::Error::success();
+    auto checkedOffset =
+        actionIndex(offset, "transportChoices", PnrCapacityMeasure::Offset);
+    if (!checkedOffset)
+      return checkedOffset.takeError();
+    auto checkedCount =
+        actionIndex(transportChoices_.size() - offset, "transportChoices",
+                    PnrCapacityMeasure::Count);
+    if (!checkedCount)
+      return checkedCount.takeError();
+    transportAnchors_.push_back({*checkedOffset, *checkedCount});
     return llvm::Error::success();
   };
-  for (PnrIndex logicalNet = 0;
-       logicalNet < preparedProblem_->transfers().logicalNets().size();
-       ++logicalNet)
-    if (llvm::Error error =
-            appendTransport(SpatialWholeNetRoutingAction{logicalNet}))
+  const auto appendWitness = [&](ResolvedPnrViolationKind kind,
+                                 PnrIndex ordinal) -> llvm::Error {
+    const std::size_t offset = transportChoices_.size();
+    transportChoices_.emplace_back(
+        SpatialWitnessRegionRoutingAction{kind, ordinal});
+    return appendTransportRange(offset);
+  };
+  const auto &transfers = preparedProblem_->transfers();
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    const std::size_t offset = transportChoices_.size();
+    transportChoices_.emplace_back(SpatialWholeNetRoutingAction{logicalNet});
+    const RouteTreeState &route = candidate.routeTree(logicalNet);
+    if (route.isRouted()) {
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+      for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
+        transportChoices_.emplace_back(
+            SpatialSingleSinkRoutingAction{logicalNet, sink});
+      const PnrIndex source = *route.sourceEndpoint();
+      routeRootEndpoints_.clear();
+      for (const RouteTreeNode &node : route.nodeStorage())
+        if (node.isActive() && node.endpoint != source)
+          routeRootEndpoints_.push_back(node.endpoint);
+      llvm::sort(routeRootEndpoints_);
+      for (PnrIndex endpoint : routeRootEndpoints_)
+        transportChoices_.emplace_back(
+            SpatialRootedSubtreeRoutingAction{logicalNet, endpoint});
+    }
+    if (llvm::Error error = appendTransportRange(offset))
       return error;
+  }
   if (preparedProblem_->transfers().logicalNets().size() >
       std::numeric_limits<std::uint64_t>::max() - movableDecisionCount_)
     return invalid("movable decision count overflows u64");
   movableDecisionCount_ += preparedProblem_->transfers().logicalNets().size();
-  if (!preparedProblem_->transfers().logicalNets().empty())
-    if (llvm::Error error = appendTransport(SpatialGlobalRoutingAction{}))
+
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    if (candidate.routeTree(logicalNet).isRouted())
+      continue;
+    const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+    for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
+      if (llvm::Error error =
+              appendWitness(ResolvedPnrViolationKind::UnroutedObligation,
+                            net.sinkOffset + sink))
+        return error;
+  }
+  for (PnrIndex capacity = 0;
+       capacity < preparedProblem_->resources().capacityDimensions().size();
+       ++capacity)
+    if (candidate.routeCapacityOveruseRaw(capacity) != 0)
+      if (llvm::Error error = appendWitness(
+              ResolvedPnrViolationKind::CapacityOveruse, capacity))
+        return error;
+
+  std::size_t globalSegment = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    const auto values = candidate.tagValues(logicalNet);
+    for (const auto &value : values) {
+      auto ordinal =
+          actionIndex(globalSegment, "tagSegments", PnrCapacityMeasure::Offset);
+      if (!ordinal)
+        return ordinal.takeError();
+      if (!value)
+        if (llvm::Error error = appendWitness(
+                ResolvedPnrViolationKind::TagUnassigned, *ordinal))
+          return error;
+      ++globalSegment;
+    }
+  }
+  for (PnrIndex domain = 0;
+       domain <
+       preparedProblem_->routing().tagContinuity().matchDomains().size();
+       ++domain)
+    if (candidate.tagDomainConflictCount(domain) != 0)
+      if (llvm::Error error =
+              appendWitness(ResolvedPnrViolationKind::TagConflict, domain))
+        return error;
+
+  if (!transfers.logicalNets().empty()) {
+    const std::size_t offset = transportChoices_.size();
+    transportChoices_.emplace_back(SpatialGlobalRoutingAction{});
+    if (llvm::Error error = appendTransportRange(offset))
       return error;
+  }
 
   const auto appendResourceRange = [&](std::size_t offset) -> llvm::Error {
     if (resourceChoices_.size() == offset)
@@ -317,5 +455,6 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
   return retainedBytes(realizationAnchors_) +
          retainedBytes(realizationChoices_) + retainedBytes(transportAnchors_) +
          retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
-         retainedBytes(resourceChoices_) + retainedBytes(relationChoices_);
+         retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
+         retainedBytes(routeRootEndpoints_);
 }

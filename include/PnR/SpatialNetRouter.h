@@ -41,6 +41,14 @@ public:
                 const SpatialCandidateState &candidate,
                 SpatialRouteCostState &costs, PnrIndex logicalNet,
                 std::uint64_t endpointExpansionLimit);
+  llvm::Expected<RouteCost> routeSingleSink(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet,
+      PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit);
+  llvm::Expected<RouteCost> routeRootedSubtree(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
+      std::uint64_t endpointExpansionLimit);
 
   std::size_t retainedStorageBytes() const;
 
@@ -61,6 +69,13 @@ private:
                                     PnrIndex logicalNet, PnrIndex sinkCount);
   llvm::Error addPathClaims(const FrozenSpatialRoutingGraph &routing,
                             llvm::ArrayRef<PnrIndex> forwardArcs);
+  llvm::Error collectCurrentClaims(const RouteTreeState &tree);
+  llvm::Expected<RouteCost>
+  routeSelectedSinks(SpatialMoveTransaction &move,
+                     const SpatialCandidateState &candidate,
+                     SpatialRouteCostState &costs, PnrIndex logicalNet,
+                     std::uint64_t endpointExpansionLimit);
+  void beginEndpointMarks();
 
   EndpointRouteSearchScratch endpointSearch_;
   std::vector<SourceCandidate> sourceCandidates_;
@@ -72,6 +87,9 @@ private:
   std::vector<PnrIndex> targetObligationByEndpoint_;
   std::vector<std::uint8_t> unresolvedSinks_;
   std::vector<std::uint64_t> prospectiveClaimBits_;
+  std::vector<std::uint64_t> endpointMarks_;
+  std::vector<PnrIndex> subtreeWorklist_;
+  std::uint64_t endpointMarkEpoch_ = 0;
   std::unique_ptr<detail::SpatialRouteConstraintScratch> routeConstraints_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };

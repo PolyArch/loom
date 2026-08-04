@@ -31,6 +31,7 @@ private:
   std::vector<SpatialRealizationBindingAction> realizationChoices_;
   std::vector<SpatialActionChoiceRange> transportAnchors_;
   std::vector<SpatialTransportRoutingAction> transportChoices_;
+  std::vector<PnrIndex> routeRootEndpoints_;
   std::vector<SpatialActionChoiceRange> resourceAnchors_;
   std::vector<SpatialResourceAllocationAction> resourceChoices_;
   std::vector<PnrIndex> relationChoices_;
