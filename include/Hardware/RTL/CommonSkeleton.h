@@ -5,6 +5,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -24,6 +25,20 @@ struct FabricOperationLeafAssociation final {
   circt::hw::HWModuleGeneratedOp module;
   fabric::FabricFuOccurrenceNodeRef occurrence;
 };
+
+/// One standalone CIRCT container built from an exact Fabric Module root.
+/// Operation-leaf associations remain transient handles into `module`.
+struct ModuleRootCirctSkeleton final {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  std::vector<FabricOperationLeafAssociation> operationLeaves;
+};
+
+/// Builds one target-independent CIRCT module from a finalized Fabric Module
+/// root. Validation and construction happen off to the side; failure publishes
+/// no partial skeleton.
+llvm::Expected<ModuleRootCirctSkeleton>
+buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
+                             const fabric::FabricArtifactView &fabric);
 
 llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const fabric::FabricArtifactView &fabric,

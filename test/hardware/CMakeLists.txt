@@ -35,6 +35,8 @@ if(LOOM_HAVE_CIRCT)
   target_link_libraries(loom-common-skeleton-test PRIVATE
     LoomADGBuilder
     LoomHardwareRTL
+    MLIRFabric
+    MLIRParser
     LLVMSupport
   )
 
