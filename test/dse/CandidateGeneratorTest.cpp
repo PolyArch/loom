@@ -56,17 +56,17 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return loom::validateComponentViewDigest(configSchema, bytes, digest);
 }
 
-constexpr std::array<const ArtifactSchemaDescriptor *, 1> inputSchemas = {
-    &inputSchema};
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{{
     CandidateGeneratorInputSlotRef(0),
     "subject",
-    inputSchemas,
-    ArtifactCollectionBounds{1, 1},
+    PlanValueRole::CandidateSet,
+    &inputSchema,
+    PlanValueCardinality::ExactlyOne,
 }}};
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
-    {{CandidateGeneratorOutputSlotRef(0), "candidate", &outputSchema,
-      ArtifactCollectionBounds{0, ArtifactCollectionBounds::unbounded}}}};
+    {{CandidateGeneratorOutputSlotRef(0), "candidate",
+      PlanValueRole::CandidateSet, &outputSchema,
+      PlanValueCardinality::FiniteSet}}};
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{{
     CandidateGeneratorWorkUnitRef(0),
     "candidate_attempt",
@@ -105,12 +105,14 @@ void exerciseRegistryAndBinding() {
   const std::array<std::uint8_t, 2> canonicalConfig = {0x01, 0x02};
   const ComponentViewDigest digest =
       take(loom::computeComponentViewDigest(configSchema, canonicalConfig));
+  const ArtifactRootReference subject = makeReference(inputSchema, 0x11);
   std::vector<CandidateGeneratorInputBinding> inputs = {
-      {CandidateGeneratorInputSlotRef(0), {makeReference(inputSchema, 0x11)}}};
+      {CandidateGeneratorInputSlotRef(0), {subject, subject}}};
   auto binding = take(ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), std::move(inputs), canonicalConfig, digest));
   if (binding.descriptorRef() != descriptor.reference() ||
       binding.inputBindings().size() != 1 ||
+      binding.inputBindings().front().artifacts.size() != 1 ||
       !llvm::equal(binding.canonicalConfigBytes(), canonicalConfig) ||
       binding.configDigest() != digest)
     fail("resolved binding did not preserve exact descriptor-owned inputs");

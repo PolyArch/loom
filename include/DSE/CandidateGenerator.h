@@ -3,13 +3,13 @@
 
 #include "Common/Artifact.h"
 #include "Common/ComponentViewDigest.h"
+#include "DSE/PlanValue.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 namespace loom::dse {
@@ -109,18 +109,6 @@ private:
   std::uint32_t ordinal_;
 };
 
-struct ArtifactCollectionBounds final {
-  static constexpr std::uint64_t unbounded =
-      std::numeric_limits<std::uint64_t>::max();
-
-  std::uint64_t minimum = 0;
-  std::uint64_t maximum = 0;
-
-  bool contains(std::uint64_t count) const {
-    return count >= minimum && count <= maximum;
-  }
-};
-
 struct CandidateGeneratorInputBinding final {
   CandidateGeneratorInputSlotRef slot;
   std::vector<ArtifactRootReference> artifacts;
@@ -129,15 +117,17 @@ struct CandidateGeneratorInputBinding final {
 struct CandidateGeneratorInputSlotDescriptor final {
   CandidateGeneratorInputSlotRef slot;
   llvm::StringRef semanticRole;
-  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedSchemas;
-  ArtifactCollectionBounds cardinality;
+  PlanValueRole role;
+  const ArtifactSchemaDescriptor *schema;
+  PlanValueCardinality cardinality;
 };
 
 struct CandidateGeneratorOutputSlotDescriptor final {
   CandidateGeneratorOutputSlotRef slot;
   llvm::StringRef semanticRole;
+  PlanValueRole role;
   const ArtifactSchemaDescriptor *schema;
-  ArtifactCollectionBounds cardinality;
+  PlanValueCardinality cardinality;
 };
 
 struct CandidateGeneratorConfigViewContract final {

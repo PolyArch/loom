@@ -24,31 +24,26 @@ enum InputSlot : std::uint32_t {
   InputSlotCount,
 };
 
-constexpr std::array<const ArtifactSchemaDescriptor *, 1> dataflowSchemas = {
-    &::dataflow::canonicalDataflowSchema};
-constexpr std::array<const ArtifactSchemaDescriptor *, 1> mappingSchemas = {
-    &::loom::mapping::mappingArtifactSchema};
-constexpr std::array<const ArtifactSchemaDescriptor *, 1> fabricSchemas = {
-    &::loom::fabric::fabricArtifactSchema};
-constexpr std::array<const ArtifactSchemaDescriptor *, 1> constraintSchemas = {
-    &::loom::mapping::mappingConstraintSetSchema};
-
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
     inputSlots = {
         {{CandidateGeneratorInputSlotRef(DataflowInput), "dataflow",
-          dataflowSchemas, ArtifactCollectionBounds{1, 1}},
+          PlanValueRole::CandidateSet, &::dataflow::canonicalDataflowSchema,
+          PlanValueCardinality::ExactlyOne},
          {CandidateGeneratorInputSlotRef(TechMappingInput), "tech_mapping",
-          mappingSchemas, ArtifactCollectionBounds{1, 1}},
-         {CandidateGeneratorInputSlotRef(FabricInput), "fabric", fabricSchemas,
-          ArtifactCollectionBounds{1, 1}},
+          PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
+          PlanValueCardinality::ExactlyOne},
+         {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
+          PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+          PlanValueCardinality::ExactlyOne},
          {CandidateGeneratorInputSlotRef(ConstraintInput),
-          "spatial_constraints", constraintSchemas,
-          ArtifactCollectionBounds{1, 1}}}};
+          "spatial_constraints", PlanValueRole::CandidateSet,
+          &::loom::mapping::mappingConstraintSetSchema,
+          PlanValueCardinality::ExactlyOne}}};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
     {{CandidateGeneratorOutputSlotRef(0), "spatial_mapping",
-      &::loom::mapping::mappingArtifactSchema,
-      ArtifactCollectionBounds{0, ArtifactCollectionBounds::unbounded}}}};
+      PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
+      PlanValueCardinality::FiniteSet}}};
 
 constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 10> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "seed_attempt"},

@@ -13,6 +13,7 @@ target_link_libraries(LoomDSEObjective PUBLIC
 
 add_library(LoomDSECandidateGenerator
   CandidateGenerator.cpp
+  Plan.cpp
 )
 
 target_include_directories(LoomDSECandidateGenerator PUBLIC

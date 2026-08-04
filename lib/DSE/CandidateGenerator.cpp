@@ -1,5 +1,7 @@
 #include "DSE/CandidateGenerator.h"
 
+#include "Common/ArtifactLocalReference.h"
+
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
@@ -31,29 +33,10 @@ bool isCanonicalAscii(llvm::StringRef value) {
   });
 }
 
-bool schemaLess(const ArtifactSchemaDescriptor *lhs,
-                const ArtifactSchemaDescriptor *rhs) {
-  if (lhs->identity != rhs->identity)
-    return lhs->identity < rhs->identity;
-  if (lhs->version.major != rhs->version.major)
-    return lhs->version.major < rhs->version.major;
-  return lhs->version.minor < rhs->version.minor;
-}
-
 bool acceptsSchema(const CandidateGeneratorInputSlotDescriptor &slot,
                    const ArtifactRootReference &artifact) {
-  return llvm::any_of(slot.acceptedSchemas,
-                      [&](const ArtifactSchemaDescriptor *schema) {
-                        return schema->identity == artifact.schemaIdentity &&
-                               schema->version == artifact.schemaVersion;
-                      });
-}
-
-llvm::Error validateBounds(llvm::StringRef owner,
-                           ArtifactCollectionBounds bounds) {
-  if (bounds.minimum > bounds.maximum)
-    return invalid(owner + " has an inverted artifact cardinality");
-  return llvm::Error::success();
+  return slot.schema && slot.schema->identity == artifact.schemaIdentity &&
+         slot.schema->version == artifact.schemaVersion;
 }
 
 llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
@@ -81,24 +64,13 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
       return invalid("input slots must be dense and canonical");
     if (!isCanonicalAscii(slot.semanticRole))
       return invalid("input slot role must be nonempty canonical ASCII");
-    if (slot.acceptedSchemas.empty())
-      return invalid("input slot requires at least one accepted schema");
-    if (llvm::any_of(slot.acceptedSchemas,
-                     [](const ArtifactSchemaDescriptor *schema) {
-                       return schema == nullptr;
-                     }))
-      return invalid("input slot contains a null schema");
-    if (!std::is_sorted(slot.acceptedSchemas.begin(),
-                        slot.acceptedSchemas.end(), schemaLess) ||
-        std::adjacent_find(slot.acceptedSchemas.begin(),
-                           slot.acceptedSchemas.end(),
-                           [](const ArtifactSchemaDescriptor *lhs,
-                              const ArtifactSchemaDescriptor *rhs) {
-                             return *lhs == *rhs;
-                           }) != slot.acceptedSchemas.end())
-      return invalid("input schemas must be canonical without duplicates");
-    if (llvm::Error error = validateBounds("input slot", slot.cardinality))
-      return error;
+    if (!slot.schema)
+      return invalid("input slot requires one exact schema");
+    if (static_cast<std::uint32_t>(slot.role) >
+            static_cast<std::uint32_t>(PlanValueRole::SimulationExecutionSet) ||
+        static_cast<std::uint32_t>(slot.cardinality) >
+            static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet))
+      return invalid("input slot has an invalid plan value contract");
   }
 
   for (std::size_t index = 0; index < descriptor.outputSlots.size(); ++index) {
@@ -108,8 +80,11 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
       return invalid("output slots must be dense and canonical");
     if (!isCanonicalAscii(slot.semanticRole) || !slot.schema)
       return invalid("output slot requires a role and exact schema");
-    if (llvm::Error error = validateBounds("output slot", slot.cardinality))
-      return error;
+    if (static_cast<std::uint32_t>(slot.role) >
+            static_cast<std::uint32_t>(PlanValueRole::SimulationExecutionSet) ||
+        static_cast<std::uint32_t>(slot.cardinality) >
+            static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet))
+      return invalid("output slot has an invalid plan value contract");
   }
 
   for (std::size_t index = 0; index < descriptor.workUnits.size(); ++index) {
@@ -224,18 +199,22 @@ ResolvedCandidateGeneratorBinding::get(
     return invalid("binding does not provide every descriptor input slot");
 
   for (std::size_t index = 0; index < inputBindings.size(); ++index) {
-    const CandidateGeneratorInputBinding &binding = inputBindings[index];
+    CandidateGeneratorInputBinding &binding = inputBindings[index];
     const CandidateGeneratorInputSlotDescriptor &slot =
         descriptor->inputSlots[index];
     if (binding.slot.ordinal() != index)
       return invalid("input bindings must be dense and canonical");
-    if (!slot.cardinality.contains(binding.artifacts.size()))
-      return invalid("input binding violates descriptor cardinality");
     for (const ArtifactRootReference &artifact : binding.artifacts)
       if (!acceptsSchema(slot, artifact))
         return invalid("input slot '" + slot.semanticRole +
                        "' does not accept artifact schema '" +
                        artifact.schemaIdentity + "'");
+    llvm::sort(binding.artifacts, artifactRootReferenceLess);
+    binding.artifacts.erase(
+        std::unique(binding.artifacts.begin(), binding.artifacts.end()),
+        binding.artifacts.end());
+    if (!planCardinalityContains(slot.cardinality, binding.artifacts.size()))
+      return invalid("canonical input set violates descriptor cardinality");
   }
 
   if (llvm::Error error = descriptor->resolvedConfigView.validateCanonical(
